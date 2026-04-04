@@ -39,3 +39,12 @@ parse-duration-to-seconds() {
   esac
   echo "$seconds"
 }
+
+read-file-or-die() {
+  local target_file="$1"
+  local status_code="${2:-1}"
+
+  if ! cat "$target_file" 2>/dev/null; then
+    fatal -s "$status_code" "Failed to read [$target_file]"
+  fi
+}

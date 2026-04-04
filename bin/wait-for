@@ -48,12 +48,9 @@ LAST_STATUS=1
 while [ $SECONDS -lt $TIMEOUT_SECONDS ]; do
     if "${COMMAND[@]}"; then
         LAST_STATUS=0
+        break
     else
         LAST_STATUS=$?
-    fi
-
-    if [ $LAST_STATUS -eq 0 ]; then
-        exit 0
     fi
 
     sleep "$PERIOD"

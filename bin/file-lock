@@ -45,8 +45,20 @@ if [ -z "$MAX_DURATION" ]; then
 fi
 
 if [ -n "$TIMEOUT" ]; then
+  # Fast fail explicitly matching operations before entering polling wait sequence
+  if [ -r "$LOCK_DIR/op" ]; then
+    CURRENT_OP=$(read-file-or-die "$LOCK_DIR/op" 2)
+    if [ -n "$OP" ] && [ "$CURRENT_OP" = "$OP" ]; then
+      exit 10
+    fi
+  fi
   # Delegate to wait-for. The omission of -t ensures the delegated process only tries once
-  exec "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$0" -o "$OP" "$LOCK_DIR" "$MAX_DURATION_STR"
+  ARGS=("$0")
+  if [ -n "$OP" ]; then
+    ARGS+=("-o" "$OP")
+  fi
+  ARGS+=("$LOCK_DIR" "$MAX_DURATION_STR")
+  exec "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "${ARGS[@]}"
 fi
 
 NOW=$(date +%s)
@@ -62,27 +74,20 @@ while true; do
   fi
 
   # Lock already exists
-  if [ -r "$LOCK_DIR/op" ]; then
-    if ! CURRENT_OP=$(cat "$LOCK_DIR/op" 2>/dev/null); then
-      fatal -s2 "Failed to read [$LOCK_DIR/op]"
-    fi
-    if [ -n "$OP" ] && [ "$CURRENT_OP" = "$OP" ]; then
-      break
-    fi
+  CURRENT_EXPIRES=$(read-file-or-die "$LOCK_DIR/expires-at" 2)
+
+  if [ "$NOW" -ge "$CURRENT_EXPIRES" ]; then
+    log-warning "Lock at $LOCK_DIR is stale (expired at $CURRENT_EXPIRES). Breaking lock."
+    mv "$LOCK_DIR" "${LOCK_DIR}.stale.$$" 2>/dev/null || true
+    continue
   fi
 
-  if [ -r "$LOCK_DIR/expires-at" ]; then
-    if ! CURRENT_EXPIRES=$(cat "$LOCK_DIR/expires-at" 2>/dev/null); then
-      fatal -s2 "Failed to read [$LOCK_DIR/expires-at]"
+  # Active, non-stale lock exists. Validate operation match.
+  if [ -r "$LOCK_DIR/op" ]; then
+    CURRENT_OP=$(read-file-or-die "$LOCK_DIR/op" 2)
+    if [ -n "$OP" ] && [ "$CURRENT_OP" = "$OP" ]; then
+      exit 10
     fi
-
-    if [ "$NOW" -ge "$CURRENT_EXPIRES" ]; then
-      log-warning "Lock at $LOCK_DIR is stale (expired at $CURRENT_EXPIRES). Breaking lock."
-      mv "$LOCK_DIR" "${LOCK_DIR}.stale.$$" 2>/dev/null || true
-      continue
-    fi
-  else
-    fatal -s2 "Unreadable file [$LOCK_DIR/expires-at]"
   fi
 
   exit 1

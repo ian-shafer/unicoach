@@ -2,3 +2,4 @@
 build/
 var/
 !gradle/wrapper/gradle-wrapper.jar
+*.swp

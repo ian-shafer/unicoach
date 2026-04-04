@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ -n "${1:-}" ]; then
+      log-info "$1"
+      exit_code=1
+  fi
+
+  cat << 'EOF'
+Usage: docker-daemon-start <service-name> [options]
+
+Boots the requested docker-compose service detached and awaits native healthchecks.
+
+Options:
+  -h, --help                Print this help message
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "${1:-}" in
+    -h|--help) help ;;
+    *) fatal "Unknown option: ${1:-}" ;;
+  esac
+done
+
+if [ "$#" -lt 1 ]; then
+  help "Missing required <service-name> argument."
+fi
+
+SERVICE_NAME="$1"
+
+
+
+COMPOSE_FILE="$PROJECT_ROOT/docker/${SERVICE_NAME}-compose.yaml"
+if [ ! -f "$COMPOSE_FILE" ]; then
+  fatal "Docker compose file not found [$COMPOSE_FILE]"
+fi
+
+LOCK_DIR="$PROJECT_ROOT/var/run/${SERVICE_NAME}.daemon.lock"
+
+if ! "$PROJECT_ROOT/bin/file-lock" -o start -t 16 "$LOCK_DIR" 60; then
+  LAST_STATUS=$?
+  if [ $LAST_STATUS -eq 10 ]; then
+    log-info "Another start instance is actively establishing $SERVICE_NAME. Exiting gracefully."
+    exit 0
+  fi
+  if [ -r "$LOCK_DIR/op" ] && [ "$(cat "$LOCK_DIR/op" 2>/dev/null)" = "start" ]; then
+    log-info "Lock is active for start. Gracefully bouncing."
+    exit 0
+  fi
+  fatal "Failed to acquire lock for $SERVICE_NAME. Lock may be held by a conflicting operation."
+fi
+
+trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+
+if "$PROJECT_ROOT/bin/docker-daemon-check" "$SERVICE_NAME"; then
+  log-info "Service $SERVICE_NAME is already running and healthy."
+  exit 0
+fi
+
+if ! "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" up -d --wait; then
+  log-info "Boot failed. Dumping logs and tearing down."
+  "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" logs >&2
+  "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" down --remove-orphans >&2
+  exit 1
+fi
+
+exit 0
