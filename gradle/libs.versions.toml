@@ -1,0 +1,17 @@
+[versions]
+kotlin = "2.3.20"
+ktor = "3.4.2"
+ktlint = "12.1.0"
+
+[libraries]
+ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
+ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
+ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
+kotlin-test-junit5 = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version = "1.5.6" }
+logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version = "7.4" }
+
+[plugins]
+ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
