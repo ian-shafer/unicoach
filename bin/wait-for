@@ -35,20 +35,12 @@ if [ "$#" -lt 2 ]; then
 fi
 
 TIMEOUT_STR="$1"
-if [[ ! "$TIMEOUT_STR" =~ ^[0-9]+[smhd]?$ ]]; then
+TIMEOUT_SECONDS=$(parse-duration-to-seconds "$TIMEOUT_STR" || echo "")
+if [ -z "$TIMEOUT_SECONDS" ]; then
     help "Invalid timeout format [$TIMEOUT_STR]. Expected a number optionally followed by s, m, h, or d (e.g., 30, 30s, 2m)."
 fi
 shift
 COMMAND=("$@")
-
-# Convert timeout limit to integer seconds supporting s, m, h, d modifiers
-TIMEOUT_SECONDS="${TIMEOUT_STR%%[a-zA-Z]*}"
-case "$TIMEOUT_STR" in
-    *m*) TIMEOUT_SECONDS=$((TIMEOUT_SECONDS * 60)) ;;
-    *h*) TIMEOUT_SECONDS=$((TIMEOUT_SECONDS * 3600)) ;;
-    *d*) TIMEOUT_SECONDS=$((TIMEOUT_SECONDS * 86400)) ;;
-    *s*|*) ;; # seconds is the default unit
-esac
 
 SECONDS=0
 LAST_STATUS=1

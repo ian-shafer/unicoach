@@ -4,3 +4,29 @@ source "$(dirname "$0")/common"
 trap 'bin/docker-daemon-stop -d dummy-service || true; bin/docker-daemon-stop -d dummy-service-failing || true' EXIT INT TERM
 
 echo "Harness up"
+
+TEST_LOCK="$PROJECT_ROOT/var/run/test.lock"
+mkdir -p "$PROJECT_ROOT/var/run"
+
+echo "==== Testing file-lock ===="
+rm -rf "$TEST_LOCK" || true
+rm -rf "${TEST_LOCK}.stale."* || true
+
+bin/file-lock -o op-a "$TEST_LOCK" 60
+if [ ! -d "$TEST_LOCK" ]; then echo "Failed to create lock"; exit 1; fi
+
+# Test matching op immediate exit
+bin/file-lock -o op-a "$TEST_LOCK" 60
+
+# Test conflicting op failure
+if bin/file-lock -t 1s -o op-b "$TEST_LOCK" 60 2>/dev/null; then echo "Failed to block conflicting op"; exit 1; fi
+
+# Test stale lock recovery
+echo "$(( $(date +%s) - 10 ))" > "$TEST_LOCK/expires-at"
+bin/file-lock -o op-c "$TEST_LOCK" 60
+if [ "$(cat "$TEST_LOCK/op")" != "op-c" ]; then echo "Failed to recover stale lock"; exit 1; fi
+
+rm -rf "$TEST_LOCK" || true
+rm -rf "${TEST_LOCK}.stale."* || true
+
+echo "file-lock assertions passed"

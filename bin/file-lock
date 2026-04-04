@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/common"
+
+help() {
+    local exit_code=0
+    if [ -n "${1:-}" ]; then
+        log-info "$1"
+        exit_code=1
+    fi
+
+    cat << 'EOF'
+Usage: file-lock [options] <lock-dir> <max-lock-duration>
+
+Options:
+  -h, --help                Print this help message
+  -o, --operation OP        Operation name written to <lock-dir>/op
+  -t, --timeout TIMEOUT     Wait up to this duration to acquire the lock
+EOF
+    exit "$exit_code"
+}
+
+OP=""
+TIMEOUT=""
+
+while [[ "${1:-}" == -* ]]; do
+  case "${1:-}" in
+    -h|--help) help ;;
+    -o|--operation) OP="${2:-}"; shift 2 ;;
+    -t|--timeout) TIMEOUT="${2:-}"; shift 2 ;;
+    *) fatal "Unknown option: ${1:-}" ;;
+  esac
+done
+
+if [ "$#" -ne 2 ]; then
+  help "Invalid number of arguments. Expected 2 (<lock-dir> and <max-lock-duration>), but received $#."
+fi
+
+LOCK_DIR="$1"
+MAX_DURATION_STR="$2"
+
+MAX_DURATION=$(parse-duration-to-seconds "$MAX_DURATION_STR" || echo "")
+if [ -z "$MAX_DURATION" ]; then
+  help "Invalid max-lock-duration format [$MAX_DURATION_STR]. Expected a number optionally followed by s, m, h, or d."
+fi
+
+if [ -n "$TIMEOUT" ]; then
+  # Delegate to wait-for. The omission of -t ensures the delegated process only tries once
+  exec "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$0" -o "$OP" "$LOCK_DIR" "$MAX_DURATION_STR"
+fi
+
+NOW=$(date +%s)
+EXPIRES=$((NOW + MAX_DURATION))
+
+while true; do
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    if [ -n "$OP" ]; then
+      echo "$OP" > "$LOCK_DIR/op"
+    fi
+    echo "$EXPIRES" > "$LOCK_DIR/expires-at"
+    break
+  fi
+
+  # Lock already exists
+  if [ -r "$LOCK_DIR/op" ]; then
+    if ! CURRENT_OP=$(cat "$LOCK_DIR/op" 2>/dev/null); then
+      fatal -s2 "Failed to read [$LOCK_DIR/op]"
+    fi
+    if [ -n "$OP" ] && [ "$CURRENT_OP" = "$OP" ]; then
+      break
+    fi
+  fi
+
+  if [ -r "$LOCK_DIR/expires-at" ]; then
+    if ! CURRENT_EXPIRES=$(cat "$LOCK_DIR/expires-at" 2>/dev/null); then
+      fatal -s2 "Failed to read [$LOCK_DIR/expires-at]"
+    fi
+
+    if [ "$NOW" -ge "$CURRENT_EXPIRES" ]; then
+      log-warning "Lock at $LOCK_DIR is stale (expired at $CURRENT_EXPIRES). Breaking lock."
+      mv "$LOCK_DIR" "${LOCK_DIR}.stale.$$" 2>/dev/null || true
+      continue
+    fi
+  else
+    fatal -s2 "Unreadable file [$LOCK_DIR/expires-at]"
+  fi
+
+  exit 1
+done
+
+exit 0

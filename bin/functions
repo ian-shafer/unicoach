@@ -2,6 +2,10 @@ log-info() {
   echo "$@" >&2
 }
 
+log-warning() {
+  echo "[WARNING] $@" >&2
+}
+
 fatal() {
   local status_code=1
   while [[ "${1:-}" == -* ]]; do
@@ -19,4 +23,19 @@ fatal() {
 
   echo "[FATAL] $*" >&2
   exit "$status_code"
+}
+
+parse-duration-to-seconds() {
+  local input="$1"
+  if [[ ! "$input" =~ ^[0-9]+[smhd]?$ ]]; then
+      return 1
+  fi
+  local seconds="${input%%[a-zA-Z]*}"
+  case "$input" in
+      *m*) seconds=$((seconds * 60)) ;;
+      *h*) seconds=$((seconds * 3600)) ;;
+      *d*) seconds=$((seconds * 86400)) ;;
+      *s*|*) ;; # seconds is the default unit
+  esac
+  echo "$seconds"
 }
