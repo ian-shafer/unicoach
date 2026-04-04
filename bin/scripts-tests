@@ -143,3 +143,17 @@ if ! bin/docker-daemon-stop dummy-service --wipe-data >/dev/null; then
 fi
 
 echo "docker-daemon-restart assertions passed"
+
+echo "==== Testing Service Wrappers ===="
+
+# Wrapper Forwarding Validation
+if bin/rest-server-check >/dev/null 2>&1; then
+  echo "Fail: Dummy rest-server natively claimed running despite no instance existing."
+  exit 1
+fi
+if ! bin/rest-server-check -h >/dev/null; then
+  echo "Fail: Wrapper forwarding failed to securely bubble the help option evaluation dynamically."
+  exit 1
+fi
+
+echo "service wrappers assertions passed"

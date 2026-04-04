@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+exec "$PROJECT_ROOT/bin/docker-daemon-check" rest-server "$@"
