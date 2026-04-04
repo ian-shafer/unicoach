@@ -1,9 +1,9 @@
 ---
 name: hexagonal-architecture
 description: >-
-  Scaffold, implement, and validate code using the Hexagonal Architecture
-  (Ports and Adapters) pattern. Use when a user asks to create a new service,
-  add a repository, structure folders, refactor code into the domain, implement
+  Scaffold, implement, and validate code using the Hexagonal Architecture (Ports
+  and Adapters) pattern. Use when a user asks to create a new service, add a
+  repository, structure folders, refactor code into the domain, implement
   adapters for external APIs, or check imports for dependency rule violations.
   Do not use for general bug fixing or basic API setup unless architectural
   structure is specifically mentioned.
@@ -37,17 +37,17 @@ within the Hexagonal Architecture (Ports and Adapters) pattern.
 > domain code is separate from the adapter code. "Ports" are just interfaces.
 > "Adapters" are implementations of those port interfaces.
 
--   `domain/`: Pure business logic (Entities, Value Objects).
--   `domain/services/`: Use case orchestrators.
--   `ports/inbound/`: Interfaces for driving operations (useful when strictly
-    separating controllers).
--   `ports/output/`: Interfaces for driven operations (e.g., `UserRepository`,
-    `EmailService`).
--   `adapters/input/`: Driving adapters (e.g., REST controllers, gRPC handlers).
--   `adapters/output/`: Driven adapters (e.g., Postgres repositories, SendGrid
-    clients).
+- `domain/`: Pure business logic (Entities, Value Objects).
+- `domain/services/`: Use case orchestrators.
+- `ports/inbound/`: Interfaces for driving operations (useful when strictly
+  separating controllers).
+- `ports/output/`: Interfaces for driven operations (e.g., `UserRepository`,
+  `EmailService`).
+- `adapters/input/`: Driving adapters (e.g., REST controllers, gRPC handlers).
+- `adapters/output/`: Driven adapters (e.g., Postgres repositories, SendGrid
+  clients).
 
---------------------------------------------------------------------------------
+---
 
 ## 1. Feature Scaffolding Workflow
 
@@ -78,13 +78,13 @@ EmailService):
 
 When the user says "Check my work" or "Check my imports":
 
-1.  Identify the core domain directory (e.g., `domain/`, `core/`, `app/`)
-    based on the project structure, and list all files under it.
+1.  Identify the core domain directory (e.g., `domain/`, `core/`, `app/`) based
+    on the project structure, and list all files under it.
 2.  For each file, closely analyze the `import`(s).
 3.  **The Rule:** A file in the core domain directory MUST NOT import anything
     outside of that directory or the language's standard library.
-    -   *Exception: Any user-specified allowlist libraries (e.g., logging or
-        base utility types) if the user explicitly allowed them.*
+    - _Exception: Any user-specified allowlist libraries (e.g., logging or base
+      utility types) if the user explicitly allowed them._
 4.  If you see imports for external tools (e.g., GORM, FastAPI, Stripe SDK,
     Express), you must forcefully raise a Dependency Rule Violation to the user
     and refuse validation.
