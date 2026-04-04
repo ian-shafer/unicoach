@@ -1,1 +1,2 @@
-// Root settings.gradle.kts
+rootProject.name = "unicoach"
+include("rest-server")
