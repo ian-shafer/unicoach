@@ -1,0 +1,9 @@
+services:
+  dummy-service-failing:
+    image: alpine:latest
+    command: ["tail", "-f", "/dev/null"]
+    healthcheck:
+      test: ["CMD-SHELL", "false"]
+      interval: 1s
+      timeout: 1s
+      retries: 1

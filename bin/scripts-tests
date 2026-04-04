@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+trap 'bin/docker-daemon-stop -d dummy-service || true; bin/docker-daemon-stop -d dummy-service-failing || true' EXIT INT TERM
+
+echo "Harness up"
