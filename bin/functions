@@ -1,3 +1,22 @@
 log-info() {
   echo "$@" >&2
 }
+
+fatal() {
+  local status_code=1
+  while [[ "${1:-}" == -* ]]; do
+    case "${1:-}" in
+      -s|--status-code)
+        status_code="${2:-1}"
+        shift 2
+        ;;
+      *)
+        echo "[FATAL] Unknown option to fatal function: ${1:-}" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  echo "[FATAL] $*" >&2
+  exit "$status_code"
+}

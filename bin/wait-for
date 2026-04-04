@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/common"
+
+help() {
+    if [ -n "${1:-}" ]; then
+        log-info "$1"
+    fi
+    cat << 'EOF'
+Usage: bin/wait-for [-h|--help] [-p|--period duration] <timeout> <command...>
+
+Arguments:
+  <timeout>              Timeout limit indicating maximum wait time (e.g. 30, 30s, 2m, 1h, 1d).
+  <command...>           Command to execute sequentially until success (0 exit status).
+
+Options:
+  -h, --help             Print this descriptive help block.
+  -p, --period duration  Time to sleep between polling attempts. Supports standard sleep formats (e.g., 1, 1s, 2m, 1h, 1d). Defaults to 1s.
+EOF
+    exit 1
+}
+
+PERIOD="1s"
+
+while [[ "${1:-}" == -* ]]; do
+    case "${1:-}" in
+        -h|--help) help ;;
+        -p|--period) PERIOD="${2:-}"; shift 2 ;;
+        *) help "Unknown option: ${1:-}" ;;
+    esac
+done
+
+if [ "$#" -lt 2 ]; then
+    help
+fi
+
+TIMEOUT_STR="$1"
+if [[ ! "$TIMEOUT_STR" =~ ^[0-9]+[smhd]?$ ]]; then
+    help "Invalid timeout format [$TIMEOUT_STR]. Expected a number optionally followed by s, m, h, or d (e.g., 30, 30s, 2m)."
+fi
+shift
+COMMAND=("$@")
+
+# Convert timeout limit to integer seconds supporting s, m, h, d modifiers
+TIMEOUT_SECONDS="${TIMEOUT_STR%%[a-zA-Z]*}"
+case "$TIMEOUT_STR" in
+    *m*) TIMEOUT_SECONDS=$((TIMEOUT_SECONDS * 60)) ;;
+    *h*) TIMEOUT_SECONDS=$((TIMEOUT_SECONDS * 3600)) ;;
+    *d*) TIMEOUT_SECONDS=$((TIMEOUT_SECONDS * 86400)) ;;
+    *s*|*) ;; # seconds is the default unit
+esac
+
+SECONDS=0
+LAST_STATUS=1
+
+while [ $SECONDS -lt $TIMEOUT_SECONDS ]; do
+    if "${COMMAND[@]}"; then
+        LAST_STATUS=0
+    else
+        LAST_STATUS=$?
+    fi
+
+    if [ $LAST_STATUS -eq 0 ]; then
+        exit 0
+    fi
+
+    sleep "$PERIOD"
+done
+
+exit $LAST_STATUS

@@ -3,3 +3,8 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 source "$PROJECT_ROOT/bin/functions"
+
+# Globally ingest any local developer environment overwriting defaults
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  source "$PROJECT_ROOT/.env"
+fi

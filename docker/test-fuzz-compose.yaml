@@ -1,0 +1,12 @@
+services:
+  fuzzer:
+    image: schemathesis/schemathesis:stable
+    volumes:
+      - ./api-specs:/api-specs
+    # Since we weave this file simultaneously with the rest-server-compose.yaml, 
+    # the rest-server hostname is resolved dynamically over the docker bridge.
+    command:
+      - run
+      - /api-specs/openapi.yaml
+      - --url=http://rest-server:${PORT:-8080}
+      - --checks=all
