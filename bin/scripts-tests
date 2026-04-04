@@ -30,3 +30,17 @@ rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
 
 echo "file-lock assertions passed"
+
+echo "==== Testing docker-daemon-check ===="
+
+if bin/docker-daemon-check dummy-service 2>/dev/null; then
+  echo "Fail: Daemon check claimed success despite service not running."
+  exit 1
+fi
+
+if ! bin/docker-daemon-check -h >/dev/null; then
+  echo "Fail: Help flag did not natively exit 0."
+  exit 1
+fi
+
+echo "docker-daemon-check assertions passed"
