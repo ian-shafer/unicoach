@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ -n "${1:-}" ]; then
+      log-info "$1"
+      exit_code=1
+  fi
+
+  cat << 'EOF'
+Usage: docker-daemon-restart <service-name> [options]
+
+Sequentially invokes docker-daemon-stop then docker-daemon-start for a seamless restart.
+
+Options:
+  -h, --help                Print this help message
+  -d, --docker-down         Passed to stop command
+  --wipe-data               Passed to stop command
+EOF
+  exit "$exit_code"
+}
+
+SERVICE_NAME=""
+STOP_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) help ;;
+    -d|--docker-down) STOP_ARGS+=("-d"); shift ;;
+    --wipe-data) STOP_ARGS+=("--wipe-data"); shift ;;
+    *)
+      if [[ "$1" == -* ]]; then
+        fatal "Unknown option: $1"
+      elif [ -z "$SERVICE_NAME" ]; then
+        SERVICE_NAME="$1"
+        shift
+      else
+        fatal "Unexpected argument: $1"
+      fi
+      ;;
+  esac
+done
+
+if [ -z "$SERVICE_NAME" ]; then
+  help "Missing required <service-name> argument."
+fi
+
+if [ ${#STOP_ARGS[@]} -gt 0 ]; then
+  "$PROJECT_ROOT/bin/docker-daemon-stop" "$SERVICE_NAME" "${STOP_ARGS[@]}"
+else
+  "$PROJECT_ROOT/bin/docker-daemon-stop" "$SERVICE_NAME"
+fi
+"$PROJECT_ROOT/bin/docker-daemon-start" "$SERVICE_NAME"

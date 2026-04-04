@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
-
 trap 'bin/docker-daemon-stop -d dummy-service || true; bin/docker-daemon-stop -d dummy-service-failing || true' EXIT INT TERM
 
 echo "Harness up"
@@ -108,3 +107,39 @@ if bin/docker-daemon-check dummy-service-failing >/dev/null 2>&1; then
 fi
 
 echo "docker-daemon-start assertions passed"
+
+echo "==== Testing docker-daemon-stop ===="
+
+# Stop Idempotency
+bin/docker-daemon-stop dummy-service >/dev/null
+if bin/docker-daemon-check dummy-service; then
+  echo "Fail: Stop failed to natively kill service."
+  exit 1
+fi
+if ! bin/docker-daemon-stop dummy-service >/dev/null; then
+  echo "Fail: Redundant stop was not idempotent."
+  exit 1
+fi
+
+echo "docker-daemon-stop assertions passed"
+
+echo "==== Testing docker-daemon-restart ===="
+
+# Restart Behavior
+bin/docker-daemon-start dummy-service >/dev/null
+if ! bin/docker-daemon-restart dummy-service >/dev/null; then
+  echo "Fail: Restart failed natively."
+  exit 1
+fi
+if ! bin/docker-daemon-check dummy-service; then
+  echo "Fail: Restart did not leave service securely running."
+  exit 1
+fi
+
+# Wipe Data Integrity
+if ! bin/docker-daemon-stop dummy-service --wipe-data >/dev/null; then
+  echo "Fail: docker-daemon-stop --wipe-data failed execution."
+  exit 1
+fi
+
+echo "docker-daemon-restart assertions passed"

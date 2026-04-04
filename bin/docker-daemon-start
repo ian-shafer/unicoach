@@ -19,18 +19,27 @@ EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "${1:-}" in
+SERVICE_NAME=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     -h|--help) help ;;
-    *) fatal "Unknown option: ${1:-}" ;;
+    *)
+      if [[ "$1" == -* ]]; then
+        fatal "Unknown option: $1"
+      elif [ -z "$SERVICE_NAME" ]; then
+        SERVICE_NAME="$1"
+        shift
+      else
+        fatal "Unexpected argument: $1"
+      fi
+      ;;
   esac
 done
 
-if [ "$#" -lt 1 ]; then
+if [ -z "$SERVICE_NAME" ]; then
   help "Missing required <service-name> argument."
 fi
-
-SERVICE_NAME="$1"
 
 
 
