@@ -1,7 +1,7 @@
 [versions]
 kotlin = "2.3.20"
 ktor = "3.4.2"
-ktlint = "12.1.0"
+ktlint = "14.2.0"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
