@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(dirname "$0")/common"
+
+help() {
+  if [ -n "${1:-}" ]; then
+    log-info "$1"
+  fi
+  cat << 'EOF'
+Usage: bin/pre-commit [OPTIONS]
+
+Manual Dockerized validation script to execute tests and ktlintCheck before committing.
+
+Options:
+  -h, --help    Show this help message and exit
+EOF
+  exit 1
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -h|--help)
+      help
+      ;;
+    *)
+      help "Unknown option: $1"
+      ;;
+  esac
+done
+
+if [ "$#" -ne 0 ]; then
+  help "Error: pre-commit accepts no positional arguments."
+fi
+
+"$PROJECT_ROOT/bin/docker-run" eclipse-temurin:21-jdk ./gradlew check

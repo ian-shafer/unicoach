@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(dirname "$0")/common"
+
+help() {
+  if [ -n "${1:-}" ]; then
+    log-info "$1"
+  fi
+  cat << 'EOF'
+Usage: bin/docker-run [OPTIONS] IMAGE COMMAND...
+
+Executes a command inside an ephemeral docker container with user/volume bindings.
+
+Options:
+  -h, --help    Show this help message and exit
+EOF
+  exit 1
+}
+
+if [ "$#" -eq 0 ]; then
+  help "Error: Target Docker image argument is missing."
+fi
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -h|--help)
+      help
+      ;;
+    *)
+      help "Unknown option: $1"
+      ;;
+  esac
+done
+
+IMAGE="$1"
+# Command payload evaluates to whatever exists from the second positional arg onwards
+COMMAND_PAYLOAD=("${@:2}")
+
+DOCKER_ARGS=(
+  "--rm"
+  "--user" "$(id -u):$(id -g)"
+  "-v" "$PROJECT_ROOT:/workspace"
+  "-w" "/workspace"
+  "-e" "GRADLE_USER_HOME=/workspace/var/gradle"
+  "-e" "HOME=/workspace/var/gradle"
+)
+
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  DOCKER_ARGS+=("--env-file" "$PROJECT_ROOT/.env")
+fi
+
+docker run "${DOCKER_ARGS[@]}" "$IMAGE" "${COMMAND_PAYLOAD[@]}"
