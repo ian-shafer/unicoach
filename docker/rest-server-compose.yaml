@@ -1,0 +1,14 @@
+services:
+  rest-server:
+    image: eclipse-temurin:21-jdk
+    user: "${HOST_UID}:${HOST_GID}"
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    ports:
+      - "${PORT}:${PORT}"
+    environment:
+      - PORT=${PORT}
+      - GRADLE_USER_HOME=/workspace/var/gradle
+      - HOME=/workspace/var/gradle
+    command: ["./gradlew", ":rest-server:run"]

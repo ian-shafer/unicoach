@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(dirname "$0")/common"
+
+help() {
+  if [ -n "${1:-}" ]; then
+    log-info "$1"
+  fi
+  cat << 'EOF'
+Usage: bin/docker-compose [OPTIONS] COMMAND...
+
+Universal docker-compose wrapper that dynamically exports user identity and projects root context natively into docker networking.
+
+Options:
+  -h, --help    Show this help message and exit
+EOF
+  exit 1
+}
+
+# Only gracefully intercept help flags if they are clearly the first argument.
+# We avoid deep parsing to prevent crashing legitimate docker compose flags like -f or --profile.
+if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+  help
+fi
+
+# Dynamically pass host identity and project root tightly scoped to the docker compose command
+HOST_UID="$(id -u)" HOST_GID="$(id -g)" PROJECT_ROOT="$PROJECT_ROOT" docker compose --project-directory "$PROJECT_ROOT" "$@"
