@@ -9,14 +9,14 @@ This skill enforces DRY principles, reliable Unix daemon polling semantics, and 
 
 ## 🏗 Core Architecture
 When implementing execution scripts for a service, NEVER build custom standalone scripts full of execution loops. 
-ALWAYS extract complex logic into reusable generic engine scripts (e.g., `start-daemon`, `stop-daemon`, `wait-for`). The exposed application scripts (e.g., `start-rest-server`) should function exclusively as **Thin Wrappers**.
+ALWAYS extract complex logic into reusable generic engine scripts (e.g., `daemon-start`, `daemon-stop`, `wait-for`). The exposed application scripts (e.g., `rest-server-start`) should function exclusively as **Thin Wrappers**.
 
-### Example Thin Wrapper (`bin/start-rest-server`)
+### Example Thin Wrapper (`bin/rest-server-start`)
 ```bash
 #!/bin/bash
 set -e
 source "$(dirname "$0")/common"
-bin/start-daemon -p8080 "rest-server"
+bin/daemon-start -p8080 "rest-server"
 ```
 
 ## 📜 Mandatory Rules
@@ -26,7 +26,7 @@ bin/start-daemon -p8080 "rest-server"
    - Never duplicate standard bash `while` polling logic.
 2. **Side-Effect Isolation**: 
    - Do NOT place execution side-effects (like `mkdir -p var/run` or creating cache files) inside passive shared dependencies (like `bin/common`). 
-   - Scope side-effects into the target activation hook itself (like `start-daemon`).
+   - Scope side-effects into the target activation hook itself (like `daemon-start`).
 3. **Explicit PID and Port Mapping**: 
    - Persist operational states down to physical tracking files (`var/run/[service].pid` and `var/run/[service].port`).
 4. **Structural File Integrity**: 
