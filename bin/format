@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/common"
+
+help() {
+  if [ -n "${1:-}" ]; then
+    log-info "$1"
+  fi
+  cat << 'EOF'
+Usage: bin/format [OPTIONS]
+
+Formats Kotlin and Markdown source code across the project.
+This runs ktlintFormat (Kotlin) and Prettier (Markdown) concurrently in Docker containers.
+
+Options:
+  -h, --help    Show this help message and exit
+EOF
+  exit 1
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -h|--help)
+      help
+      ;;
+    *)
+      help "Unknown option: $1"
+      ;;
+  esac
+done
+
+if [ "$#" -ne 0 ]; then
+  help "Error: format accepts no positional arguments."
+fi
+
+log-info "Formatting Kotlin and Markdown code concurrently..."
+
+# Run Kotlin formatting in background
+"$PROJECT_ROOT/bin/docker-run" eclipse-temurin:21-jdk ./gradlew ktlintFormat &
+KOTLIN_PID=$!
+
+"$PROJECT_ROOT/bin/docker-run" node:20-alpine npx --yes prettier@3 --write "**/*.md" &
+MARKDOWN_PID=$!
+
+# Safely capture exit codes without un-setting set -e
+KOTLIN_STATUS=0
+MARKDOWN_STATUS=0
+wait $KOTLIN_PID || KOTLIN_STATUS=$?
+wait $MARKDOWN_PID || MARKDOWN_STATUS=$?
+
+FAILED=0
+
+if [ "$KOTLIN_STATUS" -ne 0 ]; then
+  log-info "Kotlin formatter failed (Status: $KOTLIN_STATUS)"
+  FAILED=1
+fi
+
+if [ "$MARKDOWN_STATUS" -ne 0 ]; then
+  log-info "Markdown formatter failed (Status: $MARKDOWN_STATUS)"
+  FAILED=1
+fi
+
+if [ "$FAILED" -ne 0 ]; then
+  log-info "Formatting encountered errors."
+  exit 2
+fi
+
+log-info "Formatting complete."

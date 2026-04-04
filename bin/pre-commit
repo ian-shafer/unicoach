@@ -33,4 +33,34 @@ if [ "$#" -ne 0 ]; then
   help "Error: pre-commit accepts no positional arguments."
 fi
 
-"$PROJECT_ROOT/bin/docker-run" eclipse-temurin:21-jdk ./gradlew check
+log-info "Running pre-commit checks concurrently..."
+
+"$PROJECT_ROOT/bin/docker-run" eclipse-temurin:21-jdk ./gradlew check &
+KOTLIN_PID=$!
+
+"$PROJECT_ROOT/bin/docker-run" node:20-alpine npx --yes prettier@3 --check "**/*.md" &
+MARKDOWN_PID=$!
+
+KOTLIN_STATUS=0
+MARKDOWN_STATUS=0
+wait $KOTLIN_PID || KOTLIN_STATUS=$?
+wait $MARKDOWN_PID || MARKDOWN_STATUS=$?
+
+FAILED=0
+
+if [ "$KOTLIN_STATUS" -ne 0 ]; then
+  log-info "Kotlin pre-commit check failed (Status: $KOTLIN_STATUS)"
+  FAILED=1
+fi
+
+if [ "$MARKDOWN_STATUS" -ne 0 ]; then
+  log-info "Markdown pre-commit check failed (Status: $MARKDOWN_STATUS)"
+  FAILED=1
+fi
+
+if [ "$FAILED" -ne 0 ]; then
+  log-info "Pre-commit checks failed."
+  exit 2
+fi
+
+log-info "Pre-commit checks passed."
