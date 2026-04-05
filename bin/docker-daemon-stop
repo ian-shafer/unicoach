@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
-set -euo pipefail
 source "$(dirname "$0")/common"
 
 help() {
   local exit_code=0
-  if [ -n "${1:-}" ]; then
-      log-info "$1"
-      exit_code=1
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
   fi
-
   cat << 'EOF'
-Usage: docker-daemon-stop <service-name> [options]
+docker-daemon-stop <service-name> [options]
 
 Safely terminates a running daemon.
 
 Options:
-  -h, --help                Print this help message
+  -h, --help: Help
   -d, --docker-down         Tear down network/containers but leave volumes intact
   --wipe-data               Destructively remove all containers, networks, AND volumes
   --lock-timeout SECONDS    Wait up to this duration to acquire lock (default 16)
@@ -31,18 +29,18 @@ SERVICE_NAME=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -h|--help) help ;;
-    -d|--docker-down) DOCKER_COMMAND="down"; shift ;;
-    --wipe-data) DOCKER_COMMAND="down"; WIPE_DATA=true; shift ;;
-    --lock-timeout) LOCK_TIMEOUT="${2:-}"; shift 2 ;;
-    *)
+  -h|--help) help ;;
+  -d|--docker-down) DOCKER_COMMAND="down"; shift ;;
+  --wipe-data) DOCKER_COMMAND="down"; WIPE_DATA=true; shift ;;
+  --lock-timeout) LOCK_TIMEOUT="${2:-}"; shift 2 ;;
+  *)
       if [[ "$1" == -* ]]; then
-        fatal "Unknown option: $1"
+    fatal "Unknown option: $1"
       elif [ -z "$SERVICE_NAME" ]; then
-        SERVICE_NAME="$1"
-        shift
+    SERVICE_NAME="$1"
+    shift
       else
-        fatal "Unexpected argument: $1"
+    fatal "Unexpected argument: $1"
       fi
       ;;
   esac
@@ -74,7 +72,7 @@ COMPOSE_ARGS+=("$DOCKER_COMMAND")
 
 if [ "$DOCKER_COMMAND" = "down" ]; then
   if [ "$WIPE_DATA" = true ]; then
-    COMPOSE_ARGS+=("-v")
+  COMPOSE_ARGS+=("-v")
   fi
   COMPOSE_ARGS+=("--remove-orphans")
 fi

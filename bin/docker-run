@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 source "$(dirname "$0")/common"
 
 help() {
-  if [ -n "${1:-}" ]; then
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
     log-info "$1"
+    exit_code=1
   fi
   cat << 'EOF'
-Usage: bin/docker-run [OPTIONS] IMAGE COMMAND...
+docker-run [options] IMAGE COMMAND...
 
 Executes a command inside an ephemeral docker container with user/volume bindings.
 
 Options:
-  -h, --help    Show this help message and exit
+  -h, --help: Help
 EOF
-  exit 1
+  exit "$exit_code"
 }
 
 if [ "$#" -eq 0 ]; then
@@ -24,10 +25,8 @@ fi
 
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
-    -h|--help)
-      help
-      ;;
-    *)
+  -h|--help) help ;;
+  *)
       help "Unknown option: $1"
       ;;
   esac

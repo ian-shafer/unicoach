@@ -3,18 +3,17 @@ source "$(dirname "$0")/common"
 
 help() {
   local exit_code=0
-  if [ -n "${1:-}" ]; then
-      log-info "$1"
-      exit_code=1
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
   fi
-
   cat << 'EOF'
-Usage: docker-daemon-start <service-name> [options]
+docker-daemon-start <service-name> [options]
 
 Boots the requested docker-compose service detached and awaits native healthchecks.
 
 Options:
-  -h, --help                Print this help message
+  -h, --help: Help
 EOF
   exit "$exit_code"
 }
@@ -23,15 +22,15 @@ SERVICE_NAME=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -h|--help) help ;;
-    *)
+  -h|--help) help ;;
+  *)
       if [[ "$1" == -* ]]; then
-        fatal "Unknown option: $1"
+    fatal "Unknown option: $1"
       elif [ -z "$SERVICE_NAME" ]; then
-        SERVICE_NAME="$1"
-        shift
+    SERVICE_NAME="$1"
+    shift
       else
-        fatal "Unexpected argument: $1"
+    fatal "Unexpected argument: $1"
       fi
       ;;
   esac
@@ -53,12 +52,12 @@ LOCK_DIR="$PROJECT_ROOT/var/run/${SERVICE_NAME}.daemon.lock"
 if ! "$PROJECT_ROOT/bin/file-lock" -o start -t 16 "$LOCK_DIR" 60; then
   LAST_STATUS=$?
   if [ $LAST_STATUS -eq 10 ]; then
-    log-info "Another start instance is actively establishing $SERVICE_NAME. Exiting gracefully."
-    exit 0
+  log-info "Another start instance is actively establishing $SERVICE_NAME. Exiting gracefully."
+  exit 0
   fi
   if [ -r "$LOCK_DIR/op" ] && [ "$(cat "$LOCK_DIR/op" 2>/dev/null)" = "start" ]; then
-    log-info "Lock is active for start. Gracefully bouncing."
-    exit 0
+  log-info "Lock is active for start. Gracefully bouncing."
+  exit 0
   fi
   fatal "Failed to acquire lock for $SERVICE_NAME. Lock may be held by a conflicting operation."
 fi

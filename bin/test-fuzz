@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-set -euo pipefail
 source "$(dirname "$0")/common"
 
 help() {
-  if [ -n "${1:-}" ]; then
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
     log-info "$1"
+    exit_code=1
   fi
   cat << 'EOF'
-Usage: bin/test-fuzz
+test-fuzz
 
 Boot the target rest-server within the compose environment and execute blackbox Schemathesis contract validation against it.
+
+Options:
+  -h, --help: Help
 EOF
-  exit 1
+  exit "$exit_code"
 }
 
 while [[ "${1:-}" == -* ]]; do
   case "${1:-}" in
-    -h|--help)
-      help
-      ;;
-    *)
+  -h|--help) help ;;
+  *)
       help "Unknown option: ${1:-}"
       ;;
   esac

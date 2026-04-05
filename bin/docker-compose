@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 source "$(dirname "$0")/common"
 
 help() {
-  if [ -n "${1:-}" ]; then
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
     log-info "$1"
+    exit_code=1
   fi
   cat << 'EOF'
-Usage: bin/docker-compose [OPTIONS] COMMAND...
+docker-compose [options] COMMAND...
 
 Universal docker-compose wrapper that dynamically exports user identity and projects root context natively into docker networking.
 
 Options:
-  -h, --help    Show this help message and exit
+  -h, --help: Help
 EOF
-  exit 1
+  exit "$exit_code"
 }
 
 # Only gracefully intercept help flags if they are clearly the first argument.
