@@ -112,3 +112,12 @@ usability.
   verb first (e.g., `start-postgres`). This guarantees that scripts natively
   group by service entity tightly in chronological directory listings and
   auto-complete uniformly.
+13. **Variable Naming Conventions**:
+    - Transient or programmatic local variables (e.g., loop bounds, internal state) MUST use `lower_snake_case` (e.g., `postgres_container`).
+    - Global constants, configuration flags, and exported environment variables MUST use `UPPER_SNAKE_CASE` (e.g., `POSTGRES_CONTAINER`).
+14. **Subprocess Environment Isolation**:
+    - Use `export` rarely.
+    - In this system, `export` should only be used to set the initial `ENV_FILE` for system-wide, foundational configuration (e.g., `export ENV_FILE="..."`). Other exceptions may arise, but should be rare and well-documented.
+15. **Explicit Data Flow (Anti-Magic)**:
+    - Code readers should be able to physically track the flow of data passed to programs at every point in the stack. 
+    - Actively disable implicit tool loading (e.g., passing `--env-file /dev/null`) when third-party tools attempt to bypass traceable injection natively.
