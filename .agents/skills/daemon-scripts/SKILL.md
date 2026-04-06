@@ -58,7 +58,12 @@ bin/daemon-start -p8080 "rest-server"
      or failure states rather than utilizing `grep` or parsing raw standard
      output.
 7. **Physical Sandbox Idempotency**:
-   - Tests should be able to be run concurrently with the local development daemons. There should be no shared state between test daemons and local development daemons.
+   - Tests should be able to be run concurrently with the local development
+     daemons. There should be no shared state between test daemons and local
+     development daemons.
 8. **Active Health Polling**:
-   - Never use arbitrary `sleep` timeouts to wait for service readiness, unless it is absolutely necessary.
-   - Employ active container or socket probing logic. For databases, repeatedly poll the connection directly (e.g., `psql -c '\q'`) until it resolves or times out.
+   - Never use arbitrary `sleep` timeouts to wait for service readiness, unless
+     it is absolutely necessary.
+   - Employ active container or socket probing logic. For databases, repeatedly
+     poll the connection directly (e.g., `psql -c '\q'`) until it resolves or
+     times out.

@@ -47,19 +47,19 @@ To handle the shared network natively while strictly decoupling orchestrations,
 four new utilities will also be introduced:
 `bin/docker-network-daemon-{start,stop,restart,check}`. These native scripts
 will deliberately mirror the file-locking and concurrency logic currently baked
-into `bin/docker-daemon-[action]` to ensure absolute safety from race
-conditions without sacrificing simple transparency through excessive abstractions.
-Their orchestrations will rely purely on native `docker network` executions
-rather than hitting Docker Compose.
+into `bin/docker-daemon-[action]` to ensure absolute safety from race conditions
+without sacrificing simple transparency through excessive abstractions. Their
+orchestrations will rely purely on native `docker network` executions rather
+than hitting Docker Compose.
 
 For `docker-network-daemon-check`, it will independently execute explicit native
 validation (e.g., `docker network inspect unicoach-network >/dev/null 2>&1`).
 
 The `postgres-start`, `rest-server-start`, `postgres-restart`, and
-`rest-server-restart` scripts will now invoke `docker-network-daemon-start` before
-their delegated `exec` hand-off, ensuring that even after out-of-bounds network
-pruning, a restart cycle can safely initialize the DNS bridge before spinning up
-containers. Crucially, daemon stop scripts will **not** invoke
+`rest-server-restart` scripts will now invoke `docker-network-daemon-start`
+before their delegated `exec` hand-off, ensuring that even after out-of-bounds
+network pruning, a restart cycle can safely initialize the DNS bridge before
+spinning up containers. Crucially, daemon stop scripts will **not** invoke
 `docker-network-daemon-stop`, ensuring safe teardown without "active endpoint"
 collisions from other running daemons.
 
@@ -134,16 +134,16 @@ following matrix:
    Execute `docker compose -f docker/postgres-compose.yaml config` immediately
    to ensure schema interpolation and YAML correctness locally before
    proceeding.
-4. **Network Daemon Creation**: Create the `bin/docker-network-daemon-*` utilities.
-   These should be handwritten and inherently mirror the `file-lock` idempotency
-   patterns utilized by the `docker-daemon-*` family explicitly, but relying on
-   `docker network` execution payloads natively.
+4. **Network Daemon Creation**: Create the `bin/docker-network-daemon-*`
+   utilities. These should be handwritten and inherently mirror the `file-lock`
+   idempotency patterns utilized by the `docker-daemon-*` family explicitly, but
+   relying on `docker network` execution payloads natively.
 5. **Thin Wrapper Generation**: Create `bin/postgres-*` wrappers and explicitly
    `chmod +x` them. Their internal bash content must strictly mirror the
    `bin/rest-server-*` wrappers (e.g.,
-   `exec "$PROJECT_ROOT/bin/docker-daemon-[action]" postgres "$@"`).
-   Finally, attach `docker-network-daemon-start` execution blocks to the tops
-   of the `rest-server` and `postgres` start/restart wrappers.
+   `exec "$PROJECT_ROOT/bin/docker-daemon-[action]" postgres "$@"`). Finally,
+   attach `docker-network-daemon-start` execution blocks to the tops of the
+   `rest-server` and `postgres` start/restart wrappers.
 6. **Test Validation & Completion**: Pass the newly created `postgres` wrapper
    through the parameterized test matrix to verify structural start, stop,
    check, and restart idempotency.
@@ -164,10 +164,13 @@ following matrix:
 
 #### [MODIFY]
 
-- `bin/rest-server-start` (Invoke `docker-network-daemon-start` before execution)
-- `bin/rest-server-restart` (Invoke `docker-network-daemon-start` before execution)
+- `bin/rest-server-start` (Invoke `docker-network-daemon-start` before
+  execution)
+- `bin/rest-server-restart` (Invoke `docker-network-daemon-start` before
+  execution)
 - `bin/scripts-tests` (Refactor to utilize parametrized suite tests against
-  actual wrappers, and add `docker-network-daemon-stop` manually to trap teardown)
+  actual wrappers, and add `docker-network-daemon-stop` manually to trap
+  teardown)
 - `docker/rest-server-compose.yaml` (Inject explicit external network routing)
 - `.env`
 - `.env.template`

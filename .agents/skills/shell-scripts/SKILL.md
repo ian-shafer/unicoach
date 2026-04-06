@@ -67,7 +67,10 @@ usability.
      `help 0`. For all functional parameter failures, appropriately call
      `help "Error string..."`.
 6. **Standard Option Parsing**:
-   - Every script MUST use a standard `while` loop with a `case` statement to parse options, even if the script only flags `-h`/`--help`. This identical `getopt` style architecture across the repo makes adding future flags trivial and structurally consistent.
+   - Every script MUST use a standard `while` loop with a `case` statement to
+     parse options, even if the script only flags `-h`/`--help`. This identical
+     `getopt` style architecture across the repo makes adding future flags
+     trivial and structurally consistent.
    - Example architecture:
 
      ```shell
@@ -79,6 +82,7 @@ usability.
        esac
      done
      ```
+
 7. **Dual Option Signatures**:
    - Every option parsed by a script should support both a short and long names
      (e.g., `-p` or `--period`). This is not strictly required, but is
@@ -96,9 +100,9 @@ usability.
      evaluation meant to be caught by a pipe or var mapping externally).
 10. **Specific Error Codes**:
     - Scripts MUST return specific, consistently mapped integer error codes
-      (e.g., `exit 2`, `exit 3`) rather than throwing generic `exit 1` catch-alls
-      when conveying distinct failure states or missing dependencies to other
-      invoking bash scripts.
+      (e.g., `exit 2`, `exit 3`) rather than throwing generic `exit 1`
+      catch-alls when conveying distinct failure states or missing dependencies
+      to other invoking bash scripts.
 11. **Multiline Help Options**:
     - The `help()` function MUST use a standard `cat << 'EOF'` heredoc block to
       present its multiline usage string cleanly to standard output (`stdout`),
@@ -112,12 +116,21 @@ usability.
   verb first (e.g., `start-postgres`). This guarantees that scripts natively
   group by service entity tightly in chronological directory listings and
   auto-complete uniformly.
+
 13. **Variable Naming Conventions**:
-    - Transient or programmatic local variables (e.g., loop bounds, internal state) MUST use `lower_snake_case` (e.g., `postgres_container`).
-    - Global constants, configuration flags, and exported environment variables MUST use `UPPER_SNAKE_CASE` (e.g., `POSTGRES_CONTAINER`).
+    - Transient or programmatic local variables (e.g., loop bounds, internal
+      state) MUST use `lower_snake_case` (e.g., `postgres_container`).
+    - Global constants, configuration flags, and exported environment variables
+      MUST use `UPPER_SNAKE_CASE` (e.g., `POSTGRES_CONTAINER`).
 14. **Subprocess Environment Isolation**:
     - Use `export` rarely.
-    - In this system, `export` should only be used to set the initial `ENV_FILE` for system-wide, foundational configuration (e.g., `export ENV_FILE="..."`). Other exceptions may arise, but should be rare and well-documented.
+    - In this system, `export` should only be used to set the initial `ENV_FILE`
+      for system-wide, foundational configuration (e.g.,
+      `export ENV_FILE="..."`). Other exceptions may arise, but should be rare
+      and well-documented.
 15. **Explicit Data Flow (Anti-Magic)**:
-    - Code readers should be able to physically track the flow of data passed to programs at every point in the stack. 
-    - Actively disable implicit tool loading (e.g., passing `--env-file /dev/null`) when third-party tools attempt to bypass traceable injection natively.
+    - Code readers should be able to physically track the flow of data passed to
+      programs at every point in the stack.
+    - Actively disable implicit tool loading (e.g., passing
+      `--env-file /dev/null`) when third-party tools attempt to bypass traceable
+      injection natively.

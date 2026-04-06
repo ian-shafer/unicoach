@@ -19,8 +19,8 @@ step-by-step. For each step in the plan, you must strictly follow the workflow
 below. **Do not move to the next step until the current step is fully completed,
 approved, and committed.**
 
-1. **Acknowledge Steps**: Before beginning implementation, explicitly list out all
-   the steps in the Implementation Plan to the architect, and clearly state
+1. **Acknowledge Steps**: Before beginning implementation, explicitly list out
+   all the steps in the Implementation Plan to the architect, and clearly state
    which step is currently being worked on.
 2. **Implement & Test**: Implement the required code for the current step,
    including all necessary test code.
