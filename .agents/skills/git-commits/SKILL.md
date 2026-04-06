@@ -31,3 +31,11 @@ structured and managed by agents working in this repository.
      documentation/specs, and codebase implementation into separate commits. Do
      not merge meta-repository changes (like updating an AI agent skill) with
      feature delivery commits.
+
+4. **Pre-Commit Verification and Approval**
+   - BEFORE finalizing and executing any `git commit` command, you MUST
+     explicitly present the proposed commit message to the user.
+   - You MUST also display the exact list of files that will be included in the
+     commit.
+   - Await the user's explicit permission to execute the commit. Do not auto-run
+     the commit execution without this explicit verification.
