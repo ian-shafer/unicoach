@@ -35,8 +35,9 @@ structured and managed by agents working in this repository.
 4. **Pre-Commit Verification and Approval**
    - BEFORE finalizing and executing any `git commit` command, you MUST
      explicitly present the proposed commit message to the user.
-   - You should propose the commit message by writing it to a temporary file
-     (e.g., in `/tmp/`) and allow the user to review and edit it if desired.
+   - You should propose the commit message by generating a `commit_message`
+     artifact (saving it alongside your Tasks and Implementation Plans). The
+     user can review and edit this artifact directly in their interface.
    - You MUST also display the exact list of files that will be included in the
      commit.
    - Await the user's explicit permission to execute the commit. Do not auto-run
