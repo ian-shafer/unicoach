@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
 
-trap 'bin/rest-server-stop --wipe-data >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop >/dev/null 2>&1 || true; [ -x "bin/docker-network-daemon-stop" ] && bin/docker-network-daemon-stop unicoach-network >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/rest-server-stop >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop >/dev/null 2>&1 || true; [ -x "bin/docker-network-daemon-stop" ] && bin/docker-network-daemon-stop unicoach-network >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
 
 echo "Harness up"
 echo ""
@@ -68,7 +68,7 @@ test_daemon_wrapper() {
   echo "==== Testing Wrapper: $WRAPPER ===="
 
   # 1. Simple Start & Stop & 4. Idempotent Stop
-  $STOP_CMD --wipe-data $SUFFIX >/dev/null || true
+  $STOP_CMD -d $SUFFIX >/dev/null || true
   if $CHECK_CMD $SUFFIX >/dev/null 2>&1; then echo "Fail: $WRAPPER claimed success despite stripped service."; exit 1; fi
   $START_CMD $SUFFIX >/dev/null
   if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: $WRAPPER did not actually boot or reach a healthy state."; exit 1; fi
@@ -108,6 +108,36 @@ test_daemon_wrapper() {
 test_daemon_wrapper "rest-server"
 test_daemon_wrapper "postgres"
 test_daemon_wrapper "docker-network-daemon" "unicoach-network"
+
+echo ""
+echo "==== Testing Bespoke Capabilities: postgres ===="
+
+bin/postgres-stop -d >/dev/null || true
+bin/postgres-start >/dev/null
+
+if ! docker exec unicoach-postgres-1 psql -U postgres -d unicoach -c "CREATE TABLE test_data (id INT); INSERT INTO test_data VALUES (42);" >/dev/null 2>&1; then
+  echo "Fail: Could not seed test data."
+  exit 1
+fi
+
+bin/postgres-stop -d >/dev/null
+bin/postgres-start >/dev/null
+
+if ! docker exec unicoach-postgres-1 psql -U postgres -d unicoach -c "SELECT * FROM test_data;" | grep "42" >/dev/null; then
+  echo "Fail: Data persistence failed across -d teardown."
+  exit 1
+fi
+pass_test "Postgres data successfully persisted across -d teardown"
+
+
+echo "==== Testing Environment Validation ===="
+bin/postgres-stop -d >/dev/null
+POSTGRES_USER="" bin/postgres-start >/dev/null 2>&1 || STATUS=$?
+if [ -z "${STATUS:-}" ] || [ "$STATUS" -eq 0 ]; then
+  echo "Fail: Postgres started despite missing POSTGRES_USER."
+  exit 1
+fi
+pass_test "Postgres effectively failed to boot cleanly with missing environment variables"
 
 echo ""
 echo -e " 🎉 \033[0;32m${TOTAL_TESTS}/${TOTAL_TESTS} tests passed successfully.\033[0m"
