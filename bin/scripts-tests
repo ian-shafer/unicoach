@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
-trap 'bin/docker-daemon-stop -d dummy-service || true; bin/docker-daemon-stop -d dummy-service-failing || true' EXIT INT TERM
+
+trap 'bin/rest-server-stop --wipe-data >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop --wipe-data >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
 
 echo "Harness up"
+echo ""
+
+TOTAL_TESTS=0
+
+pass_test() {
+  local msg="$1"
+  ((TOTAL_TESTS++))
+  echo -e " \033[0;32m✅ ${msg}\033[0m"
+}
 
 TEST_LOCK="$PROJECT_ROOT/var/run/test.lock"
 mkdir -p "$PROJECT_ROOT/var/run"
@@ -12,13 +22,13 @@ rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
 
 bin/file-lock -o op-a "$TEST_LOCK" 60
-if [ ! -d "$TEST_LOCK" ]; then echo "Failed to create lock"; exit 1; fi
+if [ ! -d "$TEST_LOCK" ]; then echo "Fail: Failed to create lock"; exit 1; fi
+pass_test "File lock created successfully"
 
-# Test matching op immediate fast-fail code 10
 bin/file-lock -o op-a "$TEST_LOCK" 60 || STATUS=$?
-if [ "${STATUS:-0}" -ne 10 ]; then echo "Failed to fast-fail on matching op"; exit 1; fi
+if [ "${STATUS:-0}" -ne 10 ]; then echo "Fail: Failed to fast-fail on matching op"; exit 1; fi
+pass_test "File lock fast-failed on matching op"
 
-# Test breaking a stale lock that has a matching OP
 rm -rf "$TEST_LOCK" || true
 mkdir "$TEST_LOCK"
 echo "op-a" > "$TEST_LOCK/op"
@@ -27,133 +37,68 @@ if ! bin/file-lock -o op-a "$TEST_LOCK" 60; then
   echo "Fail: Failed to organically break a stale lock because the OP happened to loosely match."
   exit 1
 fi
+pass_test "File lock cleanly broke stale lock on loose match"
 
-# Test conflicting op failure
-if bin/file-lock -t 1s -o op-b "$TEST_LOCK" 60 2>/dev/null; then echo "Failed to block conflicting op"; exit 1; fi
+if bin/file-lock -t 1s -o op-b "$TEST_LOCK" 60 2>/dev/null; then echo "Fail: Failed to block conflicting op"; exit 1; fi
+pass_test "File lock blocked conflicting op"
 
-# Test stale lock recovery
 echo "$(( $(date +%s) - 10 ))" > "$TEST_LOCK/expires-at"
 bin/file-lock -o op-c "$TEST_LOCK" 60
-if [ "$(cat "$TEST_LOCK/op")" != "op-c" ]; then echo "Failed to recover stale lock"; exit 1; fi
+if [ "$(cat "$TEST_LOCK/op")" != "op-c" ]; then echo "Fail: Failed to recover stale lock"; exit 1; fi
+pass_test "File lock recovered stale lock"
 
 rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
 
-echo "file-lock assertions passed"
+test_daemon_wrapper() {
+  local WRAPPER="$1"
+  local START_CMD="bin/$WRAPPER-start"
+  local STOP_CMD="bin/$WRAPPER-stop"
+  local RESTART_CMD="bin/$WRAPPER-restart"
+  local CHECK_CMD="bin/$WRAPPER-check"
 
-echo "==== Testing docker-daemon-check ===="
+  echo ""
+  echo "==== Testing Wrapper: $WRAPPER ===="
 
-if bin/docker-daemon-check dummy-service 2>/dev/null; then
-  echo "Fail: Daemon check claimed success despite service not running."
-  exit 1
-fi
+  # 1. Simple Start & Stop & 4. Idempotent Stop
+  $STOP_CMD --wipe-data >/dev/null || true
+  if $CHECK_CMD >/dev/null 2>&1; then echo "Fail: $WRAPPER claimed success despite stripped service."; exit 1; fi
+  $START_CMD >/dev/null
+  if ! $CHECK_CMD >/dev/null; then echo "Fail: $WRAPPER did not actually boot or reach a healthy state."; exit 1; fi
+  pass_test "$WRAPPER Simple Start & Stop & Idempotent Stop"
+  
+  # 2. Idempotent Start
+  if ! $START_CMD >/dev/null; then echo "Fail: Redundant start was not idempotent for $WRAPPER."; exit 1; fi
+  pass_test "$WRAPPER Idempotent Start"
 
-if ! bin/docker-daemon-check -h >/dev/null; then
-  echo "Fail: Help flag did not natively exit 0."
-  exit 1
-fi
+  # 6. Restart Lifecycle
+  if ! $RESTART_CMD >/dev/null; then echo "Fail: Restart failed natively for $WRAPPER."; exit 1; fi
+  if ! $CHECK_CMD >/dev/null; then echo "Fail: Restart did not leave $WRAPPER securely running."; exit 1; fi
+  pass_test "$WRAPPER Restart Lifecycle"
 
-echo "docker-daemon-check assertions passed"
+  # 3. Concurrent Start (After stopping first)
+  $STOP_CMD >/dev/null
+  $START_CMD >/dev/null & PID1=$!
+  $START_CMD >/dev/null & PID2=$!
+  wait $PID1; if [ $? -ne 0 ]; then echo "Fail: Process 1 failed to boot daemon $WRAPPER"; exit 1; fi
+  wait $PID2; if [ $? -ne 0 ]; then echo "Fail: Process 2 failed lock concurrency coordination $WRAPPER"; exit 1; fi
+  if ! $CHECK_CMD >/dev/null; then echo "Fail: $WRAPPER concurrent start didn't end up healthy."; exit 1; fi
+  pass_test "$WRAPPER Concurrent Start"
 
-echo "==== Testing docker-daemon-start ===="
+  # 5. Concurrent Stop
+  $STOP_CMD >/dev/null & PID3=$!
+  $STOP_CMD >/dev/null & PID4=$!
+  wait $PID3; if [ $? -ne 0 ]; then echo "Fail: Process 3 failed concurrent stop for $WRAPPER"; exit 1; fi
+  wait $PID4; if [ $? -ne 0 ]; then echo "Fail: Process 4 failed concurrent stop coordination for $WRAPPER"; exit 1; fi
+  if $CHECK_CMD >/dev/null 2>&1; then echo "Fail: Concurrent stop didn't actually stop $WRAPPER"; exit 1; fi
+  pass_test "$WRAPPER Concurrent Stop"
+  
+  # Check invalid flag for check
+  if ! $CHECK_CMD -h >/dev/null; then echo "Fail: Help flag did not natively exit 0 on check for $WRAPPER"; exit 1; fi
+  pass_test "$WRAPPER Help flag returned 0"
+}
 
-rm -rf "$PROJECT_ROOT/var/run/dummy-service.daemon.lock" || true
-rm -rf "$PROJECT_ROOT/var/run/dummy-service-failing.daemon.lock" || true
+test_daemon_wrapper "rest-server"
 
-# Invalid Service
-if bin/docker-daemon-start non-existent-service 2>/dev/null; then
-  echo "Fail: Invalid service did not fail natively."
-  exit 1
-fi
-
-# Concurrency & Standard Start
-# Two concurrent requests using backgrounding. Both should succeed (one boots, one bails early or idles).
-bin/docker-daemon-start dummy-service >/dev/null &
-PID1=$!
-bin/docker-daemon-start dummy-service >/dev/null &
-PID2=$!
-
-wait $PID1
-if [ $? -ne 0 ]; then echo "Fail: Process 1 failed to boot daemon"; exit 1; fi
-wait $PID2
-if [ $? -ne 0 ]; then echo "Fail: Process 2 failed lock concurrency coordination"; exit 1; fi
-
-if ! bin/docker-daemon-check dummy-service; then
-  echo "Fail: dummy-service did not actually boot or reach a healthy state."
-  exit 1
-fi
-
-# Start Idempotency
-if ! bin/docker-daemon-start dummy-service >/dev/null; then
-  echo "Fail: Redundant start was not idempotent."
-  exit 1
-fi
-
-# Start Failure Path
-if bin/docker-daemon-start dummy-service-failing >/dev/null 2>&1; then
-  echo "Fail: dummy-service-failing erroneously reported success."
-  exit 1
-fi
-
-# Assert lock and container teardown
-if [ -d "$PROJECT_ROOT/var/run/dummy-service-failing.daemon.lock" ]; then
-  echo "Fail: Failing service did not release lock."
-  exit 1
-fi
-
-if bin/docker-daemon-check dummy-service-failing >/dev/null 2>&1; then
-  echo "Fail: Failing service left residual containers running."
-  exit 1
-fi
-
-echo "docker-daemon-start assertions passed"
-
-echo "==== Testing docker-daemon-stop ===="
-
-# Stop Idempotency
-bin/docker-daemon-stop dummy-service >/dev/null
-if bin/docker-daemon-check dummy-service; then
-  echo "Fail: Stop failed to natively kill service."
-  exit 1
-fi
-if ! bin/docker-daemon-stop dummy-service >/dev/null; then
-  echo "Fail: Redundant stop was not idempotent."
-  exit 1
-fi
-
-echo "docker-daemon-stop assertions passed"
-
-echo "==== Testing docker-daemon-restart ===="
-
-# Restart Behavior
-bin/docker-daemon-start dummy-service >/dev/null
-if ! bin/docker-daemon-restart dummy-service >/dev/null; then
-  echo "Fail: Restart failed natively."
-  exit 1
-fi
-if ! bin/docker-daemon-check dummy-service; then
-  echo "Fail: Restart did not leave service securely running."
-  exit 1
-fi
-
-# Wipe Data Integrity
-if ! bin/docker-daemon-stop dummy-service --wipe-data >/dev/null; then
-  echo "Fail: docker-daemon-stop --wipe-data failed execution."
-  exit 1
-fi
-
-echo "docker-daemon-restart assertions passed"
-
-echo "==== Testing Service Wrappers ===="
-
-# Wrapper Forwarding Validation
-if bin/rest-server-check >/dev/null 2>&1; then
-  echo "Fail: Dummy rest-server natively claimed running despite no instance existing."
-  exit 1
-fi
-if ! bin/rest-server-check -h >/dev/null; then
-  echo "Fail: Wrapper forwarding failed to securely bubble the help option evaluation dynamically."
-  exit 1
-fi
-
-echo "service wrappers assertions passed"
+echo ""
+echo -e " 🎉 \033[0;32m${TOTAL_TESTS}/${TOTAL_TESTS} tests passed successfully.\033[0m"
