@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:18
+    ports:
+      - "5432:5432"
+    volumes:
+      - "${POSTGRES_DATA_DIR:-./var/postgres}:/var/lib/postgresql/data"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST_AUTH_METHOD: ${POSTGRES_HOST_AUTH_METHOD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 1s
+      timeout: 1s
+      retries: 16
+
+networks:
+  default:
+    external: true
+    name: unicoach-network
