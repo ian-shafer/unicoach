@@ -28,21 +28,19 @@ while [[ $# -gt 0 ]]; do
   -h|--help) help ;;
   -d|--docker-down) STOP_ARGS+=("-d"); shift ;;
   --wipe-data) STOP_ARGS+=("--wipe-data"); shift ;;
-  *)
-      if [[ "$1" == -* ]]; then
-    fatal "Unknown option: $1"
-      elif [ -z "$SERVICE_NAME" ]; then
-    SERVICE_NAME="$1"
-    shift
-      else
-    fatal "Unexpected argument: $1"
-      fi
-      ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
   esac
 done
 
-if [ -z "$SERVICE_NAME" ]; then
+if [ "$#" -lt 1 ]; then
   help "Missing required <service-name> argument."
+fi
+SERVICE_NAME="$1"
+shift
+
+if [ "$#" -gt 0 ]; then
+  fatal "Unexpected arguments: $*"
 fi
 
 if [ ${#STOP_ARGS[@]} -gt 0 ]; then
