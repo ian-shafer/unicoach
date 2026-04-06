@@ -45,31 +45,22 @@ engines.
 
 To handle the shared network natively while strictly decoupling orchestrations,
 four new utilities will also be introduced:
-`bin/docker-network-{start,stop,restart,check}`. To guarantee concurrency-safe
-idempotency without relying on Docker Compose (and creating unnecessary dummy
-containers), the existing `bin/docker-daemon-[action]` scripts will be split.
+`bin/docker-network-daemon-{start,stop,restart,check}`. These native scripts
+will deliberately mirror the file-locking and concurrency logic currently baked
+into `bin/docker-daemon-[action]` to ensure absolute safety from race
+conditions without sacrificing simple transparency through excessive abstractions.
+Their orchestrations will rely purely on native `docker network` executions
+rather than hitting Docker Compose.
 
-A new abstraction layer, `bin/stateless-daemon-[action]` (specifically for
-start, stop, and restart routines), will be introduced to handle all generic
-bash file-locking and concurrency logic without relying on explicit PID files.
-The existing `docker-daemon-*` scripts will be refactored to handle purely
-Docker Compose payloads, passing their execution context into these new
-`stateless-daemon-*` wrappers. Notably, the `check` action cannot be universally
-abstracted; therefore `stateless-daemon-check` will not be created.
-
-Likewise, the `docker-network-[action]` utilities will directly invoke the new
-generic `stateless-daemon-[action]` engine for lifecycles, passing native
-`docker network` execution logic to it. This ensures absolute safety from race
-conditions. For `docker-network-check`, it will independently execute explicit
-native validation (e.g.,
-`docker network inspect unicoach-network >/dev/null 2>&1`).
+For `docker-network-daemon-check`, it will independently execute explicit native
+validation (e.g., `docker network inspect unicoach-network >/dev/null 2>&1`).
 
 The `postgres-start`, `rest-server-start`, `postgres-restart`, and
-`rest-server-restart` scripts will now invoke `docker-network-start` before
+`rest-server-restart` scripts will now invoke `docker-network-daemon-start` before
 their delegated `exec` hand-off, ensuring that even after out-of-bounds network
 pruning, a restart cycle can safely initialize the DNS bridge before spinning up
 containers. Crucially, daemon stop scripts will **not** invoke
-`docker-network-stop`, ensuring safe teardown without "active endpoint"
+`docker-network-daemon-stop`, ensuring safe teardown without "active endpoint"
 collisions from other running daemons.
 
 In addition, explicit validation of core environment variables (e.g.,
@@ -143,19 +134,16 @@ following matrix:
    Execute `docker compose -f docker/postgres-compose.yaml config` immediately
    to ensure schema interpolation and YAML correctness locally before
    proceeding.
-4. **Daemon Engine Refactor**: Extract the file-locking logic from the existing
-   `bin/docker-daemon-*` scripts into new generic `bin/stateless-daemon-*`
-   scripts (only for start, stop, restart). Update `bin/docker-daemon-*` to act
-   purely as the execution payload for the new `stateless-daemon-*` engine.
-   Leave `bin/docker-daemon-check` untouched since checks are bespoke.
+4. **Network Daemon Creation**: Create the `bin/docker-network-daemon-*` utilities.
+   These should be handwritten and inherently mirror the `file-lock` idempotency
+   patterns utilized by the `docker-daemon-*` family explicitly, but relying on
+   `docker network` execution payloads natively.
 5. **Thin Wrapper Generation**: Create `bin/postgres-*` wrappers and explicitly
    `chmod +x` them. Their internal bash content must strictly mirror the
    `bin/rest-server-*` wrappers (e.g.,
    `exec "$PROJECT_ROOT/bin/docker-daemon-[action]" postgres "$@"`).
-   Additionally, create the `bin/docker-network-*` utilities, utilizing the new
-   generic `stateless-daemon-*` engine with native `docker network` payloads
-   (except for check, which evaluates natively), and attach
-   `docker-network-start` to the `rest-server` and `postgres` start wrappers.
+   Finally, attach `docker-network-daemon-start` execution blocks to the tops
+   of the `rest-server` and `postgres` start/restart wrappers.
 6. **Test Validation & Completion**: Pass the newly created `postgres` wrapper
    through the parameterized test matrix to verify structural start, stop,
    check, and restart idempotency.
@@ -169,23 +157,17 @@ following matrix:
 - `bin/postgres-stop`
 - `bin/postgres-restart`
 - `bin/postgres-check`
-- `bin/stateless-daemon-start`
-- `bin/stateless-daemon-stop`
-- `bin/stateless-daemon-restart`
-- `bin/docker-network-start`
-- `bin/docker-network-stop`
-- `bin/docker-network-restart`
-- `bin/docker-network-check`
+- `bin/docker-network-daemon-start`
+- `bin/docker-network-daemon-stop`
+- `bin/docker-network-daemon-restart`
+- `bin/docker-network-daemon-check`
 
 #### [MODIFY]
 
-- `bin/docker-daemon-start` (Extract lock logic to `stateless-daemon-start`)
-- `bin/docker-daemon-stop` (Extract lock logic to `stateless-daemon-stop`)
-- `bin/docker-daemon-restart` (Extract lock logic to `stateless-daemon-restart`)
-- `bin/rest-server-start` (Invoke `docker-network-start` before execution)
-- `bin/rest-server-restart` (Invoke `docker-network-start` before execution)
+- `bin/rest-server-start` (Invoke `docker-network-daemon-start` before execution)
+- `bin/rest-server-restart` (Invoke `docker-network-daemon-start` before execution)
 - `bin/scripts-tests` (Refactor to utilize parametrized suite tests against
-  actual wrappers, and add `docker-network-stop` manually to trap teardown)
+  actual wrappers, and add `docker-network-daemon-stop` manually to trap teardown)
 - `docker/rest-server-compose.yaml` (Inject explicit external network routing)
 - `.env`
 - `.env.template`

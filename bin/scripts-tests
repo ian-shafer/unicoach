@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
 
-trap 'bin/rest-server-stop --wipe-data >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop --wipe-data >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/rest-server-stop --wipe-data >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop >/dev/null 2>&1 || true; [ -x "bin/docker-network-daemon-stop" ] && bin/docker-network-daemon-stop unicoach-network >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
 
 echo "Harness up"
 echo ""
@@ -50,8 +50,15 @@ pass_test "File lock recovered stale lock"
 rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
 
+docker network create unicoach-network >/dev/null 2>&1 || true
+
 test_daemon_wrapper() {
   local WRAPPER="$1"
+  local ARG2="${2:-}"
+  local SUFFIX=""
+  if [ -n "$ARG2" ]; then
+    SUFFIX=" $ARG2"
+  fi
   local START_CMD="bin/$WRAPPER-start"
   local STOP_CMD="bin/$WRAPPER-stop"
   local RESTART_CMD="bin/$WRAPPER-restart"
@@ -61,36 +68,36 @@ test_daemon_wrapper() {
   echo "==== Testing Wrapper: $WRAPPER ===="
 
   # 1. Simple Start & Stop & 4. Idempotent Stop
-  $STOP_CMD --wipe-data >/dev/null || true
-  if $CHECK_CMD >/dev/null 2>&1; then echo "Fail: $WRAPPER claimed success despite stripped service."; exit 1; fi
-  $START_CMD >/dev/null
-  if ! $CHECK_CMD >/dev/null; then echo "Fail: $WRAPPER did not actually boot or reach a healthy state."; exit 1; fi
+  $STOP_CMD --wipe-data $SUFFIX >/dev/null || true
+  if $CHECK_CMD $SUFFIX >/dev/null 2>&1; then echo "Fail: $WRAPPER claimed success despite stripped service."; exit 1; fi
+  $START_CMD $SUFFIX >/dev/null
+  if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: $WRAPPER did not actually boot or reach a healthy state."; exit 1; fi
   pass_test "$WRAPPER Simple Start & Stop & Idempotent Stop"
   
   # 2. Idempotent Start
-  if ! $START_CMD >/dev/null; then echo "Fail: Redundant start was not idempotent for $WRAPPER."; exit 1; fi
+  if ! $START_CMD $SUFFIX >/dev/null; then echo "Fail: Redundant start was not idempotent for $WRAPPER."; exit 1; fi
   pass_test "$WRAPPER Idempotent Start"
 
   # 6. Restart Lifecycle
-  if ! $RESTART_CMD >/dev/null; then echo "Fail: Restart failed natively for $WRAPPER."; exit 1; fi
-  if ! $CHECK_CMD >/dev/null; then echo "Fail: Restart did not leave $WRAPPER securely running."; exit 1; fi
+  if ! $RESTART_CMD $SUFFIX >/dev/null; then echo "Fail: Restart failed natively for $WRAPPER."; exit 1; fi
+  if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: Restart did not leave $WRAPPER securely running."; exit 1; fi
   pass_test "$WRAPPER Restart Lifecycle"
 
   # 3. Concurrent Start (After stopping first)
-  $STOP_CMD >/dev/null
-  $START_CMD >/dev/null & PID1=$!
-  $START_CMD >/dev/null & PID2=$!
+  $STOP_CMD $SUFFIX >/dev/null
+  $START_CMD $SUFFIX >/dev/null & PID1=$!
+  $START_CMD $SUFFIX >/dev/null & PID2=$!
   wait $PID1; if [ $? -ne 0 ]; then echo "Fail: Process 1 failed to boot daemon $WRAPPER"; exit 1; fi
   wait $PID2; if [ $? -ne 0 ]; then echo "Fail: Process 2 failed lock concurrency coordination $WRAPPER"; exit 1; fi
-  if ! $CHECK_CMD >/dev/null; then echo "Fail: $WRAPPER concurrent start didn't end up healthy."; exit 1; fi
+  if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: $WRAPPER concurrent start didn't end up healthy."; exit 1; fi
   pass_test "$WRAPPER Concurrent Start"
 
   # 5. Concurrent Stop
-  $STOP_CMD >/dev/null & PID3=$!
-  $STOP_CMD >/dev/null & PID4=$!
+  $STOP_CMD $SUFFIX >/dev/null & PID3=$!
+  $STOP_CMD $SUFFIX >/dev/null & PID4=$!
   wait $PID3; if [ $? -ne 0 ]; then echo "Fail: Process 3 failed concurrent stop for $WRAPPER"; exit 1; fi
   wait $PID4; if [ $? -ne 0 ]; then echo "Fail: Process 4 failed concurrent stop coordination for $WRAPPER"; exit 1; fi
-  if $CHECK_CMD >/dev/null 2>&1; then echo "Fail: Concurrent stop didn't actually stop $WRAPPER"; exit 1; fi
+  if $CHECK_CMD $SUFFIX >/dev/null 2>&1; then echo "Fail: Concurrent stop didn't actually stop $WRAPPER"; exit 1; fi
   pass_test "$WRAPPER Concurrent Stop"
   
   # Check invalid flag for check
@@ -99,6 +106,8 @@ test_daemon_wrapper() {
 }
 
 test_daemon_wrapper "rest-server"
+test_daemon_wrapper "postgres"
+test_daemon_wrapper "docker-network-daemon" "unicoach-network"
 
 echo ""
 echo -e " 🎉 \033[0;32m${TOTAL_TESTS}/${TOTAL_TESTS} tests passed successfully.\033[0m"
