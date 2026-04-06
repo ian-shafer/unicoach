@@ -66,32 +66,45 @@ usability.
    - Every script MUST intercept `-h` or `--help` and successfully trigger
      `help 0`. For all functional parameter failures, appropriately call
      `help "Error string..."`.
-6. **Dual Option Signatures**:
+6. **Standard Option Parsing**:
+   - Every script MUST use a standard `while` loop with a `case` statement to parse options, even if the script only flags `-h`/`--help`. This identical `getopt` style architecture across the repo makes adding future flags trivial and structurally consistent.
+   - Example architecture:
+
+     ```shell
+     while [[ $# -gt 0 ]]; do
+       case "$1" in
+       -h|--help) help ;;
+       -*) fatal "Unknown option: $1" ;;
+       *) break ;;
+       esac
+     done
+     ```
+7. **Dual Option Signatures**:
    - Every option parsed by a script should support both a short and long names
      (e.g., `-p` or `--period`). This is not strictly required, but is
      recommended, especially for options that are used frequently.
-7. **Strict Argument Bounding**:
+8. **Strict Argument Bounding**:
    - Define exactly what positional parameters are accepted and reject all else.
      Use exact evaluations (e.g., `if [ "$#" -ne 1 ]; then`) instead of loose
      minimums (`-lt`) to catch surplus trailing arguments.
-8. **Semantic Output Streams**:
+9. **Semantic Output Streams**:
    - Standard execution logs, diagnostic errors, and invalid states MUST use the
      `log-info` function natively sourced via `/bin/common`. This effectively
      pipes informative strings to `stderr` (e.g., `log-info "Message to user"`).
    - The native `echo` command MUST ONLY be utilized when a script is
      semantically returning data strings down `stdout` (e.g. printing a variable
      evaluation meant to be caught by a pipe or var mapping externally).
-9. **Specific Error Codes**:
-   - Scripts MUST return specific, consistently mapped integer error codes
-     (e.g., `exit 2`, `exit 3`) rather than throwing generic `exit 1` catch-alls
-     when conveying distinct failure states or missing dependencies to other
-     invoking bash scripts.
-10. **Multiline Help Options**:
+10. **Specific Error Codes**:
+    - Scripts MUST return specific, consistently mapped integer error codes
+      (e.g., `exit 2`, `exit 3`) rather than throwing generic `exit 1` catch-alls
+      when conveying distinct failure states or missing dependencies to other
+      invoking bash scripts.
+11. **Multiline Help Options**:
     - The `help()` function MUST use a standard `cat << 'EOF'` heredoc block to
       present its multiline usage string cleanly to standard output (`stdout`),
       rather than using `log-info` or sequential `echo` commands. This ensures
       direct user interface text is distinct from execution logging.
-11. **Daemon Script Lexicon (`DOMAIN-ACTION`)**:
+12. **Daemon Script Lexicon (`DOMAIN-ACTION`)**:
 
 - All standard service wrappers and underlying engine logic scripts MUST
   strictly apply the format `${domain}-${action}` (e.g., `postgres-start`,

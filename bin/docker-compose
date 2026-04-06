@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-source "$(dirname "$0")/common"
+source "$(dirname "$0")/common" ""
 
 help() {
   local exit_code=0
@@ -25,5 +25,14 @@ if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
   help
 fi
 
-# Dynamically pass host identity and project root tightly scoped to the docker compose command
-HOST_UID="$(id -u)" HOST_GID="$(id -g)" PROJECT_ROOT="$PROJECT_ROOT" docker compose --project-directory "$PROJECT_ROOT" "$@"
+# Dynamically pass host identity and project root tightly scoped to the docker compose command.
+# Every variable required by any compose yaml file must be securely and explicitly routed inline
+# here to systematically prevent invisible 'magic' evaluation across varying environments.
+HOST_UID="$(id -u)" \
+HOST_GID="$(id -g)" \
+PORT="${PORT:-8080}" \
+POSTGRES_DATA_DIR="${POSTGRES_DATA_DIR:-./var/postgres}" \
+POSTGRES_USER="${POSTGRES_USER:-postgres}" \
+POSTGRES_DB="${POSTGRES_DB:-unicoach}" \
+POSTGRES_HOST_AUTH_METHOD="${POSTGRES_HOST_AUTH_METHOD:-trust}" \
+docker compose --env-file /dev/null --project-directory "$PROJECT_ROOT" "$@"

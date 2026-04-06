@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 
 trap 'bin/rest-server-stop >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop >/dev/null 2>&1 || true; [ -x "bin/docker-network-daemon-stop" ] && bin/docker-network-daemon-stop unicoach-network >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
@@ -12,6 +13,21 @@ pass_test() {
   local msg="$1"
   ((TOTAL_TESTS++))
   echo -e " \033[0;32m✅ ${msg}\033[0m"
+}
+
+cleanPostgresData() {
+  rm -rf "$POSTGRES_DATA_DIR" || true
+}
+
+# Wait gracefully for the database initialization scripts fully resolve internally
+wait_for_postgres() {
+  local container_id="$1"
+  for i in {1..15}; do
+    if docker exec "$container_id" psql -U postgres -d unicoach -c '\q' >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  echo "Fail: Timed out waiting for database 'unicoach' runtime to become queryable organically."
+  exit 1
 }
 
 TEST_LOCK="$PROJECT_ROOT/var/run/test.lock"
@@ -113,9 +129,13 @@ echo ""
 echo "==== Testing Bespoke Capabilities: postgres ===="
 
 bin/postgres-stop -d >/dev/null || true
+cleanPostgresData
 bin/postgres-start >/dev/null
 
-if ! docker exec unicoach-postgres-1 psql -U postgres -d unicoach -c "CREATE TABLE test_data (id INT); INSERT INTO test_data VALUES (42);" >/dev/null 2>&1; then
+postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
+wait_for_postgres "$postgres_container"
+
+if ! docker exec "$postgres_container" psql -U postgres -d unicoach -c "CREATE TABLE test_data (id INT); INSERT INTO test_data VALUES (42);" >/dev/null; then
   echo "Fail: Could not seed test data."
   exit 1
 fi
@@ -123,11 +143,16 @@ fi
 bin/postgres-stop -d >/dev/null
 bin/postgres-start >/dev/null
 
-if ! docker exec unicoach-postgres-1 psql -U postgres -d unicoach -c "SELECT * FROM test_data;" | grep "42" >/dev/null; then
+postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
+wait_for_postgres "$postgres_container"
+
+if ! docker exec "$postgres_container" psql -U postgres -d unicoach -c "SELECT * FROM test_data;" | grep "42" >/dev/null; then
   echo "Fail: Data persistence failed across -d teardown."
   exit 1
 fi
-pass_test "Postgres data successfully persisted across -d teardown"
+pass_test "postgres Data Persistence"
+
+cleanPostgresData
 
 
 echo "==== Testing Environment Validation ===="
@@ -137,7 +162,7 @@ if [ -z "${STATUS:-}" ] || [ "$STATUS" -eq 0 ]; then
   echo "Fail: Postgres started despite missing POSTGRES_USER."
   exit 1
 fi
-pass_test "Postgres effectively failed to boot cleanly with missing environment variables"
+pass_test "postgres Missing Environment Validation"
 
 echo ""
 echo -e " 🎉 \033[0;32m${TOTAL_TESTS}/${TOTAL_TESTS} tests passed successfully.\033[0m"

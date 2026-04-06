@@ -5,6 +5,9 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_ROOT/bin/functions"
 
 # Globally ingest any local developer environment overwriting defaults
-if [ -f "$PROJECT_ROOT/.env" ]; then
-  source "$PROJECT_ROOT/.env"
+ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
+if [ ! -f "$ENV_FILE" ]; then
+  fatal "Environment file not found [$ENV_FILE]."
 fi
+
+source "$ENV_FILE"
