@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+TOTAL_TESTS=0
+
+pass_test() {
+  local msg="$1"
+  ((TOTAL_TESTS++))
+  echo -e " \033[0;32m✅ ${msg}\033[0m"
+}
+
+fail_test() {
+  local msg="$1"
+  echo -e " \033[0;31m❌ Fail: ${msg}\033[0m" >&2
+  exit 1
+}
+
+assert_success() {
+  local msg="$1"
+  shift
+  if ! "$@"; then
+    fail_test "$msg"
+  fi
+  pass_test "$msg"
+}
+
+assert_failure() {
+  local msg="$1"
+  shift
+  if "$@"; then
+    fail_test "$msg (expected to fail)"
+  fi
+  pass_test "$msg"
+}
+
+end_tests() {
+  echo ""
+  echo -e " 🎉 \033[0;32m${TOTAL_TESTS} tests passed successfully.\033[0m"
+}
