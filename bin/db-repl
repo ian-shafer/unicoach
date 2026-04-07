@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+db-repl [options]
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  *) break ;;
+  esac
+done
+
+# Suppress health check failure logs to keep the interactive startup display clean
+if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null 2>&1; then
+  log-info "PostgreSQL container is offline"
+  exit 2
+fi
+
+exec "$PROJECT_ROOT/bin/docker-compose" -f docker/postgres-compose.yaml exec \
+  postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"

@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+export ENV_FILE="$(dirname "$0")/../.env.test"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+trap 'bin/rest-server-stop >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop >/dev/null 2>&1 || true; [ -x "bin/docker-network-daemon-stop" ] && bin/docker-network-daemon-stop unicoach-network >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
+
+cleanPostgresData() {
+  rm -rf "$POSTGRES_DATA_DIR" || true
+}
+
+wait_for_postgres() {
+  local container_id="$1"
+  for i in {1..15}; do
+    if docker exec "$container_id" psql -U postgres -d unicoach -c '\q' >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  echo "Fail: Timed out waiting for database 'unicoach' runtime to become queryable organically."
+  exit 1
+}
+
+bin/postgres-stop -d >/dev/null || true
+cleanPostgresData
+bin/postgres-start >/dev/null
+
+postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
+wait_for_postgres "$postgres_container"
+
+# Set up testing table
+bin/db-run rw "CREATE TABLE db_scripts_test (id INT PRIMARY KEY, val TEXT);" >/dev/null
+
+test_db_run_ro_blocks_mutation() {
+  if bin/db-run ro "INSERT INTO db_scripts_test (id, val) VALUES (1, 'ro');" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+test_db_run_rw_allows_mutation() {
+  bin/db-run rw "INSERT INTO db_scripts_test (id, val) VALUES (2, 'rw');" >/dev/null
+}
+
+test_db_query_via_stdin() {
+  echo "SELECT * FROM db_scripts_test WHERE id = 2;" | bin/db-query | grep "rw" >/dev/null
+}
+
+test_db_query_via_positional() {
+  bin/db-query "SELECT * FROM db_scripts_test WHERE id = 2;" | grep "rw" >/dev/null
+}
+
+test_db_update_via_stdin() {
+  echo "INSERT INTO db_scripts_test (id, val) VALUES (3, 'stdin');" | bin/db-update >/dev/null
+  bin/db-query "SELECT val FROM db_scripts_test WHERE id = 3;" | grep "stdin" >/dev/null
+}
+
+test_db_update_via_positional() {
+  bin/db-update "INSERT INTO db_scripts_test (id, val) VALUES (4, 'positional');" >/dev/null
+  bin/db-query "SELECT val FROM db_scripts_test WHERE id = 4;" | grep "positional" >/dev/null
+}
+
+test_db_repl_interactive_shell() {
+  echo "\q" | bin/db-repl >/dev/null
+}
+
+test_psql_error_propagation() {
+  bin/db-query "SELECT * FROM non_existent_table;" >/dev/null 2>&1
+  local status=$?
+  if [ "$status" -eq 0 ] || [ "$status" -eq 2 ]; then
+    return 1
+  fi
+  return 0
+}
+
+test_psql_stderr_output() {
+  local out
+  out=$(bin/db-query "SELECT * FROM non_existent_table;" 2>&1 >/dev/null)
+  echo "$out" | grep "relation \"non_existent_table\" does not exist" >/dev/null
+}
+
+echo "==== Testing Core Execution & Queries ===="
+
+assert_success "db-run ro blocks mutation" test_db_run_ro_blocks_mutation
+assert_success "db-run rw allows mutation" test_db_run_rw_allows_mutation
+assert_success "db-query via stdin" test_db_query_via_stdin
+assert_success "db-query via positional" test_db_query_via_positional
+assert_success "db-update via stdin" test_db_update_via_stdin
+assert_success "db-update via positional" test_db_update_via_positional
+assert_success "db-repl interactive shell" test_db_repl_interactive_shell
+assert_success "psql error propagation" test_psql_error_propagation
+assert_success "psql stderr output" test_psql_stderr_output
+
+echo "==== Testing Error Handling Validation ===="
+
+test_container_unreachable_exits_2() {
+  bin/postgres-stop >/dev/null
+  bin/db-query "SELECT 1;" >/dev/null 2>&1
+  local status=$?
+  if [ "$status" -ne 2 ]; then
+    return 1
+  fi
+  return 0
+}
+assert_success "container unreachable exits 2" test_container_unreachable_exits_2
+
+end_tests

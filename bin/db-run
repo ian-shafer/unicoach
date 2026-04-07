@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+db-run <ro|rw> [sql] [options]
+
+Arguments:
+  ro|rw: Access mode
+  sql: Optional SQL statement
+
+Options:
+  -d, --database <db>: Override the target database
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+TARGET_DB="$POSTGRES_DB"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -d|--database)
+    if [ -z "${2:-}" ]; then
+      help "Option --database requires an argument."
+    fi
+    TARGET_DB="$2"
+    shift 2
+    ;;
+  -h|--help) help ;;
+  *) break ;;
+  esac
+done
+
+# Suppress health check failure logs to keep operational output clean
+if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null 2>&1; then
+  log-info "PostgreSQL container is offline"
+  exit 2
+fi
+
+MODE="${1:-}"
+if [ -z "$MODE" ]; then
+  help "Usage: db-run <ro|rw> [sql]"
+fi
+shift
+
+if [ "$MODE" != "ro" ] && [ "$MODE" != "rw" ]; then
+  fatal "Invalid mode [$MODE]. Must be 'ro' or 'rw'."
+fi
+
+EXEC_FLAGS=("-T")
+if [ "$MODE" = "ro" ]; then
+  EXEC_FLAGS+=("-e" "PGOPTIONS=-c default_transaction_read_only=on")
+fi
+
+if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
+  query="$1"
+  shift
+  exec "$PROJECT_ROOT/bin/docker-compose" -f docker/postgres-compose.yaml exec \
+    "${EXEC_FLAGS[@]}" postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" -c "$query" "$@"
+else
+  exec "$PROJECT_ROOT/bin/docker-compose" -f docker/postgres-compose.yaml exec \
+    "${EXEC_FLAGS[@]}" postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" "$@"
+fi

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+db-query [sql] [options]
+
+Arguments:
+  sql: Optional SQL statement
+
+Options:
+  -d, --database <db>: Override the target database
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+DB_FLAGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -d|--database)
+    if [ -z "${2:-}" ]; then
+      help "Option --database requires an argument."
+    fi
+    DB_FLAGS=("-d" "$2")
+    shift 2
+    ;;
+  -h|--help) help ;;
+  *) break ;;
+  esac
+done
+
+if [ ${#DB_FLAGS[@]} -eq 0 ]; then
+  exec "$PROJECT_ROOT/bin/db-run" ro "$@"
+else
+  exec "$PROJECT_ROOT/bin/db-run" "${DB_FLAGS[@]}" ro "$@"
+fi
