@@ -62,6 +62,9 @@ fi
 NOW=$(date +%s)
 EXPIRES=$((NOW + MAX_DURATION))
 
+# Ensure the parent directory exists so atomic mkdir does not fail due to a missing parent path
+mkdir -p "$(dirname "$LOCK_DIR")"
+
 while true; do
   if mkdir "$LOCK_DIR" 2>/dev/null; then
   if [ -n "$OP" ]; then
