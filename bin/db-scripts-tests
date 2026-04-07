@@ -148,4 +148,187 @@ test_db_init_idempotent() {
   pass_test "db-init is idempotent"
 }
 test_db_init_idempotent
+
+test_db_status_formats() {
+  bin/db-destroy -y
+  bin/db-init
+
+  export DB_SCHEMA_DIR="/tmp/test_migrations_status_$$"
+  mkdir -p "$DB_SCHEMA_DIR"
+  echo "CREATE TABLE s1 (id INT);" > "$DB_SCHEMA_DIR/0001.s1.sql"
+  
+  # Forward migration (applies 0001.s1.sql)
+  bin/db-migrate
+
+  # Creates another schema file
+  echo "CREATE TABLE s2 (id INT);" > "$DB_SCHEMA_DIR/0002.s2.sql"
+
+  # Test that --format applied-only only outputs a single, correct line
+  applied_out=$(bin/db-status --format applied-only)
+  if [ "$applied_out" != "0001.s1.sql" ]; then
+    fail_test "db-status --format applied-only did not output expected single line. Got: $applied_out"
+    return 1
+  fi
+
+  # Test that --format unapplied-only only outputs a single, correct line
+  unapplied_out=$(bin/db-status --format unapplied-only)
+  if [ "$unapplied_out" != "0002.s2.sql" ]; then
+    fail_test "db-status --format unapplied-only did not output expected single line. Got: $unapplied_out"
+    return 1
+  fi
+
+  pass_test "db-status format option correctly filters migration states"
+  rm -rf "$DB_SCHEMA_DIR"
+  unset DB_SCHEMA_DIR
+}
+test_db_status_formats
+
+echo "==== Testing Migration Engine ===="
+setup_migration_test() {
+  bin/db-destroy -y >/dev/null 2>&1 || true
+  bin/db-init
+  export DB_SCHEMA_DIR="/tmp/test_migrations_$$"
+  mkdir -p "$DB_SCHEMA_DIR"
+}
+
+teardown_migration_test() {
+  rm -rf "$DB_SCHEMA_DIR"
+  unset DB_SCHEMA_DIR
+}
+
+test_db_migrate_forward() {
+  setup_migration_test
+  
+  echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
+  echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
+  
+  status_out=$(bin/db-status)
+  if ! echo "$status_out" | grep -q "\[PENDING\] 0001.m1.sql"; then
+    fail_test "db-status did not detect pending migration 0001.m1.sql"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "$status_out" | grep -q "\[PENDING\] 0002.m2.sql"; then
+    fail_test "db-status did not detect pending migration 0002.m2.sql"
+    teardown_migration_test
+    return 1
+  fi
+  
+  bin/db-migrate
+  
+  if ! echo "SELECT * FROM m1;" | bin/db-query >/dev/null 2>&1; then
+    fail_test "migration 1 was not physically applied"
+    teardown_migration_test
+    return 1
+  fi
+  if ! echo "SELECT * FROM m2;" | bin/db-query >/dev/null 2>&1; then
+    fail_test "migration 2 was not physically applied"
+    teardown_migration_test
+    return 1
+  fi
+  
+  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
+  if [ "$applied_count" != "2" ]; then
+    fail_test "schema_migrations did not track completions. Expected 2, got: '$applied_count'"
+    teardown_migration_test
+    return 1
+  fi
+  
+  teardown_migration_test
+  return 0
+}
+
+test_db_migrate_idempotent() {
+  setup_migration_test
+  
+  echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
+  echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
+  bin/db-migrate
+  
+  if ! bin/db-migrate >/dev/null 2>&1; then
+    fail_test "db-migrate was not idempotent (did not exit 0)"
+    teardown_migration_test
+    return 1
+  fi
+  
+  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
+  if [ "$applied_count" != "2" ]; then
+    fail_test "schema counts broke during idempotent migrate"
+    teardown_migration_test
+    return 1
+  fi
+  
+  teardown_migration_test
+  return 0
+}
+
+test_db_migrate_transaction_rollback() {
+  setup_migration_test
+  
+  # 0001.m1.sql contains valid then invalid SQL
+  echo "CREATE TABLE good_table (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
+  echo "GARBAGE SQL;" >> "$DB_SCHEMA_DIR/0001.m1.sql"
+  
+  if bin/db-migrate >/dev/null 2>&1; then
+    fail_test "db-migrate did not fail on broken transaction"
+    teardown_migration_test
+    return 1
+  fi
+  
+  # Ensure the good SQL was rolled back
+  if echo "SELECT * FROM good_table;" | bin/db-query >/dev/null 2>&1; then
+    fail_test "transaction was not rolled back; good_table exists"
+    teardown_migration_test
+    return 1
+  fi
+  
+  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
+  if [ "$applied_count" != "0" ]; then
+    fail_test "schema_migrations erroneously tracked failed transaction"
+    teardown_migration_test
+    return 1
+  fi
+  
+  teardown_migration_test
+  return 0
+}
+
+test_db_migrate_halts_on_error() {
+  setup_migration_test
+  
+  echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
+  echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
+  bin/db-migrate
+  
+  echo "GARBAGE SQL SYNTAX;" > "$DB_SCHEMA_DIR/0003.bad.sql"
+  echo "CREATE TABLE m4 (id INT);" > "$DB_SCHEMA_DIR/0004.m4.sql"
+  
+  if bin/db-migrate >/dev/null 2>&1; then
+    fail_test "db-migrate did not fail on broken SQL"
+    teardown_migration_test
+    return 1
+  fi
+  
+  if echo "SELECT * FROM m4;" | bin/db-query >/dev/null 2>&1; then
+    fail_test "db-migrate did not halt; execution continued past broken SQL"
+    teardown_migration_test
+    return 1
+  fi
+  
+  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
+  if [ "$applied_count" != "2" ]; then
+    fail_test "schema_migrations erroneously tracked failed migration"
+    teardown_migration_test
+    return 1
+  fi
+  
+  teardown_migration_test
+  return 0
+}
+
+assert_success "migration engine forward migration" test_db_migrate_forward
+assert_success "migration engine restricts idempotency" test_db_migrate_idempotent
+assert_success "migration engine rolls back failed transactions" test_db_migrate_transaction_rollback
+assert_success "migration engine halts on error" test_db_migrate_halts_on_error
+
 end_tests

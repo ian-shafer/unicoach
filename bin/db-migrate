@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+db-migrate [options]
+
+Executes all pending database migrations in strict lexicographical order.
+Halts immediately upon any query execution failure.
+
+Options:
+  -h, --help:    Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "db-migrate does not accept positional arguments: $*"
+fi
+
+# Extract only pending migrations
+pending_files=$("$PROJECT_ROOT/bin/db-status" -f unapplied-only || true)
+
+if [ -z "$pending_files" ]; then
+  log-info "Database is fully migrated."
+  exit 0
+fi
+
+for base in $pending_files; do
+  file="$DB_SCHEMA_DIR/$base"
+  if [[ ! "$base" =~ ^[0-9]{4}\.([a-z0-9]|[a-z0-9][a-z0-9-]*[a-z0-9])\.sql$ ]]; then
+    fatal "Invalid migration filename [$base]"
+  fi
+
+  log-info "Migrating: $base"
+  
+  if ! (
+    echo "BEGIN;"
+    cat "$file"
+    echo ""
+    version_id="${base:0:4}"
+    echo "INSERT INTO schema_migrations (version_id, filename) VALUES ('$version_id', '$base');"
+    echo "COMMIT;"
+  ) | "$PROJECT_ROOT/bin/db-update"; then
+    fatal "Migration failed: $base. Halting."
+  fi
+done
+
+log-info "All migrations applied successfully."

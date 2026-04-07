@@ -11,3 +11,5 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 source "$ENV_FILE"
+
+export DB_SCHEMA_DIR="${DB_SCHEMA_DIR:-$PROJECT_ROOT/db/schema}"

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+db-status [options]
+
+Outputs the application state of all available database migration scripts.
+Automatically initializes the database and tracking tables if offline or missing.
+
+Options:
+  -f, --format <type>: Format output. Valid values: applied-only, unapplied-only.
+  -h, --help:          Help
+EOF
+  exit "$exit_code"
+}
+
+format=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -f|--format) format="$2"; shift 2 ;;
+  -h|--help) help ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "db-status does not accept positional arguments: $*"
+fi
+
+VALID_FORMATS=("applied-only" "unapplied-only")
+if [[ -n "$format" ]]; then
+  valid=false
+  for v in "${VALID_FORMATS[@]}"; do
+    if [[ "$format" == "$v" ]]; then
+      valid=true
+      break
+    fi
+  done
+  if ! $valid; then
+    help "Invalid format type: $format. Must be one of: ${VALID_FORMATS[*]}."
+  fi
+fi
+
+# Redirect db-init output to stderr so it doesn't artificially pollute the db-status stdout formatting
+"$PROJECT_ROOT/bin/db-init" 1>&2
+
+[ -d "$DB_SCHEMA_DIR" ] || fatal "Schema directory not found: $DB_SCHEMA_DIR"
+
+applied_raw=$(echo "SELECT filename FROM schema_migrations ORDER BY version_id ASC;" | "$PROJECT_ROOT/bin/db-query" -tA)
+
+for file in "$DB_SCHEMA_DIR"/*.sql; do
+  # Handles the case where zero schema files exist, which evaluates the loop variable to the literal glob string
+  [ -e "$file" ] || continue
+  base=$(basename "$file")
+
+  if echo "$applied_raw" | grep -q "^$base$"; then
+    if [[ "$format" == "applied-only" ]]; then
+      echo "$base"
+    elif [[ -z "$format" ]]; then
+      echo "[APPLIED] $base"
+    fi
+  else
+    if [[ "$format" == "unapplied-only" ]]; then
+      echo "$base"
+    elif [[ -z "$format" ]]; then
+      echo "[PENDING] $base"
+    fi
+  fi
+done
