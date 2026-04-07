@@ -89,7 +89,8 @@ usability.
      recommended, especially for options that are used frequently.
 8. **Strict Argument Bounding**:
    - Define exactly what positional parameters are accepted and reject all else.
-     Use exact evaluations (e.g., `if [ "$#" -ne 1 ]; then`) instead of loose
+   - If a script expects zero positional arguments after option parsing, it MUST check that no arguments were provided (e.g., `if [ "$#" -gt 0 ]; then help "Script does not accept positional arguments: $*"; fi`).
+   - Use exact evaluations (e.g., `if [ "$#" -ne 1 ]; then`) instead of loose
      minimums (`-lt`) to catch surplus trailing arguments.
 9. **Semantic Output Streams**:
    - Standard execution logs, diagnostic errors, and invalid states MUST use the
