@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-source "$(dirname "$0")/common" ""
+source "$(dirname "$0")/common"
 
 help() {
   local exit_code=0
