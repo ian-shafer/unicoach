@@ -42,3 +42,9 @@ structured and managed by agents working in this repository.
      commit.
    - Await the user's explicit permission to execute the commit. Do not auto-run
      the commit execution without this explicit verification.
+
+5. **Commit Message Formatting**
+   - The first line (subject) MUST be no more than 80 characters.
+   - The subject line must be followed by exactly one blank line.
+   - Further description (body) should follow the blank line, providing detailed
+     context for the changes.
