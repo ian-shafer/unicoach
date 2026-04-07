@@ -12,10 +12,10 @@ cleanPostgresData() {
 wait_for_postgres() {
   local container_id="$1"
   for i in {1..15}; do
-    if docker exec "$container_id" psql -U postgres -d unicoach -c '\q' >/dev/null 2>&1; then return 0; fi
+    if docker exec "$container_id" psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
-  echo "Fail: Timed out waiting for database 'unicoach' runtime to become queryable organically."
+  echo "Fail: Timed out waiting for database '$POSTGRES_DB' runtime to become queryable organically."
   exit 1
 }
 
@@ -102,4 +102,50 @@ test_container_unreachable_exits_2() {
 }
 assert_success "container unreachable exits 2" test_container_unreachable_exits_2
 
+echo "==== Testing Database Lifecycle ===="
+test_db_lifecycle_wipes_data() {
+  bin/db-init
+
+  # Write dummy data and ensure we can read it
+  bin/db-run rw "CREATE TABLE IF NOT EXISTS lifecycle_test (id INT);"
+  bin/db-run rw "INSERT INTO lifecycle_test (id) VALUES (42);"
+  
+  if ! bin/db-query "SELECT * FROM lifecycle_test;" | grep -q "42"; then
+    fail_test "lifecycle_test read failed"
+    return 1
+  fi
+
+  # Destroy the database
+  bin/db-destroy -y
+
+  # Ensure the database is permanently offline / data destroyed
+  if bin/db-query "SELECT * FROM lifecycle_test;" 2>/dev/null; then
+    fail_test "db-query erroneously succeeded after db-destroy"
+    return 1
+  fi
+
+  # Bring it back up
+  bin/db-init
+  
+  if bin/db-query "SELECT * FROM schema_migrations limit 1;" 2>&1 | grep -q "relation.*schema_migrations.*does not exist"; then
+    fail_test "db-init failed to recreate schema_migrations table"
+    return 1
+  fi
+  pass_test "db-destroy and db-init completed successfully"
+}
+test_db_lifecycle_wipes_data
+
+test_db_init_idempotent() {
+  bin/db-destroy -y
+  bin/db-init
+  
+  # Ensure it exits 0 and does not emit extraneous errors
+  out=$(bin/db-init 2>&1)
+  if [ $? -ne 0 ]; then
+    fail_test "db-init failed on second execution: $out"
+    return 1
+  fi
+  pass_test "db-init is idempotent"
+}
+test_db_init_idempotent
 end_tests

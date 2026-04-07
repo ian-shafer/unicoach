@@ -18,10 +18,10 @@ cleanPostgresData() {
 wait_for_postgres() {
   local container_id="$1"
   for i in {1..15}; do
-    if docker exec "$container_id" psql -U postgres -d unicoach -c '\q' >/dev/null 2>&1; then return 0; fi
+    if docker exec "$container_id" psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
-  echo "Fail: Timed out waiting for database 'unicoach' runtime to become queryable organically."
+  echo "Fail: Timed out waiting for database '$POSTGRES_DB' runtime to become queryable organically."
   exit 1
 }
 
