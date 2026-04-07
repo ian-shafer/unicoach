@@ -135,3 +135,8 @@ usability.
     - Actively disable implicit tool loading (e.g., passing
       `--env-file /dev/null`) when third-party tools attempt to bypass traceable
       injection natively.
+16. **Avoid Output Suppression (/dev/null)**:
+    - Eliminate redirecting stdout/stderr to `/dev/null` unless strictly necessary (e.g., for silent conditional status checks).
+    - Hiding output by default obfuscates valuable execution context, debugging insights, and native tool logs.
+    - If a redirection to `/dev/null` is strictly necessary, it MUST be accompanied by an inline comment explaining exactly why it is required.
+    - For checking string inclusion without output, prefer `grep -q` over `grep ... >/dev/null`.
