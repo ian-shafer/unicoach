@@ -162,6 +162,12 @@ CREATE TABLE users (
 );
 ```
 
+## String Types
+
+- _Use TEXT_: Always use the unbounded `TEXT` type for string data instead of `VARCHAR(n)`. In PostgreSQL, `TEXT` and `VARCHAR` have identical performance characteristics and physical storage backing.
+- _Length Constraints_: If business logic dictates a maximum length (e.g., an email shouldn't exceed 254 characters), enforce this using a named `CHECK` constraint: `CONSTRAINT users_email_length_check CHECK (length(email) <= 254)`.
+- _Why?_: Changing a `CHECK` constraint is a zero-downtime metadata operation in Postgres, unlike `ALTER COLUMN type` which can lock tables. Furthermore, named constraints allow the application to programmatically catch specific constraint violations and return meaningful user errors.
+
 ## Timestamps
 
 By default, entities should have `created_at` and `updated_at` timestamps.
@@ -182,6 +188,9 @@ changes, you can use a 4-timestamp pattern:
 - `row_updated_at`: Physical row last updated time (always updated on any
   write).
 - `updated_at`: Logical entity last updated time.
+
+> [!NOTE]
+> **`NOW()` Preference**: Prefer to use `NOW()` for all timestamps, including physical timestamps like `row_created_at` and `row_updated_at`. Use `clock_timestamp()` only when you need the current time of the statement execution. `NOW()` lock-steps to the start time of the transaction, which provides exact temporal consistency within bulk operations.
 
 This ensures that administrative scripts can update rows (changing
 `row_updated_at`) without affecting the business-meaningful `updated_at`
@@ -383,9 +392,12 @@ is optional.
 CREATE TABLE devices (
   id UUID NOT NULL PRIMARY KEY DEFAULT uuidv7(),
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-  serial_number VARCHAR(255) UNIQUE NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  model VARCHAR(255) NULL
+  serial_number TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  model TEXT NULL,
+  CONSTRAINT devices_serial_number_length_check CHECK (length(serial_number) <= 255),
+  CONSTRAINT devices_name_length_check CHECK (length(name) <= 255),
+  CONSTRAINT devices_model_length_check CHECK (model IS NULL OR length(model) <= 255)
 );
 ```
 
@@ -398,10 +410,13 @@ CREATE TABLE users (
   id UUID NOT NULL PRIMARY KEY DEFAULT uuidv7(),
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
   updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  display_name VARCHAR(255) NULL,
-  deleted_at TIMESTAMPTZ NULL
+  email TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  display_name TEXT NULL,
+  deleted_at TIMESTAMPTZ NULL,
+  CONSTRAINT users_email_length_check CHECK (length(email) <= 254),
+  CONSTRAINT users_name_length_check CHECK (length(name) <= 255),
+  CONSTRAINT users_display_name_length_check CHECK (display_name IS NULL OR length(display_name) <= 255)
 );
 ```
 
@@ -416,10 +431,11 @@ CREATE TABLE items (
   version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
   updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-  title VARCHAR(255) NOT NULL,
+  title TEXT NOT NULL,
   description TEXT NULL,
   price_cents INTEGER NOT NULL,
-  deleted_at TIMESTAMPTZ NULL
+  deleted_at TIMESTAMPTZ NULL,
+  CONSTRAINT items_title_length_check CHECK (length(title) <= 255)
 );
 
 CREATE TABLE item_versions (
@@ -427,7 +443,7 @@ CREATE TABLE item_versions (
   version INTEGER NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
-  title VARCHAR(255) NOT NULL,
+  title TEXT NOT NULL,
   description TEXT NULL,
   price_cents INTEGER NOT NULL,
   deleted_at TIMESTAMPTZ NULL,
@@ -447,9 +463,11 @@ CREATE TABLE widgets (
   row_created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
   updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
   row_updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-  sku VARCHAR(255) UNIQUE NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  description TEXT NULL
+  sku TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NULL,
+  CONSTRAINT widgets_sku_length_check CHECK (length(sku) <= 255),
+  CONSTRAINT widgets_name_length_check CHECK (length(name) <= 255)
 );
 ```
 
