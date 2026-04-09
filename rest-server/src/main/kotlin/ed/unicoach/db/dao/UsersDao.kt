@@ -348,4 +348,121 @@ object UsersDao {
             DeleteResult.DatabaseFailure(e.message ?: "Mapping error")
         }
     }
+
+    fun undelete(session: SqlSession, id: UserId, currentVersion: UserVersionId): UpdateResult {
+        return try {
+            val sql = """
+                UPDATE users 
+                SET version = ?, deleted_at = NULL
+                WHERE id = ? AND version = ?
+                RETURNING *
+            """.trimIndent()
+            session.prepareStatement(sql).use { stmt ->
+                stmt.setInt(1, currentVersion.value + 1)
+                stmt.setObject(2, id.value)
+                stmt.setInt(3, currentVersion.value)
+
+                stmt.executeQuery().use { rs ->
+                    if (rs.next()) {
+                        UpdateResult.Success(mapUser(rs))
+                    } else {
+                        session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
+                            checkStmt.setObject(1, id.value)
+                            checkStmt.executeQuery().use { checkRs ->
+                                if (checkRs.next()) {
+                                    UpdateResult.ConcurrentModification
+                                } else {
+                                    UpdateResult.NotFound
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: SQLException) {
+            when (e.sqlState) {
+                "23505" -> if (e.message?.contains("users_email_unique_active_idx") == true) {
+                    UpdateResult.DuplicateEmail
+                } else {
+                    UpdateResult.ConstraintViolation(e.message ?: "Duplicate key violation")
+                }
+                "23514" -> UpdateResult.ConstraintViolation(e.message ?: "Check constraint violation")
+                else -> UpdateResult.DatabaseFailure(e.message ?: "State: ${e.sqlState}")
+            }
+        } catch (e: Exception) {
+            UpdateResult.DatabaseFailure(e.message ?: "Mapping error")
+        }
+    }
+
+    fun revertToVersion(session: SqlSession, id: UserId, targetHistoricalVersion: UserVersionId, currentVersion: UserVersionId): UpdateResult {
+        val versionResult = findVersion(session, id, targetHistoricalVersion)
+        if (versionResult is FindVersionResult.NotFound) {
+            return UpdateResult.TargetVersionMissing
+        }
+        if (versionResult !is FindVersionResult.Success) {
+            return UpdateResult.DatabaseFailure("Failed to extract target historical bounds.")
+        }
+        val target = versionResult.version
+
+        return try {
+            val sql = """
+                UPDATE users 
+                SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?
+                WHERE id = ? AND version = ?
+                RETURNING *
+            """.trimIndent()
+            session.prepareStatement(sql).use { stmt ->
+                stmt.setInt(1, currentVersion.value + 1)
+                stmt.setString(2, target.email.value)
+                stmt.setString(3, target.name.value)
+                if (target.displayName != null) stmt.setString(4, target.displayName.value) else stmt.setNull(4, java.sql.Types.VARCHAR)
+
+                when (val method = target.authMethod) {
+                    is AuthMethod.Both -> {
+                        stmt.setString(5, method.hash.value)
+                        stmt.setString(6, method.providerId.value)
+                    }
+                    is AuthMethod.Password -> {
+                        stmt.setString(5, method.hash.value)
+                        stmt.setNull(6, java.sql.Types.VARCHAR)
+                    }
+                    is AuthMethod.SSO -> {
+                        stmt.setNull(5, java.sql.Types.VARCHAR)
+                        stmt.setString(6, method.providerId.value)
+                    }
+                }
+                stmt.setObject(7, id.value)
+                stmt.setInt(8, currentVersion.value)
+
+                stmt.executeQuery().use { rs ->
+                    if (rs.next()) {
+                        UpdateResult.Success(mapUser(rs))
+                    } else {
+                        session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
+                            checkStmt.setObject(1, id.value)
+                            checkStmt.executeQuery().use { checkRs ->
+                                if (checkRs.next()) {
+                                    UpdateResult.ConcurrentModification
+                                } else {
+                                    UpdateResult.NotFound
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: SQLException) {
+            when (e.sqlState) {
+                "23505" -> if (e.message?.contains("users_email_unique_active_idx") == true) {
+                    UpdateResult.DuplicateEmail
+                } else {
+                    UpdateResult.ConstraintViolation(e.message ?: "Duplicate key violation")
+                }
+                "23514" -> UpdateResult.ConstraintViolation(e.message ?: "Check constraint violation")
+                else -> UpdateResult.DatabaseFailure(e.message ?: "State: ${e.sqlState}")
+            }
+        } catch (e: Exception) {
+            UpdateResult.DatabaseFailure(e.message ?: "Mapping error")
+        }
+    }
 }

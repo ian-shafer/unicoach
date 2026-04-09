@@ -78,9 +78,10 @@ Since our aggressive use of strict Kotlin `Value Classes` ensures data formattin
 2. **Mutations & Optimistic Locking (`update`, `delete`, `create`)**:
    - **OCC (Tricky)**: Dispatch a stale `UserVersionId` during `update` or `delete` and assert it correctly trips into `UpdateResult.ConcurrentModification`.
    - **Conflict Res (Tricky)**: Assert `create` routes secondary duplicate emails directly into `CreateResult.DuplicateEmail`.
-3. **Advanced Integrations (`undelete`, `updatePhysicalRecord`)**: 
+3. **Advanced Integrations (`undelete`, `updatePhysicalRecord`, `revertToVersion`)**: 
    - **Undelete Conflict (Tricky)**: Perform an `undelete` into an email that is already registered to a new active user, asserting it yields `DuplicateEmail` safely without causing index violations.
    - **State Isolation (Tricky)**: Dispatch `updatePhysicalRecord`. Rollback. Dispatch a standard baseline `update`. Ascertain that `SET LOCAL unicoach.bypass_logical_timestamp = 'true'` was safely destroyed alongside the transaction block and did not bleed into subsequent queries.
+   - **Revert Extraction**: Create a user, update it, and assert that `revertToVersion` correctly reinstates the exact fields mapping from the explicit historical bounds natively.
 
 ## Implementation Plan
 1. **Set Up Test Framework**: Instantiate `UsersDaoTest.kt` with isolated SQL connection blocks in the ephemeral Postgres engine.

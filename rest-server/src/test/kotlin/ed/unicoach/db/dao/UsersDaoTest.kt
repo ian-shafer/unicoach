@@ -175,4 +175,83 @@ class UsersDaoTest {
         val staleUpdateResult = UsersDao.update(session1, createdUser.copy(name = (ed.unicoach.db.models.PersonName.create("Stale Edit") as ValidationResult.Valid).value))
         assertTrue(staleUpdateResult is UpdateResult.ConcurrentModification, "Expected ConcurrentModification, got $staleUpdateResult")
     }
+
+    @Test
+    fun `undelete conflict parses DuplicateEmail natively for overlapping active streams`() {
+        val session1 = object : SqlSession {
+            override fun prepareStatement(sql: String) = connection.prepareStatement(sql)
+        }
+        val targetEmailText = "overlap@example.com"
+        val email = (ed.unicoach.db.models.EmailAddress.create(targetEmailText) as ValidationResult.Valid).value
+        val name = (ed.unicoach.db.models.PersonName.create("Target") as ValidationResult.Valid).value
+        val pass = (ed.unicoach.db.models.PasswordHash.create("apass") as ValidationResult.Valid).value
+        
+        val newUser = ed.unicoach.db.models.NewUser(
+            email = email,
+            name = name,
+            displayName = null,
+            authMethod = ed.unicoach.db.models.AuthMethod.Password(pass)
+        )
+        
+        // 1. Create first user
+        val firstCreate = UsersDao.create(session1, newUser)
+        assertTrue(firstCreate is CreateResult.Success)
+        val firstUser = firstCreate.user
+        
+        // 2. Delete first user
+        val deleteResult = UsersDao.delete(session1, firstUser.id, firstUser.versionId)
+        assertTrue(deleteResult is DeleteResult.Success)
+        val deletedUser = deleteResult.user
+        
+        // 3. Create second user using the same email (allowed because first is logically deleted)
+        val secondCreate = UsersDao.create(session1, newUser.copy(name = (ed.unicoach.db.models.PersonName.create("Imposter") as ValidationResult.Valid).value))
+        assertTrue(secondCreate is CreateResult.Success)
+        
+        // 4. Attempt undelete on the first user, which should trigger a domain uniqueness failure
+        val undeleteResult = UsersDao.undelete(session1, firstUser.id, deletedUser.versionId)
+        assertTrue(undeleteResult is UpdateResult.DuplicateEmail, "Expected DuplicateEmail, got $undeleteResult")
+    }
+
+    @Test
+    fun `revertToVersion extracts historical bounds and accurately restores previous data values`() {
+        val session1 = object : SqlSession {
+            override fun prepareStatement(sql: String) = connection.prepareStatement(sql)
+        }
+        val email = (ed.unicoach.db.models.EmailAddress.create("revert@example.com") as ValidationResult.Valid).value
+        val pass = (ed.unicoach.db.models.PasswordHash.create("apass") as ValidationResult.Valid).value
+        val nameV1 = (ed.unicoach.db.models.PersonName.create("Original Name") as ValidationResult.Valid).value
+        
+        val newUser = ed.unicoach.db.models.NewUser(
+            email = email,
+            name = nameV1,
+            displayName = null,
+            authMethod = ed.unicoach.db.models.AuthMethod.Password(pass)
+        )
+        
+        // V1
+        val createResult = UsersDao.create(session1, newUser)
+        assertTrue(createResult is CreateResult.Success)
+        val v1User = createResult.user
+        
+        // V2
+        val nameV2 = (ed.unicoach.db.models.PersonName.create("Edited Name") as ValidationResult.Valid).value
+        val updateResult = UsersDao.update(session1, v1User.copy(name = nameV2))
+        assertTrue(updateResult is UpdateResult.Success)
+        val v2User = updateResult.user
+
+        // V3
+        val nameV3 = (ed.unicoach.db.models.PersonName.create("Final Mistake") as ValidationResult.Valid).value
+        val updateResult2 = UsersDao.update(session1, v2User.copy(name = nameV3))
+        assertTrue(updateResult2 is UpdateResult.Success)
+        val v3User = updateResult2.user
+        
+        // Revert to V1 (from current bounds V3)
+        val revertResult = UsersDao.revertToVersion(session1, v3User.id, targetHistoricalVersion = v1User.versionId, currentVersion = v3User.versionId)
+        assertTrue(revertResult is UpdateResult.Success)
+        val v4User = revertResult.user
+        
+        // Validate V1 restored cleanly into V4
+        assertTrue(v4User.name == nameV1, "Name was safely restored to V1 configuration")
+        assertTrue(v4User.versionId.value == v3User.versionId.value + 1, "Version mathematically incremented accurately")
+    }
 }
