@@ -36,8 +36,8 @@ approved, and committed.**
    for an explicit "LGTM" (Looks Good To Me) approval from the architect. Do not
    proceed until this is received.
 7. **Commit Code**: Commit the approved code. The commit message **must**
-   include the spec file name and the specific implementation plan step being
-   completed.
+   start with the spec file basename and the specific implementation plan step 
+   wrapped in square brackets (e.g., `[07-users-dao:1]`).
 8. **Next Step**: Move on to the next step in the Implementation Plan. If there
    are no more steps remaining in the spec, tell the architect that they're
    awesome and ask what they want to do next.
