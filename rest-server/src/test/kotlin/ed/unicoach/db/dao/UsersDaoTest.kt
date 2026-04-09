@@ -4,6 +4,14 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.PostgreSQLContainer
+import ed.unicoach.db.models.ValidationResult
+import ed.unicoach.db.models.EmailAddress
+import ed.unicoach.db.models.PersonName
+import ed.unicoach.db.models.PasswordHash
+import ed.unicoach.db.models.AuthMethod
+import ed.unicoach.db.models.NewUser
+import ed.unicoach.db.models.UserId
+import ed.unicoach.db.models.UserVersionId
 import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
@@ -109,5 +117,62 @@ class UsersDaoTest {
 
         val resultIncluded = UsersDao.findById(session1, ed.unicoach.db.models.UserId(rawId), includeDeleted = true)
         assertTrue(resultIncluded is FindResult.Success)
+    }
+
+    @Test
+    fun `create routes duplicate emails directly into DuplicateEmail`() {
+        val session1 = object : SqlSession {
+            override fun prepareStatement(sql: String) = connection.prepareStatement(sql)
+        }
+        val emailProvider = ed.unicoach.db.models.EmailAddress.Companion
+        val nameProvider = ed.unicoach.db.models.PersonName.Companion
+        val passProvider = ed.unicoach.db.models.PasswordHash.Companion
+        
+        val newEmail = (emailProvider.create("dup@example.com") as ValidationResult.Valid).value
+        val newName = (nameProvider.create("Dup Name") as ValidationResult.Valid).value
+        val newPass = (passProvider.create("dupHash") as ValidationResult.Valid).value
+        
+        val newUser = ed.unicoach.db.models.NewUser(
+            email = newEmail,
+            name = newName,
+            displayName = null,
+            authMethod = ed.unicoach.db.models.AuthMethod.Password(newPass)
+        )
+        
+        val createResult1 = UsersDao.create(session1, newUser)
+        assertTrue(createResult1 is CreateResult.Success)
+        
+        val createResult2 = UsersDao.create(session1, newUser)
+        assertTrue(createResult2 is CreateResult.DuplicateEmail, "Expected DuplicateEmail, got $createResult2")
+    }
+
+    @Test
+    fun `update trips into ConcurrentModification with stale version`() {
+        val session1 = object : SqlSession {
+            override fun prepareStatement(sql: String) = connection.prepareStatement(sql)
+        }
+        val email = (ed.unicoach.db.models.EmailAddress.create("occ@example.com") as ValidationResult.Valid).value
+        val name = (ed.unicoach.db.models.PersonName.create("OCC Name") as ValidationResult.Valid).value
+        val pass = (ed.unicoach.db.models.PasswordHash.create("occHash") as ValidationResult.Valid).value
+        
+        val newUser = ed.unicoach.db.models.NewUser(
+            email = email,
+            name = name,
+            displayName = null,
+            authMethod = ed.unicoach.db.models.AuthMethod.Password(pass)
+        )
+        
+        val createResult = UsersDao.create(session1, newUser)
+        assertTrue(createResult is CreateResult.Success)
+        val createdUser = createResult.user
+        
+        // Emulate an update from another process bounds
+        val nextVersionUser = createdUser.copy(name = (ed.unicoach.db.models.PersonName.create("OCC Next") as ValidationResult.Valid).value)
+        val validUpdateResult = UsersDao.update(session1, nextVersionUser)
+        assertTrue(validUpdateResult is UpdateResult.Success)
+        
+        // Attempt update with original stale model
+        val staleUpdateResult = UsersDao.update(session1, createdUser.copy(name = (ed.unicoach.db.models.PersonName.create("Stale Edit") as ValidationResult.Valid).value))
+        assertTrue(staleUpdateResult is UpdateResult.ConcurrentModification, "Expected ConcurrentModification, got $staleUpdateResult")
     }
 }
