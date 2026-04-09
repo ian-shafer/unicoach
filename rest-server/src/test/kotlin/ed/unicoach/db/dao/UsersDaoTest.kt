@@ -60,12 +60,54 @@ class UsersDaoTest {
     }
 
     @Test
-    fun `test framework is ready and schema initialized`() {
+    fun `findByIdForUpdate throws LockAcquisitionFailure when locked by another connection`() {
+        val rawId = java.util.UUID.randomUUID()
         connection.createStatement().use { stmt ->
-            val rs = stmt.executeQuery("SELECT count(*) FROM users")
-            assertTrue(rs.next())
-            val count = rs.getInt(1)
-            println("Verified users table exists, count = $count")
+            // Our schema requires auth method, so provide a password hash
+            stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$rawId', 'test-$rawId@test.com', 'Test User', 'ahash')")
         }
+
+        // Connection 1 will lock the row
+        connection.autoCommit = false
+        val session1 = object : SqlSession {
+            override fun prepareStatement(sql: String) = connection.prepareStatement(sql)
+        }
+        
+        val result1 = UsersDao.findByIdForUpdate(session1, ed.unicoach.db.models.UserId(rawId))
+        assertTrue(result1 is FindResult.Success)
+
+        // Connection 2 attempts to lock the same row and should fail immediately with NOWAIT
+        val conn2 = DriverManager.getConnection(container.jdbcUrl, container.username, container.password)
+        conn2.autoCommit = false
+        val session2 = object : SqlSession {
+            override fun prepareStatement(sql: String) = conn2.prepareStatement(sql)
+        }
+
+        val result2 = UsersDao.findByIdForUpdate(session2, ed.unicoach.db.models.UserId(rawId))
+        assertTrue(result2 is FindResult.LockAcquisitionFailure, "Expected LockAcquisitionFailure, got $result2")
+
+        conn2.rollback()
+        conn2.close()
+        
+        connection.rollback()
+        connection.autoCommit = true
+    }
+    
+    @Test
+    fun `findById includeDeleted false correctly emits NotFound for softly deleted rows`() {
+        val rawId = java.util.UUID.randomUUID()
+        connection.createStatement().use { stmt ->
+            stmt.execute("INSERT INTO users (id, email, name, password_hash, deleted_at) VALUES ('$rawId', 'test2-$rawId@test.com', 'Deleted', 'ahash', NOW())")
+        }
+        
+        val session1 = object : SqlSession {
+            override fun prepareStatement(sql: String) = connection.prepareStatement(sql)
+        }
+        
+        val resultDeleted = UsersDao.findById(session1, ed.unicoach.db.models.UserId(rawId), includeDeleted = false)
+        assertTrue(resultDeleted is FindResult.NotFound)
+
+        val resultIncluded = UsersDao.findById(session1, ed.unicoach.db.models.UserId(rawId), includeDeleted = true)
+        assertTrue(resultIncluded is FindResult.Success)
     }
 }
