@@ -18,6 +18,12 @@ dependencies {
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.ktor.server.test.host)
-  testImplementation(libs.testcontainers.junit.jupiter)
-  testImplementation(libs.testcontainers.postgresql)
+}
+
+tasks.withType<Test> {
+  useJUnitPlatform()
+  testLogging {
+    exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    events("failed")
+  }
 }

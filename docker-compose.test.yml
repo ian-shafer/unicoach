@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  gradle-runner:
+    image: eclipse-temurin:21-jdk
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      GRADLE_USER_HOME: /workspace/var/gradle
+      HOME: /workspace/var/gradle
+      POSTGRES_DB: ${POSTGRES_DB:-unicoach-test}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+    # Command overridden by `bin/test`
+    command: ./gradlew test
+
+networks:
+  default:
+    external: true
+    name: unicoach-network

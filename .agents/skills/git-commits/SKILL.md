@@ -48,3 +48,7 @@ structured and managed by agents working in this repository.
    - The subject line must be followed by exactly one blank line.
    - Further description (body) should follow the blank line, providing detailed
      context for the changes.
+
+6. **Pre-Commit Hook Verification Strategy**
+   - BEFORE ever proposing a git transaction via the `commit_message` artifact, you MUST natively invoke `bin/pre-commit` (or `bin/format`) dynamically within your execution bounds.
+   - You MUST ensure the linter constraints, format assertions, and checks evaluate completely natively before proposing the commit artifact sequence.
