@@ -1,26 +1,34 @@
 ## Executive Summary
-This specification defines the schema, behavior, and lifecycle management for the `users` entity table in the PostgreSQL database. The users table serves as the central identity record for the system, storing core profile data and authentication state. We will utilize robust database-level constraints and triggers to enforce immutability of specific fields and manage timestamp updates automatically, ensuring strong data integrity independent of application logic.
+
+This specification defines the schema, behavior, and lifecycle management for
+the `users` entity table in the PostgreSQL database. The users table serves as
+the central identity record for the system, storing core profile data and
+authentication state. We will utilize robust database-level constraints and
+triggers to enforce immutability of specific fields and manage timestamp updates
+automatically, ensuring strong data integrity independent of application logic.
 
 ## Detailed Design
+
 ### Entity Configuration
 
-| Setting        | Selection                       | Implementation Requirement                                 |
-| :------------- | :------------------------------ | :--------------------------------------------------------- |
-| **ID Type**    | `UUIDv7`                        | Use native `uuidv7()` as the `id` column default                           |
-| **Mutability** | Mutable                         | Include `updated_at` with the admin-bypass trigger configuration |
-| **Timestamps** | Advanced                        | Include `row_created_at` and `row_updated_at` |
-| **Versioning** | Enabled                         | Include `version` column and `users_versions` table        |
-| **Deletions**  | Logical                         | Include `deleted_at` timestamp column and `BEFORE DELETE` prevention trigger |
+| Setting        | Selection | Implementation Requirement                                                   |
+| :------------- | :-------- | :--------------------------------------------------------------------------- |
+| **ID Type**    | `UUIDv7`  | Use native `uuidv7()` as the `id` column default                             |
+| **Mutability** | Mutable   | Include `updated_at` with the admin-bypass trigger configuration             |
+| **Timestamps** | Advanced  | Include `row_created_at` and `row_updated_at`                                |
+| **Versioning** | Enabled   | Include `version` column and `users_versions` table                          |
+| **Deletions**  | Logical   | Include `deleted_at` timestamp column and `BEFORE DELETE` prevention trigger |
 
 ### Table Schema
 
-The table will use the 4-timestamp advanced pattern to support decoupled logical vs physical timestamp updates.
+The table will use the 4-timestamp advanced pattern to support decoupled logical
+vs physical timestamp updates.
 
 ```sql
 CREATE TABLE users (
   id UUID NOT NULL PRIMARY KEY DEFAULT uuidv7(),
   version INTEGER NOT NULL DEFAULT 1,
-  
+
   -- Timestamps
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
   row_created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
@@ -84,7 +92,10 @@ CREATE INDEX users_versions_id_updated_at_idx ON users_versions (id, updated_at)
 ```
 
 ### Triggers and Functions
-1. **Shared Functions (`update_timestamp`, `enforce_versioning`, `prevent_physical_delete`, `prevent_immutable_updates`)**: General PL/pgSQL functions instantiated once for all entities.
+
+1. **Shared Functions (`update_timestamp`, `enforce_versioning`,
+   `prevent_physical_delete`, `prevent_immutable_updates`)**: General PL/pgSQL
+   functions instantiated once for all entities.
 
 ```sql
 CREATE OR REPLACE FUNCTION update_timestamp()
@@ -144,9 +155,12 @@ END;
 $$ LANGUAGE plpgsql;
 ```
 
-> [!WARNING]
-> **Application Integration Requirement for OCC**:
-> The `enforce_versioning` trigger requires the application explicitly send the calculated next version number (e.g., `SET version = 2`). The application MUST NOT use relative SQL statements like `SET version = version + 1`, as doing so during a concurrency race condition could bypass the trigger check (since Postgres evaluates `version + 1` against the *newest committed row*).
+> [!WARNING] **Application Integration Requirement for OCC**: The
+> `enforce_versioning` trigger requires the application explicitly send the
+> calculated next version number (e.g., `SET version = 2`). The application MUST
+> NOT use relative SQL statements like `SET version = version + 1`, as doing so
+> during a concurrency race condition could bypass the trigger check (since
+> Postgres evaluates `version + 1` against the _newest committed row_).
 
 2. **Entity Specific Functions (`trim_users_strings`, `log_user_version`)**:
 
@@ -215,27 +229,56 @@ EXECUTE PROCEDURE log_user_version();
 ```
 
 ## Tests
-All database test cases MUST be wrapped in an isolated SQL transaction that ends with a `ROLLBACK` statement to ensure the testing environment remains pure.
-- **Migration test**: Verify the `users` and `users_versions` tables are created successfully.
-- **Constraints tests**: Attempt to insert duplicate active emails, empty names, empty strings for `display_name`, `password_hash`, or `sso_provider_id`, invalid email formats, and rows lacking an auth mechanism. Verify all fail appropriately.
-- **Immutable Updates test**: Attempt to `UPDATE` a row's `id`, `created_at`, or `row_created_at` fields and verify that it strictly fails.
-- **Delete test**: Attempt to run `DELETE FROM users` and assert it strictly fails due to the physical delete prevention trigger.
-- **Trimming test**: Insert a user with padded spaces on email/name, and ensure the saved entity automatically truncated the space via the `trim_users_strings` trigger.
-- **Versioning test**: Ensure that an `INSERT` starts with `version = 1`, and that `UPDATE` requires explicit `version = 2` to bypass OCC limitations. Verify `40001` ERRCODE is raised on conflict. Ensure `users_versions` has two rows after the update.
-- **Timestamp trigger test**: Update a field (e.g., name) and assert that `updated_at` and `row_updated_at` change.
-- **Timestamp bypass test**: Set session configuration `unicoach.bypass_logical_timestamp` to `'true'`, update a user's name, and assert that `row_updated_at` changes but `updated_at` does not.
-- **Soft delete index test**: Ensure the partial unique index allows re-registration of a soft-deleted email.
+
+All database test cases MUST be wrapped in an isolated SQL transaction that ends
+with a `ROLLBACK` statement to ensure the testing environment remains pure.
+
+- **Migration test**: Verify the `users` and `users_versions` tables are created
+  successfully.
+- **Constraints tests**: Attempt to insert duplicate active emails, empty names,
+  empty strings for `display_name`, `password_hash`, or `sso_provider_id`,
+  invalid email formats, and rows lacking an auth mechanism. Verify all fail
+  appropriately.
+- **Immutable Updates test**: Attempt to `UPDATE` a row's `id`, `created_at`, or
+  `row_created_at` fields and verify that it strictly fails.
+- **Delete test**: Attempt to run `DELETE FROM users` and assert it strictly
+  fails due to the physical delete prevention trigger.
+- **Trimming test**: Insert a user with padded spaces on email/name, and ensure
+  the saved entity automatically truncated the space via the
+  `trim_users_strings` trigger.
+- **Versioning test**: Ensure that an `INSERT` starts with `version = 1`, and
+  that `UPDATE` requires explicit `version = 2` to bypass OCC limitations.
+  Verify `40001` ERRCODE is raised on conflict. Ensure `users_versions` has two
+  rows after the update.
+- **Timestamp trigger test**: Update a field (e.g., name) and assert that
+  `updated_at` and `row_updated_at` change.
+- **Timestamp bypass test**: Set session configuration
+  `unicoach.bypass_logical_timestamp` to `'true'`, update a user's name, and
+  assert that `row_updated_at` changes but `updated_at` does not.
+- **Soft delete index test**: Ensure the partial unique index allows
+  re-registration of a soft-deleted email.
 
 ## Implementation Plan
+
 1. Create `db/schema/0000.shared-functions.sql` schema file to:
-   - Instantiate the generalized `update_timestamp` (using session config for bypass), `enforce_versioning` (raising serialization_failure ERRCODEs), `prevent_physical_delete`, and `prevent_immutable_updates` PL/pgSQL functions so they are available system-wide.
+   - Instantiate the generalized `update_timestamp` (using session config for
+     bypass), `enforce_versioning` (raising serialization_failure ERRCODEs),
+     `prevent_physical_delete`, and `prevent_immutable_updates` PL/pgSQL
+     functions so they are available system-wide.
 2. Create `db/schema/0001.create-users.sql` schema file to:
-   - Create the `users` and `users_versions` tables with all constraints and indices.
-   - Create the entity-specific functions `trim_users_strings` and `log_user_version`.
-   - Run the `CREATE TRIGGER` attachments on `users` for immutability, versioning, timestamps, trimming, logging, and delete prevention.
-3. Write integration tests in `bin/db-scripts-tests` or a standalone `tests/db/test_users_table.sh` script validating isolated constraint, versioning, trimming, deletion prevention, immutable updates rejection, and trigger conditions.
+   - Create the `users` and `users_versions` tables with all constraints and
+     indices.
+   - Create the entity-specific functions `trim_users_strings` and
+     `log_user_version`.
+   - Run the `CREATE TRIGGER` attachments on `users` for immutability,
+     versioning, timestamps, trimming, logging, and delete prevention.
+3. Write integration tests in `bin/db-scripts-tests` or a standalone
+   `tests/db/test_users_table.sh` script validating isolated constraint,
+   versioning, trimming, deletion prevention, immutable updates rejection, and
+   trigger conditions.
 
 ## Files Modified
+
 - `db/schema/0000.shared-functions.sql` [NEW]
 - `db/schema/0001.create-users.sql` [NEW]
 - `tests/db/test_users_table.sh` [NEW]

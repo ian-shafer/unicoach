@@ -8,5 +8,5 @@ import java.sql.PreparedStatement
  * that DAO methods cannot perform .commit() or .rollback().
  */
 interface SqlSession {
-    fun prepareStatement(sql: String): PreparedStatement
+  fun prepareStatement(sql: String): PreparedStatement
 }

@@ -1,12 +1,17 @@
 package ed.unicoach.db.models
 
 @JvmInline
-value class PersonName private constructor(val value: String) {
-    companion object {
-        fun create(value: String): ValidationResult<PersonName> {
-            val t = value.trim()
-            return if(t.isBlank()) ValidationResult.Invalid(ValidationError.BlankString) 
-            else ValidationResult.Valid(PersonName(t))
-        }
+value class PersonName private constructor(
+  val value: String,
+) {
+  companion object {
+    fun create(value: String): ValidationResult<PersonName> {
+      val t = value.trim()
+      return if (t.isBlank()) {
+        ValidationResult.Invalid(ValidationError.BlankString)
+      } else {
+        ValidationResult.Valid(PersonName(t))
+      }
     }
+  }
 }

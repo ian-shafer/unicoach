@@ -164,9 +164,17 @@ CREATE TABLE users (
 
 ## String Types
 
-- _Use TEXT_: Always use the unbounded `TEXT` type for string data instead of `VARCHAR(n)`. In PostgreSQL, `TEXT` and `VARCHAR` have identical performance characteristics and physical storage backing.
-- _Length Constraints_: If business logic dictates a maximum length (e.g., an email shouldn't exceed 254 characters), enforce this using a named `CHECK` constraint: `CONSTRAINT users_email_length_check CHECK (length(email) <= 254)`.
-- _Why?_: Changing a `CHECK` constraint is a zero-downtime metadata operation in Postgres, unlike `ALTER COLUMN type` which can lock tables. Furthermore, named constraints allow the application to programmatically catch specific constraint violations and return meaningful user errors.
+- _Use TEXT_: Always use the unbounded `TEXT` type for string data instead of
+  `VARCHAR(n)`. In PostgreSQL, `TEXT` and `VARCHAR` have identical performance
+  characteristics and physical storage backing.
+- _Length Constraints_: If business logic dictates a maximum length (e.g., an
+  email shouldn't exceed 254 characters), enforce this using a named `CHECK`
+  constraint:
+  `CONSTRAINT users_email_length_check CHECK (length(email) <= 254)`.
+- _Why?_: Changing a `CHECK` constraint is a zero-downtime metadata operation in
+  Postgres, unlike `ALTER COLUMN type` which can lock tables. Furthermore, named
+  constraints allow the application to programmatically catch specific
+  constraint violations and return meaningful user errors.
 
 ## Timestamps
 
@@ -189,8 +197,11 @@ changes, you can use a 4-timestamp pattern:
   write).
 - `updated_at`: Logical entity last updated time.
 
-> [!NOTE]
-> **`NOW()` Preference**: Prefer to use `NOW()` for all timestamps, including physical timestamps like `row_created_at` and `row_updated_at`. Use `clock_timestamp()` only when you need the current time of the statement execution. `NOW()` lock-steps to the start time of the transaction, which provides exact temporal consistency within bulk operations.
+> [!NOTE] **`NOW()` Preference**: Prefer to use `NOW()` for all timestamps,
+> including physical timestamps like `row_created_at` and `row_updated_at`. Use
+> `clock_timestamp()` only when you need the current time of the statement
+> execution. `NOW()` lock-steps to the start time of the transaction, which
+> provides exact temporal consistency within bulk operations.
 
 This ensures that administrative scripts can update rows (changing
 `row_updated_at`) without affecting the business-meaningful `updated_at`
