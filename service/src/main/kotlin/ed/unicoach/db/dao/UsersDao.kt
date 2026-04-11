@@ -137,9 +137,15 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      FindResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     } catch (e: Exception) {
-      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      FindResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
   }
 
@@ -166,9 +172,15 @@ object UsersDao {
       if (e.sqlState == "55P03") {
         return FindResult.LockAcquisitionFailure
       }
-      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      FindResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     } catch (e: Exception) {
-      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      FindResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
   }
 
@@ -187,9 +199,15 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      FindResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     } catch (e: Exception) {
-      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      FindResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
   }
 
@@ -210,9 +228,15 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      FindVersionResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      FindVersionResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     } catch (e: Exception) {
-      FindVersionResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      FindVersionResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
   }
 
@@ -251,7 +275,10 @@ object UsersDao {
           if (rs.next()) {
             CreateResult.Success(mapUser(rs))
           } else {
-            CreateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(java.lang.RuntimeException("Insert succeeded but returning failed")))
+            CreateResult.DatabaseFailure(
+              ed.unicoach.error.ExceptionWrapper
+                .from(java.lang.RuntimeException("Insert succeeded but returning failed")),
+            )
           }
         }
       }
@@ -261,13 +288,27 @@ object UsersDao {
           if (e.message?.contains("users_email_unique_active_idx") == true) {
             CreateResult.DuplicateEmail
           } else {
-            CreateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
+            CreateResult.ConstraintViolation(
+              ed.unicoach.error.ExceptionWrapper
+                .from(e),
+            )
           }
-        "23514" -> CreateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
-        else -> CreateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+        "23514" ->
+          CreateResult.ConstraintViolation(
+            ed.unicoach.error.ExceptionWrapper
+              .from(e),
+          )
+        else ->
+          CreateResult.DatabaseFailure(
+            ed.unicoach.error.ExceptionWrapper
+              .from(e),
+          )
       }
     } catch (e: Exception) {
-      CreateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      CreateResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
 
   private fun doUpdate(
@@ -330,13 +371,27 @@ object UsersDao {
           if (e.message?.contains("users_email_unique_active_idx") == true) {
             UpdateResult.DuplicateEmail
           } else {
-            UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
+            UpdateResult.ConstraintViolation(
+              ed.unicoach.error.ExceptionWrapper
+                .from(e),
+            )
           }
-        "23514" -> UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
-        else -> UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+        "23514" ->
+          UpdateResult.ConstraintViolation(
+            ed.unicoach.error.ExceptionWrapper
+              .from(e),
+          )
+        else ->
+          UpdateResult.DatabaseFailure(
+            ed.unicoach.error.ExceptionWrapper
+              .from(e),
+          )
       }
     } catch (e: Exception) {
-      UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      UpdateResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
 
   fun update(
@@ -352,7 +407,10 @@ object UsersDao {
       session.prepareStatement("SET LOCAL unicoach.bypass_logical_timestamp = 'true'").use { it.execute() }
       doUpdate(session, user)
     } catch (e: SQLException) {
-      UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      UpdateResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
 
   fun delete(
@@ -392,9 +450,15 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      DeleteResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      DeleteResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     } catch (e: Exception) {
-      DeleteResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      DeleteResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
 
   fun undelete(
@@ -438,13 +502,27 @@ object UsersDao {
           if (e.message?.contains("users_email_unique_active_idx") == true) {
             UpdateResult.DuplicateEmail
           } else {
-            UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
+            UpdateResult.ConstraintViolation(
+              ed.unicoach.error.ExceptionWrapper
+                .from(e),
+            )
           }
-        "23514" -> UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
-        else -> UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+        "23514" ->
+          UpdateResult.ConstraintViolation(
+            ed.unicoach.error.ExceptionWrapper
+              .from(e),
+          )
+        else ->
+          UpdateResult.DatabaseFailure(
+            ed.unicoach.error.ExceptionWrapper
+              .from(e),
+          )
       }
     } catch (e: Exception) {
-      UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      UpdateResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
 
   fun revertToVersion(
@@ -461,7 +539,10 @@ object UsersDao {
       return UpdateResult.DatabaseFailure(versionResult.error)
     }
     if (versionResult !is FindVersionResult.Success) {
-      return UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(java.lang.RuntimeException("Failed to extract target historical bounds.")))
+      return UpdateResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(java.lang.RuntimeException("Failed to extract target historical bounds.")),
+      )
     }
     val target = versionResult.version
 
@@ -519,13 +600,27 @@ object UsersDao {
           if (e.message?.contains("users_email_unique_active_idx") == true) {
             UpdateResult.DuplicateEmail
           } else {
-            UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
+            UpdateResult.ConstraintViolation(
+              ed.unicoach.error.ExceptionWrapper
+                .from(e),
+            )
           }
-        "23514" -> UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
-        else -> UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+        "23514" ->
+          UpdateResult.ConstraintViolation(
+            ed.unicoach.error.ExceptionWrapper
+              .from(e),
+          )
+        else ->
+          UpdateResult.DatabaseFailure(
+            ed.unicoach.error.ExceptionWrapper
+              .from(e),
+          )
       }
     } catch (e: Exception) {
-      UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
+      UpdateResult.DatabaseFailure(
+        ed.unicoach.error.ExceptionWrapper
+          .from(e),
+      )
     }
   }
 }

@@ -22,4 +22,6 @@ implementations.
 
 ## Abstract Frameworks to Common Infrastructure
 
-- Domain-agnostic code (e.g. `Validator<T>` functional interface, or a hashing library), it should be placed in the codebase in a way that is sharable across the codebase, e.g. in a common module.
+- Domain-agnostic code (e.g. `Validator<T>` functional interface, or a hashing
+  library), it should be placed in the codebase in a way that is sharable across
+  the codebase, e.g. in a common module.

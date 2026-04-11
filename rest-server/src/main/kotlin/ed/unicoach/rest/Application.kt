@@ -18,10 +18,11 @@ fun Application.module() {
   configureSerialization()
   configureStatusPages()
 
-  val dbConfig = DatabaseConfig(
-    url = environment.config.propertyOrNull("database.url")?.getString() ?: "jdbc:postgresql://localhost:5432/unicoach",
-    user = environment.config.propertyOrNull("database.user")?.getString() ?: "unicoach",
-  )
+  val dbConfig =
+    DatabaseConfig(
+      url = environment.config.propertyOrNull("database.url")?.getString() ?: "jdbc:postgresql://localhost:5432/unicoach",
+      user = environment.config.propertyOrNull("database.user")?.getString() ?: "unicoach",
+    )
   val database = Database(dbConfig)
 
   val jwtSecret = environment.config.propertyOrNull("jwt.secret")?.getString() ?: "secret"

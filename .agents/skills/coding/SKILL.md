@@ -73,14 +73,25 @@ programming languages, scripts, and implementations within the repository.
      executes the `exit 1` block so that logic is DRY.
 
 9. **Constructor Dependency Injection over Singletons** (Test Mockability)
-   - IO, network, or CPU-bound utilities (e.g., cryptography, hashers, API clients, databases) MUST be instantiated as generic classes and passed via constructor parameters structurally.
-   - NEVER use static singletons (like Kotlin `object` instances for logic). This eliminates the ability to mock constraints in unit tests.
+   - IO, network, or CPU-bound utilities (e.g., cryptography, hashers, API
+     clients, databases) MUST be instantiated as generic classes and passed via
+     constructor parameters structurally.
+   - NEVER use static singletons (like Kotlin `object` instances for logic).
+     This eliminates the ability to mock constraints in unit tests.
 
 10. **Do Not Leak Implementation Resources**
-    - Return values, including exceptions, from implementations (e.g. a postgres adapter) should not leak internal resources implicitly upward.
-    - They can pass resources back explicitly (e.g. a logger or a database connection), but the contract must be clearly defined when doing this.
+    - Return values, including exceptions, from implementations (e.g. a postgres
+      adapter) should not leak internal resources implicitly upward.
+    - They can pass resources back explicitly (e.g. a logger or a database
+      connection), but the contract must be clearly defined when doing this.
 
 11. **Lossless Error Bubbling**
-    - Error handling blockes (e.g catch blocks) MUST pass ALL root cause data upward, unaltered. The exception to this rule is if the error handling block is one of the few system-level error handlers (see the next point).
-    - A system should have a limited number of places where errors are finally handled (at least 1, and no more than necessary).
-    - The ultimate error handler (e.g., routing or global exception filters) MUST receive the *unaltered* root cause of the error. Ensure error data is never prematurely filtered, stripped, or swallowed by intermediate mapping layers.
+    - Error handling blockes (e.g catch blocks) MUST pass ALL root cause data
+      upward, unaltered. The exception to this rule is if the error handling
+      block is one of the few system-level error handlers (see the next point).
+    - A system should have a limited number of places where errors are finally
+      handled (at least 1, and no more than necessary).
+    - The ultimate error handler (e.g., routing or global exception filters)
+      MUST receive the _unaltered_ root cause of the error. Ensure error data is
+      never prematurely filtered, stripped, or swallowed by intermediate mapping
+      layers.

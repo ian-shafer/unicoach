@@ -10,19 +10,19 @@ application {
 }
 
 dependencies {
-    implementation(project(":common"))
-    implementation(project(":service"))
-    implementation(libs.ktor.server.core)
-    implementation(libs.ktor.server.netty)
-    implementation(libs.ktor.server.auth.jwt)
-    implementation(libs.ktor.server.content.negotiation)
-    implementation(libs.ktor.server.status.pages)
-    implementation(libs.ktor.serialization.jackson)
-    implementation(libs.logback.classic)
-    implementation(libs.logstash.logback.encoder)
+  implementation(project(":common"))
+  implementation(project(":service"))
+  implementation(libs.ktor.server.core)
+  implementation(libs.ktor.server.netty)
+  implementation(libs.ktor.server.auth.jwt)
+  implementation(libs.ktor.server.content.negotiation)
+  implementation(libs.ktor.server.status.pages)
+  implementation(libs.ktor.serialization.jackson)
+  implementation(libs.logback.classic)
+  implementation(libs.logstash.logback.encoder)
 
-    testImplementation(libs.kotlin.test.junit5)
-    testImplementation(libs.ktor.server.test.host)
+  testImplementation(libs.kotlin.test.junit5)
+  testImplementation(libs.ktor.server.test.host)
 }
 
 tasks.withType<Test> {

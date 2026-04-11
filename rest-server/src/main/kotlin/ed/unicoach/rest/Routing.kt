@@ -1,5 +1,6 @@
 package ed.unicoach.rest
 
+import ed.unicoach.rest.routing.authRoutes
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -35,6 +36,6 @@ fun Application.configureRouting(authService: ed.unicoach.auth.AuthService) {
       }
       rejectUnsupportedMethods(HttpMethod.Get)
     }
-    ed.unicoach.rest.routing.authRoutes(authService)
+    authRoutes(authService)
   }
 }
