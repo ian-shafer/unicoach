@@ -140,11 +140,8 @@ handled natively by Jackson.
     natively.
   - `ValidationFailure(val errors: List<FieldError>)`: Gracefully tracks
     malformed bounds preventing database invocations.
-  - `DuplicateEmail`: Safely encapsulates the precise DAO 23505 constraints
-    statically organically isolating index name bounds
-    (`users_email_unique_active_idx`).
-  - `DatabaseFailure`: Maps generic persistence exceptions statically
-    structurally neutrally.
+  - `DuplicateEmail`: Encapsulates DAO 23505 constraint violations for `users_email_unique_active_idx`.
+  - `DatabaseFailure(override val rootCause: AppError)`: Maps persistence exceptions. Catch blocks for `SQLException` or `Exception` MUST wrap the exception using `DatabaseFailure(rootCause = ExceptionWrapper.from(e))` to preserve the stack trace.
 
 ### API Contract (`POST /api/v1/auth/register`)
 
@@ -164,16 +161,7 @@ handled natively by Jackson.
   - `AuthResult.Success`: Generates `RegisterResponse` passing token explicitly
     within JSON boundaries (transport assumption maps to Bearer token semantics
     implicitly resolving `201 Created`).
-  - `AuthResult.ValidationFailure`: Resolves mathematically mapping native
-    aggregated explicit parameter validation exceptions statically dynamically
-    mapping arrays down directly explicitly emitting `400 Bad Request`.
-  - `AuthResult.DuplicateEmail`: Terminates gracefully emitting HTTP
-    `409 Conflict` dynamically assigning
-    `fieldErrors = listOf(FieldError("email", "Email already in use"))`.
-  - `AuthResult.DatabaseFailure`: Returns HTTP `500 Internal Server Error`,
-    explicitly ensuring the `message` string maps statically to generic text
-    unconditionally, preventing internal JDBC/schema error leaks completely
-    natively.
+  - **Error Routing Constraint:** Do not manually construct `ErrorResponse` DTOs inside `when` branches in `AuthRoutes.kt`. Delegate failure paths to a shared extension function (e.g., `suspend fun ApplicationCall.respondAppError(error: AppError, status: HttpStatusCode)`). The 400 ValidationFailure, 409 DuplicateEmail, and 500 DatabaseFailure mappings MUST route through this extension.
 
 ### Serialization Configuration
 
@@ -285,14 +273,15 @@ instance.
     accurately handling `jwt` and `argon2` tuning blocks. Update
     `application-test.conf`.
 3.  **General Utility Implementation:** Implement `Argon2Hasher` and
-    `JwtGenerator` securely mapping bounds. Write `Database.kt` safely leasing
-    Hikari connections via explicit `try/catch` boundaries natively.
+    `JwtGenerator`. Write `Database.kt` to implement a `withConnection` 
+    wrapper handling Hikari connection pools using strict `try/catch/finally` 
+    transaction rollbacks.
+    - **CRITICAL CONSTRAINT:** Implement `Argon2HasherTest.kt` and `JwtGeneratorTest.kt` before proceeding.
 4.  **Domain Orchestration Implementation (`service`):** Define `AuthResult.kt`.
-    Write `AuthService.kt` defining a `register` function defensively shifting
-    computation context into `withContext(Dispatchers.IO)` around the Argon2
-    operation organically before parsing through `Database.withConnection` and
-    executing `UsersDao.create`. Evaluate logic via `AuthServiceTest.kt`
-    natively.
+    Write `AuthService.kt` defining a `register` function shifting computation
+    context into `withContext(Dispatchers.IO)` around the Argon2 operation
+    before calling `Database.withConnection` and executing `UsersDao.create`.
+    - **CRITICAL CONSTRAINT:** Implement `AuthServiceTest.kt` testing valid sequences and boundaries. This step is incomplete until the unit test is written.
 5.  **Semantic Models Implementation (`rest-server`):** Generate clean
     HTTP-bound `RegisterRequest`, `PublicUser`, `RegisterResponse`, and
     `ErrorResponse` artifacts uniquely.
@@ -302,10 +291,9 @@ instance.
     forwarding cleanly to `AuthService.register()` logically mapping output
     responses automatically.
 7.  **Integration Testing Bounds:** Create `AuthRoutingTest.kt`, isolating the
-    PostgreSQL database explicitly passing injection configurations mapping
-    constraints exactly. Use integration assertions confirming valid and mapped
-    `400/409` states conditionally. (_Verification: Execute `./bin/test`
-    guaranteeing route boundaries map purely._)
+    PostgreSQL database. Use integration assertions confirming valid and mapped
+    `400/409` states.
+    - **CRITICAL CONSTRAINT:** Implement `AuthRoutingTest.kt` enforcing all 7 validation scenarios referenced in the `Tests` section. Verify via `./bin/test`.
 8.  **Dependency Matrix Update:** Explicitly attach `configureSerialization()`,
     `configureStatusPages()`, and generic `auth` loops into target module
     mapping in `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt`
