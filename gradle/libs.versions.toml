@@ -3,15 +3,27 @@ kotlin = "2.3.20"
 ktor = "3.4.2"
 ktlint = "14.2.0"
 postgresql = "42.7.3"
+argon2 = "2.11"
+hikaricp = "6.2.1"
+java-jwt = "4.4.0"
+coroutines = "1.10.1"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
+ktor-server-auth-jwt = { module = "io.ktor:ktor-server-auth-jwt", version.ref = "ktor" }
+ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
+ktor-server-status-pages = { module = "io.ktor:ktor-server-status-pages", version.ref = "ktor" }
+ktor-serialization-jackson = { module = "io.ktor:ktor-serialization-jackson", version.ref = "ktor" }
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 kotlin-test-junit5 = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version = "1.5.6" }
 logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version = "7.4" }
 postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+argon2 = { module = "de.mkammerer:argon2-jvm", version.ref = "argon2" }
+hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
+java-jwt = { module = "com.auth0:java-jwt", version.ref = "java-jwt" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 
 [plugins]
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }

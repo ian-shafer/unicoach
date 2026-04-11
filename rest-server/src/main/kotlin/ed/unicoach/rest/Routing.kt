@@ -24,7 +24,7 @@ fun Route.rejectUnsupportedMethods(vararg methods: HttpMethod) {
   }
 }
 
-fun Application.configureRouting() {
+fun Application.configureRouting(authService: ed.unicoach.auth.AuthService) {
   routing {
     route("/hello") {
       get {
@@ -35,5 +35,6 @@ fun Application.configureRouting() {
       }
       rejectUnsupportedMethods(HttpMethod.Get)
     }
+    ed.unicoach.rest.routing.authRoutes(authService)
   }
 }

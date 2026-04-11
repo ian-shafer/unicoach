@@ -19,3 +19,7 @@ implementations.
   in the database would have a table with an ID. A generic class can be written
   that handles the generic entity stuff, like setting the ID. Entities can
   extend this interface and handle their specific concerns.
+
+## Abstract Frameworks to Common Infrastructure
+
+- Domain-agnostic code (e.g. `Validator<T>` functional interface, or a hashing library), it should be placed in the codebase in a way that is sharable across the codebase, e.g. in a common module.

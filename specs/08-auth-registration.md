@@ -141,8 +141,7 @@ handled natively by Jackson.
   - `ValidationFailure(val errors: List<FieldError>)`: Gracefully tracks
     malformed bounds preventing database invocations.
   - `DuplicateEmail`: Encapsulates DAO 23505 constraint violations for `users_email_unique_active_idx`.
-  - `DatabaseFailure(override val rootCause: AppError)`: Maps persistence exceptions. Catch blocks for `SQLException` or `Exception` MUST wrap the exception using `DatabaseFailure(rootCause = ExceptionWrapper.from(e))` to preserve the stack trace.
-
+  - `DatabaseFailure(override val rootCause: AppError)`: Maps persistence exceptions or constraint violations. Catch blocks MUST pass ALL root cause data upward explicitly satisfying the `AppError` contract. The ultimate error handler (e.g., routing) must receive the unaltered root cause of the error, ensuring data is not prematurely filtered or stripped natively.
 ### API Contract (`POST /api/v1/auth/register`)
 
 - **Evaluation Loop Mapping:**
@@ -272,8 +271,7 @@ instance.
 2.  **Configuration Wiring:** Update `rest-server.conf` adding HOCON properties
     accurately handling `jwt` and `argon2` tuning blocks. Update
     `application-test.conf`.
-3.  **General Utility Implementation:** Implement `Argon2Hasher` and
-    `JwtGenerator`. Write `Database.kt` to implement a `withConnection` 
+3.  **General Utility Implementation:** Implement `Argon2Hasher` as an injectable class and construct a generic `Validator<T>` logically abstracted structurally mapping directly into the base `common` module. Write `Database.kt` to implement a `withConnection` 
     wrapper handling Hikari connection pools using strict `try/catch/finally` 
     transaction rollbacks.
     - **CRITICAL CONSTRAINT:** Implement `Argon2HasherTest.kt` and `JwtGeneratorTest.kt` before proceeding.
