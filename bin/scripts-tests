@@ -130,7 +130,7 @@ bin/postgres-start >/dev/null
 postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
 wait_for_postgres "$postgres_container"
 
-if ! docker exec "$postgres_container" psql -U postgres -d unicoach -c "CREATE TABLE test_data (id INT); INSERT INTO test_data VALUES (42);" >/dev/null; then
+if ! docker exec "$postgres_container" psql -U postgres -d "$POSTGRES_DB" -c "CREATE TABLE test_data (id INT); INSERT INTO test_data VALUES (42);" >/dev/null; then
   echo "Fail: Could not seed test data."
   exit 1
 fi
@@ -141,7 +141,7 @@ bin/postgres-start >/dev/null
 postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
 wait_for_postgres "$postgres_container"
 
-if ! docker exec "$postgres_container" psql -U postgres -d unicoach -c "SELECT * FROM test_data;" | grep "42" >/dev/null; then
+if ! docker exec "$postgres_container" psql -U postgres -d "$POSTGRES_DB" -c "SELECT * FROM test_data;" | grep "42" >/dev/null; then
   echo "Fail: Data persistence failed across -d teardown."
   exit 1
 fi
