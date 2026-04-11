@@ -34,7 +34,7 @@ fi
 
 log-info "Running pre-commit checks concurrently..."
 
-"$PROJECT_ROOT/bin/docker-run" eclipse-temurin:21-jdk ./gradlew check &
+"$PROJECT_ROOT/bin/test" check &
 KOTLIN_PID=$!
 
 "$PROJECT_ROOT/bin/docker-run" node:20-alpine npx --yes prettier@3 --check "**/*.md" &

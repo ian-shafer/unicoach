@@ -37,8 +37,11 @@ done
 "$PROJECT_ROOT/bin/db-init"
 "$PROJECT_ROOT/bin/db-migrate"
 
+# Default to 'test' if no arguments are provided, otherwise execute exactly what is passed
+GRADLE_ARGS=("${@:-test}")
+
 # gradle-runner automatically connects to `postgres:5432` internally via `unicoach-network`
-bin/docker-compose -f docker-compose.test.yml run --rm gradle-runner ./gradlew test "$@"
+bin/docker-compose -f docker-compose.test.yml run --rm gradle-runner ./gradlew "${GRADLE_ARGS[@]}"
 EXIT_CODE=$?
 
 # We specifically DO NOT `down` the network because the PostgreSQL daemon is physically shared with development scopes!

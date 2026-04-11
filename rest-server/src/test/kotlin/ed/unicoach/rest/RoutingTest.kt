@@ -14,7 +14,7 @@ class RoutingTest {
   fun testHelloWorldEndpoint() =
     testApplication {
       environment {
-        config = ApplicationConfig("rest-server.conf")
+        config = ApplicationConfig("application-test.conf")
       }
 
       val response = client.get("/hello")
