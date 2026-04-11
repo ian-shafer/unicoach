@@ -6,11 +6,11 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
+    env_file:
+      - .env.test
     environment:
       GRADLE_USER_HOME: /workspace/var/gradle
       HOME: /workspace/var/gradle
-      POSTGRES_DB: ${POSTGRES_DB:-unicoach-test}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
       DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-unicoach-test}
     # Command overridden by `bin/test`
     command: ./gradlew test

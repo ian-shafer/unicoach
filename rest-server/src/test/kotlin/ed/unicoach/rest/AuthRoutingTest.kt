@@ -19,7 +19,7 @@ class AuthRoutingTest {
   fun `test valid registration state simulation`() =
     testApplication {
       environment {
-        config = ApplicationConfig("application-test.conf")
+        config = ApplicationConfig("rest-server.conf")
       }
       val req = RegisterRequest("testuser@company.com", "Password123!", "Test User")
 
@@ -39,7 +39,7 @@ class AuthRoutingTest {
   fun `test CORS configuration validation hooks`() =
     testApplication {
       environment {
-        config = ApplicationConfig("application-test.conf")
+        config = ApplicationConfig("rest-server.conf")
       }
       // Ktor's install(CORS) usually handles this, we ensure it's at least returning 200 or 405 if not configured
       val response =
@@ -56,7 +56,7 @@ class AuthRoutingTest {
   fun `test header structure verification constraints`() =
     testApplication {
       environment {
-        config = ApplicationConfig("application-test.conf")
+        config = ApplicationConfig("rest-server.conf")
       }
       val response =
         client.post("/api/v1/auth/register") {
@@ -70,7 +70,7 @@ class AuthRoutingTest {
   fun `test unique invariant and malicious vector rejection`() =
     testApplication {
       environment {
-        config = ApplicationConfig("application-test.conf")
+        config = ApplicationConfig("rest-server.conf")
       }
       val req1 = RegisterRequest("collision@company.com", "Password123!", "Test User")
       val req2 = RegisterRequest("Collision@company.com", "Password123!", "Test User")
@@ -94,7 +94,7 @@ class AuthRoutingTest {
   fun `test large buffer mitigation rejection`() =
     testApplication {
       environment {
-        config = ApplicationConfig("application-test.conf")
+        config = ApplicationConfig("rest-server.conf")
       }
       val paddedBody = "{" + " ".repeat(10000) + "\"email\":\"valid@company.com\"}"
       val response =
@@ -110,7 +110,7 @@ class AuthRoutingTest {
   fun `test StatusPages deserialization boundaries`() =
     testApplication {
       environment {
-        config = ApplicationConfig("application-test.conf")
+        config = ApplicationConfig("rest-server.conf")
       }
       val response =
         client.post("/api/v1/auth/register") {
@@ -125,7 +125,7 @@ class AuthRoutingTest {
   fun `test timing attack mitigation`() =
     testApplication {
       environment {
-        config = ApplicationConfig("application-test.conf")
+        config = ApplicationConfig("rest-server.conf")
       }
       val req = RegisterRequest("timing@company.com", "Password123!", "Test User")
 
