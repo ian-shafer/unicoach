@@ -13,7 +13,7 @@ sealed interface FindResult {
   data object LockAcquisitionFailure : FindResult
 
   data class DatabaseFailure(
-    val msg: String,
+    val error: ed.unicoach.error.AppError,
   ) : FindResult
 }
 
@@ -25,11 +25,11 @@ sealed interface CreateResult {
   data object DuplicateEmail : CreateResult
 
   data class ConstraintViolation(
-    val reason: String,
+    val error: ed.unicoach.error.AppError,
   ) : CreateResult
 
   data class DatabaseFailure(
-    val msg: String,
+    val error: ed.unicoach.error.AppError,
   ) : CreateResult
 }
 
@@ -47,11 +47,11 @@ sealed interface UpdateResult {
   data object TargetVersionMissing : UpdateResult
 
   data class ConstraintViolation(
-    val reason: String,
+    val error: ed.unicoach.error.AppError,
   ) : UpdateResult
 
   data class DatabaseFailure(
-    val msg: String,
+    val error: ed.unicoach.error.AppError,
   ) : UpdateResult
 }
 
@@ -65,7 +65,7 @@ sealed interface DeleteResult {
   data object ConcurrentModification : DeleteResult
 
   data class DatabaseFailure(
-    val msg: String,
+    val error: ed.unicoach.error.AppError,
   ) : DeleteResult
 }
 
@@ -77,6 +77,6 @@ sealed interface FindVersionResult {
   data object NotFound : FindVersionResult
 
   data class DatabaseFailure(
-    val msg: String,
+    val error: ed.unicoach.error.AppError,
   ) : FindVersionResult
 }

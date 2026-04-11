@@ -8,11 +8,12 @@ import kotlin.test.assertFalse
 class Argon2HasherTest {
     @Test
     fun `test hashing and verifying`() = runBlocking {
+        val hasher = Argon2Hasher()
         val password = "SuperSecretPassword123!"
-        val hash = Argon2Hasher.hash(password)
+        val hash = hasher.hash(password)
         
         assertTrue(hash.startsWith("\$argon2id\$"))
-        assertTrue(Argon2Hasher.verify(hash, password))
-        assertFalse(Argon2Hasher.verify(hash, "wrongpassword"))
+        assertTrue(hasher.verify(hash, password))
+        assertFalse(hasher.verify(hash, "wrongpassword"))
     }
 }

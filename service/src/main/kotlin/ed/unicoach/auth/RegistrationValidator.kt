@@ -1,17 +1,8 @@
 package ed.unicoach.auth
 
-import ed.unicoach.db.models.FieldError
-
-interface Validator<T> {
-    fun validate(input: T): ValidationErrors
-}
-
-data class ValidationErrors(
-    val errors: List<String> = emptyList(),
-    val fieldErrors: List<FieldError> = emptyList()
-) {
-    fun hasErrors() = errors.isNotEmpty() || fieldErrors.isNotEmpty()
-}
+import ed.unicoach.error.FieldError
+import ed.unicoach.util.ValidationErrors
+import ed.unicoach.util.Validator
 
 data class RegistrationInput(
     val email: String,

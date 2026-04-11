@@ -5,6 +5,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
+import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.JwtGenerator
 import io.ktor.server.application.Application
 
@@ -27,7 +28,8 @@ fun Application.module() {
   val jwtIssuer = environment.config.propertyOrNull("jwt.issuer")?.getString() ?: "issuer"
   val jwtGenerator = JwtGenerator(jwtSecret, jwtIssuer)
 
-  val authService = AuthService(database, jwtGenerator)
+  val argon2Hasher = Argon2Hasher()
+  val authService = AuthService(database, jwtGenerator, argon2Hasher)
 
   configureRouting(authService)
 }

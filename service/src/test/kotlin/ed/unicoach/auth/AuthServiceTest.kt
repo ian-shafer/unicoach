@@ -2,6 +2,7 @@ package ed.unicoach.auth
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.JwtGenerator
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
@@ -15,7 +16,8 @@ class AuthServiceTest {
         val dummyDb = Database(DatabaseConfig("jdbc:h2:mem:test", "user", ""))
         val jwtGenerator = JwtGenerator("secret", "issuer")
         
-        val service = AuthService(dummyDb, jwtGenerator)
+        val argon2Hasher = Argon2Hasher()
+        val service = AuthService(dummyDb, jwtGenerator, argon2Hasher)
 
         val res1 = service.register("email@test.com", "Name", "short")
         assertTrue(res1 is AuthResult.ValidationFailure)

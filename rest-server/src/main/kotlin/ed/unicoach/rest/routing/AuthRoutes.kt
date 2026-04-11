@@ -4,7 +4,7 @@ import ed.unicoach.auth.AuthResult
 import ed.unicoach.auth.AuthService
 import ed.unicoach.error.AppError
 import ed.unicoach.rest.models.ErrorResponse
-import ed.unicoach.rest.models.FieldError
+import ed.unicoach.error.FieldError
 import ed.unicoach.rest.models.PublicUser
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.RegisterResponse

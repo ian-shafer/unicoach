@@ -12,12 +12,14 @@ import ed.unicoach.db.models.ValidationResult
 import ed.unicoach.error.ExceptionWrapper
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.JwtGenerator
+import ed.unicoach.util.Validator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 class AuthService(
     private val database: Database,
     private val jwtGenerator: JwtGenerator,
+    private val argon2Hasher: Argon2Hasher,
     private val validator: Validator<RegistrationInput> = RegistrationValidator()
 ) {
     suspend fun register(email: String, name: String, password: String): AuthResult {
@@ -33,7 +35,7 @@ class AuthService(
 
         val hashStr = try {
             withContext(Dispatchers.IO) {
-                Argon2Hasher.hash(password)
+                argon2Hasher.hash(password)
             }
         } catch (e: Exception) {
             return AuthResult.DatabaseFailure(ExceptionWrapper.from(e))
@@ -59,10 +61,10 @@ class AuthService(
                         AuthResult.DuplicateEmail(emailAddr.value)
                     }
                     is CreateResult.ConstraintViolation -> {
-                        AuthResult.DatabaseFailure(ExceptionWrapper.from(RuntimeException("Constraint violation: ${daoResult.reason}")))
+                        AuthResult.DatabaseFailure(daoResult.error)
                     }
                     is CreateResult.DatabaseFailure -> {
-                        AuthResult.DatabaseFailure(ExceptionWrapper.from(RuntimeException("Database failure: ${daoResult.msg}")))
+                        AuthResult.DatabaseFailure(daoResult.error)
                     }
                 }
             }

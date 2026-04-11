@@ -137,9 +137,9 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      FindResult.DatabaseFailure(e.message ?: "Unknown database error (state: ${e.sqlState})")
+      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     } catch (e: Exception) {
-      FindResult.DatabaseFailure(e.message ?: "Mapping error")
+      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
   }
 
@@ -166,9 +166,9 @@ object UsersDao {
       if (e.sqlState == "55P03") {
         return FindResult.LockAcquisitionFailure
       }
-      FindResult.DatabaseFailure(e.message ?: "Unknown database error (state: ${e.sqlState})")
+      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     } catch (e: Exception) {
-      FindResult.DatabaseFailure(e.message ?: "Mapping error")
+      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
   }
 
@@ -187,9 +187,9 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      FindResult.DatabaseFailure(e.message ?: "Unknown database error (state: ${e.sqlState})")
+      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     } catch (e: Exception) {
-      FindResult.DatabaseFailure(e.message ?: "Mapping error")
+      FindResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
   }
 
@@ -210,9 +210,9 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      FindVersionResult.DatabaseFailure(e.message ?: "Unknown database error (state: ${e.sqlState})")
+      FindVersionResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     } catch (e: Exception) {
-      FindVersionResult.DatabaseFailure(e.message ?: "Mapping error")
+      FindVersionResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
   }
 
@@ -251,7 +251,7 @@ object UsersDao {
           if (rs.next()) {
             CreateResult.Success(mapUser(rs))
           } else {
-            CreateResult.DatabaseFailure("Insert succeeded but returning failed")
+            CreateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(java.lang.RuntimeException("Insert succeeded but returning failed")))
           }
         }
       }
@@ -261,13 +261,13 @@ object UsersDao {
           if (e.message?.contains("users_email_unique_active_idx") == true) {
             CreateResult.DuplicateEmail
           } else {
-            CreateResult.ConstraintViolation(e.message ?: "Duplicate key violation")
+            CreateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
           }
-        "23514" -> CreateResult.ConstraintViolation(e.message ?: "Check constraint violation")
-        else -> CreateResult.DatabaseFailure(e.message ?: "State: ${e.sqlState}")
+        "23514" -> CreateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
+        else -> CreateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
       }
     } catch (e: Exception) {
-      CreateResult.DatabaseFailure(e.message ?: "Mapping error")
+      CreateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
 
   private fun doUpdate(
@@ -330,13 +330,13 @@ object UsersDao {
           if (e.message?.contains("users_email_unique_active_idx") == true) {
             UpdateResult.DuplicateEmail
           } else {
-            UpdateResult.ConstraintViolation(e.message ?: "Duplicate key violation")
+            UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
           }
-        "23514" -> UpdateResult.ConstraintViolation(e.message ?: "Check constraint violation")
-        else -> UpdateResult.DatabaseFailure(e.message ?: "State: ${e.sqlState}")
+        "23514" -> UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
+        else -> UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
       }
     } catch (e: Exception) {
-      UpdateResult.DatabaseFailure(e.message ?: "Mapping error")
+      UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
 
   fun update(
@@ -352,7 +352,7 @@ object UsersDao {
       session.prepareStatement("SET LOCAL unicoach.bypass_logical_timestamp = 'true'").use { it.execute() }
       doUpdate(session, user)
     } catch (e: SQLException) {
-      UpdateResult.DatabaseFailure(e.message ?: "Error setting local variable")
+      UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
 
   fun delete(
@@ -392,9 +392,9 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      DeleteResult.DatabaseFailure(e.message ?: "State: ${e.sqlState}")
+      DeleteResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     } catch (e: Exception) {
-      DeleteResult.DatabaseFailure(e.message ?: "Mapping error")
+      DeleteResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
 
   fun undelete(
@@ -438,13 +438,13 @@ object UsersDao {
           if (e.message?.contains("users_email_unique_active_idx") == true) {
             UpdateResult.DuplicateEmail
           } else {
-            UpdateResult.ConstraintViolation(e.message ?: "Duplicate key violation")
+            UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
           }
-        "23514" -> UpdateResult.ConstraintViolation(e.message ?: "Check constraint violation")
-        else -> UpdateResult.DatabaseFailure(e.message ?: "State: ${e.sqlState}")
+        "23514" -> UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
+        else -> UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
       }
     } catch (e: Exception) {
-      UpdateResult.DatabaseFailure(e.message ?: "Mapping error")
+      UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
 
   fun revertToVersion(
@@ -457,8 +457,11 @@ object UsersDao {
     if (versionResult is FindVersionResult.NotFound) {
       return UpdateResult.TargetVersionMissing
     }
+    if (versionResult is FindVersionResult.DatabaseFailure) {
+      return UpdateResult.DatabaseFailure(versionResult.error)
+    }
     if (versionResult !is FindVersionResult.Success) {
-      return UpdateResult.DatabaseFailure("Failed to extract target historical bounds.")
+      return UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(java.lang.RuntimeException("Failed to extract target historical bounds.")))
     }
     val target = versionResult.version
 
@@ -516,13 +519,13 @@ object UsersDao {
           if (e.message?.contains("users_email_unique_active_idx") == true) {
             UpdateResult.DuplicateEmail
           } else {
-            UpdateResult.ConstraintViolation(e.message ?: "Duplicate key violation")
+            UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
           }
-        "23514" -> UpdateResult.ConstraintViolation(e.message ?: "Check constraint violation")
-        else -> UpdateResult.DatabaseFailure(e.message ?: "State: ${e.sqlState}")
+        "23514" -> UpdateResult.ConstraintViolation(ed.unicoach.error.ExceptionWrapper.from(e))
+        else -> UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
       }
     } catch (e: Exception) {
-      UpdateResult.DatabaseFailure(e.message ?: "Mapping error")
+      UpdateResult.DatabaseFailure(ed.unicoach.error.ExceptionWrapper.from(e))
     }
   }
 }
