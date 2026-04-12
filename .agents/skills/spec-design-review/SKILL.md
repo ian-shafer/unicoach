@@ -93,8 +93,9 @@ You MUST evaluate the spec against the following criteria to build your review.
     (not as critical failures):
     - _Rollback Plan_: How to undo the changes if they fail in production.
     - _Data Migration_: How to handle existing data if schemas are changing.
-    - _Performance/Scalability_: Impacts on latency, throughput, or resource
-      usage.
-    - _Security/Privacy_: Handling of PII or access control.
+    - _Performance/Scalability_: Explicitly IGNORE minor (and some major)
+      performance concerns at this stage. Do not flag them.
+    - _Security/Privacy_: Explicitly IGNORE PII and security concerns at this
+      point. Do not flag or evaluate handling of PII or access control.
 11. _Provide Summary_: Summarize all findings and ask the user for final
     feedback.

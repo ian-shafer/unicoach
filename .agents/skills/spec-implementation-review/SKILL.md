@@ -18,6 +18,11 @@ you are encouraged to provide general feedback outside these bounds, these
 criteria are mandatory to ensure strict adherence to the project's coding and
 general-design standards:
 
+> **Important Constraint:** Explicitly IGNORE PII and security concerns at this
+> point. Do not flag or evaluate code for security, privacy, or PII
+> vulnerabilities during this review phase. Explicitly IGNORE minor (and some
+> major) performance concerns at this stage. Do not flag them.
+
 ## 1. Files Modified Isolation Check
 
 Validate that the code changes did not spill over into unrelated files.
