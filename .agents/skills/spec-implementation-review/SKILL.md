@@ -13,10 +13,13 @@ purpose is to enforce coding standards as specified in the `coding` and
 `general-design` skills.
 
 When a user asks you to act as a reviewer for a recently implemented spec step,
-you MUST evaluate the code changes by focusing on these three core checks. While
+you MUST assume a STRICT and ADVERSARIAL posture. Your goal is not to be polite,
+but to ruthlessly hunt for errors, edge-cases, and any deviations from the
+project's coding and general design standards.
+
+You MUST evaluate the code changes by focusing on these three core checks. While
 you are encouraged to provide general feedback outside these bounds, these
-criteria are mandatory to ensure strict adherence to the project's coding and
-general-design standards:
+criteria are mandatory to ensure strict adherence to the project's standards:
 
 > **Important Constraint:** Explicitly IGNORE PII and security concerns at this
 > point. Do not flag or evaluate code for security, privacy, or PII
@@ -34,8 +37,14 @@ Validate that the code changes did not spill over into unrelated files.
 
 ## 2. Core Philosophy Check (`coding/SKILL.md`)
 
-Evaluate the implementation against all 11 of the Core Philosophies explicitly
+Evaluate the implementation against all 12 of the Core Philosophies explicitly
 found in the `coding` skill.
+
+**Important Rule for Reasoning:** You MUST include relevant code examples in
+your reasoning to justify your verdict. However, the length of your code
+examples MUST NOT exceed 20% of the total lines of code changed in the
+implementation (e.g., if 10 lines were changed overall, your code snippet should
+be 2 lines max).
 
 1. **Accept Known, Reject All Else** (The Allowlist Principle)
 2. **Handle All Cases** (Exhaustive Evaluation)
@@ -48,6 +57,7 @@ found in the `coding` skill.
 9. **Constructor Dependency Injection over Singletons** (Test Mockability)
 10. **Do Not Leak Implementation Resources**
 11. **Lossless Error Bubbling**
+12. **DRY Structural Abstractions** (Avoid Boilerplate Duplication)
 
 ## 3. General Code and Design Check (`general-design/SKILL.md`)
 
@@ -74,26 +84,71 @@ below. Use it as a templated report card.
 
 ## 📝 1. Files Modified Isolation Check
 
-- **Expected Files:** [List of files from the spec's `Files Modified` section]
-- **Actual Files Modified:** [List of files modified in the implementation]
-- **Result:** ✅ PASS / ❌ FAIL _(If FAIL, list the extraneous files that were
-  modified unexpectedly or missing files)._
+- **Result:** ✅ PASS / ❌ FAIL
+- **Discrepancies:** _(If FAIL, list the extraneous files that were modified
+  unexpectedly or missing expected files. If PASS, state "None")._
 
 ## 🛡️ 2. Core Philosophy Check (`coding` Skill)
 
-| Point                              | Verdict                      | Notes & Required Actions |
-| ---------------------------------- | ---------------------------- | ------------------------ |
-| **1. Allowlist Principle**         | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **2. Handle All Cases**            | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **3. No Sentinel Nulls**           | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **4. Immutable State Returns**     | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **5. Avoid Metasyntactic Naming**  | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **6. Dynamic Variable Formatting** | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **7. Extramarital Defaults**       | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **8. Semantic Output Streams**     | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **9. Constructor DI**              | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **10. Don't Leak Resources**       | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
-| **11. Lossless Error Bubbling**    | (✅ PASS / ❌ FAIL / ⚪ N/A) |                          |
+### 1. Allowlist Principle
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 2. Handle All Cases
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 3. No Sentinel Nulls
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 4. Immutable State Returns
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 5. Avoid Metasyntactic Naming
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 6. Dynamic Variable Formatting
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 7. Extramarital Defaults
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 8. Semantic Output Streams
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 9. Constructor DI
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 10. Don't Leak Resources
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 11. Lossless Error Bubbling
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
+
+### 12. DRY Structural Abstractions
+
+**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
+explanation. MUST include code examples (max 20% of total LOC changed)]
 
 ## 🏗️ 3. General Code and Design Check (`general-design` Skill)
 
