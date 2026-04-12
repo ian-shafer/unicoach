@@ -25,9 +25,9 @@ execute it step-by-step. For each step in the plan, you must strictly follow the
 workflow below. **Do not move to the next step until the current step is fully
 completed, approved, and committed.**
 
-1. **Acknowledge Steps**: Before beginning implementation, explicitly list out
-   all the steps in the Implementation Plan to the architect, and clearly state
-   which step is currently being worked on.
+1. **Acknowledge Steps** _(Skip if single-shot)_: Before beginning
+   implementation, explicitly list out all the steps in the Implementation Plan
+   to the architect, and clearly state which step is currently being worked on.
 2. **Implement & Test**: Implement the required code for the current step,
    including all necessary test code.
 3. **Demonstrate Success**: Once the implementation is complete and the test
@@ -41,10 +41,9 @@ completed, approved, and committed.**
 6. **Await LGTM** _(Skip if single-shot)_: Once all code changes are implemented
    and tests pass, wait for an explicit "LGTM" (Looks Good To Me) approval from
    the architect. Do not proceed until this is received.
-7. **Commit Code**: Commit the code (whether approved or single-shot). The
-   commit message **must** start with the spec file basename and the specific
-   implementation plan step wrapped in square brackets (e.g.,
-   `[07-users-dao:1]`).
+7. **Commit Code** _(Skip if single-shot)_: Commit the code. The commit message
+   **must** start with the spec file basename and the specific implementation
+   plan step wrapped in square brackets (e.g., `[07-users-dao:1]`).
 8. **Next Step**: Move on to the next step in the Implementation Plan. If there
    are no more steps remaining in the spec, tell the architect that they're
    awesome and ask what they want to do next.
