@@ -37,51 +37,68 @@ understand the state):
   was committed.
 - The working branch should be isolated for verification (e.g.,
   `spec:[name]:impl-verify`).
+- The architect must explicitly provide the name of the branch containing the
+  **"golden implementation"** when kicking off this skill.
 
-### 2. Autonomous Implementation (The "Zero-Shot" Run)
+### 2. Autonomous Implementation (The "Single-Shot" Run)
 
 Execute the `Implementation Plan` section of the spec using the following
 constraints:
 
 - Ingest context from the spec document and relevant `.agents/skills`.
-- **Rule Override**: Unlike the standard `spec-implementation` workflow that
-  explicitly requires step-by-step human "LGTMs", you MUST implement the entire
-  plan **autonomously**. Do not pause for human review between steps. Complete
-  all steps until the codebase aligns completely with your interpretation of the
-  specification.
+- **Single-Shot Implementation**: Follow the `spec-implementation` workflow
+  using its **"single shot implementation"** mode. You must execute all steps
+  autonomously without stopping for human review or approval between steps.
+  Complete all steps until the codebase aligns completely with your
+  interpretation of the specification. **Note**: All tests should pass (e.g., by
+  running `bin/test`) before exiting this step.
 
-### 3. Verification & Evaluation
+### 3. Golden Comparison & Verification
 
-- A specification is only proven robust if it passes independent, un-prompted
-  verification.
-- Upon completing the implementation, **you MUST immediately PAUSE and wait**.
-- Inform the human architect that implementation is complete and ask how they
-  would like to verify the execution.
-- The architect will manually define the evaluation criteria. They may:
-  - Provide a test script or command for you to run.
-  - Patch in a "Gold Standard" test suite and ask you to execute it.
-  - Instruct you to wait while they manually review the codebase correctness.
-- Wait for the architect to explicitly state whether the implementation
-  **PASSED** or **FAILED**.
-- **If tests PASS**: The specification is verified as unambiguous and fully
+A specification is only proven robust if its autonomous implementation matches
+or exceeds the quality of the architect's reference code (the "golden
+implementation").
+
+1. **Compare Implementations**: Upon completing the single-shot implementation,
+   compare your newly generated codebase against the provided golden
+   implementation branch (e.g., by checking it out or running an exhaustive
+   diff).
+2. **Prepare a Verification Report**: Generate a detailed report to present to
+   the architect. Format the report using the following rules:
+   - Make each discovered discrepancy a clearly labeled section.
+   - Describe the difference between the new and golden implementations using
+     clear code examples for both.
+   - For each section, provide at least **two separate options** to fix the
+     discrepancy (either by updating the spec or tweaking global skills) and
+     explicitly **recommend one**.
+   - **Important Quality Clause**: The golden implementation is not infallible.
+     If you find that your spec-driven implementation is actually safer,
+     cleaner, or more standard than the golden implementation, explicitly call
+     this out. In such cases, options or recommendations for "fixing" it are not
+     required.
+   - **Production Readiness Assessment**: Add a final conclusion to the report explicitly evaluating whether the new autonomous implementation exceeds the golden implementation with respect to overall production-readiness. Since a core goal of this autonomous verification process is to generate an objectively higher-quality implementation than the human-authored reference using just the spec and skills, specifically call out any areas where the autonomous run adopted safer, more robust, or more maintainable architectures.
+3. **Prompt for Next Steps**: At the end of the report, present these specific,
+   exact options to the architect and wait for their decision:
+   - "Move forward making the recommended spec and skill changes"
+   - "Go through each point, one-by-one"
+   - "Allow the architect to drive the changes ad hoc"
+
+- **If no changes are needed**: The specification is verified as
   context-complete.
-- **If tests FAIL**: The implementation run failed. Proceed immediately to
-  Step 4.
+- **If discrepancies must be fixed**: Proceed immediately to Step 4.
 
 ### 4. Architectural Corrective Loop (Failure Analysis)
 
-If the verification failed, do not write code to fix the failures directly. The
-error lies in the specification or the project's skills being ambiguous or
-insufficient.
+If the comparison reveals that the implementation failed to meet the golden
+standard, **never fix the implementation code manually**. The error lies in the
+specification or the project's skills being ambiguous or insufficient.
 
-- Analyze the failure feedback. Identify what context, constraint, API boundary,
-  or architectural dependency was missing or confusing in the original `spec`
-  document or global `skills`.
-- Propose amendments to the spec and skills markdown files.
+- Based on the architect's decision from your Verification Report, apply the
+  selected amendments to the `spec` and `.agents/skills` markdown files.
 - Go through the standard review cycle with the architect and commit the spec
   and/or skills changes on the verification branch.
 - Revert all implementation code changes and go back to Step 2 to begin a new
   verification cycle.
-- The process repeats until the verification passes, at which point the
-  specification is proven robust and ready for the standard
-  `spec-implementation` workflow.
+- The process repeats, going back to "Single-Shot Implementation", until the
+  verification passes, at which point the specification is proven robust and
+  ready for the standard `spec-implementation` workflow.
