@@ -7,6 +7,7 @@ argon2 = "2.11"
 hikaricp = "6.2.1"
 java-jwt = "4.4.0"
 coroutines = "1.10.1"
+typesafe-config = "1.4.3"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -24,6 +25,7 @@ argon2 = { module = "de.mkammerer:argon2-jvm", version.ref = "argon2" }
 hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
 java-jwt = { module = "com.auth0:java-jwt", version.ref = "java-jwt" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+typesafe-config = { module = "com.typesafe:config", version.ref = "typesafe-config" }
 
 [plugins]
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }

@@ -76,6 +76,14 @@ implementation").
      cleaner, or more standard than the golden implementation, explicitly call
      this out. In such cases, options or recommendations for "fixing" it are not
      required.
+   - **Production Readiness Assessment**: Add a final conclusion to the report
+     explicitly evaluating whether the new autonomous implementation exceeds the
+     golden implementation with respect to overall production-readiness. Since a
+     core goal of this autonomous verification process is to generate an
+     objectively higher-quality implementation than the human-authored reference
+     using just the spec and skills, specifically call out any areas where the
+     autonomous run adopted safer, more robust, or more maintainable
+     architectures.
 3. **Prompt for Next Steps**: At the end of the report, present these specific,
    exact options to the architect and wait for their decision:
    - "Move forward making the recommended spec and skill changes"

@@ -11,7 +11,7 @@ services:
     environment:
       GRADLE_USER_HOME: /workspace/var/gradle
       HOME: /workspace/var/gradle
-      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-unicoach-test}
+      DATABASE_JDBCURL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-unicoach-test}
     # Command overridden by `bin/test`
     command: ./gradlew test
 

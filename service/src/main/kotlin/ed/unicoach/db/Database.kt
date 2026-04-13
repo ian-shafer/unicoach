@@ -12,11 +12,11 @@ class Database(
   init {
     val hc =
       HikariConfig().apply {
-        jdbcUrl = config.url
+        jdbcUrl = config.jdbcUrl
         username = config.user
         password = config.password
         maximumPoolSize = config.maximumPoolSize
-        connectionTimeout = config.connectionTimeoutMs
+        connectionTimeout = config.connectionTimeout
         // Prevent Hikari from holding autocommit=true connections natively in the pool if possible,
         // though we manually enforce it in withConnection.
       }

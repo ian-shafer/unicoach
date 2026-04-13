@@ -23,17 +23,15 @@ class UsersDaoTest {
     @JvmStatic
     @BeforeAll
     fun setupAll() {
-      // Evaluated locally by gradle-runner bound natively through `.env.test`
-      val dbName = System.getenv("POSTGRES_DB") ?: "unicoach-test"
-      val user = System.getenv("POSTGRES_USER") ?: "postgres"
-      // No password mandated by POSTGRES_HOST_AUTH_METHOD=trust natively
-      val password = ""
-
-      // Connect firmly pointing to daemon explicitly named 'postgres' internally mapped
-      val url = "jdbc:postgresql://postgres:5432/$dbName"
-
-      // Assume the outer script infrastructure (e.g. `bin/test`) securely guaranteed daemon health and applied migrations natively
-      connection = DriverManager.getConnection(url, user, password)
+      val config =
+        ed.unicoach.common.config.AppConfig
+          .load("common.conf", "service.conf")
+          .getOrThrow()
+      val dbConfig =
+        ed.unicoach.db.DatabaseConfig
+          .from(config)
+          .getOrThrow()
+      connection = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
     }
 
     @JvmStatic
@@ -85,9 +83,15 @@ class UsersDaoTest {
     assertTrue(result1 is FindResult.Success)
 
     // Connection 2 attempts to lock the same row and should fail immediately with NOWAIT
-    val dbName = System.getenv("POSTGRES_DB") ?: "unicoach-test"
-    val user = System.getenv("POSTGRES_USER") ?: "postgres"
-    val conn2 = DriverManager.getConnection("jdbc:postgresql://postgres:5432/$dbName", user, "")
+    val config =
+      ed.unicoach.common.config.AppConfig
+        .load("common.conf", "service.conf")
+        .getOrThrow()
+    val dbConfig =
+      ed.unicoach.db.DatabaseConfig
+        .from(config)
+        .getOrThrow()
+    val conn2 = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
     conn2.autoCommit = false
     val session2 =
       object : SqlSession {

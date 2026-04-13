@@ -27,10 +27,12 @@ programming languages, scripts, and implementations within the repository.
      closures cover unhandled edge cases.
 
 3. **No Sentinel Nulls or Empty Strings** (Explicit Initialization)
-   - NEVER use nulls or empty strings to represent an uninitialized state.
-   - Prefer either initializing the variable with a concrete default value or
-     using an explicit optional type (e.g., TypeScript's `string?` or Swift's
-     `String?`).
+   - NEVER use nulls or empty strings to represent an uninitialized state in
+     dynamically typed environments.
+   - However, in statically typed languages with native null-safety (e.g.,
+     Kotlin's `String?` or Swift's `String?`), structurally sound `null`
+     defaults are perfectly acceptable and often preferable to overly verbose
+     sealed abstractions. Use native `null` safely.
 
 4. **Immutable State Returns** (Functional Patterns)
    - When managing domain state or sessions, design models as immutable objects.
@@ -95,3 +97,11 @@ programming languages, scripts, and implementations within the repository.
       MUST receive the _unaltered_ root cause of the error. Ensure error data is
       never prematurely filtered, stripped, or swallowed by intermediate mapping
       layers.
+
+12. **DRY Structural Abstractions** (Avoid Boilerplate Duplication)
+    - Never duplicate logic boilerplate.
+    - When writing new code, always seek to re-use or abstract existing
+      patterns. E.g. database connection wrappers, stream evaluation buffers,
+      repetitive error-catch blocks, you MUST abstract the shared lifecycle
+      logic sequentially into a core foundational private function rather than
+      copying identical `try/catch/finally` syntax blocks repeatedly.
