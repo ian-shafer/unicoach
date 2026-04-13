@@ -170,5 +170,5 @@ above categories. It is not required to provide feedback in this section.]
 **Status:** 🟢 APPROVED / 🔴 REVISION REQUIRED
 
 **Action Items for Implementor:** _(If REVISION REQUIRED, list clear, actionable
-code changes they must make)_
+code changes they must make. For each action item, you MUST provide at least 2 distinct options for how to resolve it, and explicitly recommend one of the options.)_
 ```

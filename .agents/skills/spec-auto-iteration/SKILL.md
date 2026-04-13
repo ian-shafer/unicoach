@@ -47,7 +47,7 @@ state machine for exactly 3 rounds (unless the user specifies otherwise):
    `spec-design-review/SKILL.md`, read the newly saved artifact.
 2. In the chat, output your brutal critique as the Reviewer. You must list at
    least 3 concrete, technical problems (e.g., missing API pagination, missing
-   database indexes, unhandled race conditions, vague test descriptions).
+   database indexes, unhandled race conditions, vague test descriptions). For each problem, you MUST provide at least 2 distinct options for how to resolve it, and explicitly recommend one.
 3. **Switch back to Designer**: In the chat, respond to the critique. State
    explicitly which points you accept and how you will fix them, and reject any
    feedback you think is incorrect (stating why in the spec artifact).

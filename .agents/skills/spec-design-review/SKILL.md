@@ -20,6 +20,7 @@ Skill to help review a spec design interactively.
   time. Generate a comprehensive, structured review of the entire spec design at
   once.
 - Categorize findings clearly (e.g., Critical, Major, Minor, Nit).
+- For each finding, you MUST provide at least 2 distinct options for how to resolve it, and explicitly recommend one of the options.
 - After presenting the full review, ask the user how they want to proceed. Offer
   these specific options:
   1.  Go through the review points one-by-one.
