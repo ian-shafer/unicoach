@@ -27,11 +27,12 @@ variables through a single HOCON pipeline natively wrapped in functional
 - Implement `AppConfig` to centralize configuration loading. It must expose a
   `load(vararg resources: String): Result<Config>` function wrapped in
   `runCatching` that loads and merges the listed resources sequentially
-  (right-most arguments have highest precedence). Pass the combined config directly into 
-  `ConfigFactory.load(mergedConfig)` to natively process system environment overrides 
-  and defaults without manually reinventing `.withFallback()` boilerplate. OS-level 
-  priority mapping natively functions automatically via the internal `.conf` HOCON 
-  `${ENV_VAR}` substitutions directly.
+  (right-most arguments have highest precedence). Pass the combined config
+  directly into `ConfigFactory.load(mergedConfig)` to natively process system
+  environment overrides and defaults without manually reinventing
+  `.withFallback()` boilerplate. OS-level priority mapping natively functions
+  automatically via the internal `.conf` HOCON `${ENV_VAR}` substitutions
+  directly.
 - Implement `SecretString` to wrap sensitive configuration values like JWT
   secrets. It must be a standard `class` (absolutely NOT a Kotlin `data class`)
   to guarantee that default `copy()`, `equals()`, or `toString()`
@@ -100,10 +101,10 @@ variables through a single HOCON pipeline natively wrapped in functional
 - Remove Ktor's `testApplication { }` block from integration tests.
 - Isolate the server bootstrap mechanism into a `startServer(wait: Boolean)`
   function exported separately from `main()`. Integration tests execute this
-  initiation natively via `startServer(wait = false)`, guaranteeing 100%
-  startup parity.
-- Retrieve the natively bound port explicitly bypassing anti-pattern polling loops
-  directly via `testServer.engine.resolvedConnectors().first().port`.
+  initiation natively via `startServer(wait = false)`, guaranteeing 100% startup
+  parity.
+- Retrieve the natively bound port explicitly bypassing anti-pattern polling
+  loops directly via `testServer.engine.resolvedConnectors().first().port`.
 - **Environment Targeting:** Tests must dynamically inject test boundaries (like
   the local docker-compose test database) solely through mapping `.env.test`
   into the standard process environment prior to configuration rather than
@@ -138,14 +139,17 @@ variables through a single HOCON pipeline natively wrapped in functional
    - Implement `JwtConfig.kt` parsing `audience` alongside the `SecretString`
      extracted string.
    - Implement `JwtConfigTest.kt` bounding extraction failures.
-   - Update `Application.kt` to extract a `startServer()` bootstrap flow resolving configurations
-     iteratively natively via `.getOrThrow()`, register `ApplicationStopped` shutdown hooks for the DAO pool,
-     and bridge `AppConfig` into an environment application config struct.
+   - Update `Application.kt` to extract a `startServer()` bootstrap flow
+     resolving configurations iteratively natively via `.getOrThrow()`, register
+     `ApplicationStopped` shutdown hooks for the DAO pool, and bridge
+     `AppConfig` into an environment application config struct.
 4. **Integration Test Refactor (`rest-server`)**
    - Bind the local docker-compose test database securely via `.env.test` loaded
      natively into the system environment prior to test execution while avoiding
      physical `.conf` layer creations.
-   - Update `RoutingTest.kt` and `AuthRoutingTest.kt` to execute `startServer(wait = false)` directly mapping the returned Netty bindings dynamically into `HttpClient(CIO)`.
+   - Update `RoutingTest.kt` and `AuthRoutingTest.kt` to execute
+     `startServer(wait = false)` directly mapping the returned Netty bindings
+     dynamically into `HttpClient(CIO)`.
    - Configure `HttpClient(CIO)` to target the bound port securely without test
      frameworks parsing boundaries implicitly.
 
