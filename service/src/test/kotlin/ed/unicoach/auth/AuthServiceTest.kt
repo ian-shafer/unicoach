@@ -14,7 +14,18 @@ class AuthServiceTest {
   fun `test validation rejection for weak passwords`() =
     runBlocking {
       // We can pass a dummy db and jwt config because it should fail validation before hitting them
-      val dummyDb = Database(DatabaseConfig("jdbc:h2:mem:test", "user", ""))
+      val rawConfig =
+        com.typesafe.config.ConfigFactory.parseString(
+          """
+          database {
+            jdbcUrl = "jdbc:h2:mem:test"
+            user = "user"
+            maximumPoolSize = 10
+            connectionTimeout = 30000
+          }
+          """.trimIndent(),
+        )
+      val dummyDb = Database(DatabaseConfig.from(rawConfig).getOrThrow())
       val jwtGenerator = JwtGenerator("secret", "issuer")
 
       val argon2Hasher = Argon2Hasher()
