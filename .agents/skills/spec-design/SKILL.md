@@ -41,6 +41,7 @@ feature in the codebase.
   concrete question.
 - Spec scope should not be too big. If a spec can be logically split into
   multiple specs, consider doing so.
+- **Architectural Decisions**: When making important architectural decisions (like whether a database table should be versioned), you MUST ask the Architect. Always provide multiple options and a clear recommendation.
 
 ## Spec Requirements
 

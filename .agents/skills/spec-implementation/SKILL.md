@@ -12,6 +12,10 @@ Skill to direct implementors on how to take a spec design file (e.g.,
 `spec-design/SKILL.md` and `spec-design-review/SKILL.md` for context on how
 these specs are authored and reviewed.
 
+## Critical Behaviours
+
+- **Architectural Decisions**: During implementation, if you encounter important architectural decisions that are ambiguous or not fully covered by the spec (like whether a database table should be versioned), you MUST pause and ask the Architect. Always provide multiple valid options along with a clear recommendation.
+
 ## The Implementation Process
 
 If the user explicitly requests a **"single shot implementation"**, you must
