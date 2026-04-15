@@ -53,7 +53,15 @@ constraints:
   interpretation of the specification. **Note**: All tests should pass (e.g., by
   running `bin/test`) before exiting this step.
 
-### 3. Golden Comparison & Verification
+### 3. Implementation Self-Review (Up to 3 Cycles)
+
+Before comparing against the golden implementation, you must utilize the `spec-implementation-review` skill to automatically review your own work.
+1. Trigger a review of your newly generated implementation against the spec constraints and codebase defensive coding skills.
+2. If the review identifies missing architectural compliance, structurally refactor the implementation to resolve the reported gaps.
+3. You may perform up to **3 iterations** of this review-and-fix cycle silently.
+4. Once the implementation passes the self-review without further corrections, proceed to the Golden Comparison.
+
+### 4. Golden Comparison & Verification
 
 A specification is only proven robust if its autonomous implementation matches
 or exceeds the quality of the architect's reference code (the "golden
@@ -93,9 +101,9 @@ implementation").
 
 - **If no changes are needed**: The specification is verified as
   context-complete.
-- **If discrepancies must be fixed**: Proceed immediately to Step 4.
+- **If discrepancies must be fixed**: Proceed immediately to Step 5.
 
-### 4. Architectural Corrective Loop (Failure Analysis)
+### 5. Architectural Corrective Loop (Failure Analysis)
 
 If the comparison reveals that the implementation failed to meet the golden
 standard, **never fix the implementation code manually**. The error lies in the
