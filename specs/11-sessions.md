@@ -14,7 +14,7 @@ database CPU starvation, and session fixation vulnerabilities.
 - **Token Generation**: The server generates a cryptographically secure 256-bit
   random byte array using `java.security.SecureRandom`, encoded strictly as
   `Base64Url` (creating a ~43-44 character opaque string). This cryptography
-  logic MUST be encapsulated in a mockable generic `SessionGenerator` class
+  logic MUST be encapsulated in a mockable generic `TokenGenerator` class
   located natively in `ed.unicoach.util` and injected downward strictly via
   constructor DI—never written as a static singleton.
 - **Routing Protection**: The interceptor enforces a strict Regex pattern
@@ -37,6 +37,7 @@ database CPU starvation, and session fixation vulnerabilities.
   - `metadata`: JSONB (NULLABLE. Cap constrained at `2KB` physically. Note: Advanced device forensics like `active_ips` arrays for tracking VPN jumps are explicitly out of scope for this iteration).
   - `expires_at`: TIMESTAMPTZ (MUST have `INDEX`)
   - `is_revoked`: BOOLEAN (Default false)
+- **Domain Value Classes**: To prevent domain signature drift or arbitrary byte mapping, the raw hash MUST be wrapped in a strongly typed inline value class: `value class TokenHash(val value: ByteArray)`.
 - **Database Safety Triggers**: To enforce chronological safety natively rejecting illegal mutations, the table MUST bind standard entity operations (Note: Physical deletes ARE explicitly permitted for session tokens, so do NOT apply `trigger_00_prevent_physical_delete`):
   - `trigger_00a_prevent_immutable_updates`
   - `trigger_01_enforce_sessions_versioning`
@@ -74,13 +75,10 @@ database CPU starvation, and session fixation vulnerabilities.
   `SessionsDao.kt` MUST abstract repetitive JDBC `try/catch/use` closure
   definitions into a foundational private generic `executeSafely` function,
   strictly averting procedural boilerplate propagation across internal methods.
-- **`ByteArray` Mapping Gotcha**: JVM arrays resolve equality by reference by
-  default. Internal repository implementations explicitly invoke
-  `.contentEquals()` avoiding broken token-matching heuristics inherently.
+- **`ByteArray` Mapping Gotcha**: JVM arrays natively resolve equality by reference. 
+  Data classes containing arrays (like `Session`) MUST explicitly override `equals()` and `hashCode()` to evaluate structural contents (`.contentEquals()`). Because this boilerplate deviates from standard data class behavior, it MUST include a contextual code comment explaining why the overrides exist locally.
 - **Configuration Parsing**: `SessionConfig.kt` structurally maps HOCON
-  representations natively into `java.time.Duration` natively (e.g., parsing
-  `expiration = 7d` into typesafe boundaries over arbitrary raw `Long`
-  integers).
+  representations natively into `java.time.Duration` and bounded configurations natively. It MUST extract `expiration` (Duration), `cookieName`, `cookieDomain`, and `cookieSecure` explicit properties, verifying they represent the actual runtime bounds.
 
 ### API Contract updates
 
@@ -97,6 +95,7 @@ database CPU starvation, and session fixation vulnerabilities.
 
 - `SessionsDaoTest`: Verify insertion, nullable anonymous states, retrieval,
   `BYTEA` bindings, expiry extension updates, and implicit 2KB `metadata` caps.
+  Test MUST bind against a real PostgreSQL infrastructure instance directly logically bypassing dummy/memory SQL abstractions like H2.
 - `AuthServiceTest`: Verify native reminting during anonymous registration.
 - `SessionCleanupTest`: Verify background deletion coroutines.
 
@@ -128,7 +127,7 @@ database CPU starvation, and session fixation vulnerabilities.
 - `service/src/main/kotlin/ed/unicoach/auth/AuthService.kt` [MODIFY]
 - `service/src/test/kotlin/ed/unicoach/auth/AuthServiceTest.kt` [MODIFY]
 - `service/src/main/kotlin/ed/unicoach/auth/SessionCleanupJob.kt` [NEW]
-- `service/src/main/kotlin/ed/unicoach/util/SessionGenerator.kt` [NEW]
+- `service/src/main/kotlin/ed/unicoach/util/TokenGenerator.kt` [NEW]
 - `service/src/main/kotlin/ed/unicoach/db/models/Session.kt` [NEW]
 - `rest-server/src/main/kotlin/ed/unicoach/rest/auth/SessionConfig.kt` [NEW]
 - `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/JwtConfig.kt` [DELETE]

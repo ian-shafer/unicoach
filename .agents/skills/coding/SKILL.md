@@ -109,3 +109,7 @@ programming languages, scripts, and implementations within the repository.
       repetitive error-catch blocks, you MUST abstract the shared lifecycle
       logic sequentially into a core foundational private function rather than
       copying identical `try/catch/finally` syntax blocks repeatedly.
+
+13. **Contextual Code Comments Over Dumb Restatements** (Explain the Why)
+    - You MUST add clear code comments to any place where the implementation logic or design decision is not immediately obvious to a future developer.
+    - DO NOT add "dumb" comments that simply restate what the code is structurally doing (e.g., `// increment index by 1`). Comments must justify the _why_, not narrate the _what_.
