@@ -27,17 +27,20 @@ database CPU starvation, and session fixation vulnerabilities.
 
 - **Table**: `sessions`
   - `id`: UUID (Primary Key)
-  - `user_id`: UUID (Foreign Key to `users.id`, **NULLABLE**)
+  - `version`: INTEGER (Default 1, strictly enforces Optimistic Concurrency Control to prevent illegal overlapping writes).
+  - `created_at`, `row_created_at`, `updated_at`, `row_updated_at`: TIMESTAMPTZ (Standard chronologic entity bounds)
+  - `user_id`: UUID (Foreign Key to `users.id`, **NULLABLE**, strictly bound `ON DELETE CASCADE`)
   - `token_hash`: BYTEA (SHA-256 hash of the transparent token) (MUST have
     `UNIQUE INDEX`)
-  - `user_agent`: VARCHAR (Client device info)
-  - `initial_ip`: VARCHAR (The origination point IP)
-  - `metadata`: JSONB (NULLABLE. Flexible schema, capped at `2KB`. Contains
-    `active_ips` array tracking VPN jumps).
-  - `created_at`: TIMESTAMP
-  - `expires_at`: TIMESTAMP (Default to `created_at + 7 days`) (MUST have
-    `INDEX`)
+  - `user_agent`: VARCHAR (Client device info, bounded to length <= 512)
+  - `initial_ip`: VARCHAR (The origination point IP, bounded to length <= 64)
+  - `metadata`: JSONB (NULLABLE. Cap constrained at `2KB` physically. Note: Advanced device forensics like `active_ips` arrays for tracking VPN jumps are explicitly out of scope for this iteration).
+  - `expires_at`: TIMESTAMPTZ (MUST have `INDEX`)
   - `is_revoked`: BOOLEAN (Default false)
+- **Database Safety Triggers**: To enforce chronological safety natively rejecting illegal mutations, the table MUST bind standard entity operations (Note: Physical deletes ARE explicitly permitted for session tokens, so do NOT apply `trigger_00_prevent_physical_delete`):
+  - `trigger_00a_prevent_immutable_updates`
+  - `trigger_01_enforce_sessions_versioning`
+  - `trigger_03_enforce_sessions_updated_at`
 - **API Models**:
   - `Session`: Represents a session (id, created_at, user_id, metadata,
     user_agent, initial_ip) for UI enumeration.
@@ -54,10 +57,15 @@ database CPU starvation, and session fixation vulnerabilities.
   (`expires_at = NOW() + 7 days`) inline during the HTTP request lifecycle.
 - **Synchronous Zombie Purging**: An infrastructure-scheduler-friendly (e.g.
   Cron) synchronous `execute()` function located in `SessionCleanupJob`
-  explicitly manages zombie expirations
-  (`DELETE FROM sessions WHERE expires_at < NOW()`). It structurally logs bounds
-  to stderr and operates entirely decoupled from brittle self-scheduling
-  application coroutines.
+  explicitly triggers zombie expirations. However, strict architectural boundaries 
+  MUST be maintained: the job must NOT contain raw SQL. It must delegate the 
+  actual database manipulation to a dedicated `SessionsDao.expireZombieSessions(session)` 
+  method. The job structurally logs bounds to stderr and operates entirely 
+  decoupled from brittle self-scheduling application coroutines.
+- **DAO Input Data Classes**: DAO methods performing fundamental write operations
+  (like insertion) MUST accept natively structured parameter entities (e.g., 
+  `NewSession`) rather than multiple flat method arguments natively preventing 
+  domain signature drift.
 - **DAO Search Identifiers**: Search results (e.g., `NotFound`) are strictly
   modeled as Data Classes retaining their specific query identity bounds
   (`val message: String`) organically exposing deterministically trackable
