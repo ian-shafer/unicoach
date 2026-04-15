@@ -55,8 +55,7 @@ constraints:
 
 ### 3. Implementation Self-Review (Up to 3 Cycles)
 
-Before comparing against the golden implementation, you must utilize the
-`spec-implementation-review` skill to automatically review your own work.
+**MANDATORY**: Before comparing against the golden implementation or seeking feedback, you MUST utilize the `spec-implementation-review` skill to automatically review your own work. **Do not shortcut this step.** You must physically generate a review checklist artifact in your workspace (e.g., `SelfReviewChecklist.md`) verifying your newly generated codebase against all project standards and core philosophies.
 
 1. Trigger a review of your newly generated implementation against the spec
    constraints and codebase defensive coding skills.
