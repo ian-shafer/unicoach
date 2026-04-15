@@ -162,6 +162,16 @@ CREATE TABLE users (
 );
 ```
 
+## Unstructured Data and JSONB
+
+- **Native NULL over Sentinels**: For optional `JSONB` or unstructured data
+  columns, ALWAYS use native SQL `NULL`. Do NOT use empty structural sentinels
+  like `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`.
+- Using `NULL` unambiguously represents the absence of data, avoiding expensive
+  parsing operations, preserving index efficiency, and sidestepping
+  application-level evaluation logic to check if a valid object exists or if
+  it's merely a default shell.
+
 ## String Types
 
 - _Use TEXT and CHECK constraints_: Always use the unbounded `TEXT` type along with explicitly named `CHECK` constraints (e.g., `CONSTRAINT users_email_length_check CHECK (length(email) <= 254)`) for bounded string data instead of `VARCHAR(n)`.
