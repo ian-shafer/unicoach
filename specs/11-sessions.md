@@ -5,7 +5,7 @@ This specification defines the architecture for stateful user sessions in unicoa
 ## Detailed Design
 
 ### Securing the Session Token
-- **Token Generation**: The server generates a cryptographically secure 256-bit random byte array using `java.security.SecureRandom`, encoded strictly as `Base64Url` (creating a ~43-44 character opaque string). 
+- **Token Generation**: The server generates a cryptographically secure 256-bit random byte array using `java.security.SecureRandom`, encoded strictly as `Base64Url` (creating a ~43-44 character opaque string). This cryptography logic MUST be encapsulated in a mockable generic `SessionGenerator` class located natively in `ed.unicoach.util` and injected downward strictly via constructor DI—never written as a static singleton. 
 - **Routing Protection**: The interceptor enforces a strict Regex pattern (`^[A-Za-z0-9_-]{43,44}$`) rejecting invalid payloads with `400 Bad Request`.
 - **Database Persistence**: The token is hashed using SHA-256 and stored as a binary `BYTEA` in the `sessions` table (reducing index width vs VARCHAR). The plain text is NEVER stored.
 
@@ -16,7 +16,7 @@ This specification defines the architecture for stateful user sessions in unicoa
   - `token_hash`: BYTEA (SHA-256 hash of the transparent token) (MUST have `UNIQUE INDEX`)
   - `user_agent`: VARCHAR (Client device info)
   - `initial_ip`: VARCHAR (The origination point IP)
-  - `metadata`: JSONB (Default '{}'. Flexible schema, capped at `2KB`. Contains `active_ips` array tracking VPN jumps).
+  - `metadata`: JSONB (NULLABLE. Flexible schema, capped at `2KB`. Contains `active_ips` array tracking VPN jumps).
   - `created_at`: TIMESTAMP
   - `expires_at`: TIMESTAMP (Default to `created_at + 7 days`) (MUST have `INDEX`)
   - `is_revoked`: BOOLEAN (Default false)
@@ -28,6 +28,7 @@ This specification defines the architecture for stateful user sessions in unicoa
 - **Active Sliding Expiry Window**: To prevent abrupt disconnection on Day 7, if a valid token hits the server and its `expires_at` is less than 2 Days away, the application synchronously updates the database row (`expires_at = NOW() + 7 days`) inline during the HTTP request lifecycle.
 - **Synchronous Zombie Purging**: An infrastructure-scheduler-friendly (e.g. Cron) synchronous `execute()` function located in `SessionCleanupJob` explicitly manages zombie expirations (`DELETE FROM sessions WHERE expires_at < NOW()`). It structurally logs bounds to stderr and operates entirely decoupled from brittle self-scheduling application coroutines.
 - **DAO Search Identifiers**: Search results (e.g., `NotFound`) are strictly modeled as Data Classes retaining their specific query identity bounds (`val message: String`) organically exposing deterministically trackable states.
+- **DRY DAO Execution**: Building on core defensive coding philosophies, `SessionsDao.kt` MUST abstract repetitive JDBC `try/catch/use` closure definitions into a foundational private generic `executeSafely` function, strictly averting procedural boilerplate propagation across internal methods.
 - **`ByteArray` Mapping Gotcha**: JVM arrays resolve equality by reference by default. Internal repository implementations explicitly invoke `.contentEquals()` avoiding broken token-matching heuristics inherently.
 - **Configuration Parsing**: `SessionConfig.kt` structurally maps HOCON representations natively into `java.time.Duration` natively (e.g., parsing `expiration = 7d` into typesafe boundaries over arbitrary raw `Long` integers).
 
@@ -58,6 +59,8 @@ This specification defines the architecture for stateful user sessions in unicoa
 - `service/src/main/kotlin/ed/unicoach/auth/AuthService.kt` [MODIFY]
 - `service/src/test/kotlin/ed/unicoach/auth/AuthServiceTest.kt` [MODIFY]
 - `service/src/main/kotlin/ed/unicoach/auth/SessionCleanupJob.kt` [NEW]
+- `service/src/main/kotlin/ed/unicoach/util/SessionGenerator.kt` [NEW]
+- `service/src/main/kotlin/ed/unicoach/db/models/Session.kt` [NEW]
 - `rest-server/src/main/kotlin/ed/unicoach/rest/auth/SessionConfig.kt` [NEW]
 - `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/JwtConfig.kt` [DELETE]
 - `rest-server/src/main/kotlin/ed/unicoach/rest/routing/AuthRoutes.kt` [MODIFY]
