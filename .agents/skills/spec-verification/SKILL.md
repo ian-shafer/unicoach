@@ -84,11 +84,12 @@ implementation").
      using just the spec and skills, specifically call out any areas where the
      autonomous run adopted safer, more robust, or more maintainable
      architectures.
-3. **Prompt for Next Steps**: At the end of the report, present these specific,
-   exact options to the architect and wait for their decision:
-   - "Move forward making the recommended spec and skill changes"
-   - "Go through each point, one-by-one"
-   - "Allow the architect to drive the changes ad hoc"
+3. **Prompt for Next Steps**: At the end of the report, present these 
+   options to the architect and wait for their decision. Use a UI widget if possible:
+   - Move forward making the recommended spec and skill changes
+   - Go through each point, one-by-one, assisted by the implementor
+   - Allow the architect to drive the changes ad hoc
+   - Other [allow the architect to specify any other option]
 
 - **If no changes are needed**: The specification is verified as
   context-complete.
