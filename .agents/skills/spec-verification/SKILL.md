@@ -55,11 +55,16 @@ constraints:
 
 ### 3. Implementation Self-Review (Up to 3 Cycles)
 
-Before comparing against the golden implementation, you must utilize the `spec-implementation-review` skill to automatically review your own work.
-1. Trigger a review of your newly generated implementation against the spec constraints and codebase defensive coding skills.
-2. If the review identifies missing architectural compliance, structurally refactor the implementation to resolve the reported gaps.
+Before comparing against the golden implementation, you must utilize the
+`spec-implementation-review` skill to automatically review your own work.
+
+1. Trigger a review of your newly generated implementation against the spec
+   constraints and codebase defensive coding skills.
+2. If the review identifies any recommended critical, major, or minor changes,
+   take their recommendation and implement fixes.
 3. You may perform up to **3 iterations** of this review-and-fix cycle silently.
-4. Once the implementation passes the self-review without further corrections, proceed to the Golden Comparison.
+4. After 3 iterations (or fewer if no issues are found), proceed to Golden
+   Comparison.
 
 ### 4. Golden Comparison & Verification
 
@@ -92,8 +97,8 @@ implementation").
      using just the spec and skills, specifically call out any areas where the
      autonomous run adopted safer, more robust, or more maintainable
      architectures.
-3. **Prompt for Next Steps**: At the end of the report, present these 
-   options to the architect and wait for their decision. Use a UI widget if possible:
+3. **Prompt for Next Steps**: At the end of the report, present these options to
+   the architect and wait for their decision. Use a UI widget if possible:
    - Move forward making the recommended spec and skill changes
    - Go through each point, one-by-one, assisted by the implementor
    - Allow the architect to drive the changes ad hoc

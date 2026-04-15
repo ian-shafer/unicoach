@@ -27,8 +27,12 @@ programming languages, scripts, and implementations within the repository.
      closures cover unhandled edge cases.
 
 3. **No Sentinel Nulls or Empty Strings** (Explicit Initialization)
-   - NEVER use nulls or empty strings (`"none"`, `""`) to represent an uninitialized state in dynamically typed environments.
-   - Do NOT use structural sentinel values in databases (e.g., `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`) to represent the "absence" of data. Use native SQL `NULL` for optional structured data to strictly enforce index constraints and avoid ambiguous querying conditions.
+   - NEVER use nulls or empty strings (`"none"`, `""`) to represent an
+     uninitialized state in dynamically typed environments.
+   - Do NOT use structural sentinel values in databases (e.g.,
+     `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`) to represent the "absence" of
+     data. Use native SQL `NULL` for optional structured data to strictly
+     enforce index constraints and avoid ambiguous querying conditions.
    - However, in statically typed languages with native null-safety (e.g.,
      Kotlin's `String?` or Swift's `String?`), structurally sound `null`
      defaults are perfectly acceptable and often preferable to overly verbose

@@ -164,8 +164,13 @@ CREATE TABLE users (
 
 ## Unstructured Data and JSONB
 
-- **Native NULL over Sentinels**: For optional `JSONB` or unstructured data columns, ALWAYS use native SQL `NULL`. Do NOT use empty structural sentinels like `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`.
-- Using `NULL` unambiguously represents the absence of data, avoiding expensive parsing operations, preserving index efficiency, and sidestepping application-level evaluation logic to check if a valid object exists or if it's merely a default shell.
+- **Native NULL over Sentinels**: For optional `JSONB` or unstructured data
+  columns, ALWAYS use native SQL `NULL`. Do NOT use empty structural sentinels
+  like `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`.
+- Using `NULL` unambiguously represents the absence of data, avoiding expensive
+  parsing operations, preserving index efficiency, and sidestepping
+  application-level evaluation logic to check if a valid object exists or if
+  it's merely a default shell.
 
 ## String Types
 
@@ -189,7 +194,10 @@ By default, entities should have `created_at` and `updated_at` timestamps.
 - `updated_at`: Logical entity last updated time. Updated automatically on every
   update. Note that this may not be updated on some writes e.g. migrations and
   backfills (see Advanced section below).
-- **Source of Truth for Time**: Always use the database as the single source of truth for time. Do not use application times (e.g., `Instant.now()`) to set timestamps that will be stored in the database. Rely on database functions like `NOW()` to guarantee consistency.
+- **Source of Truth for Time**: Always use the database as the single source of
+  truth for time. Do not use application times (e.g., `Instant.now()`) to set
+  timestamps that will be stored in the database. Rely on database functions
+  like `NOW()` to guarantee consistency.
 
 ### Advanced: Physical vs. Logical Timestamps
 
