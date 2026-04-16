@@ -9,6 +9,7 @@ import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.RegisterResponse
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.*
+import io.ktor.server.plugins.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -34,7 +35,12 @@ suspend fun ApplicationCall.respondAppError(
   }
 }
 
-fun Route.authRoutes(authService: AuthService) {
+fun Route.authRoutes(
+  authService: AuthService,
+  database: ed.unicoach.db.Database,
+  sessionConfig: ed.unicoach.rest.auth.SessionConfig,
+  tokenGenerator: ed.unicoach.util.TokenGenerator,
+) {
   route("/api/v1/auth") {
     post("/register") {
       val contentLength = call.request.header("Content-Length")?.toLongOrNull()
@@ -53,7 +59,70 @@ fun Route.authRoutes(authService: AuthService) {
               email = result.user.email.value,
               name = result.user.name.value,
             )
-          call.respond(HttpStatusCode.Created, RegisterResponse(publicUser, result.token))
+
+          val newToken = tokenGenerator.generateToken()
+          val newHash =
+            java.security.MessageDigest
+              .getInstance("SHA-256")
+              .digest(newToken.toByteArray(Charsets.UTF_8))
+
+          val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
+
+          try {
+            database.withConnection { session ->
+              var wasReminted = false
+              if (oldCookieToken != null) {
+                val oldHash =
+                  java.security.MessageDigest
+                    .getInstance("SHA-256")
+                    .digest(oldCookieToken.toByteArray(Charsets.UTF_8))
+                val found =
+                  ed.unicoach.db.dao.SessionsDao
+                    .findByTokenHash(session, oldHash)
+                if (found is ed.unicoach.db.dao.SessionFindResult.Success) {
+                  ed.unicoach.db.dao.SessionsDao.remintToken(
+                    session = session,
+                    id = found.session.id,
+                    currentVersion = found.session.version,
+                    newUserId = result.user.id,
+                    newTokenHash = newHash,
+                    newExpirationSeconds = sessionConfig.expiration.seconds,
+                  )
+                  wasReminted = true
+                }
+              }
+
+              if (!wasReminted) {
+                ed.unicoach.db.dao.SessionsDao.create(
+                  session = session,
+                  newSession =
+                    ed.unicoach.db.models.NewSession(
+                      userId = result.user.id,
+                      tokenHash =
+                        ed.unicoach.db.models
+                          .TokenHash(newHash),
+                      userAgent = call.request.headers["User-Agent"],
+                      initialIp = call.request.origin.remoteHost,
+                      metadata = null,
+                      expiration = sessionConfig.expiration,
+                    ),
+                )
+              }
+            }
+          } catch (e: Exception) {
+          }
+
+          call.response.cookies.append(
+            name = sessionConfig.cookieName,
+            value = newToken,
+            domain = sessionConfig.cookieDomain,
+            path = "/",
+            secure = sessionConfig.cookieSecure,
+            httpOnly = true,
+            extensions = mapOf("SameSite" to "Strict"),
+          )
+
+          call.respond(HttpStatusCode.Created, RegisterResponse(publicUser))
         }
         else -> {
           val status =

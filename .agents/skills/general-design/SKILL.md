@@ -28,6 +28,12 @@ implementations.
 
 ## Avoid Over-engineering for Scale
 
-- If a scaling solution is required, it will be specifically asked for in the spec. Do not concern yourself with scaling issues unless explicitly instructed.
-- For example, writing to a database on every HTTP request is perfectly acceptable. We are building applications that will receive at most 1 query per second (1 QPS).
-- This does not mean we abandon good engineering principles—clean, modular, and maintainable code is still required. It means we will avoid over-engineering systems to handle massive, hypothetical load.
+- If a scaling solution is required, it will be specifically asked for in the
+  spec. Do not concern yourself with scaling issues unless explicitly
+  instructed.
+- For example, writing to a database on every HTTP request is perfectly
+  acceptable. We are building applications that will receive at most 1 query per
+  second (1 QPS).
+- This does not mean we abandon good engineering principles—clean, modular, and
+  maintainable code is still required. It means we will avoid over-engineering
+  systems to handle massive, hypothetical load.

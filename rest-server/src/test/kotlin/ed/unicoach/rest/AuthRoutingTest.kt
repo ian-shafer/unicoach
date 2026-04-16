@@ -65,7 +65,7 @@ class AuthRoutingTest {
 
       assertEquals(HttpStatusCode.Created, response.status)
       val body = response.bodyAsText()
-      assertTrue(body.contains("token"))
+      assertTrue(response.headers[HttpHeaders.SetCookie] != null, "Missing Set-Cookie header")
       assertTrue(body.contains("testuser@company.com"))
     }
 

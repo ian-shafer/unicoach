@@ -3,7 +3,6 @@ package ed.unicoach.auth
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.util.Argon2Hasher
-import ed.unicoach.util.JwtGenerator
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
@@ -26,10 +25,8 @@ class AuthServiceTest {
           """.trimIndent(),
         )
       val dummyDb = Database(DatabaseConfig.from(rawConfig).getOrThrow())
-      val jwtGenerator = JwtGenerator("secret", "issuer")
-
       val argon2Hasher = Argon2Hasher()
-      val service = AuthService(dummyDb, jwtGenerator, argon2Hasher)
+      val service = AuthService(dummyDb, argon2Hasher)
 
       val res1 = service.register("email@test.com", "Name", "short")
       assertTrue(res1 is AuthResult.ValidationFailure)

@@ -26,3 +26,7 @@ validations against regressions.
    - Re-run the test suite to ensure the previously failing test now passes
      successfully, and that no other adjacent tests have experienced a
      regression.
+
+4. **Real Infrastructure Equivalency**
+   - Have a STRONG preference to test agains real infrastructure (e.g. a local
+     postgres instance).

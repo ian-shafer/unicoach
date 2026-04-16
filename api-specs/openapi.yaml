@@ -30,7 +30,12 @@ paths:
               $ref: '#/components/schemas/RegisterRequest'
       responses:
         '201':
-          description: User registered successfully
+          description: User successfully registered
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: The opaque session token
           content:
             application/json:
               schema:
@@ -82,12 +87,10 @@ components:
           type: string
     RegisterResponse:
       type: object
-      required: [user, token]
+      required: [user]
       properties:
         user:
           $ref: '#/components/schemas/PublicUser'
-        token:
-          type: string
     FieldError:
       type: object
       required: [field, message]

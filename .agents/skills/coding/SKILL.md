@@ -27,8 +27,12 @@ programming languages, scripts, and implementations within the repository.
      closures cover unhandled edge cases.
 
 3. **No Sentinel Nulls or Empty Strings** (Explicit Initialization)
-   - NEVER use nulls or empty strings (`"none"`, `""`) to represent an uninitialized state in dynamically typed environments.
-   - Do NOT use structural sentinel values in databases (e.g., `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`) to represent the "absence" of data. Use native SQL `NULL` for optional structured data to strictly enforce index constraints and avoid ambiguous querying conditions.
+   - NEVER use nulls or empty strings (`"none"`, `""`) to represent an
+     uninitialized state in dynamically typed environments.
+   - Do NOT use structural sentinel values in databases (e.g.,
+     `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`) to represent the "absence" of
+     data. Use native SQL `NULL` for optional structured data to strictly
+     enforce index constraints and avoid ambiguous querying conditions.
    - However, in statically typed languages with native null-safety (e.g.,
      Kotlin's `String?` or Swift's `String?`), structurally sound `null`
      defaults are perfectly acceptable and often preferable to overly verbose
@@ -105,3 +109,10 @@ programming languages, scripts, and implementations within the repository.
       repetitive error-catch blocks, you MUST abstract the shared lifecycle
       logic sequentially into a core foundational private function rather than
       copying identical `try/catch/finally` syntax blocks repeatedly.
+
+13. **Contextual Code Comments Over Dumb Restatements** (Explain the Why)
+    - You MUST add clear code comments to any place where the implementation
+      logic or design decision is not immediately obvious to a future developer.
+    - DO NOT add "dumb" comments that simply restate what the code is
+      structurally doing (e.g., `// increment index by 1`). Comments must
+      justify the _why_, not narrate the _what_.

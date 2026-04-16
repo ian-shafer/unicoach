@@ -2,7 +2,8 @@
 name: spec-implementation
 description:
   Directs implementors in how to take a spec (e.g. specs/03-daemon-scripts.md)
-  and implement it step by step with strict architect review.
+  and implement it autonomously in a strict single-shot execution without making
+  commits.
 ---
 
 # Spec Implementation
@@ -14,43 +15,32 @@ these specs are authored and reviewed.
 
 ## Critical Behaviours
 
-- **Architectural Decisions**: During implementation, if you encounter important architectural decisions that are ambiguous or not fully covered by the spec (like whether a database table should be versioned), you MUST pause and ask the Architect. Always provide multiple valid options along with a clear recommendation.
+- **Architectural Decisions**: During implementation, if you encounter important
+  architectural decisions that are deeply ambiguous or fundamentally missing
+  from the spec (like whether a database table should be versioned), you MUST
+  pause and ask the Architect. Always provide multiple valid options along with
+  a clear recommendation.
 
 ## The Implementation Process
 
-If the user explicitly requests a **"single shot implementation"**, you must
-execute ALL steps in the implementation plan autonomously without stopping for
-human review or approval between steps. You must still implement, test, and
-commit each step individually (using the commit message format in step 7) before
-proceeding to the next step.
+This skill operates **STRICTLY** in a single-shot, fully autonomous mode.
 
-Otherwise, you MUST read through the spec's `Implementation Plan` section and
-execute it step-by-step. For each step in the plan, you must strictly follow the
-workflow below. **Do not move to the next step until the current step is fully
-completed, approved, and committed.**
+You MUST read through the spec's `Implementation Plan` section and execute ALL
+steps in the implementation plan autonomously without stopping for human review
+or approval between steps.
 
-1. **Acknowledge Steps** _(Skip if single-shot)_: Before beginning
-   implementation, explicitly list out all the steps in the Implementation Plan
-   to the architect, and clearly state which step is currently being worked on.
-2. **Implement & Test**: Implement the required code for the current step,
-   including all necessary test code.
-3. **Demonstrate Success**: Once the implementation is complete and the test
-   code passes, show the passing tests to the architect. While you can simply
-   state that the tests pass, it is highly preferable to show the actual output
-   from the test programs.
-4. **Architect Review** _(Skip if single-shot)_: Allow the architect to review
-   the code changes you have made.
-5. **Iterate** _(Skip if single-shot)_: Iterate with the architect on any
-   desired code changes, refinements, or fixes.
-6. **Await LGTM** _(Skip if single-shot)_: Once all code changes are implemented
-   and tests pass, wait for an explicit "LGTM" (Looks Good To Me) approval from
-   the architect. Do not proceed until this is received.
-7. **Commit Code** _(Skip if single-shot)_: Before committing, ensure you clean
-   up any debugging artifacts, files, or code (e.g. ad-hoc print statements or
-   test logs) generated during the implementation. Commit the code. The commit
-   message **must** start with the spec file basename and the specific
-   implementation plan step wrapped in square brackets (e.g.,
-   `[07-users-dao:1]`).
-8. **Next Step**: Move on to the next step in the Implementation Plan. If there
-   are no more steps remaining in the spec, tell the architect that they're
-   awesome and ask what they want to do next.
+For the implementation, you must strictly follow this workflow:
+
+1. **Implement All Steps**: Implement the required code for every step in the
+   `Implementation Plan` in a single exhaustive run. Ensure you clean up any
+   debugging artifacts or ad-hoc print statements.
+2. **Execute Tests**: You must verify the implementation code compiles and all
+   related test suites pass (e.g., by running `bin/test`). If tests fail,
+   systematically debug and fix them.
+3. **NO GIT COMMITS**: You **MUST NOT** make any git commits. Leave all
+   modifications in the local working directory. The architect or external
+   review skills will evaluate the raw uncommitted diffs.
+4. **Demonstrate Success**: Upon completing the steps and verifying a green test
+   suite, explicitly inform the architect that the single-shot implementation is
+   complete and ready for their review or subsequent automated verification
+   cycles.

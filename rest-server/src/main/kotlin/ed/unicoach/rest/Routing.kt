@@ -25,7 +25,12 @@ fun Route.rejectUnsupportedMethods(vararg methods: HttpMethod) {
   }
 }
 
-fun Application.configureRouting(authService: ed.unicoach.auth.AuthService) {
+fun Application.configureRouting(
+  authService: ed.unicoach.auth.AuthService,
+  database: ed.unicoach.db.Database,
+  sessionConfig: ed.unicoach.rest.auth.SessionConfig,
+  tokenGenerator: ed.unicoach.util.TokenGenerator,
+) {
   routing {
     route("/hello") {
       get {
@@ -36,6 +41,6 @@ fun Application.configureRouting(authService: ed.unicoach.auth.AuthService) {
       }
       rejectUnsupportedMethods(HttpMethod.Get)
     }
-    authRoutes(authService)
+    authRoutes(authService, database, sessionConfig, tokenGenerator)
   }
 }

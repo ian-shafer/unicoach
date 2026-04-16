@@ -118,6 +118,10 @@ Every entity has a unique ID.
   Feistel cipher in PL/pgSQL, a valid alternative is to generate short IDs in
   the _application layer_ using libraries like Hashids or Sqids and store them,
   rather than doing it in the database.
+- _App Layer Delegation Restrictions_: Application code should not manually
+  generate standard IDs (like UUIDs) for new entities. It is always preferable
+  to rely on the database to handle this. DAO input classes should typically not
+  take an ID as a parameter to INSERT methods.
 - _Invariant_: Entity IDs MUST NEVER change.
 
 #### DDL Examples for IDs
@@ -164,18 +168,23 @@ CREATE TABLE users (
 
 ## Unstructured Data and JSONB
 
-- **Native NULL over Sentinels**: For optional `JSONB` or unstructured data columns, ALWAYS use native SQL `NULL`. Do NOT use empty structural sentinels like `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`.
-- Using `NULL` unambiguously represents the absence of data, avoiding expensive parsing operations, preserving index efficiency, and sidestepping application-level evaluation logic to check if a valid object exists or if it's merely a default shell.
+- **Native NULL over Sentinels**: For optional `JSONB` or unstructured data
+  columns, ALWAYS use native SQL `NULL`. Do NOT use empty structural sentinels
+  like `DEFAULT '{}'::jsonb` or `DEFAULT '[]'`.
+- Using `NULL` unambiguously represents the absence of data, avoiding expensive
+  parsing operations, preserving index efficiency, and sidestepping
+  application-level evaluation logic to check if a valid object exists or if
+  it's merely a default shell.
 
 ## String Types
 
-- _Use TEXT_: Always use the unbounded `TEXT` type for string data instead of
-  `VARCHAR(n)`. In PostgreSQL, `TEXT` and `VARCHAR` have identical performance
-  characteristics and physical storage backing.
-- _Length Constraints_: If business logic dictates a maximum length (e.g., an
-  email shouldn't exceed 254 characters), enforce this using a named `CHECK`
-  constraint:
-  `CONSTRAINT users_email_length_check CHECK (length(email) <= 254)`.
+- _Use TEXT and CHECK constraints_: Always use the unbounded `TEXT` type along
+  with explicitly named `CHECK` constraints (e.g.,
+  `CONSTRAINT users_email_length_check CHECK (length(email) <= 254)`) for
+  bounded string data instead of `VARCHAR(n)`.
+- _Forbid VARCHAR_: Do not use `VARCHAR` except for exceptional circumstances
+  that must be clearly documented. In PostgreSQL, `TEXT` and `VARCHAR` have
+  identical performance characteristics and physical storage backing.
 - _Why?_: Changing a `CHECK` constraint is a zero-downtime metadata operation in
   Postgres, unlike `ALTER COLUMN type` which can lock tables. Furthermore, named
   constraints allow the application to programmatically catch specific
@@ -189,7 +198,10 @@ By default, entities should have `created_at` and `updated_at` timestamps.
 - `updated_at`: Logical entity last updated time. Updated automatically on every
   update. Note that this may not be updated on some writes e.g. migrations and
   backfills (see Advanced section below).
-- **Source of Truth for Time**: Always use the database as the single source of truth for time. Do not use application times (e.g., `Instant.now()`) to set timestamps that will be stored in the database. Rely on database functions like `NOW()` to guarantee consistency.
+- **Source of Truth for Time**: Always use the database as the single source of
+  truth for time. Do not use application times (e.g., `Instant.now()`) to set
+  timestamps that will be stored in the database. Rely on database functions
+  like `NOW()` to guarantee consistency.
 
 ### Advanced: Physical vs. Logical Timestamps
 

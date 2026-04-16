@@ -53,7 +53,24 @@ constraints:
   interpretation of the specification. **Note**: All tests should pass (e.g., by
   running `bin/test`) before exiting this step.
 
-### 3. Golden Comparison & Verification
+### 3. Implementation Self-Review (Up to 3 Cycles)
+
+**MANDATORY**: Before comparing against the golden implementation or seeking
+feedback, you MUST utilize the `spec-implementation-review` skill to
+automatically review your own work. **Do not shortcut this step.** You must
+generate an artifact for this step that outlines the changes you made based on
+the reviews. Also, include the final report from the spec-implementation-review
+skill in your workspace (e.g., `SelfReviewReport.md`).
+
+1. Trigger a review of your newly generated implementation against the spec
+   constraints and codebase defensive coding skills.
+2. If the review identifies any recommended critical, major, or minor changes,
+   take their recommendation and implement fixes.
+3. You may perform up to **3 iterations** of this review-and-fix cycle silently.
+4. After 3 iterations (or fewer if no issues are found), proceed to Golden
+   Comparison.
+
+### 4. Golden Comparison & Verification
 
 A specification is only proven robust if its autonomous implementation matches
 or exceeds the quality of the architect's reference code (the "golden
@@ -84,17 +101,18 @@ implementation").
      using just the spec and skills, specifically call out any areas where the
      autonomous run adopted safer, more robust, or more maintainable
      architectures.
-3. **Prompt for Next Steps**: At the end of the report, present these specific,
-   exact options to the architect and wait for their decision:
-   - "Move forward making the recommended spec and skill changes"
-   - "Go through each point, one-by-one"
-   - "Allow the architect to drive the changes ad hoc"
+3. **Prompt for Next Steps**: At the end of the report, present these options to
+   the architect and wait for their decision. Use a UI widget if possible:
+   - Move forward making the recommended spec and skill changes
+   - Go through each point, one-by-one, assisted by the implementor
+   - Allow the architect to drive the changes ad hoc
+   - Other [allow the architect to specify any other option]
 
 - **If no changes are needed**: The specification is verified as
   context-complete.
-- **If discrepancies must be fixed**: Proceed immediately to Step 4.
+- **If discrepancies must be fixed**: Proceed immediately to Step 5.
 
-### 4. Architectural Corrective Loop (Failure Analysis)
+### 5. Architectural Corrective Loop (Failure Analysis)
 
 If the comparison reveals that the implementation failed to meet the golden
 standard, **never fix the implementation code manually**. The error lies in the
