@@ -1,8 +1,8 @@
 ---
 name: technical-writing
 description:
-  Skill for authoring and editing technical documentation such as
-  specs, API docs, and designs.
+  Skill for authoring and editing technical documentation such as specs, API
+  docs, and designs.
 ---
 
 # Technical Writing

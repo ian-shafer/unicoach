@@ -47,7 +47,10 @@ database CPU starvation, and session fixation vulnerabilities.
     are explicitly out of scope for this iteration).
   - `expires_at`: TIMESTAMPTZ (MUST have `INDEX`)
   - `is_revoked`: BOOLEAN (Default false)
-- **Domain Value Classes**: To prevent domain signature drift or arbitrary byte mapping, the raw hash MUST be wrapped in a strongly typed standard class: `class TokenHash(val value: ByteArray)` which handles structural equality internally.
+- **Domain Value Classes**: To prevent domain signature drift or arbitrary byte
+  mapping, the raw hash MUST be wrapped in a strongly typed standard class:
+  `class TokenHash(val value: ByteArray)` which handles structural equality
+  internally.
 - **Database Safety Triggers**: To enforce chronological safety natively
   rejecting illegal mutations, the table MUST bind standard entity operations
   (Note: Physical deletes ARE explicitly permitted for session tokens, so do NOT
@@ -100,7 +103,10 @@ database CPU starvation, and session fixation vulnerabilities.
   `SessionsDao.kt` MUST abstract repetitive JDBC `try/catch/use` closure
   definitions into a foundational private generic `executeSafely` function,
   strictly averting procedural boilerplate propagation across internal methods.
-- **`ByteArray` Mapping Gotcha**: JVM arrays resolve equality by reference. The raw bytes are wrapped tightly in the standard class `TokenHash(val value: ByteArray)` which securely implements `.contentEquals()` avoiding broken token-matching heuristics system-wide.
+- **`ByteArray` Mapping Gotcha**: JVM arrays resolve equality by reference. The
+  raw bytes are wrapped tightly in the standard class
+  `TokenHash(val value: ByteArray)` which securely implements `.contentEquals()`
+  avoiding broken token-matching heuristics system-wide.
 - **Configuration Parsing**: `SessionConfig.kt` structurally maps HOCON
   representations natively into `java.time.Duration` and bounded configurations
   natively. It MUST extract `expiration` (Duration), `cookieName` (String),
