@@ -14,9 +14,11 @@ database CPU starvation, and session fixation vulnerabilities.
 - **Token Generation**: The server generates a cryptographically secure 256-bit
   random byte array using `java.security.SecureRandom`, encoded strictly as
   `Base64Url` (creating a ~43-44 character opaque string). This cryptography
-  logic MUST be encapsulated in a mockable generic `SessionGenerator` class
+  logic MUST be encapsulated in a mockable generic `TokenGenerator` class
   located natively in `ed.unicoach.util` and injected downward strictly via
-  constructor DI—never written as a static singleton.
+  constructor DI—never written as a static singleton. Note: This class must 
+  remain entirely agnostic of session concepts so that it can be reused generally 
+  across the platform (e.g., for password resets or email verifications).
 - **Routing Protection**: The interceptor enforces a strict Regex pattern
   (`^[A-Za-z0-9_-]{43,44}$`) rejecting invalid payloads with `400 Bad Request`.
 - **Database Persistence**: The token is hashed using SHA-256 and stored as a
@@ -128,7 +130,7 @@ database CPU starvation, and session fixation vulnerabilities.
 - `service/src/main/kotlin/ed/unicoach/auth/AuthService.kt` [MODIFY]
 - `service/src/test/kotlin/ed/unicoach/auth/AuthServiceTest.kt` [MODIFY]
 - `service/src/main/kotlin/ed/unicoach/auth/SessionCleanupJob.kt` [NEW]
-- `service/src/main/kotlin/ed/unicoach/util/SessionGenerator.kt` [NEW]
+- `service/src/main/kotlin/ed/unicoach/util/TokenGenerator.kt` [NEW]
 - `service/src/main/kotlin/ed/unicoach/db/models/Session.kt` [NEW]
 - `rest-server/src/main/kotlin/ed/unicoach/rest/auth/SessionConfig.kt` [NEW]
 - `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/JwtConfig.kt` [DELETE]
