@@ -16,9 +16,10 @@ database CPU starvation, and session fixation vulnerabilities.
   `Base64Url` (creating a ~43-44 character opaque string). This cryptography
   logic MUST be encapsulated in a mockable generic `TokenGenerator` class
   located natively in `ed.unicoach.util` and injected downward strictly via
-  constructor DI—never written as a static singleton. Note: This class must 
-  remain entirely agnostic of session concepts so that it can be reused generally 
-  across the platform (e.g., for password resets or email verifications).
+  constructor DI—never written as a static singleton. Note: This class must
+  remain entirely agnostic of session concepts so that it can be reused
+  generally across the platform (e.g., for password resets or email
+  verifications).
 - **Routing Protection**: The interceptor enforces a strict Regex pattern
   (`^[A-Za-z0-9_-]{43,44}$`) rejecting invalid payloads with `400 Bad Request`.
 - **Database Persistence**: The token is hashed using SHA-256 and stored as a
@@ -29,17 +30,27 @@ database CPU starvation, and session fixation vulnerabilities.
 
 - **Table**: `sessions`
   - `id`: UUID (Primary Key)
-  - `version`: INTEGER (Default 1, strictly enforces Optimistic Concurrency Control to prevent illegal overlapping writes).
-  - `created_at`, `row_created_at`, `updated_at`, `row_updated_at`: TIMESTAMPTZ (Standard chronologic entity bounds)
-  - `user_id`: UUID (Foreign Key to `users.id`, **NULLABLE**, strictly bound `ON DELETE CASCADE`)
+  - `version`: INTEGER (Default 1, strictly enforces Optimistic Concurrency
+    Control to prevent illegal overlapping writes).
+  - `created_at`, `row_created_at`, `updated_at`, `row_updated_at`: TIMESTAMPTZ
+    (Standard chronologic entity bounds)
+  - `user_id`: UUID (Foreign Key to `users.id`, **NULLABLE**, strictly bound
+    `ON DELETE CASCADE`)
   - `token_hash`: BYTEA (SHA-256 hash of the transparent token) (MUST have
     `UNIQUE INDEX`)
-  - `user_agent`: TEXT (Client device info, bounded by constraint to length <= 512)
-  - `initial_ip`: TEXT (The origination point IP, bounded by constraint to length <= 64)
-  - `metadata`: JSONB (**NULLABLE**. Cap constrained at `2KB` physically. Note: Advanced device forensics like `active_ips` arrays for tracking VPN jumps are explicitly out of scope for this iteration).
+  - `user_agent`: TEXT (Client device info, bounded by constraint to length
+    <= 512)
+  - `initial_ip`: TEXT (The origination point IP, bounded by constraint to
+    length <= 64)
+  - `metadata`: JSONB (**NULLABLE**. Cap constrained at `2KB` physically. Note:
+    Advanced device forensics like `active_ips` arrays for tracking VPN jumps
+    are explicitly out of scope for this iteration).
   - `expires_at`: TIMESTAMPTZ (MUST have `INDEX`)
   - `is_revoked`: BOOLEAN (Default false)
-- **Database Safety Triggers**: To enforce chronological safety natively rejecting illegal mutations, the table MUST bind standard entity operations (Note: Physical deletes ARE explicitly permitted for session tokens, so do NOT apply `trigger_00_prevent_physical_delete`):
+- **Database Safety Triggers**: To enforce chronological safety natively
+  rejecting illegal mutations, the table MUST bind standard entity operations
+  (Note: Physical deletes ARE explicitly permitted for session tokens, so do NOT
+  apply `trigger_00_prevent_physical_delete`):
   - `trigger_00a_prevent_immutable_updates`
   - `trigger_01_enforce_sessions_versioning`
   - `trigger_03_enforce_sessions_updated_at`
@@ -49,25 +60,37 @@ database CPU starvation, and session fixation vulnerabilities.
 
 ### Domain Orchestration
 
-- **Anonymous Sessions & Fixation Defense**: If `user_id` is null, the session
-  is anonymous. Upon registration, the application MUST delete the anonymous row
-  and mint an entirely **new** opaque token for the authenticated state to
-  prevent Session Fixation.
+- **Anonymous Sessions & In-Place Token Rotation (Fixation Defense)**: If
+  `user_id` is null, the session is anonymous. Upon authentication (registration
+  or login), the `AuthService.register()` domain method MUST NOT organically
+  handle session variables—remaining decoupled. Instead, the routing
+  orchestration layer updates the pre-existing anonymous session row by
+  injecting the authenticated `user_id`. Simultaneously, it MUST entirely
+  regenerate a **new** cryptographically secure opaque token and overwrite the
+  old `token_hash` on that row. This preserves device tracking seamlessly while
+  safely migrating privileges via in-place token rotation to defeat Session
+  Fixation.
 - **Active Sliding Expiry Window**: To prevent abrupt disconnection on Day 7, if
   a valid token hits the server and its `expires_at` is less than 2 Days away,
   the application synchronously updates the database row
   (`expires_at = NOW() + 7 days`) inline during the HTTP request lifecycle.
 - **Synchronous Zombie Purging**: An infrastructure-scheduler-friendly (e.g.
   Cron) synchronous `execute()` function located in `SessionCleanupJob`
-  explicitly triggers zombie expirations. However, strict architectural boundaries 
-  MUST be maintained: the job must NOT contain raw SQL. It must delegate the 
-  actual database manipulation to a dedicated `SessionsDao.expireZombieSessions(session)` 
-  method. The job structurally logs bounds to stderr and operates entirely 
-  decoupled from brittle self-scheduling application coroutines.
-- **DAO Input Data Classes**: DAO methods performing fundamental write operations
-  (like insertion) MUST accept natively structured parameter entities (e.g., 
-  `NewSession`) rather than multiple flat method arguments natively preventing 
-  domain signature drift.
+  explicitly triggers zombie expirations. However, strict architectural
+  boundaries MUST be maintained: the job must NOT contain raw SQL. It must
+  delegate the actual database manipulation to a dedicated
+  `SessionsDao.expireZombieSessions(session)` method. The job structurally logs
+  bounds to stderr and operates entirely decoupled from brittle self-scheduling
+  application coroutines.
+- **DAO Input Data Classes**: DAO methods performing fundamental write
+  operations (like insertion) MUST accept natively structured parameter entities
+  (e.g., `NewSession`) rather than multiple flat method arguments natively
+  preventing domain signature drift.
+  - The `NewSession` object MUST exactly model its inputs: `userId`,
+    `tokenHash`, `userAgent` (optional), `initialIp` (optional), `metadata`
+    (optional), and `expiration` (as a relative `java.time.Duration`).
+  - It MUST explicitly OMIT the `id` property, deferring entirely to the
+    database's native `uuidv7()` generation on insertion.
 - **DAO Search Identifiers**: Search results (e.g., `NotFound`) are strictly
   modeled as Data Classes retaining their specific query identity bounds
   (`val message: String`) organically exposing deterministically trackable
@@ -80,9 +103,11 @@ database CPU starvation, and session fixation vulnerabilities.
   default. Internal repository implementations explicitly invoke
   `.contentEquals()` avoiding broken token-matching heuristics inherently.
 - **Configuration Parsing**: `SessionConfig.kt` structurally maps HOCON
-  representations natively into `java.time.Duration` natively (e.g., parsing
-  `expiration = 7d` into typesafe boundaries over arbitrary raw `Long`
-  integers).
+  representations natively into `java.time.Duration` and bounded configurations
+  natively. It MUST extract `expiration` (Duration), `cookieName` (String),
+  `cookieDomain` (String), and `cookieSecure` (Boolean) explicit properties,
+  returning a `Result<SessionConfig>` fallback, verifying they represent the
+  actual runtime bounds.
 
 ### API Contract updates
 
