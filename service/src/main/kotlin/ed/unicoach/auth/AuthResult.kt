@@ -7,7 +7,6 @@ import ed.unicoach.error.FieldError
 sealed interface AuthResult {
   data class Success(
     val user: User,
-    val token: String,
   ) : AuthResult
 
   data class ValidationFailure(

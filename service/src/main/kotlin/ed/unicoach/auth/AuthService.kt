@@ -11,14 +11,12 @@ import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.ValidationResult
 import ed.unicoach.error.ExceptionWrapper
 import ed.unicoach.util.Argon2Hasher
-import ed.unicoach.util.JwtGenerator
 import ed.unicoach.util.Validator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 class AuthService(
   private val database: Database,
-  private val jwtGenerator: JwtGenerator,
   private val argon2Hasher: Argon2Hasher,
   private val validator: Validator<RegistrationInput> = RegistrationValidator(),
 ) {
@@ -60,12 +58,7 @@ class AuthService(
       database.withConnection { session ->
         when (val daoResult = UsersDao.create(session, newUser)) {
           is CreateResult.Success -> {
-            val token =
-              jwtGenerator.mint(
-                daoResult.user.id.value
-                  .toString(),
-              )
-            AuthResult.Success(daoResult.user, token)
+            AuthResult.Success(daoResult.user)
           }
           is CreateResult.DuplicateEmail -> {
             AuthResult.DuplicateEmail(emailAddr.value)
