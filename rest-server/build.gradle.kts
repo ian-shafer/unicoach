@@ -5,8 +5,7 @@ plugins {
 }
 
 application {
-  mainClass.set("io.ktor.server.netty.EngineMain")
-  applicationDefaultJvmArgs = listOf("-Dconfig.resource=rest-server.conf")
+  mainClass.set("ed.unicoach.rest.ApplicationKt")
 }
 
 dependencies {

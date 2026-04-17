@@ -11,6 +11,9 @@ services:
       - PORT=${PORT}
       - GRADLE_USER_HOME=/workspace/var/gradle
       - HOME=/workspace/var/gradle
+      - DATABASE_JDBCURL=${DATABASE_JDBCURL:-jdbc:postgresql://postgres:5432/unicoach}
+      - DATABASE_USER=${DATABASE_USER:-postgres}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
     command: ["./gradlew", ":rest-server:run"]
 
 networks:

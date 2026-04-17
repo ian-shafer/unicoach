@@ -143,6 +143,12 @@ variables through a single HOCON pipeline natively wrapped in functional
      resolving configurations iteratively natively via `.getOrThrow()`, register
      `ApplicationStopped` shutdown hooks for the DAO pool, and bridge
      `AppConfig` into an environment application config struct.
+   - Update `rest-server/build.gradle.kts` to point
+     `mainClass.set("ed.unicoach.rest.ApplicationKt")` to route native boots
+     securely to the unified config loader bypassing naked Ktor default loading.
+   - Update `docker/rest-server-compose.yaml` explicitly exporting
+     `DATABASE_JDBCURL`, `DATABASE_USER`, and `DATABASE_PASSWORD` to natively
+     unblock Typesafe config requirements inside detached executions.
 4. **Integration Test Refactor (`rest-server`)**
    - Bind the local docker-compose test database securely via `.env.test` loaded
      natively into the system environment prior to test execution while avoiding
@@ -175,3 +181,4 @@ variables through a single HOCON pipeline natively wrapped in functional
 - `rest-server/src/test/kotlin/ed/unicoach/rest/AuthRoutingTest.kt` [MODIFY]
 - `rest-server/src/test/kotlin/ed/unicoach/rest/plugins/JwtConfigTest.kt` [NEW]
 - `.env.test` [MODIFY]
+- `docker/rest-server-compose.yaml` [MODIFY]
