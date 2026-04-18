@@ -3,7 +3,8 @@ name: skill-loop
 description: >-
   Executes a specified sequence of skills in an iterative loop. Facilitates
   autonomous interaction between multiple persona skills without user
-  intervention.
+  intervention. Use when a user asks to "do N iterations", "put skills in a
+  loop", or execute a "skill chain".
 ---
 
 # Skill Loop
