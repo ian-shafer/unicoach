@@ -5,6 +5,7 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.NewSession
+import ed.unicoach.db.models.TokenHash
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -91,10 +92,10 @@ class SessionCleanupTest {
     // It should purge the 0 second one
     job.execute()
 
-    val validResult = SessionsDao.findByTokenHash(sqlSession, hashValid)
+    val validResult = SessionsDao.findByTokenHash(sqlSession, TokenHash(hashValid))
     assertTrue(validResult is ed.unicoach.db.dao.SessionFindResult.Success)
 
-    val expiredResult = SessionsDao.findByTokenHash(sqlSession, hashExpired)
+    val expiredResult = SessionsDao.findByTokenHash(sqlSession, TokenHash(hashExpired))
     assertTrue(expiredResult is ed.unicoach.db.dao.SessionFindResult.NotFound)
   }
 }

@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.NewSession
+import ed.unicoach.db.models.TokenHash
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -68,7 +69,7 @@ class SessionsDaoTest {
     val createResult = SessionsDao.create(session, newSession)
     assertTrue(createResult is SessionCreateResult.Success)
 
-    val retrievedResult = SessionsDao.findByTokenHash(session, hash)
+    val retrievedResult = SessionsDao.findByTokenHash(session, TokenHash(hash))
     assertTrue(retrievedResult is SessionFindResult.Success)
     assertTrue(retrievedResult.session.userId == null)
   }

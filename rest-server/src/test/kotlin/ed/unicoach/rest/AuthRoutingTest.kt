@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.system.measureTimeMillis
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -21,6 +22,9 @@ class AuthRoutingTest {
     private lateinit var testServer: EmbeddedServer<*, *>
     private lateinit var client: HttpClient
     private var boundPort: Int = 0
+
+    // Unique email counter to prevent cross-test collision on the users table
+    private val emailCounter = AtomicInteger(0)
 
     @JvmStatic
     @BeforeAll
@@ -52,10 +56,12 @@ class AuthRoutingTest {
 
   private fun buildUrl(path: String) = "http://localhost:$boundPort$path"
 
+  private fun uniqueEmail(): String = "testuser${emailCounter.incrementAndGet()}@company.com"
+
   @Test
   fun `test valid registration state simulation`() =
     runBlocking {
-      val req = RegisterRequest("testuser@company.com", "Password123!", "Test User")
+      val req = RegisterRequest(uniqueEmail(), "Password123!", "Test User")
 
       val response =
         client.post(buildUrl("/api/v1/auth/register")) {
@@ -66,7 +72,7 @@ class AuthRoutingTest {
       assertEquals(HttpStatusCode.Created, response.status)
       val body = response.bodyAsText()
       assertTrue(response.headers[HttpHeaders.SetCookie] != null, "Missing Set-Cookie header")
-      assertTrue(body.contains("testuser@company.com"))
+      assertTrue(body.contains(req.email))
     }
 
   @Test
@@ -95,8 +101,9 @@ class AuthRoutingTest {
   @Test
   fun `test unique invariant and malicious vector rejection`() =
     runBlocking {
-      val req1 = RegisterRequest("collision@company.com", "Password123!", "Test User")
-      val req2 = RegisterRequest("Collision@company.com", "Password123!", "Test User")
+      val email = uniqueEmail()
+      val req1 = RegisterRequest(email, "Password123!", "Test User")
+      val req2 = RegisterRequest(email, "Password123!", "Test User")
 
       val res1 =
         client.post(buildUrl("/api/v1/auth/register")) {
@@ -141,7 +148,8 @@ class AuthRoutingTest {
   @Test
   fun `test timing attack mitigation`() =
     runBlocking {
-      val req = RegisterRequest("timing@company.com", "Password123!", "Test User")
+      val email = uniqueEmail()
+      val req = RegisterRequest(email, "Password123!", "Test User")
 
       val t1 =
         measureTimeMillis {
@@ -161,5 +169,65 @@ class AuthRoutingTest {
 
       val diff = Math.abs(t1 - t2)
       assertTrue(diff < 1500)
+    }
+
+  // --- /me endpoint tests ---
+
+  @Test
+  fun `authenticated me returns 200 with user`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val req = RegisterRequest(email, "Password123!", "Me Test User")
+
+      val registerResponse =
+        client.post(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody(mapper.writeValueAsString(req))
+        }
+      assertEquals(HttpStatusCode.Created, registerResponse.status)
+
+      val setCookie = registerResponse.headers[HttpHeaders.SetCookie]
+      assertTrue(setCookie != null, "Missing Set-Cookie header from register")
+
+      // Extract the cookie name=value from the Set-Cookie header
+      val cookiePair = setCookie.split(";").first().trim()
+
+      val meResponse =
+        client.get(buildUrl("/api/v1/auth/me")) {
+          header(HttpHeaders.Cookie, cookiePair)
+        }
+      assertEquals(HttpStatusCode.OK, meResponse.status)
+      val body = meResponse.bodyAsText()
+      assertTrue(body.contains(email), "Response should contain the user's email")
+      assertTrue(body.contains("Me Test User"), "Response should contain the user's name")
+    }
+
+  @Test
+  fun `missing cookie returns 401`() =
+    runBlocking {
+      val meResponse =
+        client.get(buildUrl("/api/v1/auth/me"))
+      assertEquals(HttpStatusCode.Unauthorized, meResponse.status)
+    }
+
+  @Test
+  fun `invalid cookie returns 401`() =
+    runBlocking {
+      val meResponse =
+        client.get(buildUrl("/api/v1/auth/me")) {
+          header(HttpHeaders.Cookie, "UNICOACH_SESSION=garbage-token-value-12345")
+        }
+      assertEquals(HttpStatusCode.Unauthorized, meResponse.status)
+    }
+
+  @Test
+  fun `POST to me returns 405`() =
+    runBlocking {
+      val meResponse =
+        client.post(buildUrl("/api/v1/auth/me")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("{}")
+        }
+      assertEquals(HttpStatusCode.MethodNotAllowed, meResponse.status)
     }
 }

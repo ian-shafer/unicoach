@@ -2,6 +2,7 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.Session
+import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
 import ed.unicoach.error.ExceptionWrapper
 import java.sql.ResultSet
@@ -87,18 +88,18 @@ object SessionsDao {
 
   fun findByTokenHash(
     session: SqlSession,
-    tokenHash: ByteArray,
+    tokenHash: TokenHash,
   ): SessionFindResult =
     executeSafely(SessionFindResult::DatabaseFailure) {
       val sql = "SELECT * FROM sessions WHERE token_hash = ? AND is_revoked = false AND expires_at > NOW()"
       session.prepareStatement(sql).use { stmt ->
-        stmt.setBytes(1, tokenHash)
+        stmt.setBytes(1, tokenHash.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
             return@executeSafely SessionFindResult.NotFound("Session not found or expired")
           }
           val foundHash = rs.getBytes("token_hash")
-          if (!foundHash.contentEquals(tokenHash)) {
+          if (!foundHash.contentEquals(tokenHash.value)) {
             return@executeSafely SessionFindResult.NotFound("Session hash mismatch")
           }
           SessionFindResult.Success(mapSession(rs))

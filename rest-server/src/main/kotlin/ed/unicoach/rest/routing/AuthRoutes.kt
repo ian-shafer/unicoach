@@ -2,11 +2,16 @@ package ed.unicoach.rest.routing
 
 import ed.unicoach.auth.AuthResult
 import ed.unicoach.auth.AuthService
+import ed.unicoach.auth.MeResult
+import ed.unicoach.db.models.TokenHash
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.models.ErrorResponse
+import ed.unicoach.rest.models.MeResponse
 import ed.unicoach.rest.models.PublicUser
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.RegisterResponse
+import ed.unicoach.rest.rejectUnsupportedMethods
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.*
 import io.ktor.server.plugins.*
@@ -35,6 +40,14 @@ suspend fun ApplicationCall.respondAppError(
   }
 }
 
+private fun hashToken(token: String): TokenHash {
+  val hash =
+    java.security.MessageDigest
+      .getInstance("SHA-256")
+      .digest(token.toByteArray(Charsets.UTF_8))
+  return TokenHash(hash)
+}
+
 fun Route.authRoutes(
   authService: AuthService,
   database: ed.unicoach.db.Database,
@@ -61,10 +74,7 @@ fun Route.authRoutes(
             )
 
           val newToken = tokenGenerator.generateToken()
-          val newHash =
-            java.security.MessageDigest
-              .getInstance("SHA-256")
-              .digest(newToken.toByteArray(Charsets.UTF_8))
+          val newHash = hashToken(newToken)
 
           val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
 
@@ -72,10 +82,7 @@ fun Route.authRoutes(
             database.withConnection { session ->
               var wasReminted = false
               if (oldCookieToken != null) {
-                val oldHash =
-                  java.security.MessageDigest
-                    .getInstance("SHA-256")
-                    .digest(oldCookieToken.toByteArray(Charsets.UTF_8))
+                val oldHash = hashToken(oldCookieToken)
                 val found =
                   ed.unicoach.db.dao.SessionsDao
                     .findByTokenHash(session, oldHash)
@@ -85,7 +92,7 @@ fun Route.authRoutes(
                     id = found.session.id,
                     currentVersion = found.session.version,
                     newUserId = result.user.id,
-                    newTokenHash = newHash,
+                    newTokenHash = newHash.value,
                     newExpirationSeconds = sessionConfig.expiration.seconds,
                   )
                   wasReminted = true
@@ -98,9 +105,7 @@ fun Route.authRoutes(
                   newSession =
                     ed.unicoach.db.models.NewSession(
                       userId = result.user.id,
-                      tokenHash =
-                        ed.unicoach.db.models
-                          .TokenHash(newHash),
+                      tokenHash = newHash,
                       userAgent = call.request.headers["User-Agent"],
                       initialIp = call.request.origin.remoteHost,
                       metadata = null,
@@ -135,6 +140,36 @@ fun Route.authRoutes(
           call.respondAppError(result, status)
         }
       }
+    }
+    route("/me") {
+      get {
+        val token = call.request.cookies[sessionConfig.cookieName]
+        if (token == null) {
+          call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
+          return@get
+        }
+
+        val tokenHash = hashToken(token)
+
+        when (val result = authService.getCurrentUser(tokenHash)) {
+          is MeResult.Authenticated -> {
+            val publicUser =
+              PublicUser(
+                id = result.user.id.value,
+                email = result.user.email.value,
+                name = result.user.name.value,
+              )
+            call.respond(HttpStatusCode.OK, MeResponse(publicUser))
+          }
+          is MeResult.Unauthenticated -> {
+            call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
+          }
+          is MeResult.DatabaseFailure -> {
+            call.respond(HttpStatusCode.InternalServerError, ErrorResponse("internal_error", "An internal error occurred"))
+          }
+        }
+      }
+      rejectUnsupportedMethods(HttpMethod.Get)
     }
   }
 }

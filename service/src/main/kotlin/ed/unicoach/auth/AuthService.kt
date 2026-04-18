@@ -2,12 +2,16 @@ package ed.unicoach.auth
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CreateResult
+import ed.unicoach.db.dao.FindResult
+import ed.unicoach.db.dao.SessionFindResult
+import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.EmailAddress
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
+import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.ValidationResult
 import ed.unicoach.error.ExceptionWrapper
 import ed.unicoach.util.Argon2Hasher
@@ -75,4 +79,37 @@ class AuthService(
       AuthResult.DatabaseFailure(ExceptionWrapper.from(e))
     }
   }
+
+  suspend fun getCurrentUser(tokenHash: TokenHash): MeResult =
+    try {
+      withContext(Dispatchers.IO) {
+        database.withConnection { session ->
+          when (val sessionResult = SessionsDao.findByTokenHash(session, tokenHash)) {
+            is SessionFindResult.NotFound -> MeResult.Unauthenticated
+            is SessionFindResult.DatabaseFailure -> MeResult.DatabaseFailure(sessionResult.error)
+            is SessionFindResult.Success -> {
+              val userId =
+                sessionResult.session.userId
+                  ?: return@withConnection MeResult.Unauthenticated
+
+              when (val userResult = UsersDao.findById(session, userId)) {
+                is FindResult.NotFound -> MeResult.Unauthenticated
+                is FindResult.LockAcquisitionFailure -> MeResult.Unauthenticated
+                is FindResult.Success -> MeResult.Authenticated(userResult.user)
+                is FindResult.DatabaseFailure -> {
+                  // FindResult.DatabaseFailure wraps AppError; extract to ExceptionWrapper
+                  // if possible, otherwise wrap in a synthetic exception to preserve the chain.
+                  val wrapper =
+                    userResult.error as? ExceptionWrapper
+                      ?: ExceptionWrapper.from(RuntimeException("User lookup failed: [${userResult.error}]"))
+                  MeResult.DatabaseFailure(wrapper)
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e: Exception) {
+      MeResult.DatabaseFailure(ExceptionWrapper.from(e))
+    }
 }
