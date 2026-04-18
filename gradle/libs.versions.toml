@@ -8,6 +8,7 @@ hikaricp = "6.2.1"
 java-jwt = "4.4.0"
 coroutines = "1.10.1"
 typesafe-config = "1.4.3"
+kotlinx-serialization = "1.11.0"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -26,8 +27,10 @@ hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
 java-jwt = { module = "com.auth0:java-jwt", version.ref = "java-jwt" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 typesafe-config = { module = "com.typesafe:config", version.ref = "typesafe-config" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 
 [plugins]
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

@@ -4,6 +4,7 @@ import ed.unicoach.auth.AuthService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.queue.QueueConfig
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
@@ -19,7 +20,7 @@ import io.ktor.server.netty.Netty
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "service.conf", "rest-server.conf")
+      .load("common.conf", "db.conf", "service.conf", "rest-server.conf", "queue.conf")
       .getOrThrow()
 
   val dbConfig =
@@ -29,6 +30,11 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val sessionConfig =
     SessionConfig
+      .from(config)
+      .getOrThrow()
+
+  val queueConfig =
+    QueueConfig
       .from(config)
       .getOrThrow()
 

@@ -12,6 +12,7 @@ dependencies {
   implementation(project(":common"))
   implementation(project(":db"))
   implementation(project(":service"))
+  implementation(project(":queue"))
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)
   implementation(libs.ktor.server.auth.jwt)
