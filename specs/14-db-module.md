@@ -27,19 +27,23 @@ are consumed by shell scripts, not JVM code. The `DB_SCHEMA_DIR` default in
 
 ### Files Moved
 
-The following files move from `service` to `db` with **no package name changes**:
+The following files move from `service` to `db` with **no package name
+changes**:
 
 **Infrastructure** (`service/.../db/` → `db/.../db/`):
+
 - `Database.kt`
 - `DatabaseConfig.kt`
 
 **DAO layer** (`service/.../db/dao/` → `db/.../db/dao/`):
+
 - `SqlSession.kt`
 - `DaoModule.kt`
 - `UsersDao.kt`
 - `SessionsDao.kt`
 
 **Models** (`service/.../db/models/` → `db/.../db/models/`):
+
 - `AuthMethod.kt`
 - `DisplayName.kt`
 - `EmailAddress.kt`
@@ -58,6 +62,7 @@ The following files move from `service` to `db` with **no package name changes**
 - `ValidationResult.kt`
 
 **Tests** (`service/.../db/` → `db/.../db/`):
+
 - `DatabaseConfigTest.kt`
 - `dao/UsersDaoTest.kt`
 - `dao/SessionsDaoTest.kt`
@@ -76,11 +81,12 @@ Per the HOCON configuration skill ("exactly one `.conf` file per module"), the
 
 - Create `db/src/main/resources/db.conf` containing the `database { ... }` block
   (merged from `service/src/main/resources/service.conf` and the
-  `database.connectionTimeout` default from `common/src/main/resources/common.conf`).
-- Remove the `database { ... }` block from `service/src/main/resources/service.conf`
-  (file will become empty).
-- Remove the `database { ... }` block from `common/src/main/resources/common.conf`
-  (file will become empty).
+  `database.connectionTimeout` default from
+  `common/src/main/resources/common.conf`).
+- Remove the `database { ... }` block from
+  `service/src/main/resources/service.conf` (file will become empty).
+- Remove the `database { ... }` block from
+  `common/src/main/resources/common.conf` (file will become empty).
 - Empty files are left as placeholders; cleanup is deferred.
 - Update all `AppConfig.load()` call sites to include `"db.conf"`.
 
@@ -99,20 +105,24 @@ rest-server ← MODIFIED (adds project(":db"))
 ### Build File Changes
 
 **`db/build.gradle.kts`** [NEW]:
+
 - Plugins: `kotlin.jvm`, `ktlint`
-- Dependencies: `implementation(project(":common"))`, `implementation(libs.postgresql)`,
-  `implementation(libs.hikaricp)`
+- Dependencies: `implementation(project(":common"))`,
+  `implementation(libs.postgresql)`, `implementation(libs.hikaricp)`
 - Test: `testImplementation(libs.kotlin.test.junit5)`
 
 **`service/build.gradle.kts`** [MODIFY]:
+
 - Remove: `implementation(libs.postgresql)`, `implementation(libs.hikaricp)`
 - Add: `implementation(project(":db"))`
 - Leave `implementation(libs.kotlinx.coroutines.core)` untouched.
 
 **`rest-server/build.gradle.kts`** [MODIFY]:
+
 - Add: `implementation(project(":db"))`
 
 **`settings.gradle.kts`** [MODIFY]:
+
 - Add: `include("db")`
 
 ### AppConfig.load() Call Site Updates
@@ -124,22 +134,22 @@ Tests moving to the `db` module replace `"service.conf"` with `"db.conf"` (since
 
 **Tests moving to `db` module** — replace `"service.conf"` with `"db.conf"`:
 
-| File | Call sites | Before | After |
-|:-----|:-----------|:-------|:------|
-| `UsersDaoTest.kt` | 2 (lines 28, 88) | `"common.conf", "service.conf"` | `"common.conf", "db.conf"` |
-| `SessionsDaoTest.kt` | 1 (line 24) | `"common.conf", "service.conf"` | `"common.conf", "db.conf"` |
+| File                 | Call sites       | Before                          | After                      |
+| :------------------- | :--------------- | :------------------------------ | :------------------------- |
+| `UsersDaoTest.kt`    | 2 (lines 28, 88) | `"common.conf", "service.conf"` | `"common.conf", "db.conf"` |
+| `SessionsDaoTest.kt` | 1 (line 24)      | `"common.conf", "service.conf"` | `"common.conf", "db.conf"` |
 
 Note: `UsersDaoTest.kt` has two separate `AppConfig.load()` calls — once in
-`setupAll()` and once in the `findByIdForUpdate` test body. Both require
-the update.
+`setupAll()` and once in the `findByIdForUpdate` test body. Both require the
+update.
 
 **Files remaining in `service`/`rest-server`** — insert `"db.conf"`:
 
-| File | Call sites | Before | After |
-|:-----|:-----------|:-------|:------|
-| `Application.kt` | 1 (line 22) | `"common.conf", "service.conf", "rest-server.conf"` | `"common.conf", "db.conf", "service.conf", "rest-server.conf"` |
-| `AuthServiceTest.kt` | 1 (line 40) | `"common.conf", "service.conf"` | `"common.conf", "db.conf", "service.conf"` |
-| `SessionCleanupTest.kt` | 1 (line 29) | `"common.conf", "service.conf"` | `"common.conf", "db.conf", "service.conf"` |
+| File                    | Call sites  | Before                                              | After                                                          |
+| :---------------------- | :---------- | :-------------------------------------------------- | :------------------------------------------------------------- |
+| `Application.kt`        | 1 (line 22) | `"common.conf", "service.conf", "rest-server.conf"` | `"common.conf", "db.conf", "service.conf", "rest-server.conf"` |
+| `AuthServiceTest.kt`    | 1 (line 40) | `"common.conf", "service.conf"`                     | `"common.conf", "db.conf", "service.conf"`                     |
+| `SessionCleanupTest.kt` | 1 (line 29) | `"common.conf", "service.conf"`                     | `"common.conf", "db.conf", "service.conf"`                     |
 
 ## Tests
 
@@ -148,10 +158,14 @@ No new tests are required. This is a mechanical refactor.
 ### Verification
 
 - `DatabaseConfigTest` (moved to `db` module): Must pass unchanged.
-- `UsersDaoTest` (moved to `db` module): Must pass with updated AppConfig.load().
-- `SessionsDaoTest` (moved to `db` module): Must pass with updated AppConfig.load().
-- `AuthServiceTest` (remains in `service`): Must pass with updated AppConfig.load().
-- `SessionCleanupTest` (remains in `service`): Must pass with updated AppConfig.load().
+- `UsersDaoTest` (moved to `db` module): Must pass with updated
+  AppConfig.load().
+- `SessionsDaoTest` (moved to `db` module): Must pass with updated
+  AppConfig.load().
+- `AuthServiceTest` (remains in `service`): Must pass with updated
+  AppConfig.load().
+- `SessionCleanupTest` (remains in `service`): Must pass with updated
+  AppConfig.load().
 
 All tests are verified via: `./bin/test`
 
@@ -180,17 +194,17 @@ All tests are verified via: `./bin/test`
    `./gradlew :db:build` and `./gradlew :service:build` both compile.
 
 4. **Remove redundant service dependencies**: In `service/build.gradle.kts`,
-   remove `implementation(libs.postgresql)` and
-   `implementation(libs.hikaricp)`. These are now provided transitively via
-   `project(":db")`. Leave `implementation(libs.kotlinx.coroutines.core)`
-   untouched. Verify: `./gradlew :service:build` compiles.
+   remove `implementation(libs.postgresql)` and `implementation(libs.hikaricp)`.
+   These are now provided transitively via `project(":db")`. Leave
+   `implementation(libs.kotlinx.coroutines.core)` untouched. Verify:
+   `./gradlew :service:build` compiles.
 
-5. **Move test sources**: Move `DatabaseConfigTest.kt` from `service/.../db/`
-   to `db/.../db/`. Move `UsersDaoTest.kt` and `SessionsDaoTest.kt` from
-   `service/.../db/dao/` to `db/.../db/dao/`. Delete originals and the
-   now-empty `service/src/test/kotlin/ed/unicoach/db/` directory tree. Verify:
-   `./gradlew :db:compileTestKotlin` compiles (tests will not pass until
-   step 7).
+5. **Move test sources**: Move `DatabaseConfigTest.kt` from `service/.../db/` to
+   `db/.../db/`. Move `UsersDaoTest.kt` and `SessionsDaoTest.kt` from
+   `service/.../db/dao/` to `db/.../db/dao/`. Delete originals and the now-empty
+   `service/src/test/kotlin/ed/unicoach/db/` directory tree. Verify:
+   `./gradlew :db:compileTestKotlin` compiles (tests will not pass until step
+   7).
 
 6. **Migrate HOCON configuration**: Create `db/src/main/resources/db.conf` with
    the merged `database { ... }` stanza (jdbcUrl, user, password,
@@ -211,31 +225,50 @@ All tests are verified via: `./bin/test`
 
 - `db/build.gradle.kts` [NEW]
 - `db/src/main/kotlin/ed/unicoach/db/Database.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/DatabaseConfig.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/dao/SqlSession.kt` [NEW, moved from service]
+- `db/src/main/kotlin/ed/unicoach/db/DatabaseConfig.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/dao/SqlSession.kt` [NEW, moved from
+  service]
 - `db/src/main/kotlin/ed/unicoach/db/dao/DaoModule.kt` [NEW, moved from service]
 - `db/src/main/kotlin/ed/unicoach/db/dao/UsersDao.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/dao/SessionsDao.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/AuthMethod.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/DisplayName.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/EmailAddress.kt` [NEW, moved from service]
+- `db/src/main/kotlin/ed/unicoach/db/dao/SessionsDao.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/AuthMethod.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/DisplayName.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/EmailAddress.kt` [NEW, moved from
+  service]
 - `db/src/main/kotlin/ed/unicoach/db/models/Entity.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/NewSession.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/NewUser.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/PasswordHash.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/PersonName.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/Session.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/SsoProviderId.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/TokenHash.kt` [NEW, moved from service]
+- `db/src/main/kotlin/ed/unicoach/db/models/NewSession.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/NewUser.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/PasswordHash.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/PersonName.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/Session.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/SsoProviderId.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/TokenHash.kt` [NEW, moved from
+  service]
 - `db/src/main/kotlin/ed/unicoach/db/models/User.kt` [NEW, moved from service]
 - `db/src/main/kotlin/ed/unicoach/db/models/UserId.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/UserVersion.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/UserVersionId.kt` [NEW, moved from service]
-- `db/src/main/kotlin/ed/unicoach/db/models/ValidationResult.kt` [NEW, moved from service]
+- `db/src/main/kotlin/ed/unicoach/db/models/UserVersion.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/UserVersionId.kt` [NEW, moved from
+  service]
+- `db/src/main/kotlin/ed/unicoach/db/models/ValidationResult.kt` [NEW, moved
+  from service]
 - `db/src/main/resources/db.conf` [NEW]
-- `db/src/test/kotlin/ed/unicoach/db/DatabaseConfigTest.kt` [NEW, moved from service]
-- `db/src/test/kotlin/ed/unicoach/db/dao/UsersDaoTest.kt` [NEW, moved from service]
-- `db/src/test/kotlin/ed/unicoach/db/dao/SessionsDaoTest.kt` [NEW, moved from service]
+- `db/src/test/kotlin/ed/unicoach/db/DatabaseConfigTest.kt` [NEW, moved from
+  service]
+- `db/src/test/kotlin/ed/unicoach/db/dao/UsersDaoTest.kt` [NEW, moved from
+  service]
+- `db/src/test/kotlin/ed/unicoach/db/dao/SessionsDaoTest.kt` [NEW, moved from
+  service]
 - `settings.gradle.kts` [MODIFY]
 - `service/build.gradle.kts` [MODIFY]
 - `service/src/main/kotlin/ed/unicoach/db/Database.kt` [DELETE]

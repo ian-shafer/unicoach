@@ -40,17 +40,20 @@ implementations.
 
 ## Make Misuse Structurally Impossible
 
-- Prefer code, APIs, data structures, etc. where incorrect usage **cannot be expressed** over designs
-  that require runtime checks or documentation warnings to prevent misuse.
-Examples of applying this principle:
+- Prefer code, APIs, data structures, etc. where incorrect usage **cannot be
+  expressed** over designs that require runtime checks or documentation warnings
+  to prevent misuse. Examples of applying this principle:
 - Use `oneof` in protos to reduce the number of representable states.
-- Use database `CHECK` constraints to guarantee storage invariants at the schema level.
+- Use database `CHECK` constraints to guarantee storage invariants at the schema
+  level.
 - Use sealed types to force exhaustive handling of all cases at compile time.
-- Use dedicated methods to make correct use obvious and incorrect use impossible — prefer
-  `claimJob(lockDuration)` over `updateStatus(status, lockDuration?)` where `lockDuration`
-  is only meaningful for one transition.
+- Use dedicated methods to make correct use obvious and incorrect use impossible
+  — prefer `claimJob(lockDuration)` over `updateStatus(status, lockDuration?)`
+  where `lockDuration` is only meaningful for one transition.
 
 ## Actionable Error Messages
 
-- Output clear, concise error messages that provide all necessary data for resolution.
-- Eliminate the need for subsequent command executions or lookups to gather missing context.
+- Output clear, concise error messages that provide all necessary data for
+  resolution.
+- Eliminate the need for subsequent command executions or lookups to gather
+  missing context.

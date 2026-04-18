@@ -43,7 +43,8 @@ sealed interface BackoffStrategy {
 }
 ```
 
-The `coerceAtMost(20)` caps the shift to prevent overflow at high attempt counts.
+The `coerceAtMost(20)` caps the shift to prevent overflow at high attempt
+counts.
 
 ### JobTypeConfig
 
@@ -86,8 +87,8 @@ constructor injection.
 
 ### QueueWorker
 
-Located at `queue/src/main/kotlin/ed/unicoach/queue/QueueWorker.kt`. The
-central orchestrator managing the polling lifecycle.
+Located at `queue/src/main/kotlin/ed/unicoach/queue/QueueWorker.kt`. The central
+orchestrator managing the polling lifecycle.
 
 **Constructor**:
 
@@ -122,22 +123,20 @@ Each poll coroutine executes the following cycle:
 
 1. `database.withConnection { session -> JobsDao.findScheduledJobs(session, jobType, limit = 1) }`
 2. If no jobs found, sleep for `handler.config.pollInterval`, repeat.
-3. For each job found:
-   a. Transition status to `RUNNING` with `locked_until = NOW() + lockDuration`.
-   b. Commit the transaction (release the `FOR UPDATE` lock).
-   c. Execute the handler in a separate `try/catch`:
-      - Record attempt start time.
-      - Call `handler.execute(job.payload)`.
-      - If handler throws an uncaught exception, treat as
-        `RetriableFailure(exception.message)`.
-   d. Record the attempt in `job_attempts`.
-   e. Based on result:
-      - `Success` → update status to `COMPLETED`.
-      - `RetriableFailure` → check attempt count against resolved max attempts
-        (`job.maxAttempts ?: handler.config.maxAttempts`). If exhausted, update
-        to `DEAD_LETTERED`. Otherwise, reschedule with
-        `backoffStrategy.delayFor(attemptNumber)`.
-      - `PermanentFailure` → update status to `DEAD_LETTERED` immediately.
+3. For each job found: a. Transition status to `RUNNING` with
+   `locked_until = NOW() + lockDuration`. b. Commit the transaction (release the
+   `FOR UPDATE` lock). c. Execute the handler in a separate `try/catch`:
+   - Record attempt start time.
+   - Call `handler.execute(job.payload)`.
+   - If handler throws an uncaught exception, treat as
+     `RetriableFailure(exception.message)`. d. Record the attempt in
+     `job_attempts`. e. Based on result:
+   - `Success` → update status to `COMPLETED`.
+   - `RetriableFailure` → check attempt count against resolved max attempts
+     (`job.maxAttempts ?: handler.config.maxAttempts`). If exhausted, update to
+     `DEAD_LETTERED`. Otherwise, reschedule with
+     `backoffStrategy.delayFor(attemptNumber)`.
+   - `PermanentFailure` → update status to `DEAD_LETTERED` immediately.
 
 #### Max Attempts Resolution
 
@@ -163,7 +162,8 @@ A single coroutine that runs every `stuckJobCheckInterval`:
 
 A single coroutine that runs every `completedJobReapInterval`:
 
-1. Calls `JobsDao.deleteCompletedBefore(session, cutoff = Instant.now() - completedJobRetention)`.
+1. Calls
+   `JobsDao.deleteCompletedBefore(session, cutoff = Instant.now() - completedJobRetention)`.
 2. Logs the count of deleted jobs to stderr.
 
 ### Error Handling
@@ -221,8 +221,7 @@ All tests verified via: `./bin/test ed.unicoach.queue`
 
 3. **Implement `QueueWorkerTest`**: Create integration tests for all worker
    behaviors. Use a simple test `JobHandler` implementation that returns
-   configurable results. Verify:
-   `./bin/test ed.unicoach.queue.QueueWorkerTest`.
+   configurable results. Verify: `./bin/test ed.unicoach.queue.QueueWorkerTest`.
 
 ## Files Modified
 

@@ -14,28 +14,34 @@ This spec establishes the persistent foundation that the queue worker framework
 
 ### kotlinx-serialization in `common`
 
-Add `kotlinx-serialization-json` (version `1.11.0`) as an `api` dependency of the `common` module.
-Two separate entries are required in `gradle/libs.versions.toml`:
+Add `kotlinx-serialization-json` (version `1.11.0`) as an `api` dependency of
+the `common` module. Two separate entries are required in
+`gradle/libs.versions.toml`:
 
-- **Plugin** (`org.jetbrains.kotlin.plugin.serialization`): added under `[plugins]` as
+- **Plugin** (`org.jetbrains.kotlin.plugin.serialization`): added under
+  `[plugins]` as
   `kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }`.
-  The plugin is part of the Kotlin compiler toolchain and **must** use `version.ref = "kotlin"` — a
-  mismatch causes a compile error.
+  The plugin is part of the Kotlin compiler toolchain and **must** use
+  `version.ref = "kotlin"` — a mismatch causes a compile error.
 - **Library** (`kotlinx-serialization-json`): added under `[versions]` as
   `kotlinx-serialization = "1.11.0"` and under `[libraries]` as
   `kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }`.
   The runtime library has its own independent versioning cadence.
 
-> **Versioning note — read before changing this version**: The plugin and the runtime library have
-> **separate version numbers that must not be confused**. The plugin version is pinned to
-> `version.ref = "kotlin"` (currently `2.3.20`) and must never have an explicit version entry.
-> The runtime library (`kotlinx-serialization-json`) follows its own cadence and must be pinned
-> independently. Each library release is built against a specific Kotlin version; pick the release
-> that matches the project's Kotlin version. As of Kotlin `2.3.20`, the correct library version is
-> `1.11.0` (confirmed on the [GitHub releases page](https://github.com/Kotlin/kotlinx.serialization/releases)).
-> To update: check the release notes on that page and verify the target Kotlin version matches.
+> **Versioning note — read before changing this version**: The plugin and the
+> runtime library have **separate version numbers that must not be confused**.
+> The plugin version is pinned to `version.ref = "kotlin"` (currently `2.3.20`)
+> and must never have an explicit version entry. The runtime library
+> (`kotlinx-serialization-json`) follows its own cadence and must be pinned
+> independently. Each library release is built against a specific Kotlin
+> version; pick the release that matches the project's Kotlin version. As of
+> Kotlin `2.3.20`, the correct library version is `1.11.0` (confirmed on the
+> [GitHub releases page](https://github.com/Kotlin/kotlinx.serialization/releases)).
+> To update: check the release notes on that page and verify the target Kotlin
+> version matches.
 
-The `kotlin-serialization` plugin must be applied to `common` (and any module that uses `@Serializable` annotations).
+The `kotlin-serialization` plugin must be applied to `common` (and any module
+that uses `@Serializable` annotations).
 
 Create generic JSON extension functions in
 `common/src/main/kotlin/ed/unicoach/common/json/JsonExtensions.kt`:
@@ -55,7 +61,13 @@ These are domain-agnostic utilities usable across all modules.
 
 ### Configuration
 
-The queue module uses a dedicated `queue.conf` configuration file loaded via a `QueueConfig` object. This establishes the pattern for adding future properties (e.g., global timeouts or fallback policies). The `queue {}` block is required now — even while empty — so that a misconfigured classpath (e.g., missing resource directory, excluded module) causes a hard startup failure via `QueueConfig.from(config).getOrThrow()`, rather than a silent failure discovered only when the worker daemon first attempts to dispatch a job.
+The queue module uses a dedicated `queue.conf` configuration file loaded via a
+`QueueConfig` object. This establishes the pattern for adding future properties
+(e.g., global timeouts or fallback policies). The `queue {}` block is required
+now — even while empty — so that a misconfigured classpath (e.g., missing
+resource directory, excluded module) causes a hard startup failure via
+`QueueConfig.from(config).getOrThrow()`, rather than a silent failure discovered
+only when the worker daemon first attempts to dispatch a job.
 
 **`queue/src/main/resources/queue.conf`**:
 
@@ -97,8 +109,9 @@ enum class JobType(val value: String) {
 }
 ```
 
-The `fromValue` lookup is used by the worker (spec 16) to dispatch incoming jobs.
-The enum starts empty — consuming specs add variants as they implement handlers.
+The `fromValue` lookup is used by the worker (spec 16) to dispatch incoming
+jobs. The enum starts empty — consuming specs add variants as they implement
+handlers.
 
 ### Job Status
 
@@ -128,6 +141,7 @@ enum class AttemptStatus(val value: String) {
 ### Domain Models
 
 **`Job`** — represents a persisted job row:
+
 - `id: UUID`
 - `createdAt: Instant`
 - `updatedAt: Instant`
@@ -139,6 +153,7 @@ enum class AttemptStatus(val value: String) {
 - `maxAttempts: Int?`
 
 **`JobAttempt`** — represents an attempt record:
+
 - `id: UUID`
 - `jobId: UUID`
 - `attemptNumber: Int`
@@ -147,10 +162,12 @@ enum class AttemptStatus(val value: String) {
 - `status: AttemptStatus`
 - `errorMessage: String?`
 
-Attempt rows are written after job execution completes or fails — never at claim time. `finishedAt`
-is always set by the database at insert time and is therefore non-nullable.
+Attempt rows are written after job execution completes or fails — never at claim
+time. `finishedAt` is always set by the database at insert time and is therefore
+non-nullable.
 
 **`NewJob`** — DAO input for insertion (per DAO input data class pattern):
+
 - `jobType: JobType`
 - `payload: JsonObject`
 - `maxAttempts: Int?`
@@ -214,8 +231,8 @@ CREATE TABLE job_attempts (
 CREATE INDEX idx_job_attempts_job_id ON job_attempts (job_id);
 ```
 
-The `jobs` table gets a single trigger for `updated_at` maintenance. Unlike `sessions`, it has no
-`version` column so `enforce_versioning` does not apply:
+The `jobs` table gets a single trigger for `updated_at` maintenance. Unlike
+`sessions`, it has no `version` column so `enforce_versioning` does not apply:
 
 ```sql
 CREATE TRIGGER trigger_03_enforce_jobs_updated_at
@@ -226,8 +243,8 @@ EXECUTE PROCEDURE update_timestamp();
 
 ### JobsDao
 
-Located at `queue/src/main/kotlin/ed/unicoach/queue/dao/JobsDao.kt`. Follows
-the existing DAO patterns:
+Located at `queue/src/main/kotlin/ed/unicoach/queue/dao/JobsDao.kt`. Follows the
+existing DAO patterns:
 
 - Uses `executeSafely` for DRY error handling.
 - Accepts `SqlSession` as the first parameter.
@@ -240,33 +257,39 @@ the existing DAO patterns:
   the created `Job`.
 - `findNextScheduledJob(session, jobType): JobFindResult` — Selects a single job
   with `status = 'SCHEDULED' AND scheduled_at <= NOW()` using
-  `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`. Returns either a `Job` or `NotFound`.
-- `claimJob(session, id, lockDuration: kotlin.time.Duration): JobUpdateResult` — Transitions a
-  job from `SCHEDULED` to `RUNNING` and sets `locked_until = NOW() + ?::interval`. `lockDuration`
-  is required and non-nullable; a caller cannot invoke this method without specifying a lock window,
-  making misuse impossible by construction.
-- `updateStatus(session, id, status: JobStatus): JobUpdateResult` — Transitions a job from
-  `RUNNING` to a terminal status (`COMPLETED` or `DEAD_LETTERED`). Always clears `locked_until`
-  to `NULL`. Does not accept a `lockDuration` — the signature makes setting a lock on a terminal
-  transition structurally impossible.
-- `reschedule(session, id, delay: kotlin.time.Duration): JobUpdateResult` — Resets status to
-  `SCHEDULED` with a future `scheduled_at = NOW() + ?::interval` for retry backoff.
-- `insertAttempt(session, jobId, attemptNumber, startedAt, status: AttemptStatus, errorMessage?): AttemptInsertResult` —
-  Records a completed or failed attempt in `job_attempts`. Always called after job execution
-  resolves — never at claim time. `startedAt` MUST be taken from `Job.updatedAt` of the
-  `JobUpdateResult.Success` returned by the preceding `claimJob(...)` call;
-  that value is written by the DB `update_timestamp()` trigger and is therefore a DB-sourced
-  timestamp. Application-side clocks (`Instant.now()`) MUST NOT be used for `startedAt`.
-  `finished_at` is set to `NOW()` by the database at insert time.
+  `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`. Returns either a `Job` or
+  `NotFound`.
+- `claimJob(session, id, lockDuration: kotlin.time.Duration): JobUpdateResult` —
+  Transitions a job from `SCHEDULED` to `RUNNING` and sets
+  `locked_until = NOW() + ?::interval`. `lockDuration` is required and
+  non-nullable; a caller cannot invoke this method without specifying a lock
+  window, making misuse impossible by construction.
+- `updateStatus(session, id, status: JobStatus): JobUpdateResult` — Transitions
+  a job from `RUNNING` to a terminal status (`COMPLETED` or `DEAD_LETTERED`).
+  Always clears `locked_until` to `NULL`. Does not accept a `lockDuration` — the
+  signature makes setting a lock on a terminal transition structurally
+  impossible.
+- `reschedule(session, id, delay: kotlin.time.Duration): JobUpdateResult` —
+  Resets status to `SCHEDULED` with a future
+  `scheduled_at = NOW() + ?::interval` for retry backoff.
+- `insertAttempt(session, jobId, attemptNumber, startedAt, status: AttemptStatus, errorMessage?): AttemptInsertResult`
+  — Records a completed or failed attempt in `job_attempts`. Always called after
+  job execution resolves — never at claim time. `startedAt` MUST be taken from
+  `Job.updatedAt` of the `JobUpdateResult.Success` returned by the preceding
+  `claimJob(...)` call; that value is written by the DB `update_timestamp()`
+  trigger and is therefore a DB-sourced timestamp. Application-side clocks
+  (`Instant.now()`) MUST NOT be used for `startedAt`. `finished_at` is set to
+  `NOW()` by the database at insert time.
 - `countAttempts(session, jobId): AttemptCountResult` — Returns the count of
   attempts for a given job.
-- `findAttemptsByJobId(session, jobId): AttemptFindResult` — Returns all attempts
-  for a job, ordered by `attempt_number`.
-- `resetStuckRunning(session): JobResetResult` — Resets jobs
-  with `status = 'RUNNING' AND locked_until < NOW()` back to `SCHEDULED`.
-- `deleteBefore(session, statuses: Set<JobStatus>, olderThan: kotlin.time.Duration): JobDeleteResult` —
-  Physically deletes jobs where `status IN (?)` and `updated_at < NOW() - ?::interval`.
-  Relying on the database `NOW()` ensures we do not trust application server clocks for eviction boundaries.
+- `findAttemptsByJobId(session, jobId): AttemptFindResult` — Returns all
+  attempts for a job, ordered by `attempt_number`.
+- `resetStuckRunning(session): JobResetResult` — Resets jobs with
+  `status = 'RUNNING' AND locked_until < NOW()` back to `SCHEDULED`.
+- `deleteBefore(session, statuses: Set<JobStatus>, olderThan: kotlin.time.Duration): JobDeleteResult`
+  — Physically deletes jobs where `status IN (?)` and
+  `updated_at < NOW() - ?::interval`. Relying on the database `NOW()` ensures we
+  do not trust application server clocks for eviction boundaries.
 - `deleteByIds(session, ids: List<UUID>): JobDeleteResult` — Deletes specific
   jobs by ID.
 - `findById(session, id): JobFindResult` — Finds a single job by ID.
@@ -277,13 +300,16 @@ the existing DAO patterns:
 
 - `JobInsertResult`: `Success(job)`, `DatabaseFailure(error)`
 - `JobFindResult`: `Success(job)`, `NotFound(message)`, `DatabaseFailure(error)`
-- `JobUpdateResult`: `Success(job)`, `NotFound(message)`, `DatabaseFailure(error)`
+- `JobUpdateResult`: `Success(job)`, `NotFound(message)`,
+  `DatabaseFailure(error)`
 - `JobResetResult`: `Success(count: Int)`, `DatabaseFailure(error)`
 - `JobDeleteResult`: `Success(count: Int)`, `DatabaseFailure(error)`
-- `JobCountResult`: `Success(counts: Map<JobStatus, Int>)`, `DatabaseFailure(error)`
+- `JobCountResult`: `Success(counts: Map<JobStatus, Int>)`,
+  `DatabaseFailure(error)`
 - `AttemptInsertResult`: `Success(attempt)`, `DatabaseFailure(error)`
 - `AttemptCountResult`: `Success(count: Int)`, `DatabaseFailure(error)`
-- `AttemptFindResult`: `Success(attempts: List<JobAttempt>)`, `DatabaseFailure(error)`
+- `AttemptFindResult`: `Success(attempts: List<JobAttempt>)`,
+  `DatabaseFailure(error)`
 
 ### QueueService
 
@@ -321,10 +347,12 @@ class QueueService(private val database: Database) {
   - `from parses valid minimal configuration`
   - `from fails if queue block is completely missing`
 
-`AttemptStatus` and `JobStatus` have no dedicated unit tests. They contain no companion logic and
-no `fromValue` lookup — they are pure value enums. Their valid values are enforced at the database
-layer by `CHECK` constraints, exercised by the `insertAttempt constraint rejects invalid status`
-and `status constraint rejects invalid status values` integration tests in `JobsDaoTest`.
+`AttemptStatus` and `JobStatus` have no dedicated unit tests. They contain no
+companion logic and no `fromValue` lookup — they are pure value enums. Their
+valid values are enforced at the database layer by `CHECK` constraints,
+exercised by the `insertAttempt constraint rejects invalid status` and
+`status constraint rejects invalid status values` integration tests in
+`JobsDaoTest`.
 
 ### Integration (against real Postgres)
 
@@ -362,7 +390,8 @@ and `status constraint rejects invalid status values` integration tests in `Jobs
   - `payload size constraint rejects oversized payloads`
   - `status constraint rejects invalid status values`
 
-- `QueueServiceTest` (in `queue`, integration — delegates to `JobsDao.insert()` via real DB):
+- `QueueServiceTest` (in `queue`, integration — delegates to `JobsDao.insert()`
+  via real DB):
   - `enqueue creates SCHEDULED job with immediate scheduled_at`
   - `enqueue with delay sets future scheduled_at`
   - `enqueue with custom max_attempts stores value on job`
@@ -372,8 +401,8 @@ All tests verified via: `./bin/test ed.unicoach.queue`
 
 ## Implementation Plan
 
-1. **Add kotlinx-serialization to `common`**: In `gradle/libs.versions.toml`, add
-   `kotlinx-serialization = "1.11.0"` under `[versions]`, add
+1. **Add kotlinx-serialization to `common`**: In `gradle/libs.versions.toml`,
+   add `kotlinx-serialization = "1.11.0"` under `[versions]`, add
    `kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }`
    under `[libraries]`, and add
    `kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }`
@@ -383,14 +412,16 @@ All tests verified via: `./bin/test ed.unicoach.queue`
    `./bin/test ed.unicoach.common`.
 
 2. **Create `queue` Gradle module skeleton**: Add `queue/build.gradle.kts` with
-   `common` and `db` dependencies, plus `kotlinx-serialization-json`. Apply
-   the `kotlin-serialization` plugin. Add `include("queue")` to
+   `common` and `db` dependencies, plus `kotlinx-serialization-json`. Apply the
+   `kotlin-serialization` plugin. Add `include("queue")` to
    `settings.gradle.kts`. Verify: `./gradlew :queue:build`.
 
-3. **Define configuration and domain models**: Create `queue/src/main/resources/queue.conf` with a basic `queue {}` block. Create `QueueConfig.kt` and `QueueConfigTest.kt`. Create `JobType.kt`, `JobTypeTest.kt`, `JobStatus.kt`,
-   `Job.kt`, `JobAttempt.kt`, `NewJob.kt` in `ed.unicoach.queue`. Create
-   sealed result types in `ed.unicoach.queue.dao`. Verify:
-   `./gradlew :queue:build` compiles.
+3. **Define configuration and domain models**: Create
+   `queue/src/main/resources/queue.conf` with a basic `queue {}` block. Create
+   `QueueConfig.kt` and `QueueConfigTest.kt`. Create `JobType.kt`,
+   `JobTypeTest.kt`, `JobStatus.kt`, `Job.kt`, `JobAttempt.kt`, `NewJob.kt` in
+   `ed.unicoach.queue`. Create sealed result types in `ed.unicoach.queue.dao`.
+   Verify: `./gradlew :queue:build` compiles.
 
 4. **Schema migration**: Create `db/schema/0003.create-queue.sql` with both
    `jobs` and `job_attempts` tables, indexes, constraints, and `updated_at`
@@ -405,13 +436,15 @@ All tests verified via: `./bin/test ed.unicoach.queue`
    method. Create `QueueServiceTest.kt`. Verify:
    `./bin/test ed.unicoach.queue.QueueServiceTest`.
 
-7. **Load Queue configuration globally**: Add `implementation(project(":queue"))` to
-   `rest-server/build.gradle.kts`. In `startServer()` in
-   `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt`, add `"queue.conf"` to the
-   `AppConfig.load(...)` call and add `QueueConfig.from(config).getOrThrow()` immediately after
-   the existing config blocks (`DatabaseConfig`, `SessionConfig`), following the same fail-fast
-   startup validation pattern. Verify: `./gradlew :rest-server:build` compiles and the server
-   starts without error.
+7. **Load Queue configuration globally**: Add
+   `implementation(project(":queue"))` to `rest-server/build.gradle.kts`. In
+   `startServer()` in
+   `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt`, add
+   `"queue.conf"` to the `AppConfig.load(...)` call and add
+   `QueueConfig.from(config).getOrThrow()` immediately after the existing config
+   blocks (`DatabaseConfig`, `SessionConfig`), following the same fail-fast
+   startup validation pattern. Verify: `./gradlew :rest-server:build` compiles
+   and the server starts without error.
 
 ## Files Modified
 

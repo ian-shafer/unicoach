@@ -25,8 +25,7 @@ worker.
 
 ### Application Entry Point
 
-Located at
-`queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt`:
+Located at `queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt`:
 
 ```kotlin
 fun main() {
@@ -123,14 +122,15 @@ Displays job counts grouped by status. If job types are provided, filters to
 those types. If none are provided, lists all types.
 
 Output format:
+
 ```
 Job Type                  SCHEDULED  RUNNING  COMPLETED  DEAD_LETTERED
 session.extend_expiry            5        1         42              0
 email.welcome                    0        0         15              2
 ```
 
-Implementation: SQL query grouping by `job_type` and `status` with
-`COUNT(*)`, formatted via `psql` column output.
+Implementation: SQL query grouping by `job_type` and `status` with `COUNT(*)`,
+formatted via `psql` column output.
 
 #### `bin/q-truncate [job-types...]`
 
@@ -146,22 +146,24 @@ incorrect input, prints input to stderr and prompts again. User can exit via
 This follows the same pattern as `db-destroy`'s `DESTROY` confirmation but with
 the longer confirmation string and a flag variant.
 
-The `db-destroy` script MUST also be updated to accept a
-`--destroy-all-db-data` flag matching this pattern (currently it only supports
-the `--destroy-all-db-data` flag — verify and align if discrepancies exist).
+The `db-destroy` script MUST also be updated to accept a `--destroy-all-db-data`
+flag matching this pattern (currently it only supports the
+`--destroy-all-db-data` flag — verify and align if discrepancies exist).
 
 #### `bin/q-enqueue <job-type> <payload-json> [options]`
 
 Enqueues a job from the command line. Useful for testing and debugging.
 
 Arguments:
+
 - `<job-type>`: Must be a valid `JobType` enum value string.
 - `<payload-json>`: JSON payload string.
 
 Options:
+
 - `--max-attempts <n>`: Override max attempts.
-- `--delay <duration>`: Delay before the job becomes eligible (e.g., `5m`,
-  `1h`, `30s`).
+- `--delay <duration>`: Delay before the job becomes eligible (e.g., `5m`, `1h`,
+  `30s`).
 
 Implementation: Direct `INSERT` via `bin/db-update`.
 
@@ -176,6 +178,7 @@ Displays full detail for a single job: all columns from `jobs`, followed by all
 attempt records from `job_attempts` ordered by `attempt_number`.
 
 Output format:
+
 ```
 === Job ===
 ID:            550e8400-e29b-41d4-a716-446655440000
@@ -202,6 +205,7 @@ history. The job will be retried using its original `max_attempts` value.
 ### Error Contracts
 
 All CLI scripts follow the standard error contract:
+
 - Exit `0` on success.
 - Exit `1` on general failure.
 - Exit `2` on container/database unreachability.
@@ -224,11 +228,13 @@ Added to `bin/scripts-tests` (or a new `bin/queue-worker-scripts-tests`):
 `bin/q-scripts-tests`:
 
 #### q-status
+
 - `test_q_status_no_jobs`: Empty output when no jobs exist.
 - `test_q_status_with_jobs`: Correct counts by status.
 - `test_q_status_filtered_by_type`: Only shows requested types.
 
 #### q-truncate
+
 - `test_q_truncate_with_flag`: Deletes jobs when flag provided.
 - `test_q_truncate_interactive_success`: Deletes on correct confirmation.
 - `test_q_truncate_interactive_empty_exit`: Exits `0` on empty input.
@@ -237,20 +243,24 @@ Added to `bin/scripts-tests` (or a new `bin/queue-worker-scripts-tests`):
 - `test_q_truncate_cascades_attempts`: Attempt records are deleted.
 
 #### q-enqueue
+
 - `test_q_enqueue_immediate`: Job created with SCHEDULED status.
 - `test_q_enqueue_with_delay`: Job created with future scheduled_at.
 - `test_q_enqueue_with_max_attempts`: Custom max_attempts stored.
 
 #### q-delete-job
+
 - `test_q_delete_job_success`: Job and attempts deleted.
 - `test_q_delete_job_not_found`: Exits `1` with message.
 
 #### q-inspect
+
 - `test_q_inspect_shows_job_details`: All job fields displayed.
 - `test_q_inspect_shows_attempts`: Attempt history displayed in order.
 - `test_q_inspect_not_found`: Exits `1` with message.
 
 #### q-retry
+
 - `test_q_retry_resets_dead_lettered`: Status changes to SCHEDULED.
 - `test_q_retry_rejects_non_dead_lettered`: Exits `1` for COMPLETED/RUNNING.
 - `test_q_retry_preserves_attempt_history`: Existing attempts retained.
@@ -271,10 +281,9 @@ Added to `bin/scripts-tests` (or a new `bin/queue-worker-scripts-tests`):
 3. **Docker Compose**: Create `docker/queue-worker-compose.yaml`. Verify:
    `docker compose -f docker/queue-worker-compose.yaml config` validates.
 
-4. **Daemon scripts**: Create `bin/queue-worker-start`,
-   `bin/queue-worker-stop`, `bin/queue-worker-check`,
-   `bin/queue-worker-restart`. Make executable. Verify: daemon starts and stops
-   via scripts.
+4. **Daemon scripts**: Create `bin/queue-worker-start`, `bin/queue-worker-stop`,
+   `bin/queue-worker-check`, `bin/queue-worker-restart`. Make executable.
+   Verify: daemon starts and stops via scripts.
 
 5. **Daemon script tests**: Add tests to verify start/stop/check/restart
    lifecycle. Verify: daemon tests pass.
@@ -282,11 +291,11 @@ Added to `bin/scripts-tests` (or a new `bin/queue-worker-scripts-tests`):
 6. **CLI scripts — `q-status` and `q-inspect`**: Create read-only tools first.
    Add tests to `bin/q-scripts-tests`. Verify: tests pass.
 
-7. **CLI scripts — `q-enqueue` and `q-delete-job`**: Create mutating tools.
-   Add tests. Verify: tests pass.
+7. **CLI scripts — `q-enqueue` and `q-delete-job`**: Create mutating tools. Add
+   tests. Verify: tests pass.
 
-8. **CLI scripts — `q-truncate` and `q-retry`**: Create tools with
-   confirmation UX and status validation. Add tests. Verify: tests pass.
+8. **CLI scripts — `q-truncate` and `q-retry`**: Create tools with confirmation
+   UX and status validation. Add tests. Verify: tests pass.
 
 ## Files Modified
 
