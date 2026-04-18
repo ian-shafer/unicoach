@@ -21,7 +21,7 @@ class SessionsDaoTest {
     fun setupAll() {
       val config =
         ed.unicoach.common.config.AppConfig
-          .load("common.conf", "service.conf")
+          .load("common.conf", "db.conf")
           .getOrThrow()
       val dbConfig =
         ed.unicoach.db.DatabaseConfig

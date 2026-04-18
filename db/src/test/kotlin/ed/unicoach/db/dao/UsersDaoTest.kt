@@ -25,7 +25,7 @@ class UsersDaoTest {
     fun setupAll() {
       val config =
         ed.unicoach.common.config.AppConfig
-          .load("common.conf", "service.conf")
+          .load("common.conf", "db.conf")
           .getOrThrow()
       val dbConfig =
         ed.unicoach.db.DatabaseConfig
@@ -85,7 +85,7 @@ class UsersDaoTest {
     // Connection 2 attempts to lock the same row and should fail immediately with NOWAIT
     val config =
       ed.unicoach.common.config.AppConfig
-        .load("common.conf", "service.conf")
+        .load("common.conf", "db.conf")
         .getOrThrow()
     val dbConfig =
       ed.unicoach.db.DatabaseConfig

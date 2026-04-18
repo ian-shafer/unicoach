@@ -19,7 +19,7 @@ import io.ktor.server.netty.Netty
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "service.conf", "rest-server.conf")
+      .load("common.conf", "db.conf", "service.conf", "rest-server.conf")
       .getOrThrow()
 
   val dbConfig =

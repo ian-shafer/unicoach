@@ -10,6 +10,7 @@ application {
 
 dependencies {
   implementation(project(":common"))
+  implementation(project(":db"))
   implementation(project(":service"))
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)

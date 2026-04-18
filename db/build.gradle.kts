@@ -5,8 +5,8 @@ plugins {
 
 dependencies {
   implementation(project(":common"))
-  implementation(project(":db"))
-  implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.postgresql)
+  implementation(libs.hikaricp)
 
   testImplementation(libs.kotlin.test.junit5)
 }

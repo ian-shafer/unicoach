@@ -37,7 +37,7 @@ class AuthServiceTest {
     fun setupAll() {
       val config =
         ed.unicoach.common.config.AppConfig
-          .load("common.conf", "service.conf")
+          .load("common.conf", "db.conf", "service.conf")
           .getOrThrow()
       val dbConfig = DatabaseConfig.from(config).getOrThrow()
       database = Database(dbConfig)
