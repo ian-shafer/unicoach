@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+q-delete-job <job-id>
+
+Deletes a single job and its attempt history by UUID.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  help
+  exit 0
+fi
+
+if [ $# != 1 ]; then
+  help
+  exit 1
+fi
+
+job_id="$1"
+query="WITH deleted AS (DELETE FROM jobs WHERE id = '$job_id' RETURNING id) SELECT count(*) FROM deleted;"
+
+res=$(echo "$query" | "$PROJECT_ROOT/bin/db-query" -tA) || exit 2
+
+if [ "$res" = "0" ]; then
+  fatal "Job [$job_id] not found"
+fi

@@ -116,7 +116,7 @@ test_db_lifecycle_wipes_data() {
   fi
 
   # Destroy the database
-  bin/db-destroy -y
+  bin/db-destroy --yes-i-really-want-to-do-this
 
   # Ensure the database is permanently offline / data destroyed
   if bin/db-query "SELECT * FROM lifecycle_test;" 2>/dev/null; then
@@ -136,7 +136,7 @@ test_db_lifecycle_wipes_data() {
 test_db_lifecycle_wipes_data
 
 test_db_init_idempotent() {
-  bin/db-destroy -y
+  bin/db-destroy --yes-i-really-want-to-do-this
   bin/db-init
   
   # Ensure it exits 0 and does not emit extraneous errors
@@ -150,7 +150,7 @@ test_db_init_idempotent() {
 test_db_init_idempotent
 
 test_db_status_formats() {
-  bin/db-destroy -y
+  bin/db-destroy --yes-i-really-want-to-do-this
   bin/db-init
 
   export DB_SCHEMA_DIR="/tmp/test_migrations_status_$$"
@@ -185,7 +185,7 @@ test_db_status_formats
 
 echo "==== Testing Migration Engine ===="
 setup_migration_test() {
-  bin/db-destroy -y >/dev/null 2>&1 || true
+  bin/db-destroy --yes-i-really-want-to-do-this >/dev/null 2>&1 || true
   bin/db-init
   export DB_SCHEMA_DIR="/tmp/test_migrations_$$"
   mkdir -p "$DB_SCHEMA_DIR"

@@ -1,0 +1,19 @@
+services:
+  queue-worker:
+    image: eclipse-temurin:21-jdk
+    user: "${HOST_UID}:${HOST_GID}"
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    environment:
+      - GRADLE_USER_HOME=/workspace/var/gradle
+      - HOME=/workspace/var/gradle
+      - DATABASE_JDBCURL=${DATABASE_JDBCURL:-jdbc:postgresql://postgres:5432/unicoach}
+      - DATABASE_USER=${DATABASE_USER:-postgres}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
+    command: ["./gradlew", ":queue-worker:run"]
+
+networks:
+  default:
+    external: true
+    name: unicoach-network

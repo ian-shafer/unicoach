@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+export ENV_FILE="$(dirname "$0")/../.env.test"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+trap 'bin/rest-server-stop >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop >/dev/null 2>&1 || true; [ -x "bin/docker-network-daemon-stop" ] && bin/docker-network-daemon-stop unicoach-network >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
+
+cleanPostgresData() {
+  rm -rf "$POSTGRES_DATA_DIR" || true
+}
+
+bin/postgres-stop -d >/dev/null || true
+cleanPostgresData
+bin/postgres-start >/dev/null
+
+bin/db-init
+
+add_job() {
+  local type="$1"
+  local status="$2"
+  local max_attempts="${3:-3}"
+  bin/db-run rw "INSERT INTO jobs (job_type, payload, status, max_attempts, scheduled_at) VALUES ('$type', '{}', '$status', $max_attempts, NOW()) RETURNING id;" | grep -v id | grep -v "\-\-" | sed 's/ //g' | tail -n 2 | head -n 1
+}
+
+add_attempt() {
+  local job_id="$1"
+  local attempt_number="$2"
+  local status="$3"
+  local error_message="${4:-}"
+  bin/db-run rw "INSERT INTO job_attempts (job_id, attempt_number, status, started_at, finished_at, error_message) VALUES ('$job_id', $attempt_number, '$status', NOW(), NOW(), '$error_message');" >/dev/null
+}
+
+test_q_status_no_jobs() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local out=$(bin/q-status)
+  if echo "$out" | grep "test.job" >/dev/null; then return 1; fi
+  return 0
+}
+
+test_q_status_with_jobs() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  add_job "test.job" "SCHEDULED" >/dev/null
+  add_job "test.job" "SCHEDULED" >/dev/null
+  add_job "test.job" "RUNNING" >/dev/null
+  add_job "other.job" "COMPLETED" >/dev/null
+  
+  local out=$(bin/q-status)
+  if ! echo "$out" | grep "test.job.*2.*1.*0.*0" >/dev/null; then return 1; fi
+  if ! echo "$out" | grep "other.job.*0.*0.*1.*0" >/dev/null; then return 1; fi
+  return 0
+}
+
+test_q_status_filtered_by_type() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  add_job "test.job" "SCHEDULED" >/dev/null
+  add_job "other.job" "COMPLETED" >/dev/null
+  
+  local out=$(bin/q-status test.job)
+  if echo "$out" | grep "other.job" >/dev/null; then return 1; fi
+  if ! echo "$out" | grep "test.job" >/dev/null; then return 1; fi
+  return 0
+}
+
+test_q_truncate_with_flag() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j1=$(add_job "test.job" "SCHEDULED")
+  bin/q-truncate --yes-i-really-want-to-do-this >/dev/null
+  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  if [ "$remaining" != "0" ]; then return 1; fi
+  return 0
+}
+
+test_q_truncate_interactive_success() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j1=$(add_job "test.job" "SCHEDULED")
+  echo "Yes, I really want to do this" | bin/q-truncate >/dev/null
+  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  if [ "$remaining" != "0" ]; then return 1; fi
+  return 0
+}
+
+test_q_truncate_interactive_empty_exit() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j1=$(add_job "test.job" "SCHEDULED")
+  (echo "" | bin/q-truncate >/dev/null)
+  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  if [ "$remaining" != "1" ]; then return 1; fi
+  return 0
+}
+
+test_q_truncate_interactive_retry() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j1=$(add_job "test.job" "SCHEDULED")
+  echo -e "no\nyes i really want to do this" | bin/q-truncate >/dev/null
+  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  if [ "$remaining" != "0" ]; then return 1; fi
+  return 0
+}
+
+test_q_truncate_specific_types() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  add_job "type.a" "SCHEDULED" >/dev/null
+  add_job "type.b" "SCHEDULED" >/dev/null
+  bin/q-truncate type.a --yes-i-really-want-to-do-this >/dev/null
+  local remainingA=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.a';" | bin/db-query -tA)
+  local remainingB=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.b';" | bin/db-query -tA)
+  if [ "$remainingA" != "0" ]; then return 1; fi
+  if [ "$remainingB" != "1" ]; then return 1; fi
+  return 0
+}
+
+test_q_truncate_cascades_attempts() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j=$(add_job "type.a" "SCHEDULED")
+  add_attempt "$j" 1 "RETRIABLE_FAILURE"
+  bin/q-truncate --yes-i-really-want-to-do-this >/dev/null
+  local atts=$(echo "SELECT count(*) FROM job_attempts;" | bin/db-query -tA)
+  if [ "$atts" != "0" ]; then return 1; fi
+  return 0
+}
+
+test_q_enqueue_immediate() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  bin/q-enqueue "test.imm" '{"a": 1}' >/dev/null
+  local count=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'test.imm' AND status = 'SCHEDULED';" | bin/db-query -tA)
+  if [ "$count" != "1" ]; then return 1; fi
+  return 0
+}
+
+test_q_enqueue_with_delay() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  bin/q-enqueue "test.delay" '{"a": 1}' --delay 10m >/dev/null
+  local future=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'test.delay' AND scheduled_at > NOW() + INTERVAL '9 minutes';" | bin/db-query -tA)
+  if [ "$future" != "1" ]; then return 1; fi
+  return 0
+}
+
+test_q_enqueue_with_max_attempts() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  bin/q-enqueue "test.max" '{"a": 1}' --max-attempts 10 >/dev/null
+  local max=$(echo "SELECT max_attempts FROM jobs WHERE job_type = 'test.max';" | bin/db-query -tA)
+  if [ "$max" != "10" ]; then return 1; fi
+  return 0
+}
+
+test_q_delete_job_success() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j=$(add_job "type.a" "SCHEDULED")
+  add_attempt "$j" 1 "RETRIABLE_FAILURE"
+  bin/q-delete-job "$j" >/dev/null
+  local jobs=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  local atts=$(echo "SELECT count(*) FROM job_attempts;" | bin/db-query -tA)
+  if [ "$jobs" != "0" ]; then return 1; fi
+  if [ "$atts" != "0" ]; then return 1; fi
+  return 0
+}
+
+test_q_delete_job_not_found() {
+  if bin/q-delete-job "550e8400-e29b-41d4-a716-446655440000" >/dev/null 2>&1; then return 1; fi
+  return 0
+}
+
+test_q_inspect_shows_job_details() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j=$(add_job "type.a" "SCHEDULED")
+  local out=$(bin/q-inspect "$j")
+  if ! echo "$out" | grep "type.a" >/dev/null; then return 1; fi
+  if ! echo "$out" | grep "SCHEDULED" >/dev/null; then return 1; fi
+  return 0
+}
+
+test_q_inspect_shows_attempts() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j=$(add_job "type.a" "SCHEDULED")
+  add_attempt "$j" 1 "RETRIABLE_FAILURE" "Timeout"
+  local out=$(bin/q-inspect "$j")
+  if ! echo "$out" | grep "RETRIABLE_FAILURE" >/dev/null; then return 1; fi
+  if ! echo "$out" | grep "Timeout" >/dev/null; then return 1; fi
+  return 0
+}
+
+test_q_inspect_not_found() {
+  if bin/q-inspect "550e8400-e29b-41d4-a716-446655440000" >/dev/null 2>&1; then return 1; fi
+  return 0
+}
+
+test_q_retry_resets_dead_lettered() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j=$(add_job "type.a" "DEAD_LETTERED")
+  bin/q-retry "$j" >/dev/null
+  local status=$(echo "SELECT status FROM jobs WHERE id = '$j';" | bin/db-query -tA)
+  if [ "$status" != "SCHEDULED" ]; then return 1; fi
+  return 0
+}
+
+test_q_retry_rejects_non_dead_lettered() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j=$(add_job "type.a" "COMPLETED")
+  if bin/q-retry "$j" >/dev/null 2>&1; then return 1; fi
+  return 0
+}
+
+test_q_retry_preserves_attempt_history() {
+  bin/db-run rw "TRUNCATE jobs CASCADE;"
+  local j=$(add_job "type.a" "DEAD_LETTERED")
+  add_attempt "$j" 1 "TERMINAL_FAILURE"
+  bin/q-retry "$j" >/dev/null
+  local count=$(echo "SELECT count(*) FROM job_attempts WHERE job_id = '$j';" | bin/db-query -tA)
+  if [ "$count" != "1" ]; then return 1; fi
+  return 0
+}
+
+echo "==== q-status ===="
+assert_success "empty output when no jobs exist" test_q_status_no_jobs
+assert_success "correct counts by status" test_q_status_with_jobs
+assert_success "only shows requested types" test_q_status_filtered_by_type
+
+echo "==== q-truncate ===="
+assert_success "deletes jobs when flag provided" test_q_truncate_with_flag
+assert_success "deletes on correct confirmation" test_q_truncate_interactive_success
+assert_success "exits 0 on empty input" test_q_truncate_interactive_empty_exit
+assert_success "prompts again on wrong input" test_q_truncate_interactive_retry
+assert_success "only deletes specified types" test_q_truncate_specific_types
+assert_success "attempt records are deleted" test_q_truncate_cascades_attempts
+
+echo "==== q-enqueue ===="
+assert_success "job created with SCHEDULED status" test_q_enqueue_immediate
+assert_success "job created with future scheduled_at" test_q_enqueue_with_delay
+assert_success "custom max_attempts stored" test_q_enqueue_with_max_attempts
+
+echo "==== q-delete-job ===="
+assert_success "job and attempts deleted" test_q_delete_job_success
+assert_success "exits 1 with message" test_q_delete_job_not_found
+
+echo "==== q-inspect ===="
+assert_success "all job fields displayed" test_q_inspect_shows_job_details
+assert_success "attempt history displayed in order" test_q_inspect_shows_attempts
+assert_success "exits 1 with message" test_q_inspect_not_found
+
+echo "==== q-retry ===="
+assert_success "status changes to SCHEDULED" test_q_retry_resets_dead_lettered
+assert_success "exits 1 for COMPLETED/RUNNING" test_q_retry_rejects_non_dead_lettered
+assert_success "existing attempts retained" test_q_retry_preserves_attempt_history
+
+end_tests

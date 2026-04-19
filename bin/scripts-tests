@@ -117,6 +117,7 @@ test_daemon_wrapper() {
 }
 
 test_daemon_wrapper "rest-server"
+test_daemon_wrapper "queue-worker"
 test_daemon_wrapper "postgres"
 test_daemon_wrapper "docker-network-daemon" "unicoach-network"
 
@@ -158,5 +159,58 @@ if [ -z "${STATUS:-}" ] || [ "$STATUS" -eq 0 ]; then
   exit 1
 fi
 pass_test "postgres Missing Environment Validation"
+
+echo ""
+echo "==== Testing Bash Utilities ===="
+test_validate_duration_valid() {
+  if ! validate_duration 5s; then return 1; fi
+  if ! validate_duration 10m; then return 1; fi
+  if ! validate_duration 2h; then return 1; fi
+  if ! validate_duration 1d; then return 1; fi
+  return 0
+}
+assert_success "validate_duration valid" test_validate_duration_valid
+
+test_validate_duration_invalid() {
+  if validate_duration 5x; then return 1; fi
+  if validate_duration s; then return 1; fi
+  if validate_duration ""; then return 1; fi
+  return 0
+}
+assert_success "validate_duration invalid" test_validate_duration_invalid
+
+test_transform_duration_to_postgres_valid() {
+  if [ "$(transform_duration_to_postgres 5s)" != "5 seconds" ]; then return 1; fi
+  if [ "$(transform_duration_to_postgres 10m)" != "10 minutes" ]; then return 1; fi
+  if [ "$(transform_duration_to_postgres 2h)" != "2 hours" ]; then return 1; fi
+  if [ "$(transform_duration_to_postgres 1d)" != "1 days" ]; then return 1; fi
+  return 0
+}
+assert_success "transform_duration_to_postgres valid" test_transform_duration_to_postgres_valid
+
+test_require_dangerous_confirmation_success() {
+  echo "Yes, I really want to do this" | require_dangerous_confirmation "test" >/dev/null 2>&1
+}
+assert_success "require_dangerous_confirmation success" test_require_dangerous_confirmation_success
+
+test_require_dangerous_confirmation_empty() {
+  (echo "" | require_dangerous_confirmation "test" >/dev/null 2>&1)
+}
+assert_success "require_dangerous_confirmation empty" test_require_dangerous_confirmation_empty
+
+# Validates the caller-side flag bypass pattern used by q-truncate and db-destroy:
+# when --yes-i-really-want-to-do-this is present, the prompt is never invoked.
+test_require_dangerous_confirmation_flag() {
+  skip_prompt=false
+  for arg in --yes-i-really-want-to-do-this; do
+    case "$arg" in
+      --yes-i-really-want-to-do-this) skip_prompt=true ;;
+    esac
+  done
+  if [ "$skip_prompt" = false ]; then
+    require_dangerous_confirmation "test" >/dev/null 2>&1
+  fi
+}
+assert_success "require_dangerous_confirmation flag bypass" test_require_dangerous_confirmation_flag
 
 end_tests

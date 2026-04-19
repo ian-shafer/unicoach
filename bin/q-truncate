@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+q-truncate [job-types...]
+
+Deletes all jobs (and their attempts via CASCADE) for the specified job types.
+If no types are given, deletes all jobs.
+
+Options:
+  --yes-i-really-want-to-do-this: Bypass safety prompt
+EOF
+}
+
+skip_prompt=false
+types=()
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) help; exit 0 ;;
+    --yes-i-really-want-to-do-this) skip_prompt=true ;;
+    -*) fatal "Unknown option [$arg]" ;;
+    *) types+=("$arg") ;;
+  esac
+done
+
+if [ ${#types[@]} -eq 0 ]; then
+  desc="delete all jobs and their attempt history"
+  query="DELETE FROM jobs"
+else
+  desc="delete all jobs and their attempt history for types: ${types[*]}"
+  in_clause=$(printf "'%s'," "${types[@]}" | sed 's/,$//')
+  query="DELETE FROM jobs WHERE job_type IN ($in_clause)"
+fi
+
+if [ "$skip_prompt" = false ]; then
+  require_dangerous_confirmation "$desc" || exit $?
+fi
+
+echo "$query;" | "$PROJECT_ROOT/bin/db-update" || exit 2

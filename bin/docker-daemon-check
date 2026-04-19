@@ -47,6 +47,7 @@ DOCKER_ARGS=("-f" "label=com.docker.compose.service=${SERVICE_NAME}" "-f" "statu
 CONTAINERS=$(docker ps -q "${DOCKER_ARGS[@]}")
 
 if [ -z "$CONTAINERS" ]; then
+  log-info "Service [$SERVICE_NAME] is currently offline."
   exit 1
 fi
 
@@ -63,8 +64,10 @@ if [ "$HAS_HEALTH" -eq 1 ]; then
   # Augment evaluation to strictly require readiness
   CONTAINERS=$(docker ps -q "${DOCKER_ARGS[@]}" "-f" "health=healthy")
   if [ -z "$CONTAINERS" ]; then
-  exit 1
+    log-info "Service [$SERVICE_NAME] is running but currently reporting unhealthy."
+    exit 1
   fi
 fi
 
+log-info "Service [$SERVICE_NAME] is running and healthy."
 exit 0

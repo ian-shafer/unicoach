@@ -48,3 +48,51 @@ read-file-or-die() {
   fatal -s "$status_code" "Failed to read [$target_file]"
   fi
 }
+
+require_dangerous_confirmation() {
+  local description="$1"
+  
+  while true; do
+    echo -n "WARNING: Destructive action! $description. Type \"Yes, I really want to do this\" to confirm: " >&2
+    local input=""
+    if ! read -r input; then
+      echo >&2
+      return 1
+    fi
+    
+    if [ -z "$input" ]; then
+      exit 0
+    fi
+    
+    local normalized
+    normalized=$(echo "$input" | sed 's/[^a-zA-Z ]//g' | tr -s ' ' | tr '[:upper:]' '[:lower:]')
+    
+    if [ "$normalized" = "yes i really want to do this" ]; then
+      return 0
+    else
+      log-warning "Input did not match."
+    fi
+  done
+}
+
+validate_duration() {
+  local input="$1"
+  if [[ "$input" =~ ^[0-9]+[smhd]$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+transform_duration_to_postgres() {
+  local input="$1"
+  validate_duration "$input" || return 1
+  local unit="${input: -1}"
+  local value="${input%?}"
+  case "$unit" in
+    s) echo "$value seconds" ;;
+    m) echo "$value minutes" ;;
+    h) echo "$value hours" ;;
+    d) echo "$value days" ;;
+    *) return 1 ;;
+  esac
+}

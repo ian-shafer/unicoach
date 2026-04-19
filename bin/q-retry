@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+q-retry <job-id>
+
+Resets a DEAD_LETTERED job back to SCHEDULED with scheduled_at = NOW().
+Rejects jobs that are not in DEAD_LETTERED status.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  help
+  exit 0
+fi
+
+if [ $# != 1 ]; then
+  help
+  exit 1
+fi
+
+job_id="$1"
+
+status=$(echo "SELECT status FROM jobs WHERE id = '$job_id';" | "$PROJECT_ROOT/bin/db-query" -tA) || exit 2
+
+if [ -z "$status" ]; then
+  fatal "Job [$job_id] not found"
+fi
+
+if [ "$status" != "DEAD_LETTERED" ]; then
+  fatal "Job [$job_id] is not in DEAD_LETTERED status (current: [$status])"
+fi
+
+echo "UPDATE jobs SET status = 'SCHEDULED', scheduled_at = NOW() WHERE id = '$job_id';" | "$PROJECT_ROOT/bin/db-update" || exit 2

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+q-status [job-types...]
+
+Displays job counts grouped by status. If job types are provided, filters to those types.
+EOF
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -h|--help) help; exit 0 ;;
+    *) fatal "Unknown option [$1]" ;;
+  esac
+done
+
+types=("$@")
+query="SELECT job_type AS \"Job Type\",
+       COUNT(CASE WHEN status = 'SCHEDULED' THEN 1 END) AS \"SCHEDULED\",
+       COUNT(CASE WHEN status = 'RUNNING' THEN 1 END) AS \"RUNNING\",
+       COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) AS \"COMPLETED\",
+       COUNT(CASE WHEN status = 'DEAD_LETTERED' THEN 1 END) AS \"DEAD_LETTERED\"
+FROM jobs"
+
+if [ ${#types[@]} -gt 0 ]; then
+  in_clause=$(printf "'%s'," "${types[@]}" | sed 's/,$//')
+  query="$query WHERE job_type IN ($in_clause)"
+fi
+
+query="$query GROUP BY job_type;"
+
+echo "$query" | "$PROJECT_ROOT/bin/db-query" || exit 2

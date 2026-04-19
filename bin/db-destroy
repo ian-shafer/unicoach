@@ -13,35 +13,23 @@ db-destroy [options]
 Destroys the database and completely purges all underlying volume data.
 
 Options:
-  -y, --yes: Disable confirmation prompt
+  --yes-i-really-want-to-do-this: Disable confirmation prompt
   -h, --help: Help
 EOF
   exit "$exit_code"
 }
 
-FORCE=false
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -y|--yes) FORCE=true; shift ;;
-  -h|--help) help ;;
-  *) break ;;
+skip_prompt=false
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) help ;;
+    --yes-i-really-want-to-do-this) skip_prompt=true ;;
+    *) fatal "db-destroy does not accept positional arguments: [$arg]" ;;
   esac
 done
 
-if [ "$#" -gt 0 ]; then
-  help "db-destroy does not accept positional arguments: $*"
-fi
-
-if [ "$FORCE" = false ]; then
-  read -p "Are you sure you want to completely destroy the database and all its data? (y/N) " confirm
-  case "$confirm" in
-    [yY][eE][sS]|[yY]) ;;
-    *)
-      log-info "Database destruction aborted."
-      exit 0
-      ;;
-  esac
+if [ "$skip_prompt" = false ]; then
+  require_dangerous_confirmation "completely destroy the database and all its data"
 fi
 
 log-info "Destroying database [$POSTGRES_DB]..."

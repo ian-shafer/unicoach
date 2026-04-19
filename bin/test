@@ -33,7 +33,7 @@ done
 # Ensure the shared postgres daemon is genuinely online without forcibly crashing or re-creating it 
 # (which avoids mutating the service arguments identically required by docker-compose)
 "$PROJECT_ROOT/bin/postgres-start"
-"$PROJECT_ROOT/bin/db-destroy" -y
+"$PROJECT_ROOT/bin/db-destroy" --yes-i-really-want-to-do-this
 "$PROJECT_ROOT/bin/db-init"
 "$PROJECT_ROOT/bin/db-migrate"
 

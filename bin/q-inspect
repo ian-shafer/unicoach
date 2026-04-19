@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+q-inspect <job-id>
+
+Displays full detail for a single job: all columns from jobs, followed by all attempt records.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  help
+  exit 0
+fi
+
+if [ $# != 1 ]; then
+  help
+  exit 1
+fi
+
+job_id="$1"
+
+out=$(echo "SELECT id FROM jobs WHERE id = '$job_id';" | "$PROJECT_ROOT/bin/db-query" -tA) || exit 2
+if [ -z "$out" ]; then
+  fatal "Job [$job_id] not found"
+fi
+
+echo "=== Job ==="
+echo "SELECT id AS \"ID:\", job_type AS \"Type:\", status AS \"Status:\", created_at AS \"Created:\", scheduled_at AS \"Scheduled:\", max_attempts AS \"Max Attempts:\", payload AS \"Payload:\" FROM jobs WHERE id = '$job_id';" | "$PROJECT_ROOT/bin/db-query" -x -P border=0 | grep -v "^\s*$"
+
+echo ""
+echo "=== Attempts ==="
+echo "SELECT attempt_number AS \"#\", status AS \"Status\", started_at AS \"Started\", finished_at AS \"Finished\", error_message AS \"Error\" FROM job_attempts WHERE job_id = '$job_id' ORDER BY attempt_number;" | "$PROJECT_ROOT/bin/db-query"
