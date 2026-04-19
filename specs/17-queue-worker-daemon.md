@@ -30,9 +30,10 @@ Located at `queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt`:
 ```kotlin
 fun main() {
     val config = AppConfig
-        .load("common.conf", "db.conf", "service.conf", "queue-worker.conf")
+        .load("common.conf", "db.conf", "service.conf", "queue.conf", "queue-worker.conf")
         .getOrThrow()
 
+    QueueConfig.from(config).getOrThrow()
     val dbConfig = DatabaseConfig.from(config).getOrThrow()
     val database = Database(dbConfig)
 
@@ -45,13 +46,16 @@ fun main() {
 
     Runtime.getRuntime().addShutdownHook(Thread {
         worker.stop(timeout = Duration.ofSeconds(30))
-        database.close()
     })
 
-    runBlocking {
-        worker.start(this)
-        // Block until cancelled by shutdown hook
-        awaitCancellation()
+    try {
+        runBlocking {
+            worker.start(this)
+            // Block until cancelled by shutdown hook
+            awaitCancellation()
+        }
+    } finally {
+        database.close()
     }
 }
 ```
@@ -137,18 +141,19 @@ formatted via `psql` column output.
 Deletes all jobs (and their attempts via CASCADE) for the specified job types.
 If no types are given, deletes all jobs.
 
-Safety mechanism: Requires `--yes-i-really-want-to-do-this` flag for
-non-interactive execution. Without the flag, prompts the user to type
-`yes i really want to do this`. On empty input, exits with status `0`. On
-incorrect input, prints input to stderr and prompts again. User can exit via
-`ctrl-c` or `ctrl-d`.
+Safety mechanism: Requires a `--yes-i-really-want-to-do-this` flag for
+non-interactive execution. Without the flag, this MUST rely on a new shared bash function `require_dangerous_confirmation "destructive action description"` added to `bin/common`.
 
-This follows the same pattern as `db-destroy`'s `DESTROY` confirmation but with
-the longer confirmation string and a flag variant.
+The `require_dangerous_confirmation` function MUST:
+1. Listen for the `--yes-i-really-want-to-do-this` flag. If it was passed to the caller, skip the prompt and proceed.
+2. If absent, use an interactive shell prompt requesting the user to type `"Yes, I really want to do this"` (with dynamic context about what is being destroyed).
+3. If the raw input is completely empty, exit the script immediately with status 0.
+4. If not empty, strip all non-alphabetic characters except spaces (`s/[^a-zA-Z ]//g`), collapse consecutive spaces into a single space, and convert to lowercase.
+5. If the normalized input exactly equals `yes i really want to do this`, return success and proceed.
+6. If the input does not match, print an error to stderr and prompt again in a loop.
+Users must be able to cleanly exit via `ctrl-c` or `ctrl-d`.
 
-The `db-destroy` script MUST also be updated to accept a `--destroy-all-db-data`
-flag matching this pattern (currently it only supports the
-`--destroy-all-db-data` flag — verify and align if discrepancies exist).
+The `bin/db-destroy` script MUST be updated to remove its current `-y`/`--yes` flag and weak `(y/N)` prompt, entirely delegating its safety check to this new `require_dangerous_confirmation` command.
 
 #### `bin/q-enqueue <job-type> <payload-json> [options]`
 
@@ -162,10 +167,9 @@ Arguments:
 Options:
 
 - `--max-attempts <n>`: Override max attempts.
-- `--delay <duration>`: Delay before the job becomes eligible (e.g., `5m`, `1h`,
-  `30s`).
+- `--delay <duration>`: Delay before the job becomes eligible. Must support standard shell `sleep` suffixes (`s`, `m`, `h`, `d`).
 
-Implementation: Direct `INSERT` via `bin/db-update`.
+Implementation: Direct `INSERT` via `bin/db-update`. The conversion of the shell-style duration suffix into a valid PostgreSQL interval string (e.g., translating `m` to `minutes`) MUST be handled by a new shared Bash function `parse_duration_to_interval` added to `bin/common` to avoid ambiguity and enable global reuse across scripts.
 
 #### `bin/q-delete-job <job-id>`
 
@@ -216,12 +220,28 @@ All CLI scripts follow the standard error contract:
 
 ### Daemon Script Tests
 
-Added to `bin/scripts-tests` (or a new `bin/queue-worker-scripts-tests`):
+Added to `bin/scripts-tests`:
 
 - `test_queue_worker_start_stop`: Verify daemon starts and stops cleanly.
 - `test_queue_worker_check_running`: Verify check reports running status.
 - `test_queue_worker_check_stopped`: Verify check reports stopped status.
 - `test_queue_worker_restart`: Verify restart cycles the daemon.
+
+### Shared Bash Utilities Tests
+
+Added to `bin/scripts-tests`:
+
+- `test_parse_duration_to_interval_valid`: Valid suffixes convert to psql intervals.
+- `test_parse_duration_to_interval_invalid`: Invalid suffixes or formats fail cleanly.
+- `test_require_dangerous_confirmation_success`: Correct prompt input returns 0.
+- `test_require_dangerous_confirmation_empty`: Empty input exits 0 cleanly.
+- `test_require_dangerous_confirmation_flag`: Using `--yes-i-really-want-to-do-this` bypasses prompt.
+
+### DB Destroy Tests Update
+
+Added to `bin/db-scripts-tests`:
+
+- Update existing `bin/db-destroy` tests to replace `--yes` flag invocations with `--yes-i-really-want-to-do-this` flag and test its integration with the new confirmation prompt logic.
 
 ### CLI Script Tests
 
@@ -288,13 +308,15 @@ Added to `bin/scripts-tests` (or a new `bin/queue-worker-scripts-tests`):
 5. **Daemon script tests**: Add tests to verify start/stop/check/restart
    lifecycle. Verify: daemon tests pass.
 
-6. **CLI scripts — `q-status` and `q-inspect`**: Create read-only tools first.
+6. **Bash Utility Extensions**: Implement `parse_duration_to_interval` and `require_dangerous_confirmation` in `bin/common`. Refactor `bin/db-destroy` to consume the new safety prompt constraint, entirely removing its current flag architecture. Add tests for utilities to `bin/scripts-tests` and update `bin/db-destroy` tests in `bin/db-scripts-tests`. Verify: shared utility tests pass.
+
+7. **CLI scripts — `q-status` and `q-inspect`**: Create read-only tools first.
    Add tests to `bin/q-scripts-tests`. Verify: tests pass.
 
-7. **CLI scripts — `q-enqueue` and `q-delete-job`**: Create mutating tools. Add
+8. **CLI scripts — `q-enqueue` and `q-delete-job`**: Create mutating tools. Add
    tests. Verify: tests pass.
 
-8. **CLI scripts — `q-truncate` and `q-retry`**: Create tools with confirmation
+9. **CLI scripts — `q-truncate` and `q-retry`**: Create tools with confirmation
    UX and status validation. Add tests. Verify: tests pass.
 
 ## Files Modified
@@ -315,3 +337,7 @@ Added to `bin/scripts-tests` (or a new `bin/queue-worker-scripts-tests`):
 - `bin/q-inspect` [NEW]
 - `bin/q-retry` [NEW]
 - `bin/q-scripts-tests` [NEW]
+- `bin/common` [MODIFY]
+- `bin/db-destroy` [MODIFY]
+- `bin/scripts-tests` [MODIFY]
+- `bin/db-scripts-tests` [MODIFY]
