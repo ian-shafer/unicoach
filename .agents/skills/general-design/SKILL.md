@@ -1,59 +1,40 @@
 ---
 name: general-design
-description: Opinionated philosophy to apply when writing code.
+description: Opinionated philosophical constraints to apply when writing code.
 ---
 
-# 🤖 Skill: General Code and Design
+# General Code and Design
 
-This skill establishes core code design guidelines focusing on maximizing
-abstraction and reusability rather than pursuing narrowly-scoped, specific
-implementations.
+Establishes structural code design constraints emphasizing abstraction, reusability, and compile-time safety. 
 
-## Solve problems as generally as possible
+## Generalization Before Implementation
 
-- Never write code until you've determined that you could not generalize the
-  problem more. E.g. if you need to write a class to do CRUDL operations on a
-  table, try to make it more general by finding common elements with what other
-  software may be able to reuse. In this case, one could come up with the
-  concept of an entity which maybe just has an ID. So every entity represented
-  in the database would have a table with an ID. A generic class can be written
-  that handles the generic entity stuff, like setting the ID. Entities can
-  extend this interface and handle their specific concerns.
+- **Exhaustive Generalization**: Evaluate if a problem can be abstracted into shared infrastructure before implementing a specific solution.
+- **Primitive Extraction**: Centralize generic interactions (e.g., CRUD entity ID management) into broad parent abstractions rather than duplicating logic per domain.
 
-## Abstract Frameworks to Common Infrastructure
+## Solve Problems Completely
 
-- Domain-agnostic code (e.g. `Validator<T>` functional interface, or a hashing
-  library), it should be placed in the codebase in a way that is sharable across
-  the codebase, e.g. in a common module.
+- **Comprehensive Resolution**: Address core issues completely upon identification to prevent iterative patching.
+- **Scope Alignment**: Do not conflate completeness with speculative engineering. Solve the validated, identified problem comprehensively; do not invent new problems. 
 
-## Avoid Over-engineering for Scale
+## Common Infrastructure Abstraction
 
-- If a scaling solution is required, it will be specifically asked for in the
-  spec. Do not concern yourself with scaling issues unless explicitly
-  instructed.
-- For example, writing to a database on every HTTP request is perfectly
-  acceptable. We are building applications that will receive at most 1 query per
-  second (1 QPS).
-- This does not mean we abandon good engineering principles—clean, modular, and
-  maintainable code is still required. It means we will avoid over-engineering
-  systems to handle massive, hypothetical load.
+- **Domain-Agnostic Centralization**: Extract domain-agnostic components (e.g., `Validator<T>`, hashing mechanisms) into a shared `common` module accessible globally across the codebase.
 
-## Make Misuse Structurally Impossible
+## Target Scale Restraints
 
-- Prefer code, APIs, data structures, etc. where incorrect usage **cannot be
-  expressed** over designs that require runtime checks or documentation warnings
-  to prevent misuse. Examples of applying this principle:
-- Use `oneof` in protos to reduce the number of representable states.
-- Use database `CHECK` constraints to guarantee storage invariants at the schema
-  level.
-- Use sealed types to force exhaustive handling of all cases at compile time.
-- Use dedicated methods to make correct use obvious and incorrect use impossible
-  — prefer `claimJob(lockDuration)` over `updateStatus(status, lockDuration?)`
-  where `lockDuration` is only meaningful for one transition.
+- **De-prioritize Load Engineering**: Assume a maximum peak load of 1 query per second (QPS) unless otherwise specified. Synchronous database writes per HTTP request are the default standard.
+- **YAGNI Enforcement**: Do not introduce caching layers, message buses, or async optimizations for hypothetical load mitigation. Maintain clean, modular architecture without premature scaling complexity.
 
-## Actionable Error Messages
+## Structurally Impossible Misuse
 
-- Output clear, concise error messages that provide all necessary data for
-  resolution.
-- Eliminate the need for subsequent command executions or lookups to gather
-  missing context.
+- **Compile-Time Validation**: Design APIs where invalid states cannot compile. Runtime state checks or documentation warnings are failure conditions.
+  - Use `oneof`/unions to mutually exclude representable states.
+  - Use database `CHECK` constraints to enforce schema invariants.
+  - Use `sealed` types to force exhaustive handling at compile time.
+  - Use specific state transition methods (e.g., `claimJob(lockDuration)`) instead of generic property modifiers (e.g., `updateStatus(status, lockDuration?)`).
+
+## Error Actionability
+
+- **Zero-Lookup Errors**: Error messages must encapsulate all identifiers, state, and context required for root-cause analysis directly in the payload. Do not require secondary lookups to gather missing context. Ideally, an agent could read the logs and automatically fix the issue without human intervention.
+- **JSON Logging**: Prefer JSON formatting for all log outputs. Actionable state and identifiers must be natively parseable properties, not concatenated strings.
