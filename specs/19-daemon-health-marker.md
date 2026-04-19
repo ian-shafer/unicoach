@@ -116,7 +116,6 @@ services:
 
 networks:
   default:
-    external: true
     name: unicoach-network
 ```
 
@@ -156,7 +155,6 @@ services:
 
 networks:
   default:
-    external: true
     name: unicoach-network
 ```
 
