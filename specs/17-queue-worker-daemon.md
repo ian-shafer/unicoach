@@ -142,18 +142,30 @@ Deletes all jobs (and their attempts via CASCADE) for the specified job types.
 If no types are given, deletes all jobs.
 
 Safety mechanism: Requires a `--yes-i-really-want-to-do-this` flag for
-non-interactive execution. Without the flag, this MUST rely on a new shared bash function `require_dangerous_confirmation "destructive action description"` added to `bin/common`.
+non-interactive execution. Without the flag, this MUST rely on a new shared bash
+function `require_dangerous_confirmation "destructive action description"` added
+to `bin/common`.
 
 The `require_dangerous_confirmation` function MUST:
-1. Listen for the `--yes-i-really-want-to-do-this` flag. If it was passed to the caller, skip the prompt and proceed.
-2. If absent, use an interactive shell prompt requesting the user to type `"Yes, I really want to do this"` (with dynamic context about what is being destroyed).
-3. If the raw input is completely empty, exit the script immediately with status 0.
-4. If not empty, strip all non-alphabetic characters except spaces (`s/[^a-zA-Z ]//g`), collapse consecutive spaces into a single space, and convert to lowercase.
-5. If the normalized input exactly equals `yes i really want to do this`, return success and proceed.
-6. If the input does not match, print an error to stderr and prompt again in a loop.
-Users must be able to cleanly exit via `ctrl-c` or `ctrl-d`.
 
-The `bin/db-destroy` script MUST be updated to remove its current `-y`/`--yes` flag and weak `(y/N)` prompt, entirely delegating its safety check to this new `require_dangerous_confirmation` command.
+1. Listen for the `--yes-i-really-want-to-do-this` flag. If it was passed to the
+   caller, skip the prompt and proceed.
+2. If absent, use an interactive shell prompt requesting the user to type
+   `"Yes, I really want to do this"` (with dynamic context about what is being
+   destroyed).
+3. If the raw input is completely empty, exit the script immediately with
+   status 0.
+4. If not empty, strip all non-alphabetic characters except spaces
+   (`s/[^a-zA-Z ]//g`), collapse consecutive spaces into a single space, and
+   convert to lowercase.
+5. If the normalized input exactly equals `yes i really want to do this`, return
+   success and proceed.
+6. If the input does not match, print an error to stderr and prompt again in a
+   loop. Users must be able to cleanly exit via `ctrl-c` or `ctrl-d`.
+
+The `bin/db-destroy` script MUST be updated to remove its current `-y`/`--yes`
+flag and weak `(y/N)` prompt, entirely delegating its safety check to this new
+`require_dangerous_confirmation` command.
 
 #### `bin/q-enqueue <job-type> <payload-json> [options]`
 
@@ -167,9 +179,14 @@ Arguments:
 Options:
 
 - `--max-attempts <n>`: Override max attempts.
-- `--delay <duration>`: Delay before the job becomes eligible. Must support standard shell `sleep` suffixes (`s`, `m`, `h`, `d`).
+- `--delay <duration>`: Delay before the job becomes eligible. Must support
+  standard shell `sleep` suffixes (`s`, `m`, `h`, `d`).
 
-Implementation: Direct `INSERT` via `bin/db-update`. The conversion of the shell-style duration suffix into a valid PostgreSQL interval string (e.g., translating `m` to `minutes`) MUST be handled by a new shared Bash function `parse_duration_to_interval` added to `bin/common` to avoid ambiguity and enable global reuse across scripts.
+Implementation: Direct `INSERT` via `bin/db-update`. The conversion of the
+shell-style duration suffix into a valid PostgreSQL interval string (e.g.,
+translating `m` to `minutes`) MUST be handled by a new shared Bash function
+`parse_duration_to_interval` added to `bin/common` to avoid ambiguity and enable
+global reuse across scripts.
 
 #### `bin/q-delete-job <job-id>`
 
@@ -231,17 +248,22 @@ Added to `bin/scripts-tests`:
 
 Added to `bin/scripts-tests`:
 
-- `test_parse_duration_to_interval_valid`: Valid suffixes convert to psql intervals.
-- `test_parse_duration_to_interval_invalid`: Invalid suffixes or formats fail cleanly.
+- `test_parse_duration_to_interval_valid`: Valid suffixes convert to psql
+  intervals.
+- `test_parse_duration_to_interval_invalid`: Invalid suffixes or formats fail
+  cleanly.
 - `test_require_dangerous_confirmation_success`: Correct prompt input returns 0.
 - `test_require_dangerous_confirmation_empty`: Empty input exits 0 cleanly.
-- `test_require_dangerous_confirmation_flag`: Using `--yes-i-really-want-to-do-this` bypasses prompt.
+- `test_require_dangerous_confirmation_flag`: Using
+  `--yes-i-really-want-to-do-this` bypasses prompt.
 
 ### DB Destroy Tests Update
 
 Added to `bin/db-scripts-tests`:
 
-- Update existing `bin/db-destroy` tests to replace `--yes` flag invocations with `--yes-i-really-want-to-do-this` flag and test its integration with the new confirmation prompt logic.
+- Update existing `bin/db-destroy` tests to replace `--yes` flag invocations
+  with `--yes-i-really-want-to-do-this` flag and test its integration with the
+  new confirmation prompt logic.
 
 ### CLI Script Tests
 
@@ -308,7 +330,12 @@ Added to `bin/db-scripts-tests`:
 5. **Daemon script tests**: Add tests to verify start/stop/check/restart
    lifecycle. Verify: daemon tests pass.
 
-6. **Bash Utility Extensions**: Implement `parse_duration_to_interval` and `require_dangerous_confirmation` in `bin/common`. Refactor `bin/db-destroy` to consume the new safety prompt constraint, entirely removing its current flag architecture. Add tests for utilities to `bin/scripts-tests` and update `bin/db-destroy` tests in `bin/db-scripts-tests`. Verify: shared utility tests pass.
+6. **Bash Utility Extensions**: Implement `parse_duration_to_interval` and
+   `require_dangerous_confirmation` in `bin/common`. Refactor `bin/db-destroy`
+   to consume the new safety prompt constraint, entirely removing its current
+   flag architecture. Add tests for utilities to `bin/scripts-tests` and update
+   `bin/db-destroy` tests in `bin/db-scripts-tests`. Verify: shared utility
+   tests pass.
 
 7. **CLI scripts — `q-status` and `q-inspect`**: Create read-only tools first.
    Add tests to `bin/q-scripts-tests`. Verify: tests pass.

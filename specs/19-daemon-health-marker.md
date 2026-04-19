@@ -2,17 +2,29 @@
 
 ## Executive Summary
 
-Docker Compose `--wait` returns immediately for services without a healthcheck, creating a race condition where `start` reports success before the JVM crashes. A stale marker file from a previous run compounds the problem — `check` could falsely report a dead container as healthy.
+Docker Compose `--wait` returns immediately for services without a healthcheck,
+creating a race condition where `start` reports success before the JVM crashes.
+A stale marker file from a previous run compounds the problem — `check` could
+falsely report a dead container as healthy.
 
-This spec introduces a generalized, nonce-based health marker system. On each `start` invocation, `docker-daemon-start` generates a unique nonce. The nonce flows explicitly through `bin/docker-compose` into the container environment, is forwarded as a JVM system property via Gradle, and is written to a marker file (`var/run/${SERVICE_NAME}.check`) by a shared `HealthMarker` utility after successful initialization. The Docker healthcheck compares the marker file contents against the nonce, guaranteeing that only the current container instance can pass.
+This spec introduces a generalized, nonce-based health marker system. On each
+`start` invocation, `docker-daemon-start` generates a unique nonce. The nonce
+flows explicitly through `bin/docker-compose` into the container environment, is
+forwarded as a JVM system property via Gradle, and is written to a marker file
+(`var/run/${SERVICE_NAME}.check`) by a shared `HealthMarker` utility after
+successful initialization. The Docker healthcheck compares the marker file
+contents against the nonce, guaranteeing that only the current container
+instance can pass.
 
-This pattern applies uniformly to all JVM-based daemons (`queue-worker`, `rest-server`). Non-JVM services (postgres) are unaffected.
+This pattern applies uniformly to all JVM-based daemons (`queue-worker`,
+`rest-server`). Non-JVM services (postgres) are unaffected.
 
 ## Detailed Design
 
 ### Data Flow
 
-The nonce traverses the following explicit chain. No `export` is used at any point.
+The nonce traverses the following explicit chain. No `export` is used at any
+point.
 
 ```
 docker-daemon-start (generates nonce via uuidgen)
@@ -40,7 +52,8 @@ docker-daemon-start (generates nonce via uuidgen)
 
 #### `bin/docker-daemon-start`
 
-After acquiring the file lock and before calling `bin/docker-compose`, generate a nonce:
+After acquiring the file lock and before calling `bin/docker-compose`, generate
+a nonce:
 
 ```bash
 NONCE=$(uuidgen)
@@ -68,11 +81,14 @@ POSTGRES_DATA_DIR="${POSTGRES_DATA_DIR:-./var/postgres}" \
 docker compose --env-file /dev/null --project-directory "$PROJECT_ROOT" "$@"
 ```
 
-The `:-` default to empty ensures non-health-checked invocations (e.g., `docker-compose logs`) pass through without error.
+The `:-` default to empty ensures non-health-checked invocations (e.g.,
+`docker-compose logs`) pass through without error.
 
 #### `bin/queue-worker-start`
 
-Remove the nonce generation added during the spec-17 implementation. Retain the `postgres-start` dependency. The script delegates entirely to `docker-daemon-start`:
+Remove the nonce generation added during the spec-17 implementation. Retain the
+`postgres-start` dependency. The script delegates entirely to
+`docker-daemon-start`:
 
 ```bash
 #!/usr/bin/env bash
@@ -108,7 +124,12 @@ services:
       - SERVICE_NAME=queue-worker
     command: ["./gradlew", ":queue-worker:run"]
     healthcheck:
-      test: ["CMD-SHELL", "[ \"$(cat /workspace/var/run/queue-worker.check 2>/dev/null)\" = \"$HEALTH_NONCE\" ]"]
+      test:
+        [
+          "CMD-SHELL",
+          '[ "$(cat /workspace/var/run/queue-worker.check 2>/dev/null)" =
+          "$HEALTH_NONCE" ]',
+        ]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -119,7 +140,8 @@ networks:
     name: unicoach-network
 ```
 
-`start_period: 30s` accommodates Gradle compilation and JVM boot time. During the start period, failed healthchecks do not count toward retries.
+`start_period: 30s` accommodates Gradle compilation and JVM boot time. During
+the start period, failed healthchecks do not count toward retries.
 
 #### `docker/rest-server-compose.yaml`
 
@@ -147,7 +169,12 @@ services:
       - SERVICE_NAME=rest-server
     command: ["./gradlew", ":rest-server:run"]
     healthcheck:
-      test: ["CMD-SHELL", "[ \"$(cat /workspace/var/run/rest-server.check 2>/dev/null)\" = \"$HEALTH_NONCE\" ]"]
+      test:
+        [
+          "CMD-SHELL",
+          '[ "$(cat /workspace/var/run/rest-server.check 2>/dev/null)" =
+          "$HEALTH_NONCE" ]',
+        ]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -197,7 +224,8 @@ No logging, no static state, no singletons. The caller owns the lifecycle.
 
 #### `HealthMarker.fromSystemProperties()` factory
 
-A convenience factory that reads the three required system properties and fails fast if any are missing:
+A convenience factory that reads the three required system properties and fails
+fast if any are missing:
 
 ```kotlin
 companion object {
@@ -225,7 +253,8 @@ tasks.named<JavaExec>("run") {
 }
 ```
 
-This explicitly maps container environment variables to JVM system properties. No convention-based magic.
+This explicitly maps container environment variables to JVM system properties.
+No convention-based magic.
 
 #### `queue-worker/Application.kt` Integration
 
@@ -249,7 +278,8 @@ try {
 }
 ```
 
-Remove `HEALTH_NONCE` and `HEALTH_FILE` environment variable reads. Remove `java.io.File` import if no longer needed elsewhere.
+Remove `HEALTH_NONCE` and `HEALTH_FILE` environment variable reads. Remove
+`java.io.File` import if no longer needed elsewhere.
 
 #### `rest-server/Application.kt` Integration
 
@@ -280,13 +310,18 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 }
 ```
 
-The marker is written after `server.start(wait = false)` returns, confirming Netty is bound and accepting connections. The `ApplicationStopped` monitor event handles cleanup on graceful shutdown.
+The marker is written after `server.start(wait = false)` returns, confirming
+Netty is bound and accepting connections. The `ApplicationStopped` monitor event
+handles cleanup on graceful shutdown.
 
 ### Error Handling
 
 - `HealthMarker` constructor fails fast via `require` on blank inputs.
 - `fromSystemProperties()` fails fast via `error()` on missing properties.
-- `write()` calls `mkdirs()` to ensure the directory exists; `writeText` throws `IOException` on permission failures, which crashes the application (correct behavior — if we can't write the marker, the healthcheck will never pass, and Docker will restart the container).
+- `write()` calls `mkdirs()` to ensure the directory exists; `writeText` throws
+  `IOException` on permission failures, which crashes the application (correct
+  behavior — if we can't write the marker, the healthcheck will never pass, and
+  Docker will restart the container).
 - `delete()` returns `false` silently if the file doesn't exist (idempotent).
 
 ### Dependencies
@@ -299,19 +334,28 @@ No new dependencies. `HealthMarker` uses only `java.io.File`.
 
 File: `common/src/test/kotlin/ed/unicoach/common/HealthMarkerTest.kt`
 
-1. **`write creates file with nonce contents`**: Create a `HealthMarker` with a temp directory. Call `write()`. Assert the file exists and contains the exact nonce string.
+1. **`write creates file with nonce contents`**: Create a `HealthMarker` with a
+   temp directory. Call `write()`. Assert the file exists and contains the exact
+   nonce string.
 
-2. **`write creates parent directories`**: Create a `HealthMarker` pointing to a non-existent subdirectory. Call `write()`. Assert the file and directories were created.
+2. **`write creates parent directories`**: Create a `HealthMarker` pointing to a
+   non-existent subdirectory. Call `write()`. Assert the file and directories
+   were created.
 
-3. **`delete removes file`**: Call `write()` then `delete()`. Assert the file no longer exists.
+3. **`delete removes file`**: Call `write()` then `delete()`. Assert the file no
+   longer exists.
 
-4. **`delete is idempotent`**: Call `delete()` without calling `write()` first. Assert no exception is thrown.
+4. **`delete is idempotent`**: Call `delete()` without calling `write()` first.
+   Assert no exception is thrown.
 
-5. **`constructor rejects blank runDir`**: Pass blank `runDir`. Assert `IllegalArgumentException`.
+5. **`constructor rejects blank runDir`**: Pass blank `runDir`. Assert
+   `IllegalArgumentException`.
 
-6. **`constructor rejects blank serviceName`**: Pass blank `serviceName`. Assert `IllegalArgumentException`.
+6. **`constructor rejects blank serviceName`**: Pass blank `serviceName`. Assert
+   `IllegalArgumentException`.
 
-7. **`constructor rejects blank nonce`**: Pass blank `nonce`. Assert `IllegalArgumentException`.
+7. **`constructor rejects blank nonce`**: Pass blank `nonce`. Assert
+   `IllegalArgumentException`.
 
 ### Shell Integration Tests: Stale Marker Resilience
 
@@ -321,62 +365,84 @@ File: `bin/scripts-tests` (added to the existing daemon wrapper test function)
    - Stop the service.
    - Write a fake nonce (`echo "stale-nonce" > var/run/rest-server.check`).
    - Start the service.
-   - Assert `check` returns success (the new container overwrites the stale marker with its own nonce).
+   - Assert `check` returns success (the new container overwrites the stale
+     marker with its own nonce).
    - Stop the service.
 
 ### Implicit Integration Coverage
 
-The existing daemon lifecycle tests in `scripts-tests` (start, check, stop, restart, concurrent start/stop) inherently validate the full nonce flow once healthchecks are added. No modifications needed — `docker compose up --wait` will block until the healthcheck passes, confirming the nonce was written correctly.
+The existing daemon lifecycle tests in `scripts-tests` (start, check, stop,
+restart, concurrent start/stop) inherently validate the full nonce flow once
+healthchecks are added. No modifications needed — `docker compose up --wait`
+will block until the healthcheck passes, confirming the nonce was written
+correctly.
 
 ## Implementation Plan
 
 ### Step 1: Create `HealthMarker` in `common`
 
-Create `common/src/main/kotlin/ed/unicoach/common/HealthMarker.kt` with the class, `require` guards, `write()`, `delete()`, and `fromSystemProperties()` factory.
+Create `common/src/main/kotlin/ed/unicoach/common/HealthMarker.kt` with the
+class, `require` guards, `write()`, `delete()`, and `fromSystemProperties()`
+factory.
 
-Create `common/src/test/kotlin/ed/unicoach/common/HealthMarkerTest.kt` with all 7 unit tests.
+Create `common/src/test/kotlin/ed/unicoach/common/HealthMarkerTest.kt` with all
+7 unit tests.
 
 Verify: `./gradlew :common:test`
 
 ### Step 2: Update shell infrastructure
 
-Modify `bin/docker-daemon-start` to generate a nonce and pass it inline to `bin/docker-compose`.
+Modify `bin/docker-daemon-start` to generate a nonce and pass it inline to
+`bin/docker-compose`.
 
-Modify `bin/docker-compose` to add `HEALTH_NONCE="${HEALTH_NONCE:-}"` to the inline env var block.
+Modify `bin/docker-compose` to add `HEALTH_NONCE="${HEALTH_NONCE:-}"` to the
+inline env var block.
 
-Modify `bin/queue-worker-start` to remove nonce generation (retain `postgres-start` dependency).
+Modify `bin/queue-worker-start` to remove nonce generation (retain
+`postgres-start` dependency).
 
 Verify: `bin/docker-daemon-start -h` still works, no syntax errors.
 
 ### Step 3: Update `queue-worker` Docker and Gradle configuration
 
-Overwrite `docker/queue-worker-compose.yaml` with healthcheck, `HEALTH_NONCE`, `RUN_DIR`, and `SERVICE_NAME` environment variables.
+Overwrite `docker/queue-worker-compose.yaml` with healthcheck, `HEALTH_NONCE`,
+`RUN_DIR`, and `SERVICE_NAME` environment variables.
 
-Modify `queue-worker/build.gradle.kts` to add system property forwarding in the `run` task.
+Modify `queue-worker/build.gradle.kts` to add system property forwarding in the
+`run` task.
 
-Modify `queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt` to use `HealthMarker.fromSystemProperties()`. Remove direct `HEALTH_NONCE`/`HEALTH_FILE` env var reads and `java.io.File` usage for the marker.
+Modify `queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt` to use
+`HealthMarker.fromSystemProperties()`. Remove direct
+`HEALTH_NONCE`/`HEALTH_FILE` env var reads and `java.io.File` usage for the
+marker.
 
 Verify: `./gradlew :queue-worker:compileKotlin`
 
 ### Step 4: Update `rest-server` Docker and Gradle configuration
 
-Overwrite `docker/rest-server-compose.yaml` with healthcheck, `HEALTH_NONCE`, `RUN_DIR`, and `SERVICE_NAME` environment variables.
+Overwrite `docker/rest-server-compose.yaml` with healthcheck, `HEALTH_NONCE`,
+`RUN_DIR`, and `SERVICE_NAME` environment variables.
 
-Modify `rest-server/build.gradle.kts` to add system property forwarding in the `run` task.
+Modify `rest-server/build.gradle.kts` to add system property forwarding in the
+`run` task.
 
-Modify `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt` to integrate `HealthMarker`. Write marker after `server.start()`. Delete in `ApplicationStopped` monitor and shutdown hook.
+Modify `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt` to
+integrate `HealthMarker`. Write marker after `server.start()`. Delete in
+`ApplicationStopped` monitor and shutdown hook.
 
 Verify: `./gradlew :rest-server:compileKotlin`
 
 ### Step 5: Add stale marker test
 
-Modify `bin/scripts-tests` to add a stale marker resilience test within the daemon wrapper test function.
+Modify `bin/scripts-tests` to add a stale marker resilience test within the
+daemon wrapper test function.
 
 ### Step 6: Full verification
 
 Run `bin/test` to verify Kotlin compilation and all JVM tests pass.
 
-Run `bin/scripts-tests` to verify all daemon lifecycle tests pass with the new healthchecks.
+Run `bin/scripts-tests` to verify all daemon lifecycle tests pass with the new
+healthchecks.
 
 ## Files Modified
 

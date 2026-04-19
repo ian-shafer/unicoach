@@ -12,7 +12,7 @@ dependencies {
   implementation(project(":db"))
   implementation(project(":queue"))
   implementation(project(":service"))
-  
+
   implementation(libs.logback.classic)
   implementation(libs.logstash.logback.encoder)
   implementation(libs.kotlinx.coroutines.core)
