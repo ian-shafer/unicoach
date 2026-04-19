@@ -1,9 +1,9 @@
-# 19: Docker Infrastructure Hardening
+# 18: Docker Infrastructure Hardening
 
 ## Executive Summary
 
-The Docker network is managed as an `external: true` resource, requiring
-4 dedicated `docker-network-daemon-*` scripts and explicit pre-flight calls in
+The Docker network is managed as an `external: true` resource, requiring 4
+dedicated `docker-network-daemon-*` scripts and explicit pre-flight calls in
 every service wrapper. This creates the single most common class of startup
 failures — the network must exist before any compose file can be evaluated.
 After `docker system prune`, Docker Desktop restarts, or manual cleanup, all
@@ -14,9 +14,10 @@ to `name: unicoach-network` without `external: true`, which tells Docker Compose
 to auto-create the network on `up` and leave it for other stacks. The 4 network
 daemon scripts are deleted, and all wrapper `start`/`restart` scripts are
 simplified to remove the network pre-flight call. Additionally, `bin/test-fuzz`
-is updated to use daemon wrappers (clearing spec 03 debt),
-`docker-compose.test.yml` is normalized into `docker/test-compose.yaml`, and a
-new `bin/docker-status` diagnostic tool is introduced.
+is updated to use daemon wrappers (clearing spec 03 debt — spec 03 requires all
+Docker orchestration to flow through daemon wrappers), `docker-compose.test.yml`
+is normalized into `docker/test-compose.yaml`, and a new `bin/docker-status`
+diagnostic tool is introduced.
 
 ## Detailed Design
 
@@ -72,8 +73,7 @@ The `docker-network-daemon-start` pre-flight call is removed from:
 - `bin/postgres-start`: Becomes a direct delegation to `docker-daemon-start`.
 - `bin/postgres-restart`: Becomes a direct delegation to
   `docker-daemon-restart`.
-- `bin/rest-server-start`: Becomes a direct delegation to
-  `docker-daemon-start`.
+- `bin/rest-server-start`: Becomes a direct delegation to `docker-daemon-start`.
 - `bin/rest-server-restart`: Becomes a direct delegation to
   `docker-daemon-restart`.
 
@@ -101,14 +101,19 @@ use daemon wrappers.
 
 The updated script:
 
-1. **Trap**: `bin/rest-server-stop --docker-down` (replaces raw
-   `docker-compose down`).
-2. **Boot**: `bin/rest-server-restart --docker-down` (replaces raw
+1. **Trap**: `bin/rest-server-stop --docker-down` and
+   `bin/postgres-stop --docker-down` (replaces raw `docker-compose down`).
+2. **Postgres**: `bin/postgres-start` (ensures the database is online before the
+   rest-server boots — the rest-server compose file has no postgres service and
+   will crash on JDBC connect if postgres is not already running on
+   `unicoach-network`).
+3. **Boot**: `bin/rest-server-restart --docker-down` (replaces raw
    `docker-compose up -d`).
-3. **Readiness**: Retain `bin/wait-for 90s curl ...` since JVM services
+4. **Readiness**: Retain `bin/wait-for 90s curl ...` since JVM services
    currently have no Docker-level healthcheck. This becomes unnecessary after
-   spec 18 is implemented.
-4. **Fuzzer**: `bin/docker-compose -f "$PROJECT_ROOT/docker/test-fuzz-compose.yaml" run --rm fuzzer`
+   spec 19 (daemon health marker) is implemented.
+5. **Fuzzer**:
+   `bin/docker-compose -f "$PROJECT_ROOT/docker/test-fuzz-compose.yaml" run --rm fuzzer`
    (runs the fuzzer as a standalone compose invocation on `unicoach-network`).
 
 `docker/test-fuzz-compose.yaml` must declare the shared network so the fuzzer
@@ -184,7 +189,7 @@ Network:
   unicoach-network    active
 
 Services:
-  postgres            running (healthy)
+  postgres            running
   rest-server         stopped
   queue-worker        stopped
 
@@ -192,23 +197,27 @@ Locks:
   (none)
 ```
 
+Service status is derived from `bin/docker-daemon-check` exit codes: exit `0` →
+`running`, non-zero → `stopped`. Docker-level health detail (e.g., `healthy`) is
+not exposed by the check scripts and is out of scope.
+
 Implementation:
 
 - Check network existence via `docker network inspect unicoach-network`.
 - Check each service via `bin/docker-daemon-check`. Suppress stderr, evaluate
   exit code.
-- Scan `$PROJECT_ROOT/var/run/*.daemon.lock` for active locks. For each lock
-  found, read `op` and `expires-at` to display the operation and whether the
-  lock is stale.
+- Scan `$PROJECT_ROOT/var/run/*.docker-daemon.lock` for active locks. For each
+  lock found, read `op` and `expires-at` to display the operation and whether
+  the lock is stale.
 - All services to check: `postgres`, `rest-server`, `queue-worker`.
 - Help flag (`-h`, `--help`) must exit `0`.
 
 ### Trap Teardown Simplification
 
 Every test harness (`bin/scripts-tests`, `bin/db-scripts-tests`,
-`bin/q-scripts-tests`, `tests/db/test_users_table.sh`) contains a trap that
-explicitly calls `docker-network-daemon-stop` and `docker network rm`. These
-must be simplified to remove all network daemon references.
+`bin/q-scripts-tests`, `bin/db-users-tests`) contains a trap that explicitly
+calls `docker-network-daemon-stop` and `docker network rm`. These must be
+simplified to remove all network daemon references.
 
 The new trap pattern uses `*-stop -d` (which runs `docker compose down`),
 letting Docker Compose handle network cleanup:
@@ -221,8 +230,12 @@ The trailing `docker network rm` is a defensive safety net. After all compose
 stacks are torn down, the network should already be gone, but the `rm` handles
 edge cases idempotently.
 
-For harnesses that do not use all services (e.g., `tests/db/test_users_table.sh`
-only uses postgres), the trap should only stop the services it starts.
+For harnesses that do not use all services (e.g., `bin/db-users-tests` only uses
+postgres), the trap should only stop the services it starts.
+
+Note: the addition of `bin/queue-worker-stop -d` to the `bin/scripts-tests` trap
+is a **latent bug fix** — the current trap does not stop the queue-worker even
+though `test_daemon_wrapper "queue-worker"` starts it.
 
 ### Dependencies
 
@@ -277,7 +290,7 @@ Added to `bin/scripts-tests`:
 - `bin/db-scripts-tests`: Full pass. Validates database operations still work
   with auto-created network.
 - `bin/q-scripts-tests`: Full pass. Validates queue CLI tools still work.
-- `tests/db/test_users_table.sh`: Full pass.
+- `bin/db-users-tests`: Full pass.
 - Manual: Execute `docker system prune --all`, then `bin/postgres-start`.
   Confirm the network is auto-created and postgres boots without error.
 - Manual: Execute `bin/test-fuzz` to confirm the fuzzer can resolve the
@@ -290,8 +303,10 @@ Added to `bin/scripts-tests`:
      networks block.
    - Modify `docker/rest-server-compose.yaml`: Remove `external: true`.
    - Modify `docker/queue-worker-compose.yaml`: Remove `external: true`.
-   - Modify `docker/test-fuzz-compose.yaml`: Add
-     `networks: default: name: unicoach-network`.
+   - Restructure `docker/test-fuzz-compose.yaml`: Add
+     `networks: default: name: unicoach-network` block. Remove the stale weaving
+     comment (the fuzzer now runs as a standalone compose invocation, not weaved
+     with `rest-server-compose.yaml`).
    - Verify: `bin/docker-compose -f docker/postgres-compose.yaml config` parses
      without error for each file.
 
@@ -302,17 +317,16 @@ Added to `bin/scripts-tests`:
    - Delete `bin/docker-network-daemon-check`.
 
 3. **Simplify wrapper scripts.**
-   - Modify `bin/postgres-start`: Remove the
-     `docker-network-daemon-start` line. Reduce to
-     `exec "$PROJECT_ROOT/bin/docker-daemon-start" "$@" postgres`.
-   - Modify `bin/postgres-restart`: Remove the
-     `docker-network-daemon-start` line. Reduce to
+   - Modify `bin/postgres-start`: Remove the `docker-network-daemon-start` line.
+     Reduce to `exec "$PROJECT_ROOT/bin/docker-daemon-start" "$@" postgres`.
+   - Modify `bin/postgres-restart`: Remove the `docker-network-daemon-start`
+     line. Reduce to
      `exec "$PROJECT_ROOT/bin/docker-daemon-restart" "$@" postgres`.
-   - Modify `bin/rest-server-start`: Remove the
-     `docker-network-daemon-start` line. Reduce to
+   - Modify `bin/rest-server-start`: Remove the `docker-network-daemon-start`
+     line. Reduce to
      `exec "$PROJECT_ROOT/bin/docker-daemon-start" "$@" rest-server`.
-   - Modify `bin/rest-server-restart`: Remove the
-     `docker-network-daemon-start` line. Reduce to
+   - Modify `bin/rest-server-restart`: Remove the `docker-network-daemon-start`
+     line. Reduce to
      `exec "$PROJECT_ROOT/bin/docker-daemon-restart" "$@" rest-server`.
    - Verify: `bin/postgres-start -h` and `bin/rest-server-start -h` exit `0`.
 
@@ -320,15 +334,16 @@ Added to `bin/scripts-tests`:
    - Delete `docker-compose.test.yml` from the project root.
    - Create `docker/test-compose.yaml` with normalized content (no `version`,
      `user` added, `external: true` removed).
-   - Modify `bin/test`: Update the compose file path to
-     `"$PROJECT_ROOT/docker/test-compose.yaml"` and use `"$PROJECT_ROOT/bin/..."`
-     for all script references.
+   - Modify `bin/test`: Update the compose invocation to:
+     `"$PROJECT_ROOT/bin/docker-compose" -f "$PROJECT_ROOT/docker/test-compose.yaml" run --rm gradle-runner ./gradlew "${GRADLE_ARGS[@]}"`.
+     All bare `bin/` references must use `"$PROJECT_ROOT/bin/..."` consistently.
    - Verify: `bin/docker-compose -f docker/test-compose.yaml config` parses
      without error.
 
 5. **Update `bin/test-fuzz` to use daemon wrappers.**
-   - Replace the trap with
-     `"$PROJECT_ROOT/bin/rest-server-stop" --docker-down`.
+   - Replace the trap with `"$PROJECT_ROOT/bin/rest-server-stop" --docker-down`
+     and `"$PROJECT_ROOT/bin/postgres-stop" --docker-down`.
+   - Add `"$PROJECT_ROOT/bin/postgres-start"` before the rest-server boot.
    - Replace `docker-compose up -d` with
      `"$PROJECT_ROOT/bin/rest-server-restart" --docker-down`.
    - Retain the `wait-for curl` readiness poll.
@@ -337,18 +352,21 @@ Added to `bin/scripts-tests`:
    - Verify: `bin/test-fuzz -h` exits `0`.
 
 6. **Simplify test harness traps.**
-   - Modify `bin/scripts-tests`: Remove
-     `docker-network-daemon-stop` and `docker network rm` from the trap. Remove
-     the `docker network create unicoach-network` setup line. Remove the
+   - Modify `bin/scripts-tests`: Remove `docker-network-daemon-stop` and
+     `docker network rm` from the trap. Remove the
+     `docker network create unicoach-network` setup line. Remove the
      `test_daemon_wrapper "docker-network-daemon" "unicoach-network"` call. Add
      `bin/queue-worker-stop -d` to the trap. Add `docker network rm` as a
      trailing safety net.
-   - Modify `bin/db-scripts-tests`: Simplify trap to
-     `bin/postgres-stop -d` and trailing `docker network rm`.
-   - Modify `bin/q-scripts-tests`: Simplify trap to
-     `bin/postgres-stop -d` and trailing `docker network rm`.
-   - Modify `tests/db/test_users_table.sh`: Simplify trap to
-     `bin/postgres-stop -d` and trailing `docker network rm`.
+   - Modify `bin/db-scripts-tests`: Simplify trap to `bin/postgres-stop -d` and
+     trailing `docker network rm`.
+   - Modify `bin/q-scripts-tests`: Simplify trap to `bin/postgres-stop -d` and
+     trailing `docker network rm`.
+   - Relocate `tests/db/test_users_table.sh` to `bin/db-users-tests` (normalizes
+     test harness location convention). Update source paths from `../../` to
+     standard `$(dirname "$0")/` pattern. Simplify trap to
+     `bin/postgres-stop -d` and trailing `docker network rm`. Delete the empty
+     `tests/` directory tree.
 
 7. **Create `bin/docker-status`.**
    - Create `bin/docker-status` with help flag support, network check, service
@@ -361,7 +379,7 @@ Added to `bin/scripts-tests`:
    - Run `bin/scripts-tests`. All tests must pass.
    - Run `bin/db-scripts-tests`. All tests must pass.
    - Run `bin/q-scripts-tests`. All tests must pass.
-   - Run `tests/db/test_users_table.sh`. All tests must pass.
+   - Run `bin/db-users-tests`. All tests must pass.
 
 ## Files Modified
 
@@ -372,11 +390,15 @@ Added to `bin/scripts-tests`:
 - `bin/docker-network-daemon-restart`
 - `bin/docker-network-daemon-check`
 - `docker-compose.test.yml`
+- `tests/db/test_users_table.sh`
+- `tests/db/` (empty directory)
+- `tests/` (empty directory)
 
 #### [NEW]
 
 - `docker/test-compose.yaml`
 - `bin/docker-status`
+- `bin/db-users-tests`
 
 #### [MODIFY]
 
@@ -393,4 +415,3 @@ Added to `bin/scripts-tests`:
 - `bin/scripts-tests`
 - `bin/db-scripts-tests`
 - `bin/q-scripts-tests`
-- `tests/db/test_users_table.sh`
