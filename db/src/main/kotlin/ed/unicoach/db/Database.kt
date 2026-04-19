@@ -44,6 +44,13 @@ class Database(
     }
   }
 
+  fun createRawConnection(): java.sql.Connection =
+    java.sql.DriverManager.getConnection(
+      dataSource.jdbcUrl,
+      dataSource.username,
+      dataSource.password,
+    )
+
   fun close() {
     dataSource.close()
   }

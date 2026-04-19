@@ -137,6 +137,9 @@ class JobsDao {
       }
     }
 
+  // TODO: Further DRYing can be achieved by abstracting the common SQL
+  // execution and ResultSet mapping logic shared between claimJob and reschedule.
+
   /**
    * Transitions a job from SCHEDULED to RUNNING and sets
    * locked_until = NOW() + lockDuration via SQL interval.
@@ -184,18 +187,29 @@ class JobsDao {
     }
 
   /**
-   * Transitions a job from RUNNING to a terminal status (COMPLETED or DEAD_LETTERED).
+   * Transitions a job from RUNNING to COMPLETED.
    * Always clears locked_until to NULL.
    */
-  fun updateStatus(
+  fun completeJob(
+    session: SqlSession,
+    id: UUID,
+  ): JobUpdateResult = updateTerminalStatus(session, id, JobStatus.COMPLETED)
+
+  /**
+   * Transitions a job from RUNNING to DEAD_LETTERED.
+   * Always clears locked_until to NULL.
+   */
+  fun deadLetterJob(
+    session: SqlSession,
+    id: UUID,
+  ): JobUpdateResult = updateTerminalStatus(session, id, JobStatus.DEAD_LETTERED)
+
+  private fun updateTerminalStatus(
     session: SqlSession,
     id: UUID,
     status: JobStatus,
   ): JobUpdateResult =
     executeSafely(JobUpdateResult::DatabaseFailure) {
-      require(status != JobStatus.RUNNING) {
-        "Jobs must not be updated to RUNNING status using updateStatus. Use claimJob to transition a job to RUNNING."
-      }
       val sql =
         """
         WITH updated AS (
@@ -249,7 +263,7 @@ class JobsDao {
             SET status = 'SCHEDULED',
                 scheduled_at = NOW() + ?::interval,
                 locked_until = NULL
-            WHERE id = ? AND status != 'RUNNING'
+            WHERE id = ? AND status = 'RUNNING'
             RETURNING *
         )
         SELECT true AS was_updated, u.* FROM updated u

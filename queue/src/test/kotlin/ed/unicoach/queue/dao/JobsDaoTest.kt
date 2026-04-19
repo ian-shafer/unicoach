@@ -206,20 +206,20 @@ class JobsDaoTest {
   // -------------------------------------------------------------------------
 
   @Test
-  fun `updateStatus transitions RUNNING to COMPLETED clearing locked_until`() {
+  fun `completeJob transitions RUNNING to COMPLETED clearing locked_until`() {
     val job = insertJob()
     jobsDao.claimJob(session, job.id, 10.minutes)
-    val result = jobsDao.updateStatus(session, job.id, JobStatus.COMPLETED)
+    val result = jobsDao.completeJob(session, job.id)
     assertTrue(result is JobUpdateResult.Success)
     assertEquals(JobStatus.COMPLETED, result.job.status)
     assertNull(result.job.lockedUntil)
   }
 
   @Test
-  fun `updateStatus transitions RUNNING to DEAD_LETTERED clearing locked_until`() {
+  fun `deadLetterJob transitions RUNNING to DEAD_LETTERED clearing locked_until`() {
     val job = insertJob()
     jobsDao.claimJob(session, job.id, 10.minutes)
-    val result = jobsDao.updateStatus(session, job.id, JobStatus.DEAD_LETTERED)
+    val result = jobsDao.deadLetterJob(session, job.id)
     assertTrue(result is JobUpdateResult.Success)
     assertEquals(JobStatus.DEAD_LETTERED, result.job.status)
     assertNull(result.job.lockedUntil)
@@ -232,6 +232,7 @@ class JobsDaoTest {
   @Test
   fun `reschedule resets to SCHEDULED with future scheduled_at`() {
     val job = insertJob()
+    jobsDao.claimJob(session, job.id, 10.minutes)
     val result = jobsDao.reschedule(session, job.id, 30.minutes)
     assertTrue(result is JobUpdateResult.Success)
     assertEquals(JobStatus.SCHEDULED, result.job.status)
@@ -321,7 +322,6 @@ class JobsDaoTest {
   fun `countAttempts returns correct count`() {
     val (_, claimed) = claimedJob()
     jobsDao.insertAttempt(session, claimed.id, 1, claimed.updatedAt, AttemptStatus.RETRIABLE_FAILURE)
-    jobsDao.updateStatus(session, claimed.id, JobStatus.DEAD_LETTERED)
     // Re-claim to get a new updatedAt for second attempt
     jobsDao.reschedule(session, claimed.id, 0.seconds)
     val reClaimed = jobsDao.claimJob(session, claimed.id, 10.minutes)
@@ -337,7 +337,6 @@ class JobsDaoTest {
   fun `findAttemptsByJobId returns attempts ordered by attempt_number`() {
     val (_, claimed) = claimedJob()
     jobsDao.insertAttempt(session, claimed.id, 1, claimed.updatedAt, AttemptStatus.RETRIABLE_FAILURE)
-    jobsDao.updateStatus(session, claimed.id, JobStatus.DEAD_LETTERED)
     jobsDao.reschedule(session, claimed.id, 0.seconds)
     val reClaimed = jobsDao.claimJob(session, claimed.id, 10.minutes)
     assertTrue(reClaimed is JobUpdateResult.Success)
