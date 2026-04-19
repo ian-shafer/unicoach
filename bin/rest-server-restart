@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
 
-"$PROJECT_ROOT/bin/docker-network-daemon-start" "unicoach-network" || exit $?
-
 exec "$PROJECT_ROOT/bin/docker-daemon-restart" "$@" rest-server

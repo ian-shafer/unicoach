@@ -3,7 +3,7 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/rest-server-stop >/dev/null 2>&1 || true; [ -x "bin/postgres-stop" ] && bin/postgres-stop >/dev/null 2>&1 || true; [ -x "bin/docker-network-daemon-stop" ] && bin/docker-network-daemon-stop unicoach-network >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/rest-server-stop -d >/dev/null 2>&1 || true; bin/queue-worker-stop -d >/dev/null 2>&1 || true; bin/postgres-stop -d >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
 
 echo "Harness up"
 echo ""
@@ -61,8 +61,6 @@ pass_test "File lock recovered stale lock"
 rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
 
-docker network create unicoach-network >/dev/null 2>&1 || true
-
 test_daemon_wrapper() {
   local WRAPPER="$1"
   local ARG2="${2:-}"
@@ -119,7 +117,26 @@ test_daemon_wrapper() {
 test_daemon_wrapper "rest-server"
 test_daemon_wrapper "queue-worker"
 test_daemon_wrapper "postgres"
-test_daemon_wrapper "docker-network-daemon" "unicoach-network"
+
+echo ""
+echo "==== Testing docker-status ===="
+if ! bin/docker-status -h >/dev/null; then echo "Fail: docker-status -h did not exit 0"; exit 1; fi
+pass_test "docker-status help flag returned 0"
+
+# postgres is still running after test_daemon_wrapper "postgres"
+bin/postgres-start >/dev/null
+docker_status_out="$(bin/docker-status)"
+if ! echo "$docker_status_out" | grep "postgres" | grep "running" >/dev/null; then
+  echo "Fail: docker-status did not report postgres as running"
+  echo "$docker_status_out"
+  exit 1
+fi
+if ! echo "$docker_status_out" | grep "rest-server" | grep "stopped" >/dev/null; then
+  echo "Fail: docker-status did not report rest-server as stopped"
+  echo "$docker_status_out"
+  exit 1
+fi
+pass_test "docker-status output accuracy"
 
 echo ""
 echo "==== Testing Bespoke Capabilities: postgres ===="

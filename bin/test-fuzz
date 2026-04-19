@@ -27,12 +27,13 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
-# Ensure absolute teardown constraint:
-# "Regardless of the fuzzer's exit code, the script MUST execute a trap to dynamically tear down"
-trap 'log-info "Tearing down rest-server container orchestrations..." && "$PROJECT_ROOT/bin/docker-compose" -f "$PROJECT_ROOT/docker/rest-server-compose.yaml" down' EXIT
+trap '"$PROJECT_ROOT/bin/rest-server-stop" --docker-down >/dev/null 2>&1 || true; "$PROJECT_ROOT/bin/postgres-stop" --docker-down >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
 
-log-info "Building and booting rest-server dynamically (detached)..."
-"$PROJECT_ROOT/bin/docker-compose" -f "$PROJECT_ROOT/docker/rest-server-compose.yaml" up -d
+log-info "Ensuring postgres is online..."
+"$PROJECT_ROOT/bin/postgres-start"
+
+log-info "Building and booting rest-server dynamically..."
+"$PROJECT_ROOT/bin/rest-server-restart" --docker-down
 
 log-info "Waiting for Ktor to finish Gradle boot and open connections on port ${PORT:-8080}..."
 if ! "$PROJECT_ROOT/bin/wait-for" 90s curl -s -f "http://127.0.0.1:${PORT:-8080}/hello" > /dev/null; then
@@ -42,4 +43,4 @@ if ! "$PROJECT_ROOT/bin/wait-for" 90s curl -s -f "http://127.0.0.1:${PORT:-8080}
 fi
 
 log-info "Solid connection established! Commencing blackbox Schemathesis strike..."
-"$PROJECT_ROOT/bin/docker-compose" -f "$PROJECT_ROOT/docker/rest-server-compose.yaml" -f "$PROJECT_ROOT/docker/test-fuzz-compose.yaml" run --rm fuzzer
+"$PROJECT_ROOT/bin/docker-compose" -f "$PROJECT_ROOT/docker/test-fuzz-compose.yaml" run --rm fuzzer

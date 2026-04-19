@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+docker-status
+
+Display a single-command diagnostic view of all Docker infrastructure including network state, service status, and active locks.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "${1:-}" in
+  -h|--help) help ;;
+  *)
+      help "Unknown option: ${1:-}"
+      ;;
+  esac
+done
+
+if [ $# -gt 0 ]; then
+  help "Unexpected argument: $1"
+fi
+
+echo "Network:"
+if docker network inspect unicoach-network >/dev/null 2>&1; then
+  echo "  unicoach-network    active"
+else
+  echo "  unicoach-network    missing"
+fi
+
+echo ""
+echo "Services:"
+SERVICES="postgres rest-server queue-worker"
+for service in $SERVICES; do
+  if "$PROJECT_ROOT/bin/docker-daemon-check" "$service" >/dev/null 2>&1; then
+    echo "  $(printf '%-20s' "$service")running"
+  else
+    echo "  $(printf '%-20s' "$service")stopped"
+  fi
+done
+
+echo ""
+echo "Locks:"
+LOCK_FILES=("$PROJECT_ROOT"/var/run/*.docker-daemon.lock)
+if [ ! -e "${LOCK_FILES[0]}" ]; then
+  echo "  (none)"
+else
+  for lock in "${LOCK_FILES[@]}"; do
+    lock_name="$(basename "$lock")"
+    lock_op=""
+    lock_expires=""
+    if [ -r "$lock/op" ]; then
+      lock_op="$(cat "$lock/op" 2>/dev/null)"
+    fi
+    if [ -r "$lock/expires-at" ]; then
+      lock_expires="$(cat "$lock/expires-at" 2>/dev/null)"
+      now="$(date +%s)"
+      if [ -n "$lock_expires" ] && [ "$lock_expires" -lt "$now" ] 2>/dev/null; then
+        lock_expires="$lock_expires (stale)"
+      fi
+    fi
+    echo "  $lock_name    op=$lock_op  expires-at=$lock_expires"
+  done
+fi
