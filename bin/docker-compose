@@ -31,6 +31,8 @@ fi
 HOST_UID="$(id -u)" \
 HOST_GID="$(id -g)" \
 PORT="${PORT:-8080}" \
+HEALTH_NONCE="${HEALTH_NONCE:-}" \
+COMPOSE_IGNORE_ORPHANS=true \
 POSTGRES_DATA_DIR="${POSTGRES_DATA_DIR:-./var/postgres}" \
 POSTGRES_USER="${POSTGRES_USER:-postgres}" \
 POSTGRES_DB="${POSTGRES_DB:-unicoach}" \

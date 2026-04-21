@@ -5,4 +5,4 @@ source "$(dirname "$0")/common"
 # fails to connect and the container crashes immediately.
 "$PROJECT_ROOT/bin/postgres-start" || exit $?
 
-exec "$PROJECT_ROOT/bin/docker-daemon-start" "$@" queue-worker
+exec "$PROJECT_ROOT/bin/docker-daemon-start" --nonce "$@" queue-worker

@@ -8,21 +8,26 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-docker-daemon-start <service-name> [options]
+docker-daemon-start [options] <service-name>
 
-Boots the requested docker-compose service detached and awaits native healthchecks.
+Boots the requested docker-compose service detached and awaits readiness.
 
 Options:
+  --nonce: Use nonce-based health marker polling (no fixed timeout).
+           Required for JVM daemons. Without this flag, Docker's native
+           healthcheck via --wait is used.
   -h, --help: Help
 EOF
   exit "$exit_code"
 }
 
 SERVICE_NAME=""
+USES_NONCE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
   -h|--help) help ;;
+  --nonce) USES_NONCE=true; shift ;;
   -*) fatal "Unknown option: $1" ;;
   *) break ;;
   esac
@@ -48,7 +53,7 @@ LOCK_DIR="$PROJECT_ROOT/var/run/${SERVICE_NAME}.daemon.lock"
 if ! "$PROJECT_ROOT/bin/file-lock" -o start -t 16 "$LOCK_DIR" 60; then
   LAST_STATUS=$?
   if [ $LAST_STATUS -eq 10 ]; then
-  log-info "Another start instance is actively establishing $SERVICE_NAME. Exiting gracefully."
+  log-info "Another start instance is actively establishing [$SERVICE_NAME]. Exiting gracefully."
   exit 0
   fi
   if [ -r "$LOCK_DIR/op" ] && [ "$(cat "$LOCK_DIR/op" 2>/dev/null)" = "start" ]; then
@@ -61,15 +66,58 @@ fi
 trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
 
 if "$PROJECT_ROOT/bin/docker-daemon-check" "$SERVICE_NAME"; then
-  log-info "Service $SERVICE_NAME is already running and healthy."
+  log-info "Service [$SERVICE_NAME] is already running and healthy."
   exit 0
 fi
 
-if ! "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" up -d --wait; then
-  log-info "Boot failed. Dumping logs and tearing down."
-  "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" logs >&2
-  "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" down --remove-orphans >&2
-  exit 1
+NONCE=$(uuidgen)
+
+if [ "$USES_NONCE" = true ]; then
+  # Nonce-based services (JVM daemons): start detached and poll the marker file
+  # on the shared volume. No fixed timeout — compilation can take as long as it
+  # needs. Only a container exit triggers failure.
+  MARKER_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.check"
+  HEALTH_NONCE="$NONCE" "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" up -d
+
+  log-info "Waiting for [$SERVICE_NAME] to initialize..."
+  while true; do
+    # Check if the marker file contains the expected nonce.
+    if [ -f "$MARKER_FILE" ] && [ "$(cat "$MARKER_FILE" 2>/dev/null)" = "$NONCE" ]; then
+      log-info "Service initialized. Waiting for Docker health convergence..."
+      # Marker confirmed. Wait for Docker's healthcheck to converge (same file,
+      # up to 500ms lag). This ensures docker-daemon-check sees 'healthy' immediately.
+      while ! "$PROJECT_ROOT/bin/docker-daemon-check" "$SERVICE_NAME" >/dev/null 2>&1; do
+        sleep 1
+      done
+      break
+    fi
+
+    # If the container exited, it's a boot failure.
+    CONTAINER_STATE=$("$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" \
+      ps -a --format json "$SERVICE_NAME" 2>/dev/null | grep -o '"State":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [ "$CONTAINER_STATE" = "exited" ] || [ -z "$CONTAINER_STATE" ]; then
+      log-info ""
+      log-info "Boot failed for [$SERVICE_NAME]. Dumping logs."
+      log-info ""
+      "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" logs --no-log-prefix "$SERVICE_NAME" >&2
+      # Remove only the failing service container. Do NOT use 'down' — it tears
+      # down the shared network and kills unrelated services.
+      "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" rm -f "$SERVICE_NAME" 2>/dev/null
+      exit 1
+    fi
+
+    sleep 1
+  done
+else
+  # Non-nonce services (e.g., postgres): use Docker's native healthcheck via --wait.
+  if ! "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" up -d --wait; then
+    log-info ""
+    log-info "Boot failed for [$SERVICE_NAME]. Dumping logs."
+    log-info ""
+    "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" logs --no-log-prefix "$SERVICE_NAME" >&2
+    "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" rm -f "$SERVICE_NAME" 2>/dev/null
+    exit 1
+  fi
 fi
 
 exit 0

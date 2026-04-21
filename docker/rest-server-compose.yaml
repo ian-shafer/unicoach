@@ -9,12 +9,21 @@ services:
       - "${PORT}:${PORT}"
     environment:
       - PORT=${PORT}
-      - GRADLE_USER_HOME=/workspace/var/gradle
-      - HOME=/workspace/var/gradle
+      - GRADLE_USER_HOME=/workspace/var/gradle-rest-server
+      - HOME=/workspace/var/gradle-rest-server
       - DATABASE_JDBCURL=${DATABASE_JDBCURL:-jdbc:postgresql://postgres:5432/unicoach}
       - DATABASE_USER=${DATABASE_USER:-postgres}
       - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
-    command: ["./gradlew", ":rest-server:run"]
+      - HEALTH_NONCE=${HEALTH_NONCE}
+      - RUN_DIR=/workspace/var/run
+      - SERVICE_NAME=rest-server
+    command: ["./gradlew", ":rest-server:run", "--project-cache-dir", "/workspace/var/gradle-rest-server/.project-cache"]
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$(cat /workspace/var/run/$$SERVICE_NAME.check 2>/dev/null)" = "$$HEALTH_NONCE" ]']
+      interval: 200ms
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
 networks:
   default:

@@ -61,6 +61,18 @@ pass_test "File lock recovered stale lock"
 rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
 
+# JVM daemon stop -d removes the shared unicoach-network, disconnecting
+# postgres. This helper ensures postgres is back on the network and the default
+# 'unicoach' database exists before starting any JVM daemon.
+ensure_postgres_for_jvm() {
+  bin/postgres-start >/dev/null
+  local cid
+  cid="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
+  wait_for_postgres "$cid"
+  echo "SELECT 1 FROM pg_database WHERE datname = 'unicoach'" | bin/db-query -d postgres -tA | grep -q 1 || \
+    echo "CREATE DATABASE unicoach;" | bin/db-update -d postgres
+}
+
 test_daemon_wrapper() {
   local WRAPPER="$1"
   local ARG2="${2:-}"
@@ -72,6 +84,10 @@ test_daemon_wrapper() {
   local STOP_CMD="bin/$WRAPPER-stop"
   local RESTART_CMD="bin/$WRAPPER-restart"
   local CHECK_CMD="bin/$WRAPPER-check"
+  local needs_postgres=false
+  if [ "$WRAPPER" != "postgres" ]; then
+    needs_postgres=true
+  fi
 
   echo ""
   echo "==== Testing Wrapper: $WRAPPER ===="
@@ -79,6 +95,7 @@ test_daemon_wrapper() {
   # 1. Simple Start & Stop & 4. Idempotent Stop
   $STOP_CMD -d $SUFFIX >/dev/null || true
   if $CHECK_CMD $SUFFIX >/dev/null 2>&1; then echo "Fail: $WRAPPER claimed success despite stripped service."; exit 1; fi
+  if [ "$needs_postgres" = true ]; then ensure_postgres_for_jvm; fi
   $START_CMD $SUFFIX >/dev/null
   if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: $WRAPPER did not actually boot or reach a healthy state."; exit 1; fi
   pass_test "$WRAPPER Simple Start & Stop & Idempotent Stop"
@@ -94,6 +111,7 @@ test_daemon_wrapper() {
 
   # 3. Concurrent Start (After stopping first)
   $STOP_CMD $SUFFIX >/dev/null
+  if [ "$needs_postgres" = true ]; then ensure_postgres_for_jvm; fi
   $START_CMD $SUFFIX >/dev/null & PID1=$!
   $START_CMD $SUFFIX >/dev/null & PID2=$!
   wait $PID1; if [ $? -ne 0 ]; then echo "Fail: Process 1 failed to boot daemon $WRAPPER"; exit 1; fi
@@ -112,11 +130,27 @@ test_daemon_wrapper() {
   # Check invalid flag for check
   if ! $CHECK_CMD -h >/dev/null; then echo "Fail: Help flag did not natively exit 0 on check for $WRAPPER"; exit 1; fi
   pass_test "$WRAPPER Help flag returned 0"
+
+  # Stale marker resilience — only applicable to JVM daemons with health markers
+  if [ "$needs_postgres" = true ]; then
+    $STOP_CMD $SUFFIX >/dev/null || true
+    mkdir -p "$PROJECT_ROOT/var/run"
+    echo "stale-nonce" > "$PROJECT_ROOT/var/run/${WRAPPER}.check"
+    ensure_postgres_for_jvm
+    $START_CMD $SUFFIX >/dev/null
+    if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: $WRAPPER did not overwrite stale marker and reach healthy state."; exit 1; fi
+    $STOP_CMD $SUFFIX >/dev/null
+    pass_test "$WRAPPER Stale Marker Resilience"
+  fi
 }
+
+# Postgres must be tested first and restarted before JVM daemons because the
+# nonce-based healthchecks now properly wait for JVM initialization, which
+# requires a live database connection on the unicoach-network.
+test_daemon_wrapper "postgres"
 
 test_daemon_wrapper "rest-server"
 test_daemon_wrapper "queue-worker"
-test_daemon_wrapper "postgres"
 
 echo ""
 echo "==== Testing docker-status ===="

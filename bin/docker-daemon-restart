@@ -8,11 +8,12 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-docker-daemon-restart <service-name> [options]
+docker-daemon-restart [options] <service-name>
 
 Sequentially invokes docker-daemon-stop then docker-daemon-start for a seamless restart.
 
 Options:
+  --nonce                   Passed to start command
   -h, --help: Help
   -d, --docker-down         Passed to stop command
   --wipe-data               Passed to stop command
@@ -22,10 +23,12 @@ EOF
 
 SERVICE_NAME=""
 STOP_ARGS=()
+START_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
   -h|--help) help ;;
+  --nonce) START_ARGS+=("--nonce"); shift ;;
   -d|--docker-down) STOP_ARGS+=("-d"); shift ;;
   --wipe-data) STOP_ARGS+=("--wipe-data"); shift ;;
   -*) fatal "Unknown option: $1" ;;
@@ -48,4 +51,8 @@ if [ ${#STOP_ARGS[@]} -gt 0 ]; then
 else
   "$PROJECT_ROOT/bin/docker-daemon-stop" "$SERVICE_NAME"
 fi
-"$PROJECT_ROOT/bin/docker-daemon-start" "$SERVICE_NAME"
+if [ ${#START_ARGS[@]} -gt 0 ]; then
+  "$PROJECT_ROOT/bin/docker-daemon-start" "${START_ARGS[@]}" "$SERVICE_NAME"
+else
+  "$PROJECT_ROOT/bin/docker-daemon-start" "$SERVICE_NAME"
+fi
