@@ -1,4 +1,4 @@
-# 18: Daemon Health Marker
+# 19: Daemon Health Marker
 
 ## Executive Summary
 
@@ -29,7 +29,7 @@ point.
 ```
 docker-daemon-start (generates nonce via uuidgen)
   │
-  ├─ HEALTH_NONCE="$NONCE" bin/docker-compose -f ... up -d --wait
+  ├─ HEALTH_NONCE="$NONCE" bin/docker-compose -f ... up -d
   │
   └─ bin/docker-compose (explicit inline: HEALTH_NONCE="${HEALTH_NONCE:-}")
        │
@@ -59,23 +59,57 @@ a nonce:
 NONCE=$(uuidgen)
 ```
 
-Pass it inline to `bin/docker-compose`:
+The startup strategy is chosen explicitly by the caller via the `--nonce` flag
+(not derived from file contents):
+
+**Nonce-based services (JVM daemons, `--nonce`):** Start detached and poll the
+marker file on the shared volume from the host. No fixed timeout — compilation
+can take as long as it needs. Only a container exit triggers failure:
 
 ```bash
-HEALTH_NONCE="$NONCE" "$PROJECT_ROOT/bin/docker-compose" -f "$COMPOSE_FILE" up -d --wait
+MARKER_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.check"
+HEALTH_NONCE="$NONCE" docker-compose up -d
+
+while true; do
+  if [ -f "$MARKER_FILE" ] && [ "$(cat "$MARKER_FILE")" = "$NONCE" ]; then
+    # Wait for Docker's healthcheck to converge before returning.
+    while ! docker-daemon-check "$SERVICE_NAME"; do sleep 1; done
+    break
+  fi
+
+  # If the container exited, it's a boot failure.
+  if container_state == "exited"; then
+    docker-compose logs --no-log-prefix "$SERVICE_NAME" >&2
+    docker-compose rm -f "$SERVICE_NAME"
+    exit 1
+  fi
+
+  sleep 1
+done
 ```
 
-This scopes `HEALTH_NONCE` exclusively to the subprocess. No `export`.
+**Non-nonce services (e.g., postgres):** Fall back to Docker's native
+healthcheck via `--wait`:
+
+```bash
+docker-compose up -d --wait
+```
+
+On boot failure for either mode, only the failing service container is removed.
+`down` is never used — it tears down the shared network and kills unrelated
+services.
 
 #### `bin/docker-compose`
 
-Add `HEALTH_NONCE` to the existing inline environment variable block:
+Add `HEALTH_NONCE` and `COMPOSE_IGNORE_ORPHANS` to the existing inline
+environment variable block:
 
 ```bash
 HOST_UID="$(id -u)" \
 HOST_GID="$(id -g)" \
 PORT="${PORT:-8080}" \
 HEALTH_NONCE="${HEALTH_NONCE:-}" \
+COMPOSE_IGNORE_ORPHANS=true \
 POSTGRES_DATA_DIR="${POSTGRES_DATA_DIR:-./var/postgres}" \
 ...
 docker compose --env-file /dev/null --project-directory "$PROJECT_ROOT" "$@"
@@ -84,20 +118,10 @@ docker compose --env-file /dev/null --project-directory "$PROJECT_ROOT" "$@"
 The `:-` default to empty ensures non-health-checked invocations (e.g.,
 `docker-compose logs`) pass through without error.
 
-#### `bin/queue-worker-start`
-
-Remove the nonce generation added during the spec-17 implementation. Retain the
-`postgres-start` dependency. The script delegates entirely to
-`docker-daemon-start`:
-
-```bash
-#!/usr/bin/env bash
-source "$(dirname "$0")/common"
-
-"$PROJECT_ROOT/bin/postgres-start" || exit $?
-
-exec "$PROJECT_ROOT/bin/docker-daemon-start" "$@" queue-worker
-```
+`COMPOSE_IGNORE_ORPHANS=true` suppresses the "Found orphan containers" warning
+that Docker Compose emits when containers from other compose files share the
+same project name and network. This is by design — each daemon has its own
+compose file but they share `unicoach-network`.
 
 ### Docker Layer
 
@@ -114,24 +138,30 @@ services:
     volumes:
       - ./:/workspace
     environment:
-      - GRADLE_USER_HOME=/workspace/var/gradle
-      - HOME=/workspace/var/gradle
+      - GRADLE_USER_HOME=/workspace/var/gradle-queue-worker
+      - HOME=/workspace/var/gradle-queue-worker
       - DATABASE_JDBCURL=${DATABASE_JDBCURL:-jdbc:postgresql://postgres:5432/unicoach}
       - DATABASE_USER=${DATABASE_USER:-postgres}
       - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
       - HEALTH_NONCE=${HEALTH_NONCE}
       - RUN_DIR=/workspace/var/run
       - SERVICE_NAME=queue-worker
-    command: ["./gradlew", ":queue-worker:run"]
+    command:
+      [
+        "./gradlew",
+        ":queue-worker:run",
+        "--project-cache-dir",
+        "/workspace/var/gradle-queue-worker/.project-cache",
+      ]
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          '[ "$(cat /workspace/var/run/queue-worker.check 2>/dev/null)" =
-          "$HEALTH_NONCE" ]',
+          '[ "$(cat /workspace/var/run/$$SERVICE_NAME.check 2>/dev/null)" =
+          "$$HEALTH_NONCE" ]',
         ]
-      interval: 5s
-      timeout: 3s
+      interval: 200ms
+      timeout: 5s
       retries: 12
       start_period: 30s
 
@@ -140,12 +170,22 @@ networks:
     name: unicoach-network
 ```
 
-`start_period: 30s` accommodates Gradle compilation and JVM boot time. During
-the start period, failed healthchecks do not count toward retries.
+The `$$` escaping prevents Docker Compose from resolving `SERVICE_NAME` and
+`HEALTH_NONCE` as compose-level variables. The literal `$` is passed through to
+the container shell, which resolves them from the container's environment at
+healthcheck execution time.
+
+`start_period: 30s` defines how long Docker waits before counting failed
+healthchecks toward the retry limit. This only affects Docker's internal health
+label (used by `docker-daemon-check`), not the startup script — which polls the
+marker file directly with no timeout.
+
+Each JVM daemon uses its own `GRADLE_USER_HOME` and `--project-cache-dir` to
+avoid Gradle cache lock contention when multiple daemons run concurrently.
 
 #### `docker/rest-server-compose.yaml`
 
-Same pattern:
+Same pattern, same `$$`-escaped healthcheck:
 
 ```yaml
 services:
@@ -159,24 +199,30 @@ services:
       - "${PORT}:${PORT}"
     environment:
       - PORT=${PORT}
-      - GRADLE_USER_HOME=/workspace/var/gradle
-      - HOME=/workspace/var/gradle
+      - GRADLE_USER_HOME=/workspace/var/gradle-rest-server
+      - HOME=/workspace/var/gradle-rest-server
       - DATABASE_JDBCURL=${DATABASE_JDBCURL:-jdbc:postgresql://postgres:5432/unicoach}
       - DATABASE_USER=${DATABASE_USER:-postgres}
       - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
       - HEALTH_NONCE=${HEALTH_NONCE}
       - RUN_DIR=/workspace/var/run
       - SERVICE_NAME=rest-server
-    command: ["./gradlew", ":rest-server:run"]
+    command:
+      [
+        "./gradlew",
+        ":rest-server:run",
+        "--project-cache-dir",
+        "/workspace/var/gradle-rest-server/.project-cache",
+      ]
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          '[ "$(cat /workspace/var/run/rest-server.check 2>/dev/null)" =
-          "$HEALTH_NONCE" ]',
+          '[ "$(cat /workspace/var/run/$$SERVICE_NAME.check 2>/dev/null)" =
+          "$$HEALTH_NONCE" ]',
         ]
-      interval: 5s
-      timeout: 3s
+      interval: 200ms
+      timeout: 5s
       retries: 12
       start_period: 30s
 
@@ -217,92 +263,97 @@ class HealthMarker(
     fun delete() {
         file.delete()
     }
-}
-```
 
-No logging, no static state, no singletons. The caller owns the lifecycle.
-
-#### `HealthMarker.fromSystemProperties()` factory
-
-A convenience factory that reads the three required system properties and fails
-fast if any are missing:
-
-```kotlin
-companion object {
-    fun fromSystemProperties(): HealthMarker {
-        val runDir = System.getProperty("run.dir")
-            ?: error("System property [run.dir] is not set")
-        val serviceName = System.getProperty("service.name")
-            ?: error("System property [service.name] is not set")
-        val nonce = System.getProperty("health.nonce")
-            ?: error("System property [health.nonce] is not set")
-        return HealthMarker(runDir, serviceName, nonce)
+    companion object {
+        /**
+         * Creates a health marker from system properties, writes it, and
+         * registers a shutdown hook for cleanup. No-ops gracefully when
+         * system properties are absent (e.g. in test harnesses).
+         *
+         * Call once, after the service is fully initialized and ready to
+         * accept traffic.
+         */
+        fun markHealthy() {
+            val runDir = System.getProperty("run.dir")?.takeIf { it.isNotBlank() } ?: return
+            val serviceName = System.getProperty("service.name")?.takeIf { it.isNotBlank() } ?: return
+            val nonce = System.getProperty("health.nonce")?.takeIf { it.isNotBlank() } ?: return
+            val marker = HealthMarker(runDir, serviceName, nonce)
+            marker.write()
+            Runtime.getRuntime().addShutdownHook(Thread { marker.delete() })
+        }
     }
 }
 ```
 
+No logging, no singletons. The `markHealthy()` static method encapsulates the
+entire health marker lifecycle: create from system properties, write the marker,
+and register a shutdown hook for cleanup. Callers never hold a `HealthMarker`
+instance. In test harnesses where system properties are absent, `markHealthy()`
+silently no-ops.
+
 #### Gradle System Property Forwarding
 
-Both `queue-worker/build.gradle.kts` and `rest-server/build.gradle.kts` add:
+The root `build.gradle.kts` centralizes system property forwarding for all
+subprojects with the `application` plugin:
 
 ```kotlin
-tasks.named<JavaExec>("run") {
-    systemProperty("run.dir", providers.environmentVariable("RUN_DIR").getOrElse(""))
-    systemProperty("service.name", providers.environmentVariable("SERVICE_NAME").getOrElse(""))
-    systemProperty("health.nonce", providers.environmentVariable("HEALTH_NONCE").getOrElse(""))
+subprojects {
+    plugins.withId("application") {
+        tasks.named<JavaExec>("run") {
+            systemProperty("run.dir", providers.environmentVariable("RUN_DIR").getOrElse(""))
+            systemProperty("service.name", providers.environmentVariable("SERVICE_NAME").getOrElse(""))
+            systemProperty("health.nonce", providers.environmentVariable("HEALTH_NONCE").getOrElse(""))
+        }
+    }
 }
 ```
 
 This explicitly maps container environment variables to JVM system properties.
-No convention-based magic.
+Applied once in the root build file to avoid duplicating the block in each
+module. No convention-based magic.
 
 #### `queue-worker/Application.kt` Integration
 
 ```kotlin
-val healthMarker = HealthMarker.fromSystemProperties()
-
 Runtime.getRuntime().addShutdownHook(Thread {
     worker.stop(timeout = 30.seconds)
-    healthMarker.delete()
 })
 
 try {
     runBlocking {
         worker.start(this)
-        healthMarker.write()
+        HealthMarker.markHealthy()
         awaitCancellation()
     }
 } finally {
-    healthMarker.delete()
     database.close()
 }
 ```
 
-Remove `HEALTH_NONCE` and `HEALTH_FILE` environment variable reads. Remove
-`java.io.File` import if no longer needed elsewhere.
+The shutdown hook handles `worker.stop()`. The `markHealthy()` shutdown hook
+(registered internally) handles marker cleanup. The `finally` block handles
+`database.close()`. No `HealthMarker` instance is held by the caller.
 
 #### `rest-server/Application.kt` Integration
 
 ```kotlin
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
     // ... existing config loading ...
-    val healthMarker = HealthMarker.fromSystemProperties()
 
     val server = embeddedServer(Netty, port = portInt, host = hostStr) {
         environment.monitor.subscribe(ApplicationStopped) {
-            healthMarker.delete()
             database.close()
         }
         appModule(database, sessionConfig)
     }
 
+    // Start non-blocking, wait for Netty to bind, then signal readiness.
     server.start(wait = false)
-    healthMarker.write()
+    @Suppress("DEPRECATION")
+    kotlinx.coroutines.runBlocking { server.engine.resolvedConnectors() }
+    HealthMarker.markHealthy()
 
     if (wait) {
-        Runtime.getRuntime().addShutdownHook(Thread {
-            healthMarker.delete()
-        })
         Thread.currentThread().join()
     }
 
@@ -310,14 +361,24 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 }
 ```
 
-The marker is written after `server.start(wait = false)` returns, confirming
-Netty is bound and accepting connections. The `ApplicationStopped` monitor event
-handles cleanup on graceful shutdown.
+The existing `server.start(wait = wait)` call MUST be replaced with
+`server.start(wait = false)`. The original call blocks forever when
+`wait = true`, which would prevent the marker from being written. After
+starting, `resolvedConnectors()` blocks until Netty has actually bound the port,
+preventing a premature readiness signal. Blocking is reimplemented manually via
+`Thread.currentThread().join()`. The `ApplicationStopped` monitor handles
+`database.close()`. Marker cleanup is handled internally by `markHealthy()`'s
+shutdown hook.
+
+The `startServer()` function is shared between production (`main()`) and test
+harnesses (`AuthRoutingTest`, `RoutingTest`). In test contexts, system
+properties are absent and `markHealthy()` silently no-ops.
 
 ### Error Handling
 
 - `HealthMarker` constructor fails fast via `require` on blank inputs.
-- `fromSystemProperties()` fails fast via `error()` on missing properties.
+- `markHealthy()` silently no-ops when any system property is missing or blank
+  (graceful degradation for test harnesses).
 - `write()` calls `mkdirs()` to ensure the directory exists; `writeText` throws
   `IOException` on permission failures, which crashes the application (correct
   behavior — if we can't write the marker, the healthcheck will never pass, and
@@ -357,87 +418,111 @@ File: `common/src/test/kotlin/ed/unicoach/common/HealthMarkerTest.kt`
 7. **`constructor rejects blank nonce`**: Pass blank `nonce`. Assert
    `IllegalArgumentException`.
 
+8. **`markHealthy noops when system properties are absent`**: Clear all three
+   system properties. Call `markHealthy()`. Assert no exception is thrown.
+
 ### Shell Integration Tests: Stale Marker Resilience
 
 File: `bin/scripts-tests` (added to the existing daemon wrapper test function)
 
-1. **`stale marker does not fool start/check`**: For the `rest-server` wrapper:
-   - Stop the service.
-   - Write a fake nonce (`echo "stale-nonce" > var/run/rest-server.check`).
-   - Start the service.
-   - Assert `check` returns success (the new container overwrites the stale
-     marker with its own nonce).
-   - Stop the service.
+For each JVM daemon (`rest-server`, `queue-worker`):
+
+1. Stop the service.
+2. Write a fake nonce (`echo "stale-nonce" > var/run/${WRAPPER}.check`).
+3. Start the service.
+4. Assert `check` returns success (the new container overwrites the stale marker
+   with its own nonce).
+5. Stop the service.
+
+### Shell Integration Tests: Test Ordering
+
+JVM daemons require a live postgres connection to boot. With healthchecks now
+enforced, `docker compose up --wait` properly blocks until the JVM is healthy,
+which requires a database connection. The test suite orders accordingly:
+
+1. `test_daemon_wrapper "postgres"` runs first.
+2. `ensure_postgres_for_jvm` restarts postgres and creates the default
+   `unicoach` database before each JVM daemon start (since `stop -d` tears down
+   the shared network).
+3. `test_daemon_wrapper "rest-server"` and `test_daemon_wrapper "queue-worker"`
+   run after postgres infrastructure is established.
 
 ### Implicit Integration Coverage
 
 The existing daemon lifecycle tests in `scripts-tests` (start, check, stop,
 restart, concurrent start/stop) inherently validate the full nonce flow once
-healthchecks are added. No modifications needed — `docker compose up --wait`
-will block until the healthcheck passes, confirming the nonce was written
-correctly.
+healthchecks are added. The startup script polls the marker file directly,
+confirming the nonce was written correctly before returning success.
 
 ## Implementation Plan
 
 ### Step 1: Create `HealthMarker` in `common`
 
 Create `common/src/main/kotlin/ed/unicoach/common/HealthMarker.kt` with the
-class, `require` guards, `write()`, `delete()`, and `fromSystemProperties()`
-factory.
+class, `require` guards, `write()`, `delete()`, and `markHealthy()` companion
+method.
 
 Create `common/src/test/kotlin/ed/unicoach/common/HealthMarkerTest.kt` with all
-7 unit tests.
+8 unit tests.
 
 Verify: `./gradlew :common:test`
 
 ### Step 2: Update shell infrastructure
 
-Modify `bin/docker-daemon-start` to generate a nonce and pass it inline to
-`bin/docker-compose`.
+Modify `bin/docker-daemon-start` to accept a `--nonce` flag, generate a nonce,
+and pass it inline to `bin/docker-compose`. Use nonce-based marker polling when
+`--nonce` is set, Docker's native `--wait` otherwise.
 
-Modify `bin/docker-compose` to add `HEALTH_NONCE="${HEALTH_NONCE:-}"` to the
-inline env var block.
+Modify `bin/docker-daemon-restart` to accept and forward `--nonce` to
+`bin/docker-daemon-start`.
 
-Modify `bin/queue-worker-start` to remove nonce generation (retain
-`postgres-start` dependency).
+Modify `bin/docker-compose` to add `HEALTH_NONCE="${HEALTH_NONCE:-}"` and
+`COMPOSE_IGNORE_ORPHANS=true` to the inline env var block.
+
+Modify `bin/rest-server-start` and `bin/queue-worker-start` to pass `--nonce`.
+Modify `bin/rest-server-restart` and `bin/queue-worker-restart` to pass
+`--nonce`.
 
 Verify: `bin/docker-daemon-start -h` still works, no syntax errors.
 
-### Step 3: Update `queue-worker` Docker and Gradle configuration
+### Step 3: Centralize Gradle system property forwarding
+
+Modify `build.gradle.kts` (root) to add a `subprojects` block that forwards
+`RUN_DIR`, `SERVICE_NAME`, and `HEALTH_NONCE` environment variables to JVM
+system properties for all subprojects with the `application` plugin.
+
+Verify: `./gradlew :queue-worker:compileKotlin`
+
+### Step 4: Update `queue-worker` Docker configuration
 
 Overwrite `docker/queue-worker-compose.yaml` with healthcheck, `HEALTH_NONCE`,
 `RUN_DIR`, and `SERVICE_NAME` environment variables.
 
-Modify `queue-worker/build.gradle.kts` to add system property forwarding in the
-`run` task.
-
-Modify `queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt` to use
-`HealthMarker.fromSystemProperties()`. Remove direct
-`HEALTH_NONCE`/`HEALTH_FILE` env var reads and `java.io.File` usage for the
-marker.
+Modify `queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt` to call
+`HealthMarker.markHealthy()` after `worker.start()`. Remove all manual marker
+lifecycle code.
 
 Verify: `./gradlew :queue-worker:compileKotlin`
 
-### Step 4: Update `rest-server` Docker and Gradle configuration
+### Step 5: Update `rest-server` Docker configuration
 
 Overwrite `docker/rest-server-compose.yaml` with healthcheck, `HEALTH_NONCE`,
 `RUN_DIR`, and `SERVICE_NAME` environment variables.
 
-Modify `rest-server/build.gradle.kts` to add system property forwarding in the
-`run` task.
-
-Modify `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt` to
-integrate `HealthMarker`. Write marker after `server.start()`. Delete in
-`ApplicationStopped` monitor and shutdown hook.
+Modify `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt` to call
+`HealthMarker.markHealthy()` after `resolvedConnectors()` confirms Netty has
+bound the port. Remove all manual marker lifecycle code.
 
 Verify: `./gradlew :rest-server:compileKotlin`
 
-### Step 5: Add stale marker test
+### Step 6: Add stale marker test and update test ordering
 
 Modify `bin/scripts-tests` to add a stale marker resilience test within the
-daemon wrapper test function.
+daemon wrapper test function. Reorder tests: postgres first, then JVM daemons.
+Add `ensure_postgres_for_jvm` helper to restart postgres whenever the shared
+network is torn down during JVM daemon testing.
 
-### Step 6: Full verification
+### Step 7: Full verification
 
 Run `bin/test` to verify Kotlin compilation and all JVM tests pass.
 
@@ -448,13 +533,16 @@ healthchecks.
 
 - `common/src/main/kotlin/ed/unicoach/common/HealthMarker.kt` [NEW]
 - `common/src/test/kotlin/ed/unicoach/common/HealthMarkerTest.kt` [NEW]
+- `build.gradle.kts` [MODIFY]
 - `bin/docker-compose` [MODIFY]
 - `bin/docker-daemon-start` [MODIFY]
+- `bin/docker-daemon-restart` [MODIFY]
+- `bin/rest-server-start` [MODIFY]
+- `bin/rest-server-restart` [MODIFY]
 - `bin/queue-worker-start` [MODIFY]
+- `bin/queue-worker-restart` [MODIFY]
 - `bin/scripts-tests` [MODIFY]
 - `docker/queue-worker-compose.yaml` [MODIFY]
 - `docker/rest-server-compose.yaml` [MODIFY]
-- `queue-worker/build.gradle.kts` [MODIFY]
 - `queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt` [MODIFY]
-- `rest-server/build.gradle.kts` [MODIFY]
 - `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt` [MODIFY]
