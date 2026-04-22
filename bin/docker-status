@@ -32,10 +32,10 @@ if [ $# -gt 0 ]; then
 fi
 
 echo "Network:"
-if docker network inspect unicoach-network >/dev/null 2>&1; then
-  echo "  unicoach-network    active"
+if docker network inspect "$UNICOACH_NETWORK" >/dev/null 2>&1; then
+  echo "  $UNICOACH_NETWORK    active"
 else
-  echo "  unicoach-network    missing"
+  echo "  $UNICOACH_NETWORK    missing"
 fi
 
 echo ""

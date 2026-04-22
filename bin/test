@@ -30,6 +30,8 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
+trap 'docker network rm "$UNICOACH_NETWORK" >/dev/null 2>&1 || true' EXIT INT TERM
+
 # Ensure the shared postgres daemon is genuinely online without forcibly crashing or re-creating it 
 # (which avoids mutating the service arguments identically required by docker-compose)
 "$PROJECT_ROOT/bin/postgres-start"
@@ -40,9 +42,9 @@ done
 # Default to 'test' if no arguments are provided, otherwise execute exactly what is passed
 GRADLE_ARGS=("${@:-test}")
 
-# gradle-runner automatically connects to `postgres:5432` internally via `unicoach-network`
+# gradle-runner automatically connects to `postgres:5432` internally via the Docker network
 "$PROJECT_ROOT/bin/docker-compose" -f "$PROJECT_ROOT/docker/test-compose.yaml" run --rm gradle-runner ./gradlew "${GRADLE_ARGS[@]}"
 EXIT_CODE=$?
 
-# We specifically DO NOT `down` the network because the PostgreSQL daemon is physically shared with development scopes!
+# Network cleanup is handled by the EXIT trap above.
 exit $EXIT_CODE

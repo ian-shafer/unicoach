@@ -3,7 +3,7 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/rest-server-stop -d >/dev/null 2>&1 || true; bin/postgres-stop -d >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/rest-server-stop -d >/dev/null 2>&1 || true; bin/postgres-stop -d >/dev/null 2>&1 || true; docker network rm "$UNICOACH_NETWORK" >/dev/null 2>&1 || true' EXIT INT TERM
 
 cleanPostgresData() {
   rm -rf "$POSTGRES_DATA_DIR" || true

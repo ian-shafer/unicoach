@@ -27,7 +27,7 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
-trap '"$PROJECT_ROOT/bin/rest-server-stop" --docker-down >/dev/null 2>&1 || true; "$PROJECT_ROOT/bin/postgres-stop" --docker-down >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
+trap '"$PROJECT_ROOT/bin/rest-server-stop" --docker-down >/dev/null 2>&1 || true; "$PROJECT_ROOT/bin/postgres-stop" --docker-down >/dev/null 2>&1 || true; docker network rm "$UNICOACH_NETWORK" >/dev/null 2>&1 || true' EXIT INT TERM
 
 log-info "Ensuring postgres is online..."
 "$PROJECT_ROOT/bin/postgres-start"

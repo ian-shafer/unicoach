@@ -3,7 +3,7 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/rest-server-stop -d >/dev/null 2>&1 || true; bin/queue-worker-stop -d >/dev/null 2>&1 || true; bin/postgres-stop -d >/dev/null 2>&1 || true; docker network rm unicoach-network >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/rest-server-stop -d >/dev/null 2>&1 || true; bin/queue-worker-stop -d >/dev/null 2>&1 || true; bin/postgres-stop -d >/dev/null 2>&1 || true; docker network rm "$UNICOACH_NETWORK" >/dev/null 2>&1 || true' EXIT INT TERM
 
 echo "Harness up"
 echo ""
@@ -61,7 +61,7 @@ pass_test "File lock recovered stale lock"
 rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
 
-# JVM daemon stop -d removes the shared unicoach-network, disconnecting
+# JVM daemon stop -d removes the Docker network, disconnecting
 # postgres. This helper ensures postgres is back on the network and the default
 # 'unicoach' database exists before starting any JVM daemon.
 ensure_postgres_for_jvm() {
@@ -146,7 +146,7 @@ test_daemon_wrapper() {
 
 # Postgres must be tested first and restarted before JVM daemons because the
 # nonce-based healthchecks now properly wait for JVM initialization, which
-# requires a live database connection on the unicoach-network.
+# requires a live database connection on the Docker network.
 test_daemon_wrapper "postgres"
 
 test_daemon_wrapper "rest-server"

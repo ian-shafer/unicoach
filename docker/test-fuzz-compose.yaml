@@ -11,4 +11,4 @@ services:
 
 networks:
   default:
-    name: unicoach-network
+    name: ${UNICOACH_NETWORK:-unicoach-network}

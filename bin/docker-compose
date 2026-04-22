@@ -37,4 +37,5 @@ POSTGRES_DATA_DIR="${POSTGRES_DATA_DIR:-./var/postgres}" \
 POSTGRES_USER="${POSTGRES_USER:-postgres}" \
 POSTGRES_DB="${POSTGRES_DB:-unicoach}" \
 POSTGRES_HOST_AUTH_METHOD="${POSTGRES_HOST_AUTH_METHOD:-trust}" \
+UNICOACH_NETWORK="${UNICOACH_NETWORK:-unicoach-network}" \
 docker compose --env-file /dev/null --project-directory "$PROJECT_ROOT" "$@"
