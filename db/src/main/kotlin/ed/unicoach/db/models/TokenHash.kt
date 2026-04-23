@@ -25,4 +25,14 @@ class TokenHash(
   }
 
   override fun hashCode(): Int = value.contentHashCode()
+
+  companion object {
+    fun fromRawToken(token: String): TokenHash {
+      val hash =
+        java.security.MessageDigest
+          .getInstance("SHA-256")
+          .digest(token.toByteArray(Charsets.UTF_8))
+      return TokenHash(hash)
+    }
+  }
 }

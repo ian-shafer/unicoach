@@ -64,6 +64,7 @@ object SessionsDao {
     val metadata = rs.getString("metadata")
     val userAgent = rs.getString("user_agent")
     val initialIp = rs.getString("initial_ip")
+    val expiresAt = rs.getTimestamp("expires_at").toInstant()
 
     return Session(
       id = id,
@@ -73,6 +74,7 @@ object SessionsDao {
       metadata = metadata,
       userAgent = userAgent,
       initialIp = initialIp,
+      expiresAt = expiresAt,
     )
   }
 

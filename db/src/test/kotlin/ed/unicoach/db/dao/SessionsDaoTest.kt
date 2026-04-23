@@ -114,5 +114,9 @@ class SessionsDaoTest {
 
     val extendResult = SessionsDao.extendExpiry(session, createResult.session.id, createResult.session.version)
     assertTrue(extendResult is SessionUpdateResult.Success)
+
+    val original = (createResult as SessionCreateResult.Success).session
+    val extended = (extendResult as SessionUpdateResult.Success).session
+    assertTrue(extended.expiresAt.isAfter(original.expiresAt))
   }
 }

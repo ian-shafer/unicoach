@@ -11,4 +11,5 @@ data class Session(
   val metadata: String?,
   val userAgent: String?,
   val initialIp: String?,
+  val expiresAt: Instant,
 )

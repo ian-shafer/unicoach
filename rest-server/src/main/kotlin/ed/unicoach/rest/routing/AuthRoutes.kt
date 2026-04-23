@@ -40,14 +40,6 @@ suspend fun ApplicationCall.respondAppError(
   }
 }
 
-private fun hashToken(token: String): TokenHash {
-  val hash =
-    java.security.MessageDigest
-      .getInstance("SHA-256")
-      .digest(token.toByteArray(Charsets.UTF_8))
-  return TokenHash(hash)
-}
-
 fun Route.authRoutes(
   authService: AuthService,
   database: ed.unicoach.db.Database,
@@ -74,7 +66,7 @@ fun Route.authRoutes(
             )
 
           val newToken = tokenGenerator.generateToken()
-          val newHash = hashToken(newToken)
+          val newHash = TokenHash.fromRawToken(newToken)
 
           val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
 
@@ -82,7 +74,7 @@ fun Route.authRoutes(
             database.withConnection { session ->
               var wasReminted = false
               if (oldCookieToken != null) {
-                val oldHash = hashToken(oldCookieToken)
+                val oldHash = TokenHash.fromRawToken(oldCookieToken)
                 val found =
                   ed.unicoach.db.dao.SessionsDao
                     .findByTokenHash(session, oldHash)
@@ -149,7 +141,7 @@ fun Route.authRoutes(
           return@get
         }
 
-        val tokenHash = hashToken(token)
+        val tokenHash = TokenHash.fromRawToken(token)
 
         when (val result = authService.getCurrentUser(tokenHash)) {
           is MeResult.Authenticated -> {

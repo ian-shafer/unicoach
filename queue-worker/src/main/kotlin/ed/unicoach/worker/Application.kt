@@ -4,6 +4,8 @@ import ed.unicoach.common.HealthMarker
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.net.NetConfig
+import ed.unicoach.net.handlers.SessionExpiryHandler
 import ed.unicoach.queue.JobHandler
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueWorker
@@ -14,7 +16,7 @@ import kotlin.time.Duration.Companion.seconds
 fun main() {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "service.conf", "queue.conf", "queue-worker.conf")
+      .load("common.conf", "db.conf", "service.conf", "queue.conf", "queue-worker.conf", "net.conf")
       .getOrThrow()
 
   QueueConfig.from(config).getOrThrow()
@@ -24,10 +26,11 @@ fun main() {
     ed.unicoach.queue.dao
       .JobsDao()
 
+  val netConfig = NetConfig.from(config).getOrThrow()
+
   val handlers =
     listOf<JobHandler>(
-      // Concrete handlers registered here as they are implemented
-      // in future specs.
+      SessionExpiryHandler(database, netConfig.sessionSlidingWindowThreshold),
     )
 
   val worker = QueueWorker(database, jobsDao, handlers)

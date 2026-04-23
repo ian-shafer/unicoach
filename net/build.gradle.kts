@@ -1,24 +1,19 @@
 plugins {
   alias(libs.plugins.kotlin.jvm)
-  application
-}
-
-application {
-  mainClass.set("ed.unicoach.worker.ApplicationKt")
+  alias(libs.plugins.ktlint)
+  alias(libs.plugins.kotlin.serialization)
 }
 
 dependencies {
   implementation(project(":common"))
   implementation(project(":db"))
   implementation(project(":queue"))
-  implementation(project(":service"))
-  implementation(project(":net"))
-
-  implementation(libs.logback.classic)
-  implementation(libs.logstash.logback.encoder)
-  implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.slf4j.api)
 
   testImplementation(libs.kotlin.test.junit5)
+  testImplementation(libs.kotlinx.coroutines.core)
+  testImplementation(libs.postgresql)
+  testImplementation(libs.hikaricp)
 }
 
 tasks.withType<Test> {

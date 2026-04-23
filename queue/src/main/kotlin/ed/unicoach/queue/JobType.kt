@@ -7,6 +7,7 @@ enum class JobType(
   // Consuming specs add production variants alongside their handler implementations.
   TEST_JOB("TEST_JOB"),
   TEST_JOB_B("TEST_JOB_B"),
+  SESSION_EXTEND_EXPIRY("SESSION_EXTEND_EXPIRY"),
   ;
 
   companion object {

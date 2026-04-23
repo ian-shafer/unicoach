@@ -6,13 +6,16 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.queue.QueueConfig
+import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.plugins.SessionExpiryPlugin
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
+import io.ktor.server.application.install
 import io.ktor.server.config.MapApplicationConfig
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -41,6 +44,13 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val database = Database(dbConfig)
 
+  val queueService = QueueService(database)
+
+  val ignorePathPrefixes =
+    config
+      .getStringList("sessionExpiry.ignorePathPrefixes")
+      .toSet()
+
   val hostStr = config.getString("server.host")
   val portInt = config.getInt("server.port")
 
@@ -55,6 +65,12 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       }
 
       appModule(database, sessionConfig)
+
+      install(SessionExpiryPlugin) {
+        this.sessionConfig = sessionConfig
+        this.queueService = queueService
+        this.ignorePathPrefixes = ignorePathPrefixes
+      }
     }
 
   // Start non-blocking, wait for Netty to bind, then signal readiness.
