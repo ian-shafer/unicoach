@@ -33,14 +33,17 @@ Present the options below as a **numbered selection widget** so the user can
 pick one:
 
 1. Walk through findings one-by-one.
-2. User edits the spec markdown file manually.
-3. User drives the conversation ad-hoc.
-4. Reviewer implements all accepted recommendations using the `spec-design`
+2. Reviewer implements accepted recommendations using the `spec-design`
    skill (`spec-design/SKILL.md`). In this mode, read and follow the
-   `spec-design` skill, then apply every accepted finding directly to the spec
-   file. Ask the user which findings to accept before starting, and
-   offer "all" as an explicit option.
-5. **PASS verdict only**: Ignore remaining findings and mark the spec as ready
+   `spec-design` skill, then apply accepted findings directly to the spec
+   file. Before starting, ask the user which findings to implement. Accept
+   any of the following responses:
+   - **All**: Implement every finding.
+   - **Severity threshold**: e.g., "Minor and above" (= Critical + Major +
+     Minor), "Major and above" (= Critical + Major), "Critical only".
+   - **Individual selection**: User specifies finding IDs (e.g., "F1, F3,
+     F5").
+3. **PASS verdict only**: Ignore remaining findings and mark the spec as ready
    for implementation. Only present this option when the verdict is `PASS`
    (zero Critical, zero Major).
 
@@ -178,7 +181,7 @@ and ready for implementation.">
 
 ### 📝 Detailed Findings
 
-#### <F-N>. <Short title> [<Severity>] (§<Section number>)
+#### <Fn>. <Short title> [<Severity>] (§<Section number>)
 
 **Finding**: <One-line description of the issue.>
 
