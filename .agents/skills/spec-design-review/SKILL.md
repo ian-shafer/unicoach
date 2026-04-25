@@ -9,95 +9,192 @@ description: >-
 
 # Spec Design Review
 
-Skill to help review a spec design interactively.
+Adversarial review of a spec design against the standards in
+`spec-design/SKILL.md`.
 
-## Critical Behaviors
+## Behavioral Constraints
 
-- _IMPORTANT_: Do NOT just agree with the author. Push back. Be radically
-  honest. Point out blind spots, mistakes, and errors.
-- You must read the spec design file provided by the user.
-- Do NOT go through the review process step-by-step asking one question at a
-  time. Generate a comprehensive, structured review of the entire spec design at
-  once.
-- Categorize findings clearly (e.g., Critical, Major, Minor, Nit).
-- For each finding, you MUST provide at least 2 distinct options for how to
-  resolve it, and explicitly recommend one of the options.
-- After presenting the full review, ask the user how they want to proceed. Offer
-  these specific options:
-  1.  Go through the review points one-by-one.
-  2.  Let the user edit the spec markdown file manually.
-  3.  Let the user drive the conversation ad-hoc style.
-- Be clear, concise, and to the point.
-- The tone must be highly technical, dry, and objective.
+- **Adversarial Posture**: Do NOT agree with the author by default. Push back.
+  Be radically honest. Surface blind spots, mistakes, and logical gaps.
+- **Single-Pass Review**: Do NOT walk through findings one-by-one in an
+  interview style. Generate a comprehensive, structured review of the entire
+  spec in a single output.
+- **Categorized Findings**: Classify every finding as one of: `Critical`,
+  `Major`, `Minor`, `Nit`.
+- **Actionable Options**: For each finding, provide at least 2 distinct
+  resolution options. Explicitly recommend one.
+- **Tone**: Highly technical, dry, objective. Zero fluff. Zero subjective
+  adjectives.
+
+## Post-Review Interaction
+
+After presenting the full review, ask the user how they want to proceed.
+Present the options below as a **numbered selection widget** so the user can
+pick one:
+
+1. Walk through findings one-by-one.
+2. User edits the spec markdown file manually.
+3. User drives the conversation ad-hoc.
+4. Reviewer implements all accepted recommendations using the `spec-design`
+   skill (`spec-design/SKILL.md`). In this mode, read and follow the
+   `spec-design` skill, then apply every accepted finding directly to the spec
+   file. Ask the user which findings to accept before starting, and
+   offer "all" as an explicit option.
+5. **PASS verdict only**: Ignore remaining findings and mark the spec as ready
+   for implementation. Only present this option when the verdict is `PASS`
+   (zero Critical, zero Major).
 
 ## The Review Process
 
-You MUST evaluate the spec against the following criteria to build your review.
+Evaluate the spec against every criterion below. Do not skip steps.
 
-1. _Read the Spec_: Identify the spec file. If the user has already provided the
-   file content or path in the conversation, use it immediately. Only ask for
-   the path if it is missing from the current context.
-2. _Verify Headers_: Check if the spec has the exact required headers (note that
-   extra sections are allowed): - `## Executive Summary` -
-   `## Detailed Design` - `## Tests` - `## Implementation Plan` -
-   `## Files Modified` If any are missing or incorrect, note this in your review
-   findings (categorized as Critical or Major) and proceed with the rest of the
-   review. Do not stop to ask the user.
-3. _Review Executive Summary_: Check if it's short (250 words max) and answers:
-   Why and how are we building this?
-4. _Review Detailed Design_: Check if it covers the following and flag these
-   specific anti-patterns:
-   - _Data Models_: Are field types, nullability, and relationships (FKs)
-     explicitly defined? Flag missing indexes for queried fields or use of
-     overly broad types.
-   - _API Contracts_: Are exact request/response schemas and methods/RPCs
-     specified? Flag "list" endpoints missing pagination, or state mutations
-     using `GET`s.
-   - _Error Handling_: Does it specify behavior for invalid inputs, dependency
-     failures, and timeouts? Flag vague "returns error" statements; demand
-     specific error codes or failure modes.
-   - _Dependencies_: Are all services/libraries listed with their purpose and
-     identified as new or existing? You MUST perform a web search to verify the
-     latest stable release of any listed software or dependencies. Flag outdated
-     versions as a Minor or Major concern depending on how critical the package
-     is and the severity of the version deviation.
-5. _Review Tests_: Check if it specs out every individual test that will be
-   implemented. Also check that there are no missing tests (i.e., important
-   functionality that is not tested).
-6. _Review Implementation Plan_: Check if steps are atomic and sequential.
-   Verify that each step is _locally verifiable_ by requiring a specific
-   verification action (e.g., running a test, checking a log). Flag vague
-   "refactor" steps.
-7. _Review Files Modified_: Check if all files listed use exact paths relative
-   to project root. You must verify that files listed as new do not exist, and
-   files listed as modified or deleted already exist. Use search tools to check
-   if any dependencies or configs are missing. Do not trust the spec's claims
-   blindly.
-8. _Completeness Check (Semantic Cross-Referencing)_: Do not just map bullet
-   points; evaluate sufficiency and logical consistency:
-   - _Design vs. Files_: Are the files listed in `Files Modified` \*actually
-     sufficient to implement the design? If they describe a new feature, did
-     they forget to list the configuration or client library files that need
-     updates? Flag missing files that are logically required.
-   - _Design vs. Tests_: Verify that every edge case mentioned in
-     `Detailed Design` (e.g., "retries on timeout") has a specific test case in
-     `Tests`. Do not accept generic "unit tests will be added" statements.
-   - _Implied Dependencies_: If the design implies changes to other systems or
-     libraries not mentioned in the spec, flag this as a critical missing
-     detail.
-9. _Tone Check_: Scan for subjective "fluff" words (e.g., "elegant", "robust").
-   More importantly, flag _lack of quantification_. If the author says "low
-   latency", demand a target in milliseconds. If they say "handles high load",
-   demand queries-per-second (QPS) targets. Flag any hand-wavy or non-committal
-   language.
-10. _Advanced Considerations_: Check if the spec should have addressed the
-    following, and if missing, suggest them as "Considerations for the Author"
-    (not as critical failures):
-    - _Rollback Plan_: How to undo the changes if they fail in production.
-    - _Data Migration_: How to handle existing data if schemas are changing.
-    - _Performance/Scalability_: Explicitly IGNORE minor (and some major)
-      performance concerns at this stage. Do not flag them.
-    - _Security/Privacy_: Explicitly IGNORE PII and security concerns at this
-      point. Do not flag or evaluate handling of PII or access control.
-11. _Provide Summary_: Summarize all findings and ask the user for final
-    feedback.
+### 1. Spec Identification
+
+Identify the spec file. If the user has already provided the file content or
+path, use it immediately. Only ask for the path if it is absent from the current
+context.
+
+### 2. Header Verification
+
+Verify the spec contains these exact required headers:
+
+- `## Executive Summary`
+- `## Detailed Design`
+- `## Tests`
+- `## Implementation Plan`
+- `## Files Modified`
+
+Extra sections are permitted. Missing or misspelled required headers: flag as
+`Critical` or `Major`. Do not stop to ask the user — proceed with the remaining
+review.
+
+### 3. Executive Summary
+
+Verify:
+
+- Length ≤ 250 words.
+- Answers: _Why_ are we building this? _How_ are we building it?
+
+### 4. Detailed Design
+
+Evaluate depth across these axes and flag the listed anti-patterns:
+
+- **Data Models**: Field types, nullability, and relationships (FKs) must be
+  explicit. Flag missing indexes on queried fields. Flag overly broad types.
+- **API Contracts**: Exact request/response schemas and methods must be
+  specified. Flag `list` endpoints missing pagination. Flag state mutations
+  using `GET`.
+- **Error Handling**: Behavior for invalid inputs, dependency failures, and
+  timeouts must be specified. Flag vague "returns error" statements — demand
+  specific error codes and failure modes.
+- **Dependencies**: All services and libraries must be listed with their
+  purpose and identified as new or existing. **You MUST perform a web search**
+  to verify the latest stable release of every listed dependency. Flag outdated
+  versions as `Minor` or `Major` based on criticality and version deviation.
+
+### 5. Tests
+
+Verify:
+
+- Every individual test case is explicitly specified (no generic "unit tests
+  will be added" statements).
+- No missing tests — cross-reference `Detailed Design` for untested
+  functionality.
+
+### 6. Implementation Plan
+
+Verify:
+
+- Steps are atomic and sequential.
+- Each step specifies a concrete verification action (e.g., run a test, check
+  a log).
+- Flag vague "refactor" steps with no clear deliverable.
+
+### 7. Files Modified
+
+Verify:
+
+- All paths are exact, relative to the project root.
+- Files listed as **new** do not already exist.
+- Files listed as **modified** or **deleted** already exist.
+- Use search tools to check for missing dependencies or configurations. Do not
+  take the spec's claims at face value.
+
+### 8. Completeness Check (Semantic Cross-Referencing)
+
+Go beyond bullet-point mapping. Evaluate sufficiency and logical consistency:
+
+- **Design → Files**: Are the files in `Files Modified` actually sufficient to
+  implement the design? Flag logically required files that are missing (e.g.,
+  configuration, client libraries, routing modules).
+- **Design → Tests**: Every edge case in `Detailed Design` (e.g., "retries on
+  timeout") must have a corresponding test case in `Tests`.
+- **Implied Dependencies**: If the design implies changes to systems or
+  libraries not mentioned in the spec, flag as `Critical`.
+
+### 9. Tone Check
+
+- Flag subjective fluff words (e.g., "elegant", "robust", "seamless").
+- Flag lack of quantification: "low latency" → demand a target in
+  milliseconds. "Handles high load" → demand QPS targets.
+- Flag hand-wavy or non-committal language.
+
+### 10. Advanced Considerations
+
+Check whether the spec should have addressed the following. Flag as
+"Considerations for the Author" (not as critical failures):
+
+- **Rollback Plan**: How to undo the changes if they fail in production.
+- **Data Migration**: How to handle existing data if schemas change.
+- **Performance/Scalability**: Explicitly **IGNORE** minor (and some major)
+  performance concerns at this stage. Do not flag.
+- **Security/Privacy**: Explicitly **IGNORE** PII and security concerns at
+  this stage. Do not flag or evaluate.
+
+### 11. Summary
+
+Conclude the review with a structured summary using this template:
+
+```
+## Review Summary
+
+**Verdict**: <✅ PASS | 🔧 NEEDS WORK>
+
+| Severity | Count |
+|----------|-------|
+| 🔴 Critical | N     |
+| 🟠 Major    | N     |
+| 🟡 Minor    | N     |
+| ⚪ Nit      | N     |
+
+### 📋 Key Findings
+
+<If NEEDS WORK: bulleted list of all Critical and Major findings, one line
+each. Reference the section number (e.g., "§4 Detailed Design") where each
+finding was raised.>
+
+<If PASS: single line — "No critical or major findings. Spec is complete
+and ready for implementation.">
+
+### 📝 Detailed Findings
+
+#### <F-N>. <Short title> [<Severity>] (§<Section number>)
+
+**Finding**: <One-line description of the issue.>
+
+**Options**:
+1. <Resolution option A.>
+2. <Resolution option B.>
+
+**Recommendation**: Option <1|2> — <brief rationale>.
+
+<Repeat for every finding, ordered by severity: Critical → Major → Minor →
+Nit.>
+```
+
+Rules:
+
+- **PASS**: Zero `Critical` and zero `Major` findings.
+- **NEEDS WORK**: One or more `Critical` or `Major` findings.
+- After the summary, present the post-review interaction options (see
+  **Post-Review Interaction** above).
