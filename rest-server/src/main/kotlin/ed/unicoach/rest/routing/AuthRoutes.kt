@@ -40,6 +40,19 @@ suspend fun ApplicationCall.respondAppError(
   }
 }
 
+private fun ApplicationCall.clearSessionCookie(sessionConfig: ed.unicoach.rest.auth.SessionConfig) {
+  response.cookies.append(
+    name = sessionConfig.cookieName,
+    value = "",
+    domain = sessionConfig.cookieDomain,
+    path = "/",
+    secure = sessionConfig.cookieSecure,
+    httpOnly = true,
+    maxAge = 0L,
+    extensions = mapOf("SameSite" to "Strict"),
+  )
+}
+
 fun Route.authRoutes(
   authService: AuthService,
   database: ed.unicoach.db.Database,
@@ -162,6 +175,28 @@ fun Route.authRoutes(
         }
       }
       rejectUnsupportedMethods(HttpMethod.Get)
+    }
+    route("/logout") {
+      post {
+        val token = call.request.cookies[sessionConfig.cookieName]
+        if (token == null) {
+          call.clearSessionCookie(sessionConfig)
+          call.respond(HttpStatusCode.NoContent)
+          return@post
+        }
+
+        val tokenHash = TokenHash.fromRawToken(token)
+        when (authService.logout(tokenHash)) {
+          is ed.unicoach.auth.LogoutResult.Success -> {
+            call.clearSessionCookie(sessionConfig)
+            call.respond(HttpStatusCode.NoContent)
+          }
+          is ed.unicoach.auth.LogoutResult.DatabaseFailure -> {
+            call.respond(HttpStatusCode.InternalServerError, ErrorResponse("internal_error", "An internal error occurred"))
+          }
+        }
+      }
+      rejectUnsupportedMethods(HttpMethod.Post)
     }
   }
 }

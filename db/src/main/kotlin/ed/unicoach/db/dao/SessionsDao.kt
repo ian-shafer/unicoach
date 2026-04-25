@@ -195,7 +195,32 @@ object SessionsDao {
           if (rs.next()) {
             SessionUpdateResult.Success(mapSession(rs))
           } else {
-            SessionUpdateResult.NotFound("Session could not be updated either due to version mismatch or not found")
+            SessionUpdateResult.NotFound("Session could not be extended either due to version mismatch or not found")
+          }
+        }
+      }
+    }
+
+  fun revokeByTokenHash(
+    session: SqlSession,
+    tokenHash: TokenHash,
+  ): SessionUpdateResult =
+    executeSafely(SessionUpdateResult::DatabaseFailure) {
+      val sql =
+        """
+        UPDATE sessions 
+        SET version = version + 1, is_revoked = true
+        WHERE token_hash = ? AND is_revoked = false
+        RETURNING *
+        """.trimIndent()
+      session.prepareStatement(sql).use { stmt ->
+        stmt.setBytes(1, tokenHash.value)
+
+        stmt.executeQuery().use { rs ->
+          if (rs.next()) {
+            SessionUpdateResult.Success(mapSession(rs))
+          } else {
+            SessionUpdateResult.NotFound("Session not found or already revoked")
           }
         }
       }

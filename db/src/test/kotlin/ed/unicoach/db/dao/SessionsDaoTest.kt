@@ -119,4 +119,62 @@ class SessionsDaoTest {
     val extended = (extendResult as SessionUpdateResult.Success).session
     assertTrue(extended.expiresAt.isAfter(original.expiresAt))
   }
+
+  @Test
+  fun `revokeByTokenHash revokes active session`() {
+    val hash = byteArrayOf(7, 8, 9)
+    val tokenHash = TokenHash(hash)
+    val newSession =
+      NewSession(
+        userId = null,
+        tokenHash = tokenHash,
+        userAgent = "agent",
+        initialIp = null,
+        metadata = null,
+        expiration = Duration.ofDays(7),
+      )
+
+    val createResult = SessionsDao.create(session, newSession)
+    assertTrue(createResult is SessionCreateResult.Success)
+
+    val revokeResult = SessionsDao.revokeByTokenHash(session, tokenHash)
+    assertTrue(revokeResult is SessionUpdateResult.Success)
+
+    val original = createResult.session
+    val revoked = revokeResult.session
+    assertTrue(revoked.version == original.version + 1)
+    
+    val findResult = SessionsDao.findByTokenHash(session, tokenHash)
+    assertTrue(findResult is SessionFindResult.NotFound)
+  }
+
+  @Test
+  fun `revokeByTokenHash returns NotFound for nonexistent token`() {
+    val hash = byteArrayOf(10, 11, 12)
+    val tokenHash = TokenHash(hash)
+
+    val revokeResult = SessionsDao.revokeByTokenHash(session, tokenHash)
+    assertTrue(revokeResult is SessionUpdateResult.NotFound)
+  }
+
+  @Test
+  fun `revokeByTokenHash returns NotFound for already-revoked session`() {
+    val hash = byteArrayOf(13, 14, 15)
+    val tokenHash = TokenHash(hash)
+    val newSession =
+      NewSession(
+        userId = null,
+        tokenHash = tokenHash,
+        userAgent = "agent",
+        initialIp = null,
+        metadata = null,
+        expiration = Duration.ofDays(7),
+      )
+
+    SessionsDao.create(session, newSession)
+    SessionsDao.revokeByTokenHash(session, tokenHash)
+
+    val secondRevokeResult = SessionsDao.revokeByTokenHash(session, tokenHash)
+    assertTrue(secondRevokeResult is SessionUpdateResult.NotFound)
+  }
 }

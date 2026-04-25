@@ -230,4 +230,63 @@ class AuthRoutingTest {
         }
       assertEquals(HttpStatusCode.MethodNotAllowed, meResponse.status)
     }
+
+  // --- /logout endpoint tests ---
+
+  @Test
+  fun `logout with valid cookie returns 204 and clears cookie`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val req = RegisterRequest(email, "Password123!", "Logout Test User")
+
+      val registerResponse =
+        client.post(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody(mapper.writeValueAsString(req))
+        }
+      assertEquals(HttpStatusCode.Created, registerResponse.status)
+
+      val setCookie = registerResponse.headers[HttpHeaders.SetCookie]
+      assertTrue(setCookie != null)
+      val cookiePair = setCookie.split(";").first().trim()
+
+      val logoutResponse =
+        client.post(buildUrl("/api/v1/auth/logout")) {
+          header(HttpHeaders.Cookie, cookiePair)
+        }
+      assertEquals(HttpStatusCode.NoContent, logoutResponse.status)
+      val clearedCookie = logoutResponse.headers[HttpHeaders.SetCookie]
+      assertTrue(clearedCookie != null)
+      assertTrue(clearedCookie.contains("Max-Age=0") || clearedCookie.contains("max-age=0"))
+
+      val meResponse =
+        client.get(buildUrl("/api/v1/auth/me")) {
+          header(HttpHeaders.Cookie, cookiePair)
+        }
+      assertEquals(HttpStatusCode.Unauthorized, meResponse.status)
+    }
+
+  @Test
+  fun `logout without cookie returns 204`() =
+    runBlocking {
+      val logoutResponse = client.post(buildUrl("/api/v1/auth/logout"))
+      assertEquals(HttpStatusCode.NoContent, logoutResponse.status)
+    }
+
+  @Test
+  fun `logout with invalid cookie returns 204`() =
+    runBlocking {
+      val logoutResponse =
+        client.post(buildUrl("/api/v1/auth/logout")) {
+          header(HttpHeaders.Cookie, "UNICOACH_SESSION=garbage-token-value")
+        }
+      assertEquals(HttpStatusCode.NoContent, logoutResponse.status)
+    }
+
+  @Test
+  fun `GET to logout returns 405`() =
+    runBlocking {
+      val logoutResponse = client.get(buildUrl("/api/v1/auth/logout"))
+      assertEquals(HttpStatusCode.MethodNotAllowed, logoutResponse.status)
+    }
 }

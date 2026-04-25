@@ -194,4 +194,39 @@ class AuthServiceTest {
       val result = authService.getCurrentUser(tokenHash)
       assertTrue(result is MeResult.Unauthenticated)
     }
+
+  @Test
+  fun `logout revokes active session`() =
+    runBlocking {
+      val user = createTestUser()
+      val tokenHash = TokenHash(byteArrayOf(50, 51, 52))
+      createSession(userId = user.id, tokenHash = tokenHash)
+
+      val result = authService.logout(tokenHash)
+      assertTrue(result is LogoutResult.Success)
+
+      val findResult = SessionsDao.findByTokenHash(sqlSession, tokenHash)
+      assertTrue(findResult is ed.unicoach.db.dao.SessionFindResult.NotFound)
+    }
+
+  @Test
+  fun `logout returns Success for nonexistent token`() =
+    runBlocking {
+      val tokenHash = TokenHash(byteArrayOf(60, 61, 62))
+      val result = authService.logout(tokenHash)
+      assertTrue(result is LogoutResult.Success)
+    }
+
+  @Test
+  fun `logout returns Success for already-revoked session`() =
+    runBlocking {
+      val user = createTestUser()
+      val tokenHash = TokenHash(byteArrayOf(70, 71, 72))
+      createSession(userId = user.id, tokenHash = tokenHash)
+      
+      SessionsDao.revokeByTokenHash(sqlSession, tokenHash)
+
+      val result = authService.logout(tokenHash)
+      assertTrue(result is LogoutResult.Success)
+    }
 }

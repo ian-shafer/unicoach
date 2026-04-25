@@ -112,4 +112,19 @@ class AuthService(
     } catch (e: Exception) {
       MeResult.DatabaseFailure(ExceptionWrapper.from(e))
     }
+
+  suspend fun logout(tokenHash: TokenHash): LogoutResult =
+    try {
+      withContext(Dispatchers.IO) {
+        database.withConnection { session ->
+          when (val result = SessionsDao.revokeByTokenHash(session, tokenHash)) {
+            is ed.unicoach.db.dao.SessionUpdateResult.Success -> LogoutResult.Success
+            is ed.unicoach.db.dao.SessionUpdateResult.NotFound -> LogoutResult.Success
+            is ed.unicoach.db.dao.SessionUpdateResult.DatabaseFailure -> LogoutResult.DatabaseFailure(result.error)
+          }
+        }
+      }
+    } catch (e: Exception) {
+      LogoutResult.DatabaseFailure(ExceptionWrapper.from(e))
+    }
 }
