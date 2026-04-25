@@ -16,9 +16,9 @@ Adversarial review of a spec design against the standards in
 
 - **Adversarial Posture**: Do NOT agree with the author by default. Push back.
   Be radically honest. Surface blind spots, mistakes, and logical gaps.
-- **Single-Pass Review**: Do NOT walk through findings one-by-one in an
-  interview style. Generate a comprehensive, structured review of the entire
-  spec in a single output.
+- **Single-Pass Report**: Do NOT walk through findings one-by-one in an
+  interview style. Produce the report (see §11 Report Output) as a single,
+  complete output.
 - **Categorized Findings**: Classify every finding as one of: `Critical`,
   `Major`, `Minor`, `Nit`.
 - **Actionable Options**: For each finding, provide at least 2 distinct
@@ -154,50 +154,47 @@ Check whether the spec should have addressed the following. Flag as
 - **Security/Privacy**: Explicitly **IGNORE** PII and security concerns at
   this stage. Do not flag or evaluate.
 
-### 11. Summary
+### 11. Report Output
 
-Conclude the review with a structured summary using this template:
+The report is the **sole output** of the review. Do not produce incremental
+commentary — go straight to the report. Use this exact template:
 
 ```
-## Review Summary
+# 🔍 Spec Review: <Spec Title>
 
 **Verdict**: <✅ PASS | 🔧 NEEDS WORK>
 
-| Severity | Count |
-|----------|-------|
-| 🔴 Critical | N     |
-| 🟠 Major    | N     |
-| 🟡 Minor    | N     |
-| ⚪ Nit      | N     |
+| 🔴 Critical | 🟠 Major | 🟡 Minor | ⚪ Nit |
+|-------------|----------|----------|--------|
+| N           | N        | N        | N      |
 
-### 📋 Key Findings
+## 📋 Findings
 
-<If NEEDS WORK: bulleted list of all Critical and Major findings, one line
-each. Reference the section number (e.g., "§4 Detailed Design") where each
-finding was raised.>
+| #  | Sev | Finding | Options |
+|----|-----|---------|---------|
+| F1 | 🔴  | <one-line description> (§<N>) | ⭐ O1) <option><br>O2) <option> |
+| F2 | 🟠  | ... | ... |
+| F3 | 🟡  | ... | ... |
+| F4 | ⚪  | ... | ... |
 
-<If PASS: single line — "No critical or major findings. Spec is complete
-and ready for implementation.">
+<Order rows by severity: 🔴 → 🟠 → 🟡 → ⚪>
 
-### 📝 Detailed Findings
+<If PASS with zero findings: replace table with single line —
+"No findings. Spec is complete and ready for implementation.">
 
-#### <Fn>. <Short title> [<Severity>] (§<Section number>)
+## 📎 Detail
 
-**Finding**: <One-line description of the issue.>
+<Optional. Only include this section for findings that need more explanation
+than fits in a table cell. Reference by finding ID.>
 
-**Options**:
-1. <Resolution option A.>
-2. <Resolution option B.>
+### F1: <Short title>
 
-**Recommendation**: Option <1|2> — <brief rationale>.
-
-<Repeat for every finding, ordered by severity: Critical → Major → Minor →
-Nit.>
+<Extended rationale, code snippets, or examples.>
 ```
 
 Rules:
 
-- **PASS**: Zero `Critical` and zero `Major` findings.
-- **NEEDS WORK**: One or more `Critical` or `Major` findings.
-- After the summary, present the post-review interaction options (see
+- **✅ PASS**: Zero `Critical` and zero `Major` findings.
+- **🔧 NEEDS WORK**: One or more `Critical` or `Major` findings.
+- After the report, present the post-review interaction options (see
   **Post-Review Interaction** above).
