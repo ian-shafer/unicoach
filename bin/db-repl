@@ -25,9 +25,8 @@ done
 
 # Suppress health check failure logs to keep the interactive startup display clean
 if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null 2>&1; then
-  log-info "PostgreSQL container is offline"
+  log-info "PostgreSQL is offline"
   exit 2
 fi
 
-exec "$PROJECT_ROOT/bin/docker-compose" -f docker/postgres-compose.yaml exec \
-  postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"
+exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"

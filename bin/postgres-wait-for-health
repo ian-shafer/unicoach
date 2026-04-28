@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+postgres-wait-for-health [options]
+
+Polls postgres-check at 1-second intervals until it reports healthy or the
+timeout elapses. Exits 0 on success, non-zero on timeout.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+TIMEOUT=4s
+log-info "Waiting for postgres health check..."
+if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/postgres-check"; then
+  fatal "postgres did not become healthy within $TIMEOUT. Check var/log/postgres.log."
+fi
+log-info "postgres is healthy"

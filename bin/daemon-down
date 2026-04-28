@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+daemon-down [options] <service-name>
+
+Gracefully terminates the daemon for <service-name>. Reads the PID from
+var/run/<service-name>.pid, sends SIGTERM, and polls for exit using
+bin/wait-for. Escalates to SIGKILL if the process does not terminate within
+the grace period. Removes the PID file on success.
+
+Arguments:
+  service-name: Logical service identifier (e.g. postgres, rest-server).
+
+Options:
+  -h, --help: Help
+  -t, --lock-timeout TIMEOUT  Duration to wait for lock acquisition (default 16s).
+EOF
+  exit "$exit_code"
+}
+
+LOCK_TIMEOUT="16"
+SERVICE_NAME=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -t|--lock-timeout) LOCK_TIMEOUT="${2:-}"; shift 2 ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -ne 1 ]; then
+  help "Missing required <service-name> argument."
+fi
+SERVICE_NAME="$1"
+shift
+
+PID_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.pid"
+LOCK_DIR="$PROJECT_ROOT/var/run/${SERVICE_NAME}.daemon.lock"
+
+LOCK_STATUS=0
+"$PROJECT_ROOT/bin/file-lock" -o down -t "${LOCK_TIMEOUT}" "$LOCK_DIR" 60 || LOCK_STATUS=$?
+if [ "$LOCK_STATUS" -ne 0 ]; then
+  fatal "Failed to acquire lock for [$SERVICE_NAME]."
+fi
+
+trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+
+if [ ! -f "$PID_FILE" ]; then
+  log-info "Service [$SERVICE_NAME] is not running (no PID file)."
+  exit 0
+fi
+
+existing_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+
+if [ -z "$existing_pid" ]; then
+  log-info "PID file for [$SERVICE_NAME] is empty. Removing."
+  rm -f "$PID_FILE"
+  exit 0
+fi
+
+if ! "$PROJECT_ROOT/bin/check-pid" "$existing_pid" 2>/dev/null; then
+  log-info "Service [$SERVICE_NAME] process (PID $existing_pid) is already gone. Cleaning up stale PID file."
+  rm -f "$PID_FILE"
+  exit 0
+fi
+
+log-info "Sending SIGTERM to [$SERVICE_NAME] (PID $existing_pid)..."
+kill -TERM "$existing_pid" 2>/dev/null || true
+
+# Poll for up to 4s for graceful exit.
+GRACE_SECONDS=4
+DEADLINE=$((SECONDS + GRACE_SECONDS))
+while [ "$SECONDS" -lt "$DEADLINE" ]; do
+  if ! "$PROJECT_ROOT/bin/check-pid" "$existing_pid" 2>/dev/null; then
+    rm -f "$PID_FILE"
+    log-info "Service [$SERVICE_NAME] stopped."
+    exit 0
+  fi
+  sleep 1
+done
+
+# Process did not exit gracefully — escalate.
+log-info "Service [$SERVICE_NAME] did not terminate within ${GRACE_SECONDS}s. Sending SIGKILL..."
+kill -KILL "$existing_pid" 2>/dev/null || true
+sleep 1
+
+rm -f "$PID_FILE"
+log-info "Service [$SERVICE_NAME] stopped."

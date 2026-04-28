@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rest-server-up [options]
+
+Boots the rest-server daemon from a pre-built installDist binary and waits
+for it to respond to HTTP requests.
+
+The binary MUST be pre-built via `bin/build-rest-server` before invoking
+this script. If the binary is absent, this script exits non-zero immediately
+without invoking Gradle.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "rest-server-up does not accept positional arguments: $*"
+fi
+
+BINARY="$PROJECT_ROOT/rest-server/build/install/rest-server/bin/rest-server"
+
+if [ ! -x "$BINARY" ]; then
+  fatal "rest-server binary not found at [$BINARY]. Run 'bin/build-rest-server' first."
+fi
+
+"$PROJECT_ROOT/bin/daemon-up" rest-server -- "$BINARY"
+
+"$PROJECT_ROOT/bin/rest-server-wait-for-health"

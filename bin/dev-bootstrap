@@ -11,7 +11,16 @@ help() {
   cat << 'EOF'
 dev-bootstrap [options]
 
-Empty placeholder for future host environment setup.
+Verifies that nix is installed and prints instructions for activating the
+project development environment.
+
+All tools (java, postgres, python, deno, ktlint) are declared in flake.nix.
+Activate the environment with:
+
+  nix develop --command zsh
+
+This starts a zsh session with all project tools on PATH. Your existing
+.zshrc and oh-my-zsh configuration will load normally.
 
 Options:
   -h, --help: Help
@@ -31,3 +40,16 @@ done
 if [ "$#" -ne 0 ]; then
   help "Error: dev-bootstrap accepts no positional arguments."
 fi
+
+if ! command -v nix >/dev/null 2>&1; then
+  fatal "nix is not installed. Install it from https://nixos.org/download then re-run dev-bootstrap."
+fi
+
+log-info "nix is installed ($(nix --version))."
+log-info ""
+log-info "Run the following to activate the development environment:"
+log-info ""
+log-info "  nix develop --command zsh"
+log-info ""
+log-info "All project tools (java, postgres, python, deno, ktlint) will be"
+log-info "available on PATH. Your .zshrc and oh-my-zsh will load normally."

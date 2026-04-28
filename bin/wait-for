@@ -43,18 +43,24 @@ fi
 shift
 COMMAND=("$@")
 
-SECONDS=0
-LAST_STATUS=1
+LAST_STATUS=0
 
-while [ $SECONDS -lt $TIMEOUT_SECONDS ]; do
-  if "${COMMAND[@]}"; then
-    LAST_STATUS=0
-    break
-  else
-    LAST_STATUS=$?
-  fi
+# First attempt: run the command immediately with no dot.
+# Dots appear only when the command takes longer than one poll period.
+"${COMMAND[@]}" && exit 0 || LAST_STATUS=$?
 
+# Subsequent attempts: sleep, then dot, then retry.
+DOT_PRINTED=false
+while [ "$SECONDS" -lt "$TIMEOUT_SECONDS" ]; do
   sleep "$PERIOD"
+  printf '.' >&2
+  DOT_PRINTED=true
+  "${COMMAND[@]}" && { printf '\n' >&2; exit 0; } || LAST_STATUS=$?
 done
 
+if $DOT_PRINTED; then
+  printf '\n' >&2
+fi
+
+log-info "Timed out after ${TIMEOUT_STR} waiting for: ${COMMAND[*]}"
 exit $LAST_STATUS

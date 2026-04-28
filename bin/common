@@ -10,7 +10,9 @@ if [ ! -f "$ENV_FILE" ]; then
   fatal "Environment file not found [$ENV_FILE]."
 fi
 
+set -a
 source "$ENV_FILE"
+set +a
 
 export DB_SCHEMA_DIR="${DB_SCHEMA_DIR:-$PROJECT_ROOT/db/schema}"
 

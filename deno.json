@@ -1,0 +1,7 @@
+{
+  "fmt": {
+    "lineWidth": 80,
+    "proseWrap": "always",
+    "exclude": ["build/", ".gradle/", "var/", ".idea/", ".gemini/"]
+  }
+}

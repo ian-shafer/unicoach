@@ -4,7 +4,7 @@ TOTAL_TESTS=0
 
 pass_test() {
   local msg="$1"
-  ((TOTAL_TESTS++))
+  TOTAL_TESTS=$(( TOTAL_TESTS + 1 ))
   echo -e " \033[0;32m✅ ${msg}\033[0m"
 }
 

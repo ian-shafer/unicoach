@@ -33,6 +33,6 @@ if [ "$skip_prompt" = false ]; then
 fi
 
 log-info "Destroying database [$POSTGRES_DB]..."
-"$PROJECT_ROOT/bin/postgres-start" >/dev/null
+"$PROJECT_ROOT/bin/postgres-up" >/dev/null
 echo "DROP DATABASE IF EXISTS \"$POSTGRES_DB\" WITH (FORCE);" | "$PROJECT_ROOT/bin/db-update" -d "${POSTGRES_ADMIN_DB:-postgres}"
 log-info "Database [$POSTGRES_DB] successfully destroyed."

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+build [options]
+
+Full project build. Delegates to per-module build scripts in dependency order:
+  common -> db -> service -> queue -> net -> rest-server -> queue-worker
+
+Exits immediately with the failing script's exit code if any per-module
+build fails.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "build does not accept positional arguments: $*"
+fi
+
+MODULES=(
+  build-common
+  build-db
+  build-service
+  build-queue
+  build-net
+  build-rest-server
+  build-queue-worker
+)
+
+for module in "${MODULES[@]}"; do
+  log-info "Building [$module]..."
+  "$PROJECT_ROOT/bin/$module"
+done
+
+log-info "Build complete."

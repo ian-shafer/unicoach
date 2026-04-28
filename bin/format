@@ -11,7 +11,8 @@ help() {
 format [options]
 
 Formats Kotlin and Markdown source code across the project.
-This runs ktlintFormat (Kotlin) and Prettier (Markdown) concurrently in Docker containers.
+Runs ktlint --format (Kotlin) and deno fmt (Markdown) concurrently using
+the native tool binaries provided by nix.
 
 Options:
   -h, --help: Help
@@ -35,10 +36,10 @@ fi
 log-info "Formatting Kotlin and Markdown code concurrently..."
 
 # Run Kotlin formatting in background
-"$PROJECT_ROOT/bin/docker-run" eclipse-temurin:21-jdk ./gradlew ktlintFormat &
+ktlint --format "**/*.kt" "**/*.kts" &
 KOTLIN_PID=$!
 
-"$PROJECT_ROOT/bin/docker-run" node:20-alpine npx --yes prettier@3 --write "**/*.md" &
+deno fmt "**/*.md" &
 MARKDOWN_PID=$!
 
 # Safely capture exit codes without un-setting set -e
@@ -50,12 +51,12 @@ wait $MARKDOWN_PID || MARKDOWN_STATUS=$?
 FAILED=0
 
 if [ "$KOTLIN_STATUS" -ne 0 ]; then
-  log-info "Kotlin formatter failed (Status: $KOTLIN_STATUS)"
+  log-error "Kotlin formatter failed (Status: $KOTLIN_STATUS)"
   FAILED=1
 fi
 
 if [ "$MARKDOWN_STATUS" -ne 0 ]; then
-  log-info "Markdown formatter failed (Status: $MARKDOWN_STATUS)"
+  log-error "Markdown formatter failed (Status: $MARKDOWN_STATUS)"
   FAILED=1
 fi
 

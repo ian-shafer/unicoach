@@ -1,7 +1,6 @@
 package ed.unicoach.rest
 
 import ed.unicoach.auth.AuthService
-import ed.unicoach.common.HealthMarker
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -73,11 +72,10 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       }
     }
 
-  // Start non-blocking, wait for Netty to bind, then signal readiness.
+  // Start non-blocking and wait for Netty to bind.
   server.start(wait = false)
   @Suppress("DEPRECATION")
   kotlinx.coroutines.runBlocking { server.engine.resolvedConnectors() }
-  HealthMarker.markHealthy()
 
   if (wait) {
     Thread.currentThread().join()

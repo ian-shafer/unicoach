@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rest-server-wait-for-health [options]
+
+Polls rest-server-check at 1-second intervals until the /hello endpoint
+returns HTTP 200 or the timeout elapses. Exits 0 on success, non-zero
+on timeout.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+TIMEOUT=4s
+log-info "Waiting for rest-server health check on port ${PORT:-8080}..."
+if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/rest-server-check"; then
+  fatal "rest-server did not become healthy within $TIMEOUT. Check var/log/rest-server.log."
+fi
+log-info "rest-server is healthy"

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+daemon-bounce [options] <service-name> -- <command...>
+
+Sequentially invokes daemon-down then daemon-up for a clean bounce.
+Passes <service-name> and <command...> through to daemon-up unchanged.
+
+Arguments:
+  service-name: Logical service identifier (e.g. postgres, rest-server).
+  --:           Argument separator. Everything after this is passed to daemon-up.
+  command...:   The native command to execute in the background.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -lt 1 ]; then
+  help "Missing required <service-name> argument."
+fi
+
+SERVICE_NAME="$1"
+shift
+
+# Consume the mandatory -- separator
+if [ "${1:-}" != "--" ]; then
+  help "Expected '--' separator after <service-name>, got: ${1:-}"
+fi
+# Keep -- in place; daemon-up expects it
+COMMAND_WITH_SEP=("$@")
+
+"$PROJECT_ROOT/bin/daemon-down" "$SERVICE_NAME"
+"$PROJECT_ROOT/bin/daemon-up" "$SERVICE_NAME" "${COMMAND_WITH_SEP[@]}"

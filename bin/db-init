@@ -10,7 +10,15 @@ help() {
   cat << 'EOF'
 db-init [options]
 
-Initializes the database by starting it and creating required migrations tables.
+Initialises the database cluster for this project. Idempotent — safe to run
+multiple times. Performs the following steps:
+
+  1. Ensures postgres is running (postgres-up).
+  2. Creates the application role (DATABASE_USER) if it does not exist.
+  3. Creates the application database (POSTGRES_DB) if it does not exist.
+  4. Grants the application role CONNECT on the database and full access
+     to the public schema, including default privileges for future objects.
+  5. Creates the schema_migrations table if it does not exist.
 
 Options:
   -h, --help: Help
@@ -29,11 +37,66 @@ if [ "$#" -gt 0 ]; then
   help "db-init does not accept positional arguments: $*"
 fi
 
-"$PROJECT_ROOT/bin/postgres-start"
+DATA_DIR="${POSTGRES_DATA_DIR:-}"
 
-if ! echo "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -tA | grep -q 1; then
-  echo "CREATE DATABASE \"$POSTGRES_DB\";" | "$PROJECT_ROOT/bin/db-update" -d "${POSTGRES_ADMIN_DB:-postgres}"
+if [ -z "$DATA_DIR" ]; then
+  fatal "POSTGRES_DATA_DIR is not set."
 fi
 
-echo "CREATE TABLE IF NOT EXISTS schema_migrations (version_id VARCHAR(4) PRIMARY KEY, filename VARCHAR(255) NOT NULL, applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW());" | "$PROJECT_ROOT/bin/db-update"
+# ── 0. Initialise cluster if not already done ─────────────────────────────────
+if [ ! -f "$DATA_DIR/PG_VERSION" ]; then
+  log-info "Initialising PostgreSQL data directory [$DATA_DIR]..."
+  initdb -D "$DATA_DIR" -U "$POSTGRES_USER" --auth="${POSTGRES_HOST_AUTH_METHOD:-trust}"
+fi
+
+# ── 1. Ensure postgres is running ────────────────────────────────────────────
+"$PROJECT_ROOT/bin/postgres-up"
+
+# ── 2. Create application role if it does not exist ──────────────────────────
+if ! echo "SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '$DATABASE_USER'" \
+    | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -tA \
+    | grep -q 1; then
+  log-info "Creating role [$DATABASE_USER]..."
+  printf "CREATE USER \"%s\" WITH PASSWORD '%s';" \
+    "$DATABASE_USER" "$DATABASE_PASSWORD" \
+    | "$PROJECT_ROOT/bin/db-update" -d "${POSTGRES_ADMIN_DB:-postgres}"
+else
+  log-info "Role [$DATABASE_USER] already exists."
+fi
+
+# ── 3. Create application database if it does not exist ──────────────────────
+if ! echo "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" \
+    | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -tA \
+    | grep -q 1; then
+  log-info "Creating database [$POSTGRES_DB]..."
+  printf "CREATE DATABASE \"%s\";" "$POSTGRES_DB" \
+    | "$PROJECT_ROOT/bin/db-update" -d "${POSTGRES_ADMIN_DB:-postgres}"
+else
+  log-info "Database [$POSTGRES_DB] already exists."
+fi
+
+# ── 4. Grant database-level connect privilege (admin DB context) ──────────────
+printf "GRANT CONNECT ON DATABASE \"%s\" TO \"%s\";" \
+  "$POSTGRES_DB" "$DATABASE_USER" \
+  | "$PROJECT_ROOT/bin/db-update" -d "${POSTGRES_ADMIN_DB:-postgres}"
+
+# ── 5. Grant schema access and default object privileges (target DB) ──────────
+# ALTER DEFAULT PRIVILEGES covers all future tables/sequences created by the
+# admin role (POSTGRES_USER) in the public schema.
+cat << SQL | "$PROJECT_ROOT/bin/db-update"
+GRANT ALL ON SCHEMA public TO "$DATABASE_USER";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES     TO "$DATABASE_USER";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES  TO "$DATABASE_USER";
+SQL
+
+# ── 6. Create schema_migrations and grant access ──────────────────────────────
+log-info "Ensuring schema_migrations table exists..."
+cat << SQL | "$PROJECT_ROOT/bin/db-update"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version_id VARCHAR(4)    PRIMARY KEY,
+  filename   VARCHAR(255)  NOT NULL,
+  applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+SQL
+
 log-info "Database successfully initialized."

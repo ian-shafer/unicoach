@@ -8,10 +8,9 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-postgres-check [options]
+build-queue [options]
 
-Exits 0 if PostgreSQL is accepting connections on localhost:5432.
-Exits 1 if it is not reachable or not ready.
+Assembles the :queue module via Gradle.
 
 Options:
   -h, --help: Help
@@ -27,9 +26,8 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
-if pg_isready -q -h localhost -p 5432 -U "$POSTGRES_USER"; then
-  log-info "postgres is running"
-else
-  log-info "postgres is NOT running"
-  exit 1
+if [ "$#" -gt 0 ]; then
+  help "build-queue does not accept positional arguments: $*"
 fi
+
+exec "$PROJECT_ROOT/gradlew" :queue:assemble

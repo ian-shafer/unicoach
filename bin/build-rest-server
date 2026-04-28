@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+build-rest-server [options]
+
+Produces a self-contained installDist distribution for :rest-server via
+Gradle. The resulting launch script is located at:
+  rest-server/build/install/rest-server/bin/rest-server
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "build-rest-server does not accept positional arguments: $*"
+fi
+
+exec "$PROJECT_ROOT/gradlew" :rest-server:installDist

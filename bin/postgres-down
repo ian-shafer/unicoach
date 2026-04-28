@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+postgres-down [options]
+
+Gracefully stops the PostgreSQL daemon using pg_ctl.
+Does not use daemon-down.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "postgres-down does not accept positional arguments: $*"
+fi
+
+if [ -z "${POSTGRES_DATA_DIR:-}" ]; then
+  fatal "POSTGRES_DATA_DIR is not set."
+fi
+
+DATA_DIR="$POSTGRES_DATA_DIR"
+
+if [ ! -f "$DATA_DIR/postmaster.pid" ]; then
+  log-info "postgres is not running (no postmaster.pid)."
+  exit 0
+fi
+
+pg_pid="$(head -1 "$DATA_DIR/postmaster.pid" 2>/dev/null || true)"
+
+log-info "Stopping [postgres] (PID $pg_pid)..."
+kill -TERM "$pg_pid" 2>/dev/null || true
+
+# Poll on postmaster.pid deletion (postgres removes it on clean exit).
+# kill -0 is unreliable due to PID reuse.
+GRACE_SECONDS=4
+DEADLINE=$((SECONDS + GRACE_SECONDS))
+while [ "$SECONDS" -lt "$DEADLINE" ]; do
+  if [ ! -f "$DATA_DIR/postmaster.pid" ]; then
+    log-info "postgres stopped."
+    exit 0
+  fi
+  sleep 1
+done
+
+# Escalate to SIGKILL.
+log-info "postgres did not terminate within ${GRACE_SECONDS}s. Sending SIGKILL..."
+kill -KILL "$pg_pid" 2>/dev/null || true
+sleep 1
+log-info "postgres stopped."

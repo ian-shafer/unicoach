@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-source "$(dirname "$0")/common"
-
-# Postgres must be online before the worker boots, otherwise HikariCP
-# fails to connect and the container crashes immediately.
-"$PROJECT_ROOT/bin/postgres-start" || exit $?
-
-exec "$PROJECT_ROOT/bin/docker-daemon-start" --nonce "$@" queue-worker

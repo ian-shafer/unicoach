@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+check-pid <pid>
+
+Exits 0 if the process identified by <pid> is alive, 1 if it is not.
+
+Arguments:
+  pid: The process ID to check.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -ne 1 ]; then
+  help "Missing required <pid> argument."
+fi
+
+PID="$1"
+shift
+
+# kill -0 sends no signal; it only tests whether the process exists and is
+# reachable by the calling user. Redirect stderr to suppress "No such process".
+if kill -0 "$PID" 2>/dev/null; then
+  exit 0
+else
+  exit 1
+fi

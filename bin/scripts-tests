@@ -3,27 +3,10 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/rest-server-stop -d >/dev/null 2>&1 || true; bin/queue-worker-stop -d >/dev/null 2>&1 || true; bin/postgres-stop -d >/dev/null 2>&1 || true; docker network rm "$UNICOACH_NETWORK" >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/rest-server-down >/dev/null 2>&1 || true; bin/queue-worker-down >/dev/null 2>&1 || true; bin/postgres-down >/dev/null 2>&1 || true' EXIT INT TERM
 
 echo "Harness up"
 echo ""
-
-
-
-cleanPostgresData() {
-  rm -rf "$POSTGRES_DATA_DIR" || true
-}
-
-# Wait gracefully for the database initialization scripts fully resolve internally
-wait_for_postgres() {
-  local container_id="$1"
-  for i in {1..15}; do
-    if docker exec "$container_id" psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then return 0; fi
-    sleep 1
-  done
-  echo "Fail: Timed out waiting for database '$POSTGRES_DB' runtime to become queryable organically."
-  exit 1
-}
 
 TEST_LOCK="$PROJECT_ROOT/var/run/test.lock"
 mkdir -p "$PROJECT_ROOT/var/run"
@@ -61,155 +44,143 @@ pass_test "File lock recovered stale lock"
 rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
 
-# JVM daemon stop -d removes the Docker network, disconnecting
-# postgres. This helper ensures postgres is back on the network and the default
-# 'unicoach' database exists before starting any JVM daemon.
+# Ensures postgres is up and the test database exists before starting any JVM daemon.
 ensure_postgres_for_jvm() {
-  bin/postgres-start >/dev/null
-  local cid
-  cid="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
-  wait_for_postgres "$cid"
-  echo "SELECT 1 FROM pg_database WHERE datname = 'unicoach'" | bin/db-query -d postgres -tA | grep -q 1 || \
-    echo "CREATE DATABASE unicoach;" | bin/db-update -d postgres
+  bin/postgres-up >/dev/null
+  for i in {1..15}; do
+    if psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+  psql -U postgres -d postgres -tA \
+    -c "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" \
+    | grep -q 1 || psql -U postgres -d postgres -c "CREATE DATABASE \"$POSTGRES_DB\";" >/dev/null
 }
 
 test_daemon_wrapper() {
   local WRAPPER="$1"
-  local ARG2="${2:-}"
-  local SUFFIX=""
-  if [ -n "$ARG2" ]; then
-    SUFFIX=" $ARG2"
-  fi
-  local START_CMD="bin/$WRAPPER-start"
-  local STOP_CMD="bin/$WRAPPER-stop"
-  local RESTART_CMD="bin/$WRAPPER-restart"
+  local UP_CMD="bin/$WRAPPER-up"
+  local DOWN_CMD="bin/$WRAPPER-down"
+  local BOUNCE_CMD="bin/$WRAPPER-bounce"
   local CHECK_CMD="bin/$WRAPPER-check"
-  local needs_postgres=false
-  if [ "$WRAPPER" != "postgres" ]; then
-    needs_postgres=true
-  fi
 
   echo ""
   echo "==== Testing Wrapper: $WRAPPER ===="
 
-  # 1. Simple Start & Stop & 4. Idempotent Stop
-  $STOP_CMD -d $SUFFIX >/dev/null || true
-  if $CHECK_CMD $SUFFIX >/dev/null 2>&1; then echo "Fail: $WRAPPER claimed success despite stripped service."; exit 1; fi
-  if [ "$needs_postgres" = true ]; then ensure_postgres_for_jvm; fi
-  $START_CMD $SUFFIX >/dev/null
-  if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: $WRAPPER did not actually boot or reach a healthy state."; exit 1; fi
-  pass_test "$WRAPPER Simple Start & Stop & Idempotent Stop"
-  
-  # 2. Idempotent Start
-  if ! $START_CMD $SUFFIX >/dev/null; then echo "Fail: Redundant start was not idempotent for $WRAPPER."; exit 1; fi
-  pass_test "$WRAPPER Idempotent Start"
+  # 1. Simple Up & Down & 4. Idempotent Down
+  $DOWN_CMD >/dev/null || true
+  if $CHECK_CMD >/dev/null 2>&1; then echo "Fail: $WRAPPER claimed success despite stripped service."; exit 1; fi
+  ensure_postgres_for_jvm
+  $UP_CMD >/dev/null
+  if ! $CHECK_CMD >/dev/null; then echo "Fail: $WRAPPER did not actually boot or reach a healthy state."; exit 1; fi
+  pass_test "$WRAPPER Simple Up & Down & Idempotent Down"
+
+  # 2. Idempotent Up
+  if ! $UP_CMD >/dev/null; then echo "Fail: Redundant up was not idempotent for $WRAPPER."; exit 1; fi
+  pass_test "$WRAPPER Idempotent Up"
 
   # 6. Restart Lifecycle
-  if ! $RESTART_CMD $SUFFIX >/dev/null; then echo "Fail: Restart failed natively for $WRAPPER."; exit 1; fi
-  if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: Restart did not leave $WRAPPER securely running."; exit 1; fi
+  if ! $BOUNCE_CMD >/dev/null; then echo "Fail: Bounce failed natively for $WRAPPER."; exit 1; fi
+  if ! $CHECK_CMD >/dev/null; then echo "Fail: Restart did not leave $WRAPPER securely running."; exit 1; fi
   pass_test "$WRAPPER Restart Lifecycle"
 
-  # 3. Concurrent Start (After stopping first)
-  $STOP_CMD $SUFFIX >/dev/null
-  if [ "$needs_postgres" = true ]; then ensure_postgres_for_jvm; fi
-  $START_CMD $SUFFIX >/dev/null & PID1=$!
-  $START_CMD $SUFFIX >/dev/null & PID2=$!
+  # Assert PID file exists and contains a running process after up
+  PID_FILE="$PROJECT_ROOT/var/run/${WRAPPER}.pid"
+  if [ ! -f "$PID_FILE" ]; then echo "Fail: PID file not found for $WRAPPER after up."; exit 1; fi
+  running_pid="$(cat "$PID_FILE")"
+  if ! bin/check-pid "$running_pid" >/dev/null 2>&1; then echo "Fail: PID in PID file is not alive for $WRAPPER."; exit 1; fi
+  pass_test "$WRAPPER PID file created and process is alive"
+
+  # Assert log file exists after up
+  LOG_FILE="$PROJECT_ROOT/var/log/${WRAPPER}.log"
+  if [ ! -f "$LOG_FILE" ]; then echo "Fail: Log file not found for $WRAPPER."; exit 1; fi
+  pass_test "$WRAPPER log file created"
+
+  # 3. Concurrent Up (After stopping first)
+  $DOWN_CMD >/dev/null
+  ensure_postgres_for_jvm
+  $UP_CMD >/dev/null & PID1=$!
+  $UP_CMD >/dev/null & PID2=$!
   wait $PID1; if [ $? -ne 0 ]; then echo "Fail: Process 1 failed to boot daemon $WRAPPER"; exit 1; fi
   wait $PID2; if [ $? -ne 0 ]; then echo "Fail: Process 2 failed lock concurrency coordination $WRAPPER"; exit 1; fi
-  if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: $WRAPPER concurrent start didn't end up healthy."; exit 1; fi
-  pass_test "$WRAPPER Concurrent Start"
+  if ! $CHECK_CMD >/dev/null; then echo "Fail: $WRAPPER concurrent up didn't end up healthy."; exit 1; fi
+  pass_test "$WRAPPER Concurrent Up"
 
-  # 5. Concurrent Stop
-  $STOP_CMD $SUFFIX >/dev/null & PID3=$!
-  $STOP_CMD $SUFFIX >/dev/null & PID4=$!
-  wait $PID3; if [ $? -ne 0 ]; then echo "Fail: Process 3 failed concurrent stop for $WRAPPER"; exit 1; fi
-  wait $PID4; if [ $? -ne 0 ]; then echo "Fail: Process 4 failed concurrent stop coordination for $WRAPPER"; exit 1; fi
-  if $CHECK_CMD $SUFFIX >/dev/null 2>&1; then echo "Fail: Concurrent stop didn't actually stop $WRAPPER"; exit 1; fi
-  pass_test "$WRAPPER Concurrent Stop"
-  
-  # Check invalid flag for check
+  # 5. Concurrent Down
+  $DOWN_CMD >/dev/null & PID3=$!
+  $DOWN_CMD >/dev/null & PID4=$!
+  wait $PID3; if [ $? -ne 0 ]; then echo "Fail: Process 3 failed concurrent down for $WRAPPER"; exit 1; fi
+  wait $PID4; if [ $? -ne 0 ]; then echo "Fail: Process 4 failed concurrent down coordination for $WRAPPER"; exit 1; fi
+  if $CHECK_CMD >/dev/null 2>&1; then echo "Fail: Concurrent down didn't actually stop $WRAPPER"; exit 1; fi
+  pass_test "$WRAPPER Concurrent Down"
+
+  # Assert PID file is removed after down
+  if [ -f "$PID_FILE" ]; then echo "Fail: PID file still exists for $WRAPPER after down."; exit 1; fi
+  pass_test "$WRAPPER PID file removed after down"
+
+  # Assert stale PID file (process exited externally) is handled gracefully by down
+  ensure_postgres_for_jvm
+  $UP_CMD >/dev/null
+  stale_pid="$(cat "$PID_FILE")"
+  kill -KILL "$stale_pid" 2>/dev/null || true
+  sleep 1
+  if ! $DOWN_CMD >/dev/null; then echo "Fail: $WRAPPER down did not handle stale PID gracefully."; exit 1; fi
+  if [ -f "$PID_FILE" ]; then echo "Fail: Stale PID file not cleaned up by down for $WRAPPER."; exit 1; fi
+  pass_test "$WRAPPER stale PID file handled gracefully by down"
+
+  # Assert daemon-up idempotency: second invocation while service is running exits 0 without duplicate
+  ensure_postgres_for_jvm
+  $UP_CMD >/dev/null
+  first_pid="$(cat "$PID_FILE")"
+  $UP_CMD >/dev/null
+  second_pid="$(cat "$PID_FILE")"
+  if [ "$first_pid" != "$second_pid" ]; then
+    echo "Fail: daemon-up spawned a duplicate process for $WRAPPER (PIDs: $first_pid vs $second_pid)"
+    exit 1
+  fi
+  pass_test "$WRAPPER idempotent up does not spawn duplicate process"
+
+  # Check help flag for check
   if ! $CHECK_CMD -h >/dev/null; then echo "Fail: Help flag did not natively exit 0 on check for $WRAPPER"; exit 1; fi
   pass_test "$WRAPPER Help flag returned 0"
-
-  # Stale marker resilience — only applicable to JVM daemons with health markers
-  if [ "$needs_postgres" = true ]; then
-    $STOP_CMD $SUFFIX >/dev/null || true
-    mkdir -p "$PROJECT_ROOT/var/run"
-    echo "stale-nonce" > "$PROJECT_ROOT/var/run/${WRAPPER}.check"
-    ensure_postgres_for_jvm
-    $START_CMD $SUFFIX >/dev/null
-    if ! $CHECK_CMD $SUFFIX >/dev/null; then echo "Fail: $WRAPPER did not overwrite stale marker and reach healthy state."; exit 1; fi
-    $STOP_CMD $SUFFIX >/dev/null
-    pass_test "$WRAPPER Stale Marker Resilience"
-  fi
 }
-
-# Postgres must be tested first and restarted before JVM daemons because the
-# nonce-based healthchecks now properly wait for JVM initialization, which
-# requires a live database connection on the Docker network.
-test_daemon_wrapper "postgres"
 
 test_daemon_wrapper "rest-server"
 test_daemon_wrapper "queue-worker"
 
-echo ""
-echo "==== Testing docker-status ===="
-if ! bin/docker-status -h >/dev/null; then echo "Fail: docker-status -h did not exit 0"; exit 1; fi
-pass_test "docker-status help flag returned 0"
-
-# postgres is still running after test_daemon_wrapper "postgres"
-bin/postgres-start >/dev/null
-docker_status_out="$(bin/docker-status)"
-if ! echo "$docker_status_out" | grep "postgres" | grep "running" >/dev/null; then
-  echo "Fail: docker-status did not report postgres as running"
-  echo "$docker_status_out"
-  exit 1
-fi
-if ! echo "$docker_status_out" | grep "rest-server" | grep "stopped" >/dev/null; then
-  echo "Fail: docker-status did not report rest-server as stopped"
-  echo "$docker_status_out"
-  exit 1
-fi
-pass_test "docker-status output accuracy"
+# Ensure all services are stopped before the standalone section tests.
+bin/rest-server-down >/dev/null 2>&1 || true
+bin/queue-worker-down >/dev/null 2>&1 || true
 
 echo ""
-echo "==== Testing Bespoke Capabilities: postgres ===="
+echo "==== Testing daemon-status ===="
+if ! bin/daemon-status -h >/dev/null; then echo "Fail: daemon-status -h did not exit 0"; exit 1; fi
+pass_test "daemon-status help flag returned 0"
 
-bin/postgres-stop -d >/dev/null || true
-cleanPostgresData
-bin/postgres-start >/dev/null
-
-postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
-wait_for_postgres "$postgres_container"
-
-if ! docker exec "$postgres_container" psql -U postgres -d "$POSTGRES_DB" -c "CREATE TABLE test_data (id INT); INSERT INTO test_data VALUES (42);" >/dev/null; then
-  echo "Fail: Could not seed test data."
+daemon_status_out="$(bin/daemon-status)"
+if ! echo "$daemon_status_out" | grep "rest-server" | grep "stopped" >/dev/null; then
+  echo "Fail: daemon-status did not report rest-server as stopped"
+  echo "$daemon_status_out"
   exit 1
 fi
+pass_test "daemon-status output accuracy"
 
-bin/postgres-stop -d >/dev/null
-bin/postgres-start >/dev/null
+echo ""
+echo "==== Testing check-pid ===="
+if ! bin/check-pid $$ >/dev/null; then echo "Fail: check-pid did not exit 0 for live PID"; exit 1; fi
+pass_test "check-pid exits 0 when PID is alive"
 
-postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
-wait_for_postgres "$postgres_container"
+if bin/check-pid 999999 >/dev/null 2>&1; then echo "Fail: check-pid did not exit 1 for nonexistent PID"; exit 1; fi
+pass_test "check-pid exits 1 when PID does not exist"
 
-if ! docker exec "$postgres_container" psql -U postgres -d "$POSTGRES_DB" -c "SELECT * FROM test_data;" | grep "42" >/dev/null; then
-  echo "Fail: Data persistence failed across -d teardown."
-  exit 1
-fi
-pass_test "postgres Data Persistence"
-
-cleanPostgresData
-
-
-echo "==== Testing Environment Validation ===="
-bin/postgres-stop -d >/dev/null
-POSTGRES_USER="" bin/postgres-start >/dev/null 2>&1 || STATUS=$?
-if [ -z "${STATUS:-}" ] || [ "$STATUS" -eq 0 ]; then
-  echo "Fail: Postgres started despite missing POSTGRES_USER."
-  exit 1
-fi
-pass_test "postgres Missing Environment Validation"
+echo ""
+echo "==== Testing SIGKILL escalation ===="
+mkdir -p "$PROJECT_ROOT/var/run" "$PROJECT_ROOT/var/log"
+( trap '' TERM; while true; do sleep 1; done ) >/dev/null 2>&1 &
+STUBBORN_PID=$!
+echo "$STUBBORN_PID" > "$PROJECT_ROOT/var/run/sigkill-test.pid"
+if ! bin/daemon-down sigkill-test >/dev/null; then echo "Fail: daemon-down failed on SIGKILL escalation test"; exit 1; fi
+if bin/check-pid "$STUBBORN_PID" 2>/dev/null; then echo "Fail: Stubborn process still alive after SIGKILL"; exit 1; fi
+pass_test "daemon-down escalates to SIGKILL when process ignores SIGTERM"
 
 echo ""
 echo "==== Testing Bash Utilities ===="

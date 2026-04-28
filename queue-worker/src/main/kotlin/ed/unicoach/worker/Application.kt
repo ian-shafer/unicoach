@@ -1,6 +1,5 @@
 package ed.unicoach.worker
 
-import ed.unicoach.common.HealthMarker
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -44,7 +43,6 @@ fun main() {
   try {
     runBlocking {
       worker.start(this)
-      HealthMarker.markHealthy()
       awaitCancellation()
     }
   } finally {

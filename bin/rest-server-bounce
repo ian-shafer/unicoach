@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+"$PROJECT_ROOT/bin/rest-server-down"
+exec "$PROJECT_ROOT/bin/rest-server-up"

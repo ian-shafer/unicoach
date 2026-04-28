@@ -1,4 +1,35 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
 
-exec "$PROJECT_ROOT/bin/docker-daemon-check" "$@" queue-worker
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+queue-worker-check [options]
+
+Exits 0 if the queue-worker process is alive (PID file present and live).
+Exits non-zero if it is not running.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if "$PROJECT_ROOT/bin/daemon-check" queue-worker > /dev/null 2>&1; then
+  log-info "queue-worker is running"
+else
+  log-info "queue-worker is NOT running"
+  exit 1
+fi

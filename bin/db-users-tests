@@ -3,12 +3,11 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/postgres-stop -d >/dev/null 2>&1 || true; docker network rm "$UNICOACH_NETWORK" >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/postgres-down >/dev/null 2>&1 || true' EXIT INT TERM
 
 wait_for_postgres() {
-  local container_id="$1"
   for i in {1..15}; do
-    if docker exec "$container_id" psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then return 0; fi
+    if psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
   echo "Fail: Timed out waiting for database '$POSTGRES_DB' runtime to become queryable organically."
@@ -16,11 +15,10 @@ wait_for_postgres() {
 }
 
 # Start clean
-bin/postgres-stop -d >/dev/null 2>&1 || true
+bin/postgres-down >/dev/null 2>&1 || true
 rm -rf "$POSTGRES_DATA_DIR" >/dev/null 2>&1 || true
-bin/postgres-start >/dev/null
-postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
-wait_for_postgres "$postgres_container"
+bin/postgres-up >/dev/null
+wait_for_postgres
 
 bin/db-init >/dev/null
 bin/db-migrate >/dev/null

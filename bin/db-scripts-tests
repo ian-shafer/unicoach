@@ -3,28 +3,26 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/rest-server-stop -d >/dev/null 2>&1 || true; bin/postgres-stop -d >/dev/null 2>&1 || true; docker network rm "$UNICOACH_NETWORK" >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/postgres-down >/dev/null 2>&1 || true' EXIT INT TERM
 
 cleanPostgresData() {
   rm -rf "$POSTGRES_DATA_DIR" || true
 }
 
 wait_for_postgres() {
-  local container_id="$1"
   for i in {1..15}; do
-    if docker exec "$container_id" psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then return 0; fi
+    if psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
   echo "Fail: Timed out waiting for database '$POSTGRES_DB' runtime to become queryable organically."
   exit 1
 }
 
-bin/postgres-stop -d >/dev/null || true
+bin/postgres-down >/dev/null || true
 cleanPostgresData
-bin/postgres-start >/dev/null
+bin/postgres-up >/dev/null
 
-postgres_container="$(bin/docker-compose -f docker/postgres-compose.yaml ps -q postgres)"
-wait_for_postgres "$postgres_container"
+wait_for_postgres
 
 # Set up testing table
 bin/db-run rw "CREATE TABLE db_scripts_test (id INT PRIMARY KEY, val TEXT);" >/dev/null
@@ -92,7 +90,7 @@ assert_success "psql stderr output" test_psql_stderr_output
 echo "==== Testing Error Handling Validation ===="
 
 test_container_unreachable_exits_2() {
-  bin/postgres-stop >/dev/null
+  bin/postgres-down >/dev/null
   bin/db-query "SELECT 1;" >/dev/null 2>&1
   local status=$?
   if [ "$status" -ne 2 ]; then
@@ -104,12 +102,15 @@ assert_success "container unreachable exits 2" test_container_unreachable_exits_
 
 echo "==== Testing Database Lifecycle ===="
 test_db_lifecycle_wipes_data() {
+  # Restart postgres after the unreachable test above
+  bin/postgres-up >/dev/null
+  wait_for_postgres
   bin/db-init
 
   # Write dummy data and ensure we can read it
   bin/db-run rw "CREATE TABLE IF NOT EXISTS lifecycle_test (id INT);"
   bin/db-run rw "INSERT INTO lifecycle_test (id) VALUES (42);"
-  
+
   if ! bin/db-query "SELECT * FROM lifecycle_test;" | grep -q "42"; then
     fail_test "lifecycle_test read failed"
     return 1
@@ -126,7 +127,7 @@ test_db_lifecycle_wipes_data() {
 
   # Bring it back up
   bin/db-init
-  
+
   if bin/db-query "SELECT * FROM schema_migrations limit 1;" 2>&1 | grep -q "relation.*schema_migrations.*does not exist"; then
     fail_test "db-init failed to recreate schema_migrations table"
     return 1
@@ -138,7 +139,7 @@ test_db_lifecycle_wipes_data
 test_db_init_idempotent() {
   bin/db-destroy --yes-i-really-want-to-do-this
   bin/db-init
-  
+
   # Ensure it exits 0 and does not emit extraneous errors
   out=$(bin/db-init 2>&1)
   if [ $? -ne 0 ]; then
@@ -156,7 +157,7 @@ test_db_status_formats() {
   export DB_SCHEMA_DIR="/tmp/test_migrations_status_$$"
   mkdir -p "$DB_SCHEMA_DIR"
   echo "CREATE TABLE s1 (id INT);" > "$DB_SCHEMA_DIR/0001.s1.sql"
-  
+
   # Forward migration (applies 0001.s1.sql)
   bin/db-migrate
 
@@ -198,10 +199,10 @@ teardown_migration_test() {
 
 test_db_migrate_forward() {
   setup_migration_test
-  
+
   echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
   echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
-  
+
   status_out=$(bin/db-status)
   if ! echo "$status_out" | grep -q "\[PENDING\] 0001.m1.sql"; then
     fail_test "db-status did not detect pending migration 0001.m1.sql"
@@ -213,9 +214,9 @@ test_db_migrate_forward() {
     teardown_migration_test
     return 1
   fi
-  
+
   bin/db-migrate
-  
+
   if ! echo "SELECT * FROM m1;" | bin/db-query >/dev/null 2>&1; then
     fail_test "migration 1 was not physically applied"
     teardown_migration_test
@@ -226,102 +227,102 @@ test_db_migrate_forward() {
     teardown_migration_test
     return 1
   fi
-  
+
   applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
   if [ "$applied_count" != "2" ]; then
     fail_test "schema_migrations did not track completions. Expected 2, got: '$applied_count'"
     teardown_migration_test
     return 1
   fi
-  
+
   teardown_migration_test
   return 0
 }
 
 test_db_migrate_idempotent() {
   setup_migration_test
-  
+
   echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
   echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
   bin/db-migrate
-  
+
   if ! bin/db-migrate >/dev/null 2>&1; then
     fail_test "db-migrate was not idempotent (did not exit 0)"
     teardown_migration_test
     return 1
   fi
-  
+
   applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
   if [ "$applied_count" != "2" ]; then
     fail_test "schema counts broke during idempotent migrate"
     teardown_migration_test
     return 1
   fi
-  
+
   teardown_migration_test
   return 0
 }
 
 test_db_migrate_transaction_rollback() {
   setup_migration_test
-  
+
   # 0001.m1.sql contains valid then invalid SQL
   echo "CREATE TABLE good_table (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
   echo "GARBAGE SQL;" >> "$DB_SCHEMA_DIR/0001.m1.sql"
-  
+
   if bin/db-migrate >/dev/null 2>&1; then
     fail_test "db-migrate did not fail on broken transaction"
     teardown_migration_test
     return 1
   fi
-  
+
   # Ensure the good SQL was rolled back
   if echo "SELECT * FROM good_table;" | bin/db-query >/dev/null 2>&1; then
     fail_test "transaction was not rolled back; good_table exists"
     teardown_migration_test
     return 1
   fi
-  
+
   applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
   if [ "$applied_count" != "0" ]; then
     fail_test "schema_migrations erroneously tracked failed transaction"
     teardown_migration_test
     return 1
   fi
-  
+
   teardown_migration_test
   return 0
 }
 
 test_db_migrate_halts_on_error() {
   setup_migration_test
-  
+
   echo "CREATE TABLE m1 (id INT);" > "$DB_SCHEMA_DIR/0001.m1.sql"
   echo "CREATE TABLE m2 (id INT);" > "$DB_SCHEMA_DIR/0002.m2.sql"
   bin/db-migrate
-  
+
   echo "GARBAGE SQL SYNTAX;" > "$DB_SCHEMA_DIR/0003.bad.sql"
   echo "CREATE TABLE m4 (id INT);" > "$DB_SCHEMA_DIR/0004.m4.sql"
-  
+
   if bin/db-migrate >/dev/null 2>&1; then
     fail_test "db-migrate did not fail on broken SQL"
     teardown_migration_test
     return 1
   fi
-  
+
   if echo "SELECT * FROM m4;" | bin/db-query >/dev/null 2>&1; then
     fail_test "db-migrate did not halt; execution continued past broken SQL"
     teardown_migration_test
     return 1
   fi
-  
+
   applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
   if [ "$applied_count" != "2" ]; then
     fail_test "schema_migrations erroneously tracked failed migration"
     teardown_migration_test
     return 1
   fi
-  
+
   teardown_migration_test
   return 0
 }

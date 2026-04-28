@@ -39,7 +39,7 @@ done
 
 # Suppress health check failure logs to keep operational output clean
 if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null 2>&1; then
-  log-info "PostgreSQL container is offline"
+  log-info "PostgreSQL is offline"
   exit 2
 fi
 
@@ -53,17 +53,22 @@ if [ "$MODE" != "ro" ] && [ "$MODE" != "rw" ]; then
   fatal "Invalid mode [$MODE]. Must be 'ro' or 'rw'."
 fi
 
-EXEC_FLAGS=("-T")
-if [ "$MODE" = "ro" ]; then
-  EXEC_FLAGS+=("-e" "PGOPTIONS=-c default_transaction_read_only=on")
-fi
-
 if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
   query="$1"
   shift
-  exec "$PROJECT_ROOT/bin/docker-compose" -f docker/postgres-compose.yaml exec \
-    "${EXEC_FLAGS[@]}" postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" -c "$query" "$@"
+  PSQL_OPTS=()
+  if [ "$MODE" = "ro" ]; then
+    PSQL_OPTS+=("-v" "ON_ERROR_STOP=1" "-U" "$POSTGRES_USER" "-d" "$TARGET_DB")
+    exec env PGOPTIONS="-c default_transaction_read_only=on" \
+      psql "${PSQL_OPTS[@]}" -c "$query" "$@"
+  else
+    exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" -c "$query" "$@"
+  fi
 else
-  exec "$PROJECT_ROOT/bin/docker-compose" -f docker/postgres-compose.yaml exec \
-    "${EXEC_FLAGS[@]}" postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" "$@"
+  if [ "$MODE" = "ro" ]; then
+    exec env PGOPTIONS="-c default_transaction_read_only=on" \
+      psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" "$@"
+  else
+    exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" "$@"
+  fi
 fi

@@ -11,7 +11,8 @@ help() {
   cat << 'EOF'
 pre-commit [options]
 
-Manual Dockerized validation script to execute tests and ktlintCheck before committing.
+Native validation script to execute tests and ktlint check before committing.
+Runs Gradle check (Kotlin) and deno fmt --check (Markdown) concurrently.
 
 Options:
   -h, --help: Help
@@ -37,7 +38,7 @@ log-info "Running pre-commit checks concurrently..."
 "$PROJECT_ROOT/bin/test" check &
 KOTLIN_PID=$!
 
-"$PROJECT_ROOT/bin/docker-run" node:20-alpine npx --yes prettier@3 --check "**/*.md" &
+deno fmt --check "**/*.md" &
 MARKDOWN_PID=$!
 
 KOTLIN_STATUS=0

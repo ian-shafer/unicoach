@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+queue-worker-wait-for-health [options]
+
+Polls queue-worker-check at 1-second intervals until the process is confirmed
+alive or the timeout elapses. Exits 0 on success, non-zero on timeout.
+
+The queue-worker has no network port to probe. Process liveness (via the PID
+file written by daemon-up) is the best available health signal.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+TIMEOUT=4s
+log-info "Waiting for queue-worker health check..."
+if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/queue-worker-check"; then
+  fatal "queue-worker did not become healthy within $TIMEOUT. Check var/log/queue-worker.log."
+fi
+log-info "queue-worker is healthy"

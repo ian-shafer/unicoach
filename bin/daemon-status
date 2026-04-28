@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+daemon-status
+
+Prints each known service name alongside its running/stopped state, one per
+line. Exits 0 regardless of individual service states.
+
+Format:
+  <service-name>    running|stopped
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "${1:-}" in
+  -h|--help) help ;;
+  *) help "Unknown option: ${1:-}" ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "daemon-status does not accept positional arguments: $*"
+fi
+
+SERVICES=(postgres rest-server queue-worker)
+
+# Resolve postgres data directory for postmaster.pid check.
+PG_DATA_DIR="${POSTGRES_DATA_DIR:-}"
+
+for service in "${SERVICES[@]}"; do
+  if [ "$service" = "postgres" ]; then
+    pg_pid="$(head -1 "$PG_DATA_DIR/postmaster.pid" 2>/dev/null || true)"
+    is_running() { [ -n "$pg_pid" ] && kill -0 "$pg_pid" 2>/dev/null; }
+  else
+    is_running() { "$PROJECT_ROOT/bin/daemon-check" "$service" > /dev/null 2>&1; }
+  fi
+  if is_running; then
+    echo "$(printf '%-20s' "$service")running"
+  else
+    echo "$(printf '%-20s' "$service")stopped"
+  fi
+done

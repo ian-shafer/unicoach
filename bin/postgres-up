@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+postgres-up [options]
+
+Boots a native PostgreSQL daemon and waits for it to become ready.
+Uses pg_ctl to manage the process lifecycle; does not use daemon-up.
+
+The data directory is read from the POSTGRES_DATA_DIR environment variable.
+The cluster must already be initialised via `bin/db-init`. This script will
+fatal if the data directory does not exist.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "postgres-up does not accept positional arguments: $*"
+fi
+
+if [ -z "${POSTGRES_DATA_DIR:-}" ]; then
+  fatal "POSTGRES_DATA_DIR is not set. Cannot start postgres."
+fi
+
+DATA_DIR="$POSTGRES_DATA_DIR"
+
+LOG_FILE="$PROJECT_ROOT/var/log/postgres.log"
+
+# Idempotency: only skip startup if OUR postmaster is already running.
+# Do not use postgres-check here — it would match Docker or any other
+# process on port 5432, not just ours.
+if [ -f "$DATA_DIR/postmaster.pid" ]; then
+  existing_pid="$(head -1 "$DATA_DIR/postmaster.pid" 2>/dev/null || true)"
+  if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+    log-info "postgres is already running (PID $existing_pid)."
+    exit 0
+  fi
+fi
+
+mkdir -p "$(dirname "$LOG_FILE")"
+
+log-info "Starting [postgres]..."
+pg_ctl start \
+  -D "$DATA_DIR" \
+  -l "$LOG_FILE" \
+  -o "-c unix_socket_directories=$DATA_DIR -c listen_addresses=localhost -c port=5432 -c log_destination=stderr" \
+  --silent < /dev/null > /dev/null 2>&1 || true
+
+log-info "Log: $LOG_FILE"
+
+"$PROJECT_ROOT/bin/postgres-wait-for-health"
+
+# postgres has written postmaster.pid by the time health check passes.
+# Log the real postmaster PID for observability.
+real_pid="$(head -1 "$DATA_DIR/postmaster.pid" 2>/dev/null || true)"
+if [ -n "$real_pid" ]; then
+  log-info "postgres postmaster PID: $real_pid"
+fi
