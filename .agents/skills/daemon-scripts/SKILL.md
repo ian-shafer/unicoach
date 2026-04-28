@@ -40,9 +40,9 @@ bin/daemon-start -p8080 "rest-server"
      cache files) inside passive shared dependencies (like `bin/common`).
    - Scope side-effects into the target activation hook itself (like
      `daemon-start`).
-3. **Explicit PID and Port Mapping**:
-   - Persist operational states down to physical tracking files
-     (`var/run/[service].pid` and `var/run/[service].port`).
+3. **Explicit PID Mapping**:
+   - Persist operational states down to a physical tracking file
+     (`var/run/[service].pid`).
 4. **Structural File Integrity**:
    - Verify the structural existence of cache files (`if [ ! -f "$FILE" ];`)
      before attempting to parse them via `cat` to prevent bash syntax errors.
