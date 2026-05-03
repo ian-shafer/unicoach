@@ -1,67 +1,79 @@
-# bin/ — Shell Script Layer
+# SPEC: bin
 
 ## I. Overview
 
-`bin/` is the **unified shell interface** for the entire project. It owns every
-developer-facing and CI-facing operation: process lifecycle management, database
-administration, build orchestration, code quality enforcement, and test
-execution. All scripts are written in Bash and source `bin/common` to establish
-`$PROJECT_ROOT` and a shared environment. No script in `bin/` contains
-business logic; each delegates to the appropriate tool (`gradlew`, `pg_ctl`,
-`psql`, `ktlint`, `deno`, `schemathesis`).
+`bin/` contains all shell scripts for the Unicoach application. Scripts fall
+into five categories: build, daemon control, linting, CLIs, and testing. Every
+script sources `bin/common` to establish `$PROJECT_ROOT` and a shared
+environment.
 
 ---
 
 ## II. Invariants
 
-### Execution Environment
+### Common Invariants
 
-- Every script MUST begin with `source "$(dirname "$0")/common"` as its first
-  non-comment, non-shebang line (or source `common` before any project path
-  resolution is needed).
-- `bin/common` MUST set `PROJECT_ROOT` to the repo root by resolving
-  `"$(dirname "${BASH_SOURCE[0]}")/.."` and exporting it.
-- `bin/common` MUST source `bin/functions` before loading `.env`.
-- `bin/common` MUST fatal if the resolved `$ENV_FILE` does not exist.
-- All scripts MUST set `set -euo pipefail` (inherited from `common`).
+Every script MUST source `bin/common` as its first non-comment, non-shebang
+line. `bin/common` establishes the following environment:
+
+- Sets `set -euo pipefail`.
+- Resolves and exports `PROJECT_ROOT` to the repository root.
+- Sources `bin/functions` (shared function library).
+- Loads `$ENV_FILE` (defaults to `$PROJECT_ROOT/.env`) into the process
+  environment. Fatals if the file does not exist.
 
 ### Help Interface
 
-- Every script MUST intercept `-h` / `--help` and print a multiline usage block
-  via a `help()` heredoc, then exit `0`.
-- A script invoking `help()` with a non-empty argument MUST print that argument
-  to stderr and exit `1`.
+Every script directly invoked by the architect MUST define a `help()` function
+triggered by `-h` or `--help`. The structure:
+
+```bash
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+<script-name> [options] [arguments]
+
+<description>
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+```
+
+- Called with no arguments: prints usage, exits `0`.
+- Called with an error message: prints the message to stderr, prints usage,
+  exits `1`.
 
 ### Exit Codes
 
-- Exit `0`: success or idempotent no-op (service already up/down).
-- Exit `1`: general error.
-- Exit `2`: PostgreSQL is unreachable (used by `db-run`, `db-repl`, and queue
-  CLI scripts).
-- `file-lock` exits `10` when the lock is already held by a matching operation.
+- `0`: success.
+- Non-zero: MUST be documented in the script's `help()` output. Scripts MUST
+  define distinct non-zero codes when there are multiple failure reasons, so
+  calling scripts can distinguish why a dependency failed.
 
 ### Logging
 
-- All human-readable status output MUST go to **stderr** via `log-info` or
-  `log-warning`.
-- `log-error` MUST be used for errors arising from programming logic mistakes or
-  I/O failures (e.g. invalid user input, tool invocation failures).
-- `fatal` MUST print `[FATAL] <message>` to stderr and exit with the given
-  status code (default `1`).
-- Scripts MUST NOT emit to stdout unless producing output is the core function
-  of the script (e.g. `db-query` prints query rows, `db-status` prints
-  migration state). Diagnostic and status messages MUST go to stderr.
+All log output MUST go to stderr. Each log function MUST prefix its output
+with the log level in brackets. Five levels:
 
-### Dangerous Operations
-
-- Scripts that destroy data (`db-destroy`, `q-truncate`) MUST gate execution
-  behind `require_dangerous_confirmation` **unless** the caller passes
-  `--yes-i-really-want-to-do-this`.
+| Level | Function | Side Effects |
+|---|---|---|
+| `DEBUG` | `log-debug` | None. |
+| `INFO` | `log-info` | None. |
+| `WARN` | `log-warn` | None. |
+| `ERROR` | `log-error` | None. |
+| `FATAL` | `fatal` | Exits with the given status code (default `1`). |
 
 ### Path Resolution
 
-- All inter-script invocations MUST use absolute paths:
-  `"$PROJECT_ROOT/bin/<script>"`. Relative invocations are forbidden.
+All scripts MUST refer to other scripts and files using absolute paths,
+typically via `$PROJECT_ROOT` (e.g., `"$PROJECT_ROOT/bin/<script>"`).
 
 ---
 
@@ -73,18 +85,16 @@ business logic; each delegates to the appropriate tool (`gradlew`, `pg_ctl`,
 
 ### Shared Library
 
-`bin/common` bootstraps every script: sets `PROJECT_ROOT`, sources
-`bin/functions`, and exports all `.env` variables into the process environment.
-
-`bin/functions` exports the following public API (all functions are available
-in every script that sources `common`):
+`bin/functions` exports the following public API, available in every script
+that sources `bin/common`:
 
 | Function | Signature | Output / Return | Notes |
 |---|---|---|---|
-| `log-info` | `log-info <msg…>` | stderr | No prefix. |
-| `log-warning` | `log-warning <msg…>` | stderr | Prefixes `[WARNING]`. |
+| `log-debug` | `log-debug <msg…>` | stderr | Prefixes `[DEBUG]`. |
+| `log-info` | `log-info <msg…>` | stderr | Prefixes `[INFO]`. |
+| `log-warn` | `log-warn <msg…>` | stderr | Prefixes `[WARN]`. |
 | `log-error` | `log-error <msg…>` | stderr | Prefixes `[ERROR]`. |
-| `fatal` | `fatal [-s \|--status-code <n>] <msg…>` | exits | Prefixes `[FATAL]`; exits with `<n>` (default `1`). |
+| `fatal` | `fatal [-s \|--status-code <n>] <msg…>` | stderr; exits | Prefixes `[FATAL]`; exits with `<n>` (default `1`). |
 | `read-file-or-die` | `read-file-or-die <file> [<code>]` | stdout | Cats file or calls `fatal -s <code>`. |
 | `parse-duration-to-seconds` | `parse-duration-to-seconds <dur>` | stdout | Converts `30s`/`5m`/`2h`/`1d` → integer seconds; bare integers treated as seconds. |
 | `validate_duration` | `validate_duration <dur>` | exit 0/1 | Accepts only `[0-9]+[smhd]` (unit suffix required). |
@@ -93,60 +103,71 @@ in every script that sources `common`):
 
 ---
 
+### Dangerous Operations
+
+Scripts that destroy data (`db-destroy`, `q-truncate`) MUST gate execution
+behind `require_dangerous_confirmation` **unless** the caller passes
+`--yes-i-really-want-to-do-this`.
+
+---
+
 ### Concurrency Primitive: `file-lock`
 
-Exit codes are the contract callers depend on:
+Directory-based file lock. Scripts use `file-lock <lock-dir> <max-duration>`
+to acquire a lock that automatically expires after `<max-duration>`. An
+optional `--operation <OP>` writes the operation name into the lock directory,
+allowing other lock readers to identify the holder. Without `--timeout`, the
+script fails immediately if the lock is held; with `--timeout <dur>`, it
+polls via `wait-for` until the lock is acquired or the timeout expires.
+Stale locks are broken automatically. Callers MUST release the lock via a
+trap registered **after** successful acquisition.
+
+Exit codes:
 
 - **Exit 0**: lock acquired.
 - **Exit 1**: lock held by a conflicting operation; timed out.
 - **Exit 10**: lock already held by the **same** operation — caller MUST treat
   this as a success and exit `0` without retrying.
 
-The lock MUST be released via a trap registered **after** successful
-acquisition, never before. Stale locks (past their expiry) are broken
-automatically.
-
 ---
 
 ### Polling Primitive: `wait-for`
 
-**Side effects**: executes `<command>` one or more times (command MUST be
-idempotent); may sleep `<period>` between retries. Exits with the last non-zero
-status of `<command>` on timeout.
+Waits for `<command>` to exit `0`. Sleeps `<period>` (default `1s`) between
+retries. On timeout, exits with the status of the last `<command>` invocation.
 
 ---
 
 ### PID Liveness: `check-pid`
 
-No side effects. Exit `0` if alive, `1` if dead.
+Exits `0` if the given PID is running, `1` otherwise.
 
 ---
 
-### Generic Daemon Engine
+### Daemon Lifecycle
 
-- **`daemon-up`**: acquires a lock, checks for a live process (idempotent if
-  already running), launches `<command>` in the background, writes the PID.
-  **Does not perform health checks** — callers must invoke
-  `<service>-wait-for-health`.
-- **`daemon-down`**: idempotent if already stopped; sends `SIGTERM` with a
-  grace period, escalates to `SIGKILL`. Always removes the PID file on exit.
-- **`daemon-check`**: exit `0` if PID file exists and process is alive.
-- **`daemon-bounce`**: `daemon-down` then `daemon-up`.
-- **`daemon-status`**: prints `running`/`stopped` for each known service.
-  Always exits `0`.
+- **`daemon-up`**: Idempotent. Starts the daemon and writes the PID file. If
+  the daemon is already running, does nothing. Only checks PID for liveness —
+  callers MUST invoke `<service>-wait-for-health` separately.
+- **`daemon-down`**: Idempotent. Sends `SIGTERM` with a grace period;
+  escalates to `SIGKILL` if the process does not exit. Removes the PID file
+  on completion. No-op if already stopped.
+- **`daemon-check`**: Exits `0` if the daemon is running according to the PID,
+  `1` otherwise.
+- **`daemon-bounce`**: Idempotent. Stops the daemon if running, then starts it.
+- **`daemon-status`**: Prints the status of all known services.
 
 ---
 
 ### PostgreSQL Lifecycle
 
-PostgreSQL is **not** managed via `daemon-up`/`daemon-down`. It uses `pg_ctl`
-directly because postgres owns its own `postmaster.pid`. `postgres-down` polls
-for `postmaster.pid` deletion — not `kill -0` — to avoid PID reuse races.
+PostgreSQL is **not** managed via `daemon-*` system. It uses `pg_ctl` as the authoritative source of truth regarding its running status and manages its own lifecycle (and PID file).
 
-`bin/db-init` is the sole entry point for cluster initialisation (`initdb`);
-`postgres-up` requires the cluster to already exist.
+`bin/db-init` is the first step for setting up the unicoach environment.
 
-The full postgres lifecycle family:
+Then `bin/db-migrate` must be run to apply the database schema migrations and match it to the source code.
+
+`bin/postgres-*` scripts can be used to manage the lifecycle of the PostgreSQL server.
 
 | Script | Delegates to | Exit contract |
 |---|---|---|
@@ -158,72 +179,82 @@ The full postgres lifecycle family:
 
 ---
 
-### Service Wrappers
+### Daemons
 
-`rest-server-*` and `queue-worker-*` follow the same pattern. The full family
-for each `<svc>` (`rest-server`, `queue-worker`):
+Individual daemons use the Daemon Lifecycle scripts (§III) and follow the
+naming convention `<service>-{up,down,bounce,check}`. A daemon MAY
+additionally provide `<service>-wait-for-health`, which blocks until the
+daemon is healthy. "Healthy" is defined by the logic in each script.
 
-| Script | Delegates to | Notes |
-|---|---|---|
-| `<svc>-up` | `daemon-up`, then `<svc>-wait-for-health` | **Fatals if the `installDist` binary is absent.** Never invokes Gradle. |
-| `<svc>-down` | `daemon-down` | Thin delegate. |
-| `<svc>-bounce` | `daemon-bounce` | Thin delegate. |
-| `<svc>-check` | HTTP/port probe | `rest-server-check`: `GET /hello` → HTTP 200. `queue-worker-check`: TCP port probe. Exit `0` if healthy, non-zero otherwise. |
-| `<svc>-wait-for-health` | `wait-for` + `<svc>-check` | Polls until `<svc>-check` succeeds or timeout. |
+Current daemons: `rest-server`, `queue-worker`.
+
+| Script | Behavior |
+|---|---|
+| `<svc>-up` | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists. |
+| `<svc>-down` | Delegates to `daemon-down`. |
+| `<svc>-bounce` | Delegates to `daemon-bounce`. |
+| `<svc>-check` | Runs service-specific health check (possibly none), then delegates to `daemon-check` for PID liveness check. |
+| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes. |
 
 ---
 
 ### Build Scripts
 
-`bin/build` runs per-module scripts in dependency order:
-`common → db → service → queue → net → rest-server → queue-worker`. Exits
-immediately on any module failure. Library modules use `:module:assemble`;
-JVM executables use `:module:installDist`.
+`bin/build` builds all Kotlin source. It delegates to per-module
+`bin/build-<module>` scripts in dependency order:
+`common → db → service → queue → net → rest-server → queue-worker`.
+Fast-fails on the first module failure.
 
-Each `bin/build-<module>` script follows this template:
+Each `bin/build-<module>` script runs exactly one `./gradlew` task via `exec`:
+`:module:assemble` for libraries, `:module:installDist` for daemons.
 
-1. `source "$(dirname "$0")/common"`
-2. Declare a `help()` heredoc.
-3. Parse `-h|--help` and reject unknown flags/positional args via `help`.
-4. `exec "$PROJECT_ROOT/gradlew" :<module>:<task>` — `assemble` for library
-   modules (`common`, `db`, `service`, `queue`, `net`); `installDist` for JVM
-   executables (`rest-server`, `queue-worker`).
+To add a new Gradle module:
 
-Adding a new Gradle module requires: (1) creating `bin/build-<module>` using
-this template, and (2) inserting it at the correct position in the ordered
-sequence inside `bin/build`.
+1. Create `bin/build-<module>` following the existing template.
+2. Insert it at the correct position in the ordered sequence inside
+   `bin/build`.
 
 ---
 
 ### Database Scripts
 
-- **`db-init`**: idempotent cluster bootstrap (role, database, schema grants,
-  `schema_migrations` table). Safe to run multiple times.
-- **`db-migrate`**: applies pending migrations in lexicographical order, each
-  wrapped in a transaction. Halts on failure; previously applied migrations are
-  not rolled back.
-- **`db-status`**: calls `db-init` internally before reporting migration state.
-- **`db-run`**: execution primitive. `ro` mode enforces read-only transactions;
-  exits `2` if postgres is unreachable. `db-query` and `db-update` are thin
-  wrappers over `db-run ro` and `db-run rw`.
+- **`db-init`**: Idempotent. Creates the application role, database, schema
+  grants, and `schema_migrations` table.
+- **`db-migrate`**: Applies pending migrations in lexicographical order, each
+  wrapped in a transaction. Previously applied migrations are skipped by
+  inspecting the `schema_migrations` table. Halts on failure.
+- **`db-status`**: Reports the applied/pending state of all migration scripts.
+  Auto-initializes the database via `db-init` if needed.
+- **`db-run`**: Execution primitive. `ro` mode enforces read-only transactions;
+  exits `2` if postgres is unreachable.
+- **`db-query`**, **`db-update`**: Thin wrappers over `db-run ro` and
+  `db-run rw`.
+- **`db-repl`**: Opens a `psql` session connected to the application database.
+- **`db-destroy`**: Deletes the application database from the PostgreSQL
+  instance.
 
 ---
 
 ### Queue CLI Scripts
 
-`q-*` scripts delegate to `db-query`/`db-update` and propagate exit `2` on
-database unreachability. `q-retry` only accepts `DEAD_LETTERED` jobs.
-`q-truncate` requires `--yes-i-really-want-to-do-this` or interactive
-confirmation.
+Scripts to inspect and mutate the application work queue. All delegate to
+`db-query`/`db-update` and propagate exit `2` on database unreachability.
+
+- **`q-status`**: Displays queue stats by job type.
+- **`q-enqueue`**: Adds an item onto the queue.
+- **`q-inspect`**: Full details for a single job by ID.
+- **`q-retry`**: Resets a `DEAD_LETTERED` job back to `SCHEDULED`. Rejects
+  jobs not in `DEAD_LETTERED` status.
+- **`q-delete-job`**: Removes an item from the queue by ID.
+- **`q-truncate`**: Removes all items from the queue.
 
 ---
 
-### Code Quality
+### CI/CD
 
-- **`bin/format`**: runs `ktlint` (Kotlin) and `deno fmt` (Markdown)
-  concurrently; exits `2` if either fails.
-- **`bin/pre-commit`**: runs `bin/test check` and `deno fmt --check`
-  concurrently; exits `2` if either fails.
+- **`bin/format`**: Runs `ktlint` (Kotlin) and `deno fmt` (Markdown)
+  concurrently.
+- **`bin/pre-commit`**: Runs tests and checks code format.
 
 ---
 
@@ -249,24 +280,15 @@ an EXIT trap to tear down any services it started.
 
 #### Test Suites
 
-- **`bin/test`**: freshly destroys and re-initializes the test database, then
-  delegates to `./gradlew`. Entry point for JVM unit/integration tests.
-- **`bin/test-fuzz`**: boots postgres and rest-server, runs `schemathesis`
-  against the live API.
-- **`bin/scripts-tests`**: exercises the daemon engine (`rest-server`,
-  `queue-worker`), `file-lock`, `check-pid`, `daemon-status`, and bash
-  utilities (`validate_duration`, `transform_duration_to_postgres`,
-  `require_dangerous_confirmation`). Postgres is excluded from
-  `test_daemon_wrapper` — it is managed via `pg_ctl`, not the daemon engine.
-- **`bin/db-scripts-tests`**: exercises `db-run`, `db-query`, `db-update`,
-  `db-repl`, `db-init`, `db-migrate`, `db-status`, `db-destroy`. Spins up a
-  fresh postgres cluster at test start; tears it down on EXIT.
-- **`bin/db-users-tests`**: exercises the `users` and `users_versions` table
-  constraints, triggers, and OCC semantics against a live migrated database.
-  Runs `db-init` + `db-migrate` at startup; tears down postgres on EXIT.
-- **`bin/q-scripts-tests`**: exercises `q-status`, `q-enqueue`, `q-inspect`,
-  `q-retry`, `q-delete-job`, and `q-truncate` against a live migrated
-  database. Spins up a fresh postgres cluster at test start; tears it down on EXIT.
+- **`bin/test`**: Runs all Kotlin tests via `./gradlew`. Destroys and
+  initializes a test database.
+- **`bin/test-fuzz`**: Runs schemathesis fuzz tests against the REST API.
+- **`bin/scripts-tests`**: Tests scripts in `bin/`.
+- **`bin/db-scripts-tests`**: Tests `db-run`, `db-query`, `db-update`,
+  `db-repl`, `db-init`, `db-migrate`, `db-status`, `db-destroy`.
+- **`bin/db-users-tests`**: Tests the functionality of the `users` table.
+- **`bin/q-scripts-tests`**: Tests `q-status`, `q-enqueue`, `q-inspect`,
+  `q-retry`, `q-delete-job`, `q-truncate`.
 
 ---
 
@@ -287,14 +309,6 @@ instructions. Does not install anything.
   by `daemon-up` and `postgres-up`.
 - **Environment files**: `.env` (dev), `.env.test` (test). Test scripts set
   `export ENV_FILE=".../.env.test"` before sourcing `common`.
-- **`POSTGRES_DATA_DIR`**: absolute path (e.g. `$PROJECT_ROOT/var/postgres`).
-  Declared in `.env` using `$PROJECT_ROOT` so it resolves correctly from any
-  working directory.
-- **`PGHOST=localhost`**: set in `.env` and `.env.test` so all libpq clients
-  use TCP by default (postgres socket lives under `$POSTGRES_DATA_DIR`).
-- **`PORT` / `SERVER_PORT`**: `PORT` is the single source of truth for the
-  REST server bind port; `SERVER_PORT=$PORT` in env files bridges to
-  `rest-server.conf`.
 - **Dev/test cluster sharing**: both environments share one PostgreSQL cluster
   (`$PROJECT_ROOT/var/postgres/`); isolation is at the database level
   (`POSTGRES_DB=unicoach` vs `POSTGRES_DB=unicoach-test`).
