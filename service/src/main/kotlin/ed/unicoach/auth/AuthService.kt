@@ -1,9 +1,7 @@
 package ed.unicoach.auth
 
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.CreateResult
-import ed.unicoach.db.dao.FindResult
-import ed.unicoach.db.dao.SessionFindResult
+import ed.unicoach.db.dao.DaoResult
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.AuthMethod
@@ -61,17 +59,28 @@ class AuthService(
     return try {
       database.withConnection { session ->
         when (val daoResult = UsersDao.create(session, newUser)) {
-          is CreateResult.Success -> {
-            AuthResult.Success(daoResult.user)
+          is DaoResult.Success -> {
+            AuthResult.Success(daoResult.value)
           }
-          is CreateResult.DuplicateEmail -> {
+          is DaoResult.PermanentError.DuplicateEmail -> {
             AuthResult.DuplicateEmail(emailAddr.value)
           }
-          is CreateResult.ConstraintViolation -> {
-            AuthResult.DatabaseFailure(daoResult.error)
+          is DaoResult.PermanentError -> {
+            AuthResult.DatabaseFailure(
+              when (daoResult) {
+                is DaoResult.PermanentError.ConstraintViolation -> daoResult.error
+                is DaoResult.PermanentError.DatabaseError -> daoResult.error
+                else -> ExceptionWrapper.from(RuntimeException("Permanent error during user creation"))
+              },
+            )
           }
-          is CreateResult.DatabaseFailure -> {
-            AuthResult.DatabaseFailure(daoResult.error)
+          is DaoResult.TransientError -> {
+            AuthResult.DatabaseFailure(
+              when (daoResult) {
+                is DaoResult.TransientError.DatabaseError -> daoResult.error
+                else -> ExceptionWrapper.from(RuntimeException("Transient error during user creation"))
+              },
+            )
           }
         }
       }
@@ -85,25 +94,22 @@ class AuthService(
       withContext(Dispatchers.IO) {
         database.withConnection { session ->
           when (val sessionResult = SessionsDao.findByTokenHash(session, tokenHash)) {
-            is SessionFindResult.NotFound -> MeResult.Unauthenticated
-            is SessionFindResult.DatabaseFailure -> MeResult.DatabaseFailure(sessionResult.error)
-            is SessionFindResult.Success -> {
+            is DaoResult.PermanentError -> MeResult.Unauthenticated
+            is DaoResult.TransientError -> MeResult.DatabaseFailure(
+              when (sessionResult) {
+                is DaoResult.TransientError.DatabaseError -> sessionResult.error
+                else -> ExceptionWrapper.from(RuntimeException("Transient error during session lookup"))
+              },
+            )
+            is DaoResult.Success -> {
               val userId =
-                sessionResult.session.userId
+                sessionResult.value.userId
                   ?: return@withConnection MeResult.Unauthenticated
 
               when (val userResult = UsersDao.findById(session, userId)) {
-                is FindResult.NotFound -> MeResult.Unauthenticated
-                is FindResult.LockAcquisitionFailure -> MeResult.Unauthenticated
-                is FindResult.Success -> MeResult.Authenticated(userResult.user)
-                is FindResult.DatabaseFailure -> {
-                  // FindResult.DatabaseFailure wraps AppError; extract to ExceptionWrapper
-                  // if possible, otherwise wrap in a synthetic exception to preserve the chain.
-                  val wrapper =
-                    userResult.error as? ExceptionWrapper
-                      ?: ExceptionWrapper.from(RuntimeException("User lookup failed: [${userResult.error}]"))
-                  MeResult.DatabaseFailure(wrapper)
-                }
+                is DaoResult.PermanentError -> MeResult.Unauthenticated
+                is DaoResult.TransientError -> MeResult.Unauthenticated
+                is DaoResult.Success -> MeResult.Authenticated(userResult.value)
               }
             }
           }
@@ -118,9 +124,14 @@ class AuthService(
       withContext(Dispatchers.IO) {
         database.withConnection { session ->
           when (val result = SessionsDao.revokeByTokenHash(session, tokenHash)) {
-            is ed.unicoach.db.dao.SessionUpdateResult.Success -> LogoutResult.Success
-            is ed.unicoach.db.dao.SessionUpdateResult.NotFound -> LogoutResult.Success
-            is ed.unicoach.db.dao.SessionUpdateResult.DatabaseFailure -> LogoutResult.DatabaseFailure(result.error)
+            is DaoResult.Success -> LogoutResult.Success
+            is DaoResult.PermanentError -> LogoutResult.Success
+            is DaoResult.TransientError -> LogoutResult.DatabaseFailure(
+              when (result) {
+                is DaoResult.TransientError.DatabaseError -> result.error
+                else -> ExceptionWrapper.from(RuntimeException("Transient error during logout"))
+              },
+            )
           }
         }
       }

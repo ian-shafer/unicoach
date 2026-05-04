@@ -93,9 +93,9 @@ class SessionCleanupTest {
     job.execute()
 
     val validResult = SessionsDao.findByTokenHash(sqlSession, TokenHash(hashValid))
-    assertTrue(validResult is ed.unicoach.db.dao.SessionFindResult.Success)
+    assertTrue(validResult is ed.unicoach.db.dao.DaoResult.Success)
 
     val expiredResult = SessionsDao.findByTokenHash(sqlSession, TokenHash(hashExpired))
-    assertTrue(expiredResult is ed.unicoach.db.dao.SessionFindResult.NotFound)
+    assertTrue(expiredResult is ed.unicoach.db.dao.DaoResult.PermanentError.NotFound)
   }
 }

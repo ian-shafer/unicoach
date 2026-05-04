@@ -80,7 +80,7 @@ class UsersDaoTest {
         ed.unicoach.db.models
           .UserId(rawId),
       )
-    assertTrue(result1 is FindResult.Success)
+    assertTrue(result1 is DaoResult.Success)
 
     // Connection 2 attempts to lock the same row and should fail immediately with NOWAIT
     val config =
@@ -104,7 +104,7 @@ class UsersDaoTest {
         ed.unicoach.db.models
           .UserId(rawId),
       )
-    assertTrue(result2 is FindResult.LockAcquisitionFailure, "Expected LockAcquisitionFailure, got $result2")
+    assertTrue(result2 is DaoResult.TransientError.LockAcquisitionFailure, "Expected LockAcquisitionFailure, got $result2")
 
     conn2.rollback()
     conn2.close()
@@ -134,7 +134,7 @@ class UsersDaoTest {
           .UserId(rawId),
         includeDeleted = false,
       )
-    assertTrue(resultDeleted is FindResult.NotFound)
+    assertTrue(resultDeleted is DaoResult.PermanentError.NotFound)
 
     val resultIncluded =
       UsersDao.findById(
@@ -143,7 +143,7 @@ class UsersDaoTest {
           .UserId(rawId),
         includeDeleted = true,
       )
-    assertTrue(resultIncluded is FindResult.Success)
+    assertTrue(resultIncluded is DaoResult.Success)
   }
 
   @Test
@@ -171,10 +171,10 @@ class UsersDaoTest {
       )
 
     val createResult1 = UsersDao.create(session1, newUser)
-    assertTrue(createResult1 is CreateResult.Success)
+    assertTrue(createResult1 is DaoResult.Success)
 
     val createResult2 = UsersDao.create(session1, newUser)
-    assertTrue(createResult2 is CreateResult.DuplicateEmail, "Expected DuplicateEmail, got $createResult2")
+    assertTrue(createResult2 is DaoResult.PermanentError.DuplicateEmail, "Expected DuplicateEmail, got $createResult2")
   }
 
   @Test
@@ -210,8 +210,8 @@ class UsersDaoTest {
       )
 
     val createResult = UsersDao.create(session1, newUser)
-    assertTrue(createResult is CreateResult.Success)
-    val createdUser = createResult.user
+    assertTrue(createResult is DaoResult.Success)
+    val createdUser = (createResult as DaoResult.Success).value
 
     // Emulate an update from another process bounds
     val nextVersionUser =
@@ -223,7 +223,7 @@ class UsersDaoTest {
           ).value,
       )
     val validUpdateResult = UsersDao.update(session1, nextVersionUser)
-    assertTrue(validUpdateResult is UpdateResult.Success)
+    assertTrue(validUpdateResult is DaoResult.Success)
 
     // Attempt update with original stale model
     val staleUpdateResult =
@@ -237,7 +237,7 @@ class UsersDaoTest {
             ).value,
         ),
       )
-    assertTrue(staleUpdateResult is UpdateResult.ConcurrentModification, "Expected ConcurrentModification, got $staleUpdateResult")
+    assertTrue(staleUpdateResult is DaoResult.TransientError.ConcurrentModification, "Expected ConcurrentModification, got $staleUpdateResult")
   }
 
   @Test
@@ -275,13 +275,13 @@ class UsersDaoTest {
 
     // 1. Create first user
     val firstCreate = UsersDao.create(session1, newUser)
-    assertTrue(firstCreate is CreateResult.Success)
-    val firstUser = firstCreate.user
+    assertTrue(firstCreate is DaoResult.Success)
+    val firstUser = (firstCreate as DaoResult.Success).value
 
     // 2. Delete first user
     val deleteResult = UsersDao.delete(session1, firstUser.id, firstUser.versionId)
-    assertTrue(deleteResult is DeleteResult.Success)
-    val deletedUser = deleteResult.user
+    assertTrue(deleteResult is DaoResult.Success)
+    val deletedUser = (deleteResult as DaoResult.Success).value
 
     // 3. Create second user using the same email (allowed because first is logically deleted)
     val secondCreate =
@@ -295,11 +295,11 @@ class UsersDaoTest {
             ).value,
         ),
       )
-    assertTrue(secondCreate is CreateResult.Success)
+    assertTrue(secondCreate is DaoResult.Success)
 
     // 4. Attempt undelete on the first user, which should trigger a domain uniqueness failure
     val undeleteResult = UsersDao.undelete(session1, firstUser.id, deletedUser.versionId)
-    assertTrue(undeleteResult is UpdateResult.DuplicateEmail, "Expected DuplicateEmail, got $undeleteResult")
+    assertTrue(undeleteResult is DaoResult.PermanentError.DuplicateEmail, "Expected DuplicateEmail, got $undeleteResult")
   }
 
   @Test
@@ -336,8 +336,8 @@ class UsersDaoTest {
 
     // V1
     val createResult = UsersDao.create(session1, newUser)
-    assertTrue(createResult is CreateResult.Success)
-    val v1User = createResult.user
+    assertTrue(createResult is DaoResult.Success)
+    val v1User = (createResult as DaoResult.Success).value
 
     // V2
     val nameV2 =
@@ -346,8 +346,8 @@ class UsersDaoTest {
           .create("Edited Name") as ValidationResult.Valid
       ).value
     val updateResult = UsersDao.update(session1, v1User.copy(name = nameV2))
-    assertTrue(updateResult is UpdateResult.Success)
-    val v2User = updateResult.user
+    assertTrue(updateResult is DaoResult.Success)
+    val v2User = (updateResult as DaoResult.Success).value
 
     // V3
     val nameV3 =
@@ -356,8 +356,8 @@ class UsersDaoTest {
           .create("Final Mistake") as ValidationResult.Valid
       ).value
     val updateResult2 = UsersDao.update(session1, v2User.copy(name = nameV3))
-    assertTrue(updateResult2 is UpdateResult.Success)
-    val v3User = updateResult2.user
+    assertTrue(updateResult2 is DaoResult.Success)
+    val v3User = (updateResult2 as DaoResult.Success).value
 
     // Revert to V1 (from current bounds V3)
     val revertResult =
@@ -367,8 +367,8 @@ class UsersDaoTest {
         targetHistoricalVersion = v1User.versionId,
         currentVersion = v3User.versionId,
       )
-    assertTrue(revertResult is UpdateResult.Success)
-    val v4User = revertResult.user
+    assertTrue(revertResult is DaoResult.Success)
+    val v4User = (revertResult as DaoResult.Success).value
 
     // Validate V1 restored cleanly into V4
     assertTrue(v4User.name == nameV1, "Name was safely restored to V1 configuration")

@@ -1,30 +1,39 @@
 package ed.unicoach.auth
 
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.SessionDeleteResult
+import ed.unicoach.db.dao.DaoResult
 import ed.unicoach.db.dao.SessionsDao
+import org.slf4j.LoggerFactory
 import kotlin.system.exitProcess
 
 class SessionCleanupJob(
   private val database: Database,
 ) {
+  private val logger = LoggerFactory.getLogger(SessionCleanupJob::class.java)
+
   fun execute() {
-    System.err.println("[INFO] Initiating zombie session purge...")
+    logger.info("Initiating zombie session purge...")
 
     try {
       database.withConnection { session ->
         when (val result = SessionsDao.expireZombieSessions(session)) {
-          is SessionDeleteResult.Success -> {
-            System.err.println("[INFO] Successfully completed zombie session purge.")
+          is DaoResult.Success -> {
+            logger.info("Successfully completed zombie session purge.")
           }
-          is SessionDeleteResult.DatabaseFailure -> {
-            System.err.println("[ERROR] Database failure during zombie session purge: [${result.error.exception.message}]")
+          is DaoResult.TransientError -> {
+            val msg = (result as? DaoResult.TransientError.DatabaseError)?.error?.exception?.message ?: "transient error"
+            logger.error("Transient database failure during zombie session purge: [$msg]")
+          }
+          is DaoResult.PermanentError -> {
+            val msg = (result as? DaoResult.PermanentError.DatabaseError)?.error?.exception?.message ?: "permanent error"
+            logger.error("Database failure during zombie session purge: [$msg]")
           }
         }
       }
     } catch (e: Exception) {
-      System.err.println("[FATAL] Unexpected application failure during zombie session purge: [${e.message}]")
+      logger.error("Unexpected application failure during zombie session purge: [${e.message}]", e)
       exitProcess(1)
     }
   }
 }
+

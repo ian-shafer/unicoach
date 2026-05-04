@@ -8,52 +8,6 @@ import ed.unicoach.error.ExceptionWrapper
 import java.sql.ResultSet
 import java.util.UUID
 
-sealed interface SessionFindResult {
-  data class Success(
-    val session: Session,
-  ) : SessionFindResult
-
-  data class NotFound(
-    val message: String,
-  ) : SessionFindResult
-
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
-  ) : SessionFindResult
-}
-
-sealed interface SessionCreateResult {
-  data class Success(
-    val session: Session,
-  ) : SessionCreateResult
-
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
-  ) : SessionCreateResult
-}
-
-sealed interface SessionUpdateResult {
-  data class Success(
-    val session: Session,
-  ) : SessionUpdateResult
-
-  data class NotFound(
-    val message: String,
-  ) : SessionUpdateResult
-
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
-  ) : SessionUpdateResult
-}
-
-sealed interface SessionDeleteResult {
-  data object Success : SessionDeleteResult
-
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
-  ) : SessionDeleteResult
-}
-
 object SessionsDao {
   private fun mapSession(rs: ResultSet): Session {
     val id = UUID.fromString(rs.getString("id"))
@@ -78,33 +32,30 @@ object SessionsDao {
     )
   }
 
-  private fun <T> executeSafely(
-    onError: (ExceptionWrapper) -> T,
-    block: () -> T,
-  ): T =
+  private fun <T> executeSafely(block: () -> DaoResult<T>): DaoResult<T> =
     try {
       block()
     } catch (e: Exception) {
-      onError(ExceptionWrapper.from(e))
+      classifyDatabaseError(e)
     }
 
   fun findByTokenHash(
     session: SqlSession,
     tokenHash: TokenHash,
-  ): SessionFindResult =
-    executeSafely(SessionFindResult::DatabaseFailure) {
+  ): DaoResult<Session> =
+    executeSafely {
       val sql = "SELECT * FROM sessions WHERE token_hash = ? AND is_revoked = false AND expires_at > NOW()"
       session.prepareStatement(sql).use { stmt ->
         stmt.setBytes(1, tokenHash.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
-            return@executeSafely SessionFindResult.NotFound("Session not found or expired")
+            return@executeSafely DaoResult.PermanentError.NotFound("Session not found or expired")
           }
           val foundHash = rs.getBytes("token_hash")
           if (!foundHash.contentEquals(tokenHash.value)) {
-            return@executeSafely SessionFindResult.NotFound("Session hash mismatch")
+            return@executeSafely DaoResult.PermanentError.NotFound("Session hash mismatch")
           }
-          SessionFindResult.Success(mapSession(rs))
+          DaoResult.Success(mapSession(rs))
         }
       }
     }
@@ -112,8 +63,8 @@ object SessionsDao {
   fun create(
     session: SqlSession,
     newSession: NewSession,
-  ): SessionCreateResult =
-    executeSafely(SessionCreateResult::DatabaseFailure) {
+  ): DaoResult<Session> =
+    executeSafely {
       val sql =
         """
         INSERT INTO sessions (user_id, token_hash, user_agent, initial_ip, metadata, expires_at)
@@ -129,9 +80,9 @@ object SessionsDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            SessionCreateResult.Success(mapSession(rs))
+            DaoResult.Success(mapSession(rs))
           } else {
-            SessionCreateResult.DatabaseFailure(ExceptionWrapper.from(RuntimeException("Insert succeeded but returning failed")))
+            DaoResult.PermanentError.DatabaseError(ExceptionWrapper.from(RuntimeException("Insert succeeded but returning failed")))
           }
         }
       }
@@ -144,8 +95,8 @@ object SessionsDao {
     newUserId: UserId,
     newTokenHash: ByteArray,
     newExpirationSeconds: Long,
-  ): SessionUpdateResult =
-    executeSafely(SessionUpdateResult::DatabaseFailure) {
+  ): DaoResult<Session> =
+    executeSafely {
       val sql =
         """
         UPDATE sessions 
@@ -164,9 +115,9 @@ object SessionsDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            SessionUpdateResult.Success(mapSession(rs))
+            DaoResult.Success(mapSession(rs))
           } else {
-            SessionUpdateResult.NotFound("Session could not be reminted either due to version mismatch or not found")
+            DaoResult.PermanentError.NotFound("Session could not be reminted either due to version mismatch or not found")
           }
         }
       }
@@ -176,8 +127,8 @@ object SessionsDao {
     session: SqlSession,
     id: UUID,
     currentVersion: Int,
-  ): SessionUpdateResult =
-    executeSafely(SessionUpdateResult::DatabaseFailure) {
+  ): DaoResult<Session> =
+    executeSafely {
       val sql =
         """
         UPDATE sessions 
@@ -193,9 +144,9 @@ object SessionsDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            SessionUpdateResult.Success(mapSession(rs))
+            DaoResult.Success(mapSession(rs))
           } else {
-            SessionUpdateResult.NotFound("Session could not be extended either due to version mismatch or not found")
+            DaoResult.PermanentError.NotFound("Session could not be extended either due to version mismatch or not found")
           }
         }
       }
@@ -204,8 +155,8 @@ object SessionsDao {
   fun revokeByTokenHash(
     session: SqlSession,
     tokenHash: TokenHash,
-  ): SessionUpdateResult =
-    executeSafely(SessionUpdateResult::DatabaseFailure) {
+  ): DaoResult<Session> =
+    executeSafely {
       val sql =
         """
         UPDATE sessions 
@@ -218,16 +169,16 @@ object SessionsDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            SessionUpdateResult.Success(mapSession(rs))
+            DaoResult.Success(mapSession(rs))
           } else {
-            SessionUpdateResult.NotFound("Session not found or already revoked")
+            DaoResult.PermanentError.NotFound("Session not found or already revoked")
           }
         }
       }
     }
 
-  fun expireZombieSessions(session: SqlSession): SessionDeleteResult =
-    executeSafely(SessionDeleteResult::DatabaseFailure) {
+  fun expireZombieSessions(session: SqlSession): DaoResult<Unit> =
+    executeSafely {
       val sql =
         """
         DELETE FROM sessions 
@@ -235,7 +186,7 @@ object SessionsDao {
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
         stmt.executeUpdate()
-        SessionDeleteResult.Success
+        DaoResult.Success(Unit)
       }
     }
 }

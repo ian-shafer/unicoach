@@ -2,8 +2,7 @@ package ed.unicoach.net.handlers
 
 import ed.unicoach.common.json.deserialize
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.SessionFindResult
-import ed.unicoach.db.dao.SessionUpdateResult
+import ed.unicoach.db.dao.DaoResult
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.models.Session
 import ed.unicoach.db.models.TokenHash
@@ -49,13 +48,17 @@ class SessionExpiryHandler(
 
     return database.withConnection { session ->
       when (val findResult = SessionsDao.findByTokenHash(session, tokenHash)) {
-        is SessionFindResult.NotFound -> JobResult.Success // expired/revoked, no-op
-        is SessionFindResult.DatabaseFailure ->
-          JobResult.RetriableFailure(
-            findResult.error.exception.message ?: "Database error",
+        is DaoResult.PermanentError.NotFound -> JobResult.Success // expired/revoked, no-op
+        is DaoResult.PermanentError ->
+          JobResult.PermanentFailure(
+            (findResult as? DaoResult.PermanentError.DatabaseError)?.error?.exception?.message ?: "Permanent error during session lookup",
           )
-        is SessionFindResult.Success ->
-          extendIfApproaching(session, findResult.session)
+        is DaoResult.TransientError ->
+          JobResult.RetriableFailure(
+            (findResult as? DaoResult.TransientError.DatabaseError)?.error?.exception?.message ?: "Transient error",
+          )
+        is DaoResult.Success ->
+          extendIfApproaching(session, findResult.value)
       }
     }
   }
@@ -72,12 +75,16 @@ class SessionExpiryHandler(
       val result =
         SessionsDao.extendExpiry(session, sess.id, sess.version)
     ) {
-      is SessionUpdateResult.Success -> JobResult.Success
-      is SessionUpdateResult.NotFound ->
-        JobResult.Success // version mismatch, already updated
-      is SessionUpdateResult.DatabaseFailure ->
+      is DaoResult.Success -> JobResult.Success
+      is DaoResult.PermanentError.NotFound ->
+        JobResult.Success // version mismatch or not found, already updated
+      is DaoResult.PermanentError ->
+        JobResult.PermanentFailure(
+          (result as? DaoResult.PermanentError.DatabaseError)?.error?.exception?.message ?: "Permanent error during session extension",
+        )
+      is DaoResult.TransientError ->
         JobResult.RetriableFailure(
-          result.error.exception.message ?: "Database error",
+          (result as? DaoResult.TransientError.DatabaseError)?.error?.exception?.message ?: "Transient error",
         )
     }
   }

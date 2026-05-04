@@ -91,11 +91,11 @@ fun Route.authRoutes(
                 val found =
                   ed.unicoach.db.dao.SessionsDao
                     .findByTokenHash(session, oldHash)
-                if (found is ed.unicoach.db.dao.SessionFindResult.Success) {
+                if (found is ed.unicoach.db.dao.DaoResult.Success) {
                   ed.unicoach.db.dao.SessionsDao.remintToken(
                     session = session,
-                    id = found.session.id,
-                    currentVersion = found.session.version,
+                    id = found.value.id,
+                    currentVersion = found.value.version,
                     newUserId = result.user.id,
                     newTokenHash = newHash.value,
                     newExpirationSeconds = sessionConfig.expiration.seconds,

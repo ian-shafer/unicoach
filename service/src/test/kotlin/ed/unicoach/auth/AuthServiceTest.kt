@@ -2,8 +2,7 @@ package ed.unicoach.auth
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.db.dao.CreateResult
-import ed.unicoach.db.dao.SessionCreateResult
+import ed.unicoach.db.dao.DaoResult
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
@@ -81,8 +80,8 @@ class AuthServiceTest {
         sqlSession,
         NewUser(email = email, name = name, displayName = null, authMethod = AuthMethod.Password(pwdHash)),
       )
-    assertTrue(result is CreateResult.Success)
-    return result.user
+    assertTrue(result is DaoResult.Success)
+    return (result as DaoResult.Success).value
   }
 
   private fun createSession(
@@ -102,7 +101,7 @@ class AuthServiceTest {
           expiration = expiration,
         ),
       )
-    assertTrue(result is SessionCreateResult.Success)
+    assertTrue(result is DaoResult.Success)
   }
 
   // Tests domain validation boundary correctly
@@ -186,7 +185,7 @@ class AuthServiceTest {
 
       // Soft-delete the user
       val deleteResult = UsersDao.delete(sqlSession, user.id, user.versionId)
-      assertTrue(deleteResult is ed.unicoach.db.dao.DeleteResult.Success)
+      assertTrue(deleteResult is DaoResult.Success)
 
       val tokenHash = TokenHash(byteArrayOf(13, 23, 33))
       createSession(userId = user.id, tokenHash = tokenHash)
@@ -206,7 +205,7 @@ class AuthServiceTest {
       assertTrue(result is LogoutResult.Success)
 
       val findResult = SessionsDao.findByTokenHash(sqlSession, tokenHash)
-      assertTrue(findResult is ed.unicoach.db.dao.SessionFindResult.NotFound)
+      assertTrue(findResult is DaoResult.PermanentError.NotFound)
     }
 
   @Test
