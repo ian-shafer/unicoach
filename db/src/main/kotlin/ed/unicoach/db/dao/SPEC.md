@@ -2,106 +2,104 @@
 
 ## I. Overview
 
-This directory is the **data access layer** for the `db` Gradle module. It
-exposes two stateless DAO singletons (`UsersDao`, `SessionsDao`) and the
-shared infrastructure they depend on: the `SqlSession` transaction-scope
-facade and the sealed-interface result types declared in `DaoModule.kt`. All
-database reads and writes for `users` and `sessions` rows MUST pass through
-this layer.
+`db/dao/` is the sole interface between the Kotlin application and the
+PostgreSQL database. Stateless DAO singletons provide every read and write
+operation:
+
+| DAO | Table(s) |
+|-----|----------|
+| `UsersDao` | `users`, `users_versions` |
+| `SessionsDao` | `sessions` |
+
+Every DAO method accepts a `SqlSession` as its first parameter. Connection
+pooling, transaction boundaries, and commit/rollback are managed exclusively
+by `Database.kt` in the parent package.
+
+All DAO methods return `DaoResult<T>`, a unified sealed interface declared in
+`DaoResult.kt`. `DaoResult<T>` has three branches — `Success<T>`,
+`TransientError`, `PermanentError` — enabling consumers to handle results at
+any granularity from coarse category matching to specific variant
+discrimination. Database exceptions are classified by SQLSTATE into transient
+or permanent at the DAO boundary.
 
 ---
 
 ## II. Invariants
 
+### Entity Tables
+
+Database tables fall into two categories: **entity tables** and
+**non-entity tables**. Entity tables represent first-class domain objects
+with standardized lifecycle columns. Non-entity tables (e.g., `job_attempts`)
+have no DAO-level invariants beyond normal SQL correctness.
+
+Entity table characteristics vary by flavor:
+
+| Entity | Soft Delete | `*_versions` Table | `version` Column | Row Timestamps |
+|--------|-------------|---------------------|------------------|----------------|
+| `users` | ✓ (logical) | ✓ | ✓ | ✓ |
+| `sessions` | ✗ (physical) | ✗ | ✓ | ✓ |
+
 ### Transaction Boundary
 
-- The `SqlSession` interface MUST expose only `prepareStatement(sql: String):
-  PreparedStatement`. It MUST NOT expose `commit()`, `rollback()`, or any other
-  connection-lifecycle method, making it a compile-time guarantee that DAO
-  methods cannot mutate transaction state.
-- Every DAO method MUST accept a `SqlSession` as its first parameter. Direct
-  use of `java.sql.Connection` inside DAO methods is NEVER permitted.
+- Transaction management (begin, commit, rollback) is handled exclusively by
+  `../Database.kt`. DAO methods MUST NOT manage transactions.
+- `SqlSession` provides necessary access to the underlying connection (via
+  `prepareStatement`). Direct access to the connection is not possible through
+  this interface.
 
 ### Optimistic Concurrency Control (OCC)
 
-- Every `UPDATE` on `users` MUST include `WHERE id = ? AND version = ?` and
-  increment `version` by exactly 1 in the `SET` clause.
-- Every `UPDATE` on `sessions` that is version-guarded MUST include
-  `WHERE id = ? AND version = ?` and increment `version` by exactly 1.
+- `UPDATE` statements on tables with a `version` column MUST include
+  `WHERE id = ? AND version = ?`. The DAO sets the new version in the `SET`
+  clause; the database trigger validates it equals `old_version + 1`.
 - When an UPDATE matches zero rows, the DAO MUST issue a secondary
   `SELECT version FROM <table> WHERE id = ?` to distinguish
-  `ConcurrentModification` (row exists, wrong version) from `NotFound` (row
-  absent).
+  `TransientError.ConcurrentModification` (row exists, wrong version) from
+  `PermanentError.NotFound` (row absent).
+- "Force" methods (e.g., `revokeByTokenHash`) MAY skip version guards when
+  the business logic does not require OCC.
 
 ### Immutable Columns
 
-- `id`, `created_at`, and `row_created_at` MUST NEVER appear in any `UPDATE
-  ... SET` clause.
-- `updated_at` and `row_updated_at` are managed exclusively by database
-  triggers and MUST NOT be set by DAO code.
+- `id` and `{row_,}created_at` MUST NEVER appear in any `UPDATE ... SET`
+  clause.
+- `{row_,}updated_at` and `version` are managed by database triggers and
+  SHOULD NOT be set by DAO code (except `version` in the `SET` clause for OCC,
+  which the trigger validates).
 
 ### Soft Delete
 
 - `UsersDao.findById` and `UsersDao.findByIdForUpdate` MUST return
-  `FindResult.NotFound` for rows where `deleted_at IS NOT NULL` unless
-  `includeDeleted = true` is explicitly passed.
+  `DaoResult.PermanentError.NotFound` for rows where `deleted_at IS NOT NULL`
+  unless `includeDeleted = true` is explicitly passed.
 - `UsersDao.findByEmail` MUST filter `deleted_at IS NULL` unconditionally.
 
-### Token Storage
+### Postgres Error Codes
 
-- The `sessions.token_hash` column stores a SHA-256 hash as `BYTEA`. The
-  plain-text token MUST NEVER be stored.
-- `SessionsDao.findByTokenHash` MUST perform an additional in-process
-  `contentEquals` check on the retrieved `BYTEA` value after the SQL
-  `WHERE token_hash = ?` filter to guard against hash-equality collisions from
-  the JVM's `ByteArray` reference equality semantics.
+Specific error code mappings:
 
-### Value-Class Mapping Assumption
+- `23505` containing index `users_email_unique_active_idx` →
+  `DaoResult.PermanentError.DuplicateEmail`.
+- `23505` (other index) → `DaoResult.PermanentError.ConstraintViolation`.
+- `23514` → `DaoResult.PermanentError.ConstraintViolation`.
+- `55P03` in `findByIdForUpdate` →
+  `DaoResult.TransientError.LockAcquisitionFailure`.
 
-- The DAO ASSUMES all persisted `users` rows satisfy their value-class
-  validation constraints (non-blank `email`, `name`, etc.). The `mapUser` and
-  `mapUserVersion` functions perform unsafe `as ValidationResult.Valid` casts;
-  if a DB row fails validation, the resulting `ClassCastException` is caught by
-  the outer `catch (e: Exception)` handler and surfaces as `DatabaseFailure`.
-  Database-level constraints MUST enforce conformance so this path is never
-  reached in normal operation.
+All other `SQLException` are classified into `TransientError.DatabaseError` or
+`PermanentError.DatabaseError` based on SQLSTATE class:
 
-### Session Validity Filter
+| SQLSTATE Class | Category | Examples |
+|---|---|---|
+| `08*` | Transient | Connection exception, broken pipe |
+| `40001` | Transient | Serialization failure |
+| `40P01` | Transient | Deadlock detected |
+| `53*` | Transient | Insufficient resources |
+| `57P*` | Transient | Operator intervention |
+| Everything else | Permanent | Syntax error, type mismatch |
 
-- `SessionsDao.findByTokenHash` MUST filter `is_revoked = false AND expires_at > NOW()` in the SQL query. Expired or revoked sessions MUST return
-  `SessionFindResult.NotFound`.
-
-### Revocation Semantics
-
-- `SessionsDao.revokeByTokenHash` MUST use a blind `UPDATE ... WHERE
-  token_hash = ? AND is_revoked = false` without a version guard. It MUST set
-  `is_revoked = true` and atomically bump `version = version + 1`.
-- If the session is already revoked or absent, `revokeByTokenHash` returns
-  `SessionUpdateResult.NotFound`.
-
-### Expiry Window
-
-- `SessionsDao.extendExpiry` MUST hard-code the renewal interval as `7 days`
-  (`INTERVAL '7 days'`). This value is intentionally not configurable.
-
-### Error Wrapping
-
-- All `SQLException` and general `Exception` instances MUST be wrapped in
-  `ExceptionWrapper` (for `SessionsDao`) or `ed.unicoach.error.AppError` /
-  `ed.unicoach.error.ExceptionWrapper` (for `UsersDao`) before being placed in
-  a `DatabaseFailure` result variant. Raw exceptions MUST NEVER propagate past
-  a DAO method boundary.
-
-### SQLSTATE Discrimination (`UsersDao`)
-
-- `SQLException` with `sqlState = "23505"` containing the index name
-  `users_email_unique_active_idx` MUST be mapped to `DuplicateEmail`.
-- `SQLException` with `sqlState = "23505"` **not** matching that index MUST be
-  mapped to `ConstraintViolation`.
-- `SQLException` with `sqlState = "23514"` MUST be mapped to
-  `ConstraintViolation`.
-- `SQLException` with `sqlState = "55P03"` in `findByIdForUpdate` MUST be
-  mapped to `FindResult.LockAcquisitionFailure`.
+Non-`SQLException` (e.g., `ClassCastException`) defaults to
+`PermanentError.DatabaseError` — these indicate application bugs.
 
 ### Physical Record Bypass
 
@@ -110,24 +108,15 @@ this layer.
   before executing the standard `doUpdate` path. This flag is scoped to the
   current transaction and MUST NOT bleed into subsequent transactions.
 
-### DRY Execution (`SessionsDao`)
-
-- `SessionsDao` MUST abstract all JDBC `try/catch` blocks through a single
-  private generic `executeSafely(onError, block)` function. Duplicate
-  `try/catch` patterns across individual methods are NEVER permitted in this
-  file.
-
 ---
 
 ## III. Behavioral Contracts
 
 ### `SqlSession` — [`SqlSession.kt`](./SqlSession.kt)
 
-| Attribute | Detail |
-|-----------|--------|
-| **Side Effects** | None. Wraps an existing `java.sql.Connection`; does not open or close it. |
-| **Error Handling** | Propagates `SQLException` from `PreparedStatement` creation. |
-| **Idempotency** | Idempotent: yes — method is a pure delegation. |
+`SqlSession` is the DAO's only interface to the database. It controls what DAO
+methods can and cannot do — for example, it exposes `prepareStatement` but does
+not allow `commit()` or `rollback()`.
 
 ---
 
@@ -136,108 +125,78 @@ this layer.
 All methods are `object`-level (static equivalent). All SQL is issued via
 `PreparedStatement`; no string interpolation of user data is permitted.
 
-#### `findById(session, id, includeDeleted = false): FindResult`
+#### `findById(session, id, includeDeleted = false): DaoResult<User>`
 
-- **SQL**: `SELECT * FROM users WHERE id = ?`
-- **Side Effects**: DB read only.
-- **Error Handling**: `FindResult.NotFound` if row absent or soft-deleted (when
-  `includeDeleted = false`). `FindResult.DatabaseFailure` on `SQLException` or
-  general `Exception`.
-- **Idempotency**: Idempotent: yes.
+- **Side Effects**: Read only.
+- **Error Handling**: `PermanentError.NotFound` if row absent or soft-deleted
+  (when `includeDeleted = false`).
+- **Idempotency**: Yes.
 
-#### `findByIdForUpdate(session, id, includeDeleted = false): FindResult`
+#### `findByIdForUpdate(session, id, includeDeleted = false): DaoResult<User>`
 
-- **SQL**: `SELECT * FROM users WHERE id = ? FOR UPDATE NOWAIT`
-- **Side Effects**: Acquires a row-level exclusive lock for the duration of the
-  enclosing transaction.
-- **Error Handling**: `FindResult.LockAcquisitionFailure` on `sqlState =
-  "55P03"`. All other errors → `FindResult.DatabaseFailure`.
-- **Idempotency**: Idempotent: no (lock acquisition is stateful within a
-  transaction).
+- **Side Effects**: Read/write — acquires a row-level exclusive lock.
+- **Error Handling**: `PermanentError.NotFound` if row absent or soft-deleted.
+  `TransientError.LockAcquisitionFailure` on lock contention.
+- **Idempotency**: No (lock acquisition is stateful within a transaction).
 
-#### `findByEmail(session, email): FindResult`
+#### `findByEmail(session, email): DaoResult<User>`
 
-- **SQL**: `SELECT * FROM users WHERE email = ? AND deleted_at IS NULL`
-- **Side Effects**: DB read only.
-- **Error Handling**: `FindResult.NotFound` if absent. `FindResult.DatabaseFailure` on error.
-- **Idempotency**: Idempotent: yes.
+- **Side Effects**: Read only.
+- **Error Handling**: `PermanentError.NotFound` if absent.
+- **Idempotency**: Yes.
 
-#### `findVersion(session, id, targetVersion): FindVersionResult`
+#### `findVersion(session, id, targetVersion): DaoResult<UserVersion>`
 
-- **SQL**: `SELECT * FROM users_versions WHERE id = ? AND version = ?`
-- **Side Effects**: DB read only (queries the `users_versions` audit table).
-- **Error Handling**: `FindVersionResult.NotFound` if absent.
-  `FindVersionResult.DatabaseFailure` on error.
-- **Idempotency**: Idempotent: yes.
+- **Side Effects**: Read only (queries the `users_versions` audit table).
+- **Error Handling**: `PermanentError.NotFound` if absent.
+- **Idempotency**: Yes.
 
-#### `create(session, user): CreateResult`
+#### `create(session, user): DaoResult<User>`
 
-- **SQL**: `INSERT INTO users (...) VALUES (...) RETURNING *`
-- **Side Effects**: Inserts one row into `users`. Database generates UUID via
-  `uuidv7()` default; `id` is NOT supplied by the caller.
-- **Error Handling**:
-  - `sqlState = "23505"` + index `users_email_unique_active_idx` →
-    `CreateResult.DuplicateEmail`
-  - `sqlState = "23505"` (other index) → `CreateResult.ConstraintViolation`
-  - `sqlState = "23514"` → `CreateResult.ConstraintViolation`
-  - Any other error → `CreateResult.DatabaseFailure`
-- **Idempotency**: Idempotent: no (each call produces a new row if the email
-  is unique; duplicate emails surface as `DuplicateEmail` rather than
-  silently succeeding).
+- **Side Effects**: Write — inserts one row. Database generates `id` via
+  `uuidv7()` default.
+- **Error Handling**: `PermanentError.DuplicateEmail` on active-email unique
+  index violation. `PermanentError.ConstraintViolation` on other constraint
+  violations.
+- **Idempotency**: No.
 
-#### `update(session, user): UpdateResult`
+#### `update(session, user): DaoResult<User>`
 
-- **SQL**: `UPDATE users SET version = ?, ... WHERE id = ? AND version = ? RETURNING *`
-- **Side Effects**: Mutates one `users` row. On zero-row match, issues a
-  secondary `SELECT version` query to distinguish `ConcurrentModification` from
-  `NotFound`.
-- **Error Handling**: Full SQLSTATE discrimination (see Invariants).
-  `UpdateResult.NotFound`, `ConcurrentModification`, `DuplicateEmail`,
-  `ConstraintViolation`, `DatabaseFailure`.
-- **Idempotency**: Idempotent: no.
+- **Side Effects**: Read/write — mutates one row with OCC.
+- **Error Handling**: `PermanentError.NotFound`, `ConcurrentModification`,
+  `DuplicateEmail`, `ConstraintViolation`. Full SQLSTATE discrimination
+  (see §II).
+- **Idempotency**: No.
 
-#### `updatePhysicalRecord(session, user): UpdateResult`
+#### `updatePhysicalRecord(session, user): DaoResult<User>`
 
-- **SQL**: Prepends `SET LOCAL unicoach.bypass_logical_timestamp = 'true'`
-  then delegates to `doUpdate`.
-- **Side Effects**: Mutates one `users` row. Sets a session-local PostgreSQL
-  configuration variable scoped to the current transaction.
-- **Error Handling**: `UpdateResult.DatabaseFailure` on any `SQLException`
-  raised during the `SET LOCAL` step. Remaining error paths identical to
-  `update`.
-- **Idempotency**: Idempotent: no.
+- **Side Effects**: Read/write — sets `bypass_logical_timestamp` then
+  delegates to `doUpdate`.
+- **Error Handling**: Same as `update`.
+- **Idempotency**: No.
 
-#### `delete(session, id, currentVersion): DeleteResult`
+#### `delete(session, id, currentVersion): DaoResult<User>`
 
-- **SQL**: `UPDATE users SET version = ?, deleted_at = NOW() WHERE id = ? AND version = ? RETURNING *`
-- **Side Effects**: Soft-deletes one `users` row (sets `deleted_at`).
-  Secondary `SELECT version` on zero-row match.
-- **Error Handling**: `DeleteResult.NotFound`, `ConcurrentModification`,
-  `DatabaseFailure`.
-- **Idempotency**: Idempotent: no.
+- **Side Effects**: Read/write — soft-deletes (sets `deleted_at`).
+- **Error Handling**: `PermanentError.NotFound`,
+  `TransientError.ConcurrentModification`.
+- **Idempotency**: No.
 
-#### `undelete(session, id, currentVersion): UpdateResult`
+#### `undelete(session, id, currentVersion): DaoResult<User>`
 
-- **SQL**: `UPDATE users SET version = ?, deleted_at = NULL WHERE id = ? AND version = ? RETURNING *`
-- **Side Effects**: Restores a soft-deleted `users` row. Secondary `SELECT
-  version` on zero-row match.
-- **Error Handling**: Full SQLSTATE discrimination. May surface
-  `UpdateResult.DuplicateEmail` if undeleting would violate the active-email
-  unique index.
-- **Idempotency**: Idempotent: no.
+- **Side Effects**: Read/write — restores a soft-deleted row.
+- **Error Handling**: `PermanentError.NotFound`. May surface
+  `PermanentError.DuplicateEmail` if undeleting would violate the
+  active-email unique index.
+- **Idempotency**: No.
 
-#### `revertToVersion(session, id, targetHistoricalVersion, currentVersion): UpdateResult`
+#### `revertToVersion(session, id, targetHistoricalVersion, currentVersion): DaoResult<User>`
 
-- **Logic**: First calls `findVersion(session, id, targetHistoricalVersion)`.
-  If not found → `UpdateResult.TargetVersionMissing`. If DB error →
-  `UpdateResult.DatabaseFailure`. On success, re-applies the historical row's
-  fields via a full `UPDATE ... SET` against `currentVersion`.
-- **Side Effects**: Two DB round-trips (read historical version, then update
-  current row).
-- **Error Handling**: `UpdateResult.TargetVersionMissing`,
-  `ConcurrentModification`, `DuplicateEmail`, `ConstraintViolation`,
-  `DatabaseFailure`.
-- **Idempotency**: Idempotent: no.
+- **Side Effects**: Read/write — two round-trips (read historical version,
+  then update current row).
+- **Error Handling**: `PermanentError.TargetVersionMissing` if the historical
+  version does not exist. Otherwise same as `update`.
+- **Idempotency**: No.
 
 ---
 
@@ -246,111 +205,70 @@ All methods are `object`-level (static equivalent). All SQL is issued via
 All methods delegate through `executeSafely`. All session mutations target the
 `sessions` table.
 
-#### `findByTokenHash(session, tokenHash): SessionFindResult`
+#### `findByTokenHash(session, tokenHash): DaoResult<Session>`
 
-- **SQL**: `SELECT * FROM sessions WHERE token_hash = ? AND is_revoked = false AND expires_at > NOW()`
-- **Side Effects**: DB read only.
-- **Error Handling**: `SessionFindResult.NotFound` if absent, revoked, expired,
-  or if the post-fetch `contentEquals` check fails (see §II Token Storage
-  invariant). `SessionFindResult.DatabaseFailure` on exception.
-- **Idempotency**: Idempotent: yes.
+- **Side Effects**: Read only. Filters revoked and expired sessions.
+- **Error Handling**: `PermanentError.NotFound` if absent, revoked, expired,
+  or if the post-fetch `contentEquals` check fails.
+- **Idempotency**: Yes.
 
-#### `create(session, newSession): SessionCreateResult`
+#### `create(session, newSession): DaoResult<Session>`
 
-- **SQL**: `INSERT INTO sessions (user_id, token_hash, user_agent, initial_ip, metadata, expires_at) VALUES (...) RETURNING *`
-- **Side Effects**: Inserts one row. `expires_at` is computed as
-  `NOW() + newSession.expiration.seconds * INTERVAL '1 second'`. The caller
-  supplies `userId` (nullable for anonymous sessions), `tokenHash`,
-  `userAgent` (nullable), `initialIp` (nullable), `metadata` (nullable),
-  and `expiration` as a `java.time.Duration`.
-- **Error Handling**: `SessionCreateResult.DatabaseFailure` on any exception,
-  including when `RETURNING *` yields no rows after a successful insert.
-- **Idempotency**: Idempotent: no.
+- **Side Effects**: Write — inserts one row. `expires_at` is computed from
+  the caller-supplied `expiration` duration.
+- **Idempotency**: No.
 
-#### `remintToken(session, id, currentVersion, newUserId, newTokenHash, newExpirationSeconds): SessionUpdateResult`
+#### `remintToken(session, id, currentVersion, newUserId, newTokenHash, newExpirationSeconds): DaoResult<Session>`
 
-- **SQL**: `UPDATE sessions SET version = ?, user_id = ?, token_hash = ?, expires_at = NOW() + (? * INTERVAL '1 second') WHERE id = ? AND version = ? AND is_revoked = false RETURNING *`
-- **Side Effects**: Rotates the token hash and binds the session to a
-  `userId`. Used during login/registration to upgrade an anonymous session to
-  an authenticated one (session fixation defense).
-- **Error Handling**: `SessionUpdateResult.NotFound` if version mismatch,
-  row absent, or already revoked. `SessionUpdateResult.DatabaseFailure` on
-  exception.
-- **Idempotency**: Idempotent: no.
+- **Side Effects**: Read/write — rotates token hash and binds session to a
+  user (session fixation defense).
+- **Error Handling**: `PermanentError.NotFound` if version mismatch, row
+  absent, or already revoked.
+- **Idempotency**: No.
 
-#### `extendExpiry(session, id, currentVersion): SessionUpdateResult`
+#### `extendExpiry(session, id, currentVersion): DaoResult<Session>`
 
-- **SQL**: `UPDATE sessions SET version = ?, expires_at = NOW() + INTERVAL '7 days' WHERE id = ? AND version = ? AND is_revoked = false RETURNING *`
-- **Side Effects**: Extends a non-revoked session's expiry by exactly 7 days
-  from the current server timestamp.
-- **Error Handling**: `SessionUpdateResult.NotFound` on version mismatch, row
-  absent, or already revoked. `SessionUpdateResult.DatabaseFailure` on
-  exception.
-- **Idempotency**: Idempotent: no (each call advances `expires_at` and bumps
-  `version`).
+- **Side Effects**: Read/write — extends expiry by 7 days.
+- **Error Handling**: `PermanentError.NotFound` on version mismatch, row
+  absent, or already revoked.
+- **Idempotency**: No.
 
-#### `revokeByTokenHash(session, tokenHash): SessionUpdateResult`
+#### `revokeByTokenHash(session, tokenHash): DaoResult<Session>`
 
-- **SQL**: `UPDATE sessions SET version = version + 1, is_revoked = true WHERE token_hash = ? AND is_revoked = false RETURNING *`
-- **Side Effects**: Marks one session as revoked; no version guard beyond
-  `is_revoked = false`.
-- **Error Handling**: `SessionUpdateResult.NotFound` if already revoked or
-  absent. `SessionUpdateResult.DatabaseFailure` on exception.
-- **Idempotency**: Idempotent: effectively idempotent — a second call on an
-  already-revoked session returns `NotFound` without error.
+- **Side Effects**: Read/write — marks session as revoked. No version guard.
+- **Error Handling**: `PermanentError.NotFound` if already revoked or absent.
+- **Idempotency**: Effectively yes — a second call returns `NotFound`.
 
-#### `expireZombieSessions(session): SessionDeleteResult`
+#### `expireZombieSessions(session): DaoResult<Unit>`
 
-- **SQL**: `DELETE FROM sessions WHERE expires_at < NOW() OR is_revoked = true`
-- **Side Effects**: Physically deletes all expired or revoked session rows.
-  Intended to be called by `SessionCleanupJob` on a scheduled basis.
-- **Error Handling**: `SessionDeleteResult.DatabaseFailure` on exception.
-  `SessionDeleteResult.Success` carries no payload (row count is not exposed).
-- **Idempotency**: Idempotent: yes — repeated calls delete any newly expired
-  rows without error.
+- **Side Effects**: Write — physically deletes all expired or revoked rows.
+- **Idempotency**: Yes.
 
 ---
 
-### Result Types — [`DaoModule.kt`](./DaoModule.kt)
+### Result Types — [`DaoResult.kt`](./DaoResult.kt)
 
-Sealed interfaces scoped to `UsersDao` operations:
+All DAO methods return `DaoResult<T>`, a single generic sealed interface with
+three top-level branches:
 
-| Type | Variants |
-|------|----------|
-| `FindResult` | `Success(user)`, `NotFound`, `LockAcquisitionFailure`, `DatabaseFailure(error)` |
-| `CreateResult` | `Success(user)`, `DuplicateEmail`, `ConstraintViolation(error)`, `DatabaseFailure(error)` |
-| `UpdateResult` | `Success(user)`, `NotFound`, `DuplicateEmail`, `ConcurrentModification`, `TargetVersionMissing`, `ConstraintViolation(error)`, `DatabaseFailure(error)` |
-| `DeleteResult` | `Success(user)`, `NotFound`, `ConcurrentModification`, `DatabaseFailure(error)` |
-| `FindVersionResult` | `Success(version)`, `NotFound`, `DatabaseFailure(error)` |
+| Branch | Variants |
+|--------|----------|
+| `Success<T>` | `Success(value: T)` |
+| `TransientError` | `ConcurrentModification`, `LockAcquisitionFailure`, `DatabaseError(error)` |
+| `PermanentError` | `NotFound(message)`, `DuplicateEmail`, `TargetVersionMissing`, `ConstraintViolation(error)`, `DatabaseError(error)` |
 
-Sealed interfaces scoped to `SessionsDao` operations are declared inline in
-[`SessionsDao.kt`](./SessionsDao.kt):
-
-| Type | Variants |
-|------|----------|
-| `SessionFindResult` | `Success(session)`, `NotFound(message)`, `DatabaseFailure(error)` |
-| `SessionCreateResult` | `Success(session)`, `DatabaseFailure(error)` |
-| `SessionUpdateResult` | `Success(session)`, `NotFound(message)`, `DatabaseFailure(error)` |
-| `SessionDeleteResult` | `Success`, `DatabaseFailure(error)` |
+SQLSTATE classification rules are documented in §II Postgres Error Codes.
 
 ---
 
 ## IV. Infrastructure & Environment
 
-- **Module**: `db` Gradle sub-project.
 - **JDBC Driver**: `org.postgresql:postgresql` (version managed by root BOM).
   No ORM (Hibernate, Exposed, etc.) is used.
-- **Database**: PostgreSQL. All SQL targets the `users` and `sessions` tables.
-  The `users_versions` audit table is read by `UsersDao.findVersion`.
+- **Database**: PostgreSQL 18.
 - **Session-local configuration variable**: `unicoach.bypass_logical_timestamp`
   is a PostgreSQL custom GUC used by `updatePhysicalRecord`. It is set with
   `SET LOCAL` and is automatically discarded at transaction commit/rollback.
-- **`ExceptionWrapper`**: Provided by the `ed.unicoach.error` package (sibling
-  module dependency). Both DAOs use `ExceptionWrapper.from(e)` to wrap
-  exceptions.
-- **No environment variables** are read directly by this package. Connection
-  parameters are injected via the `SqlSession` abstraction from the calling
-  layer.
 
 ---
 
@@ -364,3 +282,4 @@ Sealed interfaces scoped to `SessionsDao` operations are declared inline in
 - [x] [RFC-14: DB Module](../../../../../../../rfc/14-db-module.md) — Moved all DAO files from `service/` to the `db` Gradle module at their current path.
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../rfc/21-session-expiry-queue.md) — Added `extendExpiry` and `remintToken` to `SessionsDao`; added `expires_at` mapping in `mapSession`.
 - [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md) — Added `revokeByTokenHash` to `SessionsDao`.
+- [x] Unified all per-entity and per-session result types into `DaoResult<T>` with `TransientError`/`PermanentError` categories. Deleted `DaoModule.kt`. SQLSTATE-based exception classification.
