@@ -8,13 +8,15 @@ description: Opinionated philosophical constraints to apply when writing code.
 Establishes structural code design constraints emphasizing abstraction,
 reusability, and compile-time safety.
 
+## Single Responsibility Principle
+
+- **Do One Thing**: Coding constructs (functions, methods, interfaces, classes, etc.) should do exactly one thing. If multiple actions are required, they should be bubbled up into an orchestration layer that does one thing (orchestrating the required actions). Keep abstractions atomic so they can be composed and re-used in the future.
+
 ## Generalization Before Implementation
 
-- **Exhaustive Generalization**: Evaluate if a problem can be abstracted into
-  shared infrastructure before implementing a specific solution.
-- **Primitive Extraction**: Centralize generic interactions (e.g., CRUD entity
-  ID management) into broad parent abstractions rather than duplicating logic
-  per domain.
+- **Exhaustive Generalization**: Evaluate if a problem can be abstracted into shared infrastructure before implementing a specific solution.
+- **Generic Primitives with Syntactic Sugar**: Code must always be implemented as generic primitives (e.g., `requireContentType(ContentType)`). Value-bound functions (e.g., `requireJson()`) are acceptable *only* as syntactic sugar or ease-of-use wrappers that immediately delegate to the underlying generic primitive. Never implement core logic directly inside a value-bound function.
+- **Primitive Extraction**: Centralize generic interactions (e.g., CRUD entity ID management) into broad parent abstractions rather than duplicating logic per domain.
 
 ## Solve Problems Completely
 
@@ -29,6 +31,7 @@ reusability, and compile-time safety.
 - **Domain-Agnostic Centralization**: Extract domain-agnostic components (e.g.,
   `Validator<T>`, hashing mechanisms) into a shared `common` module accessible
   globally across the codebase.
+- **Separation of Cross-Cutting Concerns**: Any logic that is not directly related to the core purpose of a function or handler MUST be extracted. Utilize middleware, interceptors, wrappers, or closures to encapsulate cross-cutting concerns (such as rate limits, request / response logging, HTTP method filters), ensuring the primary function remains purely focused on its domain objective.
 
 ## Target Scale Restraints
 

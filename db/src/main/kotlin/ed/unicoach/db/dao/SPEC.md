@@ -40,6 +40,11 @@ Entity table characteristics vary by flavor:
 | `users` | ✓ (logical) | ✓ | ✓ | ✓ |
 | `sessions` | ✗ (physical) | ✗ | ✓ | ✓ |
 
+#### Mapping Notes
+
+- **`users` table**: The `password_hash` and `sso_provider_id` columns are synthesized into a sealed `AuthMethod` (variants: `Password`, `SSO`, or `Both`).
+- Complex columns (e.g., `email`, `name`, `display_name`) are mapped into strongly-typed value classes (e.g., `EmailAddress`, `PersonName`) using their respective `.create()` factories, unwrapping `ValidationResult.Valid`.
+
 ### Transaction Boundary
 
 - Transaction management (begin, commit, rollback) is handled exclusively by
@@ -118,6 +123,12 @@ Non-`SQLException` (e.g., `ClassCastException`) defaults to
 methods can and cannot do — for example, it exposes `prepareStatement` but does
 not allow `commit()` or `rollback()`.
 
+```kotlin
+interface SqlSession {
+  fun prepareStatement(sql: String): PreparedStatement
+}
+```
+
 ---
 
 ### `UsersDao` — [`UsersDao.kt`](./UsersDao.kt)
@@ -171,7 +182,7 @@ All methods are `object`-level (static equivalent). All SQL is issued via
 #### `updatePhysicalRecord(session, user): DaoResult<User>`
 
 - **Side Effects**: Read/write — sets `bypass_logical_timestamp` then
-  delegates to `doUpdate`.
+  delegates to `doUpdate` (a private method used to share execution logic between standard and physical updates).
 - **Error Handling**: Same as `update`.
 - **Idempotency**: No.
 

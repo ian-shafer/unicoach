@@ -1,16 +1,16 @@
 ---
-name: spec-design-review
+name: rfc-design-review
 description: >-
-  Interactively reviews spec designs to ensure they meet the standards defined
-  in spec-design/SKILL.md. Use when reviewing a new feature specification,
+  Interactively reviews RFC designs to ensure they meet the standards defined
+  in rfc-design/SKILL.md. Use when reviewing a new feature RFC,
   checking for required headers, analyzing design depth, or verifying
   implementation plans.
 ---
 
-# Spec Design Review
+# RFC Design Review
 
-Adversarial review of a spec design against the standards in
-`spec-design/SKILL.md`.
+Adversarial review of an RFC design against the standards in
+`rfc-design/SKILL.md`.
 
 ## Behavioral Constraints
 
@@ -25,6 +25,7 @@ Adversarial review of a spec design against the standards in
   resolution options. Explicitly recommend one.
 - **Tone**: Highly technical, dry, objective. Zero fluff. Zero subjective
   adjectives.
+- **Acceptance of N/A**: While all required headers must be present, it is generally acceptable for the content of a section to be `N/A` if it is genuinely not applicable. **However, the `Detailed Design` section is a strict exception: it should almost never be N/A. Flag `Detailed Design` as `Critical` if it is marked `N/A` unless the objective is purely exploratory and no concrete design information exists.** For other sections, do not flag `N/A` as lacking detail, incomplete, or missing if it avoids unnecessary fluff.
 
 ## Post-Review Interaction
 
@@ -33,9 +34,9 @@ Present the options below as a **numbered selection widget** so the user can
 pick one:
 
 1. Walk through findings one-by-one.
-2. Reviewer implements accepted recommendations using the `spec-design`
-   skill (`spec-design/SKILL.md`). In this mode, read and follow the
-   `spec-design` skill, then apply accepted findings directly to the spec
+2. Reviewer implements accepted recommendations using the `rfc-design`
+   skill (`rfc-design/SKILL.md`). In this mode, read and follow the
+   `rfc-design` skill, then apply accepted findings directly to the RFC
    file. Before starting, ask the user which findings to implement. Accept
    any of the following responses:
    - **All**: Implement every finding.
@@ -43,23 +44,23 @@ pick one:
      Minor), "Major and above" (= Critical + Major), "Critical only".
    - **Individual selection**: User specifies finding IDs (e.g., "F1, F3,
      F5").
-3. **PASS verdict only**: Ignore remaining findings and mark the spec as ready
+3. **PASS verdict only**: Ignore remaining findings and mark the RFC as ready
    for implementation. Only present this option when the verdict is `PASS`
    (zero Critical, zero Major).
 
 ## The Review Process
 
-Evaluate the spec against every criterion below. Do not skip steps.
+Evaluate the RFC against every criterion below. Do not skip steps.
 
-### 1. Spec Identification
+### 1. RFC Identification
 
-Identify the spec file. If the user has already provided the file content or
+Identify the RFC file. If the user has already provided the file content or
 path, use it immediately. Only ask for the path if it is absent from the current
 context.
 
 ### 2. Header Verification
 
-Verify the spec contains these exact required headers:
+Verify the RFC contains these exact required headers:
 
 - `## Executive Summary`
 - `## Detailed Design`
@@ -69,7 +70,7 @@ Verify the spec contains these exact required headers:
 
 Extra sections are permitted. Missing or misspelled required headers: flag as
 `Critical` or `Major`. Do not stop to ask the user — proceed with the remaining
-review.
+review. Note: If a required header is present but its content is simply `N/A`, this is perfectly acceptable provided the section is legitimately not applicable, **with the strict exception of `Detailed Design` which must almost never be N/A (unless purely exploratory). Flag an invalid `N/A` in Detailed Design as `Critical`.** Do not flag valid `N/A`s as missing or incomplete.
 
 ### 3. Executive Summary
 
@@ -121,7 +122,7 @@ Verify:
 - Files listed as **new** do not already exist.
 - Files listed as **modified** or **deleted** already exist.
 - Use search tools to check for missing dependencies or configurations. Do not
-  take the spec's claims at face value.
+  take the RFC's claims at face value.
 
 ### 8. Completeness Check (Semantic Cross-Referencing)
 
@@ -133,7 +134,7 @@ Go beyond bullet-point mapping. Evaluate sufficiency and logical consistency:
 - **Design → Tests**: Every edge case in `Detailed Design` (e.g., "retries on
   timeout") must have a corresponding test case in `Tests`.
 - **Implied Dependencies**: If the design implies changes to systems or
-  libraries not mentioned in the spec, flag as `Critical`.
+  libraries not mentioned in the RFC, flag as `Critical`.
 
 ### 9. Tone Check
 
@@ -144,7 +145,7 @@ Go beyond bullet-point mapping. Evaluate sufficiency and logical consistency:
 
 ### 10. Advanced Considerations
 
-Check whether the spec should have addressed the following. Flag as
+Check whether the RFC should have addressed the following. Flag as
 "Considerations for the Author" (not as critical failures):
 
 - **Rollback Plan**: How to undo the changes if they fail in production.
@@ -160,7 +161,7 @@ The report is the **sole output** of the review. Do not produce incremental
 commentary — go straight to the report. Use this exact template:
 
 ```
-# 🔍 Spec Review: <Spec Title>
+# 🔍 RFC Review: <RFC Title>
 
 **Verdict**: <✅ PASS | 🔧 NEEDS WORK>
 
@@ -180,7 +181,7 @@ commentary — go straight to the report. Use this exact template:
 <Order rows by severity: 🔴 → 🟠 → 🟡 → ⚪>
 
 <If PASS with zero findings: replace table with single line —
-"No findings. Spec is complete and ready for implementation.">
+"No findings. RFC is complete and ready for implementation.">
 
 ## 📎 Detail
 

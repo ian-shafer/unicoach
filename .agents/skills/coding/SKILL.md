@@ -116,3 +116,19 @@ programming languages, scripts, and implementations within the repository.
     - DO NOT add "dumb" comments that simply restate what the code is
       structurally doing (e.g., `// increment index by 1`). Comments must
       justify the _why_, not narrate the _what_.
+
+14. **Parameterize Magic Bounds (Configuration over Hardcoding)**
+    - Any raw primitive should be suspect. Sometimes these are okay, but rarely.
+    - Do not hardcode magic numbers, lengths, or system constraints deep inside function bodies (e.g., `val bytes = ByteArray(32)`).
+    - Extract these values to function parameters, constants, or config passed into constructors. Provide sensible defaults where appropriate (e.g., `fun generateToken(byteLength: Int = 32)`). This explicitly documents the constraint and makes the function flexible and testable.
+
+15. **Avoid Redundant Naming (No Smurf Naming)**
+    - Do not bake parameter types or arbitrary domain concepts into function names if the generic signature already communicates the intent.
+    - Let the type system do the talking. For example, use `fun hash(value: String)` instead of `fun hashString(value: String)` (the type is obvious) or `fun hashToken(token: String)` (which artificially couples a generic algorithm to a specific domain entity).
+
+## 🤖 Agentic Behavior: Spec-Driven Development (SDD) Override
+
+When the user provides an RFC or `SPEC.md` document and asks to implement it, you MUST treat the provided document as a finalized, approved implementation plan.
+- **DO NOT** generate a new `implementation_plan.md` artifact.
+- **DO NOT** pause to ask for design approval.
+- Proceed directly to executing the steps in the provided document.
