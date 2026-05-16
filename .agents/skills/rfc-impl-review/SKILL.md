@@ -1,176 +1,76 @@
 ---
 name: rfc-impl-review
-description:
+description: >-
   Reviews completed RFC implementations to ensure they strictly modified the
-  specified files, adhered to core defensive coding philosophies, and upheld
-  general design principles.
+  specified files, implemented the exact scope without feature creep, and adhered 
+  to core coding and design philosophies. Acts as a master orchestrator delegating
+  to code-review-chain and design-review-chain.
 ---
 
 # 🤖 Skill: RFC Implementation Review
 
-This skill formalizes the process for reviewing implemented RFCs. The
-purpose is to enforce coding standards as specified in the `coding` and
-`general-design` skills.
+This skill formalizes the process for reviewing implemented RFCs. 
+You act as a STRICT and ADVERSARIAL master orchestrator. Your goal is not to be polite, but to ruthlessly hunt for errors, scope creep, and deviations from the project's standards.
 
-When a user asks you to act as a reviewer for a recently implemented RFC step,
-you MUST assume a STRICT and ADVERSARIAL posture. Your goal is not to be polite,
-but to ruthlessly hunt for errors, edge-cases, and any deviations from the
-project's coding and general design standards.
+> **Important Constraint:** Explicitly IGNORE PII and security concerns at this point. Do not flag or evaluate code for security, privacy, or PII vulnerabilities during this review phase. Explicitly IGNORE minor (and some major) performance concerns at this stage. Do not flag them.
 
-You MUST evaluate the code changes by focusing on these three core checks. While
-you are encouraged to provide general feedback outside these bounds, these
-criteria are mandatory to ensure strict adherence to the project's standards:
+## Execution Workflow
 
-> **Important Constraint:** Explicitly IGNORE PII and security concerns at this
-> point. Do not flag or evaluate code for security, privacy, or PII
-> vulnerabilities during this review phase. Explicitly IGNORE minor (and some
-> major) performance concerns at this stage. Do not flag them.
+You MUST execute the review by following these exact phases sequentially:
 
-## 1. Files Modified Isolation Check
+### Phase 1. Files Modified Isolation Check
 
 Validate that the code changes did not spill over into unrelated files.
+- Compare exactly what was expected in the `Files Modified` section of the RFC against what files were *actually* modified.
+- If an extraneous file was modified, clearly identify it as an isolation failure.
 
-- Compare exactly what was expected in the `Files Modified` section of the
-  document against what files were _actually_ modified during the implementation
-  phase.
-- If an extraneous file was modified, clearly identify it as a failure.
+### Phase 2. Implementation Scope Check
 
-## 2. Core Philosophy Check (`coding/SKILL.md`)
+Validate the scope boundaries of the implementation:
+- **Missing Features:** Verify that *everything* explicitly requested in the RFC was actually implemented.
+- **Feature Creep:** Verify that *no extra functionality* was added. The implementor must not add speculative abstractions or features not mentioned in the RFC.
 
-Evaluate the implementation against all 12 of the Core Philosophies explicitly
-found in the `coding` skill.
+### Phase 3. Chain Delegation
 
-**Important Rule for Reasoning:** You MUST include relevant code examples in
-your reasoning to justify your verdict. However, the length of your code
-examples MUST NOT exceed 20% of the total lines of code changed in the
-implementation (e.g., if 10 lines were changed overall, your code snippet should
-be 2 lines max).
+You MUST delegate the deep structural and code reviews to the dedicated macro chains. 
+Execute the following chains on the target implementation files:
+1. `design-review-chain`
+2. `code-review-chain`
 
-1. **Accept Known, Reject All Else** (The Allowlist Principle)
-2. **Handle All Cases** (Exhaustive Evaluation)
-3. **No Sentinel Nulls or Empty Strings** (Explicit Initialization)
-4. **Immutable State Returns** (Functional Patterns)
-5. **Avoid Metasyntactic Naming** (Concrete Identifiers)
-6. **Dynamic Variable Formatting** (Bracket Serialization)
-7. **Extramarital Routing Defaults** (Explicit Interfaces Over Implicit Magic)
-8. **Semantic Output Streams** (Error and Fatal Routing)
-9. **Constructor Dependency Injection over Singletons** (Test Mockability)
-10. **Do Not Leak Implementation Resources**
-11. **Lossless Error Bubbling**
-12. **DRY Structural Abstractions** (Avoid Boilerplate Duplication)
+*(Note: Instruct these chains to write their full reports to persistent markdown files in your scratch directory. You must use your file reading tools to ingest these reports once the chains complete.)*
 
-## 3. General Code and Design Check (`general-design/SKILL.md`)
+### Phase 4. Aggregation and Final Verdict
 
-Deliver a brief evaluation based on the core points of the general code design
-skill:
-
-- **Solve problems as generally as possible:** Evaluate if the solution takes an
-  excessively specific approach to a problem that could be generalized via
-  abstraction (e.g., standardizing on an Entity rather than specifically
-  CRUD'ing a table).
-- **Abstract Frameworks to Common Infrastructure:** Check if generic or
-  logic-independent code was erroneously isolated in a specific module instead
-  of placed into a common, sharable folder.
-
----
+Once Phase 1-3 are complete, aggregate all findings into a final master report.
 
 ## 📋 Required Review Output Format
 
-You MUST output your evaluation precisely using the markdown format provided
-below. Use it as a templated report card.
+You MUST output your final master evaluation precisely using the markdown format provided below.
 
 ```markdown
-# 🔍 Implementation Review: [RFC Name / Step]
+# 🔍 Master Implementation Review: [RFC Name / Step]
 
-## 📝 1. Files Modified Isolation Check
+## 📝 1. Scope & Boundary Checks
 
+**Files Modified Isolation Check:**
 - **Result:** ✅ PASS / ❌ FAIL
-- **Discrepancies:** _(If FAIL, list the extraneous files that were modified
-  unexpectedly or missing expected files. If PASS, state "None")._
+- **Discrepancies:** _(If FAIL, list the extraneous or missing files. If PASS, state "None")_
 
-## 🛡️ 2. Core Philosophy Check (`coding` Skill)
+**Implementation Scope Check:**
+- **Result:** ✅ PASS / ❌ FAIL
+- **Discrepancies:** _(If FAIL, list missing features or feature creep. If PASS, state "None")_
 
-### 1. Allowlist Principle
+## 🏗️ 2. Design Review Summary
 
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
+_(Summarize the critical failures and observations from the `design-review-report.md`. Do not list passing checks, only actionable violations.)_
 
-### 2. Handle All Cases
+## 🛡️ 3. Code Review Summary
 
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 3. No Sentinel Nulls
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 4. Immutable State Returns
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 5. Avoid Metasyntactic Naming
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 6. Dynamic Variable Formatting
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 7. Extramarital Defaults
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 8. Semantic Output Streams
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 9. Constructor DI
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 10. Don't Leak Resources
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 11. Lossless Error Bubbling
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-### 12. DRY Structural Abstractions
-
-**Verdict:** (✅ PASS / ❌ FAIL / ⚪ N/A) **Reasoning:** [Provide detailed
-explanation. MUST include code examples (max 20% of total LOC changed)]
-
-## 🏗️ 3. General Code and Design Check (`general-design` Skill)
-
-### Solve problems as generally as possible
-
-**Evaluation:** [Provide observation] **Status:** ✅ PASS / ❌ FAIL
-
-### Abstract Frameworks to Common Infrastructure
-
-**Evaluation:** [Provide observation] **Status:** ✅ PASS / ❌ FAIL
-
-## General Review and Feedback
-
-[This section is for general feedback and observations that do not fit into the
-above categories. It is not required to provide feedback in this section.]
+_(Summarize the critical failures, missing abstractions, and coding rule violations from the `code-review-report.md`. Do not list passing checks, only actionable violations.)_
 
 ## 🏁 Final Verdict
 
 **Status:** 🟢 APPROVED / 🔴 REVISION REQUIRED
 
-**Action Items for Implementor:** _(If REVISION REQUIRED, list clear, actionable
-code changes they must make. For each action item, you MUST provide at least 2
-distinct options for how to resolve it, and explicitly recommend one of the
-options.)_
+**Action Items for Implementor:** _(If REVISION REQUIRED, list clear, actionable code changes they must make based on all phases. For each action item, you MUST provide at least 2 distinct options for how to resolve it, and explicitly recommend one of the options.)_
 ```
