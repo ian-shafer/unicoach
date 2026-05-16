@@ -41,6 +41,7 @@ _Example definition extracted from prompt:_
      - **Context Pass-through**: Persist outputs (e.g., critique, conceptual
        feedback, implementation plan) as the active input context for the
        subsequent skill in the chain.
+   - **Iteration Summary**: At the end of each full iteration, provide the user with a concise, bulleted summary of all changes made to the Target during this loop before starting the next iteration.
 3. **Termination**: Upon completion of all iterations, summarize terminal target
    state and halt for user input.
 
