@@ -1,18 +1,18 @@
 ---
-name: spec-implementation-review
+name: rfc-impl-review
 description:
-  Reviews completed spec implementations to ensure they strictly modified the
+  Reviews completed RFC implementations to ensure they strictly modified the
   specified files, adhered to core defensive coding philosophies, and upheld
   general design principles.
 ---
 
-# 🤖 Skill: Spec Implementation Review
+# 🤖 Skill: RFC Implementation Review
 
-This skill formalizes the process for reviewing implemented specifications. The
+This skill formalizes the process for reviewing implemented RFCs. The
 purpose is to enforce coding standards as specified in the `coding` and
 `general-design` skills.
 
-When a user asks you to act as a reviewer for a recently implemented spec step,
+When a user asks you to act as a reviewer for a recently implemented RFC step,
 you MUST assume a STRICT and ADVERSARIAL posture. Your goal is not to be polite,
 but to ruthlessly hunt for errors, edge-cases, and any deviations from the
 project's coding and general design standards.
@@ -80,7 +80,7 @@ You MUST output your evaluation precisely using the markdown format provided
 below. Use it as a templated report card.
 
 ```markdown
-# 🔍 Implementation Review: [Spec Name / Step]
+# 🔍 Implementation Review: [RFC Name / Step]
 
 ## 📝 1. Files Modified Isolation Check
 

@@ -1,23 +1,23 @@
 ---
-name: spec-implementation
+name: rfc-impl
 description:
-  Directs implementors in how to take a spec (e.g. specs/03-daemon-scripts.md)
+  Directs implementors in how to take an RFC (e.g. rfc/03-daemon-scripts.md)
   and implement it autonomously in a strict single-shot execution without making
   commits.
 ---
 
-# Spec Implementation
+# RFC Implementation
 
-Skill to direct implementors on how to take a spec design file (e.g.,
-`specs/03-daemon-scripts.md`) and strictly implement it. See
-`spec-design/SKILL.md` and `spec-design-review/SKILL.md` for context on how
-these specs are authored and reviewed.
+Skill to direct implementors on how to take an RFC design file (e.g.,
+`rfc/03-daemon-scripts.md`) and strictly implement it. See
+`rfc-design/SKILL.md` and `rfc-design-review/SKILL.md` for context on how
+these RFCs are authored and reviewed.
 
 ## Critical Behaviours
 
 - **Architectural Decisions**: During implementation, if you encounter important
   architectural decisions that are deeply ambiguous or fundamentally missing
-  from the spec (like whether a database table should be versioned), you MUST
+  from the RFC (like whether a database table should be versioned), you MUST
   pause and ask the Architect. Always provide multiple valid options along with
   a clear recommendation.
 
@@ -25,7 +25,7 @@ these specs are authored and reviewed.
 
 This skill operates **STRICTLY** in a single-shot, fully autonomous mode.
 
-You MUST read through the spec's `Implementation Plan` section and execute ALL
+You MUST read through the RFC's `Implementation Plan` section and execute ALL
 steps in the implementation plan autonomously without stopping for human review
 or approval between steps.
 
