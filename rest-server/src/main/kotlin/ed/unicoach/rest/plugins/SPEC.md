@@ -34,9 +34,8 @@ request/response in the `rest-server`. The three plugins cover:
 - An unhandled `UnsupportedMediaTypeException` MUST produce a `415
   Unsupported Media Type` response with an `ErrorResponse` body (`code =
   "unsupported_media_type"`).
-- An unhandled `BadRequestException` MUST produce a `400 Bad Request` response
-  with an `ErrorResponse` body (`code = "bad_request"`, `message = "Invalid
-  JSON payload structure"`).
+- Unhandled `TransientError` exceptions MUST produce a `503 Service Unavailable` response.
+- Unhandled `PermanentError` exceptions MUST produce a `400 Bad Request` or appropriate 4xx response.
 - The `ErrorResponse` type used here MUST be the shared
   `ed.unicoach.rest.models.ErrorResponse` — no ad-hoc response types are
   permitted.
@@ -90,10 +89,11 @@ request/response in the `rest-server`. The three plugins cover:
   no network calls.
 - **Handled Exceptions**:
 
-  | Exception                       | HTTP Status | `ErrorResponse.code`         | `ErrorResponse.message`                       |
+  | Exception | HTTP Status | `ErrorResponse.code` | `ErrorResponse.message` |
   |---------------------------------|-------------|------------------------------|------------------------------------------------|
-  | `UnsupportedMediaTypeException`  | 415         | `"unsupported_media_type"`   | `cause.message ?: "Unsupported media type"`   |
-  | `BadRequestException`            | 400         | `"bad_request"`              | `"Invalid JSON payload structure"` (hardcoded) |
+  | `TransientError` | 503 | `"service_unavailable"` | `"Service unavailable"` |
+  | `PermanentError` | 400 | `"bad_request"` | `cause.message ?: "Bad request"` |
+  | `UnsupportedMediaTypeException` | 415 | `"unsupported_media_type"` | `cause.message ?: "Unsupported media type"` |
 
 - **Unhandled Exceptions**: Any exception type not listed above falls through to
   Ktor's default 500 handler.

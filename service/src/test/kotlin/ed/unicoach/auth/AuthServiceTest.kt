@@ -2,7 +2,7 @@ package ed.unicoach.auth
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.db.dao.DaoResult
+import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
@@ -68,7 +68,7 @@ class AuthServiceTest {
     }
 
   private val argon2Hasher = Argon2Hasher()
-  private val authService by lazy { AuthService(database, argon2Hasher) }
+  private val authService by lazy { AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator()) }
 
   private fun createTestUser(): ed.unicoach.db.models.User {
     val email = (EmailAddress.create("testme@example.com") as ValidationResult.Valid).value
@@ -80,8 +80,8 @@ class AuthServiceTest {
         sqlSession,
         NewUser(email = email, name = name, displayName = null, authMethod = AuthMethod.Password(pwdHash)),
       )
-    assertTrue(result is DaoResult.Success)
-    return (result as DaoResult.Success).value
+    assertTrue(result.isSuccess)
+    return result.getOrNull()!!
   }
 
   private fun createSession(
@@ -101,7 +101,7 @@ class AuthServiceTest {
           expiration = expiration,
         ),
       )
-    assertTrue(result is DaoResult.Success)
+    assertTrue(result.isSuccess)
   }
 
   // Tests domain validation boundary correctly
@@ -121,16 +121,16 @@ class AuthServiceTest {
           """.trimIndent(),
         )
       val dummyDb = Database(DatabaseConfig.from(rawConfig).getOrThrow())
-      val service = AuthService(dummyDb, argon2Hasher)
+      val service = AuthService(dummyDb, argon2Hasher, ed.unicoach.util.TokenGenerator())
 
-      val res1 = service.register("email@test.com", "Name", "short")
-      assertTrue(res1 is AuthResult.ValidationFailure)
+      val res1 = service.register("email@test.com", "Name", "short", null, 86400L, null, null)
+      assertTrue(res1.isSuccess && res1.getOrNull() is RegisterOutcome.ValidationFailure)
 
-      val res2 = service.register("email@test.com", "Name", "nouppercasenonumber")
-      assertTrue(res2 is AuthResult.ValidationFailure)
+      val res2 = service.register("email@test.com", "Name", "nouppercasenonumber", null, 86400L, null, null)
+      assertTrue(res2.isSuccess && res2.getOrNull() is RegisterOutcome.ValidationFailure)
 
-      val res3 = service.register("email@test.com", "Name", "UPPERCASENONUMBER")
-      assertTrue(res3 is AuthResult.ValidationFailure)
+      val res3 = service.register("email@test.com", "Name", "UPPERCASENONUMBER", null, 86400L, null, null)
+      assertTrue(res3.isSuccess && res3.getOrNull() is RegisterOutcome.ValidationFailure)
 
       dummyDb.close()
     }
@@ -143,9 +143,10 @@ class AuthServiceTest {
       createSession(userId = user.id, tokenHash = tokenHash)
 
       val result = authService.getCurrentUser(tokenHash)
-      assertTrue(result is MeResult.Authenticated)
-      assertTrue(result.user.email.value == "testme@example.com")
-      assertTrue(result.user.name.value == "Test User")
+      assertTrue(result.isSuccess)
+      val authUser = result.getOrNull()!!
+      assertTrue(authUser.email.value == "testme@example.com")
+      assertTrue(authUser.name.value == "Test User")
     }
 
   @Test
@@ -155,7 +156,7 @@ class AuthServiceTest {
       createSession(userId = null, tokenHash = tokenHash)
 
       val result = authService.getCurrentUser(tokenHash)
-      assertTrue(result is MeResult.Unauthenticated)
+      assertTrue(result.isSuccess && result.getOrNull() == null)
     }
 
   @Test
@@ -164,7 +165,7 @@ class AuthServiceTest {
       val tokenHash = TokenHash(byteArrayOf(99, 98, 97))
 
       val result = authService.getCurrentUser(tokenHash)
-      assertTrue(result is MeResult.Unauthenticated)
+      assertTrue(result.isSuccess && result.getOrNull() == null)
     }
 
   @Test
@@ -175,7 +176,7 @@ class AuthServiceTest {
       createSession(userId = user.id, tokenHash = tokenHash, expiration = Duration.ofSeconds(-1))
 
       val result = authService.getCurrentUser(tokenHash)
-      assertTrue(result is MeResult.Unauthenticated)
+      assertTrue(result.isSuccess && result.getOrNull() == null)
     }
 
   @Test
@@ -185,13 +186,13 @@ class AuthServiceTest {
 
       // Soft-delete the user
       val deleteResult = UsersDao.delete(sqlSession, user.id, user.versionId)
-      assertTrue(deleteResult is DaoResult.Success)
+      assertTrue(deleteResult.isSuccess)
 
       val tokenHash = TokenHash(byteArrayOf(13, 23, 33))
       createSession(userId = user.id, tokenHash = tokenHash)
 
       val result = authService.getCurrentUser(tokenHash)
-      assertTrue(result is MeResult.Unauthenticated)
+      assertTrue(result.isSuccess && result.getOrNull() == null)
     }
 
   @Test
@@ -202,10 +203,10 @@ class AuthServiceTest {
       createSession(userId = user.id, tokenHash = tokenHash)
 
       val result = authService.logout(tokenHash)
-      assertTrue(result is LogoutResult.Success)
+      assertTrue(result.isSuccess)
 
       val findResult = SessionsDao.findByTokenHash(sqlSession, tokenHash)
-      assertTrue(findResult is DaoResult.PermanentError.NotFound)
+      assertTrue(findResult.isFailure && findResult.exceptionOrNull() is NotFoundException)
     }
 
   @Test
@@ -213,7 +214,7 @@ class AuthServiceTest {
     runBlocking {
       val tokenHash = TokenHash(byteArrayOf(60, 61, 62))
       val result = authService.logout(tokenHash)
-      assertTrue(result is LogoutResult.Success)
+      assertTrue(result.isSuccess)
     }
 
   @Test
@@ -222,10 +223,10 @@ class AuthServiceTest {
       val user = createTestUser()
       val tokenHash = TokenHash(byteArrayOf(70, 71, 72))
       createSession(userId = user.id, tokenHash = tokenHash)
-      
+
       SessionsDao.revokeByTokenHash(sqlSession, tokenHash)
 
       val result = authService.logout(tokenHash)
-      assertTrue(result is LogoutResult.Success)
+      assertTrue(result.isSuccess)
     }
 }

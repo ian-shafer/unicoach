@@ -1,7 +1,6 @@
 package ed.unicoach.queue.dao
 
 import ed.unicoach.db.dao.SqlSession
-import ed.unicoach.error.ExceptionWrapper
 import ed.unicoach.queue.AttemptStatus
 import ed.unicoach.queue.Job
 import ed.unicoach.queue.JobAttempt
@@ -21,13 +20,13 @@ class JobsDao {
   // ---------------------------------------------------------------------------
 
   private fun <T> executeSafely(
-    onError: (ExceptionWrapper) -> T,
+    onError: (Exception) -> T,
     block: () -> T,
   ): T =
     try {
       block()
     } catch (e: Exception) {
-      onError(ExceptionWrapper.from(e))
+      onError(e)
     }
 
   private fun mapJob(rs: ResultSet): Job {
@@ -99,7 +98,7 @@ class JobsDao {
             JobInsertResult.Success(mapJob(rs))
           } else {
             JobInsertResult.DatabaseFailure(
-              ExceptionWrapper.from(RuntimeException("Insert succeeded but RETURNING returned no rows")),
+              Exception("Insert succeeded but RETURNING returned no rows"),
             )
           }
         }
@@ -323,7 +322,7 @@ class JobsDao {
             AttemptInsertResult.Success(mapAttempt(rs))
           } else {
             AttemptInsertResult.DatabaseFailure(
-              ExceptionWrapper.from(RuntimeException("Insert succeeded but RETURNING returned no rows")),
+              Exception("Insert succeeded but RETURNING returned no rows"),
             )
           }
         }

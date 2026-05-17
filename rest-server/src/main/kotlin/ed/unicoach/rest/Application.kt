@@ -97,7 +97,7 @@ fun Application.appModule(
 
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
-  val authService = AuthService(database, argon2Hasher)
+  val authService = AuthService(database, argon2Hasher, tokenGenerator)
 
   configureRouting(authService, database, sessionConfig, tokenGenerator)
 }

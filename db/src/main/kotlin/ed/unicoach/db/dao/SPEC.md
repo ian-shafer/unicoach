@@ -15,12 +15,8 @@ Every DAO method accepts a `SqlSession` as its first parameter. Connection
 pooling, transaction boundaries, and commit/rollback are managed exclusively
 by `Database.kt` in the parent package.
 
-All DAO methods return `DaoResult<T>`, a unified sealed interface declared in
-`DaoResult.kt`. `DaoResult<T>` has three branches — `Success<T>`,
-`TransientError`, `PermanentError` — enabling consumers to handle results at
-any granularity from coarse category matching to specific variant
-discrimination. Database exceptions are classified by SQLSTATE into transient
-or permanent at the DAO boundary.
+All DAO methods return standard Kotlin `Result<T>`. Expected domain states and successful ("happy path") operations return `Result.success(T)`.
+Database exceptions are classified into `TransientError` or `PermanentError` interfaces at the DAO boundary and wrapped in `Result.failure(Exception)`.
 
 ---
 
@@ -76,7 +72,7 @@ Entity table characteristics vary by flavor:
 ### Soft Delete
 
 - `UsersDao.findById` and `UsersDao.findByIdForUpdate` MUST return
-  `DaoResult.PermanentError.NotFound` for rows where `deleted_at IS NOT NULL`
+  `Result.failure(NotFoundException())` for rows where `deleted_at IS NOT NULL`
   unless `includeDeleted = true` is explicitly passed.
 - `UsersDao.findByEmail` MUST filter `deleted_at IS NULL` unconditionally.
 
@@ -85,14 +81,14 @@ Entity table characteristics vary by flavor:
 Specific error code mappings:
 
 - `23505` containing index `users_email_unique_active_idx` →
-  `DaoResult.PermanentError.DuplicateEmail`.
-- `23505` (other index) → `DaoResult.PermanentError.ConstraintViolation`.
-- `23514` → `DaoResult.PermanentError.ConstraintViolation`.
+  `Result.failure(DuplicateEmailException())`.
+- `23505` (other index) → `Result.failure(ConstraintViolationException())`.
+- `23514` → `Result.failure(ConstraintViolationException())`.
 - `55P03` in `findByIdForUpdate` →
-  `DaoResult.TransientError.LockAcquisitionFailure`.
+  `Result.failure(LockAcquisitionFailureException())`.
 
-All other `SQLException` are classified into `TransientError.DatabaseError` or
-`PermanentError.DatabaseError` based on SQLSTATE class:
+All other `SQLException` are classified into `TransientError` or
+`PermanentError` via `DaoException` implementations based on SQLSTATE class:
 
 | SQLSTATE Class | Category | Examples |
 |---|---|---|
@@ -104,7 +100,7 @@ All other `SQLException` are classified into `TransientError.DatabaseError` or
 | Everything else | Permanent | Syntax error, type mismatch |
 
 Non-`SQLException` (e.g., `ClassCastException`) defaults to
-`PermanentError.DatabaseError` — these indicate application bugs.
+`DatabaseException` (Permanent) — these indicate application bugs.
 
 ### Physical Record Bypass
 
@@ -136,76 +132,74 @@ interface SqlSession {
 All methods are `object`-level (static equivalent). All SQL is issued via
 `PreparedStatement`; no string interpolation of user data is permitted.
 
-#### `findById(session, id, includeDeleted = false): DaoResult<User>`
+#### `findById(session, id, includeDeleted = false): Result<User>`
 
 - **Side Effects**: Read only.
-- **Error Handling**: `PermanentError.NotFound` if row absent or soft-deleted
+- **Error Handling**: `Result.failure(NotFoundException())` if row absent or soft-deleted
   (when `includeDeleted = false`).
 - **Idempotency**: Yes.
 
-#### `findByIdForUpdate(session, id, includeDeleted = false): DaoResult<User>`
+#### `findByIdForUpdate(session, id, includeDeleted = false): Result<User>`
 
 - **Side Effects**: Read/write — acquires a row-level exclusive lock.
-- **Error Handling**: `PermanentError.NotFound` if row absent or soft-deleted.
-  `TransientError.LockAcquisitionFailure` on lock contention.
+- **Error Handling**: `Result.failure(NotFoundException())` if row absent or soft-deleted.
+  `Result.failure(LockAcquisitionFailureException())` on lock contention.
 - **Idempotency**: No (lock acquisition is stateful within a transaction).
 
-#### `findByEmail(session, email): DaoResult<User>`
+#### `findByEmail(session, email): Result<User>`
 
 - **Side Effects**: Read only.
-- **Error Handling**: `PermanentError.NotFound` if absent.
+- **Error Handling**: `Result.failure(NotFoundException())` if absent.
 - **Idempotency**: Yes.
 
-#### `findVersion(session, id, targetVersion): DaoResult<UserVersion>`
+#### `findVersion(session, id, targetVersion): Result<UserVersion>`
 
 - **Side Effects**: Read only (queries the `users_versions` audit table).
-- **Error Handling**: `PermanentError.NotFound` if absent.
+- **Error Handling**: `Result.failure(NotFoundException())` if absent.
 - **Idempotency**: Yes.
 
-#### `create(session, user): DaoResult<User>`
+#### `create(session, user): Result<User>`
 
 - **Side Effects**: Write — inserts one row. Database generates `id` via
   `uuidv7()` default.
-- **Error Handling**: `PermanentError.DuplicateEmail` on active-email unique
-  index violation. `PermanentError.ConstraintViolation` on other constraint
+- **Error Handling**: `Result.failure(DuplicateEmailException())` on active-email unique
+  index violation. `Result.failure(ConstraintViolationException())` on other constraint
   violations.
 - **Idempotency**: No.
 
-#### `update(session, user): DaoResult<User>`
+#### `update(session, user): Result<User>`
 
 - **Side Effects**: Read/write — mutates one row with OCC.
-- **Error Handling**: `PermanentError.NotFound`, `ConcurrentModification`,
-  `DuplicateEmail`, `ConstraintViolation`. Full SQLSTATE discrimination
-  (see §II).
+- **Error Handling**: `Result.failure(Exception)` containing `NotFoundException`, `ConcurrentModificationException`,
+  `DuplicateEmailException`, or `ConstraintViolationException`.
 - **Idempotency**: No.
 
-#### `updatePhysicalRecord(session, user): DaoResult<User>`
+#### `updatePhysicalRecord(session, user): Result<User>`
 
 - **Side Effects**: Read/write — sets `bypass_logical_timestamp` then
   delegates to `doUpdate` (a private method used to share execution logic between standard and physical updates).
 - **Error Handling**: Same as `update`.
 - **Idempotency**: No.
 
-#### `delete(session, id, currentVersion): DaoResult<User>`
+#### `delete(session, id, currentVersion): Result<User>`
 
 - **Side Effects**: Read/write — soft-deletes (sets `deleted_at`).
-- **Error Handling**: `PermanentError.NotFound`,
-  `TransientError.ConcurrentModification`.
+- **Error Handling**: `Result.failure(Exception)` with `NotFoundException` or `ConcurrentModificationException`.
 - **Idempotency**: No.
 
-#### `undelete(session, id, currentVersion): DaoResult<User>`
+#### `undelete(session, id, currentVersion): Result<User>`
 
 - **Side Effects**: Read/write — restores a soft-deleted row.
-- **Error Handling**: `PermanentError.NotFound`. May surface
-  `PermanentError.DuplicateEmail` if undeleting would violate the
+- **Error Handling**: `Result.failure(NotFoundException())`. May surface
+  `DuplicateEmailException` if undeleting would violate the
   active-email unique index.
 - **Idempotency**: No.
 
-#### `revertToVersion(session, id, targetHistoricalVersion, currentVersion): DaoResult<User>`
+#### `revertToVersion(session, id, targetHistoricalVersion, currentVersion): Result<User>`
 
 - **Side Effects**: Read/write — two round-trips (read historical version,
   then update current row).
-- **Error Handling**: `PermanentError.TargetVersionMissing` if the historical
+- **Error Handling**: `Result.failure(TargetVersionMissingException())` if the historical
   version does not exist. Otherwise same as `update`.
 - **Idempotency**: No.
 
@@ -216,57 +210,51 @@ All methods are `object`-level (static equivalent). All SQL is issued via
 All methods delegate through `executeSafely`. All session mutations target the
 `sessions` table.
 
-#### `findByTokenHash(session, tokenHash): DaoResult<Session>`
+#### `findByTokenHash(session, tokenHash): Result<Session>`
 
 - **Side Effects**: Read only. Filters revoked and expired sessions.
-- **Error Handling**: `PermanentError.NotFound` if absent, revoked, expired,
+- **Error Handling**: `Result.failure(NotFoundException())` if absent, revoked, expired,
   or if the post-fetch `contentEquals` check fails.
 - **Idempotency**: Yes.
 
-#### `create(session, newSession): DaoResult<Session>`
+#### `create(session, newSession): Result<Session>`
 
 - **Side Effects**: Write — inserts one row. `expires_at` is computed from
   the caller-supplied `expiration` duration.
 - **Idempotency**: No.
 
-#### `remintToken(session, id, currentVersion, newUserId, newTokenHash, newExpirationSeconds): DaoResult<Session>`
+#### `remintToken(session, id, currentVersion, newUserId, newTokenHash, newExpirationSeconds): Result<Session>`
 
 - **Side Effects**: Read/write — rotates token hash and binds session to a
   user (session fixation defense).
-- **Error Handling**: `PermanentError.NotFound` if version mismatch, row
+- **Error Handling**: `Result.failure(NotFoundException())` if version mismatch, row
   absent, or already revoked.
 - **Idempotency**: No.
 
-#### `extendExpiry(session, id, currentVersion): DaoResult<Session>`
+#### `extendExpiry(session, id, currentVersion): Result<Session>`
 
 - **Side Effects**: Read/write — extends expiry by 7 days.
-- **Error Handling**: `PermanentError.NotFound` on version mismatch, row
+- **Error Handling**: `Result.failure(NotFoundException())` on version mismatch, row
   absent, or already revoked.
 - **Idempotency**: No.
 
-#### `revokeByTokenHash(session, tokenHash): DaoResult<Session>`
+#### `revokeByTokenHash(session, tokenHash): Result<Session>`
 
 - **Side Effects**: Read/write — marks session as revoked. No version guard.
-- **Error Handling**: `PermanentError.NotFound` if already revoked or absent.
+- **Error Handling**: `Result.failure(NotFoundException())` if already revoked or absent.
 - **Idempotency**: Effectively yes — a second call returns `NotFound`.
 
-#### `expireZombieSessions(session): DaoResult<Unit>`
+#### `expireZombieSessions(session): Result<Unit>`
 
 - **Side Effects**: Write — physically deletes all expired or revoked rows.
 - **Idempotency**: Yes.
 
 ---
 
-### Result Types — [`DaoResult.kt`](./DaoResult.kt)
+### Result Types — Kotlin `Result<T>`
 
-All DAO methods return `DaoResult<T>`, a single generic sealed interface with
-three top-level branches:
-
-| Branch | Variants |
-|--------|----------|
-| `Success<T>` | `Success(value: T)` |
-| `TransientError` | `ConcurrentModification`, `LockAcquisitionFailure`, `DatabaseError(error)` |
-| `PermanentError` | `NotFound(message)`, `DuplicateEmail`, `TargetVersionMissing`, `ConstraintViolation(error)`, `DatabaseError(error)` |
+All DAO methods return standard Kotlin `Result<T>`. Exceptions are wrapped in `Result.failure()` and
+are derived from `DaoException` (which extends `RuntimeException` and may implement `TransientError` or `PermanentError`).
 
 SQLSTATE classification rules are documented in §II Postgres Error Codes.
 

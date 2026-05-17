@@ -19,8 +19,8 @@ See [SessionExpiryHandler.kt](./SessionExpiryHandler.kt)
 - **Error Handling**:
   - Malformed JSON payloads or invalid Base64 decoding MUST return `JobResult.PermanentFailure`.
   - Transient database errors during lookup or update MUST return `JobResult.RetriableFailure` to leverage queue backoff.
-  - If the session is missing, revoked, or already expired during lookup, the handler MUST return `JobResult.Success` (treated as a graceful no-op).
-  - If the `extendExpiry` operation returns an OCC version mismatch (`SessionUpdateResult.NotFound`), the handler MUST return `JobResult.Success`.
+  - If the session is missing, revoked, or already expired during lookup (`NotFoundException`), the handler MUST return `JobResult.Success` (treated as a graceful no-op).
+  - If the `extendExpiry` operation returns a `NotFoundException` (due to version mismatch, missing, or revoked), the handler MUST return `JobResult.Success`.
 - **Idempotency**: **Idempotent: yes**. Concurrent or duplicate executions are safely ignored due to OCC version checks and sliding window threshold validation.
 
 ## IV. Infrastructure & Environment

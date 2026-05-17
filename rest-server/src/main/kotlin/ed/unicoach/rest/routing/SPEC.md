@@ -4,8 +4,7 @@
 
 The HTTP routing layer of the unicoach platform. This directory contains a
 single file — [`AuthRoutes.kt`](./AuthRoutes.kt) — that declares all
-`/api/v1/auth/*` route handlers and a shared `ApplicationCall` extension for
-mapping `AuthResult` failures to structured `ErrorResponse` JSON. It owns the
+`/api/v1/auth/*` route handlers. It owns the
 full session cookie lifecycle for authentication flows: minting on registration,
 reading on identity resolution, and clearing on logout. It contains no domain
 logic — all business decisions are delegated to `AuthService`.
@@ -56,16 +55,9 @@ logic — all business decisions are delegated to `AuthService`.
 
 ### Error Mapping
 
-- All `AuthResult` failure paths (`ValidationFailure`, `DuplicateEmail`,
-  `DatabaseFailure`) MUST be routed through
-  `ApplicationCall.respondAppError(error, status)`. Failure responses MUST NOT
-  be constructed inline in `when` branches.
-- `respondAppError` MUST NOT be called with `AuthResult.Success`. Doing so
-  routes into the `else` fallback, emitting a `500` for a success case.
-- `AuthResult.DatabaseFailure` MUST map to `500 Internal Server Error` and MUST
-  NOT expose internal exception details in the response body.
-- Unrecognized `AuthResult` variants in `respondAppError` MUST fall through to
-  `500 Internal Server Error` with `code = "unknown_error"`.
+- Route logic MUST call `getOrThrow()` on `Result<T>` types returned by the service layer.
+- `Exception` instances are propagated outwards and handled globally by the Ktor `StatusPages` plugin.
+- Known domain outcomes (e.g. `RegisterOutcome.ValidationFailure`, `RegisterOutcome.DuplicateEmail`) MUST be handled explicitly in `when` branches.
 
 ### Session Reminting (Register)
 
@@ -114,10 +106,10 @@ logic — all business decisions are delegated to `AuthService`.
   | Condition | Status | Body |
   |-----------|--------|------|
   | `Content-Length > 4096` | `413 Payload Too Large` | `ErrorResponse(code="payload_too_large")` |
-  | `AuthResult.Success` | `201 Created` | `RegisterResponse { user: PublicUser }` |
-  | `AuthResult.ValidationFailure` | `400 Bad Request` | `ErrorResponse(code="validation_failed", fieldErrors=[...])` |
-  | `AuthResult.DuplicateEmail` | `409 Conflict` | `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])` |
-  | `AuthResult.DatabaseFailure` | `500 Internal Server Error` | `ErrorResponse(code="internal_error")` |
+  | `RegisterOutcome.Success` | `201 Created` | `RegisterResponse { user: PublicUser }` |
+  | `RegisterOutcome.ValidationFailure` | `400 Bad Request` | `ErrorResponse(code="validation_failed", fieldErrors=[...])` |
+  | `RegisterOutcome.DuplicateEmail` | `409 Conflict` | `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])` |
+  | Exceptions thrown by `.getOrThrow()` | `400`, `503`, or `500` | Processed by `StatusPages` |
 
 - **Session reminting detail**: Reads the existing cookie; hashes it via
   `TokenHash.fromRawToken()`; calls `SessionsDao.findByTokenHash()`. If
@@ -140,9 +132,9 @@ logic — all business decisions are delegated to `AuthService`.
   | Condition | Status | Body |
   |-----------|--------|------|
   | Cookie absent | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
-  | `MeResult.Authenticated` | `200 OK` | `MeResponse { user: PublicUser }` |
-  | `MeResult.Unauthenticated` | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
-  | `MeResult.DatabaseFailure` | `500 Internal Server Error` | `ErrorResponse(code="internal_error")` |
+  | User successfully fetched | `200 OK` | `MeResponse { user: PublicUser }` |
+  | User returned `null` | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
+  | Exceptions thrown by `.getOrThrow()` | `503`, `400` | Processed by `StatusPages` |
 
 - **Method restriction**: Non-GET methods → `405 Method Not Allowed` (via
   `rejectUnsupportedMethods(HttpMethod.Get)`).
@@ -161,8 +153,8 @@ logic — all business decisions are delegated to `AuthService`.
   | Condition | Status | Cookie Cleared? | Body |
   |-----------|--------|-----------------|------|
   | Cookie absent | `204 No Content` | Yes | None |
-  | `LogoutResult.Success` | `204 No Content` | Yes | None |
-  | `LogoutResult.DatabaseFailure` | `500 Internal Server Error` | **No** | `ErrorResponse(code="internal_error")` |
+  | Success | `204 No Content` | Yes | None |
+  | Exceptions thrown by `.getOrThrow()` | `503`, `400` | **No** | Processed by `StatusPages` |
 
 - **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
   `rejectUnsupportedMethods(HttpMethod.Post)`).
@@ -171,25 +163,7 @@ logic — all business decisions are delegated to `AuthService`.
 
 ---
 
-### `ApplicationCall.respondAppError(error: AuthResult, status: HttpStatusCode)` — [`AuthRoutes.kt`](./AuthRoutes.kt)
 
-- **Precondition**: MUST only be called with failure variants of `AuthResult`
-  (`ValidationFailure`, `DuplicateEmail`, `DatabaseFailure`). Calling with
-  `AuthResult.Success` routes into the `else` fallback, emitting a `500`.
-- **Behavior**: Maps `AuthResult` subtypes to `ErrorResponse` JSON responses.
-- **Side effects**: Writes HTTP response body and status.
-- **Mapping**:
-
-  | `AuthResult` variant | `ErrorResponse.code` | `fieldErrors` |
-  |----------------------|----------------------|---------------|
-  | `ValidationFailure` | `"validation_failed"` | Domain `FieldError` list + general errors mapped to `field="general"` |
-  | `DuplicateEmail` | `"conflict"` | `[{field="email", message="Email already in use"}]` |
-  | `DatabaseFailure` | `"internal_error"` | None |
-  | Unknown (else) | `"unknown_error"` | None, status forced to `500` |
-
-- **Idempotency**: Not idempotent — mutates response state.
-
----
 
 ## IV. Infrastructure & Environment
 

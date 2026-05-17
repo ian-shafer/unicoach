@@ -89,8 +89,8 @@ expiry enqueueing. It does not contain domain logic.
   `ErrorResponse(code = "unsupported_media_type", ...)`.
 - `BadRequestException` MUST map to `400 Bad Request` with
   `ErrorResponse(code = "bad_request", message = "Invalid JSON payload structure")`.
-- All `AuthResult.DatabaseFailure` conditions MUST map to `500 Internal Server
-  Error` and MUST NOT expose internal exception details in the response body.
+- Uncaught `PermanentError` MUST map to `400 Bad Request`, except for `NotFoundException` (`404`) and `DuplicateEmailException` (`409`).
+- Uncaught `TransientError` MUST map to `500 Internal Server Error` and MUST NOT expose internal exception details in the response body.
 
 ### Token Hashing
 
@@ -149,10 +149,10 @@ expiry enqueueing. It does not contain domain logic.
     `SessionsDao.create()` — writes `sessions` row in DB.
   - Sets `Set-Cookie` response header with opaque session token.
 - **Response mapping**:
-  - `AuthResult.Success` → `201 Created`, `RegisterResponse { user: PublicUser }`.
-  - `AuthResult.ValidationFailure` → `400 Bad Request`, `ErrorResponse(code="validation_failed", fieldErrors=[...])`.
-  - `AuthResult.DuplicateEmail` → `409 Conflict`, `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])`.
-  - `AuthResult.DatabaseFailure` → `500 Internal Server Error`.
+  - `RegisterOutcome.Success` → `201 Created`, `RegisterResponse { user: PublicUser }`.
+  - `RegisterOutcome.ValidationFailure` → `400 Bad Request`, `ErrorResponse(code="validation_failed", fieldErrors=[...])`.
+  - `RegisterOutcome.DuplicateEmail` → `409 Conflict`, `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])`.
+  - Uncaught exception → StatusPages handles (e.g., `500 Internal Server Error`).
   - `Content-Length > 4096` → `413 Payload Too Large` before body read.
 - **Session reminting**: If a session cookie is present, the handler calls
   `SessionsDao.findByTokenHash()` to look up the existing session. If the
@@ -169,9 +169,9 @@ expiry enqueueing. It does not contain domain logic.
 - **Side effects**: Calls `AuthService.getCurrentUser()` — DB read only.
 - **Response mapping**:
   - Cookie absent → `401 Unauthorized`, `ErrorResponse(code="unauthorized")`.
-  - `MeResult.Authenticated` → `200 OK`, `MeResponse { user: PublicUser }`.
-  - `MeResult.Unauthenticated` → `401 Unauthorized`.
-  - `MeResult.DatabaseFailure` → `500 Internal Server Error`.
+  - Success with non-null user → `200 OK`, `MeResponse { user: PublicUser }`.
+  - Success with null user → `401 Unauthorized`.
+  - Uncaught exception → StatusPages handles (e.g., `500 Internal Server Error`).
 - **Method restriction**: Non-GET methods → `405 Method Not Allowed`.
 - **Idempotency**: Yes — read-only.
 
@@ -182,9 +182,8 @@ expiry enqueueing. It does not contain domain logic.
   the `sessions` row. Always clears the session cookie on success.
 - **Response mapping**:
   - Cookie absent → `204 No Content`, cookie cleared. No DB call.
-  - `LogoutResult.Success` → `204 No Content`, cookie cleared.
-  - `LogoutResult.DatabaseFailure` → `500 Internal Server Error`. Cookie NOT
-    cleared.
+  - Success → `204 No Content`, cookie cleared.
+  - Uncaught exception → StatusPages handles (e.g., `500 Internal Server Error`). Cookie NOT cleared.
 - **Method restriction**: Non-POST methods → `405 Method Not Allowed`.
 - **Idempotency**: Yes — logout of an already-revoked or missing session returns
   `204`.
@@ -225,12 +224,7 @@ expiry enqueueing. It does not contain domain logic.
   missing key → `Result.failure(exception)`.
 - **Idempotency**: Yes — pure function.
 
-### `ApplicationCall.respondAppError(error, status)` — [`routing/AuthRoutes.kt`](./routing/AuthRoutes.kt)
 
-- **Behavior**: Maps `AuthResult` subtypes to structured `ErrorResponse` JSON.
-- **Side effects**: Writes HTTP response.
-- Unrecognized `AuthResult` variants fall through to `500 Internal Server Error`
-  with `code = "unknown_error"`.
 
 ---
 

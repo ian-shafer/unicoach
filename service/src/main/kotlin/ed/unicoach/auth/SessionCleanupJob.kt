@@ -1,7 +1,6 @@
 package ed.unicoach.auth
 
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.DaoResult
 import ed.unicoach.db.dao.SessionsDao
 import org.slf4j.LoggerFactory
 import kotlin.system.exitProcess
@@ -16,18 +15,13 @@ class SessionCleanupJob(
 
     try {
       database.withConnection { session ->
-        when (val result = SessionsDao.expireZombieSessions(session)) {
-          is DaoResult.Success -> {
-            logger.info("Successfully completed zombie session purge.")
-          }
-          is DaoResult.TransientError -> {
-            val msg = (result as? DaoResult.TransientError.DatabaseError)?.error?.exception?.message ?: "transient error"
-            logger.error("Transient database failure during zombie session purge: [$msg]")
-          }
-          is DaoResult.PermanentError -> {
-            val msg = (result as? DaoResult.PermanentError.DatabaseError)?.error?.exception?.message ?: "permanent error"
-            logger.error("Database failure during zombie session purge: [$msg]")
-          }
+        val result = SessionsDao.expireZombieSessions(session)
+        if (result.isSuccess) {
+          logger.info("Successfully completed zombie session purge.")
+        } else {
+          val ex = result.exceptionOrNull()
+          val msg = ex?.message ?: "unknown error"
+          logger.error("Database failure during zombie session purge: [$msg]", ex)
         }
       }
     } catch (e: Exception) {
@@ -36,4 +30,3 @@ class SessionCleanupJob(
     }
   }
 }
-

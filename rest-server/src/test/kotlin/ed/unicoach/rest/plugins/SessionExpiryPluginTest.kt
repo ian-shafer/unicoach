@@ -174,17 +174,18 @@ class SessionExpiryPluginTest {
   fun `plugin logs error and does not crash on enqueue failure`() =
     testApplication {
       // Use a database that is closed to simulate enqueue failure
-      val closedDb = run {
-        val config =
-          AppConfig
-            .load("common.conf", "db.conf")
-            .getOrThrow()
-        val dbConfig =
-          DatabaseConfig
-            .from(config)
-            .getOrThrow()
-        Database(dbConfig)
-      }
+      val closedDb =
+        run {
+          val config =
+            AppConfig
+              .load("common.conf", "db.conf")
+              .getOrThrow()
+          val dbConfig =
+            DatabaseConfig
+              .from(config)
+              .getOrThrow()
+          Database(dbConfig)
+        }
       closedDb.close()
       val failingQueueService = QueueService(closedDb)
 

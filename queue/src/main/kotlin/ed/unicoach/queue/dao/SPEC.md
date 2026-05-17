@@ -61,168 +61,156 @@ encapsulation.
 
 See [`JobsDao.kt`](./JobsDao.kt).
 
-#### `insert(session: SqlSession, newJob: NewJob): JobInsertResult`
+#### `insert(session: SqlSession, newJob: NewJob): Result<Job>`
 
 - **Side Effects**: Inserts one row into `jobs` with `status = 'SCHEDULED'`.
 - **Scheduling**: If `newJob.delay` is non-null, `scheduled_at = NOW() + delay`
   via SQL interval. If null, delay is treated as `0` seconds (`NOW()`).
 - **maxAttempts**: If `newJob.maxAttempts` is null, the column is stored as SQL
   `NULL`.
-- **Returns**: `JobInsertResult.Success(job)` with the inserted row. Returns
-  `JobInsertResult.DatabaseFailure(error)` on any exception.
+- **Returns**: `Result.success(job)` with the inserted row. Returns
+  `Result.failure(error)` on any exception.
 - **Idempotent**: No.
 
-#### `findNextScheduledJob(session: SqlSession, jobType: JobType): JobFindResult`
+#### `findNextScheduledJob(session: SqlSession, jobType: JobType): Result<Job>`
 
 - **Side Effects**: Acquires a row-level lock (`FOR UPDATE SKIP LOCKED`) on the
   selected row within the caller's transaction. No data is mutated.
 - **Selection criteria**: `status = 'SCHEDULED' AND job_type = ? AND
   scheduled_at <= NOW()`, ordered by `scheduled_at ASC`, limit 1.
-- **Returns**: `JobFindResult.Success(job)` if a qualifying job exists.
-  `JobFindResult.NotFound(message)` if the queue is empty or no job is due.
-  `JobFindResult.DatabaseFailure(error)` on any exception.
+- **Returns**: `Result.success(job)` if a qualifying job exists.
+  `Result.failure(NotFoundException)` if the queue is empty or no job is due.
+  `Result.failure(error)` on any exception.
 - **Idempotent**: Yes (read-only within transaction).
 
-#### `claimJob(session: SqlSession, id: UUID, lockDuration: Duration): JobUpdateResult`
+#### `claimJob(session: SqlSession, id: UUID, lockDuration: Duration): Result<Job>`
 
 - **Side Effects**: Updates `jobs` row: `status = 'RUNNING'`, `locked_until =
   NOW() + lockDuration`. `locked_until` guards against the stuck-job reaper
   prematurely reclaiming the job.
 - **Precondition**: Job MUST be in `SCHEDULED` status.
-- **Returns**: `JobUpdateResult.Success(job)` on successful transition.
-  `JobUpdateResult.InvalidState(message)` if the job exists but is not
-  `SCHEDULED`. `JobUpdateResult.NotFound(message)` if no row with the given `id`
-  exists. `JobUpdateResult.DatabaseFailure(error)` on any exception.
+- **Returns**: `Result.success(job)` on successful transition.
+  `Result.failure(InvalidStateException)` if the job exists but is not
+  `SCHEDULED`. `Result.failure(NotFoundException)` if no row with the given `id`
+  exists. `Result.failure(error)` on any exception.
 - **Idempotent**: No (mutates status and lock).
 
-#### `completeJob(session: SqlSession, id: UUID): JobUpdateResult`
+#### `completeJob(session: SqlSession, id: UUID): Result<Job>`
 
 - **Side Effects**: Updates `jobs` row: `status = 'COMPLETED'`, `locked_until =
   NULL`.
 - **Precondition**: Job MUST be in `RUNNING` status.
-- **Returns**: Same variants as `claimJob`. `InvalidState` if the row exists but
+- **Returns**: Same variants as `claimJob`. `InvalidStateException` if the row exists but
   is not in `RUNNING` status (e.g., already `COMPLETED` or `DEAD_LETTERED`).
-  `NotFound` only if no row with the given `id` exists.
+  `NotFoundException` only if no row with the given `id` exists.
 - **Idempotent**: No.
 
-#### `deadLetterJob(session: SqlSession, id: UUID): JobUpdateResult`
+#### `deadLetterJob(session: SqlSession, id: UUID): Result<Job>`
 
 - **Side Effects**: Updates `jobs` row: `status = 'DEAD_LETTERED'`, `locked_until
   = NULL`.
 - **Precondition**: Job MUST be in `RUNNING` status.
-- **Returns**: Same variants as `claimJob`. `InvalidState` if the row exists but
+- **Returns**: Same variants as `claimJob`. `InvalidStateException` if the row exists but
   is not in `RUNNING` status (e.g., already `COMPLETED` or `DEAD_LETTERED`).
-  `NotFound` only if no row with the given `id` exists.
+  `NotFoundException` only if no row with the given `id` exists.
 - **Idempotent**: No.
 
-#### `reschedule(session: SqlSession, id: UUID, delay: Duration): JobUpdateResult`
+#### `reschedule(session: SqlSession, id: UUID, delay: Duration): Result<Job>`
 
 - **Side Effects**: Updates `jobs` row: `status = 'SCHEDULED'`, `scheduled_at =
   NOW() + delay` (SQL interval), `locked_until = NULL`.
 - **Precondition**: Job MUST be in `RUNNING` status.
-- **Returns**: Same variants as `claimJob`. `InvalidState` if not `RUNNING`.
+- **Returns**: Same variants as `claimJob`. `InvalidStateException` if not `RUNNING`.
 - **Idempotent**: No.
 
-#### `insertAttempt(session: SqlSession, jobId: UUID, attemptNumber: Int, startedAt: Instant, status: AttemptStatus, errorMessage: String?): AttemptInsertResult`
+#### `insertAttempt(session: SqlSession, jobId: UUID, attemptNumber: Int, startedAt: Instant, status: AttemptStatus, errorMessage: String?): Result<JobAttempt>`
 
 - **Side Effects**: Inserts one row into `job_attempts`. `finished_at` is set by
   the database to `NOW()`.
 - **startedAt**: MUST be taken from `Job.updatedAt` of the preceding `claimJob`
   success result.
 - **errorMessage**: May be `null` for successful attempts; stored as SQL `NULL`.
-- **Returns**: `AttemptInsertResult.Success(attempt)` with the inserted row.
-  `AttemptInsertResult.DatabaseFailure(error)` on any exception (including
+- **Returns**: `Result.success(attempt)` with the inserted row.
+  `Result.failure(error)` on any exception (including
   constraint violations: duplicate `(job_id, attempt_number)`, invalid `status`
   string, oversized `error_message`).
 - **Idempotent**: No (unique constraint on `(job_id, attempt_number)` enforces
   exactly-once insertion per attempt slot).
 
-#### `countAttempts(session: SqlSession, jobId: UUID): AttemptCountResult`
+#### `countAttempts(session: SqlSession, jobId: UUID): Result<Int>`
 
 - **Side Effects**: None (read-only).
-- **Returns**: `AttemptCountResult.Success(count)`. `AttemptCountResult.DatabaseFailure(error)`
+- **Returns**: `Result.success(count)`. `Result.failure(error)`
   on any exception.
 - **Idempotent**: Yes.
 
-#### `findAttemptsByJobId(session: SqlSession, jobId: UUID): AttemptFindResult`
+#### `findAttemptsByJobId(session: SqlSession, jobId: UUID): Result<List<JobAttempt>>`
 
 - **Side Effects**: None (read-only).
 - **Ordering**: Results are ordered by `attempt_number ASC`.
-- **Returns**: `AttemptFindResult.Success(attempts)` — empty list if no attempts
-  exist. `AttemptFindResult.DatabaseFailure(error)` on any exception.
+- **Returns**: `Result.success(attempts)` — empty list if no attempts
+  exist. `Result.failure(error)` on any exception.
 - **Idempotent**: Yes.
 
-#### `resetStuckRunning(session: SqlSession): JobResetResult`
+#### `resetStuckRunning(session: SqlSession): Result<Int>`
 
 - **Side Effects**: Bulk-updates `jobs` rows where `status = 'RUNNING' AND
   locked_until < NOW()`: sets `status = 'SCHEDULED'`, `locked_until = NULL`.
   Clock comparison uses database `NOW()`.
-- **Returns**: `JobResetResult.Success(count)` — count of rows reset (may be 0).
-  `JobResetResult.DatabaseFailure(error)` on any exception.
+- **Returns**: `Result.success(count)` — count of rows reset (may be 0).
+  `Result.failure(error)` on any exception.
 - **Idempotent**: Yes (repeated calls are safe; expired locks are idempotently
   reset).
 
-#### `deleteBefore(session: SqlSession, statuses: Set<JobStatus>, olderThan: Duration): JobDeleteResult`
+#### `deleteBefore(session: SqlSession, statuses: Set<JobStatus>, olderThan: Duration): Result<Int>`
 
 - **Side Effects**: Physically deletes `jobs` rows where `status IN (statuses)
   AND updated_at < NOW() - olderThan` (SQL interval). Cascades to
   `job_attempts`.
-- **Empty set guard**: Returns `JobDeleteResult.Success(0)` immediately if
+- **Empty set guard**: Returns `Result.success(0)` immediately if
   `statuses` is empty.
-- **Returns**: `JobDeleteResult.Success(count)` — count of deleted rows (may be
-  0). `JobDeleteResult.DatabaseFailure(error)` on any exception.
+- **Returns**: `Result.success(count)` — count of deleted rows (may be
+  0). `Result.failure(error)` on any exception.
 - **Idempotent**: Yes (repeated deletions on already-deleted rows affect 0 rows).
 
-#### `deleteByIds(session: SqlSession, ids: List<UUID>): JobDeleteResult`
+#### `deleteByIds(session: SqlSession, ids: List<UUID>): Result<Int>`
 
 - **Side Effects**: Physically deletes `jobs` rows by primary key. Cascades to
   `job_attempts` via `ON DELETE CASCADE`.
-- **Empty list guard**: Returns `JobDeleteResult.Success(0)` immediately if
+- **Empty list guard**: Returns `Result.success(0)` immediately if
   `ids` is empty.
-- **Returns**: `JobDeleteResult.Success(count)`. `JobDeleteResult.DatabaseFailure(error)`
+- **Returns**: `Result.success(count)`. `Result.failure(error)`
   on any exception.
 - **Idempotent**: Yes (deleting already-deleted IDs affects 0 rows).
 - **Note**: Also exposed as a vararg overload `deleteByIds(session, vararg ids:
   UUID)` for call-site convenience.
 
-#### `findById(session: SqlSession, id: UUID): JobFindResult`
+#### `findById(session: SqlSession, id: UUID): Result<Job>`
 
 - **Side Effects**: None (read-only).
-- **Returns**: `JobFindResult.Success(job)` if found. `JobFindResult.NotFound(message)`
-  if no row with the given `id` exists. `JobFindResult.DatabaseFailure(error)`
+- **Returns**: `Result.success(job)` if found. `Result.failure(NotFoundException)`
+  if no row with the given `id` exists. `Result.failure(error)`
   on any exception.
 - **Idempotent**: Yes.
 
-#### `countByStatus(session: SqlSession, jobType: JobType?): JobCountResult`
+#### `countByStatus(session: SqlSession, jobType: JobType?): Result<Map<JobStatus, Int>>`
 
 - **Side Effects**: None (read-only).
 - **Filtering**: If `jobType` is non-null, results are filtered to that type. If
   null, counts are returned across all job types.
-- **Returns**: `JobCountResult.Success(counts)` — a `Map<JobStatus, Int>`
+- **Returns**: `Result.success(counts)` — a `Map<JobStatus, Int>`
   containing only statuses with at least one row (statuses with zero rows are
-  absent from the map). `JobCountResult.DatabaseFailure(error)` on any
+  absent from the map). `Result.failure(error)` on any
   exception.
 - **Idempotent**: Yes.
 
 ---
 
-### Sealed Result Types
+### Result Types
 
-See [`Results.kt`](./Results.kt).
+All DAO methods return standard Kotlin `Result<T>`. Custom exceptions defined in `Results.kt` are returned in `Result.failure()` to indicate business logic errors or expected domain outcomes (e.g., `InvalidStateException`, `NotFoundException`).
 
-| Result Type          | Variants                                              |
-|----------------------|-------------------------------------------------------|
-| `JobInsertResult`    | `Success(job)`, `DatabaseFailure(error)`              |
-| `JobFindResult`      | `Success(job)`, `NotFound(message)`, `DatabaseFailure(error)` |
-| `JobUpdateResult`    | `Success(job)`, `NotFound(message)`, `InvalidState(message)`, `DatabaseFailure(error)` |
-| `JobResetResult`     | `Success(count: Int)`, `DatabaseFailure(error)`       |
-| `JobDeleteResult`    | `Success(count: Int)`, `DatabaseFailure(error)`       |
-| `JobCountResult`     | `Success(counts: Map<JobStatus, Int>)`, `DatabaseFailure(error)` |
-| `AttemptInsertResult`| `Success(attempt)`, `DatabaseFailure(error)`          |
-| `AttemptCountResult` | `Success(count: Int)`, `DatabaseFailure(error)`       |
-| `AttemptFindResult`  | `Success(attempts: List<JobAttempt>)`, `DatabaseFailure(error)` |
-
-**`JobUpdateResult.InvalidState`**: Returned when the row exists but its current
+**`InvalidStateException`**: Returned when the row exists but its current
 `status` does not satisfy the precondition of the requested transition. Includes
 the current status in the message for observability.
 

@@ -4,7 +4,6 @@ import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.Session
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
-import ed.unicoach.error.ExceptionWrapper
 import java.sql.ResultSet
 import java.util.UUID
 
@@ -32,30 +31,30 @@ object SessionsDao {
     )
   }
 
-  private fun <T> executeSafely(block: () -> DaoResult<T>): DaoResult<T> =
+  private fun <T> executeSafely(block: () -> Result<T>): Result<T> =
     try {
       block()
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
 
   fun findByTokenHash(
     session: SqlSession,
     tokenHash: TokenHash,
-  ): DaoResult<Session> =
+  ): Result<Session> =
     executeSafely {
       val sql = "SELECT * FROM sessions WHERE token_hash = ? AND is_revoked = false AND expires_at > NOW()"
       session.prepareStatement(sql).use { stmt ->
         stmt.setBytes(1, tokenHash.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
-            return@executeSafely DaoResult.PermanentError.NotFound("Session not found or expired")
+            return@executeSafely Result.failure(NotFoundException("Session not found or expired"))
           }
           val foundHash = rs.getBytes("token_hash")
           if (!foundHash.contentEquals(tokenHash.value)) {
-            return@executeSafely DaoResult.PermanentError.NotFound("Session hash mismatch")
+            return@executeSafely Result.failure(NotFoundException("Session hash mismatch"))
           }
-          DaoResult.Success(mapSession(rs))
+          Result.success(mapSession(rs))
         }
       }
     }
@@ -63,7 +62,7 @@ object SessionsDao {
   fun create(
     session: SqlSession,
     newSession: NewSession,
-  ): DaoResult<Session> =
+  ): Result<Session> =
     executeSafely {
       val sql =
         """
@@ -80,9 +79,9 @@ object SessionsDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapSession(rs))
+            Result.success(mapSession(rs))
           } else {
-            DaoResult.PermanentError.DatabaseError(ExceptionWrapper.from(RuntimeException("Insert succeeded but returning failed")))
+            Result.failure(DatabaseException(RuntimeException("Insert succeeded but returning failed")))
           }
         }
       }
@@ -95,7 +94,7 @@ object SessionsDao {
     newUserId: UserId,
     newTokenHash: ByteArray,
     newExpirationSeconds: Long,
-  ): DaoResult<Session> =
+  ): Result<Session> =
     executeSafely {
       val sql =
         """
@@ -115,9 +114,9 @@ object SessionsDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapSession(rs))
+            Result.success(mapSession(rs))
           } else {
-            DaoResult.PermanentError.NotFound("Session could not be reminted either due to version mismatch or not found")
+            Result.failure(NotFoundException("Session could not be reminted either due to version mismatch or not found"))
           }
         }
       }
@@ -127,7 +126,7 @@ object SessionsDao {
     session: SqlSession,
     id: UUID,
     currentVersion: Int,
-  ): DaoResult<Session> =
+  ): Result<Session> =
     executeSafely {
       val sql =
         """
@@ -144,9 +143,9 @@ object SessionsDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapSession(rs))
+            Result.success(mapSession(rs))
           } else {
-            DaoResult.PermanentError.NotFound("Session could not be extended either due to version mismatch or not found")
+            Result.failure(NotFoundException("Session could not be extended either due to version mismatch or not found"))
           }
         }
       }
@@ -155,7 +154,7 @@ object SessionsDao {
   fun revokeByTokenHash(
     session: SqlSession,
     tokenHash: TokenHash,
-  ): DaoResult<Session> =
+  ): Result<Session> =
     executeSafely {
       val sql =
         """
@@ -169,15 +168,15 @@ object SessionsDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapSession(rs))
+            Result.success(mapSession(rs))
           } else {
-            DaoResult.PermanentError.NotFound("Session not found or already revoked")
+            Result.failure(NotFoundException("Session not found or already revoked"))
           }
         }
       }
     }
 
-  fun expireZombieSessions(session: SqlSession): DaoResult<Unit> =
+  fun expireZombieSessions(session: SqlSession): Result<Unit> =
     executeSafely {
       val sql =
         """
@@ -186,7 +185,7 @@ object SessionsDao {
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
         stmt.executeUpdate()
-        DaoResult.Success(Unit)
+        Result.success(Unit)
       }
     }
 }

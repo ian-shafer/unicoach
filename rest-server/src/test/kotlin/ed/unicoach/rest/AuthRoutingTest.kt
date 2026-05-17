@@ -56,7 +56,7 @@ class AuthRoutingTest {
 
   private fun buildUrl(path: String) = "http://localhost:$boundPort$path"
 
-  private fun uniqueEmail(): String = "testuser${emailCounter.incrementAndGet()}@company.com"
+  private fun uniqueEmail(): String = "testuser${java.util.UUID.randomUUID()}@company.com"
 
   @Test
   fun `test valid registration state simulation`() =

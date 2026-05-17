@@ -32,32 +32,31 @@ by the `rest-server` routing tier.
 
 - `AuthService.register()` MUST validate input via `RegistrationValidator` before
   any database call. If validation fails, it MUST return
-  `AuthResult.ValidationFailure` without touching the DB.
+  `RegisterOutcome.ValidationFailure` without touching the DB.
 - Password hashing MUST run inside `withContext(Dispatchers.IO)` — Argon2
   computation MUST NOT block the Netty event loop.
-- If `UsersDao.create()` returns `CreateResult.DuplicateEmail`, `AuthService`
-  MUST return `AuthResult.DuplicateEmail`, not a database error.
+- If `UsersDao.create()` returns `DuplicateEmailException`, `AuthService`
+  MUST return `RegisterOutcome.DuplicateEmail`, not a database error.
 - `AuthService.register()` MUST NOT mint sessions or tokens — session creation is
   delegated to the routing layer.
 
 ### Session Resolution (`getCurrentUser`)
 
-- `AuthService.getCurrentUser()` MUST return `MeResult.Unauthenticated` for
+- `AuthService.getCurrentUser()` MUST return `Result.success(null)` for
   all of: token not found, expired token, revoked token, anonymous session
   (`user_id = null`), and soft-deleted user.
-- A `FindResult.LockAcquisitionFailure` on the user lookup MUST map to
-  `MeResult.Unauthenticated`, not `MeResult.DatabaseFailure`.
+- A `LockAcquisitionFailureException` on the user lookup MUST map to
+  `Result.success(null)`, not `Result.failure(e)`.
 - `AuthService.getCurrentUser()` MUST NOT perform expiry extension inline — that
   concern belongs to `SessionExpiryPlugin` in `rest-server`.
 
 ### Logout
 
-- `AuthService.logout()` MUST be idempotent: both `SessionUpdateResult.Success`
-  and `SessionUpdateResult.NotFound` MUST map to `LogoutResult.Success`.
+- `AuthService.logout()` MUST be idempotent. A `NotFoundException` MUST be mapped
+  to a `Result.success(Unit)`.
 - `AuthService.logout()` MUST NOT clear cookies — that is the routing layer's
   responsibility.
-- `LogoutResult` MUST NOT contain an `Unauthenticated` variant; all non-DB-error
-  paths are `Success`.
+- `Result<Unit>` is used to indicate success or failure.
 
 ### RegistrationValidator
 
@@ -90,55 +89,50 @@ by the `rest-server` routing tier.
 
 ## III. Behavioral Contracts
 
-### `AuthService.register(email, name, password): AuthResult` — See [AuthService.kt](./AuthService.kt)
+### `AuthService.register(email, name, password): Result<RegisterOutcome>` — See [AuthService.kt](./AuthService.kt)
 
 - **Side Effects**: Writes one row to `users` via `UsersDao.create()`. No
   session or token is created here.
 - **Validation**: `RegistrationValidator` is called first; returns
-  `AuthResult.ValidationFailure(errors, fieldErrors)` without DB access if
+  `RegisterOutcome.ValidationFailure(errors, fieldErrors)` without DB access if
   validation fails.
 - **Hashing**: `argon2Hasher.hash(password)` runs on `Dispatchers.IO`.
   Exceptions from hashing are caught and returned as
-  `AuthResult.DatabaseFailure`.
+  `Result.failure()`.
 - **Idempotency**: Not idempotent. Submitting the same email twice returns
-  `AuthResult.DuplicateEmail` on the second call.
+  `RegisterOutcome.DuplicateEmail` on the second call.
 - **Error mapping**:
-  - `CreateResult.Success` → `AuthResult.Success(user)`
-  - `CreateResult.DuplicateEmail` → `AuthResult.DuplicateEmail(email)`
-  - `CreateResult.ConstraintViolation` → `AuthResult.DatabaseFailure(error)`
-  - `CreateResult.DatabaseFailure` → `AuthResult.DatabaseFailure(error)`
-  - Uncaught exception → `AuthResult.DatabaseFailure(ExceptionWrapper.from(e))`
+  - `Success` → `Result.success(RegisterOutcome.Success(user))`
+  - `DuplicateEmailException` → `Result.success(RegisterOutcome.DuplicateEmail(email))`
+  - Uncaught exception → `Result.failure(e)`
 
-### `AuthService.getCurrentUser(tokenHash: TokenHash): MeResult` — See [AuthService.kt](./AuthService.kt)
+### `AuthService.getCurrentUser(tokenHash: TokenHash): Result<User?>` — See [AuthService.kt](./AuthService.kt)
 
 - **Side Effects**: Two read-only DB queries (`SessionsDao.findByTokenHash`,
   `UsersDao.findById`). No writes.
 - **IO dispatch**: Entire DB pipeline runs inside `withContext(Dispatchers.IO)`.
 - **Session lookup**: `SessionsDao.findByTokenHash` filters expired and revoked
-  sessions. `SessionFindResult.NotFound` → `MeResult.Unauthenticated`.
-  `SessionFindResult.DatabaseFailure` → `MeResult.DatabaseFailure`.
-- **Anonymous session**: If `session.userId == null` → `MeResult.Unauthenticated`.
+  sessions. `NotFoundException` → `Result.success(null)`.
+  Other exceptions → `Result.failure(e)`.
+- **Anonymous session**: If `session.userId == null` → `Result.success(null)`.
 - **User lookup**: `UsersDao.findById` with `includeDeleted = false`.
-  `FindResult.NotFound` → `MeResult.Unauthenticated`.
-  `FindResult.LockAcquisitionFailure` → `MeResult.Unauthenticated`.
-  `FindResult.Success` → `MeResult.Authenticated(user)`.
-  `FindResult.DatabaseFailure` → `MeResult.DatabaseFailure(ExceptionWrapper)`.
+  `NotFoundException` → `Result.success(null)`.
+  `Success` → `Result.success(user)`.
 - **Idempotency**: Fully idempotent (read-only).
-- **Error mapping** (uncaught): `MeResult.DatabaseFailure(ExceptionWrapper.from(e))`.
+- **Error mapping** (uncaught): `Result.failure(e)`.
 
-### `AuthService.logout(tokenHash: TokenHash): LogoutResult` — See [AuthService.kt](./AuthService.kt)
+### `AuthService.logout(tokenHash: TokenHash): Result<Unit>` — See [AuthService.kt](./AuthService.kt)
 
 - **Side Effects**: One blind `UPDATE` on `sessions` via
   `SessionsDao.revokeByTokenHash()`. Sets `is_revoked = true`,
   increments `version`.
 - **IO dispatch**: Entire pipeline runs inside `withContext(Dispatchers.IO)`.
-- **Idempotency**: Idempotent. `NotFound` (already revoked or missing) maps to
-  `LogoutResult.Success`.
+- **Idempotency**: Idempotent. `NotFoundException` (already revoked or missing) maps to
+  `Result.success(Unit)`.
 - **Error mapping**:
-  - `SessionUpdateResult.Success` → `LogoutResult.Success`
-  - `SessionUpdateResult.NotFound` → `LogoutResult.Success`
-  - `SessionUpdateResult.DatabaseFailure` → `LogoutResult.DatabaseFailure(error)`
-  - Uncaught exception → `LogoutResult.DatabaseFailure(ExceptionWrapper.from(e))`
+  - `Success` → `Result.success(Unit)`
+  - `NotFoundException` → `Result.success(Unit)`
+  - Uncaught exception → `Result.failure(e)`
 
 ### `RegistrationValidator.validate(input: RegistrationInput): ValidationErrors` — See [RegistrationValidator.kt](./RegistrationValidator.kt)
 
@@ -163,35 +157,13 @@ by the `rest-server` routing tier.
 - **On uncaught exception**: Logs `[FATAL]` to stderr; calls `exitProcess(1)`.
 - **Idempotency**: Idempotent (delete is safe to re-run).
 
-### `AuthResult` (sealed interface) — See [AuthResult.kt](./AuthResult.kt)
+### `RegisterOutcome` (sealed interface) — See [RegisterOutcome.kt](./RegisterOutcome.kt)
 
 | Variant | Carries | When returned |
 |---|---|---|
 | `Success` | `user: User` | Successful registration |
 | `ValidationFailure` | `errors: List<String>`, `fieldErrors: List<FieldError>` | Validator rejects input |
 | `DuplicateEmail` | `email: String` | DB unique constraint hit on email |
-| `DatabaseFailure` | `rootCause: AppError` | Any persistence error |
-
-> **Note**: `DatabaseFailure` implements `AppError` and carries a `rootCause`,
-> unlike `MeResult.DatabaseFailure` and `LogoutResult.DatabaseFailure` which
-> carry `ExceptionWrapper` directly. An `Unauthorized` variant was proposed in
-> RFC-10 alongside a `login()` method; neither was implemented in this layer
-> (login verification lives in `rest-server`).
-
-### `MeResult` (sealed interface) — See [MeResult.kt](./MeResult.kt)
-
-| Variant | Carries | When returned |
-|---|---|---|
-| `Authenticated` | `user: User` | Valid, non-anonymous, non-deleted session found |
-| `Unauthenticated` | _(none)_ | Missing/expired/revoked/anonymous session, or deleted user |
-| `DatabaseFailure` | `error: ExceptionWrapper` | Transient DB error |
-
-### `LogoutResult` (sealed interface) — See [LogoutResult.kt](./LogoutResult.kt)
-
-| Variant | Carries | When returned |
-|---|---|---|
-| `Success` | _(none)_ | Session revoked, or already gone — always |
-| `DatabaseFailure` | `error: ExceptionWrapper` | Transient DB error only |
 
 ---
 

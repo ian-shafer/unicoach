@@ -12,7 +12,6 @@ import ed.unicoach.db.models.UserId
 import ed.unicoach.db.models.UserVersion
 import ed.unicoach.db.models.UserVersionId
 import ed.unicoach.db.models.ValidationResult
-import ed.unicoach.error.ExceptionWrapper
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -122,23 +121,23 @@ object UsersDao {
     session: SqlSession,
     id: UserId,
     includeDeleted: Boolean = false,
-  ): DaoResult<User> {
+  ): Result<User> {
     return try {
       session.prepareStatement("SELECT * FROM users WHERE id = ?").use { stmt ->
         stmt.setObject(1, id.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
-            return DaoResult.PermanentError.NotFound()
+            return Result.failure(NotFoundException())
           }
           val user = mapUser(rs)
           if (!includeDeleted && user.deletedAt != null) {
-            return DaoResult.PermanentError.NotFound()
+            return Result.failure(NotFoundException())
           }
-          DaoResult.Success(user)
+          Result.success(user)
         }
       }
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
   }
 
@@ -146,47 +145,47 @@ object UsersDao {
     session: SqlSession,
     id: UserId,
     includeDeleted: Boolean = false,
-  ): DaoResult<User> {
+  ): Result<User> {
     return try {
       session.prepareStatement("SELECT * FROM users WHERE id = ? FOR UPDATE NOWAIT").use { stmt ->
         stmt.setObject(1, id.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
-            return DaoResult.PermanentError.NotFound()
+            return Result.failure(NotFoundException())
           }
           val user = mapUser(rs)
           if (!includeDeleted && user.deletedAt != null) {
-            return DaoResult.PermanentError.NotFound()
+            return Result.failure(NotFoundException())
           }
-          DaoResult.Success(user)
+          Result.success(user)
         }
       }
     } catch (e: SQLException) {
       if (e.sqlState == "55P03") {
-        return DaoResult.TransientError.LockAcquisitionFailure
+        return Result.failure(LockAcquisitionFailureException())
       }
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
   }
 
   fun findByEmail(
     session: SqlSession,
     email: EmailAddress,
-  ): DaoResult<User> {
+  ): Result<User> {
     return try {
       session.prepareStatement("SELECT * FROM users WHERE email = ? AND deleted_at IS NULL").use { stmt ->
         stmt.setString(1, email.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
-            return DaoResult.PermanentError.NotFound()
+            return Result.failure(NotFoundException())
           }
-          DaoResult.Success(mapUser(rs))
+          Result.success(mapUser(rs))
         }
       }
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
   }
 
@@ -194,27 +193,27 @@ object UsersDao {
     session: SqlSession,
     id: UserId,
     targetVersion: UserVersionId,
-  ): DaoResult<UserVersion> {
+  ): Result<UserVersion> {
     return try {
       session.prepareStatement("SELECT * FROM users_versions WHERE id = ? AND version = ?").use { stmt ->
         stmt.setObject(1, id.value)
         stmt.setInt(2, targetVersion.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
-            return DaoResult.PermanentError.NotFound()
+            return Result.failure(NotFoundException())
           }
-          DaoResult.Success(mapUserVersion(rs))
+          Result.success(mapUserVersion(rs))
         }
       }
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
   }
 
   fun create(
     session: SqlSession,
     user: NewUser,
-  ): DaoResult<User> =
+  ): Result<User> =
     try {
       val sql =
         """
@@ -244,24 +243,22 @@ object UsersDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapUser(rs))
+            Result.success(mapUser(rs))
           } else {
-            DaoResult.PermanentError.DatabaseError(
-              ExceptionWrapper.from(RuntimeException("Insert succeeded but returning failed")),
-            )
+            Result.failure(DatabaseException(RuntimeException("Insert succeeded but returning failed")))
           }
         }
       }
     } catch (e: SQLException) {
-      classifyCreateUpdateError(e)
+      Result.failure(mapCreateUpdateError(e))
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
 
   private fun doUpdate(
     session: SqlSession,
     user: User,
-  ): DaoResult<User> =
+  ): Result<User> =
     try {
       val sql =
         """
@@ -296,16 +293,16 @@ object UsersDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapUser(rs))
+            Result.success(mapUser(rs))
           } else {
             // Because we could not find it, check if id exists to distinguish NotFound vs ConcurrentModification
             session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
               checkStmt.setObject(1, user.id.value)
               checkStmt.executeQuery().use { checkRs ->
                 if (checkRs.next()) {
-                  DaoResult.TransientError.ConcurrentModification
+                  Result.failure(ConcurrentModificationException())
                 } else {
-                  DaoResult.PermanentError.NotFound()
+                  Result.failure(NotFoundException())
                 }
               }
             }
@@ -313,32 +310,32 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      classifyCreateUpdateError(e)
+      Result.failure(mapCreateUpdateError(e))
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
 
   fun update(
     session: SqlSession,
     user: User,
-  ): DaoResult<User> = doUpdate(session, user)
+  ): Result<User> = doUpdate(session, user)
 
   fun updatePhysicalRecord(
     session: SqlSession,
     user: User,
-  ): DaoResult<User> =
+  ): Result<User> =
     try {
       session.prepareStatement("SET LOCAL unicoach.bypass_logical_timestamp = 'true'").use { it.execute() }
       doUpdate(session, user)
     } catch (e: SQLException) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
 
   fun delete(
     session: SqlSession,
     id: UserId,
     currentVersion: UserVersionId,
-  ): DaoResult<User> =
+  ): Result<User> =
     try {
       val sql =
         """
@@ -355,15 +352,15 @@ object UsersDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapUser(rs))
+            Result.success(mapUser(rs))
           } else {
             session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
               checkStmt.setObject(1, id.value)
               checkStmt.executeQuery().use { checkRs ->
                 if (checkRs.next()) {
-                  DaoResult.TransientError.ConcurrentModification
+                  Result.failure(ConcurrentModificationException())
                 } else {
-                  DaoResult.PermanentError.NotFound()
+                  Result.failure(NotFoundException())
                 }
               }
             }
@@ -371,14 +368,14 @@ object UsersDao {
         }
       }
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
 
   fun undelete(
     session: SqlSession,
     id: UserId,
     currentVersion: UserVersionId,
-  ): DaoResult<User> =
+  ): Result<User> =
     try {
       val sql =
         """
@@ -394,15 +391,15 @@ object UsersDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapUser(rs))
+            Result.success(mapUser(rs))
           } else {
             session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
               checkStmt.setObject(1, id.value)
               checkStmt.executeQuery().use { checkRs ->
                 if (checkRs.next()) {
-                  DaoResult.TransientError.ConcurrentModification
+                  Result.failure(ConcurrentModificationException())
                 } else {
-                  DaoResult.PermanentError.NotFound()
+                  Result.failure(NotFoundException())
                 }
               }
             }
@@ -410,9 +407,9 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      classifyCreateUpdateError(e)
+      Result.failure(mapCreateUpdateError(e))
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
 
   fun revertToVersion(
@@ -420,18 +417,16 @@ object UsersDao {
     id: UserId,
     targetHistoricalVersion: UserVersionId,
     currentVersion: UserVersionId,
-  ): DaoResult<User> {
+  ): Result<User> {
     val versionResult = findVersion(session, id, targetHistoricalVersion)
-    if (versionResult is DaoResult.PermanentError.NotFound) {
-      return DaoResult.PermanentError.TargetVersionMissing
-    }
-    if (versionResult !is DaoResult.Success) {
-      return when (versionResult) {
-        is DaoResult.TransientError -> versionResult
-        is DaoResult.PermanentError -> versionResult
+    if (versionResult.isFailure) {
+      if (versionResult.exceptionOrNull() is NotFoundException) {
+        return Result.failure(TargetVersionMissingException())
       }
+      return versionResult.map { it as User }
     }
-    val target = versionResult.value
+
+    val target = versionResult.getOrThrow()
 
     return try {
       val sql =
@@ -466,15 +461,15 @@ object UsersDao {
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
-            DaoResult.Success(mapUser(rs))
+            Result.success(mapUser(rs))
           } else {
             session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
               checkStmt.setObject(1, id.value)
               checkStmt.executeQuery().use { checkRs ->
                 if (checkRs.next()) {
-                  DaoResult.TransientError.ConcurrentModification
+                  Result.failure(ConcurrentModificationException())
                 } else {
-                  DaoResult.PermanentError.NotFound()
+                  Result.failure(NotFoundException())
                 }
               }
             }
@@ -482,9 +477,9 @@ object UsersDao {
         }
       }
     } catch (e: SQLException) {
-      classifyCreateUpdateError(e)
+      Result.failure(mapCreateUpdateError(e))
     } catch (e: Exception) {
-      classifyDatabaseError(e)
+      Result.failure(mapDatabaseError(e))
     }
   }
 
@@ -492,17 +487,17 @@ object UsersDao {
    * Shared SQLSTATE discrimination for create/update operations that may
    * produce DuplicateEmail or ConstraintViolation.
    */
-  private fun classifyCreateUpdateError(e: SQLException): DaoResult<Nothing> =
+  private fun mapCreateUpdateError(e: SQLException): Exception =
     when (e.sqlState) {
       "23505" ->
         if (e.message?.contains("users_email_unique_active_idx") == true) {
-          DaoResult.PermanentError.DuplicateEmail
+          DuplicateEmailException()
         } else {
-          DaoResult.PermanentError.ConstraintViolation(ExceptionWrapper.from(e))
+          ConstraintViolationException(e)
         }
       "23514" ->
-        DaoResult.PermanentError.ConstraintViolation(ExceptionWrapper.from(e))
+        ConstraintViolationException(e)
       else ->
-        classifyDatabaseError(e)
+        mapDatabaseError(e)
     }
 }

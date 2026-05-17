@@ -1,7 +1,8 @@
 package ed.unicoach.auth
 
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.DaoResult
+import ed.unicoach.db.dao.DuplicateEmailException
+import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.AuthMethod
@@ -11,7 +12,6 @@ import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.ValidationResult
-import ed.unicoach.error.ExceptionWrapper
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
 import kotlinx.coroutines.Dispatchers
@@ -20,18 +20,23 @@ import kotlinx.coroutines.withContext
 class AuthService(
   private val database: Database,
   private val argon2Hasher: Argon2Hasher,
+  private val tokenGenerator: ed.unicoach.util.TokenGenerator,
   private val validator: Validator<RegistrationInput> = RegistrationValidator(),
 ) {
   suspend fun register(
     email: String,
     name: String,
     password: String,
-  ): AuthResult {
+    oldCookieToken: String?,
+    sessionExpirationSeconds: Long,
+    userAgent: String?,
+    initialIp: String?,
+  ): Result<RegisterOutcome> {
     val input = RegistrationInput(email, name, password)
     val validationResult = validator.validate(input)
 
     if (validationResult.hasErrors()) {
-      return AuthResult.ValidationFailure(validationResult.errors, validationResult.fieldErrors)
+      return Result.success(RegisterOutcome.ValidationFailure(validationResult.errors, validationResult.fieldErrors))
     }
 
     val emailAddr = (EmailAddress.create(email) as ValidationResult.Valid).value
@@ -43,7 +48,7 @@ class AuthService(
           argon2Hasher.hash(password)
         }
       } catch (e: Exception) {
-        return AuthResult.DatabaseFailure(ExceptionWrapper.from(e))
+        return Result.failure(e)
       }
 
     val pwdHash = (PasswordHash.create(hashStr) as ValidationResult.Valid).value
@@ -58,84 +63,100 @@ class AuthService(
 
     return try {
       database.withConnection { session ->
-        when (val daoResult = UsersDao.create(session, newUser)) {
-          is DaoResult.Success -> {
-            AuthResult.Success(daoResult.value)
-          }
-          is DaoResult.PermanentError.DuplicateEmail -> {
-            AuthResult.DuplicateEmail(emailAddr.value)
-          }
-          is DaoResult.PermanentError -> {
-            AuthResult.DatabaseFailure(
-              when (daoResult) {
-                is DaoResult.PermanentError.ConstraintViolation -> daoResult.error
-                is DaoResult.PermanentError.DatabaseError -> daoResult.error
-                else -> ExceptionWrapper.from(RuntimeException("Permanent error during user creation"))
-              },
-            )
-          }
-          is DaoResult.TransientError -> {
-            AuthResult.DatabaseFailure(
-              when (daoResult) {
-                is DaoResult.TransientError.DatabaseError -> daoResult.error
-                else -> ExceptionWrapper.from(RuntimeException("Transient error during user creation"))
-              },
-            )
+        val daoResult = UsersDao.create(session, newUser)
+        if (daoResult.isFailure) {
+          val ex = daoResult.exceptionOrNull()
+          if (ex is DuplicateEmailException) {
+            return@withConnection Result.success(RegisterOutcome.DuplicateEmail(emailAddr.value))
+          } else {
+            return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
           }
         }
+        val user = daoResult.getOrNull()!!
+
+        val newToken = tokenGenerator.generateToken()
+        val newHash = TokenHash.fromRawToken(newToken)
+        var wasReminted = false
+
+        if (oldCookieToken != null) {
+          val oldHash = TokenHash.fromRawToken(oldCookieToken)
+          val found = SessionsDao.findByTokenHash(session, oldHash)
+          if (found.isSuccess) {
+            val sessionVal = found.getOrNull()!!
+            SessionsDao.remintToken(
+              session = session,
+              id = sessionVal.id,
+              currentVersion = sessionVal.version,
+              newUserId = user.id,
+              newTokenHash = newHash.value,
+              newExpirationSeconds = sessionExpirationSeconds,
+            ).getOrThrow()
+            wasReminted = true
+          }
+        }
+
+        if (!wasReminted) {
+          SessionsDao.create(
+            session = session,
+            newSession = ed.unicoach.db.models.NewSession(
+              userId = user.id,
+              tokenHash = newHash,
+              userAgent = userAgent,
+              initialIp = initialIp,
+              metadata = null,
+              expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+            ),
+          ).getOrThrow()
+        }
+
+        Result.success(RegisterOutcome.Success(user, newToken))
       }
     } catch (e: Exception) {
-      AuthResult.DatabaseFailure(ExceptionWrapper.from(e))
+      Result.failure(e)
     }
   }
 
-  suspend fun getCurrentUser(tokenHash: TokenHash): MeResult =
+  suspend fun getCurrentUser(tokenHash: TokenHash): Result<ed.unicoach.db.models.User?> =
     try {
       withContext(Dispatchers.IO) {
         database.withConnection { session ->
-          when (val sessionResult = SessionsDao.findByTokenHash(session, tokenHash)) {
-            is DaoResult.PermanentError -> MeResult.Unauthenticated
-            is DaoResult.TransientError -> MeResult.DatabaseFailure(
-              when (sessionResult) {
-                is DaoResult.TransientError.DatabaseError -> sessionResult.error
-                else -> ExceptionWrapper.from(RuntimeException("Transient error during session lookup"))
-              },
-            )
-            is DaoResult.Success -> {
-              val userId =
-                sessionResult.value.userId
-                  ?: return@withConnection MeResult.Unauthenticated
-
-              when (val userResult = UsersDao.findById(session, userId)) {
-                is DaoResult.PermanentError -> MeResult.Unauthenticated
-                is DaoResult.TransientError -> MeResult.Unauthenticated
-                is DaoResult.Success -> MeResult.Authenticated(userResult.value)
-              }
+          val sessionResult = SessionsDao.findByTokenHash(session, tokenHash)
+          if (sessionResult.isFailure) {
+            if (sessionResult.exceptionOrNull() is NotFoundException) {
+              return@withConnection Result.success(null)
             }
+            return@withConnection Result.failure(sessionResult.exceptionOrNull()!!)
           }
+
+          val userId = sessionResult.getOrNull()!!.userId ?: return@withConnection Result.success(null)
+
+          val userResult = UsersDao.findById(session, userId)
+          if (userResult.isFailure) {
+            if (userResult.exceptionOrNull() is NotFoundException) {
+              return@withConnection Result.success(null)
+            }
+            return@withConnection Result.failure(userResult.exceptionOrNull()!!)
+          }
+          Result.success(userResult.getOrNull())
         }
       }
     } catch (e: Exception) {
-      MeResult.DatabaseFailure(ExceptionWrapper.from(e))
+      Result.failure(e)
     }
 
-  suspend fun logout(tokenHash: TokenHash): LogoutResult =
+  suspend fun logout(tokenHash: TokenHash): Result<Unit> =
     try {
       withContext(Dispatchers.IO) {
         database.withConnection { session ->
-          when (val result = SessionsDao.revokeByTokenHash(session, tokenHash)) {
-            is DaoResult.Success -> LogoutResult.Success
-            is DaoResult.PermanentError -> LogoutResult.Success
-            is DaoResult.TransientError -> LogoutResult.DatabaseFailure(
-              when (result) {
-                is DaoResult.TransientError.DatabaseError -> result.error
-                else -> ExceptionWrapper.from(RuntimeException("Transient error during logout"))
-              },
-            )
+          val result = SessionsDao.revokeByTokenHash(session, tokenHash)
+          if (result.isFailure && result.exceptionOrNull() !is NotFoundException) {
+            Result.failure(result.exceptionOrNull()!!)
+          } else {
+            Result.success(Unit)
           }
         }
       }
     } catch (e: Exception) {
-      LogoutResult.DatabaseFailure(ExceptionWrapper.from(e))
+      Result.failure(e)
     }
 }

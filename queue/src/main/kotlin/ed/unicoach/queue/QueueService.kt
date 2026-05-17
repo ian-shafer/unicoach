@@ -1,7 +1,6 @@
 package ed.unicoach.queue
 
 import ed.unicoach.db.Database
-import ed.unicoach.error.ExceptionWrapper
 import ed.unicoach.queue.dao.JobInsertResult
 import ed.unicoach.queue.dao.JobsDao
 import kotlinx.serialization.json.JsonObject
@@ -11,8 +10,8 @@ sealed interface EnqueueResult {
     val job: Job,
   ) : EnqueueResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : EnqueueResult
 }
 

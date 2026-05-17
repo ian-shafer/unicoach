@@ -4,7 +4,6 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.json.asJson
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.db.dao.DaoResult
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.TokenHash
@@ -66,7 +65,7 @@ class SessionExpiryHandlerTest {
   private fun createSessionWithExpiration(
     tokenBytes: ByteArray,
     expiration: Duration,
-  ): DaoResult.Success<ed.unicoach.db.models.Session> {
+  ): ed.unicoach.db.models.Session {
     val result =
       database.withConnection { session ->
         SessionsDao.create(
@@ -81,8 +80,8 @@ class SessionExpiryHandlerTest {
           ),
         )
       }
-    assertTrue(result is DaoResult.Success)
-    return result as DaoResult.Success<ed.unicoach.db.models.Session>
+    assertTrue(result.isSuccess)
+    return result.getOrNull()!!
   }
 
   private fun buildPayload(tokenBytes: ByteArray): JsonObject {
@@ -94,7 +93,7 @@ class SessionExpiryHandlerTest {
   fun `handler extends session expiry when within sliding window`() {
     val tokenBytes = byteArrayOf(10, 20, 30)
     val created = createSessionWithExpiration(tokenBytes, Duration.ofDays(1))
-    val originalExpiresAt = created.value.expiresAt
+    val originalExpiresAt = created.expiresAt
     val payload = buildPayload(tokenBytes)
 
     val result = runBlocking { handler.execute(payload) }
@@ -104,15 +103,15 @@ class SessionExpiryHandlerTest {
       database.withConnection { session ->
         SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
       }
-    assertTrue(found is DaoResult.Success)
-    assertTrue((found as DaoResult.Success).value.expiresAt.isAfter(originalExpiresAt))
+    assertTrue(found.isSuccess)
+    assertTrue(found.getOrNull()!!.expiresAt.isAfter(originalExpiresAt))
   }
 
   @Test
   fun `handler skips extension when expiry is outside sliding window`() {
     val tokenBytes = byteArrayOf(11, 21, 31)
     val created = createSessionWithExpiration(tokenBytes, Duration.ofDays(7))
-    val originalExpiresAt = created.value.expiresAt
+    val originalExpiresAt = created.expiresAt
     val payload = buildPayload(tokenBytes)
 
     val result = runBlocking { handler.execute(payload) }
@@ -122,10 +121,10 @@ class SessionExpiryHandlerTest {
       database.withConnection { session ->
         SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
       }
-    assertTrue(found is DaoResult.Success)
+    assertTrue(found.isSuccess)
 
     val tolerance = Duration.ofSeconds(1)
-    val foundSession = (found as DaoResult.Success).value
+    val foundSession = found.getOrNull()!!
     assertTrue(foundSession.expiresAt.isAfter(originalExpiresAt.minus(tolerance)))
     assertTrue(foundSession.expiresAt.isBefore(originalExpiresAt.plus(tolerance)))
   }
@@ -160,8 +159,8 @@ class SessionExpiryHandlerTest {
       database.withConnection { session ->
         SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
       }
-    assertTrue(found is DaoResult.Success)
-    assertEquals(2, (found as DaoResult.Success).value.version)
+    assertTrue(found.isSuccess)
+    assertEquals(2, found.getOrNull()!!.version)
   }
 
   @Test

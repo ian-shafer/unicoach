@@ -1,8 +1,6 @@
 package ed.unicoach.rest.routing
 
-import ed.unicoach.auth.AuthResult
 import ed.unicoach.auth.AuthService
-import ed.unicoach.auth.MeResult
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.models.ErrorResponse
@@ -19,26 +17,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 
-suspend fun ApplicationCall.respondAppError(
-  error: AuthResult,
-  status: HttpStatusCode,
-) {
-  when (error) {
-    is AuthResult.ValidationFailure -> {
-      val restFieldErrors =
-        error.fieldErrors.map { FieldError(it.field, it.message) } +
-          error.errors.map { FieldError("general", it) }
-      respond(status, ErrorResponse("validation_failed", "Invalid registration parameters", restFieldErrors))
-    }
-    is AuthResult.DuplicateEmail -> {
-      respond(status, ErrorResponse("conflict", "Email already in use", listOf(FieldError("email", "Email already in use"))))
-    }
-    is AuthResult.DatabaseFailure -> {
-      respond(status, ErrorResponse("internal_error", "An internal error occurred"))
-    }
-    else -> respond(HttpStatusCode.InternalServerError, ErrorResponse("unknown_error", "An unknown error occurred"))
-  }
-}
+// Removed respondAppError
 
 private fun ApplicationCall.clearSessionCookie(sessionConfig: ed.unicoach.rest.auth.SessionConfig) {
   response.cookies.append(
@@ -69,62 +48,30 @@ fun Route.authRoutes(
 
       val request = call.receive<RegisterRequest>()
 
-      when (val result = authService.register(request.email, request.name, request.password)) {
-        is AuthResult.Success -> {
+      val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
+
+      val outcome = authService.register(
+        email = request.email,
+        name = request.name,
+        password = request.password,
+        oldCookieToken = oldCookieToken,
+        sessionExpirationSeconds = sessionConfig.expiration.seconds,
+        userAgent = call.request.headers["User-Agent"],
+        initialIp = call.request.origin.remoteHost,
+      ).getOrThrow()
+
+      when (outcome) {
+        is ed.unicoach.auth.RegisterOutcome.Success -> {
           val publicUser =
             PublicUser(
-              id = result.user.id.value,
-              email = result.user.email.value,
-              name = result.user.name.value,
+              id = outcome.user.id.value,
+              email = outcome.user.email.value,
+              name = outcome.user.name.value,
             )
-
-          val newToken = tokenGenerator.generateToken()
-          val newHash = TokenHash.fromRawToken(newToken)
-
-          val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
-
-          try {
-            database.withConnection { session ->
-              var wasReminted = false
-              if (oldCookieToken != null) {
-                val oldHash = TokenHash.fromRawToken(oldCookieToken)
-                val found =
-                  ed.unicoach.db.dao.SessionsDao
-                    .findByTokenHash(session, oldHash)
-                if (found is ed.unicoach.db.dao.DaoResult.Success) {
-                  ed.unicoach.db.dao.SessionsDao.remintToken(
-                    session = session,
-                    id = found.value.id,
-                    currentVersion = found.value.version,
-                    newUserId = result.user.id,
-                    newTokenHash = newHash.value,
-                    newExpirationSeconds = sessionConfig.expiration.seconds,
-                  )
-                  wasReminted = true
-                }
-              }
-
-              if (!wasReminted) {
-                ed.unicoach.db.dao.SessionsDao.create(
-                  session = session,
-                  newSession =
-                    ed.unicoach.db.models.NewSession(
-                      userId = result.user.id,
-                      tokenHash = newHash,
-                      userAgent = call.request.headers["User-Agent"],
-                      initialIp = call.request.origin.remoteHost,
-                      metadata = null,
-                      expiration = sessionConfig.expiration,
-                    ),
-                )
-              }
-            }
-          } catch (e: Exception) {
-          }
 
           call.response.cookies.append(
             name = sessionConfig.cookieName,
-            value = newToken,
+            value = outcome.token,
             domain = sessionConfig.cookieDomain,
             path = "/",
             secure = sessionConfig.cookieSecure,
@@ -134,15 +81,17 @@ fun Route.authRoutes(
 
           call.respond(HttpStatusCode.Created, RegisterResponse(publicUser))
         }
-        else -> {
-          val status =
-            when (result) {
-              is AuthResult.ValidationFailure -> HttpStatusCode.BadRequest
-              is AuthResult.DuplicateEmail -> HttpStatusCode.Conflict
-              is AuthResult.DatabaseFailure -> HttpStatusCode.InternalServerError
-              else -> HttpStatusCode.InternalServerError
-            }
-          call.respondAppError(result, status)
+        is ed.unicoach.auth.RegisterOutcome.ValidationFailure -> {
+          val restFieldErrors =
+            outcome.fieldErrors.map { FieldError(it.field, it.message) } +
+              outcome.errors.map { FieldError("general", it) }
+          call.respond(HttpStatusCode.BadRequest, ErrorResponse("validation_failed", "Invalid registration parameters", restFieldErrors))
+        }
+        is ed.unicoach.auth.RegisterOutcome.DuplicateEmail -> {
+          call.respond(
+            HttpStatusCode.Conflict,
+            ErrorResponse("conflict", "Email already in use", listOf(FieldError("email", "Email already in use"))),
+          )
         }
       }
     }
@@ -156,22 +105,17 @@ fun Route.authRoutes(
 
         val tokenHash = TokenHash.fromRawToken(token)
 
-        when (val result = authService.getCurrentUser(tokenHash)) {
-          is MeResult.Authenticated -> {
-            val publicUser =
-              PublicUser(
-                id = result.user.id.value,
-                email = result.user.email.value,
-                name = result.user.name.value,
-              )
-            call.respond(HttpStatusCode.OK, MeResponse(publicUser))
-          }
-          is MeResult.Unauthenticated -> {
-            call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
-          }
-          is MeResult.DatabaseFailure -> {
-            call.respond(HttpStatusCode.InternalServerError, ErrorResponse("internal_error", "An internal error occurred"))
-          }
+        val user = authService.getCurrentUser(tokenHash).getOrThrow()
+        if (user == null) {
+          call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
+        } else {
+          val publicUser =
+            PublicUser(
+              id = user.id.value,
+              email = user.email.value,
+              name = user.name.value,
+            )
+          call.respond(HttpStatusCode.OK, MeResponse(publicUser))
         }
       }
       rejectUnsupportedMethods(HttpMethod.Get)
@@ -186,15 +130,9 @@ fun Route.authRoutes(
         }
 
         val tokenHash = TokenHash.fromRawToken(token)
-        when (authService.logout(tokenHash)) {
-          is ed.unicoach.auth.LogoutResult.Success -> {
-            call.clearSessionCookie(sessionConfig)
-            call.respond(HttpStatusCode.NoContent)
-          }
-          is ed.unicoach.auth.LogoutResult.DatabaseFailure -> {
-            call.respond(HttpStatusCode.InternalServerError, ErrorResponse("internal_error", "An internal error occurred"))
-          }
-        }
+        authService.logout(tokenHash).getOrThrow()
+        call.clearSessionCookie(sessionConfig)
+        call.respond(HttpStatusCode.NoContent)
       }
       rejectUnsupportedMethods(HttpMethod.Post)
     }

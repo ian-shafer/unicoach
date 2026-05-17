@@ -248,7 +248,7 @@ class JobsDaoTest {
     val job = insertJob()
     val claimed = jobsDao.claimJob(session, job.id, 10.minutes)
     println("CLAIM JOB RESULT: $claimed")
-    if (claimed is JobUpdateResult.DatabaseFailure) println(claimed.error.exception.stackTraceToString())
+    if (claimed is JobUpdateResult.DatabaseFailure) println(claimed.error.stackTraceToString())
     assertTrue(claimed is JobUpdateResult.Success)
     return job to claimed.job
   }

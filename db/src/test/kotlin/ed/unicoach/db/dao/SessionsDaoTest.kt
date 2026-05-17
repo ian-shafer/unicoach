@@ -67,11 +67,11 @@ class SessionsDaoTest {
       )
 
     val createResult = SessionsDao.create(session, newSession)
-    assertTrue(createResult is DaoResult.Success)
+    assertTrue(createResult.isSuccess)
 
     val retrievedResult = SessionsDao.findByTokenHash(session, TokenHash(hash))
-    assertTrue(retrievedResult is DaoResult.Success)
-    assertTrue((retrievedResult as DaoResult.Success).value.userId == null)
+    assertTrue(retrievedResult.isSuccess)
+    assertTrue(retrievedResult.getOrNull()!!.userId == null)
   }
 
   @Test
@@ -91,7 +91,7 @@ class SessionsDaoTest {
       )
 
     val createResult = SessionsDao.create(session, newSession)
-    assertTrue(createResult is DaoResult.PermanentError)
+    assertTrue(createResult.isFailure)
   }
 
   @Test
@@ -110,13 +110,13 @@ class SessionsDaoTest {
       )
 
     val createResult = SessionsDao.create(session, newSession)
-    assertTrue(createResult is DaoResult.Success)
+    assertTrue(createResult.isSuccess)
 
-    val created = (createResult as DaoResult.Success).value
+    val created = createResult.getOrNull()!!
     val extendResult = SessionsDao.extendExpiry(session, created.id, created.version)
-    assertTrue(extendResult is DaoResult.Success)
+    assertTrue(extendResult.isSuccess)
 
-    val extended = (extendResult as DaoResult.Success).value
+    val extended = extendResult.getOrNull()!!
     assertTrue(extended.expiresAt.isAfter(created.expiresAt))
   }
 
@@ -135,17 +135,17 @@ class SessionsDaoTest {
       )
 
     val createResult = SessionsDao.create(session, newSession)
-    assertTrue(createResult is DaoResult.Success)
+    assertTrue(createResult.isSuccess)
 
     val revokeResult = SessionsDao.revokeByTokenHash(session, tokenHash)
-    assertTrue(revokeResult is DaoResult.Success)
+    assertTrue(revokeResult.isSuccess)
 
-    val original = (createResult as DaoResult.Success).value
-    val revoked = (revokeResult as DaoResult.Success).value
+    val original = createResult.getOrNull()!!
+    val revoked = revokeResult.getOrNull()!!
     assertTrue(revoked.version == original.version + 1)
-    
+
     val findResult = SessionsDao.findByTokenHash(session, tokenHash)
-    assertTrue(findResult is DaoResult.PermanentError.NotFound)
+    assertTrue(findResult.isFailure && findResult.exceptionOrNull() is NotFoundException)
   }
 
   @Test
@@ -154,7 +154,7 @@ class SessionsDaoTest {
     val tokenHash = TokenHash(hash)
 
     val revokeResult = SessionsDao.revokeByTokenHash(session, tokenHash)
-    assertTrue(revokeResult is DaoResult.PermanentError.NotFound)
+    assertTrue(revokeResult.isFailure && revokeResult.exceptionOrNull() is NotFoundException)
   }
 
   @Test
@@ -175,6 +175,6 @@ class SessionsDaoTest {
     SessionsDao.revokeByTokenHash(session, tokenHash)
 
     val secondRevokeResult = SessionsDao.revokeByTokenHash(session, tokenHash)
-    assertTrue(secondRevokeResult is DaoResult.PermanentError.NotFound)
+    assertTrue(secondRevokeResult.isFailure && secondRevokeResult.exceptionOrNull() is NotFoundException)
   }
 }

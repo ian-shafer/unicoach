@@ -1,6 +1,5 @@
 package ed.unicoach.queue.dao
 
-import ed.unicoach.error.ExceptionWrapper
 import ed.unicoach.queue.Job
 import ed.unicoach.queue.JobAttempt
 import ed.unicoach.queue.JobStatus
@@ -10,8 +9,8 @@ sealed interface JobInsertResult {
     val job: Job,
   ) : JobInsertResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : JobInsertResult
 }
 
@@ -24,8 +23,8 @@ sealed interface JobFindResult {
     val message: String,
   ) : JobFindResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : JobFindResult
 }
 
@@ -42,8 +41,8 @@ sealed interface JobUpdateResult {
     val message: String,
   ) : JobUpdateResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : JobUpdateResult
 }
 
@@ -52,8 +51,8 @@ sealed interface JobResetResult {
     val count: Int,
   ) : JobResetResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : JobResetResult
 }
 
@@ -62,8 +61,8 @@ sealed interface JobDeleteResult {
     val count: Int,
   ) : JobDeleteResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : JobDeleteResult
 }
 
@@ -72,8 +71,8 @@ sealed interface JobCountResult {
     val counts: Map<JobStatus, Int>,
   ) : JobCountResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : JobCountResult
 }
 
@@ -82,8 +81,8 @@ sealed interface AttemptInsertResult {
     val attempt: JobAttempt,
   ) : AttemptInsertResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : AttemptInsertResult
 }
 
@@ -92,8 +91,8 @@ sealed interface AttemptCountResult {
     val count: Int,
   ) : AttemptCountResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : AttemptCountResult
 }
 
@@ -102,7 +101,7 @@ sealed interface AttemptFindResult {
     val attempts: List<JobAttempt>,
   ) : AttemptFindResult
 
-  data class DatabaseFailure(
-    val error: ExceptionWrapper,
+  class DatabaseFailure(
+    val error: Exception,
   ) : AttemptFindResult
 }

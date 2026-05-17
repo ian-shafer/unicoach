@@ -1,25 +1,20 @@
 package ed.unicoach.auth
 
 import ed.unicoach.db.models.User
-import ed.unicoach.error.AppError
 import ed.unicoach.error.FieldError
 
-sealed interface AuthResult {
+sealed interface RegisterOutcome {
   data class Success(
     val user: User,
-  ) : AuthResult
+    val token: String,
+  ) : RegisterOutcome
 
   data class ValidationFailure(
     val errors: List<String>,
     val fieldErrors: List<FieldError>,
-  ) : AuthResult
+  ) : RegisterOutcome
 
   data class DuplicateEmail(
     val email: String,
-  ) : AuthResult
-
-  data class DatabaseFailure(
-    override val rootCause: AppError,
-  ) : AuthResult,
-    AppError
+  ) : RegisterOutcome
 }

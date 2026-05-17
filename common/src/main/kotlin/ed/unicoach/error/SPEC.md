@@ -3,70 +3,35 @@
 ## I. Overview
 
 This package is the **cross-cutting error abstraction layer** for the entire
-`unicoach` JVM codebase. It defines the root `AppError` interface and
-`ExceptionWrapper` implementation for propagating typed error chains across
-module boundaries, and the `FieldError` value type for structured per-field
-validation failures consumed by both the service and REST presentation layers.
+`unicoach` JVM codebase. It defines the global exception hierarchy and
+marker interfaces (traits) used to categorize and handle expected system
+and domain errors within and across module boundaries. It also provides the `FieldError`
+value type for structured per-field validation failures.
 
 ---
 
 ## II. Invariants
 
-- **INV-1**: Every `AppError` implementation MUST expose a `rootCause: AppError?`
-  property. Leaf errors (no upstream cause) MUST set `rootCause = null`.
-
-- **INV-2**: `ExceptionWrapper` MUST be the sole concrete `AppError` used to
-  wrap JVM `Throwable` instances. No other class in any module MUST wrap a
-  `Throwable` directly into an `AppError` without using `ExceptionWrapper`.
-
-- **INV-3**: `ExceptionWrapper.rootCause` MUST always be `null`. It is a
-  terminal node in the error chain; it wraps a `Throwable`, not another
-  `AppError`.
-
-- **INV-4**: `FieldError` MUST remain a plain data class with exactly two
+- **INV-1**: The exception hierarchy MUST use marker interfaces (`TransientError`, `PermanentError`) to categorize exceptions, rather than a rigid tree structure.
+- **INV-2**: `TransientError` MUST be applied to retryable errors (e.g., database locks, connection timeouts).
+- **INV-3**: `PermanentError` MUST be applied to non-retryable errors (e.g., duplicate unique constraints, target version missing).
+- **INV-4**: Domain exceptions MUST inherit from standard JVM `RuntimeException` and implement the relevant trait interfaces.
+- **INV-5**: `FieldError` MUST remain a plain data class with exactly two
   non-nullable `String` fields: `field` (the logical field name) and `message`
-  (a human-readable error description). The Kotlin type system enforces
-  non-nullability; no runtime blank-check is performed.
-
-- **INV-5**: `AppError` MUST NOT carry HTTP semantics (status codes, headers).
-  HTTP mapping is exclusively the responsibility of the `rest-server` layer.
-
-- **INV-6**: The `error` package MUST NOT import from any other module
-  (`db`, `service`, `rest-server`, `queue`, `queue-worker`). It depends only
-  on the Kotlin standard library.
-
-- **INV-7**: `FieldError` defined in this package is the canonical cross-module
-  `FieldError`. The `rest-server` layer MUST NOT define its own parallel
-  `FieldError` class; it MUST import `ed.unicoach.error.FieldError` directly.
+  (a human-readable error description).
+- **INV-6**: Exceptions in this package MUST NOT carry HTTP semantics (status codes, headers).
+  HTTP mapping is exclusively the responsibility of the presentation layer.
+- **INV-7**: The `error` package MUST NOT import from any other module.
 
 ---
 
 ## III. Behavioral Contracts
 
-### `AppError` — [`AppError.kt`](./AppError.kt)
+### `ExceptionTraits` — [`ExceptionTraits.kt`](./ExceptionTraits.kt)
 
-- **Purpose**: Root interface for all typed, domain-level errors in the
-  application.
-- **`rootCause: AppError?`**: Returns the upstream `AppError` that caused this
-  error, enabling recursive cause-chain traversal. Returns `null` at the chain
-  root.
-- **Side Effects**: None. The interface carries no behavior.
-- **Error Handling**: Not applicable — `AppError` is the error representation
-  itself.
-- **Idempotency**: Not applicable.
-
-### `ExceptionWrapper` — [`AppError.kt`](./AppError.kt)
-
-- **Purpose**: Wraps a JVM `Throwable` as a terminal `AppError`, bridging
-  exception-based infrastructure failures into the typed error hierarchy.
-- **`ExceptionWrapper(val exception: Throwable)`**: Stores the raw `Throwable`.
-  `rootCause` is always `null`.
-- **`ExceptionWrapper.from(e: Throwable): ExceptionWrapper`**: Factory method.
-  Equivalent to calling the constructor directly; provided for call-site
-  readability.
-  - **Side Effects**: None.
-  - **Error Handling**: Does not throw; accepts any `Throwable`.
-  - **Idempotency**: Yes — pure construction, no state mutation.
+- **Purpose**: Defines marker interfaces to categorize exceptions.
+- **`interface TransientError`**: Marker for retryable errors. Maps to HTTP 503 (Service Unavailable) at the routing layer.
+- **`interface PermanentError`**: Marker for non-retryable errors. Maps to HTTP 400 (Bad Request) or HTTP 422 (Unprocessable Entity) depending on the context.
 
 ### `FieldError` — [`FieldError.kt`](./FieldError.kt)
 
@@ -77,13 +42,10 @@ validation failures consumed by both the service and REST presentation layers.
 - **Consumers**:
   - `ed.unicoach.util.Validator` / `ValidationErrors`: accumulates
     `List<FieldError>` during input validation in the `common` module.
-  - `ed.unicoach.auth.AuthResult.ValidationFailure`: carries
+  - `ed.unicoach.auth.RegisterOutcome.ValidationFailure`: carries
     `List<FieldError>` up through the service layer.
   - `ed.unicoach.rest.models.ErrorResponse`: serializes
     `List<FieldError>?` in HTTP error responses.
-- **Side Effects**: None.
-- **Error Handling**: Not applicable.
-- **Idempotency**: Not applicable.
 
 ---
 
@@ -91,33 +53,15 @@ validation failures consumed by both the service and REST presentation layers.
 
 - **Module**: `common` Gradle module.
 - **Package**: `ed.unicoach.error`.
-- **Dependencies**: Kotlin standard library only. No external JARs, no
-  environment variables, no HOCON configuration.
-- **Transitive Dependents**: `db`, `service`, `rest-server`, `queue`,
-  `queue-worker` all depend on `common` and therefore have access to this
-  package. Any module that needs to model a typed error MUST implement
-  `AppError`.
+- **Dependencies**: Kotlin standard library only.
+- **Transitive Dependents**: All application modules depend on `common` and
+  have access to this package.
 
 ---
 
 ## V. History
 
-No RFC lists files in `common/src/main/kotlin/ed/unicoach/error/` under its
-**"Files Modified"** section. The types were introduced organically during RFC-08
-implementation and refined across subsequent RFCs. The RFCs that directly shaped
-the contracts documented here are:
-
 - [x] [RFC-08: Auth Registration](../../../../../../../rfc/08-auth-registration.md) —
-  Defined `FieldError` and the `AppError` interface with `rootCause`; mandated
-  that `DatabaseFailure` variants carry an `AppError` root cause;
-  established `FieldError`/`ErrorResponse` as global baseline constructs.
-- [x] [RFC-13: Auth Me](../../../../../../../rfc/13-auth-me.md) —
-  Established `ExceptionWrapper` as the concrete `AppError` implementation used
-  in service-layer `DatabaseFailure` variants (`MeResult.DatabaseFailure`).
-- [x] [RFC-14: Extract Database Module](../../../../../../../rfc/14-db-module.md) —
-  Confirmed `common` provides `AppError` and `ExceptionWrapper` as shared
-  infrastructure consumed by `db` module DAOs.
-- [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md) —
-  Further confirmed `ExceptionWrapper` as the canonical error carrier in
-  `LogoutResult.DatabaseFailure`; explicitly lists `ExceptionWrapper` as a
-  pre-existing dependency.
+  Defined `FieldError`.
+- [x] [RFC-24: Result Types Refactoring](../../../../../../../rfc/24-result-types.md) —
+  Replaced the `AppError` hierarchy with `ExceptionTraits` (`TransientError` and `PermanentError`), and exclusively adopted `Result<T>` for error bubbling.
