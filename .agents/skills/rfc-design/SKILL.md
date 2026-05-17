@@ -55,7 +55,7 @@ feature in the codebase.
 - `## Implementation Plan`: An ordered, step-by-step, detailed plan for how this
   RFC will be implemented. The coding agent will follow these steps exactly
   when it implements. Each step must represent an atomic, sequential, and
-  locally verifiable unit of work. Each step must include a list of verification commands to prove correctness.
+  locally verifiable unit of work. Each step must include a list of verification commands to prove correctness. **IMPORTANT:** You MUST NOT include instructions to update `SPEC.md` files in this plan. Spec synchronization is handled out-of-band by the `spec-sync-loop`.
 - `## Files Modified`: EVERY file that will be modified in the implementation
   phase must be listed. If a file is not listed in this section, it CAN NOT be
   modified in the implementation. Because implementing agents are strictly
@@ -63,7 +63,7 @@ feature in the codebase.
   generating this list. Actively search the codebase for routing files,
   dependency injection modules, configuration files, and test fixtures that will
   inevitably need to be updated. All files listed MUST use exact paths relative
-  to the project root to avoid ambiguity.
+  to the project root to avoid ambiguity. **IMPORTANT:** Do NOT list any `SPEC.md` files here.
 
 ## The RFC Authoring Process
 

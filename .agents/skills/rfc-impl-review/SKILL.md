@@ -23,6 +23,7 @@ You MUST execute the review by following these exact phases sequentially:
 Validate that the code changes did not spill over into unrelated files.
 - Compare exactly what was expected in the `Files Modified` section of the RFC against what files were *actually* modified.
 - If an extraneous file was modified, clearly identify it as an isolation failure.
+- **Spec Touch Ban:** Explicitly check if any `SPEC.md` files were modified. If they were, this is an automatic isolation failure. The implementor must revert all changes to `SPEC.md` files, as they are managed exclusively via the `spec-sync-loop`.
 
 ### Phase 2. Implementation Scope Check
 

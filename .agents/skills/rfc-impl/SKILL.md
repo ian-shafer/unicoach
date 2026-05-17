@@ -37,10 +37,14 @@ For the implementation, you must strictly follow this workflow:
 2. **Execute Tests**: You must verify the implementation code compiles and all
    related test suites pass (e.g., by running `bin/test`). If tests fail,
    systematically debug and fix them.
-3. **NO GIT COMMITS**: You **MUST NOT** make any git commits. Leave all
+3. **DO NOT TOUCH SPECS**: You are strictly forbidden from modifying any `SPEC.md` 
+   files during the implementation phase. Even if the RFC explicitly instructs you 
+   to update a `SPEC.md`, you must ignore that instruction. Spec synchronization 
+   is handled by a separate pipeline phase.
+4. **NO GIT COMMITS**: You **MUST NOT** make any git commits. Leave all
    modifications in the local working directory. The architect or external
    review skills will evaluate the raw uncommitted diffs.
-4. **Demonstrate Success**: Upon completing the steps and verifying a green test
+5. **Demonstrate Success**: Upon completing the steps and verifying a green test
    suite, explicitly inform the architect that the single-shot implementation is
    complete and ready for their review or subsequent automated verification
    cycles.
