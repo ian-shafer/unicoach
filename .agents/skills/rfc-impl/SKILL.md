@@ -44,4 +44,3 @@ For the implementation, you must strictly follow this workflow:
    suite, explicitly inform the architect that the single-shot implementation is
    complete and ready for their review or subsequent automated verification
    cycles.
-5. **Update Specifications**: If you modified any files in a directory, you must check if it contains a `SPEC.md` file. If it does NOT, you MUST create an empty `SPEC.md` file in that directory. Then, for every affected directory containing a `SPEC.md` file, you MUST NOT update the `SPEC.md` file autonomously. Instead, you MUST inform the Architect and transition to an interactive session using the `spec-editor` skill for each affected directory. This ensures the Architect is present to approve every change to the specification before completion.
