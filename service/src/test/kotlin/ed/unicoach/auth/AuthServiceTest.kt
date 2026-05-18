@@ -229,4 +229,72 @@ class AuthServiceTest {
       val result = authService.logout(tokenHash)
       assertTrue(result.isSuccess)
     }
+
+  @Test
+  fun `login with valid credentials yields Success`() = runBlocking {
+    val email = "login_test@example.com"
+    val password = "Password123"
+    authService.register(email, "Login Test", password, null, 86400L, null, null)
+
+    val result = authService.login(email, password, null, 86400L, null, null)
+    assertTrue(result.isSuccess)
+    val loginResult = result.getOrNull()
+    assertTrue(loginResult is LoginResult.Success)
+    assertTrue(loginResult.user.email.value == email)
+  }
+
+  @Test
+  fun `login with invalid email yields Unauthorized`() = runBlocking {
+    val result = authService.login("nonexistent@example.com", "Password123", null, 86400L, null, null)
+    assertTrue(result.isSuccess)
+    assertTrue(result.getOrNull() is LoginResult.Unauthorized)
+  }
+
+  @Test
+  fun `login with invalid password yields Unauthorized`() = runBlocking {
+    val email = "login_bad_pwd@example.com"
+    authService.register(email, "Bad Pwd", "Password123", null, 86400L, null, null)
+
+    val result = authService.login(email, "WrongPassword", null, 86400L, null, null)
+    assertTrue(result.isSuccess)
+    assertTrue(result.getOrNull() is LoginResult.Unauthorized)
+  }
+
+  @Test
+  fun `login with old cookie revokes old session and creates new`() = runBlocking {
+    val email = "login_old_cookie@example.com"
+    val password = "Password123"
+    val regResult = authService.register(email, "Old Cookie", password, null, 86400L, null, null)
+    val oldToken = (regResult.getOrNull() as RegisterOutcome.Success).token
+
+    val result = authService.login(email, password, oldToken, 86400L, null, null)
+    assertTrue(result.isSuccess)
+    val loginResult = result.getOrNull() as LoginResult.Success
+
+    // Old token should be revoked
+    val oldHash = TokenHash.fromRawToken(oldToken)
+    val findResult = SessionsDao.findByTokenHash(sqlSession, oldHash)
+    assertTrue(findResult.isFailure && findResult.exceptionOrNull() is NotFoundException)
+
+    // New token should be valid
+    val newHash = TokenHash.fromRawToken(loginResult.token)
+    val newFindResult = SessionsDao.findByTokenHash(sqlSession, newHash)
+    assertTrue(newFindResult.isSuccess)
+  }
+
+  @Test
+  fun `login with nonexistent old cookie creates new session without error`() = runBlocking {
+    val email = "login_fake_old_cookie@example.com"
+    val password = "Password123"
+    authService.register(email, "Fake Old Cookie", password, null, 86400L, null, null)
+
+    val fakeOldToken = "some_nonexistent_token"
+    val result = authService.login(email, password, fakeOldToken, 86400L, null, null)
+    assertTrue(result.isSuccess)
+    val loginResult = result.getOrNull() as LoginResult.Success
+
+    val newHash = TokenHash.fromRawToken(loginResult.token)
+    val newFindResult = SessionsDao.findByTokenHash(sqlSession, newHash)
+    assertTrue(newFindResult.isSuccess)
+  }
 }

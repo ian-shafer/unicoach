@@ -121,6 +121,27 @@ logic — all business decisions are delegated to `AuthService`.
 
 ---
 
+### `POST /api/v1/auth/login` — [`AuthRoutes.kt`](./AuthRoutes.kt)
+
+- **Request**: JSON body `{"email": string, "password": string}`.
+  Deserialized as `LoginRequest`.
+- **Side effects**:
+  - Calls `AuthService.login()` — verifies credentials and manages session state.
+  - Writes `Set-Cookie` header with the new opaque raw token upon success.
+- **Response mapping**:
+
+  | Condition | Status | Body |
+  |-----------|--------|------|
+  | `LoginResult.Success` | `200 OK` | `LoginResponse { user: PublicUser }` |
+  | All other `LoginResult` variants | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
+  | Exceptions thrown by `.getOrThrow()` | `400`, `503`, or `500` | Processed by `StatusPages` |
+
+- **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
+  `rejectUnsupportedMethods(HttpMethod.Post)`).
+- **Idempotency**: Not idempotent — creates a new session.
+
+---
+
 ### `GET /api/v1/auth/me` — [`AuthRoutes.kt`](./AuthRoutes.kt)
 
 - **Request**: No body. Session identity derived from the request cookie named
@@ -195,3 +216,6 @@ All four values are parsed by `SessionConfig.from(config)` in the parent
 - [x] [RFC-13: Auth Me](../../../../../../../../rfc/13-auth-me.md)
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../../rfc/21-session-expiry-queue.md)
 - [x] [RFC-22: Auth Logout](../../../../../../../../rfc/22-auth-logout.md)
+- [x] [RFC-24: Result Types](../../../../../../../../rfc/24-result-types.md)
+- [x] [RFC-25: Auth Routes Refactor](../../../../../../../../rfc/25-auth-routes-refactor.md)
+- [x] [RFC-26: Login](../../../../../../../../rfc/26-login.md)

@@ -8,6 +8,8 @@ import ed.unicoach.rest.models.MeResponse
 import ed.unicoach.rest.models.PublicUser
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.RegisterResponse
+import ed.unicoach.rest.models.LoginRequest
+import ed.unicoach.rest.models.LoginResponse
 import ed.unicoach.rest.rejectUnsupportedMethods
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -40,6 +42,10 @@ class AuthRouteHandler(
   fun registerRoutes(route: Route) {
     route.route("/api/v1/auth") {
       post("/register") { handleRegister() }
+      route("/login") {
+        post { handleLogin() }
+        rejectUnsupportedMethods(HttpMethod.Post)
+      }
       route("/me") {
         get { handleMe() }
         rejectUnsupportedMethods(HttpMethod.Get)
@@ -147,5 +153,57 @@ class AuthRouteHandler(
     authService.logout(tokenHash).getOrThrow()
     call.clearSessionCookie(sessionConfig)
     call.respond(HttpStatusCode.NoContent)
+  }
+
+  private suspend fun RoutingContext.handleLogin() {
+    val request = call.receive<LoginRequest>()
+    val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
+
+    val outcome = authService.login(
+      email = request.email,
+      password = request.password,
+      oldCookieToken = oldCookieToken,
+      sessionExpirationSeconds = sessionConfig.expiration.seconds,
+      userAgent = call.request.headers["User-Agent"],
+      initialIp = call.request.origin.remoteHost,
+    ).getOrThrow()
+
+    respondLoginOutcome(outcome)
+  }
+
+  private suspend fun RoutingContext.respondLoginOutcome(outcome: ed.unicoach.auth.LoginResult) {
+    when (outcome) {
+      is ed.unicoach.auth.LoginResult.Success -> respondLoginSuccess(outcome)
+      is ed.unicoach.auth.LoginResult.InvalidEmail -> respondLoginUnauthorized(outcome)
+      is ed.unicoach.auth.LoginResult.UserNotFound -> respondLoginUnauthorized(outcome)
+      is ed.unicoach.auth.LoginResult.PasswordNotSet -> respondLoginUnauthorized(outcome)
+      is ed.unicoach.auth.LoginResult.PasswordMismatch -> respondLoginUnauthorized(outcome)
+    }
+  }
+
+  private suspend fun RoutingContext.respondLoginSuccess(outcome: ed.unicoach.auth.LoginResult.Success) {
+    val publicUser =
+      PublicUser(
+        id = outcome.user.id.value,
+        email = outcome.user.email.value,
+        name = outcome.user.name.value,
+      )
+
+    call.response.cookies.append(
+      name = sessionConfig.cookieName,
+      value = outcome.token,
+      domain = sessionConfig.cookieDomain,
+      path = "/",
+      secure = sessionConfig.cookieSecure,
+      httpOnly = true,
+      extensions = mapOf("SameSite" to "Strict"),
+    )
+
+    call.respond(HttpStatusCode.OK, LoginResponse(publicUser))
+  }
+
+  private suspend fun RoutingContext.respondLoginUnauthorized(outcome: ed.unicoach.auth.LoginResult) {
+    call.application.environment.log.info("Login failed: $outcome")
+    call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Invalid email or password", null))
   }
 }

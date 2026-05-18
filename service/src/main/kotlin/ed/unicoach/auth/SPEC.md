@@ -7,8 +7,7 @@ for user registration, session-bound user resolution (`/me`), session revocation
 (logout), and background zombie-session cleanup. It bridges the HTTP boundary
 (handled by `rest-server`) and the data layer (handled by `service/db`), exposing
 pure domain results via sealed interfaces that contain no HTTP types. Login
-credential verification is intentionally absent from this layer — it is handled
-by the `rest-server` routing tier.
+credential verification is handled in this layer, dispatching Argon2 password comparison to a dedicated crypto dispatcher to prevent event loop starvation.
 
 ---
 
@@ -24,9 +23,7 @@ by the `rest-server` routing tier.
   and return the appropriate `DatabaseFailure` variant on uncaught exceptions.
 - `AuthService` MUST NOT own or hold a raw `java.sql.Connection` — all DB access
   MUST go through `Database.withConnection`.
-- `AuthService` MUST NOT implement login credential verification (`login()` is
-  absent by design). Argon2 password comparison and user enumeration mitigation
-  live in the `rest-server` routing layer, not in this module.
+- CPU-bound Argon2 password verification MUST run inside `withContext(Dispatchers.Crypto)` to prevent Netty event loop starvation.
 
 ### Registration
 
@@ -165,6 +162,29 @@ by the `rest-server` routing tier.
 | `ValidationFailure` | `errors: List<String>`, `fieldErrors: List<FieldError>` | Validator rejects input |
 | `DuplicateEmail` | `email: String` | DB unique constraint hit on email |
 
+### `AuthService.login(...)` — See [AuthService.kt](./AuthService.kt)
+
+- **Side Effects**: One read-only DB query for the user via `UsersDao.findByEmail()`. If successful, optionally revokes the old session and creates a new session via `SessionsDao.create()`.
+- **IO dispatch**: DB operations run inside `withContext(Dispatchers.IO)`. Argon2 verification runs inside `withContext(Dispatchers.Crypto)`.
+- **Idempotency**: Not idempotent. Creating a session mutates the database.
+- **Error mapping**:
+  - `Success` → `Result.success(LoginResult.Success(user, newToken))`
+  - Invalid email → `Result.success(LoginResult.InvalidEmail(error))`
+  - User not found → `Result.success(LoginResult.UserNotFound)`
+  - Password not set → `Result.success(LoginResult.PasswordNotSet)`
+  - Password mismatch → `Result.success(LoginResult.PasswordMismatch)`
+  - Uncaught exception → `Result.failure(e)`
+
+### `LoginResult` (sealed interface) — See [LoginResult.kt](./LoginResult.kt)
+
+| Variant | Carries | When returned |
+|---|---|---|
+| `Success` | `user: User`, `token: String` | Successful login |
+| `InvalidEmail` | `error: ValidationError` | Email format is invalid |
+| `UserNotFound` | None | User does not exist |
+| `PasswordNotSet` | None | User uses SSO only |
+| `PasswordMismatch` | None | Incorrect password |
+
 ---
 
 ## IV. Infrastructure & Environment
@@ -174,8 +194,7 @@ by the `rest-server` routing tier.
 - **Database**: Requires a live PostgreSQL connection pool via `Database`
   (HikariCP). `AuthService` is constructed with an injected `Database` instance.
 - **Coroutine context**: `AuthService` must be called from a coroutine scope.
-  Internal IO is dispatched to `Dispatchers.IO`; callers retain their own
-  dispatcher.
+  Internal IO is dispatched to `Dispatchers.IO`. CPU-bound cryptographic operations (Argon2) MUST use `Dispatchers.Crypto`. Callers retain their own dispatcher.
 - **No HOCON keys** are read directly by this package. Configuration is injected
   via constructor parameters (`database`, `argon2Hasher`).
 - **`SessionCleanupJob`** is intended to be invoked by an external scheduler
@@ -191,3 +210,5 @@ by the `rest-server` routing tier.
 - [x] [RFC-13: Auth Me](../../../../../../../rfc/13-auth-me.md)
 - [x] [RFC-14: DB Module](../../../../../../../rfc/14-db-module.md)
 - [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md)
+- [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md)
+- [x] [RFC-26: Login](../../../../../../../rfc/26-login.md)

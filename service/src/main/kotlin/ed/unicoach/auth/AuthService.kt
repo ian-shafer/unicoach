@@ -16,6 +16,7 @@ import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import ed.unicoach.util.Crypto
 
 class AuthService(
   private val database: Database,
@@ -159,4 +160,86 @@ class AuthService(
     } catch (e: Exception) {
       Result.failure(e)
     }
+  suspend fun login(
+    email: String,
+    password: String,
+    oldCookieToken: String?,
+    sessionExpirationSeconds: Long,
+    userAgent: String?,
+    initialIp: String?,
+  ): Result<LoginResult> = try {
+    val emailStr = email.trim().lowercase()
+    val emailValidation = EmailAddress.create(emailStr)
+    if (emailValidation !is ValidationResult.Valid) {
+      return Result.success(LoginResult.InvalidEmail((emailValidation as ValidationResult.Invalid).error))
+    }
+    val emailAddr = emailValidation.value
+
+    var user: ed.unicoach.db.models.User? = null
+
+    withContext(Dispatchers.IO) {
+      database.withConnection { session ->
+        val userResult = UsersDao.findByEmail(session, emailAddr)
+        val exception = userResult.exceptionOrNull()
+        if (exception != null && exception !is ed.unicoach.db.dao.NotFoundException) {
+          throw exception
+        }
+        user = userResult.getOrNull()
+      }
+    }
+
+    if (user == null) {
+      return Result.success(LoginResult.UserNotFound)
+    }
+
+    val pwdHash = when (val method = user!!.authMethod) {
+      is AuthMethod.Password -> method.hash
+      is AuthMethod.Both -> method.hash
+      is AuthMethod.SSO -> null
+    }
+
+    if (pwdHash == null) {
+      return Result.success(LoginResult.PasswordNotSet)
+    }
+
+    val isValid = withContext(Dispatchers.Crypto) {
+      argon2Hasher.verify(pwdHash.value, password)
+    }
+
+    if (!isValid) {
+      return Result.success(LoginResult.PasswordMismatch)
+    }
+
+    val newToken = tokenGenerator.generateToken()
+    val newHash = TokenHash.fromRawToken(newToken)
+
+    withContext(Dispatchers.IO) {
+      database.withConnection { session ->
+        if (oldCookieToken != null) {
+          val oldHash = TokenHash.fromRawToken(oldCookieToken)
+          val revokeResult = SessionsDao.revokeByTokenHash(session, oldHash)
+          val exception = revokeResult.exceptionOrNull()
+          if (exception != null && exception !is ed.unicoach.db.dao.NotFoundException) {
+            throw exception
+          }
+        }
+
+        SessionsDao.create(
+          session = session,
+          newSession = ed.unicoach.db.models.NewSession(
+            userId = user!!.id,
+            tokenHash = newHash,
+            userAgent = userAgent,
+            initialIp = initialIp,
+            metadata = null,
+            expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+          ),
+        ).getOrThrow()
+      }
+    }
+
+    Result.success(LoginResult.Success(user!!, newToken))
+  } catch (e: Exception) {
+    Result.failure(e)
+  }
 }
