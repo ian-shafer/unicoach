@@ -87,7 +87,7 @@ via `Result.failure` propagation in `Application.kt`.
 `SessionConfig` is instantiated once at application startup via
 `SessionConfig.from(config)` in `Application.kt` and injected into:
 
-- `Routing.kt` — passes it to `authRoutes(...)`.
+- `Routing.kt` — passes it to `AuthRouteHandler`.
 - `plugins/SessionExpiryPlugin.kt` — uses `cookieName` to read the session
   cookie for expiry extension.
 

@@ -78,7 +78,7 @@ logic — all business decisions are delegated to `AuthService`.
 
 ## III. Behavioral Contracts
 
-### `Route.authRoutes(authService, database, sessionConfig, tokenGenerator)` — [`AuthRoutes.kt`](./AuthRoutes.kt)
+### `AuthRouteHandler.registerRoutes(route: Route)` — [`AuthRoutes.kt`](./AuthRoutes.kt)
 
 - **Behavior**: Registers all `/api/v1/auth/*` route handlers onto the Ktor
   routing tree.
@@ -184,11 +184,7 @@ All four values are parsed by `SessionConfig.from(config)` in the parent
 
 - **`AuthService`** (`service` module): Provides `register()`, `getCurrentUser()`,
   and `logout()`.
-- **`Database`** (`db` module): Used directly for session read/write within the
-  `/register` handler only.
 - **`SessionConfig`** (`rest/auth/` package): Cookie parameters.
-- **`TokenGenerator`** (`common` module): Generates cryptographically secure
-  256-bit Base64Url tokens for new or reminted sessions.
 
 ---
 

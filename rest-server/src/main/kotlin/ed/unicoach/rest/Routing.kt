@@ -1,6 +1,6 @@
 package ed.unicoach.rest
 
-import ed.unicoach.rest.routing.authRoutes
+import ed.unicoach.rest.routing.AuthRouteHandler
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -27,10 +27,9 @@ fun Route.rejectUnsupportedMethods(vararg methods: HttpMethod) {
 
 fun Application.configureRouting(
   authService: ed.unicoach.auth.AuthService,
-  database: ed.unicoach.db.Database,
   sessionConfig: ed.unicoach.rest.auth.SessionConfig,
-  tokenGenerator: ed.unicoach.util.TokenGenerator,
 ) {
+  val authRouteHandler = AuthRouteHandler(authService, sessionConfig)
   routing {
     route("/hello") {
       get {
@@ -41,6 +40,6 @@ fun Application.configureRouting(
       }
       rejectUnsupportedMethods(HttpMethod.Get)
     }
-    authRoutes(authService, database, sessionConfig, tokenGenerator)
+    authRouteHandler.registerRoutes(this)
   }
 }

@@ -124,7 +124,7 @@ expiry enqueueing. It does not contain domain logic.
 
 - **Routes registered**:
   - `GET /hello` → `200 OK` with plain UTF-8 text body.
-  - All `/api/v1/auth/*` routes via `authRoutes(...)`.
+  - All `/api/v1/auth/*` routes via `AuthRouteHandler.registerRoutes(...)`.
 - **Side effects**: Route table registration — installs handlers into the
   Ktor routing tree.
 - **Idempotency**: Not idempotent — calling twice installs duplicate routes.
