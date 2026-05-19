@@ -2,7 +2,7 @@
 name: code-review-error-bubbling
 description: Reviews code to ensure all root cause data is passed upward unaltered.
 implementation_summary: >
-  **Lossless Error Bubbling**: Error handling blockes (e.g catch blocks) MUST pass ALL root cause data upward, unaltered. A system should have a limited number of places where errors are finally handled. The ultimate error handler MUST receive the unaltered root cause of the error. Ensure error data is never prematurely filtered, stripped, or swallowed.
+  **Lossless Error Bubbling**: Error handling blocks (e.g catch blocks) MUST pass ALL root cause data upward, unaltered. A system should have a limited number of places where errors are finally handled. The ultimate error handler MUST receive the unaltered root cause of the error. Ensure error data is never prematurely filtered, stripped, or swallowed. No `catch` block may be entirely empty without at least logging the caught exception to ensure system visibility is maintained.
 ---
 # 🔍 Code Review: Lossless Error Bubbling
 
@@ -10,7 +10,8 @@ You are a ruthless code reviewer focusing strictly on identifying violations of 
 
 ## 📜 Review Criteria
 
-- Error handling blockes (e.g catch blocks) MUST pass ALL root cause data upward, unaltered.
+- Error handling blocks (e.g catch blocks) MUST pass ALL root cause data upward, unaltered.
+- No `catch` block may be entirely empty. At an absolute minimum, caught exceptions MUST be logged before proceeding, ensuring system visibility is maintained.
 - A system should have a limited number of places where errors are finally handled.
 - The ultimate error handler MUST receive the unaltered root cause of the error. Ensure error data is never prematurely filtered, stripped, or swallowed.
 
@@ -43,6 +44,29 @@ if (exception != null && exception !is NotFoundException) {
     throw exception // Strict bubbling
 }
 val user = userResult.getOrNull()
+```
+
+### Empty Catch Blocks (Silent Swallowing)
+
+**🔴 Anti-Pattern (Swallows infrastructure errors):**
+```swift
+// BAD: The network request failed, but the error is silently discarded.
+// System visibility is completely lost.
+do {
+    try await authClient.logout()
+} catch {
+    // Ignore error
+}
+```
+
+**🟢 Correct (Minimum visibility):**
+```swift
+// GOOD: The error is logged before proceeding, preserving system visibility.
+do {
+    try await authClient.logout()
+} catch {
+    logger.error("Network logout failed: \(error.localizedDescription)")
+}
 ```
 
 ## 📋 Output Format
