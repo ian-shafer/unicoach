@@ -63,54 +63,56 @@ class AuthService(
       )
 
     return try {
-      database.withConnection { session ->
-        val daoResult = UsersDao.create(session, newUser)
-        if (daoResult.isFailure) {
-          val ex = daoResult.exceptionOrNull()
-          if (ex is DuplicateEmailException) {
-            return@withConnection Result.success(RegisterOutcome.DuplicateEmail(emailAddr.value))
-          } else {
-            return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
+      withContext(Dispatchers.IO) {
+        database.withConnection { session ->
+          val daoResult = UsersDao.create(session, newUser)
+          if (daoResult.isFailure) {
+            val ex = daoResult.exceptionOrNull()
+            if (ex is DuplicateEmailException) {
+              return@withConnection Result.success(RegisterOutcome.DuplicateEmail(emailAddr.value))
+            } else {
+              return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
+            }
           }
-        }
-        val user = daoResult.getOrNull()!!
-
-        val newToken = tokenGenerator.generateToken()
-        val newHash = TokenHash.fromRawToken(newToken)
-        var wasReminted = false
-
-        if (oldCookieToken != null) {
-          val oldHash = TokenHash.fromRawToken(oldCookieToken)
-          val found = SessionsDao.findByTokenHash(session, oldHash)
-          if (found.isSuccess) {
-            val sessionVal = found.getOrNull()!!
-            SessionsDao.remintToken(
+          val user = daoResult.getOrNull()!!
+  
+          val newToken = tokenGenerator.generateToken()
+          val newHash = TokenHash.fromRawToken(newToken)
+          var wasReminted = false
+  
+          if (oldCookieToken != null) {
+            val oldHash = TokenHash.fromRawToken(oldCookieToken)
+            val found = SessionsDao.findByTokenHash(session, oldHash)
+            if (found.isSuccess) {
+              val sessionVal = found.getOrNull()!!
+              SessionsDao.remintToken(
+                session = session,
+                id = sessionVal.id,
+                currentVersion = sessionVal.version,
+                newUserId = user.id,
+                newTokenHash = newHash.value,
+                newExpirationSeconds = sessionExpirationSeconds,
+              ).getOrThrow()
+              wasReminted = true
+            }
+          }
+  
+          if (!wasReminted) {
+            SessionsDao.create(
               session = session,
-              id = sessionVal.id,
-              currentVersion = sessionVal.version,
-              newUserId = user.id,
-              newTokenHash = newHash.value,
-              newExpirationSeconds = sessionExpirationSeconds,
+              newSession = ed.unicoach.db.models.NewSession(
+                userId = user.id,
+                tokenHash = newHash,
+                userAgent = userAgent,
+                initialIp = initialIp,
+                metadata = null,
+                expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+              ),
             ).getOrThrow()
-            wasReminted = true
           }
+  
+          Result.success(RegisterOutcome.Success(user, newToken))
         }
-
-        if (!wasReminted) {
-          SessionsDao.create(
-            session = session,
-            newSession = ed.unicoach.db.models.NewSession(
-              userId = user.id,
-              tokenHash = newHash,
-              userAgent = userAgent,
-              initialIp = initialIp,
-              metadata = null,
-              expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
-            ),
-          ).getOrThrow()
-        }
-
-        Result.success(RegisterOutcome.Success(user, newToken))
       }
     } catch (e: Exception) {
       Result.failure(e)
