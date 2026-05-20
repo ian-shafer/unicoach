@@ -126,6 +126,7 @@ Verify:
 - Files listed as **modified** or **deleted** already exist.
 - Use search tools to check for missing dependencies or configurations. Do not
   take the RFC's claims at face value.
+- **IMPORTANT**: Any time the `Files Modified` section is missing a required file or includes an extraneous file, list it as a `Minor` finding.
 
 ### 8. Completeness Check (Semantic Cross-Referencing)
 
@@ -133,7 +134,7 @@ Go beyond bullet-point mapping. Evaluate sufficiency and logical consistency:
 
 - **Design → Files**: Are the files in `Files Modified` actually sufficient to
   implement the design? Flag logically required files that are missing (e.g.,
-  configuration, client libraries, routing modules).
+  configuration, client libraries, routing modules) as a `Minor` finding.
 - **Design → Tests**: Every edge case in `Detailed Design` (e.g., "retries on
   timeout") must have a corresponding test case in `Tests`.
 - **Implied Dependencies**: If the design implies changes to systems or
