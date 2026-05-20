@@ -1,31 +1,19 @@
 import XCTest
 @testable import UnicoachiOS
 
-class MockAuthClient: AuthClientProtocol, @unchecked Sendable {
-    var registerResult: Result<RegisterResponse, Error>?
-    
-    func register(request: RegisterRequest) async throws -> RegisterResponse {
-        if let result = registerResult {
-            switch result {
-            case .success(let response):
-                return response
-            case .failure(let error):
-                throw error
-            }
-        }
-        fatalError("No result configured")
-    }
-}
-
 @MainActor
 class RegistrationViewModelTests: XCTestCase {
     var viewModel: RegistrationViewModel!
     var mockClient: MockAuthClient!
+    var lastSuccessUser: PublicUser?
     
     override func setUp() async throws {
         try await super.setUp()
         mockClient = MockAuthClient()
-        viewModel = RegistrationViewModel(authClient: mockClient)
+        lastSuccessUser = nil
+        viewModel = RegistrationViewModel(authClient: mockClient) { user in
+            self.lastSuccessUser = user
+        }
     }
     
     func testLocalValidationFailsFast() async {
@@ -39,6 +27,35 @@ class RegistrationViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.errorResponse?.code, "VALIDATION")
         XCTAssertEqual(viewModel.errorResponse?.fieldErrors?.first?.field, "password")
         XCTAssertFalse(viewModel.isLoading)
+        XCTAssertNil(lastSuccessUser)
+    }
+    
+    func testSuccessfulRegistrationInvokesCallback() async throws {
+        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        mockClient.registerResult = .success(RegisterResponse(user: expectedUser))
+        
+        viewModel.email = "test@example.com"
+        viewModel.name = "Test"
+        viewModel.password = "password123"
+        
+        await viewModel.register()
+        
+        XCTAssertEqual(lastSuccessUser?.id, expectedUser.id)
+        XCTAssertNil(viewModel.errorResponse)
+        XCTAssertNil(viewModel.infrastructureError)
+    }
+    
+    func testServerErrorSetsInfrastructureError() async {
+        mockClient.registerResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Server Error", fieldErrors: nil))
+        
+        viewModel.email = "test@example.com"
+        viewModel.name = "Test"
+        viewModel.password = "password123"
+        
+        await viewModel.register()
+        
+        XCTAssertEqual(viewModel.infrastructureError, .serverError)
+        XCTAssertNil(viewModel.errorResponse)
     }
     
     func testSuccessfulRegistrationTogglesLoading() async throws {
@@ -55,10 +72,13 @@ class RegistrationViewModelTests: XCTestCase {
                 }
                 return RegisterResponse(user: PublicUser(id: UUID(), email: "test@example.com", name: "Test"))
             }
+            func login(request: LoginRequest) async throws -> LoginResponse { fatalError() }
+            func logout() async throws { fatalError() }
+            func me() async throws -> MeResponse { fatalError() }
         }
         
         let delayedClient = DelayedAuthClient()
-        viewModel = RegistrationViewModel(authClient: delayedClient)
+        viewModel = RegistrationViewModel(authClient: delayedClient) { _ in }
         delayedClient.viewModelRef = viewModel
         
         viewModel.email = "test@example.com"

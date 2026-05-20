@@ -7,16 +7,28 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		188CC6069EC5B0D0E4D317F9 /* LoginViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A9C9A24C5D3D920ADB5657 /* LoginViewModel.swift */; };
+		1B5D67F44509AAC5162D2D9B /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76885EFAAF600E01FC2CA4E9 /* AppViewModel.swift */; };
+		24AEAB991B392D40D5F4865D /* UserAuthState.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF26463FA3E9D6158360F6B0 /* UserAuthState.swift */; };
+		2A8F34E11A9B308FF97B5C93 /* ErrorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0492882B3D047293ADFE06B /* ErrorView.swift */; };
+		305DFBB6DF5DDD6CFD662B17 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95688CBB1214D3278FA13E27 /* LoginView.swift */; };
 		3E36533C112F695B175277F4 /* RegistrationViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 883B58CD37496DA7F775524A /* RegistrationViewModelTests.swift */; };
+		473585B6D2515A0F3F04F832 /* AuthFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */; };
 		51EDF3D4D368E28FAD40A072 /* AuthClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E07CF0E17D649CCDB28346C4 /* AuthClientTests.swift */; };
+		63C0E03A53327D2F2C1DF54B /* AppViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */; };
+		7A8C8BD03AA7CC720818E921 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11EB23D4BA12D429EC020603 /* HomeView.swift */; };
 		7FADE3CF9342DBBA420151F0 /* AuthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6825BBE278E8DA9E9B075B91 /* AuthClient.swift */; };
 		8003C3DC5A8DDE362AB90D04 /* RegistrationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 571A4B19EB5CC138BE8B778E /* RegistrationView.swift */; };
 		8A9A885769335695678A41C7 /* UnicoachiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0369D9C82AA6374C4EEF5C33 /* UnicoachiOSApp.swift */; };
 		8D6E5132A7516D290E16C958 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 24C7FAB0BDD4E68265F0BDE6 /* Foundation.framework */; };
 		9D1136E85F82EA52DB6FDACE /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 24C7FAB0BDD4E68265F0BDE6 /* Foundation.framework */; };
+		B49688497600EA7DC3C15E64 /* LoginViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D62AAE67DF17D5BF66357229 /* LoginViewModelTests.swift */; };
+		E18E82B50D2DECBF36C8CCFC /* CookieStorageProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEA408B564E10F9E132951E2 /* CookieStorageProtocol.swift */; };
+		E52E30993062D5052E73B728 /* InfrastructureError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C1C30C6AA0A048AF2C056AB /* InfrastructureError.swift */; };
 		EE7EC19D3631E49D1AA056DF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BC933E46CFC14069D3498016 /* Assets.xcassets */; };
 		F419AD7AD0C4D307069ED0E4 /* RegistrationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C8A2A153A20CE21B45852C9 /* RegistrationViewModel.swift */; };
 		F42153F746F1877B7A2463BD /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BA3C895E84184F93D916BB5 /* Models.swift */; };
+		FCB2B11F8FF11F5448DC44A8 /* MockAuthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B78E8AB9325BA342EC147D1 /* MockAuthClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -30,18 +42,30 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppViewModelTests.swift; sourceTree = "<group>"; };
 		0369D9C82AA6374C4EEF5C33 /* UnicoachiOSApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UnicoachiOSApp.swift; sourceTree = "<group>"; };
+		11EB23D4BA12D429EC020603 /* HomeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		24C7FAB0BDD4E68265F0BDE6 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		2C8A2A153A20CE21B45852C9 /* RegistrationViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RegistrationViewModel.swift; sourceTree = "<group>"; };
 		31BB1219080B31BB2938AB80 /* UnicoachiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = UnicoachiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		4C1C30C6AA0A048AF2C056AB /* InfrastructureError.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InfrastructureError.swift; sourceTree = "<group>"; };
 		571A4B19EB5CC138BE8B778E /* RegistrationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RegistrationView.swift; sourceTree = "<group>"; };
+		5B78E8AB9325BA342EC147D1 /* MockAuthClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockAuthClient.swift; sourceTree = "<group>"; };
 		5CE6708FAE272F81F495C1FA /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		6825BBE278E8DA9E9B075B91 /* AuthClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuthClient.swift; sourceTree = "<group>"; };
 		6BA3C895E84184F93D916BB5 /* Models.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuthFlowView.swift; sourceTree = "<group>"; };
+		76885EFAAF600E01FC2CA4E9 /* AppViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
 		841CE404B1BC74E8DC98E67E /* UnicoachiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = UnicoachiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		883B58CD37496DA7F775524A /* RegistrationViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RegistrationViewModelTests.swift; sourceTree = "<group>"; };
+		95688CBB1214D3278FA13E27 /* LoginView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		A0A9C9A24C5D3D920ADB5657 /* LoginViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LoginViewModel.swift; sourceTree = "<group>"; };
 		BC933E46CFC14069D3498016 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		CEA408B564E10F9E132951E2 /* CookieStorageProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CookieStorageProtocol.swift; sourceTree = "<group>"; };
+		D0492882B3D047293ADFE06B /* ErrorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ErrorView.swift; sourceTree = "<group>"; };
+		D62AAE67DF17D5BF66357229 /* LoginViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LoginViewModelTests.swift; sourceTree = "<group>"; };
 		E07CF0E17D649CCDB28346C4 /* AuthClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuthClientTests.swift; sourceTree = "<group>"; };
+		EF26463FA3E9D6158360F6B0 /* UserAuthState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UserAuthState.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -84,6 +108,15 @@
 				0369D9C82AA6374C4EEF5C33 /* UnicoachiOSApp.swift */,
 				5CE6708FAE272F81F495C1FA /* Info.plist */,
 				BC933E46CFC14069D3498016 /* Assets.xcassets */,
+				EF26463FA3E9D6158360F6B0 /* UserAuthState.swift */,
+				4C1C30C6AA0A048AF2C056AB /* InfrastructureError.swift */,
+				76885EFAAF600E01FC2CA4E9 /* AppViewModel.swift */,
+				D0492882B3D047293ADFE06B /* ErrorView.swift */,
+				95688CBB1214D3278FA13E27 /* LoginView.swift */,
+				A0A9C9A24C5D3D920ADB5657 /* LoginViewModel.swift */,
+				11EB23D4BA12D429EC020603 /* HomeView.swift */,
+				6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */,
+				CEA408B564E10F9E132951E2 /* CookieStorageProtocol.swift */,
 			);
 			name = UnicoachiOS;
 			path = UnicoachiOS;
@@ -111,6 +144,9 @@
 			children = (
 				E07CF0E17D649CCDB28346C4 /* AuthClientTests.swift */,
 				883B58CD37496DA7F775524A /* RegistrationViewModelTests.swift */,
+				5B78E8AB9325BA342EC147D1 /* MockAuthClient.swift */,
+				D62AAE67DF17D5BF66357229 /* LoginViewModelTests.swift */,
+				008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */,
 			);
 			name = UnicoachiOSTests;
 			path = UnicoachiOSTests;
@@ -221,6 +257,15 @@
 				F419AD7AD0C4D307069ED0E4 /* RegistrationViewModel.swift in Sources */,
 				8003C3DC5A8DDE362AB90D04 /* RegistrationView.swift in Sources */,
 				8A9A885769335695678A41C7 /* UnicoachiOSApp.swift in Sources */,
+				24AEAB991B392D40D5F4865D /* UserAuthState.swift in Sources */,
+				E52E30993062D5052E73B728 /* InfrastructureError.swift in Sources */,
+				1B5D67F44509AAC5162D2D9B /* AppViewModel.swift in Sources */,
+				2A8F34E11A9B308FF97B5C93 /* ErrorView.swift in Sources */,
+				305DFBB6DF5DDD6CFD662B17 /* LoginView.swift in Sources */,
+				188CC6069EC5B0D0E4D317F9 /* LoginViewModel.swift in Sources */,
+				7A8C8BD03AA7CC720818E921 /* HomeView.swift in Sources */,
+				473585B6D2515A0F3F04F832 /* AuthFlowView.swift in Sources */,
+				E18E82B50D2DECBF36C8CCFC /* CookieStorageProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -230,6 +275,9 @@
 			files = (
 				51EDF3D4D368E28FAD40A072 /* AuthClientTests.swift in Sources */,
 				3E36533C112F695B175277F4 /* RegistrationViewModelTests.swift in Sources */,
+				FCB2B11F8FF11F5448DC44A8 /* MockAuthClient.swift in Sources */,
+				B49688497600EA7DC3C15E64 /* LoginViewModelTests.swift in Sources */,
+				63C0E03A53327D2F2C1DF54B /* AppViewModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

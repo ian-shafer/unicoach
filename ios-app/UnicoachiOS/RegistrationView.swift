@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct RegistrationView: View {
-    @StateObject private var viewModel = RegistrationViewModel()
+    @StateObject private var viewModel: RegistrationViewModel
+    let onSwitchToLogin: () -> Void
     
     enum FocusField {
         case email
@@ -10,6 +11,11 @@ struct RegistrationView: View {
     }
     
     @FocusState private var focusedField: FocusField?
+    
+    init(authClient: AuthClientProtocol, onRegisterSuccess: @escaping (PublicUser) -> Void, onSwitchToLogin: @escaping () -> Void) {
+        _viewModel = StateObject(wrappedValue: RegistrationViewModel(authClient: authClient, onRegisterSuccess: onRegisterSuccess))
+        self.onSwitchToLogin = onSwitchToLogin
+    }
     
     var body: some View {
         NavigationStack {
@@ -77,11 +83,31 @@ struct RegistrationView: View {
                     .accessibilityIdentifier("registerButton")
                     .accessibilityLabel("Register")
                 }
+                
+                Section {
+                    Button(action: onSwitchToLogin) {
+                        Text("Already have an account? Log in")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .accessibilityIdentifier("switchToLoginButton")
+                    .accessibilityLabel("Log In")
+                }
             }
             .navigationTitle("Register")
             .alert(item: $viewModel.errorResponse, content: { error in
                 Alert(title: Text("Error"), message: Text(error.message), dismissButton: .default(Text("OK")))
             })
+            .fullScreenCover(item: $viewModel.infrastructureError) { error in
+                ErrorView(
+                    title: error.title,
+                    description: error.description,
+                    systemImage: error.systemImage,
+                    retryAction: {
+                        viewModel.infrastructureError = nil
+                        register()
+                    }
+                )
+            }
         }
     }
     
@@ -90,8 +116,4 @@ struct RegistrationView: View {
             await viewModel.register()
         }
     }
-}
-
-#Preview {
-    RegistrationView()
 }

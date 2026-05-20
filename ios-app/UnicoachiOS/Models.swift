@@ -27,3 +27,16 @@ struct ErrorResponse: Codable, Error, Identifiable {
     let message: String
     let fieldErrors: [FieldError]?
 }
+
+struct LoginRequest: Codable {
+    let email: String
+    let password: String
+}
+
+struct LoginResponse: Codable {
+    let user: PublicUser
+}
+
+struct MeResponse: Codable {
+    let user: PublicUser
+}

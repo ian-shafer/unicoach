@@ -8,15 +8,19 @@ class RegistrationViewModel: ObservableObject {
     
     @Published var isLoading = false
     @Published var errorResponse: ErrorResponse?
+    @Published var infrastructureError: InfrastructureError?
     
     private let authClient: AuthClientProtocol
+    let onRegisterSuccess: (PublicUser) -> Void
     
-    init(authClient: AuthClientProtocol = AuthClient()) {
+    init(authClient: AuthClientProtocol, onRegisterSuccess: @escaping (PublicUser) -> Void) {
         self.authClient = authClient
+        self.onRegisterSuccess = onRegisterSuccess
     }
     
     func register() async {
         self.errorResponse = nil
+        self.infrastructureError = nil
         
         if email.isEmpty || name.isEmpty || password.isEmpty {
             self.errorResponse = ErrorResponse(code: "VALIDATION", message: String(localized: "All fields are required."), fieldErrors: nil)
@@ -36,16 +40,20 @@ class RegistrationViewModel: ObservableObject {
         let request = RegisterRequest(email: email, password: password, name: name)
         
         do {
-            let _ = try await authClient.register(request: request)
-            // Upon success, gracefully handle the next step (routing away, showing success, etc.).
-            // In this isolated app, we're just resetting form or completing the register action.
-            self.email = ""
-            self.name = ""
-            self.password = ""
+            let response = try await authClient.register(request: request)
+            onRegisterSuccess(response.user)
         } catch let error as ErrorResponse {
-            self.errorResponse = error
+            if error.code == "TIMEOUT" {
+                self.infrastructureError = .timeout
+            } else if error.code == "NETWORK_ERROR" {
+                self.infrastructureError = .noConnectivity
+            } else if error.code == "SERVER_ERROR" {
+                self.infrastructureError = .serverError
+            } else {
+                self.errorResponse = error
+            }
         } catch {
-            self.errorResponse = ErrorResponse(code: "UNKNOWN", message: error.localizedDescription, fieldErrors: nil)
+            self.infrastructureError = .serverError
         }
     }
 }
