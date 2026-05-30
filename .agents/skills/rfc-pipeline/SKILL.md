@@ -304,3 +304,4 @@ Guide the Architect through the following phases sequentially:
     -   Instruct them to verify everything locally and manually commit/upload
         the changes once they approve. Wait for their confirmation that the code
         is committed.
+
