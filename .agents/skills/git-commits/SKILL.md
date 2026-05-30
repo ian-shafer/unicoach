@@ -44,14 +44,12 @@ structured and managed by agents working in this repository.
      the commit execution without this explicit verification.
 
 5. **Commit Message Formatting**
-   - The first line (subject) MUST be no more than 80 characters.
-   - The subject line must be followed by exactly one blank line.
-   - Further description (body) should follow the blank line, providing detailed
-     context for the changes.
-
-6. **Pre-Commit Hook Verification Strategy**
-   - BEFORE ever proposing a git transaction via the `commit_message` artifact,
-     you MUST natively invoke `bin/pre-commit` (or `bin/format`) dynamically
-     within your execution bounds.
-   - You MUST ensure the linter constraints, format assertions, and checks
-     evaluate completely natively before proposing the commit artifact sequence.
+   - The subject line MUST be a short imperative summary under 40-50
+     characters (e.g. "Add execution-context review skill", not "Added"
+     or "Adds").
+   - The subject line MUST be followed by exactly one blank line. This
+     blank line separating the summary from the body is critical.
+   - The body provides detailed explanatory text where necessary and
+     MUST be wrapped to 72 characters per line.
+   - Bullet points are acceptable in the body; use a hanging indent for
+     bullet lists.
