@@ -8,6 +8,7 @@ import ed.unicoach.rest.models.ErrorResponse
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.*
 import io.ktor.server.plugins.BadRequestException
+import io.ktor.server.plugins.PayloadTooLargeException
 import io.ktor.server.plugins.UnsupportedMediaTypeException
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
@@ -18,6 +19,12 @@ fun Application.configureStatusPages() {
       call.respond(
         HttpStatusCode.UnsupportedMediaType,
         ErrorResponse(code = "unsupported_media_type", message = cause.message ?: "Unsupported media type"),
+      )
+    }
+    exception<PayloadTooLargeException> { call, _ ->
+      call.respond(
+        HttpStatusCode.PayloadTooLarge,
+        ErrorResponse("payload_too_large", "Request body exceeds the maximum allowed size"),
       )
     }
     exception<BadRequestException> { call, cause ->

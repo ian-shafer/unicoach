@@ -79,18 +79,29 @@ expiry enqueueing. It does not contain domain logic.
 
 ### Payload Limits
 
-- `POST /api/v1/auth/register` MUST reject requests whose `Content-Length`
-  header exceeds 4096 bytes with `413 Payload Too Large` before body
-  deserialization.
+- A single application-scope request-body-size limit MUST govern every route.
+  There MUST NOT be any per-route opt-in a handler could omit; a route added in
+  future MUST inherit the limit with no additional wiring.
+- The configured default (`server.requestSize.maxSize`) MUST apply to any path
+  with no `routeOverrides` entry. A `routeOverrides` entry, matched by exact
+  request path, MUST be the only way a path deviates from the default.
+- A request whose body exceeds the applicable limit MUST be rejected with
+  `413 Payload Too Large` before content negotiation runs, so an oversized body
+  never reaches the JSON converter.
 
 ### Error Mapping
 
 - `UnsupportedMediaTypeException` MUST map to `415 Unsupported Media Type` with
   `ErrorResponse(code = "unsupported_media_type", ...)`.
+- `PayloadTooLargeException` MUST map to `413 Payload Too Large` with
+  `ErrorResponse(code = "payload_too_large", ...)`. This handler MUST take
+  precedence over the `Throwable` catch-all (which would otherwise return `500`).
 - `BadRequestException` MUST map to `400 Bad Request` with
   `ErrorResponse(code = "bad_request", message = "Invalid JSON payload structure")`.
-- Uncaught `PermanentError` MUST map to `400 Bad Request`, except for `NotFoundException` (`404`) and `DuplicateEmailException` (`409`).
-- Uncaught `TransientError` MUST map to `500 Internal Server Error` and MUST NOT expose internal exception details in the response body.
+- Uncaught `PermanentError` MUST map to `400 Bad Request` (code `permanent_error`),
+  except for `NotFoundException` (`404`) and `DuplicateEmailException` (`409`).
+- Uncaught `TransientError` MUST map to `503 Service Unavailable`
+  (code `internal_error`) and MUST NOT expose internal exception details.
 
 ### Token Hashing
 
@@ -111,10 +122,12 @@ expiry enqueueing. It does not contain domain logic.
   server binds.
 - **Idempotency**: Not idempotent — calling twice binds two server instances.
 
-### `Application.appModule(database, sessionConfig)` — [`Application.kt`](./Application.kt)
+### `Application.appModule(database, sessionConfig, requestSizeConfig)` — [`Application.kt`](./Application.kt)
 
-- **Side effects**: Installs `ContentNegotiation` (Jackson), `StatusPages`,
-  builds `AuthService`, and registers all routes.
+- **Side effects**: Installs `ContentNegotiation` (Jackson), `StatusPages`, and
+  the application-scope request-body-size limit via
+  `configureRequestSizeLimit(requestSizeConfig)`; builds `AuthService`, and
+  registers all routes.
 - **Scope**: Intentionally excludes `SessionExpiryPlugin` installation. Tests
   calling `appModule()` directly bypass the queue-write side effect.
 - **Idempotency**: Not idempotent — Ktor plugin installation is not
@@ -153,7 +166,8 @@ expiry enqueueing. It does not contain domain logic.
   - `RegisterOutcome.ValidationFailure` → `400 Bad Request`, `ErrorResponse(code="validation_failed", fieldErrors=[...])`.
   - `RegisterOutcome.DuplicateEmail` → `409 Conflict`, `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])`.
   - Uncaught exception → StatusPages handles (e.g., `500 Internal Server Error`).
-  - `Content-Length > 4096` → `413 Payload Too Large` before body read.
+  - Body exceeding the applicable request-size limit → `413 Payload Too Large`,
+    rejected before content negotiation (see §II Payload Limits).
 - **Session reminting**: If a session cookie is present, the handler calls
   `SessionsDao.findByTokenHash()` to look up the existing session. If the
   result is `SessionFindResult.Success`, the session is reminted via
@@ -214,8 +228,21 @@ expiry enqueueing. It does not contain domain logic.
 
 - **Handles**:
   - `UnsupportedMediaTypeException` → `415`.
+  - `PayloadTooLargeException` → `413`, code `payload_too_large`.
   - `BadRequestException` → `400`, message fixed as `"Invalid JSON payload structure"`.
 - **Side effects**: None beyond response write.
+
+### `Application.configureRequestSizeLimit(config: RequestSizeConfig)` — [`plugins/RequestSizeLimit.kt`](./plugins/RequestSizeLimit.kt)
+
+- **Side effects**: A single application-scope `install(RequestBodyLimit)`. No
+  DB or network access.
+- **Behavior**: The `bodyLimit` callback selects the limit per call by exact
+  request-path match —
+  `config.routeOverrides[path]?.bytes ?: config.defaultMax.bytes`. Enforced on
+  both the `Content-Length` header and the streamed body, ahead of content
+  negotiation. Over-limit requests raise `PayloadTooLargeException` → `413`.
+- **Idempotency**: Not idempotent — `RequestBodyLimit` is route-scoped; a second
+  install throws `DuplicatePluginException`.
 
 ### `SessionConfig.from(config): Result<SessionConfig>` — [`auth/SessionConfig.kt`](./auth/SessionConfig.kt)
 
@@ -286,6 +313,8 @@ Required keys in `rest-server.conf`:
 |-----|------|-------------|
 | `server.host` | String | Netty bind host |
 | `server.port` | Int | Netty bind port |
+| `server.requestSize.maxSize` | Size string | Default max request body size (e.g. `"8 KiB"`); parsed via `Config.getBytes` |
+| `server.requestSize.routeOverrides` | Object\<path → size string\> | Per-exact-path body-size overrides (e.g. `"/api/v1/auth/register" = "1 KiB"`) |
 | `session.expiration` | Duration | Session TTL |
 | `session.cookieName` | String | Cookie name |
 | `session.cookieDomain` | String | Cookie domain attribute |
@@ -327,3 +356,4 @@ It does NOT depend on `net`.
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../rfc/21-session-expiry-queue.md)
 - [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md)
 - [x] [RFC-23: Native Daemon Scripts](../../../../../../../rfc/23-native-daemon-scripts.md)
+- [x] [RFC-29: Request Payload Size Limits](../../../../../../../rfc/29-request-payload-limits.md)

@@ -4,12 +4,14 @@
 
 This directory contains Ktor application-level plugins that are installed once
 at server startup and apply cross-cutting concerns to every HTTP
-request/response in the `rest-server`. The three plugins cover:
+request/response in the `rest-server`. The plugins cover:
 
 1. **Serialization** — JSON codec configuration (Jackson).
 2. **StatusPages** — Global exception-to-HTTP-status mapping.
 3. **SessionExpiryPlugin** — Post-response hook that asynchronously enqueues
    session expiry extension jobs.
+4. **RequestSizeLimit** — Application-scope request body size enforcement,
+   rejecting oversized bodies with `413`.
 
 ---
 
@@ -34,8 +36,18 @@ request/response in the `rest-server`. The three plugins cover:
 - An unhandled `UnsupportedMediaTypeException` MUST produce a `415
   Unsupported Media Type` response with an `ErrorResponse` body (`code =
   "unsupported_media_type"`).
-- Unhandled `TransientError` exceptions MUST produce a `503 Service Unavailable` response.
-- Unhandled `PermanentError` exceptions MUST produce a `400 Bad Request` or appropriate 4xx response.
+- An unhandled `PayloadTooLargeException` MUST produce a `413 Payload Too Large`
+  response with `code = "payload_too_large"`.
+- An unhandled `BadRequestException` MUST produce a `400 Bad Request` response
+  with `code = "bad_request"` and the fixed message `"Invalid JSON payload
+  structure"` (not derived from the cause).
+- An unhandled `PermanentError` MUST produce `code = "permanent_error"` with a
+  status by subtype: `NotFoundException` → `404`, `DuplicateEmailException` →
+  `409`, any other `PermanentError` → `400`.
+- An unhandled `TransientError` MUST produce a `503 Service Unavailable`
+  response with `code = "internal_error"`.
+- Any other `Throwable` MUST produce a `500 Internal Server Error` with
+  `code = "internal_error"`.
 - The `ErrorResponse` type used here MUST be the shared
   `ed.unicoach.rest.models.ErrorResponse` — no ad-hoc response types are
   permitted.
@@ -66,6 +78,21 @@ request/response in the `rest-server`. The three plugins cover:
 - The plugin MUST NOT perform any database reads or writes. Its only I/O side
   effect is a single call to `queueService.enqueue()`.
 
+### RequestSizeLimit (`RequestSizeLimit.kt`)
+
+- The server MUST enforce a request body size limit on every routed call via a
+  single application-scope `install(RequestBodyLimit)` in
+  `configureRequestSizeLimit()`. There MUST NOT be any per-route opt-in — a
+  route added in the future is covered without per-route wiring.
+- The applicable limit MUST be selected per request by exact `call.request.path()`
+  match against `routeOverrides` (slash- and case-sensitive); a path with no
+  matching entry MUST resolve to `defaultMax`.
+- A request body exceeding the applicable limit (declared `Content-Length` or
+  streamed bytes) MUST raise `PayloadTooLargeException`, mapped to `413` by
+  StatusPages.
+- An over-limit body MUST be rejected before `ContentNegotiation` runs, so it
+  produces a `413` — never a Jackson `400`.
+
 ---
 
 ## III. Behavioral Contracts
@@ -90,13 +117,20 @@ request/response in the `rest-server`. The three plugins cover:
 - **Handled Exceptions**:
 
   | Exception | HTTP Status | `ErrorResponse.code` | `ErrorResponse.message` |
-  |---------------------------------|-------------|------------------------------|------------------------------------------------|
-  | `TransientError` | 503 | `"service_unavailable"` | `"Service unavailable"` |
-  | `PermanentError` | 400 | `"bad_request"` | `cause.message ?: "Bad request"` |
+  |---------------------------------|---------------------|----------------------|------------------------------------------------|
+  | `PayloadTooLargeException` | 413 | `"payload_too_large"` | `"Request body exceeds the maximum allowed size"` |
+  | `BadRequestException` | 400 | `"bad_request"` | `"Invalid JSON payload structure"` (fixed) |
   | `UnsupportedMediaTypeException` | 415 | `"unsupported_media_type"` | `cause.message ?: "Unsupported media type"` |
+  | `PermanentError` | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (other) | `"permanent_error"` | `cause.message ?: "Bad request"` |
+  | `TransientError` | 503 | `"internal_error"` | `cause.message ?: "Internal server error"` |
 
-- **Unhandled Exceptions**: Any exception type not listed above falls through to
-  Ktor's default 500 handler.
+- **Dispatch**: `StatusPages` routes to the handler for the most specific
+  superclass; the `PayloadTooLargeException`, `BadRequestException`, and
+  `UnsupportedMediaTypeException` handlers take precedence over the
+  `exception<Throwable>` catch-all.
+- **Fallback**: any `Throwable` that is neither `PermanentError` nor
+  `TransientError` produces a `500 Internal Server Error` with
+  `code = "internal_error"`, message `"An internal error occurred"`.
 - **Idempotency**: MUST be called exactly once at startup.
 
 ---
@@ -143,6 +177,23 @@ request/response in the `rest-server`. The three plugins cover:
 
 ---
 
+### `configureRequestSizeLimit()` ([RequestSizeLimit.kt](./RequestSizeLimit.kt))
+
+- **Signature**: `fun Application.configureRequestSizeLimit(config: RequestSizeConfig)`
+- **Side Effects**: Installs the Ktor `RequestBodyLimit` plugin once at
+  application scope with a path-aware `bodyLimit` callback. No database writes,
+  no network calls.
+- **Limit Selection**: returns
+  `config.routeOverrides[call.request.path()]?.bytes ?: config.defaultMax.bytes`
+  — exact-path lookup with default fallback.
+- **Error Handling**: a body exceeding the applicable limit raises
+  `io.ktor.server.plugins.PayloadTooLargeException`, mapped to `413` by
+  `configureStatusPages()`.
+- **Idempotency**: MUST be called exactly once at startup. A second call on the
+  same `Application` results in a Ktor `DuplicatePluginException`.
+
+---
+
 ## IV. Infrastructure & Environment
 
 - **HOCON Key** (`rest-server.conf`): `sessionExpiry.ignorePathPrefixes` — a
@@ -167,3 +218,5 @@ request/response in the `rest-server`. The three plugins cover:
 - [x] [RFC-09: Global Config](../../../../../../../../rfc/09-global-config.md) — introduced `JwtConfig.kt` (subsequently deleted).
 - [x] [RFC-11: Sessions](../../../../../../../../rfc/11-sessions.md) — deleted `JwtConfig.kt` (replaced by `SessionConfig`-based auth).
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../../rfc/21-session-expiry-queue.md) — introduced `SessionExpiryPlugin.kt`.
+- [x] [RFC-24: Result Types](../../../../../../../../rfc/24-result-types.md) — reworked `StatusPages.kt` exception mapping (`permanent_error` / `internal_error` codes, subtype-driven status).
+- [x] [RFC-29: Request Payload Limits](../../../../../../../../rfc/29-request-payload-limits.md) — introduced `RequestSizeLimit.kt`; added the `413`/`PayloadTooLargeException` handler in `StatusPages.kt`.

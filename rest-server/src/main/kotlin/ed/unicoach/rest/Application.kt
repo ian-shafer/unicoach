@@ -7,7 +7,9 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.plugins.SessionExpiryPlugin
+import ed.unicoach.rest.plugins.configureRequestSizeLimit
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
 import ed.unicoach.util.Argon2Hasher
@@ -33,6 +35,11 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val sessionConfig =
     SessionConfig
+      .from(config)
+      .getOrThrow()
+
+  val requestSizeConfig =
+    RequestSizeConfig
       .from(config)
       .getOrThrow()
 
@@ -63,7 +70,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         database.close()
       }
 
-      appModule(database, sessionConfig)
+      appModule(database, sessionConfig, requestSizeConfig)
 
       install(SessionExpiryPlugin) {
         this.sessionConfig = sessionConfig
@@ -91,9 +98,11 @@ fun main() {
 fun Application.appModule(
   database: Database,
   sessionConfig: SessionConfig,
+  requestSizeConfig: RequestSizeConfig,
 ) {
   configureSerialization()
   configureStatusPages()
+  configureRequestSizeLimit(requestSizeConfig)
 
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()

@@ -1,19 +1,36 @@
 package ed.unicoach.common.config
 
+import com.typesafe.config.ConfigFactory
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 class AppConfigTest {
   @Test
-  fun `load correctly prioritizes right-most module overrides`() {
-    val config = AppConfig.load("common.conf").getOrThrow()
-    assertEquals(30000, config.getInt("database.connectionTimeout"))
+  fun `load merges resources right-to-left so the right-most resource overrides earlier keys`() {
+    val config = AppConfig.load("merge-base.conf", "merge-override.conf").getOrThrow()
+
+    // `app.name` is defined in both; the right-most resource wins.
+    assertEquals("override", config.getString("app.name"))
+    // `app.region` is only in the left-most resource and survives the merge.
+    assertEquals("base-region", config.getString("app.region"))
   }
 
   @Test
-  fun `verify System getenv forcefully overrides all identically named fields`() {
-    val config = AppConfig.load().getOrThrow()
-    assertTrue(config.hasPath("PATH") || config.hasPath("USER"), "Environment must contain standard variables natively")
+  fun `load resolves optional substitutions so external overrides win over in-file defaults`() {
+    System.setProperty("APP_CONFIG_TEST_OVERRIDE", "from-environment")
+    ConfigFactory.invalidateCaches()
+
+    val config = AppConfig.load("env-substitution.conf").getOrThrow()
+
+    // `value = ${?APP_CONFIG_TEST_OVERRIDE}` overrides the literal default once the
+    // substitution source is present at load time.
+    assertEquals("from-environment", config.getString("app.value"))
+  }
+
+  @AfterTest
+  fun clearOverride() {
+    System.clearProperty("APP_CONFIG_TEST_OVERRIDE")
+    ConfigFactory.invalidateCaches()
   }
 }

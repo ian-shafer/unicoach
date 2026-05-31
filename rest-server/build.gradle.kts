@@ -19,6 +19,7 @@ dependencies {
   implementation(libs.ktor.server.auth.jwt)
   implementation(libs.ktor.server.content.negotiation)
   implementation(libs.ktor.server.status.pages)
+  implementation(libs.ktor.server.body.limit)
   implementation(libs.ktor.serialization.jackson)
   implementation(libs.logback.classic)
   implementation(libs.logstash.logback.encoder)
