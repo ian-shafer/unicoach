@@ -14,9 +14,6 @@ import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.ValidationResult
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import ed.unicoach.util.Crypto
 
 class AuthService(
   private val database: Database,
@@ -45,9 +42,7 @@ class AuthService(
 
     val hashStr =
       try {
-        withContext(Dispatchers.IO) {
-          argon2Hasher.hash(password)
-        }
+        argon2Hasher.hash(password)
       } catch (e: Exception) {
         return Result.failure(e)
       }
@@ -63,56 +58,54 @@ class AuthService(
       )
 
     return try {
-      withContext(Dispatchers.IO) {
-        database.withConnection { session ->
-          val daoResult = UsersDao.create(session, newUser)
-          if (daoResult.isFailure) {
-            val ex = daoResult.exceptionOrNull()
-            if (ex is DuplicateEmailException) {
-              return@withConnection Result.success(RegisterOutcome.DuplicateEmail(emailAddr.value))
-            } else {
-              return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
-            }
+      database.withConnection { session ->
+        val daoResult = UsersDao.create(session, newUser)
+        if (daoResult.isFailure) {
+          val ex = daoResult.exceptionOrNull()
+          if (ex is DuplicateEmailException) {
+            return@withConnection Result.success(RegisterOutcome.DuplicateEmail(emailAddr.value))
+          } else {
+            return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
           }
-          val user = daoResult.getOrNull()!!
-  
-          val newToken = tokenGenerator.generateToken()
-          val newHash = TokenHash.fromRawToken(newToken)
-          var wasReminted = false
-  
-          if (oldCookieToken != null) {
-            val oldHash = TokenHash.fromRawToken(oldCookieToken)
-            val found = SessionsDao.findByTokenHash(session, oldHash)
-            if (found.isSuccess) {
-              val sessionVal = found.getOrNull()!!
-              SessionsDao.remintToken(
-                session = session,
-                id = sessionVal.id,
-                currentVersion = sessionVal.version,
-                newUserId = user.id,
-                newTokenHash = newHash.value,
-                newExpirationSeconds = sessionExpirationSeconds,
-              ).getOrThrow()
-              wasReminted = true
-            }
-          }
-  
-          if (!wasReminted) {
-            SessionsDao.create(
-              session = session,
-              newSession = ed.unicoach.db.models.NewSession(
-                userId = user.id,
-                tokenHash = newHash,
-                userAgent = userAgent,
-                initialIp = initialIp,
-                metadata = null,
-                expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
-              ),
-            ).getOrThrow()
-          }
-  
-          Result.success(RegisterOutcome.Success(user, newToken))
         }
+        val user = daoResult.getOrNull()!!
+
+        val newToken = tokenGenerator.generateToken()
+        val newHash = TokenHash.fromRawToken(newToken)
+        var wasReminted = false
+
+        if (oldCookieToken != null) {
+          val oldHash = TokenHash.fromRawToken(oldCookieToken)
+          val found = SessionsDao.findByTokenHash(session, oldHash)
+          if (found.isSuccess) {
+            val sessionVal = found.getOrNull()!!
+            SessionsDao.remintToken(
+              session = session,
+              id = sessionVal.id,
+              currentVersion = sessionVal.version,
+              newUserId = user.id,
+              newTokenHash = newHash.value,
+              newExpirationSeconds = sessionExpirationSeconds,
+            ).getOrThrow()
+            wasReminted = true
+          }
+        }
+
+        if (!wasReminted) {
+          SessionsDao.create(
+            session = session,
+            newSession = ed.unicoach.db.models.NewSession(
+              userId = user.id,
+              tokenHash = newHash,
+              userAgent = userAgent,
+              initialIp = initialIp,
+              metadata = null,
+              expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+            ),
+          ).getOrThrow()
+        }
+
+        Result.success(RegisterOutcome.Success(user, newToken))
       }
     } catch (e: Exception) {
       Result.failure(e)
@@ -121,27 +114,25 @@ class AuthService(
 
   suspend fun getCurrentUser(tokenHash: TokenHash): Result<ed.unicoach.db.models.User?> =
     try {
-      withContext(Dispatchers.IO) {
-        database.withConnection { session ->
-          val sessionResult = SessionsDao.findByTokenHash(session, tokenHash)
-          if (sessionResult.isFailure) {
-            if (sessionResult.exceptionOrNull() is NotFoundException) {
-              return@withConnection Result.success(null)
-            }
-            return@withConnection Result.failure(sessionResult.exceptionOrNull()!!)
+      database.withConnection { session ->
+        val sessionResult = SessionsDao.findByTokenHash(session, tokenHash)
+        if (sessionResult.isFailure) {
+          if (sessionResult.exceptionOrNull() is NotFoundException) {
+            return@withConnection Result.success(null)
           }
-
-          val userId = sessionResult.getOrNull()!!.userId ?: return@withConnection Result.success(null)
-
-          val userResult = UsersDao.findById(session, userId)
-          if (userResult.isFailure) {
-            if (userResult.exceptionOrNull() is NotFoundException) {
-              return@withConnection Result.success(null)
-            }
-            return@withConnection Result.failure(userResult.exceptionOrNull()!!)
-          }
-          Result.success(userResult.getOrNull())
+          return@withConnection Result.failure(sessionResult.exceptionOrNull()!!)
         }
+
+        val userId = sessionResult.getOrNull()!!.userId ?: return@withConnection Result.success(null)
+
+        val userResult = UsersDao.findById(session, userId)
+        if (userResult.isFailure) {
+          if (userResult.exceptionOrNull() is NotFoundException) {
+            return@withConnection Result.success(null)
+          }
+          return@withConnection Result.failure(userResult.exceptionOrNull()!!)
+        }
+        Result.success(userResult.getOrNull())
       }
     } catch (e: Exception) {
       Result.failure(e)
@@ -149,14 +140,12 @@ class AuthService(
 
   suspend fun logout(tokenHash: TokenHash): Result<Unit> =
     try {
-      withContext(Dispatchers.IO) {
-        database.withConnection { session ->
-          val result = SessionsDao.revokeByTokenHash(session, tokenHash)
-          if (result.isFailure && result.exceptionOrNull() !is NotFoundException) {
-            Result.failure(result.exceptionOrNull()!!)
-          } else {
-            Result.success(Unit)
-          }
+      database.withConnection { session ->
+        val result = SessionsDao.revokeByTokenHash(session, tokenHash)
+        if (result.isFailure && result.exceptionOrNull() !is NotFoundException) {
+          Result.failure(result.exceptionOrNull()!!)
+        } else {
+          Result.success(Unit)
         }
       }
     } catch (e: Exception) {
@@ -179,15 +168,13 @@ class AuthService(
 
     var user: ed.unicoach.db.models.User? = null
 
-    withContext(Dispatchers.IO) {
-      database.withConnection { session ->
-        val userResult = UsersDao.findByEmail(session, emailAddr)
-        val exception = userResult.exceptionOrNull()
-        if (exception != null && exception !is ed.unicoach.db.dao.NotFoundException) {
-          throw exception
-        }
-        user = userResult.getOrNull()
+    database.withConnection { session ->
+      val userResult = UsersDao.findByEmail(session, emailAddr)
+      val exception = userResult.exceptionOrNull()
+      if (exception != null && exception !is ed.unicoach.db.dao.NotFoundException) {
+        throw exception
       }
+      user = userResult.getOrNull()
     }
 
     if (user == null) {
@@ -204,9 +191,7 @@ class AuthService(
       return Result.success(LoginResult.PasswordNotSet)
     }
 
-    val isValid = withContext(Dispatchers.Crypto) {
-      argon2Hasher.verify(pwdHash.value, password)
-    }
+    val isValid = argon2Hasher.verify(pwdHash.value, password)
 
     if (!isValid) {
       return Result.success(LoginResult.PasswordMismatch)
@@ -215,29 +200,27 @@ class AuthService(
     val newToken = tokenGenerator.generateToken()
     val newHash = TokenHash.fromRawToken(newToken)
 
-    withContext(Dispatchers.IO) {
-      database.withConnection { session ->
-        if (oldCookieToken != null) {
-          val oldHash = TokenHash.fromRawToken(oldCookieToken)
-          val revokeResult = SessionsDao.revokeByTokenHash(session, oldHash)
-          val exception = revokeResult.exceptionOrNull()
-          if (exception != null && exception !is ed.unicoach.db.dao.NotFoundException) {
-            throw exception
-          }
+    database.withConnection { session ->
+      if (oldCookieToken != null) {
+        val oldHash = TokenHash.fromRawToken(oldCookieToken)
+        val revokeResult = SessionsDao.revokeByTokenHash(session, oldHash)
+        val exception = revokeResult.exceptionOrNull()
+        if (exception != null && exception !is ed.unicoach.db.dao.NotFoundException) {
+          throw exception
         }
-
-        SessionsDao.create(
-          session = session,
-          newSession = ed.unicoach.db.models.NewSession(
-            userId = user!!.id,
-            tokenHash = newHash,
-            userAgent = userAgent,
-            initialIp = initialIp,
-            metadata = null,
-            expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
-          ),
-        ).getOrThrow()
       }
+
+      SessionsDao.create(
+        session = session,
+        newSession = ed.unicoach.db.models.NewSession(
+          userId = user!!.id,
+          tokenHash = newHash,
+          userAgent = userAgent,
+          initialIp = initialIp,
+          metadata = null,
+          expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+        ),
+      ).getOrThrow()
     }
 
     Result.success(LoginResult.Success(user!!, newToken))

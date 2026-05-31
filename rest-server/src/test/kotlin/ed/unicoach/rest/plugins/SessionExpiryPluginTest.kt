@@ -14,6 +14,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -59,18 +60,22 @@ class SessionExpiryPluginTest {
   }
 
   @BeforeEach
-  fun resetDatabase() {
-    database.withConnection { session ->
-      session.prepareStatement("TRUNCATE TABLE jobs CASCADE").use { it.execute() }
+  fun resetDatabase() =
+    runBlocking {
+      database.withConnection { session ->
+        session.prepareStatement("TRUNCATE TABLE jobs CASCADE").use { it.execute() }
+      }
+      Unit
     }
-  }
 
   private fun countJobs(): Int =
-    database.withConnection { session ->
-      session.prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = 'SESSION_EXTEND_EXPIRY'").use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
+    runBlocking {
+      database.withConnection { session ->
+        session.prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = 'SESSION_EXTEND_EXPIRY'").use { stmt ->
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            rs.getInt(1)
+          }
         }
       }
     }

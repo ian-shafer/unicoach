@@ -7,7 +7,7 @@ for user registration, session-bound user resolution (`/me`), session revocation
 (logout), and background zombie-session cleanup. It bridges the HTTP boundary
 (handled by `rest-server`) and the data layer (handled by `service/db`), exposing
 pure domain results via sealed interfaces that contain no HTTP types. Login
-credential verification is handled in this layer, dispatching Argon2 password comparison to a dedicated crypto dispatcher to prevent event loop starvation.
+credential verification is handled in this layer.
 
 ---
 
@@ -16,26 +16,20 @@ credential verification is handled in this layer, dispatching Argon2 password co
 ### General
 
 - `AuthService` MUST NOT import or reference any Ktor, HTTP, or REST-layer types.
-- All `AuthService` methods that perform I/O MUST dispatch to `Dispatchers.IO`
-  via `withContext` before opening a database connection, to prevent Netty event
-  loop starvation.
 - All `AuthService` methods MUST wrap their entire body in `try/catch(Exception)`
   and return the appropriate `DatabaseFailure` variant on uncaught exceptions.
 - `AuthService` MUST NOT own or hold a raw `java.sql.Connection` — all DB access
   MUST go through `Database.withConnection`.
-- CPU-bound Argon2 password verification MUST run inside `withContext(Dispatchers.Crypto)` to prevent Netty event loop starvation.
 
 ### Registration
 
 - `AuthService.register()` MUST validate input via `RegistrationValidator` before
   any database call. If validation fails, it MUST return
   `RegisterOutcome.ValidationFailure` without touching the DB.
-- Password hashing MUST run inside `withContext(Dispatchers.IO)` — Argon2
-  computation MUST NOT block the Netty event loop.
 - If `UsersDao.create()` returns `DuplicateEmailException`, `AuthService`
   MUST return `RegisterOutcome.DuplicateEmail`, not a database error.
-- `AuthService.register()` MUST NOT mint sessions or tokens — session creation is
-  delegated to the routing layer.
+- `AuthService.register()` MUST mint a token and create a session (or remint the
+  caller's existing session when `oldCookieToken` is supplied) on success.
 
 ### Session Resolution (`getCurrentUser`)
 
@@ -86,20 +80,19 @@ credential verification is handled in this layer, dispatching Argon2 password co
 
 ## III. Behavioral Contracts
 
-### `AuthService.register(email, name, password): Result<RegisterOutcome>` — See [AuthService.kt](./AuthService.kt)
+### `AuthService.register(email, name, password, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<RegisterOutcome>` — See [AuthService.kt](./AuthService.kt)
 
-- **Side Effects**: Writes one row to `users` via `UsersDao.create()`. No
-  session or token is created here.
+- **Side Effects**: Writes one row to `users` via `UsersDao.create()`, then mints
+  a token and creates or remints a session via `SessionsDao`.
 - **Validation**: `RegistrationValidator` is called first; returns
   `RegisterOutcome.ValidationFailure(errors, fieldErrors)` without DB access if
   validation fails.
-- **Hashing**: `argon2Hasher.hash(password)` runs on `Dispatchers.IO`.
-  Exceptions from hashing are caught and returned as
-  `Result.failure()`.
+- **Hashing**: `argon2Hasher.hash(password)` is invoked; thrown exceptions are
+  caught and returned as `Result.failure()`.
 - **Idempotency**: Not idempotent. Submitting the same email twice returns
   `RegisterOutcome.DuplicateEmail` on the second call.
 - **Error mapping**:
-  - `Success` → `Result.success(RegisterOutcome.Success(user))`
+  - `Success` → `Result.success(RegisterOutcome.Success(user, newToken))`
   - `DuplicateEmailException` → `Result.success(RegisterOutcome.DuplicateEmail(email))`
   - Uncaught exception → `Result.failure(e)`
 
@@ -107,7 +100,6 @@ credential verification is handled in this layer, dispatching Argon2 password co
 
 - **Side Effects**: Two read-only DB queries (`SessionsDao.findByTokenHash`,
   `UsersDao.findById`). No writes.
-- **IO dispatch**: Entire DB pipeline runs inside `withContext(Dispatchers.IO)`.
 - **Session lookup**: `SessionsDao.findByTokenHash` filters expired and revoked
   sessions. `NotFoundException` → `Result.success(null)`.
   Other exceptions → `Result.failure(e)`.
@@ -123,7 +115,6 @@ credential verification is handled in this layer, dispatching Argon2 password co
 - **Side Effects**: One blind `UPDATE` on `sessions` via
   `SessionsDao.revokeByTokenHash()`. Sets `is_revoked = true`,
   increments `version`.
-- **IO dispatch**: Entire pipeline runs inside `withContext(Dispatchers.IO)`.
 - **Idempotency**: Idempotent. `NotFoundException` (already revoked or missing) maps to
   `Result.success(Unit)`.
 - **Error mapping**:
@@ -158,14 +149,13 @@ credential verification is handled in this layer, dispatching Argon2 password co
 
 | Variant | Carries | When returned |
 |---|---|---|
-| `Success` | `user: User` | Successful registration |
+| `Success` | `user: User`, `token: String` | Successful registration |
 | `ValidationFailure` | `errors: List<String>`, `fieldErrors: List<FieldError>` | Validator rejects input |
 | `DuplicateEmail` | `email: String` | DB unique constraint hit on email |
 
 ### `AuthService.login(...)` — See [AuthService.kt](./AuthService.kt)
 
 - **Side Effects**: One read-only DB query for the user via `UsersDao.findByEmail()`. If successful, optionally revokes the old session and creates a new session via `SessionsDao.create()`.
-- **IO dispatch**: DB operations run inside `withContext(Dispatchers.IO)`. Argon2 verification runs inside `withContext(Dispatchers.Crypto)`.
 - **Idempotency**: Not idempotent. Creating a session mutates the database.
 - **Error mapping**:
   - `Success` → `Result.success(LoginResult.Success(user, newToken))`
@@ -193,12 +183,13 @@ credential verification is handled in this layer, dispatching Argon2 password co
   `Argon2Hasher` (from `common`), and `Validator<RegistrationInput>`.
 - **Database**: Requires a live PostgreSQL connection pool via `Database`
   (HikariCP). `AuthService` is constructed with an injected `Database` instance.
-- **Coroutine context**: `AuthService` must be called from a coroutine scope.
-  Internal IO is dispatched to `Dispatchers.IO`. CPU-bound cryptographic operations (Argon2) MUST use `Dispatchers.Crypto`. Callers retain their own dispatcher.
+- **Coroutine context**: `AuthService`'s `suspend` methods must be called from a
+  coroutine scope. The module performs no dispatcher switching and preserves the
+  caller's context.
 - **No HOCON keys** are read directly by this package. Configuration is injected
   via constructor parameters (`database`, `argon2Hasher`).
 - **`SessionCleanupJob`** is intended to be invoked by an external scheduler
-  (e.g., cron). It is synchronous and does NOT self-schedule.
+  (e.g., cron). `execute()` is a `suspend` function and does NOT self-schedule.
 
 ---
 
@@ -212,3 +203,4 @@ credential verification is handled in this layer, dispatching Argon2 password co
 - [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md)
 - [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md)
 - [x] [RFC-26: Login](../../../../../../../rfc/26-login.md)
+- [x] [RFC-28: Coroutine Context Refactor](../../../../../../../rfc/28-coroutine-context.md)

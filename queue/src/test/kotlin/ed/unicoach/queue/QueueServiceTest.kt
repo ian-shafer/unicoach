@@ -2,6 +2,8 @@ package ed.unicoach.queue
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.jupiter.api.AfterAll
@@ -15,6 +17,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class QueueServiceTest {
   companion object {
     private lateinit var database: Database
@@ -60,7 +63,7 @@ class QueueServiceTest {
   private fun simplePayload(): JsonObject = JsonObject(mapOf("k" to JsonPrimitive("v")))
 
   @Test
-  fun `enqueue creates SCHEDULED job with immediate scheduled_at`() {
+  fun `enqueue creates SCHEDULED job with immediate scheduled_at`() = runTest {
     val result = service.enqueue(JobType.TEST_JOB, simplePayload())
     assertTrue(result is EnqueueResult.Success)
     val job = result.job
@@ -69,7 +72,7 @@ class QueueServiceTest {
   }
 
   @Test
-  fun `enqueue with delay sets future scheduled_at`() {
+  fun `enqueue with delay sets future scheduled_at`() = runTest {
     val result = service.enqueue(JobType.TEST_JOB, simplePayload(), delay = 1.hours)
     assertTrue(result is EnqueueResult.Success)
     val job = result.job
@@ -84,14 +87,14 @@ class QueueServiceTest {
   }
 
   @Test
-  fun `enqueue with custom max_attempts stores value on job`() {
+  fun `enqueue with custom max_attempts stores value on job`() = runTest {
     val result = service.enqueue(JobType.TEST_JOB, simplePayload(), maxAttempts = 3)
     assertTrue(result is EnqueueResult.Success)
     assertEquals(3, result.job.maxAttempts)
   }
 
   @Test
-  fun `enqueue with null max_attempts stores NULL`() {
+  fun `enqueue with null max_attempts stores NULL`() = runTest {
     val result = service.enqueue(JobType.TEST_JOB, simplePayload(), maxAttempts = null)
     assertTrue(result is EnqueueResult.Success)
     assertNull(result.job.maxAttempts)

@@ -10,7 +10,7 @@ class SessionCleanupJob(
 ) {
   private val logger = LoggerFactory.getLogger(SessionCleanupJob::class.java)
 
-  fun execute() {
+  suspend fun execute() {
     logger.info("Initiating zombie session purge...")
 
     try {

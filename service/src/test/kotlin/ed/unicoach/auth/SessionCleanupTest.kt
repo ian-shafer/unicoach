@@ -6,6 +6,8 @@ import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.TokenHash
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -16,6 +18,7 @@ import java.sql.PreparedStatement
 import java.time.Duration
 import kotlin.test.assertTrue
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class SessionCleanupTest {
   companion object {
     private lateinit var connection: Connection
@@ -55,7 +58,7 @@ class SessionCleanupTest {
     }
 
   @Test
-  fun `execute synchronously deletes expired and revoked sessions`() {
+  fun `execute synchronously deletes expired and revoked sessions`() = runTest {
     val job = SessionCleanupJob(database)
 
     val hashValid = byteArrayOf(1)

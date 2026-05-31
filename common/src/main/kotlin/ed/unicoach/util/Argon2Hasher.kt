@@ -1,6 +1,7 @@
 package ed.unicoach.util
 
 import de.mkammerer.argon2.Argon2Factory
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -10,6 +11,7 @@ class Argon2Hasher(
   private val memory: Int = 65536,
   private val parallelism: Int = 1,
   private val timeoutMs: Long = 2000L,
+  private val dispatcher: CoroutineDispatcher = Dispatchers.Crypto,
 ) {
   private val argon2 =
     Argon2Factory.create(
@@ -19,7 +21,7 @@ class Argon2Hasher(
     )
 
   suspend fun hash(password: String): String =
-    withContext(Dispatchers.IO) {
+    withContext(dispatcher) {
       withTimeout(timeoutMs) {
         val passwordChars = password.toCharArray()
         try {
@@ -34,7 +36,7 @@ class Argon2Hasher(
     hash: String,
     password: String,
   ): Boolean =
-    withContext(Dispatchers.IO) {
+    withContext(dispatcher) {
       withTimeout(timeoutMs) {
         val passwordChars = password.toCharArray()
         try {

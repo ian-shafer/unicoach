@@ -170,6 +170,9 @@ handler output and the attempt row written to the database:
 
 ### `QueueService.enqueue()`
 
+- **Suspension**: `enqueue` is a `suspend` function. It performs no thread or dispatcher
+  management of its own; the DB write runs on the execution context supplied by the injected
+  `Database` connection.
 - **Side effects**: Inserts a row into `jobs` with `status = 'SCHEDULED'`. Emits a PostgreSQL
   `NOTIFY jobs_channel, '<job_type>'` via database trigger (not application code).
 - **Delay**: If `delay` is non-null, `scheduled_at = NOW() + delay` (SQL interval). If null,
@@ -280,8 +283,8 @@ handler output and the attempt row written to the database:
 - MUST NOT throw unhandled exceptions; the framework catches all non-`CancellationException`
   throwables and converts them to `RetriableFailure`.
 - `CancellationException` MUST be re-thrown to respect graceful shutdown.
-- Execution is dispatched on `Dispatchers.IO`. Blocking JDBC calls inside `execute()` are safe
-  without an additional `withContext(Dispatchers.IO)`.
+- `execute()` is invoked on an IO-bound dispatcher; handlers need not manage their own
+  execution context for blocking IO.
 
 ### `BackoffStrategy.delayFor()`
 
@@ -355,7 +358,8 @@ handler output and the attempt row written to the database:
 
 ## V. History
 
-- [x] [RFC-15: Queue Data Layer](../../../../../rfc/15-queue-data-layer.md)
-- [x] [RFC-16: Queue Worker Framework](../../../../../rfc/16-queue-worker-framework.md)
-- [x] [RFC-17: Queue Worker Daemon and CLI](../../../../../rfc/17-queue-worker-daemon.md)
-- [x] [RFC-21: Session Expiry Queue](../../../../../rfc/21-session-expiry-queue.md)
+- [x] [RFC-15: Queue Data Layer](../../../../../../../rfc/15-queue-data-layer.md)
+- [x] [RFC-16: Queue Worker Framework](../../../../../../../rfc/16-queue-worker-framework.md)
+- [x] [RFC-21: Session Expiry Queue](../../../../../../../rfc/21-session-expiry-queue.md)
+- [x] [RFC-24: Result Types Refactoring](../../../../../../../rfc/24-result-types.md)
+- [x] [RFC-28: Coroutine Context Refactor](../../../../../../../rfc/28-coroutine-context.md)

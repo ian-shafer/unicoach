@@ -3,9 +3,13 @@ package ed.unicoach.db
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import ed.unicoach.db.dao.SqlSession
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class Database(
   config: DatabaseConfig,
+  private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
   private val dataSource: HikariDataSource
 
@@ -23,26 +27,27 @@ class Database(
     dataSource = HikariDataSource(hc)
   }
 
-  fun <T> withConnection(block: (SqlSession) -> T): T {
-    val conn = dataSource.connection
-    val originalAutoCommit = conn.autoCommit
-    return try {
-      conn.autoCommit = false
-      val session =
-        object : SqlSession {
-          override fun prepareStatement(sql: String) = conn.prepareStatement(sql)
-        }
-      val result = block(session)
-      conn.commit()
-      result
-    } catch (e: Exception) {
-      conn.rollback()
-      throw e
-    } finally {
-      conn.autoCommit = originalAutoCommit
-      conn.close()
+  suspend fun <T> withConnection(block: (SqlSession) -> T): T =
+    withContext(dispatcher) {
+      val conn = dataSource.connection
+      val originalAutoCommit = conn.autoCommit
+      try {
+        conn.autoCommit = false
+        val session =
+          object : SqlSession {
+            override fun prepareStatement(sql: String) = conn.prepareStatement(sql)
+          }
+        val result = block(session)
+        conn.commit()
+        result
+      } catch (e: Exception) {
+        conn.rollback()
+        throw e
+      } finally {
+        conn.autoCommit = originalAutoCommit
+        conn.close()
+      }
     }
-  }
 
   fun createRawConnection(): java.sql.Connection =
     java.sql.DriverManager.getConnection(

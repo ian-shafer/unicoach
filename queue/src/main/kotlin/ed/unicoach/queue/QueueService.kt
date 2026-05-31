@@ -23,7 +23,7 @@ class QueueService(
   private val database: Database,
   private val jobsDao: JobsDao = JobsDao(),
 ) {
-  fun enqueue(
+  suspend fun enqueue(
     jobType: JobType,
     payload: JsonObject,
     maxAttempts: Int? = null,

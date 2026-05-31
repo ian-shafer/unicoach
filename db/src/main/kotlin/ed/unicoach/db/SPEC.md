@@ -22,11 +22,13 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
 - **`Database.withConnection` MUST return the connection to the Hikari pool
   (via `conn.close()`) in the `finally` block** even when the block or commit
   raises an exception.
-- **`Database.withConnection` MUST commit BEFORE any handler code executes
-  outside the block.** The `withConnection` block MUST return before further
-  handler execution proceeds (i.e., no long-running handler work may run inside
-  a `withConnection` block).
-- **`Database.createRawConnection` MUST bypass the Hikari pool.** It connects
+- **`Database.withConnection` MUST execute its transaction on the injected
+  dispatcher (default `Dispatchers.IO`), never the caller's coroutine context.**
+  Callers MUST NOT wrap the call in their own `withContext(Dispatchers.IO)`.
+- **`Database.withConnection` MUST commit on normal return of `block`, before
+  the connection is returned to the pool.** Commit ordering is tied to `block`
+  completion, not to any consuming layer's lifecycle.
+- **[`Database.createRawConnection`](./Database.kt) MUST bypass the Hikari pool.** It connects
   directly via `DriverManager.getConnection` using the pool's URL, username, and
   password. Callers (e.g., `QueueWorker`'s `LISTEN` coroutine) are responsible
   for lifecycle management of the returned `Connection`.
@@ -62,11 +64,14 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
 
 ---
 
-### `Database(config: DatabaseConfig)`
+### `Database(config: DatabaseConfig, dispatcher: CoroutineDispatcher = Dispatchers.IO)`
 
 - **Side Effects**: On construction, creates and starts a `HikariDataSource`
   with the parameters from `config`. Hikari initiates pool connections to
   PostgreSQL at this point.
+- **Dispatcher**: The injected `dispatcher` is the context onto which
+  `withConnection` offloads all blocking JDBC. Defaults to `Dispatchers.IO`;
+  injectable for deterministic unit testing (e.g. `TestDispatcher`).
 - **Error Handling**: Construction throws if HikariCP cannot initialize (e.g.,
   invalid JDBC URL, unreachable host). No `Result` wrapper — callers must handle
   via try/catch or let the exception propagate to crash startup.
@@ -74,11 +79,14 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
 
 ---
 
-### `Database.withConnection(block: (`[`SqlSession`](./dao/SqlSession.kt)`) -> T): T`
+### `suspend Database.withConnection(block: (`[`SqlSession`](./dao/SqlSession.kt)`) -> T): T`
 
-- **Side Effects**: Opens a JDBC connection from the Hikari pool, sets
-  `autoCommit = false`, executes `block`, commits the transaction, and returns
-  the connection to the pool.
+- **Side Effects**: Suspends and offloads the entire transaction onto the
+  injected dispatcher (default `Dispatchers.IO`). Within that context: opens a
+  JDBC connection from the Hikari pool, sets `autoCommit = false`, executes
+  `block`, commits the transaction, and returns the connection to the pool.
+- **Suspend semantics**: Callable only from a coroutine. The `block` parameter
+  is non-suspending; its body runs on the injected dispatcher, not the caller's.
 - **Transactional guarantee**: Any exception thrown inside `block` (or from
   `commit()`) triggers `conn.rollback()` before the connection is released.
 - **`SqlSession` scope**: The [`SqlSession`](./dao/SqlSession.kt) passed to
@@ -118,12 +126,15 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
 
 - **Module**: `db` Gradle module (`db/build.gradle.kts`).
 - **Dependencies**: `common` (for `getNonBlankString`), `postgresql` (JDBC
-  driver), `hikaricp` (connection pooling).
+  driver), `hikaricp` (connection pooling), `kotlinx-coroutines-core` (for
+  `withContext` / `CoroutineDispatcher`).
 - **HOCON config file**: `db/src/main/resources/db.conf`. MUST be included in
   every `AppConfig.load(...)` call for any module that instantiates `Database`.
 - **Environment variables** (substituted by HOCON):
   - `POSTGRES_DB` — database name suffix appended to the JDBC URL base.
-  - `DATABASE_USER` — optional override for `database.user`.
+  - `DATABASE_USER` — required. `db.conf` binds `database.user = ${?DATABASE_USER}`
+    with no literal default, so an unset var yields a blank `database.user` and
+    `DatabaseConfig.from` returns `Result.failure`.
   - `DATABASE_PASSWORD` — optional override for `database.password`.
   - `DATABASE_MAXIMUM_POOL_SIZE` — optional override for pool size (default: 10).
 - **Defaults** (defined in `db.conf`):
@@ -139,3 +150,4 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
 
 - [x] [RFC-14: Extract Database Module](../../../../../../../rfc/14-db-module.md)
 - [x] [RFC-16: Queue Worker Framework](../../../../../../../rfc/16-queue-worker-framework.md)
+- [x] [RFC-28: Coroutine Context Refactor](../../../../../../../rfc/28-coroutine-context.md)

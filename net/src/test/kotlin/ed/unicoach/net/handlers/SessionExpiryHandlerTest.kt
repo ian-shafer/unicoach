@@ -49,12 +49,14 @@ class SessionExpiryHandlerTest {
   }
 
   @BeforeEach
-  fun resetDatabase() {
-    database.withConnection { session ->
-      session.prepareStatement("TRUNCATE TABLE sessions CASCADE").use { it.execute() }
-      session.prepareStatement("TRUNCATE TABLE jobs CASCADE").use { it.execute() }
+  fun resetDatabase() =
+    runBlocking {
+      database.withConnection { session ->
+        session.prepareStatement("TRUNCATE TABLE sessions CASCADE").use { it.execute() }
+        session.prepareStatement("TRUNCATE TABLE jobs CASCADE").use { it.execute() }
+      }
+      Unit
     }
-  }
 
   private val handler =
     SessionExpiryHandler(
@@ -67,18 +69,20 @@ class SessionExpiryHandlerTest {
     expiration: Duration,
   ): ed.unicoach.db.models.Session {
     val result =
-      database.withConnection { session ->
-        SessionsDao.create(
-          session,
-          NewSession(
-            userId = null,
-            tokenHash = TokenHash(tokenBytes),
-            userAgent = "test-agent",
-            initialIp = "127.0.0.1",
-            metadata = null,
-            expiration = expiration,
-          ),
-        )
+      runBlocking {
+        database.withConnection { session ->
+          SessionsDao.create(
+            session,
+            NewSession(
+              userId = null,
+              tokenHash = TokenHash(tokenBytes),
+              userAgent = "test-agent",
+              initialIp = "127.0.0.1",
+              metadata = null,
+              expiration = expiration,
+            ),
+          )
+        }
       }
     assertTrue(result.isSuccess)
     return result.getOrNull()!!
@@ -100,8 +104,10 @@ class SessionExpiryHandlerTest {
     assertEquals(JobResult.Success, result)
 
     val found =
-      database.withConnection { session ->
-        SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
+      runBlocking {
+        database.withConnection { session ->
+          SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
+        }
       }
     assertTrue(found.isSuccess)
     assertTrue(found.getOrNull()!!.expiresAt.isAfter(originalExpiresAt))
@@ -118,8 +124,10 @@ class SessionExpiryHandlerTest {
     assertEquals(JobResult.Success, result)
 
     val found =
-      database.withConnection { session ->
-        SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
+      runBlocking {
+        database.withConnection { session ->
+          SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
+        }
       }
     assertTrue(found.isSuccess)
 
@@ -156,8 +164,10 @@ class SessionExpiryHandlerTest {
 
     // Verify the session was extended only once (version bumped once from 1 to 2)
     val found =
-      database.withConnection { session ->
-        SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
+      runBlocking {
+        database.withConnection { session ->
+          SessionsDao.findByTokenHash(session, TokenHash(tokenBytes))
+        }
       }
     assertTrue(found.isSuccess)
     assertEquals(2, found.getOrNull()!!.version)

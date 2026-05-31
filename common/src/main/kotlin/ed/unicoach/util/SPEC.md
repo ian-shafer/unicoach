@@ -12,12 +12,13 @@ of HTTP semantics, domain entities, or persistence.
 
 ## II. Invariants
 
-### Argon2Hasher
+### [Argon2Hasher](./Argon2Hasher.kt)
 
 - The hasher MUST use algorithm `Argon2id` with salt length 16 bytes and hash
   length 32 bytes.
-- `hash(password)` and `verify(hash, password)` MUST execute on
-  `Dispatchers.IO` — NEVER on the Ktor Netty event-loop thread.
+- `hash` and `verify` MUST offload work to the injected `dispatcher`, never the
+  caller's coroutine context. The default `dispatcher` MUST be a dedicated
+  CPU-bound pool.
 - Both `hash` and `verify` MUST be wrapped in `withTimeout(timeoutMs)`. The
   default timeout MUST be `2000 ms`.
 - The plaintext password char array MUST be wiped via `argon2.wipeArray()`
@@ -25,14 +26,17 @@ of HTTP semantics, domain entities, or persistence.
   call completes.
 - Default tuning parameters MUST be: `iterations = 3`, `memory = 65536 KiB`,
   `parallelism = 1`. All four tunables (`iterations`, `memory`, `parallelism`,
-  `timeoutMs`) MUST be injectable at construction time.
-- _(Planned — not yet in code)_ RFC-10 requires `Argon2Hasher` to expose a
-  `DUMMY_HASH` constant computed once at startup using the active Argon2id
-  parameters. When implemented, it MUST NOT be a hardcoded string; it ensures
-  dummy verification during login timing-attack mitigation absorbs the same
-  computational penalty as a real hash.
+  `timeoutMs`) MUST be injectable at construction time, as MUST the execution
+  `dispatcher`.
 
-### JwtGenerator
+### [CryptoDispatcher](./CryptoDispatcher.kt)
+
+- `Dispatchers.Crypto` MUST provide a CPU-bound dispatcher backed by a single
+  process-wide thread pool, shared across all callers — NEVER a new pool per
+  access.
+- The pool size MUST be bound to the host's available processor count.
+
+### [JwtGenerator](./JwtGenerator.kt)
 
 - Tokens MUST be signed with `HMAC256` using the injected `secret`.
 - Token expiry MUST be exactly `+7 days` from the `issuedAt` instant as derived
@@ -44,7 +48,7 @@ of HTTP semantics, domain entities, or persistence.
 - Claim value types MUST be restricted to `String`, `Int`, `Boolean`, `Double`,
   and `Long`. Unsupported claim types MUST be silently dropped (no exception).
 
-### Validator / ValidationErrors
+### [Validator / ValidationErrors](./Validator.kt)
 
 - `Validator<T>` MUST be a pure interface with a single method
   `validate(input: T): ValidationErrors`.
@@ -63,7 +67,8 @@ of HTTP semantics, domain entities, or persistence.
 ### `Argon2Hasher.hash(password: String): String`
 
 - **Side Effects**: None. No DB, no network, no file I/O.
-- **Execution Context**: Suspends; dispatches to `Dispatchers.IO` internally.
+- **Execution Context**: Suspends; offloads to the injected `dispatcher`, never
+  the caller's context.
 - **Timeout**: Throws `kotlinx.coroutines.TimeoutCancellationException` if
   hashing exceeds `timeoutMs`.
 - **Memory Safety**: Wipes the password char array in `finally` before
@@ -77,7 +82,8 @@ of HTTP semantics, domain entities, or persistence.
 ### `Argon2Hasher.verify(hash: String, password: String): Boolean`
 
 - **Side Effects**: None.
-- **Execution Context**: Suspends; dispatches to `Dispatchers.IO` internally.
+- **Execution Context**: Suspends; offloads to the injected `dispatcher`, never
+  the caller's context.
 - **Timeout**: Throws `TimeoutCancellationException` if verification exceeds
   `timeoutMs`.
 - **Memory Safety**: Wipes the password char array in `finally`.
@@ -87,9 +93,20 @@ of HTTP semantics, domain entities, or persistence.
   same Boolean.
 - **Return**: `true` if the password matches the hash; `false` otherwise.
 
+### `Dispatchers.Crypto: CoroutineDispatcher`
+
+- **Side Effects**: None per access; lazily wraps the shared process-wide crypto
+  thread pool.
+- **Execution Context**: A CPU-bound dispatcher; the default execution context
+  for `Argon2Hasher`.
+- **Idempotency**: Yes — every access returns a dispatcher over the same
+  underlying pool.
+
 ### `JwtGenerator.mint(subjectId: String, claims: Map<String, Any>): String`
 
 - **Side Effects**: None. No DB, no network.
+- **Claims**: `claims` defaults to empty; `mint(subjectId)` produces a token
+  carrying only the standard issuer/subject/issuedAt/expiresAt claims.
 - **Execution Context**: Synchronous (not a suspend function).
 - **Error Handling**: Propagates `com.auth0.jwt.exceptions.JWTCreationException`
   to the caller on signing failure.
@@ -122,11 +139,6 @@ of HTTP semantics, domain entities, or persistence.
   from HOCON at the application-wiring layer — not inside this package.
 - **No HOCON parsing** occurs inside this package.
 - **No Ktor or HTTP dependencies** are permitted in this package.
-- _(Planned — not yet in code)_ RFC-10 specifies that Argon2 operations MUST
-  run on a **dedicated bounded thread pool** (`Executors.newFixedThreadPool(16)
-  .asCoroutineDispatcher()`) distinct from `Dispatchers.IO`, to prevent a
-  login-flood attack from exhausting the global IO dispatcher used for DB access.
-  Current implementation uses `Dispatchers.IO`.
 
 ---
 
@@ -134,3 +146,5 @@ of HTTP semantics, domain entities, or persistence.
 
 - [x] [RFC-08: Auth Registration](../../../../../../../rfc/08-auth-registration.md)
 - [x] [RFC-10: Auth Login](../../../../../../../rfc/10-auth-login.md)
+- [x] [RFC-26: Login](../../../../../../../rfc/26-login.md)
+- [x] [RFC-28: Coroutine Context Refactor](../../../../../../../rfc/28-coroutine-context.md)

@@ -15,7 +15,8 @@ import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.ValidationResult
 import ed.unicoach.util.Argon2Hasher
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -26,6 +27,7 @@ import java.sql.PreparedStatement
 import java.time.Duration
 import kotlin.test.assertTrue
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class AuthServiceTest {
   companion object {
     private lateinit var connection: Connection
@@ -107,7 +109,7 @@ class AuthServiceTest {
   // Tests domain validation boundary correctly
   @Test
   fun `test validation rejection for weak passwords`() =
-    runBlocking {
+    runTest {
       // We can pass a dummy db and jwt config because it should fail validation before hitting them
       val rawConfig =
         com.typesafe.config.ConfigFactory.parseString(
@@ -137,7 +139,7 @@ class AuthServiceTest {
 
   @Test
   fun `authenticated session returns user`() =
-    runBlocking {
+    runTest {
       val user = createTestUser()
       val tokenHash = TokenHash(byteArrayOf(10, 20, 30))
       createSession(userId = user.id, tokenHash = tokenHash)
@@ -151,7 +153,7 @@ class AuthServiceTest {
 
   @Test
   fun `anonymous session returns unauthenticated`() =
-    runBlocking {
+    runTest {
       val tokenHash = TokenHash(byteArrayOf(11, 21, 31))
       createSession(userId = null, tokenHash = tokenHash)
 
@@ -161,7 +163,7 @@ class AuthServiceTest {
 
   @Test
   fun `invalid token returns unauthenticated`() =
-    runBlocking {
+    runTest {
       val tokenHash = TokenHash(byteArrayOf(99, 98, 97))
 
       val result = authService.getCurrentUser(tokenHash)
@@ -170,7 +172,7 @@ class AuthServiceTest {
 
   @Test
   fun `expired session returns unauthenticated`() =
-    runBlocking {
+    runTest {
       val user = createTestUser()
       val tokenHash = TokenHash(byteArrayOf(12, 22, 32))
       createSession(userId = user.id, tokenHash = tokenHash, expiration = Duration.ofSeconds(-1))
@@ -181,7 +183,7 @@ class AuthServiceTest {
 
   @Test
   fun `soft-deleted user returns unauthenticated`() =
-    runBlocking {
+    runTest {
       val user = createTestUser()
 
       // Soft-delete the user
@@ -197,7 +199,7 @@ class AuthServiceTest {
 
   @Test
   fun `logout revokes active session`() =
-    runBlocking {
+    runTest {
       val user = createTestUser()
       val tokenHash = TokenHash(byteArrayOf(50, 51, 52))
       createSession(userId = user.id, tokenHash = tokenHash)
@@ -211,7 +213,7 @@ class AuthServiceTest {
 
   @Test
   fun `logout returns Success for nonexistent token`() =
-    runBlocking {
+    runTest {
       val tokenHash = TokenHash(byteArrayOf(60, 61, 62))
       val result = authService.logout(tokenHash)
       assertTrue(result.isSuccess)
@@ -219,7 +221,7 @@ class AuthServiceTest {
 
   @Test
   fun `logout returns Success for already-revoked session`() =
-    runBlocking {
+    runTest {
       val user = createTestUser()
       val tokenHash = TokenHash(byteArrayOf(70, 71, 72))
       createSession(userId = user.id, tokenHash = tokenHash)
@@ -231,7 +233,7 @@ class AuthServiceTest {
     }
 
   @Test
-  fun `login with valid credentials yields Success`() = runBlocking {
+  fun `login with valid credentials yields Success`() = runTest {
     val email = "login_test@example.com"
     val password = "Password123"
     authService.register(email, "Login Test", password, null, 86400L, null, null)
@@ -244,24 +246,24 @@ class AuthServiceTest {
   }
 
   @Test
-  fun `login with invalid email yields Unauthorized`() = runBlocking {
+  fun `login with invalid email yields UserNotFound`() = runTest {
     val result = authService.login("nonexistent@example.com", "Password123", null, 86400L, null, null)
     assertTrue(result.isSuccess)
-    assertTrue(result.getOrNull() is LoginResult.Unauthorized)
+    assertTrue(result.getOrNull() is LoginResult.UserNotFound)
   }
 
   @Test
-  fun `login with invalid password yields Unauthorized`() = runBlocking {
+  fun `login with invalid password yields PasswordMismatch`() = runTest {
     val email = "login_bad_pwd@example.com"
     authService.register(email, "Bad Pwd", "Password123", null, 86400L, null, null)
 
     val result = authService.login(email, "WrongPassword", null, 86400L, null, null)
     assertTrue(result.isSuccess)
-    assertTrue(result.getOrNull() is LoginResult.Unauthorized)
+    assertTrue(result.getOrNull() is LoginResult.PasswordMismatch)
   }
 
   @Test
-  fun `login with old cookie revokes old session and creates new`() = runBlocking {
+  fun `login with old cookie revokes old session and creates new`() = runTest {
     val email = "login_old_cookie@example.com"
     val password = "Password123"
     val regResult = authService.register(email, "Old Cookie", password, null, 86400L, null, null)
@@ -283,7 +285,7 @@ class AuthServiceTest {
   }
 
   @Test
-  fun `login with nonexistent old cookie creates new session without error`() = runBlocking {
+  fun `login with nonexistent old cookie creates new session without error`() = runTest {
     val email = "login_fake_old_cookie@example.com"
     val password = "Password123"
     authService.register(email, "Fake Old Cookie", password, null, 86400L, null, null)

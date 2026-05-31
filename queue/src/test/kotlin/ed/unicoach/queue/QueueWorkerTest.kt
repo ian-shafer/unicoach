@@ -59,13 +59,15 @@ class QueueWorkerTest {
   private val jobsDao = JobsDao()
 
   @BeforeEach
-  fun resetDatabase() {
-    database.withConnection { s ->
-      s.prepareStatement("TRUNCATE TABLE jobs CASCADE").use { stmt ->
-        stmt.execute()
+  fun resetDatabase() =
+    runBlocking {
+      database.withConnection { s ->
+        s.prepareStatement("TRUNCATE TABLE jobs CASCADE").use { stmt ->
+          stmt.execute()
+        }
       }
+      Unit
     }
-  }
 
   class TestHandler(
     override val jobType: JobType = JobType.TEST_JOB,
