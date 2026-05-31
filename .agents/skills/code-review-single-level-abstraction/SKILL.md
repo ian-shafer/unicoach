@@ -15,7 +15,9 @@ You are a ruthless code reviewer focusing strictly on identifying violations of 
 
 ## 🎯 Code Examples
 
-### ❌ Negative Example (Violation of SLA)
+### Example 1: Routing HTTP Outcomes
+
+#### ❌ Negative Example (Violation of SLA)
 Mixing high-level routing with low-level execution details (building cookies, formatting errors):
 ```kotlin
 private suspend fun RoutingContext.respondRegisterOutcome(outcome: RegisterOutcome) {
@@ -35,7 +37,7 @@ private suspend fun RoutingContext.respondRegisterOutcome(outcome: RegisterOutco
 }
 ```
 
-### ✅ Positive Example (Adheres to SLA)
+#### ✅ Positive Example (Adheres to SLA)
 The router function only delegates. Low-level execution is handled in dedicated helpers:
 ```kotlin
 private suspend fun RoutingContext.respondRegisterOutcome(outcome: RegisterOutcome) {
@@ -54,6 +56,62 @@ private suspend fun RoutingContext.respondRegisterSuccess(outcome: RegisterOutco
 private suspend fun RoutingContext.respondRegisterValidationFailure(outcome: RegisterOutcome.ValidationFailure) {
   val restFieldErrors = outcome.fieldErrors.map { FieldError(it.field, it.message) }
   call.respond(HttpStatusCode.BadRequest, ErrorResponse("validation_failed", restFieldErrors))
+}
+```
+
+### Example 2: Service Layer Process Orchestration
+
+#### ❌ Negative Example (Mixing process flow orchestration with low-level SQL query execution and string builder rendering)
+```kotlin
+class OrderService {
+  fun completeOrder(order: Order, user: User) {
+    // Step 1: Check permissions (High-level check)
+    if (!user.hasRole("CUSTOMER")) throw AccessDeniedException()
+    
+    // VIOLATION: Low-level SQL query setup and execution detailed embedded directly in the orchestrator.
+    dbPool.getConnection().use { conn ->
+      conn.prepareStatement("UPDATE orders SET status = 'COMPLETED' WHERE id = ?").use { stmt ->
+        stmt.setString(1, order.id)
+        stmt.executeUpdate()
+      }
+    }
+    
+    // VIOLATION: Low-level raw HTML string generation mixed inside high-level business flow.
+    val emailBody = "<html><body><h1>Order Completed</h1><p>Thank you ${user.name}</p></body></html>"
+    emailClient.send(user.email, "Your Order", emailBody)
+  }
+}
+```
+
+#### ✅ Positive Example (Orchestrator functions strictly at a single level of abstraction, delegating steps)
+```kotlin
+class OrderService {
+  
+  // ADHERES TO RULE: The method operates strictly as a coordinator at a single level of abstraction.
+  // Every complex implementation detail is delegated to private helper routines.
+  fun completeOrder(order: Order, user: User) {
+    verifyCustomerRole(user)
+    persistOrderCompletion(order)
+    sendOrderEmail(user, order)
+  }
+  
+  private fun verifyCustomerRole(user: User) {
+    if (!user.hasRole("CUSTOMER")) throw AccessDeniedException()
+  }
+  
+  private fun persistOrderCompletion(order: Order) {
+    dbPool.getConnection().use { conn ->
+      conn.prepareStatement("UPDATE orders SET status = 'COMPLETED' WHERE id = ?").use { stmt ->
+        stmt.setString(1, order.id)
+        stmt.executeUpdate()
+      }
+    }
+  }
+  
+  private fun sendOrderEmail(user: User, order: Order) {
+    val emailBody = "<html><body><h1>Order Completed</h1><p>Thank you ${user.name}</p></body></html>"
+    emailClient.send(user.email, "Your Order", emailBody)
+  }
 }
 ```
 

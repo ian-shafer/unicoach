@@ -48,6 +48,38 @@ if (emailValidation !is ValidationResult.Valid) {
 }
 ```
 
+### Example 2: Eager Formatting of Duration Calculations
+
+**🔴 Anti-Pattern (Eagerly formatting time spans into strings inside core logic):**
+```kotlin
+class TaskScheduler {
+  
+  // VIOLATION: Eagerly formats the delay between times into a human-readable string ("3h 15m") 
+  // deep inside the scheduling core. Callers cannot perform math, compare delays, 
+  // or localized the display format without parsing the string back.
+  fun calculateDelay(scheduledTime: Instant, currentTime: Instant): String {
+    val delaySeconds = java.time.Duration.between(currentTime, scheduledTime).seconds
+    val hours = delaySeconds / 3600
+    val minutes = (delaySeconds % 3600) / 60
+    
+    return "${hours}h ${minutes}m"
+  }
+}
+```
+
+**🟢 Correct (Returning a structured `Duration` value, deferring formatting to the edge):**
+```kotlin
+class TaskScheduler {
+  
+  // ADHERES TO RULE: Returns a structured java.time.Duration. The logic remains strictly type-safe, 
+  // enabling presentation layers, CLI tools, or UI dashboards to format the duration as they see fit.
+  fun calculateDelay(scheduledTime: Instant, currentTime: Instant): java.time.Duration {
+    
+    return java.time.Duration.between(currentTime, scheduledTime)
+  }
+}
+```
+
 ## 📋 Output Format
 
 Output your findings clearly and concisely. Group your findings by severity (Critical, Major, Minor, Nit).

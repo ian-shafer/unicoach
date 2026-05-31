@@ -47,6 +47,33 @@ if (emailValidation !is ValidationResult.Valid) {
 }
 ```
 
+### Example 2: Mapping Third-Party Gateway Responses (e.g., Payment Gateway)
+
+**🔴 Anti-Pattern (Swallowing failure details from third-party API responses):**
+```kotlin
+val stripeResponse = stripeClient.chargeCard(amount, token)
+if (!stripeResponse.isSuccess) {
+  
+  // VIOLATION: The payment gateway's specific failure code (e.g., "card_declined", "insufficient_funds")
+  // is permanently swallowed. The application returns a completely generic outcome object with zero context.
+  return CheckoutResult.Failure
+}
+```
+
+**🟢 Correct (Mapping third-party failures to the domain with lossless context):**
+```kotlin
+val stripeResponse = stripeClient.chargeCard(amount, token)
+if (!stripeResponse.isSuccess) {
+  
+  // ADHERES TO RULE: The gateway failure code and raw error message are preserved in the domain result, 
+  // enabling helpful frontend messaging, support diagnostics, and transaction auditing.
+  return CheckoutResult.Failure(
+    code = stripeResponse.errorCode, 
+    reason = stripeResponse.errorMessage
+  )
+}
+```
+
 ## 📋 Output Format
 
 Output your findings clearly and concisely. Group your findings by severity (Critical, Major, Minor, Nit).
