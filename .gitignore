@@ -5,3 +5,6 @@ var/
 !gradle/wrapper/gradle-wrapper.jar
 *.swp
 ios-app/UnicoachiOS.xcodeproj/project.xcworkspace/xcuserdata/ian.xcuserdatad/UserInterfaceState.xcuserstate
+
+# Transient RFC-pipeline output (RFC backups, diff artifacts)
+/.scratch/
