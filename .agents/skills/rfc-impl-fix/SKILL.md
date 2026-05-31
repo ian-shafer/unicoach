@@ -14,7 +14,12 @@ This skill takes the output of an `rfc-impl-review` report and acts as the stric
 ## Critical Behaviors
 
 - **Context Inheritance**: You execute within the same context as the original `rfc-impl` skill. You must ensure you have ingested the target RFC, relevant `SPEC.md` files, and required defensive coding skills before modifying code.
-- **Strict Adherence**: You MUST strictly implement only the fixes recommended in the report. Do NOT introduce speculative changes, extra refactoring, or feature creep outside the bounds of the review feedback.
+-   **Strict Adherence**: You MUST strictly implement only the fixes recommended
+    in the report. However, the target RFC remains the absolute ground truth:
+    before applying any recommendation, verify that it does not contradict or
+    exceed the scope of the target RFC. If a recommendation deviates from or
+    violates the RFC, you MUST reject it and report this discrepancy. Do NOT
+    introduce speculative changes, extra refactoring, or feature creep.
 - **NO GIT COMMITS**: You MUST NOT make any git commits. Leave all modifications in the local working directory. The architect or external review skills will evaluate the raw uncommitted diffs.
 - **Verification**: After applying the fixes, you MUST run relevant tests (e.g., `bin/test` or specific test suites) to ensure your changes compile and pass.
 

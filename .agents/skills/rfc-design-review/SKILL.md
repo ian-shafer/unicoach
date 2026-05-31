@@ -83,14 +83,17 @@ Verify:
 
 Evaluate depth across these axes and flag the listed anti-patterns:
 
+- **Structural Specifications Only**: Ensure that the RFC strictly excludes concrete implementation code (e.g., function bodies, control flow, markup templates, stylesheet rules). Verify that design specifications are restricted to declarative schemas and interfaces: API signatures, structural type definitions, database schemas, protobuf definitions, configuration schemas, etc. Flag any concrete implementation code as a `Major` finding.
+
+
 - **Data Models**: Field types, nullability, and relationships (FKs) must be
   explicit. Flag missing indexes on queried fields. Flag overly broad types.
 - **API Contracts**: Exact request/response schemas and methods must be
   specified. Flag `list` endpoints missing pagination. Flag state mutations
   using `GET`.
-- **Error Handling**: Behavior for invalid inputs, dependency failures, and
-  timeouts must be specified. Flag vague "returns error" statements — demand
-  specific error codes and failure modes.
+-   **Error Handling**: Behavior for invalid inputs, dependency failures, and
+    timeouts must be specified. Flag vague "returns error" statements — demand
+    specific error codes and failure modes.
 - **Dependencies**: All services and libraries must be listed with their
   purpose and identified as new or existing. **You MUST perform a web search**
   to verify the latest stable release of every listed dependency. Flag outdated

@@ -2,16 +2,14 @@
 name: code-review-chain
 description: >-
   A pre-configured macro skill that initiates a comprehensive, adversarial 
-  code review chain for a specific target. It delegates execution to the 
-  `skill-loop` primitive, chaining all individual `code-review-*` micro-skills 
-  for a targeted, single-pass evaluation.
+  code review chain for a specific target. It concurrently invokes background 
+  subagents to execute all individual `code-review-*` micro-skills, compiling 
+  their results into a single evaluation report.
 ---
 
 # Code Review Chain
 
-This skill acts as a specific execution macro. 
-It ensures that when a user asks to "do a full code review" or "run code-review-chain",
-the underlying generic state machine is invoked with all the micro-review personas sequentially for a single pass.
+This skill acts as a specific execution macro. It ensures that when a user asks to "do a full code review" or "run code-review-chain", the orchestrator concurrently spawns background subagents to evaluate all code-review rules in parallel.
 
 ## Invocation Parameters
 
@@ -19,24 +17,36 @@ Invocation MUST define the following parameter:
 
 - **Target**: The file, artifact, or component under review.
 
-If the user does not provide a Target in their prompt, you MUST pause and ask them to provide it before continuing.
+If the user does not provide a Target in their prompt, you MUST pause and ask
+them to provide it before continuing.
 
 ## Execution
 
-Once the Target is known, you MUST immediately delegate execution to `skill-loop/SKILL.md` using the following parameters:
-
-- **Target**: <The Target provided by the user>
-- **Iterations**: 1
-- **Skills Chain**: All skills located in `.agents/skills/` that match the pattern `code-review-*` (excluding `code-review-chain` itself). You MUST use your directory listing tools to discover all matching skills at runtime before beginning the chain.
-
-Follow the initialization and execution state machine instructions defined in `skill-loop/SKILL.md` exactly.
+1. **Discover Review Skills**: Scan the list of all active skills available in your execution context (defined in your system prompt or `<skills>` block) that match the pattern `code-review-*` (excluding `code-review-chain` itself).
+2.  **Concurrently Spawn Subagents**: Launch a background subagent for each
+    discovered code-review skill using `invoke_subagent`. Specify the following
+    for each subagent entry in the list:
+    - **TypeName**: `self`
+    -   **Role**: `[Skill Name] Reviewer` (e.g. `code-review-allowlist
+        Reviewer`)
+    -   **Prompt**: `"Run the [Skill Name] skill on target '[Target]' and return
+        a detailed verdict. Your response must clearly state the Verdict (PASS,
+        FAIL, or N/A) and the detailed Reasoning."`
+    - **Workspace**: `inherit`
+3. **Await Reports**: Pause and wait for all spawned subagents to finish and report back. If some subagents respond earlier, keep track of their reports in your conversation memory until every subagent has returned a verdict.
+4. **Compile Report**: Once all subagents have finished, compile their verdicts into a unified report using the markdown format below.
 
 ## Output Format
 
-As the orchestrator delegates to each persona, you MUST accumulate the verdicts in your context.
-Upon completion of the chain, you MUST compile a unified evaluation report using the markdown format provided below.
+Accumulate all subagent verdicts in your context and compile a unified
+evaluation report.
 
-> **CRITICAL CONSTRAINT:** Do NOT output the raw report to the chat buffer. You MUST use your file editing tools to write the report to a persistent markdown file in your local scratch directory (e.g. `<appDataDir>/brain/<conversation-id>/scratch/code-review-report.md`). Only output a summary and the file path to the chat buffer so the master orchestrator can read it later.
+> **CRITICAL CONSTRAINT:** Do NOT output the raw report to the chat buffer. You
+> MUST use your file editing tools to write the report to a persistent markdown
+> file in your local scratch directory (e.g.
+> `<appDataDir>/brain/<conversation-id>/scratch/code-review-report.md`). Only
+> output a summary and the file path to the chat buffer so the master
+> orchestrator can read it later.
 
 ```markdown
 # 🔍 Comprehensive Code Review: [Target]
