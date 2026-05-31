@@ -206,10 +206,11 @@ Guide the Architect through the following phases sequentially:
 
     -   **Immediate RFC Backup**: Immediately take a backup snapshot copy of the
         current RFC file (e.g., copy `rfc/<rfc-file>.md` to a temporary file
-        under `scratch/`, such as `scratch/<rfc-file>.md.bak`). This MUST be
-        done every time this step starts, so a clean reference point is
-        preserved in case the Architect chooses Option A.
-    -   Generate a persistent artifact `artifacts/implementation_diff.md`. This
+        under `.scratch/`, such as `.scratch/<rfc-file>.md.bak`). `.scratch/` is
+        a gitignored directory for transient pipeline output; create it if
+        absent. This MUST be done every time this step starts, so a clean
+        reference point is preserved in case the Architect chooses Option A.
+    -   Generate a persistent artifact `.scratch/implementation_diff.md`. This
         artifact MUST contain a structured walkthrough AND the **actual code
         diff blocks** (in standard `git diff` format) showing every line that
         was added, modified, or deleted.
@@ -230,7 +231,7 @@ Guide the Architect through the following phases sequentially:
     3.  Pause and wait for them to return once the RFC has been updated.
     4.  Once they return:
         -   **Verify RFC Diffs**: Immediately run `git diff --no-index
-            scratch/<rfc-file>.md.bak rfc/<rfc-file>.md` (or `diff -u` if the
+            .scratch/<rfc-file>.md.bak rfc/<rfc-file>.md` (or `diff -u` if the
             backup is untracked) to capture exactly what design changes were
             made. Present this diff to the Architect for verification, then
             delete the backup snapshot.

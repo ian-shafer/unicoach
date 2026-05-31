@@ -96,6 +96,25 @@ This is the highest-signal section. Evaluate rigorously:
   `Critical`.
 - **Scope**: Flag invariants that describe *how* the system was built (narrative
   history) rather than *what* it enforces. These belong in `## V. History`.
+- **Layer Purity**: Flag any invariant or contract that references a consuming or
+  sibling layer the module does not depend on (e.g. HTTP, Ktor, persistence,
+  another module's dispatcher) as `Major` — this is a coupling leak. Apply the
+  **Dependency-Change Test**: if a change to a *dependency's* internals (with this
+  module's own code untouched) would force an edit to the line, it has leaked that
+  dependency's implementation — flag `Major`. Describing what a collaborator does
+  with execution context (e.g. "runs on `Database`'s IO dispatcher") is such a leak.
+- **Signal / Generality**: Flag any invariant or contract that applies generically
+  to all or most classes in the module or across the codebase (e.g. "MUST NOT
+  manage execution context on behalf of collaborators", "MUST handle its own
+  errors") as `Minor` — a module spec carries only module-specific guarantees;
+  universal principles are noise that dilute real invariants. Recommend deletion,
+  not rewording.
+- **Transcription Smell**: Flag invariants that merely restate an implementation
+  call or hard-code a default value, rather than the guarantee that survives a
+  refactor, as `Minor`. Forbidding a specific *mechanism* (e.g. "MUST NOT contain
+  `withContext`") is also transcription; note that the fix is often deletion — if
+  the underlying rule is a universal principle, do not reword it into one (see
+  Signal / Generality).
 
 ### 5. Behavioral Contracts
 
