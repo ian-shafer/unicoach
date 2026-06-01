@@ -62,6 +62,128 @@ context; otherwise spawn a fresh agent per phase.
     deliver live mid-run notifications from a background agent, so capture this
     in the agent's returned summary rather than expecting an interrupt.)
 
+## Change Tracking, Checkpoints & Agent Write-Scope
+
+The pipeline runs many subagents against one shared working tree across many
+steps. To make every step's delta inspectable, every agent's writes verifiable,
+and a stalled or rogue agent recoverable, the orchestrator tracks all state on a
+dedicated **pipeline branch** with **checkpoint commits**, and verifies each
+agent's footprint against a declared **write-scope allowlist**.
+
+### Phase 0 — pipeline branch (before Phase 1)
+
+Branch off the default branch and record the base commit:
+
+```sh
+git rev-parse HEAD                    # base commit — record the literal SHA
+git checkout -b pipeline/rfc-<n>
+```
+
+All pipeline work — RFC edits, implementation, spec sync — happens on this
+branch. The default branch is never touched until the Architect commits at
+Phase 3.
+
+**Persist SHAs in orchestrator state, not shell variables.** The Bash tool's
+shell state does not survive between calls, so a `base=$(…)` variable is gone by
+the next command. Record the **literal base SHA** in your own tracked state, and
+capture each checkpoint's **literal SHA** as you create it (the commit prints
+it, or `git rev-parse HEAD`). Diff and squash against those recorded SHAs — do
+not rely on a shell variable or on diffing by commit message (git cannot diff by
+message; resolve via the captured SHA or `git log --grep`).
+
+### Checkpoints
+
+A checkpoint is a WIP commit capturing the **entire** working tree (tracked and
+untracked) at a gate boundary:
+
+```sh
+git add -A && git commit -m "pipeline(rfc-<n>): <step> [<i>]"
+```
+
+-   **Checkpoint at every gate boundary**: immediately before and after each
+    subagent spawn, and before each Architect review. Never checkpoint while an
+    agent is mid-write — the snapshot must be consistent.
+-   **Number every loopable step.** Any step the state machine can repeat —
+    `review-loop`, `impl-review`, `impl-fix`, `architect-review` — carries a
+    monotonic `[i]` counter. Counters are **monotonic per step-type across the
+    whole run and never reused**: if the Architect loops back and re-runs
+    reviews, they continue `[4] [5] …`, they do not reset. A number therefore
+    identifies a unique moment. Non-loop steps omit the counter.
+
+### Diffs for the Architect walkthrough
+
+Per-step delta and cumulative diff are plain git:
+
+```sh
+git diff <prev-checkpoint> <this-checkpoint> -- rfc/<rfc-file>.md   # what one step changed
+git diff <base-sha> HEAD                                            # full cumulative diff
+```
+
+Build every walkthrough and the `.scratch/implementation_diff.md` artifact from
+these. `.scratch/` is the home for transient artifacts (diff walkthroughs, agent
+reports); it is gitignored and never committed.
+
+### Recovery
+
+Because each gate is a commit, a stalled, crashed, or rogue agent is undone
+cleanly:
+
+```sh
+git reset --hard <last-good-checkpoint> && git clean -fd
+```
+
+Then re-run the step or escalate to the Architect. A checkpoint commit is a
+restore point, so recovery is exact and immediate.
+
+### Agent write-scope contract (enforced, not trusted)
+
+Subagent self-reports are not authoritative. The tree is at a clean checkpoint
+before every spawn, so after the agent returns `git status --porcelain` is its
+**exact** footprint. Every spawn declares an allowlist; the orchestrator asserts
+the footprint is a subset of it.
+
+| Agent | May write (tracked) | Post-run assertion |
+|---|---|---|
+| `/rfc-review-loop` | `rfc/<rfc-file>.md` only | porcelain ⊆ {the RFC}; any code/test write ⇒ **FAIL** |
+| `/rfc-impl-review`, review chains | nothing | porcelain **empty** ⇒ pass; else **FAIL** |
+| `/rfc-impl`, `/rfc-impl-fix` | code, tests, config | porcelain contains **no `*/SPEC.md`** (the Spec Touch Ban, enforced) |
+
+-   `.scratch/` is gitignored, so review/impl chains may write reports there
+    freely — those writes never appear in `git status --porcelain` and need no
+    allowlist exception.
+-   A net-zero edit (modify then revert) is invisible and acceptable.
+-   On any violation: surface it to the Architect, `git reset --hard
+    <checkpoint> && git clean -fd` to discard the rogue writes, then re-run or
+    escalate. Do NOT silently keep out-of-scope writes.
+
+### Independent verification (never trust "green")
+
+Write-scope verifies *where* an agent wrote, not whether its logic is correct.
+Separately, **before reporting any test result as passing, the orchestrator
+re-runs the suite itself** via the project's test harness and reads the real
+pass/fail counts. Never relay an agent's "all tests pass" claim without an
+independent run — agent reports have been wrong, and a green claim has masked a
+broken tree.
+
+### Subagent rules (state these in every spawn prompt)
+
+-   **Never `git commit`** — the orchestrator owns all checkpoints.
+-   **Never `git stash`** — it mutates shared state and can strand the tree if
+    the agent crashes mid-stash. Use `git diff HEAD` for any baseline.
+
+### Phase 3 squash
+
+At Phase 3, collapse all WIP checkpoints into the clean final commits, using the
+**recorded base SHA**:
+
+```sh
+git reset --soft <base-sha>
+```
+
+The working tree and index are preserved; only the WIP history is dropped. Then
+create the Architect's two commits (RFC doc; code + specs). The checkpoint
+history never leaves the pipeline branch.
+
 ## 🗺️ Lifecycle State Machine
 
 ```mermaid
@@ -101,7 +223,7 @@ stateDiagram-v2
         }
     }
 
-    Option_A_Design --> Design_Drafting : "Loop back (Create backup, edit RFC)"
+    Option_A_Design --> Design_Drafting : "Loop back (checkpoint, edit RFC)"
     Option_D_Done --> Phase3_Sync : "Ready for Specs"
 
     state Phase3_Sync {
@@ -113,7 +235,12 @@ stateDiagram-v2
 
 ## The Pipeline Lifecycle
 
-Guide the Architect through the following phases sequentially:
+Guide the Architect through the following phases sequentially. **Before Phase 1,
+run Phase 0** (create the `pipeline/rfc-<n>` branch and record the base SHA) per
+**Change Tracking, Checkpoints & Agent Write-Scope** above. Throughout, take a
+checkpoint at every gate boundary, number every loopable step, verify each
+agent's write-scope on return, and independently re-run tests before reporting
+any result as green.
 
 ### Phase 1: Design
 
@@ -143,17 +270,25 @@ Guide the Architect through the following phases sequentially:
         <codebase-root>. Return a final summary report of every change made to
         the RFC."`
 
-    Print the transparency line first, then spawn. Pause; when the harness
-    notifies you the agent has completed, present its final summary report to
-    the Architect.
+    Checkpoint before spawning (`pipeline(rfc-<n>): before review-loop [i]`).
+    The spawn prompt MUST state the **write-scope** (`rfc/<rfc-file>.md` only)
+    and the subagent rules (never commit, never stash). Print the transparency
+    line first, then spawn. Pause; when the harness notifies you the agent has
+    completed, **verify its write-scope** (`git status --porcelain` ⊆ the RFC;
+    any code/test write ⇒ reset and escalate), checkpoint the result
+    (`pipeline(rfc-<n>): after review-loop [i]`), then present its final summary
+    report to the Architect.
 
 3.  **Architect Review**:
 
     -   To prevent automatic progression when reviews modify the RFC, the Master
         Orchestrator MUST NOT proceed directly to Phase 2.
-    -   **Verifying Diffs**: Run a `git diff` (or `git status`) check to capture
-        exactly what changes were applied to `rfc/<rfc-file>.md` during the
-        review loop.
+    -   **Verifying Diffs**: Diff the two review-loop checkpoints to capture
+        exactly what the loop changed: `git diff "pipeline(rfc-<n>): before
+        review-loop [i]" "pipeline(rfc-<n>): after review-loop [i]" --
+        rfc/<rfc-file>.md` (resolve the messages to SHAs as needed). Because the
+        RFC is committed in the checkpoint, a plain `git diff` against the
+        working tree alone would miss it — diff the checkpoints.
     -   **Walk-through**: Present a clear, structured line-by-line markdown diff
         of all additions and deletions made to the RFC to the Architect.
     -   **Decisive Action**: Explicitly ask the Architect: *"Are you satisfied
@@ -179,8 +314,13 @@ Guide the Architect through the following phases sequentially:
         If you spawn any nested agents, list them (name + task) in your final
         report."`
 
-    Print the transparency line first, then spawn. Pause and wait for the agent
-    to complete.
+    Checkpoint before spawning (`pipeline(rfc-<n>): before impl`); the spawn
+    prompt MUST state the **write-scope** (code, tests, config — but **no
+    `*/SPEC.md`**) and the subagent rules (never commit, never stash). Print the
+    transparency line first, then spawn. Pause and wait for the agent to
+    complete. On return, **verify write-scope** (`git status --porcelain`
+    contains no `*/SPEC.md`), **independently re-run the test suite** (do not
+    trust the agent's green claim), and checkpoint (`pipeline(rfc-<n>): impl`).
 
 2.  **Autonomous Implementation Review**: Once implementation is complete, spawn
     a background agent with the **`Agent`** tool:
@@ -193,27 +333,30 @@ Guide the Architect through the following phases sequentially:
         <codebase-root>. Return the final review findings, changes made, and an
         uncommitted-diff summary."`
 
-    Pause and wait for the agent to complete. Once it finishes, present the final
-    review findings, changes made, and the uncommitted diff summary to the
-    Architect. You MUST explicitly verify that the generated review report
-    contains a `Test Verification Completeness Check` section with a passing
-    status. If it does not, or if the status is FAILED, you must halt and
-    request revisions.
+    The spawn prompt MUST state the **write-scope** (the review writes nothing
+    tracked; reports go to gitignored `.scratch/`) and the subagent rules.
+    Number this loopable step (`impl-review [i]`). Pause and wait for the agent
+    to complete. On return, **verify write-scope** (`git status --porcelain`
+    empty — a review that edited source ⇒ reset and escalate). Once it finishes,
+    present the final review findings, changes made, and the uncommitted diff
+    summary to the Architect. You MUST explicitly verify that the generated
+    review report contains a `Test Verification Completeness Check` section with
+    a passing status; **and independently re-run the suite yourself** to confirm
+    it — do not rely on the report's claim alone. If the section is missing, the
+    status is FAILED, or your own run does not pass, halt and request revisions.
 
 3.  **Architect Implementation Review**: Once the autonomous reviews and fixes
     pass (or if the Architect requests intermediate iterations), present the
     final/current implementation state to the Architect.
 
-    -   **Immediate RFC Backup**: Immediately take a backup snapshot copy of the
-        current RFC file (e.g., copy `rfc/<rfc-file>.md` to a temporary file
-        under `.scratch/`, such as `.scratch/<rfc-file>.md.bak`). `.scratch/` is
-        a gitignored directory for transient pipeline output; create it if
-        absent. This MUST be done every time this step starts, so a clean
-        reference point is preserved in case the Architect chooses Option A.
-    -   Generate a persistent artifact `.scratch/implementation_diff.md`. This
-        artifact MUST contain a structured walkthrough AND the **actual code
-        diff blocks** (in standard `git diff` format) showing every line that
-        was added, modified, or deleted.
+    -   **Immediate Checkpoint**: Take an `architect-review [i]` checkpoint at
+        the start of this step every time it is entered (`git add -A && git
+        commit -m "pipeline(rfc-<n>): architect-review [i]"`). This is the clean
+        reference point preserved in case the Architect chooses Option A.
+    -   Generate a persistent artifact `.scratch/implementation_diff.md` from
+        `git diff <base-sha> HEAD`. This artifact MUST contain a structured
+        walkthrough AND the **actual code diff blocks** (in standard `git diff`
+        format) showing every line that was added, modified, or deleted.
     -   Clearly print and describe the three options below to the Architect in
         your response, helping them choose how to iterate:
 
@@ -230,15 +373,19 @@ Guide the Architect through the following phases sequentially:
         updates: <Architect-inputs>"`
     3.  Pause and wait for them to return once the RFC has been updated.
     4.  Once they return:
-        -   **Verify RFC Diffs**: Immediately run `git diff --no-index
-            .scratch/<rfc-file>.md.bak rfc/<rfc-file>.md` (or `diff -u` if the
-            backup is untracked) to capture exactly what design changes were
-            made. Present this diff to the Architect for verification, then
-            delete the backup snapshot.
-        -   **Surgical Patch Re-run**: Spawn a background agent running
-            `/rfc-impl-fix` to apply only the RFC design changes incrementally
-            to the existing implementation. You MUST pass the captured RFC
-            design diff as the action items to implement:
+        -   **Verify RFC Diffs**: Diff the working-tree RFC against the
+            `architect-review [i]` checkpoint taken at the start of this step
+            (`git diff "pipeline(rfc-<n>): architect-review [i]" --
+            rfc/<rfc-file>.md`) to capture exactly what design changes were made.
+            Present this diff to the Architect for verification; the checkpoint
+            is the reference.
+        -   **Surgical Patch Re-run**: Checkpoint the Architect's RFC edit
+            (`pipeline(rfc-<n>): rfc-refine [i]`), then spawn a background agent
+            running `/rfc-impl-fix` to apply only the RFC design changes
+            incrementally to the existing implementation. The spawn prompt MUST
+            state the **write-scope** (code, tests, config — **no `*/SPEC.md`**)
+            and the subagent rules. You MUST pass the captured RFC design diff as
+            the action items to implement:
             -   **subagent_type**: `general-purpose`
             -   **description**: `RFC impl fix — <rfc-file>`
             -   **run_in_background**: `true`
@@ -318,7 +465,14 @@ Guide the Architect through the following phases sequentially:
 2.  **Commit Message Generation & Code Approval**: Once the Architect confirms
     the `SPEC.md` sync changes are done:
 
-    -   Ingest the final uncommitted workspace diff.
+    -   **Squash the pipeline checkpoints**: collapse all WIP checkpoints into a
+        clean staging state with `git reset --soft <base-sha>` (the recorded base
+        SHA; working tree and index preserved, only the WIP history dropped). The
+        two final commits are created from this state.
+    -   **Final independent test run**: before generating commit messages, re-run
+        the suite yourself (project test harness) and confirm it is green — do
+        not rely on any earlier agent report.
+    -   Ingest the final workspace diff (`git diff <base-sha>` / `git status`).
     -   Generate and provide two formatted commit messages for the Architect to
         copy-paste (following the repository's commit guidelines): one for the
         new/updated RFC markdown document, and one for the actual code
