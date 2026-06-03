@@ -4,41 +4,43 @@ struct HomeView: View {
     let user: PublicUser
     let onLogout: () async -> Void
     @State private var isLoggingOut = false
-    
+
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: DSSpacing.md) {
             Text("Welcome, \(user.name)!")
-                .font(.largeTitle)
-                .padding(.top, 40)
-            
+                .font(.dsTitleXL)
+                .foregroundStyle(Color.dsTextPrimary)
+                .padding(.top, DSSpacing.xl)
+
             Text(user.email)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-            
+                .font(.dsLabel)
+                .foregroundStyle(Color.dsTextSecondary)
+
             Spacer()
-            
-            Button {
-                isLoggingOut = true
-                Task {
-                    await onLogout()
-                    isLoggingOut = false
+
+            LoadingButton(
+                "Log Out",
+                isLoading: isLoggingOut,
+                role: .destructive,
+                action: {
+                    isLoggingOut = true
+                    Task {
+                        await onLogout()
+                        isLoggingOut = false
+                    }
                 }
-            } label: {
-                if isLoggingOut {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle())
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Text("Log Out")
-                        .foregroundColor(.red)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red.opacity(0.1))
-            .disabled(isLoggingOut)
-            .padding(.bottom, 40)
-            .padding(.horizontal)
+            )
+            .padding(.bottom, DSSpacing.xl)
         }
+        .padding(.horizontal, DSSpacing.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.dsBackground)
     }
+}
+
+#Preview {
+    HomeView(
+        user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User"),
+        onLogout: {}
+    )
 }

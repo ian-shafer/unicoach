@@ -29,6 +29,9 @@
 		F419AD7AD0C4D307069ED0E4 /* RegistrationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C8A2A153A20CE21B45852C9 /* RegistrationViewModel.swift */; };
 		F42153F746F1877B7A2463BD /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BA3C895E84184F93D916BB5 /* Models.swift */; };
 		FCB2B11F8FF11F5448DC44A8 /* MockAuthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B78E8AB9325BA342EC147D1 /* MockAuthClient.swift */; };
+		AAAA00010000000000000B01 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00010000000000000F01 /* Theme.swift */; };
+		AAAA00010000000000000B02 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00010000000000000F02 /* Components.swift */; };
+		AAAA00010000000000000B03 /* ErrorResponseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00010000000000000F03 /* ErrorResponseTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -66,6 +69,9 @@
 		D62AAE67DF17D5BF66357229 /* LoginViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LoginViewModelTests.swift; sourceTree = "<group>"; };
 		E07CF0E17D649CCDB28346C4 /* AuthClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuthClientTests.swift; sourceTree = "<group>"; };
 		EF26463FA3E9D6158360F6B0 /* UserAuthState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UserAuthState.swift; sourceTree = "<group>"; };
+		AAAA00010000000000000F01 /* Theme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		AAAA00010000000000000F02 /* Components.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		AAAA00010000000000000F03 /* ErrorResponseTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ErrorResponseTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -117,9 +123,19 @@
 				11EB23D4BA12D429EC020603 /* HomeView.swift */,
 				6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */,
 				CEA408B564E10F9E132951E2 /* CookieStorageProtocol.swift */,
+				AAAA00010000000000000A01 /* DesignSystem */,
 			);
 			name = UnicoachiOS;
 			path = UnicoachiOS;
+			sourceTree = "<group>";
+		};
+		AAAA00010000000000000A01 /* DesignSystem */ = {
+			isa = PBXGroup;
+			children = (
+				AAAA00010000000000000F01 /* Theme.swift */,
+				AAAA00010000000000000F02 /* Components.swift */,
+			);
+			path = DesignSystem;
 			sourceTree = "<group>";
 		};
 		7E1C4D1685B13437648DB535 /* iOS */ = {
@@ -147,6 +163,7 @@
 				5B78E8AB9325BA342EC147D1 /* MockAuthClient.swift */,
 				D62AAE67DF17D5BF66357229 /* LoginViewModelTests.swift */,
 				008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */,
+				AAAA00010000000000000F03 /* ErrorResponseTests.swift */,
 			);
 			name = UnicoachiOSTests;
 			path = UnicoachiOSTests;
@@ -266,6 +283,8 @@
 				7A8C8BD03AA7CC720818E921 /* HomeView.swift in Sources */,
 				473585B6D2515A0F3F04F832 /* AuthFlowView.swift in Sources */,
 				E18E82B50D2DECBF36C8CCFC /* CookieStorageProtocol.swift in Sources */,
+				AAAA00010000000000000B01 /* Theme.swift in Sources */,
+				AAAA00010000000000000B02 /* Components.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -278,6 +297,7 @@
 				FCB2B11F8FF11F5448DC44A8 /* MockAuthClient.swift in Sources */,
 				B49688497600EA7DC3C15E64 /* LoginViewModelTests.swift in Sources */,
 				63C0E03A53327D2F2C1DF54B /* AppViewModelTests.swift in Sources */,
+				AAAA00010000000000000B03 /* ErrorResponseTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

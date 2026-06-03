@@ -28,6 +28,12 @@ struct ErrorResponse: Codable, Error, Identifiable {
     let fieldErrors: [FieldError]?
 }
 
+extension ErrorResponse {
+    func fieldError(for field: String) -> String? {
+        fieldErrors?.first(where: { $0.field == field })?.message
+    }
+}
+
 struct LoginRequest: Codable {
     let email: String
     let password: String
