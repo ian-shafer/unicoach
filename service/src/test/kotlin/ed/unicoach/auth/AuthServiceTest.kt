@@ -110,31 +110,18 @@ class AuthServiceTest {
   @Test
   fun `test validation rejection for weak passwords`() =
     runTest {
-      // We can pass a dummy db and jwt config because it should fail validation before hitting them
-      val rawConfig =
-        com.typesafe.config.ConfigFactory.parseString(
-          """
-          database {
-            jdbcUrl = "jdbc:h2:mem:test"
-            user = "user"
-            maximumPoolSize = 10
-            connectionTimeout = 30000
-          }
-          """.trimIndent(),
-        )
-      val dummyDb = Database(DatabaseConfig.from(rawConfig).getOrThrow())
-      val service = AuthService(dummyDb, argon2Hasher, ed.unicoach.util.TokenGenerator())
+      // Weak passwords are rejected before any persistence occurs; the registrations
+      // run against the same Postgres harness as the other tests in this class.
+      val service = AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator())
 
       val res1 = service.register("email@test.com", "Name", "short", null, 86400L, null, null)
-      assertTrue(res1.isSuccess && res1.getOrNull() is RegisterOutcome.ValidationFailure)
+      assertTrue(res1.isSuccess && res1.getOrNull() is RegisterResult.ValidationFailure)
 
       val res2 = service.register("email@test.com", "Name", "nouppercasenonumber", null, 86400L, null, null)
-      assertTrue(res2.isSuccess && res2.getOrNull() is RegisterOutcome.ValidationFailure)
+      assertTrue(res2.isSuccess && res2.getOrNull() is RegisterResult.ValidationFailure)
 
       val res3 = service.register("email@test.com", "Name", "UPPERCASENONUMBER", null, 86400L, null, null)
-      assertTrue(res3.isSuccess && res3.getOrNull() is RegisterOutcome.ValidationFailure)
-
-      dummyDb.close()
+      assertTrue(res3.isSuccess && res3.getOrNull() is RegisterResult.ValidationFailure)
     }
 
   @Test
@@ -267,7 +254,7 @@ class AuthServiceTest {
     val email = "login_old_cookie@example.com"
     val password = "Password123"
     val regResult = authService.register(email, "Old Cookie", password, null, 86400L, null, null)
-    val oldToken = (regResult.getOrNull() as RegisterOutcome.Success).token
+    val oldToken = (regResult.getOrNull() as RegisterResult.Success).token
 
     val result = authService.login(email, password, oldToken, 86400L, null, null)
     assertTrue(result.isSuccess)

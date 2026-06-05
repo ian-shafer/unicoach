@@ -75,15 +75,15 @@ class AuthRouteHandler(
     respondRegisterOutcome(outcome)
   }
 
-  private suspend fun RoutingContext.respondRegisterOutcome(outcome: ed.unicoach.auth.RegisterOutcome) {
+  private suspend fun RoutingContext.respondRegisterOutcome(outcome: ed.unicoach.auth.RegisterResult) {
     when (outcome) {
-      is ed.unicoach.auth.RegisterOutcome.Success -> respondRegisterSuccess(outcome)
-      is ed.unicoach.auth.RegisterOutcome.ValidationFailure -> respondRegisterValidationFailure(outcome)
-      is ed.unicoach.auth.RegisterOutcome.DuplicateEmail -> respondRegisterDuplicateEmail()
+      is ed.unicoach.auth.RegisterResult.Success -> respondRegisterSuccess(outcome)
+      is ed.unicoach.auth.RegisterResult.ValidationFailure -> respondRegisterValidationFailure(outcome)
+      is ed.unicoach.auth.RegisterResult.DuplicateEmail -> respondRegisterDuplicateEmail()
     }
   }
 
-  private suspend fun RoutingContext.respondRegisterSuccess(outcome: ed.unicoach.auth.RegisterOutcome.Success) {
+  private suspend fun RoutingContext.respondRegisterSuccess(outcome: ed.unicoach.auth.RegisterResult.Success) {
     val publicUser =
       PublicUser(
         id = outcome.user.id.value,
@@ -104,7 +104,7 @@ class AuthRouteHandler(
     call.respond(HttpStatusCode.Created, RegisterResponse(publicUser))
   }
 
-  private suspend fun RoutingContext.respondRegisterValidationFailure(outcome: ed.unicoach.auth.RegisterOutcome.ValidationFailure) {
+  private suspend fun RoutingContext.respondRegisterValidationFailure(outcome: ed.unicoach.auth.RegisterResult.ValidationFailure) {
     val restFieldErrors =
       outcome.fieldErrors.map { FieldError(it.field, it.message) } +
         outcome.errors.map { FieldError("general", it) }

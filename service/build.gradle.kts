@@ -12,3 +12,7 @@ dependencies {
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)
 }
+
+tasks.test {
+  useJUnitPlatform()
+}

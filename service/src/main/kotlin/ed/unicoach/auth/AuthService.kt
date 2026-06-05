@@ -29,12 +29,12 @@ class AuthService(
     sessionExpirationSeconds: Long,
     userAgent: String?,
     initialIp: String?,
-  ): Result<RegisterOutcome> {
+  ): Result<RegisterResult> {
     val input = RegistrationInput(email, name, password)
     val validationResult = validator.validate(input)
 
     if (validationResult.hasErrors()) {
-      return Result.success(RegisterOutcome.ValidationFailure(validationResult.errors, validationResult.fieldErrors))
+      return Result.success(RegisterResult.ValidationFailure(validationResult.errors, validationResult.fieldErrors))
     }
 
     val emailAddr = (EmailAddress.create(email) as ValidationResult.Valid).value
@@ -63,7 +63,7 @@ class AuthService(
         if (daoResult.isFailure) {
           val ex = daoResult.exceptionOrNull()
           if (ex is DuplicateEmailException) {
-            return@withConnection Result.success(RegisterOutcome.DuplicateEmail(emailAddr.value))
+            return@withConnection Result.success(RegisterResult.DuplicateEmail(emailAddr.value))
           } else {
             return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
           }
@@ -105,7 +105,7 @@ class AuthService(
           ).getOrThrow()
         }
 
-        Result.success(RegisterOutcome.Success(user, newToken))
+        Result.success(RegisterResult.Success(user, newToken))
       }
     } catch (e: Exception) {
       Result.failure(e)

@@ -28,6 +28,11 @@ request/response in the `rest-server`. The plugins cover:
   `DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES = true` — any JSON
   payload omitting a required constructor field MUST be rejected.
 - `SerializationFeature.INDENT_OUTPUT` MUST be enabled (formatted JSON output).
+- The Jackson `JavaTimeModule` MUST be registered, and
+  `SerializationFeature.WRITE_DATES_AS_TIMESTAMPS` MUST be disabled, so that
+  `java.time.Instant` (and other `java.time` values) serialize as ISO-8601
+  strings rather than numeric epoch arrays. Any response body carrying an
+  `Instant` field MUST emit it as an ISO-8601 string.
 
 ### StatusPages (`StatusPages.kt`)
 
@@ -100,8 +105,9 @@ request/response in the `rest-server`. The plugins cover:
 ### `configureSerialization()` ([Serialization.kt](./Serialization.kt))
 
 - **Signature**: `fun Application.configureSerialization()`
-- **Side Effects**: Installs the Ktor `ContentNegotiation` plugin with Jackson.
-  No database writes, no network calls.
+- **Side Effects**: Installs the Ktor `ContentNegotiation` plugin with Jackson,
+  with the `JavaTimeModule` registered and `WRITE_DATES_AS_TIMESTAMPS` disabled
+  for ISO-8601 temporal output. No database writes, no network calls.
 - **Error Handling**: If installation fails (e.g., duplicate plugin install),
   Ktor throws internally at startup — not a runtime HTTP error.
 - **Idempotency**: MUST be called exactly once at startup. Calling it twice on
@@ -220,3 +226,4 @@ request/response in the `rest-server`. The plugins cover:
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../../rfc/21-session-expiry-queue.md) — introduced `SessionExpiryPlugin.kt`.
 - [x] [RFC-24: Result Types](../../../../../../../../rfc/24-result-types.md) — reworked `StatusPages.kt` exception mapping (`permanent_error` / `internal_error` codes, subtype-driven status).
 - [x] [RFC-29: Request Payload Limits](../../../../../../../../rfc/29-request-payload-limits.md) — introduced `RequestSizeLimit.kt`; added the `413`/`PayloadTooLargeException` handler in `StatusPages.kt`.
+- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md) — registered the Jackson `JavaTimeModule` and disabled `WRITE_DATES_AS_TIMESTAMPS` in `Serialization.kt` so `Instant` response fields serialize as ISO-8601 strings.

@@ -17,7 +17,7 @@ credential verification is handled in this layer.
 
 - `AuthService` MUST NOT import or reference any Ktor, HTTP, or REST-layer types.
 - All `AuthService` methods MUST wrap their entire body in `try/catch(Exception)`
-  and return the appropriate `DatabaseFailure` variant on uncaught exceptions.
+  and return `Result.failure(e)` on any uncaught exception.
 - `AuthService` MUST NOT own or hold a raw `java.sql.Connection` — all DB access
   MUST go through `Database.withConnection`.
 
@@ -25,9 +25,9 @@ credential verification is handled in this layer.
 
 - `AuthService.register()` MUST validate input via `RegistrationValidator` before
   any database call. If validation fails, it MUST return
-  `RegisterOutcome.ValidationFailure` without touching the DB.
+  `RegisterResult.ValidationFailure` without touching the DB.
 - If `UsersDao.create()` returns `DuplicateEmailException`, `AuthService`
-  MUST return `RegisterOutcome.DuplicateEmail`, not a database error.
+  MUST return `RegisterResult.DuplicateEmail`, not a database error.
 - `AuthService.register()` MUST mint a token and create a session (or remint the
   caller's existing session when `oldCookieToken` is supplied) on success.
 
@@ -35,11 +35,11 @@ credential verification is handled in this layer.
 
 - `AuthService.getCurrentUser()` MUST return `Result.success(null)` for
   all of: token not found, expired token, revoked token, anonymous session
-  (`user_id = null`), and soft-deleted user.
-- A `LockAcquisitionFailureException` on the user lookup MUST map to
-  `Result.success(null)`, not `Result.failure(e)`.
+  (`user_id = null`), and soft-deleted user. Every one of these is signalled by
+  the DAO as a `NotFoundException`; any other DAO failure MUST surface as
+  `Result.failure(e)`.
 - `AuthService.getCurrentUser()` MUST NOT perform expiry extension inline — that
-  concern belongs to `SessionExpiryPlugin` in `rest-server`.
+  concern belongs to the `rest-server` layer.
 
 ### Logout
 
@@ -47,7 +47,6 @@ credential verification is handled in this layer.
   to a `Result.success(Unit)`.
 - `AuthService.logout()` MUST NOT clear cookies — that is the routing layer's
   responsibility.
-- `Result<Unit>` is used to indicate success or failure.
 
 ### RegistrationValidator
 
@@ -63,37 +62,35 @@ credential verification is handled in this layer.
 
 - `SessionCleanupJob.execute()` MUST NOT contain raw SQL — all DB mutation is
   delegated to `SessionsDao.expireZombieSessions()`.
-- On `SessionDeleteResult.DatabaseFailure`, the job MUST log to `stderr` and
-  continue (not re-throw).
-- On any uncaught `Exception`, the job MUST call `exitProcess(1)`.
-- The job MUST log progress to `stderr` — never to `stdout`.
+- When `expireZombieSessions()` returns `Result.failure`, the job MUST log the
+  error and complete normally (MUST NOT re-throw and MUST NOT exit non-zero).
+- On any uncaught `Exception`, the job MUST log the failure and call
+  `exitProcess(1)`.
 
 ### Result Sealed Interfaces
 
-- `AuthResult.DatabaseFailure` MUST implement `AppError` (i.e., carry a
-  `rootCause: AppError`); other `DatabaseFailure` variants carry an
-  `ExceptionWrapper`.
-- No `AuthResult`, `MeResult`, or `LogoutResult` variant MUST contain HTTP
-  status codes or Ktor types.
+- The `RegisterResult` and `LoginResult` sealed interfaces and their variants
+  MUST NOT carry HTTP status codes or any Ktor/REST-layer types; they model
+  expected domain outcomes only.
 
 ---
 
 ## III. Behavioral Contracts
 
-### `AuthService.register(email, name, password, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<RegisterOutcome>` — See [AuthService.kt](./AuthService.kt)
+### `AuthService.register(email, name, password, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<RegisterResult>` — See [AuthService.kt](./AuthService.kt)
 
 - **Side Effects**: Writes one row to `users` via `UsersDao.create()`, then mints
   a token and creates or remints a session via `SessionsDao`.
 - **Validation**: `RegistrationValidator` is called first; returns
-  `RegisterOutcome.ValidationFailure(errors, fieldErrors)` without DB access if
+  `RegisterResult.ValidationFailure(errors, fieldErrors)` without DB access if
   validation fails.
 - **Hashing**: `argon2Hasher.hash(password)` is invoked; thrown exceptions are
   caught and returned as `Result.failure()`.
 - **Idempotency**: Not idempotent. Submitting the same email twice returns
-  `RegisterOutcome.DuplicateEmail` on the second call.
+  `RegisterResult.DuplicateEmail` on the second call.
 - **Error mapping**:
-  - `Success` → `Result.success(RegisterOutcome.Success(user, newToken))`
-  - `DuplicateEmailException` → `Result.success(RegisterOutcome.DuplicateEmail(email))`
+  - `Success` → `Result.success(RegisterResult.Success(user, newToken))`
+  - `DuplicateEmailException` → `Result.success(RegisterResult.DuplicateEmail(email))`
   - Uncaught exception → `Result.failure(e)`
 
 ### `AuthService.getCurrentUser(tokenHash: TokenHash): Result<User?>` — See [AuthService.kt](./AuthService.kt)
@@ -139,13 +136,15 @@ credential verification is handled in this layer.
 
 ### `SessionCleanupJob.execute()` — See [SessionCleanupJob.kt](./SessionCleanupJob.kt)
 
-- **Side Effects**: Deletes expired session rows from `sessions` via
-  `SessionsDao.expireZombieSessions()`. Logs to `stderr`.
-- **On DB failure**: Logs `[ERROR]` to stderr; does not re-throw; job completes.
-- **On uncaught exception**: Logs `[FATAL]` to stderr; calls `exitProcess(1)`.
-- **Idempotency**: Idempotent (delete is safe to re-run).
+- **Side Effects**: Expires zombie session rows in `sessions` via
+  `SessionsDao.expireZombieSessions()`. Emits progress and outcome via an
+  injected SLF4J logger.
+- **On DB failure** (`Result.failure` from the DAO): logs the error; does not
+  re-throw; `execute()` returns normally.
+- **On uncaught exception**: logs the error and calls `exitProcess(1)`.
+- **Idempotency**: Idempotent (expiry is safe to re-run).
 
-### `RegisterOutcome` (sealed interface) — See [RegisterOutcome.kt](./RegisterOutcome.kt)
+### `RegisterResult` (sealed interface) — See [RegisterResult.kt](./RegisterResult.kt)
 
 | Variant | Carries | When returned |
 |---|---|---|
@@ -199,8 +198,7 @@ credential verification is handled in this layer.
 - [x] [RFC-10: Auth Login](../../../../../../../rfc/10-auth-login.md)
 - [x] [RFC-11: Sessions](../../../../../../../rfc/11-sessions.md)
 - [x] [RFC-13: Auth Me](../../../../../../../rfc/13-auth-me.md)
-- [x] [RFC-14: DB Module](../../../../../../../rfc/14-db-module.md)
 - [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md)
-- [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md)
+- [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md) (deleted `AuthResult`/`MeResult`/`LogoutResult`; service layer returns `Result<T>`)
 - [x] [RFC-26: Login](../../../../../../../rfc/26-login.md)
 - [x] [RFC-28: Coroutine Context Refactor](../../../../../../../rfc/28-coroutine-context.md)

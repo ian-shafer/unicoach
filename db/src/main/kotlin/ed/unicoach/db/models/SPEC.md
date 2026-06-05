@@ -26,11 +26,12 @@ contracts.
   `ValidationResult.Invalid(BlankString)`.
 - `SsoProviderId.create()` MUST trim whitespace. A blank-after-trim input MUST return
   `ValidationResult.Invalid(BlankString)`.
-- All `@JvmInline value class` types (`UserId`, `UserVersionId`, `EmailAddress`,
-  `DisplayName`, `PersonName`, `PasswordHash`, `SsoProviderId`) MUST expose their
-  raw value through a public `val value` property.
-- `UserId` wraps `UUID`; `UserVersionId` wraps `Int`. Neither provides a factory
-  method — they are constructed directly and carry no validation logic.
+- All `@JvmInline value class` types (`UserId`, `UserVersionId`, `StudentId`,
+  `StudentVersionId`, `EmailAddress`, `DisplayName`, `PersonName`, `PasswordHash`,
+  `SsoProviderId`) MUST expose their raw value through a public `val value` property.
+- `UserId` and `StudentId` wrap `UUID`; `UserVersionId` and `StudentVersionId` wrap
+  `Int`. None of these provide a factory method — they are constructed directly and
+  carry no validation logic.
 
 ### TokenHash
 
@@ -52,6 +53,27 @@ contracts.
 - A `Password` variant MUST carry a `PasswordHash`. An `SSO` variant MUST carry a
   `SsoProviderId`. A `Both` variant MUST carry both.
 
+### PartialDate
+
+- `PartialDate` is a domain-agnostic, `java.time`-backed sealed interface modeling a
+  variable-precision calendar value with exactly three variants: `YearOnly` (year),
+  `YearAndMonth` (year + month), and `FullDate` (year + month + day). It carries no
+  domain semantics (birthdate, deadline, graduation) and MUST remain reusable.
+- Every variant MUST expose `year: Year`, `month: Month?`, and `day: Int?`, with the
+  unset components null at the variant's precision (`YearOnly` has null `month`/`day`;
+  `YearAndMonth` has null `day`).
+- Precision MUST be downward-closed: a value MUST NOT carry a day without a month.
+  This is enforced structurally by the variant set (there is no day-without-month
+  variant) and by `of()`, which rejects `day != null && month == null`.
+- `toIso()` MUST emit zero-padded ISO at the stored precision only: `"YYYY"`,
+  `"YYYY-MM"`, or `"YYYY-MM-DD"` (year four digits, month/day two digits each).
+- The accepted wire form and `toIso()` output MUST be identical: `parse()` and
+  `toIso()` are symmetric round-trips at every precision.
+- `PartialDate` MUST be constructed only via the `parse()` / `of()` factory methods
+  or its variant constructors; neither factory throws — all failures are expressed as
+  `ValidationResult.Invalid`. Both factories use `ValidationError.InvalidFormat` for
+  every rejection; no new `ValidationError` variant is introduced.
+
 ### Aggregate Records
 
 - `NewUser` MUST carry a validated `EmailAddress`, `PersonName`, optional
@@ -59,24 +81,42 @@ contracts.
 - `NewSession` MUST carry a `TokenHash`, a relative `Duration` expiration, and
   optional `userId`, `userAgent`, `initialIp`, and `metadata` fields. Sessions with
   `userId == null` represent anonymous/pre-auth sessions.
-- `User` MUST implement both `BaseEntity<UserId>` and `AdvancedEntity`. It MUST
-  carry `deletedAt: Instant?`; a non-null value indicates a soft-deleted user.
-- `UserVersion` MUST implement `BaseVersionEntity<UserId>`. It MUST carry six
-  timestamps: `createdAt`, `updatedAt` (via `BaseVersionEntity`), and `rowCreatedAt`,
-  `rowUpdatedAt` as explicit `val` fields (NOT via `AdvancedEntity` — `UserVersion`
-  does NOT implement `AdvancedEntity`). It MUST also carry `deletedAt: Instant?`.
+- `User` MUST implement both `BaseEntity<UserId, UserVersionId>` and
+  `AdvancedEntity`. It MUST carry `deletedAt: Instant?`; a non-null value indicates a
+  soft-deleted user.
+- `UserVersion` MUST implement `BaseVersionEntity<UserId, UserVersionId>`. It MUST
+  carry six timestamps: `createdAt`, `updatedAt` (via `BaseVersionEntity`), and
+  `rowCreatedAt`, `rowUpdatedAt` as explicit `val` fields (NOT via `AdvancedEntity` —
+  `UserVersion` does NOT implement `AdvancedEntity`). It MUST also carry
+  `deletedAt: Instant?`.
+- `Student` MUST implement both `BaseEntity<StudentId, StudentVersionId>` and
+  `AdvancedEntity`. It MUST carry `userId: UserId`, an `expectedHighSchoolGraduationDate:
+  PartialDate`, and `deletedAt: Instant?` (a non-null value indicates a soft-deleted
+  student).
+- `StudentVersion` MUST implement `BaseVersionEntity<StudentId, StudentVersionId>`. It
+  MUST carry the same domain fields as `Student` (`userId`,
+  `expectedHighSchoolGraduationDate`, `deletedAt`) plus `rowCreatedAt`/`rowUpdatedAt`
+  as explicit `val` fields (NOT via `AdvancedEntity` — `StudentVersion` does NOT
+  implement `AdvancedEntity`).
+- `NewStudent` MUST carry a `userId: UserId` and a validated
+  `expectedHighSchoolGraduationDate: PartialDate`. It is the sole input type for
+  student creation.
 - `Session` MUST include `expiresAt: Instant` as a mandatory field. It MUST NOT
   include a token value or raw token hash — only the opaque UUID session `id` and
   `version` are stored on the model.
 
 ### Entity Interfaces
 
-- Every entity type returned by a DAO MUST implement `BaseEntity<ID>`, which
-  mandates `id`, `versionId`, `createdAt`, and `updatedAt`.
+- `BaseEntity<ID, V>` mandates `id: ID`, `versionId: V`, `createdAt`, and
+  `updatedAt` on every implementor. Both `ID` and `V` are bounded `: Any` (non-null)
+  type parameters; the entity's identity and version-key types MUST be carried
+  explicitly rather than hardcoded, so each implementor pairs its own id type with
+  its own version-id type (e.g. `UserId`/`UserVersionId`,
+  `StudentId`/`StudentVersionId`). `User` and `Student` are the current implementors.
 - `AdvancedEntity` provides row-level audit timestamps (`rowCreatedAt`,
   `rowUpdatedAt`) distinct from domain-level `createdAt`/`updatedAt`. Types
   implementing `AdvancedEntity` MUST carry all four timestamps.
-- `BaseVersionEntity<ID>` extends `BaseEntity<ID>` and is used exclusively for
+- `BaseVersionEntity<ID, V>` extends `BaseEntity<ID, V>` and is used exclusively for
   version-history records.
 
 ### ValidationResult
@@ -131,6 +171,38 @@ contracts.
 - **Error Handling**: Returns `Invalid(BlankString)` for blank input after trim.
 - **Idempotent**: Yes.
 
+### `PartialDate.parse(iso: String): ValidationResult<PartialDate>`
+
+- **Side Effects**: None.
+- **Behavior**: Validates in two ordered stages. **First**, the input MUST match the
+  regex `^\d{4}(-\d{2}(-\d{2})?)?$` (year exactly four digits, optional two-digit
+  month, optional two-digit day, no leading sign). Inputs that fail the regex —
+  unpadded components (`"2028-6"`, `"2028-6-5"`), signed or overlong years
+  (`"+2028"`, `"20281"`) — MUST be rejected before any `java.time` call. **Second**,
+  matching inputs are constructed via `java.time` (`Year` / `YearMonth.parse` /
+  `LocalDate.parse`), which rejects out-of-range months and impossible calendar
+  days.
+- **Error Handling**: Every rejection — failing regex, out-of-range month, impossible
+  calendar day (`DateTimeParseException`/`DateTimeException`) — returns
+  `Invalid(InvalidFormat)`. No exception escapes the method.
+- **Idempotent**: Yes. The accepted form equals `toIso()` output, so
+  `parse(x.toIso())` round-trips at every precision.
+
+### `PartialDate.of(year: Int, month: Int?, day: Int?): ValidationResult<PartialDate>`
+
+- **Side Effects**: None.
+- **Behavior**: Reconstructs a `PartialDate` from decomposed `(year, month?, day?)`
+  components — the read-path inverse of the stored-column decomposition. A `day` with
+  a null `month` MUST be rejected. Otherwise selects the variant by which components
+  are present and validates the month/day via `java.time` (`Month.of` /
+  `LocalDate.of`).
+- **Error Handling**: `day != null && month == null`, an out-of-range month, or an
+  impossible calendar day (`DateTimeException`) returns `Invalid(InvalidFormat)`.
+  Because callers feed `of()` only components that already satisfy the persistence
+  layer's integrity guarantees, an `Invalid` from `of()` on a read path indicates row
+  corruption, not user input.
+- **Idempotent**: Yes.
+
 ### `TokenHash(value: ByteArray)` constructor
 
 - **Side Effects**: None.
@@ -172,7 +244,8 @@ contracts.
 - **Package**: `ed.unicoach.db.models`.
 - **Dependencies**: No external runtime dependencies. All types in this package use
   only JDK standard library types (`UUID`, `Instant`, `Duration`, `ByteArray`,
-  `MessageDigest`).
+  `MessageDigest`, and the `java.time` calendar types `Year`, `Month`, `YearMonth`,
+  `LocalDate`).
 - **JVM Inline Classes**: `@JvmInline value class` is used for all scalar wrapper
   types to eliminate boxing overhead. Callers on the JVM boundary (e.g., JDBC
   result-set mappers) MUST unwrap via `.value` when binding parameters.
@@ -188,3 +261,4 @@ contracts.
 - [x] [RFC-11: Sessions](../../../../../../../../rfc/11-sessions.md) — Introduced `Session` and `NewSession` models.
 - [x] [RFC-14: DB Module](../../../../../../../../rfc/14-db-module.md) — Moved all model files from `service/` to `db/src/main/kotlin/ed/unicoach/db/models/`. Introduced `Entity.kt` (`BaseEntity`, `AdvancedEntity`, `BaseVersionEntity`). Confirmed current package location.
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../../rfc/21-session-expiry-queue.md) — Added `expiresAt: Instant` to `Session`. Extracted `TokenHash.fromRawToken()` as a shared companion method (previously a private function in `AuthRoutes.kt`).
+- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md) — Introduced `PartialDate` (variable-precision `java.time`-backed sealed type with two-stage zero-padded-ISO parsing), `StudentId`/`StudentVersionId` value classes, and `Student`/`NewStudent`/`StudentVersion` aggregates. Generalized `BaseEntity`/`BaseVersionEntity` to carry the version-key type as a second parameter (`BaseEntity<ID, V>`); updated `User` and `UserVersion` to `BaseEntity<UserId, UserVersionId>` / `BaseVersionEntity<UserId, UserVersionId>`.

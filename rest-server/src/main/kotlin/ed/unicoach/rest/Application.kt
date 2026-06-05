@@ -107,6 +107,7 @@ fun Application.appModule(
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
   val authService = AuthService(database, argon2Hasher, tokenGenerator)
+  val studentService = ed.unicoach.student.StudentService(database)
 
-  configureRouting(authService, sessionConfig)
+  configureRouting(authService, studentService, sessionConfig)
 }

@@ -2,9 +2,9 @@ package ed.unicoach.db.models
 
 import java.time.Instant
 
-interface BaseEntity<ID : Any> {
+interface BaseEntity<ID : Any, V : Any> {
   val id: ID
-  val versionId: UserVersionId
+  val versionId: V
   val createdAt: Instant
   val updatedAt: Instant
 }
@@ -14,4 +14,4 @@ interface AdvancedEntity {
   val rowUpdatedAt: Instant
 }
 
-interface BaseVersionEntity<ID : Any> : BaseEntity<ID>
+interface BaseVersionEntity<ID : Any, V : Any> : BaseEntity<ID, V>

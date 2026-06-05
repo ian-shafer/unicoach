@@ -10,6 +10,7 @@ operation:
 |-----|----------|
 | `UsersDao` | `users`, `users_versions` |
 | `SessionsDao` | `sessions` |
+| `StudentsDao` | `students` |
 
 Every DAO method accepts a `SqlSession` as its first parameter. Connection
 pooling, transaction boundaries, and commit/rollback are managed exclusively
@@ -35,11 +36,19 @@ Entity table characteristics vary by flavor:
 |--------|-------------|---------------------|------------------|----------------|
 | `users` | ✓ (logical) | ✓ | ✓ | ✓ |
 | `sessions` | ✗ (physical) | ✗ | ✓ | ✓ |
+| `students` | ✓ (logical) | ✓ (not read by DAO) | ✓ | ✓ |
 
 #### Mapping Notes
 
 - **`users` table**: The `password_hash` and `sso_provider_id` columns are synthesized into a sealed `AuthMethod` (variants: `Password`, `SSO`, or `Both`).
 - Complex columns (e.g., `email`, `name`, `display_name`) are mapped into strongly-typed value classes (e.g., `EmailAddress`, `PersonName`) using their respective `.create()` factories, unwrapping `ValidationResult.Valid`.
+- **`students` table**: The decomposed `expected_high_school_graduation_{year,month,day}`
+  columns are reconstructed into a single `PartialDate` via `PartialDate.of`,
+  with the month/day NULL-state preserved through `ResultSet.wasNull`. The DB
+  constraints already guarantee the persisted columns form a valid partial date,
+  so a `ValidationResult.Invalid` on this read path indicates row corruption, not
+  user input; it MUST be surfaced as a `PermanentError` mapping failure
+  (`DatabaseException`), never as a user-facing validation failure.
 
 ### Transaction Boundary
 
@@ -75,6 +84,11 @@ Entity table characteristics vary by flavor:
   `Result.failure(NotFoundException())` for rows where `deleted_at IS NOT NULL`
   unless `includeDeleted = true` is explicitly passed.
 - `UsersDao.findByEmail` MUST filter `deleted_at IS NULL` unconditionally.
+- `StudentsDao.findById` and `StudentsDao.findByUserId` MUST return
+  `Result.failure(NotFoundException())` for soft-deleted rows unless
+  `includeDeleted = true`. `StudentsDao.findByUserIdForUpdate` filters
+  `deleted_at IS NULL` unconditionally in SQL; `StudentsDao.findByIdForUpdate`
+  locks by primary key without a soft-delete filter.
 
 ### Postgres Error Codes
 
@@ -82,10 +96,19 @@ Specific error code mappings:
 
 - `23505` containing index `users_email_unique_active_idx` →
   `Result.failure(DuplicateEmailException())`.
+- `23505` containing index `students_user_id_unique_idx` →
+  `Result.failure(StudentAlreadyExistsException())`. The index is total (no
+  `WHERE deleted_at IS NULL` predicate), so a soft-deleted student still reserves
+  its owner's slot.
 - `23505` (other index) → `Result.failure(ConstraintViolationException())`.
-- `23514` → `Result.failure(ConstraintViolationException())`.
-- `55P03` in `findByIdForUpdate` →
-  `Result.failure(LockAcquisitionFailureException())`.
+- `22008` (datetime field overflow) and `23514` (check violation) →
+  `Result.failure(ConstraintViolationException())`. On `StudentsDao` these
+  surface the `students` grad-date constraints as a permanent,
+  caller-correctable validation failure.
+- `23503` (foreign key violation) on `StudentsDao` create/update →
+  `Result.failure(NotFoundException())` (owning user absent).
+- `55P03` in any `*ForUpdate` method (issued via `SELECT ... FOR UPDATE NOWAIT`)
+  → `Result.failure(LockAcquisitionFailureException())`.
 
 All other `SQLException` are classified into `TransientError` or
 `PermanentError` via `DaoException` implementations based on SQLSTATE class:
@@ -251,6 +274,74 @@ All methods delegate through `executeSafely`. All session mutations target the
 
 ---
 
+### `StudentsDao` — [`StudentsDao.kt`](./StudentsDao.kt)
+
+All methods are `object`-level. Create/update/delete SQLSTATE discrimination is
+centralized in the private `mapCreateUpdateError`; all other failures route
+through `mapDatabaseError`. Each grad-date column trio is reconstructed into a
+`PartialDate` per §II Mapping Notes.
+
+#### `findById(session, id, includeDeleted = false): Result<Student>`
+
+- **Side Effects**: Read only.
+- **Error Handling**: `Result.failure(NotFoundException())` if row absent or
+  soft-deleted (when `includeDeleted = false`).
+- **Idempotency**: Yes.
+
+#### `findByUserId(session, userId, includeDeleted = false): Result<Student>`
+
+- **Side Effects**: Read only.
+- **Error Handling**: `Result.failure(NotFoundException())` if row absent or
+  soft-deleted (when `includeDeleted = false`).
+- **Idempotency**: Yes.
+
+#### `findByIdForUpdate(session, id): Result<Student>`
+
+- **Side Effects**: Read/write — acquires a row-level exclusive lock via
+  `FOR UPDATE NOWAIT`. No soft-delete filter.
+- **Error Handling**: `Result.failure(NotFoundException())` if row absent.
+  `Result.failure(LockAcquisitionFailureException())` on lock contention.
+- **Idempotency**: No (lock acquisition is stateful within a transaction).
+
+#### `findByUserIdForUpdate(session, userId): Result<Student>`
+
+- **Side Effects**: Read/write — acquires a row-level exclusive lock via
+  `FOR UPDATE NOWAIT`, filtering `deleted_at IS NULL`.
+- **Error Handling**: `Result.failure(NotFoundException())` if row absent or
+  soft-deleted. `Result.failure(LockAcquisitionFailureException())` on lock
+  contention.
+- **Idempotency**: No.
+
+#### `create(session, student): Result<Student>`
+
+- **Side Effects**: Write — inserts one row (`RETURNING *`). Database generates
+  `id` and timestamps.
+- **Error Handling**: `Result.failure(StudentAlreadyExistsException())` on the
+  total `students_user_id_unique_idx` violation (including against a soft-deleted
+  row); `Result.failure(ConstraintViolationException())` on grad-date constraint
+  violations (`22008`/`23514`); `Result.failure(NotFoundException())` on FK
+  violation (`23503`).
+- **Idempotency**: No.
+
+#### `update(session, student): Result<Student>`
+
+- **Side Effects**: Read/write — mutates one row with OCC
+  (`WHERE id = ? AND version = ?`, `RETURNING *`).
+- **Error Handling**: On zero rows matched, issues the secondary `SELECT version`
+  to return `ConcurrentModificationException` (row exists) or `NotFoundException`
+  (row absent). Otherwise same constraint mapping as `create`.
+- **Idempotency**: No.
+
+#### `delete(session, id, currentVersion): Result<Student>`
+
+- **Side Effects**: Read/write — soft-deletes (sets `deleted_at = NOW()`) with
+  OCC, `RETURNING *`.
+- **Error Handling**: On zero rows matched, the secondary `SELECT version`
+  distinguishes `ConcurrentModificationException` from `NotFoundException`.
+- **Idempotency**: No.
+
+---
+
 ### Result Types — Kotlin `Result<T>`
 
 All DAO methods return standard Kotlin `Result<T>`. Exceptions are wrapped in `Result.failure()` and
@@ -273,12 +364,13 @@ SQLSTATE classification rules are documented in §II Postgres Error Codes.
 
 ## V. History
 
-- [x] [RFC-07: UsersDao](../../../../../../../rfc/07-users-dao.md) — Defined `UsersDao`, `DaoModule.kt`, and `SqlSession` (in `rest-server/`).
-- [x] [RFC-08: Auth Registration](../../../../../../../rfc/08-auth-registration.md) — Relocated `UsersDao`/`SqlSession` to `service/`.
-- [x] [RFC-10: Auth Login](../../../../../../../rfc/10-auth-login.md) — Added `findByEmail` to `UsersDao`.
-- [x] [RFC-11: Sessions](../../../../../../../rfc/11-sessions.md) — Created `SessionsDao` with `create`, `findByTokenHash`, `expireZombieSessions`, and `executeSafely` pattern.
-- [x] [RFC-13: Auth Me](../../../../../../../rfc/13-auth-me.md) — Changed `findByTokenHash` parameter from `ByteArray` to `TokenHash`; added `contentEquals` guard.
-- [x] [RFC-14: DB Module](../../../../../../../rfc/14-db-module.md) — Moved all DAO files from `service/` to the `db` Gradle module at their current path.
-- [x] [RFC-21: Session Expiry Queue](../../../../../../../rfc/21-session-expiry-queue.md) — Added `extendExpiry` and `remintToken` to `SessionsDao`; added `expires_at` mapping in `mapSession`.
-- [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md) — Added `revokeByTokenHash` to `SessionsDao`.
-- [x] Unified all per-entity and per-session result types into `DaoResult<T>` with `TransientError`/`PermanentError` categories. Deleted `DaoModule.kt`. SQLSTATE-based exception classification.
+- [x] [RFC-07: UsersDao](../../../../../../../../rfc/07-users-dao.md) — Defined `UsersDao`, `DaoModule.kt`, and `SqlSession` (in `rest-server/`).
+- [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md) — Relocated `UsersDao`/`SqlSession` to `service/`.
+- [x] [RFC-10: Auth Login](../../../../../../../../rfc/10-auth-login.md) — Added `findByEmail` to `UsersDao`.
+- [x] [RFC-11: Sessions](../../../../../../../../rfc/11-sessions.md) — Created `SessionsDao` with `create`, `findByTokenHash`, `expireZombieSessions`, and `executeSafely` pattern.
+- [x] [RFC-13: Auth Me](../../../../../../../../rfc/13-auth-me.md) — Changed `findByTokenHash` parameter from `ByteArray` to `TokenHash`; added `contentEquals` guard.
+- [x] [RFC-14: DB Module](../../../../../../../../rfc/14-db-module.md) — Moved all DAO files from `service/` to the `db` Gradle module at their current path.
+- [x] [RFC-21: Session Expiry Queue](../../../../../../../../rfc/21-session-expiry-queue.md) — Added `extendExpiry` and `remintToken` to `SessionsDao`; added `expires_at` mapping in `mapSession`.
+- [x] [RFC-22: Auth Logout](../../../../../../../../rfc/22-auth-logout.md) — Added `revokeByTokenHash` to `SessionsDao`.
+- [x] [RFC-24: Result Types Refactoring](../../../../../../../../rfc/24-result-types.md) — Unified all per-entity and per-session result types into standard Kotlin `Result<T>` with `TransientError`/`PermanentError` categories (deleted `DaoResult.kt`); introduced `DaoExceptions.kt` and SQLSTATE-based exception classification.
+- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md) — Added `StudentsDao` (`findById`, `findByUserId`, `findByIdForUpdate`, `findByUserIdForUpdate`, `create`, `update`, `delete`) over the `students` table with `PartialDate` column reconstruction, `FOR UPDATE NOWAIT` locking, and the `mapCreateUpdateError` SQLSTATE map (`23505`→`StudentAlreadyExistsException`, `22008`/`23514`→`ConstraintViolationException`, `23503`→`NotFoundException`); added `StudentAlreadyExistsException` to `DaoExceptions.kt`.

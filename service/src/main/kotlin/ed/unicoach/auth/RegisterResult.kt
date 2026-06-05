@@ -3,18 +3,18 @@ package ed.unicoach.auth
 import ed.unicoach.db.models.User
 import ed.unicoach.error.FieldError
 
-sealed interface RegisterOutcome {
+sealed interface RegisterResult {
   data class Success(
     val user: User,
     val token: String,
-  ) : RegisterOutcome
+  ) : RegisterResult
 
   data class ValidationFailure(
     val errors: List<String>,
     val fieldErrors: List<FieldError>,
-  ) : RegisterOutcome
+  ) : RegisterResult
 
   data class DuplicateEmail(
     val email: String,
-  ) : RegisterOutcome
+  ) : RegisterResult
 }

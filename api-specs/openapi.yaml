@@ -144,6 +144,159 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/students:
+    post:
+      summary: Create the current user's student profile
+      description: >
+        Creates the owner-resolved student profile for the authenticated user.
+        The resource is a per-user singleton; there is no path identifier.
+      operationId: createStudent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStudentRequest'
+      responses:
+        '201':
+          description: Student profile created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentResponse'
+        '400':
+          description: Validation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: A student profile already exists for the user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/students/me:
+    get:
+      summary: Get the current user's student profile
+      operationId: getStudentMe
+      responses:
+        '200':
+          description: The authenticated user's student profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The user has no student profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      summary: Update the current user's student profile
+      operationId: updateStudentMe
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStudentRequest'
+      responses:
+        '200':
+          description: Student profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentResponse'
+        '400':
+          description: Validation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The user has no student profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Optimistic concurrency version conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Delete the current user's student profile and account
+      description: >
+        Soft-deletes the student row and the owning user row atomically and
+        clears the session cookie. All sessions are invalidated.
+      operationId: deleteStudentMe
+      responses:
+        '204':
+          description: Student profile and account deleted; session cookie cleared
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: The cleared session cookie
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The user has no student profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   schemas:
     RegisterRequest:
@@ -197,6 +350,56 @@ components:
       properties:
         user:
           $ref: '#/components/schemas/PublicUser'
+    CreateStudentRequest:
+      type: object
+      required: [expectedHighSchoolGraduationDate]
+      properties:
+        expectedHighSchoolGraduationDate:
+          type: string
+          description: >
+            Variable-precision expected high-school graduation date in
+            zero-padded canonical ISO form: YYYY, YYYY-MM, or YYYY-MM-DD.
+          pattern: '^\d{4}(-\d{2}(-\d{2})?)?$'
+          example: "2028-06-15"
+    UpdateStudentRequest:
+      type: object
+      required: [expectedHighSchoolGraduationDate, version]
+      properties:
+        expectedHighSchoolGraduationDate:
+          type: string
+          description: >
+            Variable-precision expected high-school graduation date in
+            zero-padded canonical ISO form: YYYY, YYYY-MM, or YYYY-MM-DD.
+          pattern: '^\d{4}(-\d{2}(-\d{2})?)?$'
+          example: "2028-06"
+        version:
+          type: integer
+          description: Optimistic-concurrency version the client last observed.
+    PublicStudent:
+      type: object
+      required: [id, expectedHighSchoolGraduationDate, version, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        expectedHighSchoolGraduationDate:
+          type: string
+          description: Zero-padded ISO at the stored precision (YYYY | YYYY-MM | YYYY-MM-DD).
+          pattern: '^\d{4}(-\d{2}(-\d{2})?)?$'
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    StudentResponse:
+      type: object
+      required: [student]
+      properties:
+        student:
+          $ref: '#/components/schemas/PublicStudent'
     FieldError:
       type: object
       required: [field, message]

@@ -14,4 +14,4 @@ data class UserVersion(
   override val updatedAt: Instant,
   val rowUpdatedAt: Instant,
   val deletedAt: Instant?,
-) : BaseVersionEntity<UserId>
+) : BaseVersionEntity<UserId, UserVersionId>

@@ -4,9 +4,11 @@
 
 The HTTP presentation layer of the unicoach platform. It hosts the Ktor/Netty
 embedded server, wires all application plugins, and exposes the REST API surface
-under `/api/v1`. It translates between domain results (from `service` and `db`)
-and HTTP responses, managing session cookie lifecycle and asynchronous session
-expiry enqueueing. It does not contain domain logic.
+under `/api/v1`. It owns construction of the application's services
+(`AuthService`, `StudentService`) and injects them into the route handlers. It
+translates between domain results (from `service` and `db`) and HTTP responses,
+managing session cookie lifecycle and asynchronous session expiry enqueueing. It
+does not contain domain logic.
 
 ---
 
@@ -35,21 +37,24 @@ expiry enqueueing. It does not contain domain logic.
 ### Serialization
 
 - All JSON serialization MUST use Jackson with `INDENT_OUTPUT` enabled and
-  `FAIL_ON_UNKNOWN_PROPERTIES = true` and `FAIL_ON_MISSING_CREATOR_PROPERTIES =
-  true`. Unknown or missing fields in request bodies MUST trigger a
-  `400 Bad Request`.
+  `FAIL_ON_UNKNOWN_PROPERTIES = true` and
+  `FAIL_ON_MISSING_CREATOR_PROPERTIES = true`. Unknown or missing fields in
+  request bodies MUST trigger a `400 Bad Request`.
+- `java.time` values MUST serialize as ISO-8601 strings (`JavaTimeModule`
+  registered, `WRITE_DATES_AS_TIMESTAMPS` disabled), NEVER as numeric epoch
+  arrays.
 
 ### Routing
 
 - All API routes MUST be nested under `/api/v1`.
-- Route blocks declared with `route("...")` that permit only specific methods MUST
-  call `rejectUnsupportedMethods(...)` to return `405 Method Not Allowed` with an
-  `Allow` header. Leaf handlers declared with `post("...")` or `get("...")` do
-  NOT apply `rejectUnsupportedMethods` — Ktor returns a method-not-allowed
-  response natively for those.
-- `/api/v1/auth/me` and `/api/v1/auth/logout` use `route()` blocks and MUST
-  call `rejectUnsupportedMethods`. `/api/v1/auth/register` uses `post()` and
-  does NOT.
+- The `/api/v1/auth/*` and `/api/v1/students/*` route groups MUST each be
+  registered by their own route handler (`AuthRouteHandler.registerRoutes`,
+  `StudentRouteHandler.registerRoutes`). This directory owns only the wiring and
+  service construction; the per-route HTTP contracts (methods, status codes,
+  request/response DTOs, `rejectUnsupportedMethods` placement) live in
+  [`routing/SPEC.md`](./routing/SPEC.md).
+- `rejectUnsupportedMethods(...)`, defined in this directory, MUST return
+  `405 Method Not Allowed` with an `Allow` header listing the permitted methods.
 - The `/hello` endpoint MUST NOT be removed — it is the health probe target for
   `rest-server-check`.
 
@@ -95,13 +100,15 @@ expiry enqueueing. It does not contain domain logic.
   `ErrorResponse(code = "unsupported_media_type", ...)`.
 - `PayloadTooLargeException` MUST map to `413 Payload Too Large` with
   `ErrorResponse(code = "payload_too_large", ...)`. This handler MUST take
-  precedence over the `Throwable` catch-all (which would otherwise return `500`).
+  precedence over the `Throwable` catch-all (which would otherwise return
+  `500`).
 - `BadRequestException` MUST map to `400 Bad Request` with
   `ErrorResponse(code = "bad_request", message = "Invalid JSON payload structure")`.
-- Uncaught `PermanentError` MUST map to `400 Bad Request` (code `permanent_error`),
-  except for `NotFoundException` (`404`) and `DuplicateEmailException` (`409`).
-- Uncaught `TransientError` MUST map to `503 Service Unavailable`
-  (code `internal_error`) and MUST NOT expose internal exception details.
+- Uncaught `PermanentError` MUST map to `400 Bad Request` (code
+  `permanent_error`), except for `NotFoundException` (`404`) and
+  `DuplicateEmailException` (`409`).
+- Uncaught `TransientError` MUST map to `503 Service Unavailable` (code
+  `internal_error`) and MUST NOT expose internal exception details.
 
 ### Token Hashing
 
@@ -126,81 +133,40 @@ expiry enqueueing. It does not contain domain logic.
 
 - **Side effects**: Installs `ContentNegotiation` (Jackson), `StatusPages`, and
   the application-scope request-body-size limit via
-  `configureRequestSizeLimit(requestSizeConfig)`; builds `AuthService`, and
-  registers all routes.
+  `configureRequestSizeLimit(requestSizeConfig)`; builds `AuthService` and
+  `StudentService`, and registers all routes via `configureRouting`.
 - **Scope**: Intentionally excludes `SessionExpiryPlugin` installation. Tests
   calling `appModule()` directly bypass the queue-write side effect.
-- **Idempotency**: Not idempotent — Ktor plugin installation is not
-  idempotent if called twice on the same Application.
+- **Idempotency**: Not idempotent — Ktor plugin installation is not idempotent
+  if called twice on the same Application.
 
-### `Application.configureRouting(...)` — [`Routing.kt`](./Routing.kt)
+### `Application.configureRouting(authService, studentService, sessionConfig)` — [`Routing.kt`](./Routing.kt)
 
 - **Routes registered**:
   - `GET /hello` → `200 OK` with plain UTF-8 text body.
   - All `/api/v1/auth/*` routes via `AuthRouteHandler.registerRoutes(...)`.
-- **Side effects**: Route table registration — installs handlers into the
-  Ktor routing tree.
+  - All `/api/v1/students/*` routes via
+    `StudentRouteHandler.registerRoutes(...)`.
+- **Side effects**: Route table registration — installs handlers into the Ktor
+  routing tree.
 - **Idempotency**: Not idempotent — calling twice installs duplicate routes.
 
 ### `Route.rejectUnsupportedMethods(vararg methods)` — [`Routing.kt`](./Routing.kt)
 
-- **Behavior**: Installs a catch-all `handle {}` block into the routing DSL
-  that responds `405 Method Not Allowed` and appends an `Allow` header listing
-  the permitted method values.
-- **Side effects**: Registration-time side effect — adds a handler to the
-  route. Must be called exactly once per route block.
-- **Idempotency**: Not idempotent — calling twice on the same route installs
-  a duplicate handler.
+- **Behavior**: Installs a catch-all `handle {}` block into the routing DSL that
+  responds `405 Method Not Allowed` and appends an `Allow` header listing the
+  permitted method values.
+- **Side effects**: Registration-time side effect — adds a handler to the route.
+  Must be called exactly once per route block.
+- **Idempotency**: Not idempotent — calling twice on the same route installs a
+  duplicate handler.
 
-### `POST /api/v1/auth/register` — [`routing/AuthRoutes.kt`](./routing/AuthRoutes.kt)
-
-- **Request**: JSON body `{"email": string, "password": string, "name": string}`.
-  Deserialized as `RegisterRequest`.
-- **Side effects**:
-  - Calls `AuthService.register()` — writes `users` row in DB.
-  - Calls `SessionsDao.remintToken()` (if anonymous session cookie present) OR
-    `SessionsDao.create()` — writes `sessions` row in DB.
-  - Sets `Set-Cookie` response header with opaque session token.
-- **Response mapping**:
-  - `RegisterOutcome.Success` → `201 Created`, `RegisterResponse { user: PublicUser }`.
-  - `RegisterOutcome.ValidationFailure` → `400 Bad Request`, `ErrorResponse(code="validation_failed", fieldErrors=[...])`.
-  - `RegisterOutcome.DuplicateEmail` → `409 Conflict`, `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])`.
-  - Uncaught exception → StatusPages handles (e.g., `500 Internal Server Error`).
-  - Body exceeding the applicable request-size limit → `413 Payload Too Large`,
-    rejected before content negotiation (see §II Payload Limits).
-- **Session reminting**: If a session cookie is present, the handler calls
-  `SessionsDao.findByTokenHash()` to look up the existing session. If the
-  result is `SessionFindResult.Success`, the session is reminted via
-  `SessionsDao.remintToken()` (token rotated, `user_id` assigned). Only if no
-  valid session is found is a new session created via `SessionsDao.create()`.
-  DB exceptions during session writes are silently swallowed — the registration
-  response is sent regardless.
-- **Idempotency**: Not idempotent — duplicate email returns `409`.
-
-### `GET /api/v1/auth/me` — [`routing/AuthRoutes.kt`](./routing/AuthRoutes.kt)
-
-- **Request**: No body. Session identity derived from cookie.
-- **Side effects**: Calls `AuthService.getCurrentUser()` — DB read only.
-- **Response mapping**:
-  - Cookie absent → `401 Unauthorized`, `ErrorResponse(code="unauthorized")`.
-  - Success with non-null user → `200 OK`, `MeResponse { user: PublicUser }`.
-  - Success with null user → `401 Unauthorized`.
-  - Uncaught exception → StatusPages handles (e.g., `500 Internal Server Error`).
-- **Method restriction**: Non-GET methods → `405 Method Not Allowed`.
-- **Idempotency**: Yes — read-only.
-
-### `POST /api/v1/auth/logout` — [`routing/AuthRoutes.kt`](./routing/AuthRoutes.kt)
-
-- **Request**: No body. Session identity derived from cookie.
-- **Side effects**: Calls `AuthService.logout()` — writes `is_revoked = true` on
-  the `sessions` row. Always clears the session cookie on success.
-- **Response mapping**:
-  - Cookie absent → `204 No Content`, cookie cleared. No DB call.
-  - Success → `204 No Content`, cookie cleared.
-  - Uncaught exception → StatusPages handles (e.g., `500 Internal Server Error`). Cookie NOT cleared.
-- **Method restriction**: Non-POST methods → `405 Method Not Allowed`.
-- **Idempotency**: Yes — logout of an already-revoked or missing session returns
-  `204`.
+> The per-route HTTP contracts for `/api/v1/auth/*` and `/api/v1/students/*`
+> (request/response DTOs, status codes, cookie lifecycle, OCC behavior,
+> cascade-delete cookie clearing) are owned by
+> [`routing/SPEC.md`](./routing/SPEC.md). The DTO shapes are owned by
+> [`models/SPEC.md`](./models/SPEC.md). This directory documents only the
+> wiring, plugins, and config it constructs.
 
 ### `SessionExpiryPlugin` — [`plugins/SessionExpiryPlugin.kt`](./plugins/SessionExpiryPlugin.kt)
 
@@ -209,8 +175,8 @@ expiry enqueueing. It does not contain domain logic.
   1. Session cookie present in request.
   2. Request path does NOT start with any prefix in `ignorePathPrefixes`.
   3. Response status in `200–299`.
-- **Side effects**: Enqueues `SESSION_EXTEND_EXPIRY` job via `QueueService` —
-  DB write to `jobs` table. Enqueue is fire-and-forget on `Dispatchers.IO`.
+- **Side effects**: Enqueues `SESSION_EXTEND_EXPIRY` job via `QueueService` — DB
+  write to `jobs` table. Enqueue is fire-and-forget on `Dispatchers.IO`.
 - **Error handling**: `EnqueueResult.DatabaseFailure` → `error`-level log, no
   exception propagation. All exceptions in the coroutine body → `error`-level
   log, swallowed.
@@ -223,13 +189,17 @@ expiry enqueueing. It does not contain domain logic.
 - `FAIL_ON_UNKNOWN_PROPERTIES = true` causes `BadRequestException` on unknown
   JSON fields, handled by `StatusPages`.
 - `FAIL_ON_MISSING_CREATOR_PROPERTIES = true` rejects partial request bodies.
+- Registers `JavaTimeModule` with `WRITE_DATES_AS_TIMESTAMPS` disabled, so
+  `java.time.Instant` fields serialize as ISO-8601 strings, not numeric epoch
+  arrays.
 
 ### `Application.configureStatusPages()` — [`plugins/StatusPages.kt`](./plugins/StatusPages.kt)
 
 - **Handles**:
   - `UnsupportedMediaTypeException` → `415`.
   - `PayloadTooLargeException` → `413`, code `payload_too_large`.
-  - `BadRequestException` → `400`, message fixed as `"Invalid JSON payload structure"`.
+  - `BadRequestException` → `400`, message fixed as
+    `"Invalid JSON payload structure"`.
 - **Side effects**: None beyond response write.
 
 ### `Application.configureRequestSizeLimit(config: RequestSizeConfig)` — [`plugins/RequestSizeLimit.kt`](./plugins/RequestSizeLimit.kt)
@@ -247,59 +217,10 @@ expiry enqueueing. It does not contain domain logic.
 ### `SessionConfig.from(config): Result<SessionConfig>` — [`auth/SessionConfig.kt`](./auth/SessionConfig.kt)
 
 - **Side effects**: None — pure config parsing.
-- **Error handling**: Missing `session` block → `Result.failure(IllegalArgumentException(...))`. Any
-  missing key → `Result.failure(exception)`.
+- **Error handling**: Missing `session` block →
+  `Result.failure(IllegalArgumentException(...))`. Any missing key →
+  `Result.failure(exception)`.
 - **Idempotency**: Yes — pure function.
-
-
-
----
-
-## III-B. Data Model Contracts
-
-All types are plain Kotlin data classes serialized via Jackson. Because
-`FAIL_ON_MISSING_CREATOR_PROPERTIES = true`, every non-optional field MUST be
-present in the JSON request body or deserialization throws `BadRequestException`
-(→ `400`).
-
-### `PublicUser` — [`models/PublicUser.kt`](./models/PublicUser.kt)
-
-| Field | JSON key | Type | Notes |
-|-------|----------|------|-------|
-| `id` | `"id"` | UUID | Serializes as lowercase hyphenated string |
-| `email` | `"email"` | String | Validated email address |
-| `name` | `"name"` | String | Display name |
-
-Included in: `RegisterResponse.user`, `MeResponse.user`.
-
-### `RegisterRequest` — [`models/RegisterRequest.kt`](./models/RegisterRequest.kt)
-
-| Field | Type | Required |
-|-------|------|----------|
-| `email` | String | Yes |
-| `password` | String | Yes |
-| `name` | String | Yes |
-
-All fields are required. Missing any field → `400 Bad Request`.
-
-### `RegisterResponse` — [`models/RegisterResponse.kt`](./models/RegisterResponse.kt)
-
-- `user: PublicUser` — the newly registered user's public fields.
-
-### `MeResponse` — [`models/MeResponse.kt`](./models/MeResponse.kt)
-
-- `user: PublicUser` — the authenticated user's public fields.
-
-### `ErrorResponse` — [`models/ErrorResponse.kt`](./models/ErrorResponse.kt)
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `code` | String | Yes | Machine-readable error code |
-| `message` | String | Yes | Human-readable description |
-| `fieldErrors` | List\<FieldError\>? | No | Present only for validation failures |
-
-`FieldError` is sourced from `ed.unicoach.error.FieldError` (common module), not
-defined in this package.
 
 ---
 
@@ -309,17 +230,17 @@ defined in this package.
 
 Required keys in `rest-server.conf`:
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `server.host` | String | Netty bind host |
-| `server.port` | Int | Netty bind port |
-| `server.requestSize.maxSize` | Size string | Default max request body size (e.g. `"8 KiB"`); parsed via `Config.getBytes` |
+| Key                                 | Type                         | Description                                                                   |
+| ----------------------------------- | ---------------------------- | ----------------------------------------------------------------------------- |
+| `server.host`                       | String                       | Netty bind host                                                               |
+| `server.port`                       | Int                          | Netty bind port                                                               |
+| `server.requestSize.maxSize`        | Size string                  | Default max request body size (e.g. `"8 KiB"`); parsed via `Config.getBytes`  |
 | `server.requestSize.routeOverrides` | Object\<path → size string\> | Per-exact-path body-size overrides (e.g. `"/api/v1/auth/register" = "1 KiB"`) |
-| `session.expiration` | Duration | Session TTL |
-| `session.cookieName` | String | Cookie name |
-| `session.cookieDomain` | String | Cookie domain attribute |
-| `session.cookieSecure` | Boolean | `Secure` cookie flag |
-| `sessionExpiry.ignorePathPrefixes` | List\<String\> | Paths excluded from expiry enqueue |
+| `session.expiration`                | Duration                     | Session TTL                                                                   |
+| `session.cookieName`                | String                       | Cookie name                                                                   |
+| `session.cookieDomain`              | String                       | Cookie domain attribute                                                       |
+| `session.cookieSecure`              | Boolean                      | `Secure` cookie flag                                                          |
+| `sessionExpiry.ignorePathPrefixes`  | List\<String\>               | Paths excluded from expiry enqueue                                            |
 
 ### Config Load Order
 
@@ -338,8 +259,8 @@ Required keys in `rest-server.conf`:
 
 ### Module Dependencies
 
-`rest-server` depends on: `common`, `db`, `service`, `queue`.
-It does NOT depend on `net`.
+`rest-server` depends on: `common`, `db`, `service`, `queue`. It does NOT depend
+on `net`.
 
 ---
 
@@ -356,4 +277,13 @@ It does NOT depend on `net`.
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../rfc/21-session-expiry-queue.md)
 - [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md)
 - [x] [RFC-23: Native Daemon Scripts](../../../../../../../rfc/23-native-daemon-scripts.md)
+- [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md) —
+      Introduced the `StatusPages` `PermanentError`/`TransientError` mapping and
+      the `getOrThrow()` propagation contract in `appModule`.
+- [x] [RFC-25: Auth Routes Refactor](../../../../../../../rfc/25-auth-routes-refactor.md)
+      — Moved route registration into `configureRouting` + `AuthRouteHandler`,
+      establishing the wiring boundary this directory owns.
 - [x] [RFC-29: Request Payload Size Limits](../../../../../../../rfc/29-request-payload-limits.md)
+- [x] [RFC-31: Student Profile](../../../../../../../rfc/31-student-profile.md)
+      — Wired `StudentService` construction in `appModule` and registered the
+      `/api/v1/students/*` route group via `configureRouting`.

@@ -93,6 +93,8 @@ Entity tables enable additional capabilities via **mix-ins**:
 |---|---|---|---|---|---|
 | `users` | Entity | ✅ | ✅ | ✅ | ✅ |
 | `users_versions` | Support | — | — | — | — |
+| `students` | Entity | ✅ | ✅ | ✅ | ✅ |
+| `students_versions` | Support | — | — | — | — |
 | `sessions` | Entity | ✅ | ✅ | ❌ | ❌ |
 | `jobs` | Non-entity | ❌ | ❌ | ❌ | ❌ |
 | `job_attempts` | Non-entity | ❌ | ❌ | ❌ | ❌ |
@@ -108,6 +110,33 @@ Entity tables enable additional capabilities via **mix-ins**:
   (`users_email_unique_active_idx WHERE deleted_at IS NULL`).
 - **Version history**: `users_versions` rows MUST NOT be physically deleted
   (`ON DELETE RESTRICT`).
+
+### `students` — Extensions
+
+- **1:1 ownership**: `user_id UUID NOT NULL REFERENCES users(id)`. A user owns at
+  most one student profile.
+- **Total uniqueness on owner**: `students_user_id_unique_idx` is a **total**
+  (non-partial) unique index on `user_id` — a `user_id` MUST NOT appear twice
+  even across soft-deletes. There is no legitimate re-creation path: account
+  deletion soft-deletes the owning user alongside the student, never freeing the
+  `user_id` for re-use.
+- **Variable-precision graduation date**: Modeled as three columns —
+  `expected_high_school_graduation_year` (NOT NULL), `..._month` and `..._day`
+  (both NULL) — admitting exactly three precisions: year, year+month, or
+  year+month+day. Enforced by three check constraints:
+  - `grad_month_range`: month, when present, MUST be `BETWEEN 1 AND 12`.
+  - `grad_day_requires_month`: a non-null day REQUIRES a non-null month
+    (no day-without-month precision).
+  - `grad_date_valid`: when a day is present, the (year, month, day) triple MUST
+    form a real calendar date. Verified via `make_date(...)`, which is
+    `IMMUTABLE` and therefore legal in a CHECK. An impossible date (e.g. Feb 31,
+    Feb 29 in a non-leap year) raises `ERRCODE 22008` (datetime_field_overflow),
+    distinct from the `23514` (check_violation) raised by the other two
+    constraints.
+- **Version history**: `students_versions` rows MUST NOT be physically deleted
+  (`ON DELETE RESTRICT`).
+- **No string normalization**: No free-text columns, so no trim trigger is
+  attached (unlike `users`).
 
 ### `sessions` — Extensions
 
@@ -201,6 +230,15 @@ Entity tables enable additional capabilities via **mix-ins**:
   transaction is rolled back.
 - **Idempotency**: No — duplicate `(id, version)` violates the primary key.
 
+#### `log_student_version()`
+
+- **Trigger type**: `AFTER INSERT OR UPDATE` on `students`
+- **Side effects**: Inserts one row into `students_versions` per triggering
+  statement.
+- **Error handling**: Failure raises a PostgreSQL exception; the parent
+  transaction is rolled back.
+- **Idempotency**: No — duplicate `(id, version)` violates the primary key.
+
 #### `update_jobs_timestamp()`
 
 - **Trigger type**: `BEFORE UPDATE` on `jobs`
@@ -250,3 +288,4 @@ Entity tables enable additional capabilities via **mix-ins**:
 - [x] [RFC-14: Extract Database Module](../../rfc/14-db-module.md)
 - [x] [RFC-15: Queue Data Layer](../../rfc/15-queue-data-layer.md)
 - [x] [RFC-16: Queue Worker Framework](../../rfc/16-queue-worker-framework.md)
+- [x] [RFC-31: Student Profile](../../rfc/31-student-profile.md)

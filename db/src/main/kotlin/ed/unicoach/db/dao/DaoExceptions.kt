@@ -23,6 +23,11 @@ class DuplicateEmailException(
 ) : DaoException(message),
   PermanentError
 
+class StudentAlreadyExistsException(
+  message: String = "Student already exists for user",
+) : DaoException(message),
+  PermanentError
+
 class ConstraintViolationException(
   cause: Throwable,
 ) : DaoException("Database constraint violation", cause),
