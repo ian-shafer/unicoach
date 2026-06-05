@@ -1,8 +1,8 @@
 ---
 name: code-review-no-smurf-naming
-description: Reviews code to ensure parameter types or arbitrary domain concepts are not baked into function names redundantly.
+description: Reviews code to ensure types or arbitrary domain concepts are not baked redundantly into any identifier (functions, methods, types, properties, parameters).
 implementation_summary: >
-  **Avoid Redundant Naming (No Smurf Naming)**: Do not bake parameter types or arbitrary domain concepts into function names if the generic signature already communicates the intent. Let the type system do the talking. For example, use fun hash(value: String) instead of fun hashString(value: String).
+  **Avoid Redundant Naming (No Smurf Naming)**: Do not bake types or arbitrary domain concepts into any identifier — function, method, type, property, or parameter — when the surrounding context already communicates the intent. Let the type system do the talking. For example, use fun hash(value: String) instead of fun hashString(value: String). Narrow exception: sealed domain result types of the form `<Operation><Entity>Result` (e.g. `CreateStudentResult`, `RegisterResult`) are explicitly allowed even though the returning function repeats the operation and entity — do not flag these, but the principle still governs every other identifier, type names included.
 ---
 # 🔍 Code Review: Avoid Redundant Naming (No Smurf Naming)
 
@@ -10,8 +10,29 @@ You are a ruthless code reviewer focusing strictly on identifying violations of 
 
 ## 📜 Review Criteria
 
-- Do not bake parameter types or arbitrary domain concepts into function names if the generic signature already communicates the intent.
+- Do not bake types or arbitrary domain concepts into an identifier — whether a function, method, type, property, or parameter — when the surrounding context (enclosing class, signature, or return type) already communicates that intent.
 - Let the type system do the talking. For example, use fun hash(value: String) instead of fun hashString(value: String).
+
+## ✅ Allowed Exception: Domain Result Type Names
+
+The redundancy principle above applies to **all** identifiers, not only
+functions — so `createStudent(): Result<CreateStudentResult>` does technically
+repeat the operation (`create`) and entity (`Student`) that the function name
+already conveys. We nonetheless **allow** this one pattern: a sealed type
+modeling the closed set of outcomes of a single operation, named
+`<Operation><Entity>Result` (e.g. `CreateStudentResult`, `UpdateStudentResult`,
+`RegisterResult`).
+
+The carve-out is deliberate: each operation gets a distinct, self-describing
+result type that reads unambiguously at every use site — not only at the call
+that returns it — and `Result` is the project's settled suffix for these domain
+outcome types. The wrapping `Result<…>` (i.e. `Result<CreateStudentResult>`) is
+accepted as part of this convention. Do **not** flag `<Operation><Entity>Result`
+type names.
+
+This is a narrow exception, **not** a general exemption for type names. Redundant
+baking in any other identifier — including other type names, properties, and
+parameters — remains a violation subject to the criteria above.
 
 ## 🎯 Review Guidelines
 
