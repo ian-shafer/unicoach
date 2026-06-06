@@ -43,7 +43,9 @@ retrieved from PostgreSQL.
 - `bin/db-migrate` MUST skip any migration whose `version_id` already exists in
   `schema_migrations`, making re-runs idempotent.
 
-### Shared Functions (`0000.shared-functions.sql`)
+### Shared Functions
+
+Defined in `0000.shared-functions.sql` unless noted otherwise.
 
 - `update_timestamp()` sets `row_updated_at = NOW()` on every update. It also
   sets `updated_at = NOW()` unless the logical-timestamp bypass is active.
@@ -59,6 +61,13 @@ retrieved from PostgreSQL.
   invocation.
 - `prevent_immutable_updates()` raises `ERRCODE = 'P0001'` if an UPDATE
   attempts to change `id`, `created_at`, or `row_created_at`.
+- `prevent_log_update()` raises `ERRCODE = 'P0001'` on any UPDATE trigger
+  invocation, enforcing the append-only contract on log tables. Defined in
+  `0006` (not `0000`), via idempotent `CREATE OR REPLACE`. Distinct from
+  `prevent_physical_delete()` — different message, append-only (not soft-delete)
+  semantics.
+- `prevent_log_delete()` raises `ERRCODE = 'P0001'` on any DELETE trigger
+  invocation. Defined in `0006` (not `0000`).
 
 ### Standard Entity Table Pattern
 
@@ -98,6 +107,13 @@ Entity tables enable additional capabilities via **mix-ins**:
 | `sessions` | Entity | ✅ | ✅ | ❌ | ❌ |
 | `jobs` | Non-entity | ❌ | ❌ | ❌ | ❌ |
 | `job_attempts` | Non-entity | ❌ | ❌ | ❌ | ❌ |
+| `convos` | Entity | ✅ | ❌ | ❌ | ✅ |
+| `convo_requests` | Log | — | — | — | — |
+| `convo_responses` | Log | — | — | — | — |
+| `convo_responses_raw` | Log | — | — | — | — |
+
+**Log** tables are append-only (see the `convo_*` subsections below): write-once,
+never updated or deleted, carrying none of the entity mix-ins.
 
 ### `users` — Extensions
 
@@ -169,6 +185,88 @@ Entity tables enable additional capabilities via **mix-ins**:
   supply this value.
 - `ON DELETE CASCADE` from `jobs`.
 
+### `convos` — Extensions
+
+`convos` is the **entity-that-owns-logs**: a standard entity (advanced
+timestamps + logical deletes) with OCC versioning and version history **disabled
+(D-3)**, owning three append-only log children (`convo_requests`,
+`convo_responses`, `convo_responses_raw`).
+
+- **Ownership**: `student_id UUID NOT NULL REFERENCES students(id) ON DELETE
+  CASCADE`. A student owns many conversations (1:many). The CASCADE is inert
+  while `prevent_physical_delete()` blocks physical deletes; it wires the future
+  physical-erasure path (D-4).
+- **Advanced timestamps**: full 4-timestamp pattern (`created_at`,
+  `row_created_at`, `updated_at`, `row_updated_at`), maintained by
+  `update_timestamp()`.
+- **Logical deletes**: `deleted_at TIMESTAMPTZ NULL`; physical deletes blocked by
+  `prevent_physical_delete()`. The active-list index `convos_student_id_idx` is
+  partial (`WHERE deleted_at IS NULL`).
+- **Versioning disabled (D-3)**: no `version` column, no `enforce_versioning()`,
+  no `convos_versions` sibling — the transcript logs are the authoritative
+  history.
+- **`name` mandatory & canonical (D-8 / D-9)**: `name TEXT NOT NULL` with **no
+  default** (D-8) — every conversation MUST be created with an explicit name.
+  Stored trimmed and non-empty (D-9): `convos_name_trimmed_check`
+  (`name = trim(name)`), `convos_name_not_empty_check` (`length(trim(name)) >
+  0`), `convos_name_length_check` (`length(name) <= 255`). There is no trim
+  trigger; callers MUST supply already-trimmed values or the check rejects them.
+
+### `convo_requests` — Append-Only Log
+
+- **Append-only**: rows MUST NOT be updated or deleted. `prevent_log_update()`
+  (`trigger_00`) and `prevent_log_delete()` (`trigger_01`) raise `P0001`.
+- **Identity / ordering**: `id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`
+  (internal, monotonic). Replayed via `convo_requests_convo_id_created_at_idx`
+  on `(convo_id, created_at)`.
+- **Ownership**: `convo_id UUID NOT NULL REFERENCES convos(id) ON DELETE
+  CASCADE`. One row = one turn sent to the model.
+- **Provider allowlist (D-7)**: `provider` is TEXT + CHECK
+  (`provider IN ('anthropic')`), pinned per-turn — NOT a native pg enum. Extend
+  the allowlist in a later migration as providers are added.
+- **Content opaque & bounded (D-6)**: `content JSONB NOT NULL`, the new user
+  input. The DB MUST NOT constrain its internal shape. Bounded to 1 MiB
+  (`octet_length(content::text) <= 1048576`). Prior history is deliberately NOT
+  re-stored per row (the stateless API resends it each turn).
+- **`request_params`**: `JSONB NULL`; when present MUST be a JSON object
+  (`jsonb_typeof = 'object'`).
+- **Free-text (D-9)**: `model_requested` and `system_prompt_version` are NOT
+  NULL, ≤255, trimmed, and non-empty.
+
+### `convo_responses` — Append-Only Log
+
+- **Append-only**: `prevent_log_update()` / `prevent_log_delete()` guards, same
+  as `convo_requests`.
+- **1:1 with request**: `request_id BIGINT NOT NULL UNIQUE REFERENCES
+  convo_requests(id) ON DELETE CASCADE` — exactly one response per request.
+- **Errors are recorded, never dropped**: a failed turn is stored as a row with
+  `stop_reason = 'error'`. `convo_responses_content_presence_check`
+  (`content IS NOT NULL OR stop_reason = 'error'`) and
+  `convo_responses_model_presence_check` (same for `model_resolved`) guarantee
+  content and model are present on success and NULL only on error.
+- **Denormalized `convo_id` (writer-side invariant)**: `convo_id` is duplicated
+  from the parent request for replay. The DB guarantees both `request_id` and
+  `convo_id` reference valid rows but NOT that they agree;
+  `convo_responses.convo_id = (request_id → convo_requests.convo_id)` is a
+  writer-side invariant (no cross-row CHECK).
+- **Numeric sanity**: `input_tokens`, `output_tokens`, `cache_read_tokens`,
+  `cache_write_tokens`, and `latency_ms` are nullable and, when present, MUST be
+  `>= 0`.
+- **Free-text (D-9)**: `stop_reason` NOT NULL, ≤64, trimmed, non-empty;
+  `model_resolved` and `provider_request_id` are nullable but, when present,
+  ≤255, trimmed, non-empty (NULL means absent; `''` is illegal).
+
+### `convo_responses_raw` — Append-Only Log
+
+- **Append-only**: `prevent_log_update()` / `prevent_log_delete()` guards.
+- **At-most-one per response**: `response_id BIGINT NOT NULL PRIMARY KEY
+  REFERENCES convo_responses(id) ON DELETE CASCADE` — the FK is the PK, so each
+  response has zero or one raw rows. A transport-failure response legitimately
+  has zero.
+- **Payload**: `payload JSONB NOT NULL` — the verbatim provider response body,
+  isolated so it can be archived/dropped later without rewriting hot
+  `convo_responses` rows.
+
 ---
 
 ## III. Behavioral Contracts
@@ -212,6 +310,21 @@ Entity tables enable additional capabilities via **mix-ins**:
 - **Expects columns**: `id`, `created_at`, `row_created_at`
 - **Side effects**: Raises `ERRCODE P0001` if any of the expected columns are
   changed.
+- **Idempotency**: N/A.
+
+#### `prevent_log_update()`
+
+- **Trigger type**: `BEFORE UPDATE` (on `convo_requests`, `convo_responses`,
+  `convo_responses_raw`)
+- **Side effects**: Always raises `ERRCODE P0001` ("Log rows are append-only and
+  cannot be updated.").
+- **Idempotency**: N/A.
+
+#### `prevent_log_delete()`
+
+- **Trigger type**: `BEFORE DELETE` (on the three `convo_*` log tables)
+- **Side effects**: Always raises `ERRCODE P0001` ("Log rows cannot be deleted;
+  prune by partition/retention.").
 - **Idempotency**: N/A.
 
 #### `trim_users_strings()`
@@ -274,8 +387,8 @@ Entity tables enable additional capabilities via **mix-ins**:
   same transaction (see §II, Global Schema Invariants). Created by `db-init`
   (not defined in this directory).
 - **PostgreSQL version**: Schema relies on `pg_notify`, `TIMESTAMPTZ`,
-  `JSONB`, `BYTEA`, and `uuidv7()`. Requires PostgreSQL 18 (provided by
-  `pkgs.postgresql_18` in `flake.nix`).
+  `JSONB`, `BYTEA`, `uuidv7()`, and `BIGINT GENERATED ALWAYS AS IDENTITY`.
+  Requires PostgreSQL 18 (provided by `pkgs.postgresql_18` in `flake.nix`).
 - **`unicoach.bypass_logical_timestamp`**: See §II, Logical-timestamp bypass.
 
 ---
@@ -289,3 +402,4 @@ Entity tables enable additional capabilities via **mix-ins**:
 - [x] [RFC-15: Queue Data Layer](../../rfc/15-queue-data-layer.md)
 - [x] [RFC-16: Queue Worker Framework](../../rfc/16-queue-worker-framework.md)
 - [x] [RFC-31: Student Profile](../../rfc/31-student-profile.md)
+- [x] [RFC-32: Coaching Conversations](../../rfc/32-coaching-conversations.md)

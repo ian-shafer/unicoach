@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Aggregator for shell DB schema-test harnesses.
+#
+# OWNS NO POSTGRES LIFECYCLE: it assumes the caller (bin/test, or a developer
+# who has run db-init/db-migrate) provides a live, already-migrated database. It
+# runs each harness sequentially and aborts non-zero if any harness fails.
+export ENV_FILE="${ENV_FILE:-$(dirname "$0")/../.env.test}"
+source "$(dirname "$0")/common"
+
+"$PROJECT_ROOT/bin/db-convos-tests"

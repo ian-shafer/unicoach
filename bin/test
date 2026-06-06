@@ -35,6 +35,11 @@ done
 "$PROJECT_ROOT/bin/db-init"
 "$PROJECT_ROOT/bin/db-migrate"
 
+# Run the shell DB schema harnesses against the freshly migrated DB, sequentially
+# (never backgrounded) and before the terminal exec. Under set -e a non-zero exit
+# aborts the run; Postgres stays up so the subsequent Gradle suite sees the same DB.
+"$PROJECT_ROOT/bin/db-tests"
+
 # Default to 'test' if no arguments are provided, otherwise execute exactly what is passed
 GRADLE_ARGS=("${@:-test}")
 
