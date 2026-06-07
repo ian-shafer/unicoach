@@ -7,4 +7,5 @@
 export ENV_FILE="${ENV_FILE:-$(dirname "$0")/../.env.test}"
 source "$(dirname "$0")/common"
 
+"$PROJECT_ROOT/bin/db-system-prompts-tests"
 "$PROJECT_ROOT/bin/db-convos-tests"

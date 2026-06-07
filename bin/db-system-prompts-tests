@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# Schema-test harness for RFC 33 system_prompts (the immutable, insert-only
+# prompt catalog) and its convo_requests FK rewire.
+#
+# Modeled on bin/db-convos-tests, with the SAME deliberate divergence: this
+# harness OWNS NO POSTGRES LIFECYCLE. It sets no EXIT/INT/TERM trap and runs no
+# postgres-up/postgres-down/rm -rf $POSTGRES_DATA_DIR/db-init/db-migrate. It
+# assumes a live, already-migrated database supplied by the caller (bin/test or
+# a developer who has run db-init/db-migrate). Tearing Postgres down here would
+# break bin/test's subsequent Gradle phase.
+#
+# system_prompts has no FK dependencies, so this harness needs no committed
+# fixture; every case is a self-contained BEGIN/ROLLBACK insert. Cases use a
+# namespaced name (sp-test-*) to avoid colliding with the convos harness fixture
+# prompt.
+export ENV_FILE="$(dirname "$0")/../.env.test"
+source "$(dirname "$0")/common"
+source "$(dirname "$0")/tests-common"
+
+# --- helpers --------------------------------------------------------------
+
+# Run SQL inside a BEGIN/ROLLBACK so per-assertion writes never persist.
+run_test_sql() {
+  (
+    echo "BEGIN;"
+    cat
+    echo "ROLLBACK;"
+  ) | bin/db-run rw 2>&1
+}
+
+# Same, but tuples-only / unaligned for clean machine-readable output.
+run_test_sql_ta() {
+  (
+    echo "BEGIN;"
+    cat
+    echo "ROLLBACK;"
+  ) | bin/db-run rw -tA 2>&1
+}
+
+# ==========================================================================
+echo "==== system_prompts (immutable entity) ===="
+# ==========================================================================
+
+test_system_prompts_minimal_insert() {
+  local out
+  out=$(run_test_sql_ta << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', 'You are a helpful coach.')
+    RETURNING (id IS NOT NULL)
+      || '|' || (created_at IS NOT NULL)
+      || '|' || (row_created_at IS NOT NULL);
+EOF
+  )
+  echo "$out" | grep -q '^true|true|true$' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: minimal insert (name/version/body) takes defaults" test_system_prompts_minimal_insert
+
+test_system_prompts_null_name() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES (NULL, 'v1', 'body');
+EOF
+  )
+  echo "$out" | grep -qi 'null value in column "name"' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: NULL name rejected (NOT NULL, 23502)" test_system_prompts_null_name
+
+test_system_prompts_null_version() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', NULL, 'body');
+EOF
+  )
+  echo "$out" | grep -qi 'null value in column "version"' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: NULL version rejected (NOT NULL, 23502)" test_system_prompts_null_version
+
+test_system_prompts_null_body() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', NULL);
+EOF
+  )
+  echo "$out" | grep -qi 'null value in column "body"' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: NULL body rejected (NOT NULL, 23502)" test_system_prompts_null_body
+
+test_system_prompts_name_too_long() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES (repeat('a', 256), 'v1', 'body');
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_name_length_check' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: 256-char name rejected (length check)" test_system_prompts_name_too_long
+
+test_system_prompts_name_blank() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('   ', 'v1', 'body');
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_name_not_empty_check' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: whitespace-only name rejected (not-empty check)" test_system_prompts_name_blank
+
+test_system_prompts_name_untrimmed() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES (' sp-test-coach ', 'v1', 'body');
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_name_trimmed_check' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: leading/trailing-whitespace name rejected (trimmed check)" test_system_prompts_name_untrimmed
+
+test_system_prompts_version_too_long() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', repeat('v', 256), 'body');
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_version_length_check' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: 256-char version rejected (length check)" test_system_prompts_version_too_long
+
+test_system_prompts_version_blank() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', '   ', 'body');
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_version_not_empty_check' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: whitespace-only version rejected (not-empty check)" test_system_prompts_version_blank
+
+test_system_prompts_version_untrimmed() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', ' v1 ', 'body');
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_version_trimmed_check' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: leading/trailing-whitespace version rejected (trimmed check)" test_system_prompts_version_untrimmed
+
+test_system_prompts_body_blank() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', '   ');
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_body_not_empty_check' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: whitespace-only body rejected (not-empty check)" test_system_prompts_body_blank
+
+test_system_prompts_body_oversized() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', repeat('x', 1048577));
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_body_size_check' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: body over 1 MiB rejected (size check)" test_system_prompts_body_oversized
+
+test_system_prompts_body_untrimmed_accepted() {
+  # A body with leading/trailing whitespace is ACCEPTED — there is deliberately
+  # no body trim check (D-5): trailing whitespace/newlines may be intentional.
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', E'  You are a helpful coach.\n\n');
+EOF
+  )
+  echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
+  return 0
+}
+assert_success "system_prompts: body with leading/trailing whitespace accepted (no trim check)" test_system_prompts_body_untrimmed_accepted
+
+test_system_prompts_unique_name_version() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', 'body one');
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', 'body two');
+EOF
+  )
+  echo "$out" | grep -q 'system_prompts_name_version_unique' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: duplicate (name, version) rejected (UNIQUE, 23505)" test_system_prompts_unique_name_version
+
+test_system_prompts_same_name_diff_version() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', 'body one');
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v2', 'body two');
+EOF
+  )
+  echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
+  return 0
+}
+assert_success "system_prompts: same name with different version accepted" test_system_prompts_same_name_diff_version
+
+test_system_prompts_diff_name_same_version() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', 'body one');
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-mentor', 'v1', 'body two');
+EOF
+  )
+  echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
+  return 0
+}
+assert_success "system_prompts: different name with same version accepted" test_system_prompts_diff_name_same_version
+
+test_system_prompts_update_rejected() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', 'body') RETURNING id \\gset
+    UPDATE system_prompts SET body = 'changed' WHERE id = :'id';
+EOF
+  )
+  echo "$out" | grep -q 'Immutable entity rows cannot be updated.' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: UPDATE rejected (prevent_immutable_entity_update)" test_system_prompts_update_rejected
+
+test_system_prompts_delete_rejected() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO system_prompts (name, version, body)
+    VALUES ('sp-test-coach', 'v1', 'body') RETURNING id \\gset
+    DELETE FROM system_prompts WHERE id = :'id';
+EOF
+  )
+  echo "$out" | grep -q 'Immutable entity rows cannot be deleted.' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: DELETE rejected (prevent_immutable_entity_delete)" test_system_prompts_delete_rejected
+
+test_system_prompts_backfill_created_at() {
+  # An insert that sets created_at to a fixed past literal and leaves
+  # row_created_at defaulted (NOW()) is accepted, and reads back with
+  # created_at < row_created_at — confirming the two creation timestamps are
+  # independent (the reason row_created_at is carried).
+  local out
+  out=$(run_test_sql_ta << EOF
+    INSERT INTO system_prompts (name, version, body, created_at)
+    VALUES ('sp-test-coach', 'v1', 'body', '2020-01-01T00:00:00Z'::timestamptz)
+    RETURNING (created_at < row_created_at);
+EOF
+  )
+  echo "$out" | grep -q '^t$' || { echo "output was: $out"; return 1; }
+}
+assert_success "system_prompts: backfilled created_at reads back < row_created_at" test_system_prompts_backfill_created_at
+
+# ==========================================================================
+echo "==== Function existence ===="
+# ==========================================================================
+
+test_prevent_immutable_entity_update_exists() {
+  local out
+  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_immutable_entity_update';" | bin/db-query -tA 2>&1)
+  echo "$out" | grep -q '^1$' || { echo "output was: $out"; return 1; }
+}
+assert_success "function: prevent_immutable_entity_update() exists after migration" test_prevent_immutable_entity_update_exists
+
+test_prevent_immutable_entity_delete_exists() {
+  local out
+  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_immutable_entity_delete';" | bin/db-query -tA 2>&1)
+  echo "$out" | grep -q '^1$' || { echo "output was: $out"; return 1; }
+}
+assert_success "function: prevent_immutable_entity_delete() exists after migration" test_prevent_immutable_entity_delete_exists
+
+end_tests

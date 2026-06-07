@@ -68,6 +68,14 @@ Defined in `0000.shared-functions.sql` unless noted otherwise.
   semantics.
 - `prevent_log_delete()` raises `ERRCODE = 'P0001'` on any DELETE trigger
   invocation. Defined in `0006` (not `0000`).
+- `prevent_immutable_entity_update()` raises `ERRCODE = 'P0001'` on any UPDATE
+  trigger invocation, enforcing the insert-only contract on immutable-entity
+  tables. Defined in `0007` (not `0000`), via idempotent `CREATE OR REPLACE`.
+  Distinct from `prevent_immutable_updates()`: that guard blocks only `id`,
+  `created_at`, and `row_created_at`, leaving domain columns mutable; this one
+  blocks every update, including domain columns.
+- `prevent_immutable_entity_delete()` raises `ERRCODE = 'P0001'` on any DELETE
+  trigger invocation. Defined in `0007` (not `0000`).
 
 ### Standard Entity Table Pattern
 
@@ -96,6 +104,14 @@ Entity tables enable additional capabilities via **mix-ins**:
   are blocked by `prevent_physical_delete()`. Unique indexes MUST use partial
   predicates (`WHERE deleted_at IS NULL`).
 
+An entity table MAY instead be an **immutable (insert-only) variant**: created
+once, never updated or deleted. It carries creation-only timestamps (`created_at`
++ `row_created_at`, no `updated_at`/`row_updated_at`), no `version`, and no
+`deleted_at`. A `BEFORE UPDATE` trigger (`prevent_immutable_entity_update()`) and
+a `BEFORE DELETE` trigger (`prevent_immutable_entity_delete()`) reject every
+mutation, making all columns — domain fields included — immutable. A "new version"
+is a new row with a new `id`, never an in-place edit.
+
 #### Table Summary
 
 | Table | Type | Adv. Timestamps | OCC Versioning | Version History | Logical Deletes |
@@ -111,9 +127,15 @@ Entity tables enable additional capabilities via **mix-ins**:
 | `convo_requests` | Log | — | — | — | — |
 | `convo_responses` | Log | — | — | — | — |
 | `convo_responses_raw` | Log | — | — | — | — |
+| `system_prompts` | Immutable Entity | — | — | — | — |
 
 **Log** tables are append-only (see the `convo_*` subsections below): write-once,
 never updated or deleted, carrying none of the entity mix-ins.
+
+**Immutable-entity** tables (`system_prompts`) are insert-only: created once,
+never updated or deleted. They carry creation-only timestamps (`created_at` +
+`row_created_at`) and none of the four mix-ins above — see the `system_prompts`
+subsection.
 
 ### `users` — Extensions
 
@@ -221,6 +243,13 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
   on `(convo_id, created_at)`.
 - **Ownership**: `convo_id UUID NOT NULL REFERENCES convos(id) ON DELETE
   CASCADE`. One row = one turn sent to the model.
+- **System-prompt pin (D-6)**: `system_prompt_id UUID NOT NULL REFERENCES
+  system_prompts(id) ON DELETE RESTRICT`. Each turn pins the exact immutable
+  prompt that produced it; because the referenced row is immutable, the `id`
+  resolves forever to the precise `(name, version, body)` sent. `RESTRICT` (not
+  the child-ward `CASCADE` of the other `convo_*` FKs): the pin points at a
+  shared parent, so a `system_prompts` row MUST NOT be deleted while any turn
+  cites it.
 - **Provider allowlist (D-7)**: `provider` is TEXT + CHECK
   (`provider IN ('anthropic')`), pinned per-turn — NOT a native pg enum. Extend
   the allowlist in a later migration as providers are added.
@@ -230,8 +259,8 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
   re-stored per row (the stateless API resends it each turn).
 - **`request_params`**: `JSONB NULL`; when present MUST be a JSON object
   (`jsonb_typeof = 'object'`).
-- **Free-text (D-9)**: `model_requested` and `system_prompt_version` are NOT
-  NULL, ≤255, trimmed, and non-empty.
+- **Free-text (D-9)**: `model_requested` is NOT NULL, ≤255, trimmed, and
+  non-empty.
 
 ### `convo_responses` — Append-Only Log
 
@@ -266,6 +295,39 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
 - **Payload**: `payload JSONB NOT NULL` — the verbatim provider response body,
   isolated so it can be archived/dropped later without rewriting hot
   `convo_responses` rows.
+
+### `system_prompts` — Immutable Entity
+
+The team-authored catalog of system prompts that shape every coaching turn,
+FK'd-to by `convo_requests`. Insert-only (see §II, immutable variant): a row is
+created once and never updated or deleted. A "new version" of a prompt is a new
+row with a new `id`, so there is no `version` OCC column, no `system_prompts`
+sibling-versions table, and no log trigger.
+
+- **Immutability**: every `UPDATE` is rejected by
+  `prevent_immutable_entity_update()` (`trigger_00`), every `DELETE` by
+  `prevent_immutable_entity_delete()` (`trigger_01`), both raising `P0001`. The
+  blanket UPDATE block makes `id`, `created_at`, and `row_created_at` immutable
+  with no separate guard.
+- **Creation-only timestamps**: `created_at` (logical authoring time) and
+  `row_created_at` (physical insert time), both `TIMESTAMPTZ NOT NULL DEFAULT
+  NOW()`; no `updated_at`/`row_updated_at`. `created_at` MAY be supplied
+  explicitly to backfill a prompt's original authoring date — the one documented
+  exception to §I's clock-authority rule — in which case it reads back earlier
+  than the defaulted `row_created_at`.
+- **`(name, version)` uniqueness**: `system_prompts_name_version_unique` — a
+  `(name, version)` pair maps to exactly one immutable `body` forever. `name` is
+  the logical family (e.g. `coach`); `version` is a plain immutable label (e.g.
+  `v1`), NOT an OCC counter. The composite index's leading `name` column also
+  serves "all versions of a family" lookups, so there is no separate secondary
+  index.
+- **`name` / `version` canonical**: both NOT NULL, ≤255, non-empty, and trimmed
+  (six named CHECKs, the project TEXT-column convention).
+- **`body` bounded, NOT trimmed (D-5)**: `body TEXT NOT NULL`, non-empty
+  (`system_prompts_body_not_empty_check`) and ≤1 MiB
+  (`system_prompts_body_size_check`), but deliberately NOT trimmed — it is the
+  verbatim artifact sent to the model with no raw-payload backup behind it, so
+  leading/trailing whitespace MUST be preserved as authored.
 
 ---
 
@@ -325,6 +387,20 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
 - **Trigger type**: `BEFORE DELETE` (on the three `convo_*` log tables)
 - **Side effects**: Always raises `ERRCODE P0001` ("Log rows cannot be deleted;
   prune by partition/retention.").
+- **Idempotency**: N/A.
+
+#### `prevent_immutable_entity_update()`
+
+- **Trigger type**: `BEFORE UPDATE` (on `system_prompts`)
+- **Side effects**: Always raises `ERRCODE P0001` ("Immutable entity rows cannot
+  be updated.").
+- **Idempotency**: N/A.
+
+#### `prevent_immutable_entity_delete()`
+
+- **Trigger type**: `BEFORE DELETE` (on `system_prompts`)
+- **Side effects**: Always raises `ERRCODE P0001` ("Immutable entity rows cannot
+  be deleted.").
 - **Idempotency**: N/A.
 
 #### `trim_users_strings()`
@@ -403,3 +479,4 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
 - [x] [RFC-16: Queue Worker Framework](../../rfc/16-queue-worker-framework.md)
 - [x] [RFC-31: Student Profile](../../rfc/31-student-profile.md)
 - [x] [RFC-32: Coaching Conversations](../../rfc/32-coaching-conversations.md)
+- [x] [RFC-33: System Prompts](../../rfc/33-system-prompts.md)

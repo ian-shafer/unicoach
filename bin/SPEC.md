@@ -269,7 +269,8 @@ defers to a caller-supplied value. Harnesses that make assertions source
 - **Self-contained harnesses** (`scripts-tests`, `db-scripts-tests`,
   `db-users-tests`, `q-scripts-tests`) MUST register an EXIT/INT/TERM trap to
   tear down any services they started.
-- **No-lifecycle harnesses** (`db-convos-tests` and its aggregator `db-tests`)
+- **No-lifecycle harnesses** (`db-convos-tests`, `db-system-prompts-tests`, and
+  their aggregator `db-tests`)
   MUST own no Postgres lifecycle — no `postgres-up`/`postgres-down`, no
   `db-init`/`db-migrate`, no `$POSTGRES_DATA_DIR` wipe — and MUST NOT register a
   teardown trap. They MUST assume a live, already-migrated database supplied by
@@ -310,6 +311,9 @@ defers to a caller-supplied value. Harnesses that make assertions source
 - **`bin/db-convos-tests`**: Schema harness for the coaching-conversations
   tables (`convos`, `convo_requests`, `convo_responses`,
   `convo_responses_raw`). Owns no Postgres lifecycle.
+- **`bin/db-system-prompts-tests`**: Schema harness for the immutable
+  `system_prompts` catalog and the `convo_requests.system_prompt_id` FK rewire.
+  Owns no Postgres lifecycle.
 
 ---
 
@@ -355,3 +359,4 @@ instructions. Does not install anything.
 - [x] [RFC-22: Auth Logout](../rfc/22-auth-logout.md)
 - [x] [RFC-23: Native Daemon Scripts](../rfc/23-native-daemon-scripts.md)
 - [x] [RFC-32: Coaching Conversations](../rfc/32-coaching-conversations.md)
+- [x] [RFC-33: System Prompts](../rfc/33-system-prompts.md)

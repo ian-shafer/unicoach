@@ -71,9 +71,25 @@ if [ -z "$CONVO_ID" ]; then
 fi
 pass_test "fixture convo created (convo_id=$CONVO_ID)"
 
+# A committed system_prompts row, FK-referenced by every committed and
+# per-assertion convo_requests insert below. MUST precede the first
+# convo_requests insert (REQUEST_ID and the CASCADE_* subtree), which now
+# require a non-NULL system_prompt_id. Like the users/students/convos fixtures,
+# its fixed (name, version) collides if the harness runs twice without a DB
+# recreate; it relies on bin/test's db-destroy -> db-init -> db-migrate.
+SYSTEM_PROMPT_ID=$(
+  echo "INSERT INTO system_prompts (name, version, body)
+        VALUES ('convos-fixture-prompt', 'v1', 'You are a helpful coach.')
+        RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9a-f-]{36}$'
+)
+if [ -z "$SYSTEM_PROMPT_ID" ]; then
+  fail_test "fixture: could not create system_prompts row"
+fi
+pass_test "fixture system_prompt created (system_prompt_id=$SYSTEM_PROMPT_ID)"
+
 REQUEST_ID=$(
-  echo "INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-        VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{\"text\":\"hi\"}'::jsonb)
+  echo "INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+        VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{\"text\":\"hi\"}'::jsonb)
         RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9]+$'
 )
 if [ -z "$REQUEST_ID" ]; then
@@ -101,8 +117,8 @@ CASCADE_CONVO_ID=$(
     | bin/db-run rw -tA | grep -E '^[0-9a-f-]{36}$'
 )
 CASCADE_REQUEST_ID=$(
-  echo "INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-        VALUES ('$CASCADE_CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb)
+  echo "INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+        VALUES ('$CASCADE_CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb)
         RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9]+$'
 )
 CASCADE_RESPONSE_ID=$(
@@ -311,10 +327,10 @@ echo "==== convo_requests (log) ===="
 test_convo_requests_monotonic_ids() {
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS id_a \\gset
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS id_b \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS id_a \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS id_b \\gset
     SELECT (:id_b > :id_a);
 EOF
   )
@@ -325,8 +341,8 @@ assert_success "convo_requests: ids monotonically increase" test_convo_requests_
 test_convo_requests_null_provider() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'claude-opus-4-8', 'v1', '{}'::jsonb);
+    INSERT INTO convo_requests (convo_id, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -qi 'null value in column "provider"' || { echo "output was: $out"; return 1; }
@@ -336,8 +352,8 @@ assert_success "convo_requests: NULL provider rejected (NOT NULL)" test_convo_re
 test_convo_requests_null_content() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1');
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID');
 EOF
   )
   echo "$out" | grep -qi 'null value in column "content"' || { echo "output was: $out"; return 1; }
@@ -347,8 +363,8 @@ assert_success "convo_requests: NULL content rejected (NOT NULL)" test_convo_req
 test_convo_requests_provider_allowlist() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'openai', 'gpt-4', 'v1', '{}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'openai', 'gpt-4', '$SYSTEM_PROMPT_ID', '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'convo_requests_provider_valid_check' || { echo "output was: $out"; return 1; }
@@ -358,8 +374,8 @@ assert_success "convo_requests: provider 'openai' rejected (allowlist)" test_con
 test_convo_requests_provider_anthropic_ok() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
@@ -370,12 +386,12 @@ assert_success "convo_requests: provider 'anthropic' accepted" test_convo_reques
 test_convo_requests_content_any_json_shape() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '[1,2,3]'::jsonb);
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '42'::jsonb);
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{"k":"v"}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '[1,2,3]'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '42'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{"k":"v"}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
@@ -386,8 +402,8 @@ assert_success "convo_requests: content accepts object/array/scalar JSON" test_c
 test_convo_requests_request_params_object_ok() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, request_params, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{"temperature":0.7}'::jsonb, '{}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, request_params, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{"temperature":0.7}'::jsonb, '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
@@ -398,8 +414,8 @@ assert_success "convo_requests: request_params object accepted" test_convo_reque
 test_convo_requests_request_params_null_ok() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, request_params, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', NULL, '{}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, request_params, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', NULL, '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
@@ -410,8 +426,8 @@ assert_success "convo_requests: request_params NULL accepted" test_convo_request
 test_convo_requests_request_params_array_rejected() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, request_params, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '[1,2]'::jsonb, '{}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, request_params, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '[1,2]'::jsonb, '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'convo_requests_request_params_is_object_check' || { echo "output was: $out"; return 1; }
@@ -421,52 +437,30 @@ assert_success "convo_requests: request_params array rejected (is-object check)"
 test_convo_requests_model_too_long() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', repeat('m', 256), 'v1', '{}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', repeat('m', 256), '$SYSTEM_PROMPT_ID', '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'convo_requests_model_requested_length_check' || { echo "output was: $out"; return 1; }
 }
 assert_success "convo_requests: 256-char model_requested rejected (length check)" test_convo_requests_model_too_long
 
-test_convo_requests_blank_system_prompt_version() {
-  local out
-  out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '   ', '{}'::jsonb);
-EOF
-  )
-  echo "$out" | grep -q 'convo_requests_system_prompt_version_not_empty_check' || { echo "output was: $out"; return 1; }
-}
-assert_success "convo_requests: blank system_prompt_version rejected (not-empty check)" test_convo_requests_blank_system_prompt_version
-
 test_convo_requests_model_untrimmed() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', ' claude-opus-4-8 ', 'v1', '{}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', ' claude-opus-4-8 ', '$SYSTEM_PROMPT_ID', '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'convo_requests_model_requested_trimmed_check' || { echo "output was: $out"; return 1; }
 }
 assert_success "convo_requests: leading/trailing-whitespace model_requested rejected (trimmed check)" test_convo_requests_model_untrimmed
 
-test_convo_requests_system_prompt_version_untrimmed() {
-  local out
-  out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', ' v1 ', '{}'::jsonb);
-EOF
-  )
-  echo "$out" | grep -q 'convo_requests_system_prompt_version_trimmed_check' || { echo "output was: $out"; return 1; }
-}
-assert_success "convo_requests: leading/trailing-whitespace system_prompt_version rejected (trimmed check)" test_convo_requests_system_prompt_version_untrimmed
-
 test_convo_requests_content_oversized() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1',
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID',
             jsonb_build_object('big', repeat('x', 1048577)));
 EOF
   )
@@ -476,19 +470,55 @@ assert_success "convo_requests: content over 1 MiB rejected (size check)" test_c
 
 test_convo_requests_bad_convo_fk() {
   local out
-  out=$(run_test_sql << 'EOF'
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('00000000-0000-0000-0000-000000000000', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb);
+  out=$(run_test_sql << EOF
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('00000000-0000-0000-0000-000000000000', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb);
 EOF
   )
   echo "$out" | grep -q 'violates foreign key constraint' || { echo "output was: $out"; return 1; }
 }
 assert_success "convo_requests: non-existent convo_id rejected (FK)" test_convo_requests_bad_convo_fk
 
+test_convo_requests_null_system_prompt_id() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', NULL, '{}'::jsonb);
+EOF
+  )
+  echo "$out" | grep -qi 'null value in column "system_prompt_id"' || { echo "output was: $out"; return 1; }
+}
+assert_success "convo_requests: NULL system_prompt_id rejected (NOT NULL, 23502)" test_convo_requests_null_system_prompt_id
+
+test_convo_requests_bad_system_prompt_fk() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '00000000-0000-0000-0000-000000000000', '{}'::jsonb);
+EOF
+  )
+  echo "$out" | grep -q 'violates foreign key constraint' || { echo "output was: $out"; return 1; }
+}
+assert_success "convo_requests: non-existent system_prompt_id rejected (FK, 23503)" test_convo_requests_bad_system_prompt_fk
+
+test_convo_requests_dropped_column_regression() {
+  # 0007 dropped system_prompt_version (and its three CHECKs); naming it now is
+  # an undefined-column error (42703), proving the column is gone rather than
+  # lingering alongside the new FK.
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, system_prompt_version, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', 'v1', '{}'::jsonb);
+EOF
+  )
+  echo "$out" | grep -qi 'column "system_prompt_version" .* does not exist' || { echo "output was: $out"; return 1; }
+}
+assert_success "convo_requests: referencing dropped system_prompt_version rejected (42703)" test_convo_requests_dropped_column_regression
+
 test_convo_requests_update_rejected() {
   local out
   out=$(run_test_sql << EOF
-    UPDATE convo_requests SET system_prompt_version = 'v2' WHERE id = $REQUEST_ID;
+    UPDATE convo_requests SET model_requested = 'x' WHERE id = $REQUEST_ID;
 EOF
   )
   echo "$out" | grep -q 'Log rows are append-only and cannot be updated.' || { echo "output was: $out"; return 1; }
@@ -512,8 +542,8 @@ echo "==== convo_responses (log) ===="
 test_convo_responses_unique_request() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', 'end_turn');
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
@@ -527,8 +557,8 @@ assert_success "convo_responses: second response for a request_id rejected (UNIQ
 test_convo_responses_success_row() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses
       (request_id, convo_id, content, model_resolved, stop_reason,
        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
@@ -545,8 +575,8 @@ assert_success "convo_responses: full success row accepted" test_convo_responses
 test_convo_responses_error_row() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', NULL, NULL, 'error');
 EOF
@@ -559,8 +589,8 @@ assert_success "convo_responses: error row (content/model NULL) accepted" test_c
 test_convo_responses_content_presence() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', NULL, 'claude-opus-4-8', 'end_turn');
 EOF
@@ -572,8 +602,8 @@ assert_success "convo_responses: NULL content with end_turn rejected (content pr
 test_convo_responses_model_presence() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, NULL, 'end_turn');
 EOF
@@ -585,8 +615,8 @@ assert_success "convo_responses: NULL model_resolved with end_turn rejected (mod
 test_convo_responses_negative_output_tokens() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason, output_tokens)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', 'end_turn', -1);
 EOF
@@ -598,8 +628,8 @@ assert_success "convo_responses: negative output_tokens rejected (tokens non-neg
 test_convo_responses_negative_latency() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason, latency_ms)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', 'end_turn', -1);
 EOF
@@ -611,8 +641,8 @@ assert_success "convo_responses: negative latency_ms rejected (latency non-neg)"
 test_convo_responses_stop_reason_too_long() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', repeat('s', 65));
 EOF
@@ -624,8 +654,8 @@ assert_success "convo_responses: 65-char stop_reason rejected (length check)" te
 test_convo_responses_model_resolved_too_long() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, repeat('m', 256), 'end_turn');
 EOF
@@ -637,8 +667,8 @@ assert_success "convo_responses: 256-char model_resolved rejected (length check)
 test_convo_responses_stop_reason_untrimmed() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', ' end_turn ');
 EOF
@@ -650,8 +680,8 @@ assert_success "convo_responses: leading/trailing-whitespace stop_reason rejecte
 test_convo_responses_model_resolved_untrimmed() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, ' claude-opus-4-8 ', 'end_turn');
 EOF
@@ -663,8 +693,8 @@ assert_success "convo_responses: leading/trailing-whitespace model_resolved reje
 test_convo_responses_provider_request_id_untrimmed() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason, provider_request_id)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', 'end_turn', ' req_abc123 ');
 EOF
@@ -676,8 +706,8 @@ assert_success "convo_responses: leading/trailing-whitespace provider_request_id
 test_convo_responses_stop_reason_empty() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', '');
 EOF
@@ -689,8 +719,8 @@ assert_success "convo_responses: empty-string stop_reason rejected (not-empty ch
 test_convo_responses_model_resolved_empty() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, '', 'end_turn');
 EOF
@@ -702,8 +732,8 @@ assert_success "convo_responses: empty-string model_resolved rejected (not-empty
 test_convo_responses_provider_request_id_empty() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason, provider_request_id)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', 'end_turn', '');
 EOF
@@ -715,8 +745,8 @@ assert_success "convo_responses: empty-string provider_request_id rejected (not-
 test_convo_responses_null_optional_text_ok() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason, provider_request_id)
     VALUES (:rid, '$CONVO_ID', NULL, NULL, 'error', NULL);
 EOF
@@ -740,8 +770,8 @@ assert_success "convo_responses: non-existent request_id rejected (FK)" test_con
 test_convo_responses_bad_convo_fk() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '00000000-0000-0000-0000-000000000000', '{}'::jsonb, 'claude-opus-4-8', 'end_turn');
 EOF
@@ -777,8 +807,8 @@ echo "==== convo_responses_raw (log) ===="
 test_convo_responses_raw_pk_unique() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', 'end_turn') RETURNING id AS resid \\gset
     INSERT INTO convo_responses_raw (response_id, payload)
@@ -794,8 +824,8 @@ assert_success "convo_responses_raw: second raw row for a response_id rejected (
 test_convo_responses_raw_null_payload() {
   local out
   out=$(run_test_sql << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', 'end_turn') RETURNING id AS resid \\gset
     INSERT INTO convo_responses_raw (response_id, payload) VALUES (:resid, NULL);
@@ -818,8 +848,8 @@ assert_success "convo_responses_raw: non-existent response_id rejected (FK)" tes
 test_convo_responses_raw_error_response_no_raw() {
   local out
   out=$(run_test_sql_ta << EOF
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', 'v1', '{}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, '$CONVO_ID', NULL, NULL, 'error') RETURNING id AS resid \\gset
     SELECT count(*) FROM convo_responses_raw WHERE response_id = :resid;
@@ -859,12 +889,12 @@ test_replay_insertion_order() {
   local out
   out=$(run_test_sql_ta << EOF
     INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Replay order') RETURNING id AS cid \\gset
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES (:'cid', 'anthropic', 'claude-opus-4-8', 'v1', '{"n":1}'::jsonb);
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES (:'cid', 'anthropic', 'claude-opus-4-8', 'v1', '{"n":2}'::jsonb);
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES (:'cid', 'anthropic', 'claude-opus-4-8', 'v1', '{"n":3}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES (:'cid', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{"n":1}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES (:'cid', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{"n":2}'::jsonb);
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES (:'cid', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{"n":3}'::jsonb);
     SELECT string_agg(content->>'n', ',' ORDER BY created_at, id)
     FROM convo_requests WHERE convo_id = :'cid';
 EOF
@@ -879,10 +909,10 @@ test_replay_same_txn_tiebreaker() {
   local out
   out=$(run_test_sql_ta << EOF
     INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Replay tiebreaker') RETURNING id AS cid \\gset
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
     VALUES
-      (:'cid', 'anthropic', 'claude-opus-4-8', 'v1', '{"n":1}'::jsonb),
-      (:'cid', 'anthropic', 'claude-opus-4-8', 'v1', '{"n":2}'::jsonb);
+      (:'cid', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{"n":1}'::jsonb),
+      (:'cid', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{"n":2}'::jsonb);
     SELECT count(DISTINCT created_at)::text || '|' ||
            string_agg(content->>'n', ',' ORDER BY created_at, id)
     FROM convo_requests WHERE convo_id = :'cid';
@@ -896,8 +926,8 @@ test_replay_full_turn_join() {
   local out
   out=$(run_test_sql_ta << EOF
     INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Replay join') RETURNING id AS cid \\gset
-    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_version, content)
-    VALUES (:'cid', 'anthropic', 'claude-opus-4-8', 'v1', '{"q":"hi"}'::jsonb) RETURNING id AS rid \\gset
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES (:'cid', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{"q":"hi"}'::jsonb) RETURNING id AS rid \\gset
     INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
     VALUES (:rid, :'cid', '{"a":"yo"}'::jsonb, 'claude-opus-4-8', 'end_turn') RETURNING id AS resid \\gset
     INSERT INTO convo_responses_raw (response_id, payload) VALUES (:resid, '{"raw":"verbatim"}'::jsonb);
@@ -933,28 +963,6 @@ assert_success "function: prevent_log_delete() exists after migration" test_prev
 # ==========================================================================
 echo "==== Cascade topology (declared but inert) ===="
 # ==========================================================================
-
-test_cascade_delete_rules() {
-  # All five FKs in the erasure chain must report CASCADE.
-  local out
-  out=$(echo "
-    SELECT tc.constraint_name || ':' || rc.delete_rule
-    FROM information_schema.referential_constraints rc
-    JOIN information_schema.table_constraints tc
-      ON tc.constraint_name = rc.constraint_name
-     AND tc.constraint_schema = rc.constraint_schema
-    WHERE tc.table_name IN ('convos','convo_requests','convo_responses','convo_responses_raw')
-    ORDER BY 1;" | bin/db-query -tA 2>&1)
-  # Every reported FK on these tables must be CASCADE; none may be NO ACTION/RESTRICT.
-  if echo "$out" | grep -qv ':CASCADE$'; then
-    echo "output was: $out"; return 1
-  fi
-  # Confirm at least five rows (the five chain FKs).
-  local n
-  n=$(echo "$out" | grep -c ':CASCADE$')
-  [ "$n" -ge 5 ] || { echo "expected >=5 CASCADE FKs, got $n: $out"; return 1; }
-}
-assert_success "cascade: all chain FKs report delete_rule = CASCADE" test_cascade_delete_rules
 
 test_cascade_inert_on_convos_delete() {
   # A physical DELETE over a full request/response/raw subtree is rejected by the
