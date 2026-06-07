@@ -14,6 +14,11 @@ set -a
 source "$ENV_FILE"
 set +a
 
+# POSTGRES_PORT is required (set in ENV_FILE). Under `set -u` an unset value aborts
+# here rather than silently defaulting. Exporting PGPORT makes every libpq client
+# (psql via db-run, pg_isready) target the configured port with no per-call flags.
+export PGPORT="$POSTGRES_PORT"
+
 export DB_SCHEMA_DIR="${DB_SCHEMA_DIR:-$PROJECT_ROOT/db/schema}"
 
 

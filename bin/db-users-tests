@@ -3,25 +3,11 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/postgres-down >/dev/null 2>&1 || true' EXIT INT TERM
-
-wait_for_postgres() {
-  for i in {1..15}; do
-    if psql -U postgres -d "$POSTGRES_DB" -c '\q' >/dev/null 2>&1; then return 0; fi
-    sleep 1
-  done
-  echo "Fail: Timed out waiting for database '$POSTGRES_DB' runtime to become queryable organically."
-  exit 1
-}
-
-# Start clean
-bin/postgres-down >/dev/null 2>&1 || true
-rm -rf "$POSTGRES_DATA_DIR" >/dev/null 2>&1 || true
-bin/postgres-up >/dev/null
-wait_for_postgres
-
-bin/db-init >/dev/null
-bin/db-migrate >/dev/null
+# Ensure the shared cluster + role exist (idempotent), then start from a clean,
+# fully-migrated per-worktree test DB. We never stop or wipe the shared cluster —
+# isolation is at the database level (see .env.test's POSTGRES_DB).
+bin/db-bootstrap >/dev/null
+bin/db-reset >/dev/null
 
 echo "==== Testing Users Table Initialization ===="
 
@@ -218,9 +204,9 @@ EOF
 assert_success "soft delete allows email reuse" test_soft_delete_index
 
 test_timestamp_trigger() {
-  bin/db-update "INSERT INTO users (email, name, password_hash) VALUES ('ts@example.com', 'Test', 'hash');"
+  bin/db-write "INSERT INTO users (email, name, password_hash) VALUES ('ts@example.com', 'Test', 'hash');"
   sleep 1
-  bin/db-update "UPDATE users SET name = 'Test2', version = 2 WHERE email = 'ts@example.com';"
+  bin/db-write "UPDATE users SET name = 'Test2', version = 2 WHERE email = 'ts@example.com';"
   local out
   out=$(echo "SELECT (created_at = updated_at)::text || '|' || (created_at = row_updated_at)::text FROM users WHERE email = 'ts@example.com';" | bin/db-query -tA)
   
@@ -229,7 +215,7 @@ test_timestamp_trigger() {
 assert_success "updated_at and row_updated_at change on mutation" test_timestamp_trigger
 
 test_timestamp_bypass() {
-  bin/db-update "INSERT INTO users (email, name, password_hash) VALUES ('ts_bypass@example.com', 'Test', 'hash');"
+  bin/db-write "INSERT INTO users (email, name, password_hash) VALUES ('ts_bypass@example.com', 'Test', 'hash');"
   sleep 1
   
   local out

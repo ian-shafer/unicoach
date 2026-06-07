@@ -33,7 +33,9 @@ if [ "$#" -gt 0 ]; then
   help "test-fuzz does not accept positional arguments: $*"
 fi
 
-trap '"$PROJECT_ROOT/bin/rest-server-down" >/dev/null 2>&1 || true; "$PROJECT_ROOT/bin/postgres-down" >/dev/null 2>&1 || true' EXIT INT TERM
+# Tear down only the rest-server this harness starts. The PostgreSQL cluster is
+# shared across worktrees (see SPEC.md §II Shared Cluster) — never stop it.
+trap '"$PROJECT_ROOT/bin/rest-server-down" >/dev/null 2>&1 || true' EXIT INT TERM
 
 log-info "Ensuring postgres is online..."
 "$PROJECT_ROOT/bin/postgres-up"

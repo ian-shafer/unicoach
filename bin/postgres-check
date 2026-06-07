@@ -10,7 +10,7 @@ help() {
   cat << 'EOF'
 postgres-check [options]
 
-Exits 0 if PostgreSQL is accepting connections on localhost:5432.
+Exits 0 if PostgreSQL is accepting connections on localhost at POSTGRES_PORT.
 Exits 1 if it is not reachable or not ready.
 
 Options:
@@ -27,7 +27,7 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
-if pg_isready -q -h localhost -p 5432 -U "$POSTGRES_USER"; then
+if pg_isready -q -h localhost -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; then
   log-info "postgres is running"
 else
   log-info "postgres is NOT running"

@@ -30,10 +30,11 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
+# Assumes db-bootstrap was already run once by hand (shared cluster + role).
+# Reset only this worktree's test DB to a clean, fully-migrated state; never
+# touch the shared cluster itself.
 "$PROJECT_ROOT/bin/postgres-up"
-"$PROJECT_ROOT/bin/db-destroy" --yes-i-really-want-to-do-this
-"$PROJECT_ROOT/bin/db-init"
-"$PROJECT_ROOT/bin/db-migrate"
+"$PROJECT_ROOT/bin/db-reset"
 
 # Run the shell DB schema harnesses against the freshly migrated DB, sequentially
 # (never backgrounded) and before the terminal exec. Under set -e a non-zero exit

@@ -53,7 +53,7 @@ for base in $pending_files; do
     version_id="${base:0:4}"
     echo "INSERT INTO schema_migrations (version_id, filename) VALUES ('$version_id', '$base');"
     echo "COMMIT;"
-  ) | "$PROJECT_ROOT/bin/db-update"; then
+  ) | "$PROJECT_ROOT/bin/db-write"; then
     fatal "Migration failed: $base. Halting."
   fi
 done

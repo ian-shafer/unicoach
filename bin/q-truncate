@@ -37,4 +37,4 @@ if [ "$skip_prompt" = false ]; then
   require_dangerous_confirmation "$desc" || exit $?
 fi
 
-echo "$query;" | "$PROJECT_ROOT/bin/db-update" || exit 2
+echo "$query;" | "$PROJECT_ROOT/bin/db-write" || exit 2

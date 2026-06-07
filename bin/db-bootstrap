@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+db-bootstrap [options]
+
+One-time, per-machine setup of the shared PostgreSQL cluster. Run this once by
+hand after cloning (or after changing POSTGRES_DATA_DIR). Idempotent. Performs:
+
+  1. Initialises the cluster (initdb) if POSTGRES_DATA_DIR is empty.
+  2. Ensures the cluster is running (postgres-up).
+  3. Creates the application role (DATABASE_USER) if it does not exist.
+
+It does NOT create any database — that is db-create's job. Because the cluster is
+shared by every git worktree, role creation is race-tolerant: two worktrees may
+bootstrap concurrently without error.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "db-bootstrap does not accept positional arguments: $*"
+fi
+
+DATA_DIR="${POSTGRES_DATA_DIR:-}"
+
+if [ -z "$DATA_DIR" ]; then
+  fatal "POSTGRES_DATA_DIR is not set."
+fi
+
+# ── 1. Initialise the cluster if not already done ─────────────────────────────
+if [ ! -f "$DATA_DIR/PG_VERSION" ]; then
+  log-info "Initialising PostgreSQL data directory [$DATA_DIR]..."
+  mkdir -p "$DATA_DIR"
+  initdb -D "$DATA_DIR" -U "$POSTGRES_USER" --auth="${POSTGRES_HOST_AUTH_METHOD:-trust}"
+fi
+
+# ── 2. Ensure postgres is running ─────────────────────────────────────────────
+"$PROJECT_ROOT/bin/postgres-up"
+
+# ── 3. Create the application role (idempotent + race-tolerant) ───────────────
+# A plain SELECT-then-CREATE has a TOCTOU race when two worktrees bootstrap the
+# shared cluster at once. Creating inside a DO block that swallows the duplicate
+# makes concurrent bootstraps safe.
+log-info "Ensuring role [$DATABASE_USER] exists..."
+cat << SQL | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
+DO \$\$
+BEGIN
+  CREATE ROLE "$DATABASE_USER" WITH LOGIN PASSWORD '$DATABASE_PASSWORD';
+EXCEPTION WHEN duplicate_object OR unique_violation THEN
+  RAISE NOTICE 'role "%" already exists, skipping', '$DATABASE_USER';
+END
+\$\$;
+SQL
+
+log-info "db-bootstrap complete (cluster + role [$DATABASE_USER])."

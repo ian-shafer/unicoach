@@ -2,12 +2,12 @@
 # Schema-test harness for RFC 33 system_prompts (the immutable, insert-only
 # prompt catalog) and its convo_requests FK rewire.
 #
-# Modeled on bin/db-convos-tests, with the SAME deliberate divergence: this
-# harness OWNS NO POSTGRES LIFECYCLE. It sets no EXIT/INT/TERM trap and runs no
-# postgres-up/postgres-down/rm -rf $POSTGRES_DATA_DIR/db-init/db-migrate. It
-# assumes a live, already-migrated database supplied by the caller (bin/test or
-# a developer who has run db-init/db-migrate). Tearing Postgres down here would
-# break bin/test's subsequent Gradle phase.
+# Modeled on bin/db-convos-tests, with the SAME property: this harness OWNS NO
+# POSTGRES LIFECYCLE. It sets no EXIT/INT/TERM trap and runs no
+# db-bootstrap/db-reset/db-migrate. It assumes a live, already-migrated database
+# supplied by the caller (bin/test, or a developer who has run db-bootstrap then
+# db-reset). Managing the shared cluster here would break bin/test's subsequent
+# Gradle phase.
 #
 # system_prompts has no FK dependencies, so this harness needs no committed
 # fixture; every case is a self-contained BEGIN/ROLLBACK insert. Cases use a

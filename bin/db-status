@@ -11,7 +11,8 @@ help() {
 db-status [options]
 
 Outputs the application state of all available database migration scripts.
-Automatically initializes the database and tracking tables if offline or missing.
+Automatically provisions the database and tracking tables if missing (via
+db-create; assumes db-bootstrap has already created the cluster and role).
 
 Options:
   -f, --format <type>: Format output. Valid values: applied-only, unapplied-only.
@@ -48,8 +49,8 @@ if [[ -n "$format" ]]; then
   fi
 fi
 
-# Redirect db-init output to stderr so it doesn't artificially pollute the db-status stdout formatting
-"$PROJECT_ROOT/bin/db-init" 1>&2
+# Redirect db-create output to stderr so it doesn't artificially pollute the db-status stdout formatting
+"$PROJECT_ROOT/bin/db-create" 1>&2
 
 [ -d "$DB_SCHEMA_DIR" ] || fatal "Schema directory not found: $DB_SCHEMA_DIR"
 

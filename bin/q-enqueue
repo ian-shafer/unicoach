@@ -47,4 +47,4 @@ fi
 payload_escaped=$(echo "$payload" | sed "s/'/''/g")
 query="INSERT INTO jobs (job_type, payload, scheduled_at, max_attempts) VALUES ('$job_type', '$payload_escaped', $sql_scheduled_at, COALESCE($max_attempts, 3));"
 
-echo "$query" | "$PROJECT_ROOT/bin/db-update" || exit 2
+echo "$query" | "$PROJECT_ROOT/bin/db-write" || exit 2

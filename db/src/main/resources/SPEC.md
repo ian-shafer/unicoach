@@ -20,12 +20,15 @@ connection pool.
   self-contained block. The `database` stanza MUST NOT be split across multiple
   `.conf` files on the `db` module's classpath.
 - `database.jdbcUrl` MUST be constructed as the HOCON expression
-  `"jdbc:postgresql://localhost:5432/"${POSTGRES_DB}`. The base URL prefix
-  (`jdbc:postgresql://localhost:5432/`) is a hardcoded literal; only the
-  database name suffix is injected via `${POSTGRES_DB}`. If `POSTGRES_DB`
-  is unset at runtime, the URL resolves to `"jdbc:postgresql://localhost:5432/"`
-  (non-blank, so `getNonBlankString` passes), but HikariCP MUST fail at pool
-  initialization when it cannot connect to an unspecified database.
+  `"jdbc:postgresql://localhost:"${POSTGRES_PORT}"/"${POSTGRES_DB}`. Only the
+  scheme and host (`jdbc:postgresql://localhost:`) are hardcoded literals; the
+  port is injected via the REQUIRED substitution `${POSTGRES_PORT}` and the
+  database name via the REQUIRED substitution `${POSTGRES_DB}`. Both
+  substitutions MUST resolve at config load: if either `POSTGRES_PORT` or
+  `POSTGRES_DB` is unset, HOCON MUST throw `Could not resolve substitution to a
+  value` at load time (`AppConfig.load()`), before `DatabaseConfig.from()` runs.
+  This hard load-time failure is intentional — there is NO silent fallback (the
+  port is not defaulted to `5432`).
 - `database.user` MUST be present and non-blank. It MUST resolve via
   `${?DATABASE_USER}` (optional substitution). Absent at runtime →
   `DatabaseConfig.from()` returns a `Failure` via `getNonBlankString`.
@@ -51,7 +54,7 @@ connection pool.
 
 | Key | HOCON Form | Required | Default | Override Env Var |
 |-----|-----------|----------|---------|-----------------|
-| `database.jdbcUrl` | `"jdbc:postgresql://localhost:5432/"${POSTGRES_DB}` | MUST be non-blank | None | `POSTGRES_DB` (suffix) |
+| `database.jdbcUrl` | `"jdbc:postgresql://localhost:"${POSTGRES_PORT}"/"${POSTGRES_DB}` | MUST be non-blank; both substitutions REQUIRED | None | `POSTGRES_PORT` (port), `POSTGRES_DB` (db name) |
 | `database.user` | `${?DATABASE_USER}` | MUST be non-blank | None | `DATABASE_USER` |
 | `database.password` | `${?DATABASE_PASSWORD}` | Optional | Absent | `DATABASE_PASSWORD` |
 | `database.maximumPoolSize` | `10` + `${?DATABASE_MAXIMUM_POOL_SIZE}` | Yes | `10` | `DATABASE_MAXIMUM_POOL_SIZE` |
@@ -61,8 +64,12 @@ connection pool.
 I/O or cause side effects directly.
 
 **Error Handling**:
-- If `database.jdbcUrl` resolves to blank or is absent → `DatabaseConfig.from()`
-  returns `Result.Failure` wrapping the exception thrown by `getNonBlankString`.
+- If `POSTGRES_PORT` or `POSTGRES_DB` is unset at config load → HOCON throws
+  `Could not resolve substitution to a value` from `AppConfig.load()`, before
+  `DatabaseConfig.from()` is reached. There is no fallback port.
+- If `database.jdbcUrl` otherwise resolves to blank or is absent →
+  `DatabaseConfig.from()` returns `Result.Failure` wrapping the exception thrown
+  by `getNonBlankString`.
 - If `database.user` resolves to blank or is absent → same failure path.
 - If `database.password` key is absent, `DatabaseConfig` sets `password = null`
   (permitted; HikariCP accepts null password).
@@ -91,7 +98,8 @@ application classpath when `rest-server` assembles the fat JAR.
 
 | Variable | Role | Fail Behavior |
 |----------|------|---------------|
-| `POSTGRES_DB` | Appended to the JDBC URL base string | `jdbcUrl` becomes `"jdbc:postgresql://localhost:5432/"` (connects to no DB) → connection error at pool init |
+| `POSTGRES_PORT` | Supplies the port in the JDBC URL (required substitution) | Unset → HOCON throws `Could not resolve substitution to a value: ${POSTGRES_PORT}` at config load (no fallback to `5432`) |
+| `POSTGRES_DB` | Supplies the database name in the JDBC URL (required substitution) | Unset → HOCON throws `Could not resolve substitution to a value: ${POSTGRES_DB}` at config load |
 | `DATABASE_USER` | PostgreSQL username | `DatabaseConfig.from()` returns `Failure` |
 | `DATABASE_PASSWORD` | PostgreSQL password | Absent → `password = null`; pool connects without password |
 | `DATABASE_MAXIMUM_POOL_SIZE` | HikariCP pool size override | Absent → defaults to `10` |

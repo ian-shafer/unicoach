@@ -3,7 +3,9 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/rest-server-down >/dev/null 2>&1 || true; bin/queue-worker-down >/dev/null 2>&1 || true; bin/postgres-down >/dev/null 2>&1 || true' EXIT INT TERM
+# Tear down only the daemons this harness starts. The PostgreSQL cluster is
+# shared across worktrees (see SPEC.md §II Shared Cluster) — never stop it.
+trap 'bin/rest-server-down >/dev/null 2>&1 || true; bin/queue-worker-down >/dev/null 2>&1 || true' EXIT INT TERM
 
 echo "Harness up"
 echo ""
@@ -220,7 +222,7 @@ test_require_dangerous_confirmation_empty() {
 }
 assert_success "require_dangerous_confirmation empty" test_require_dangerous_confirmation_empty
 
-# Validates the caller-side flag bypass pattern used by q-truncate and db-destroy:
+# Validates the caller-side flag bypass pattern used by q-truncate and db-drop:
 # when --yes-i-really-want-to-do-this is present, the prompt is never invoked.
 test_require_dangerous_confirmation_flag() {
   skip_prompt=false

@@ -7,7 +7,7 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-db-update [sql] [options]
+db-write [sql] [options]
 
 Arguments:
   sql: Optional SQL statement

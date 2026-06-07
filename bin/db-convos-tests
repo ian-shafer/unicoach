@@ -2,13 +2,11 @@
 # Schema-test harness for RFC 32 coaching conversations (convos,
 # convo_requests, convo_responses, convo_responses_raw).
 #
-# Modeled on bin/db-users-tests, with ONE deliberate divergence: this harness
-# OWNS NO POSTGRES LIFECYCLE. It sets no EXIT/INT/TERM trap and runs no
-# postgres-up/postgres-down/rm -rf $POSTGRES_DATA_DIR/db-init/db-migrate. It
-# assumes a live, already-migrated database supplied by the caller (bin/test or
-# a developer who has run db-init/db-migrate). Copying db-users-tests's
-# self-contained lifecycle (with its EXIT-trap postgres-down) would tear
-# Postgres down before bin/test's Gradle phase.
+# Modeled on bin/db-users-tests, but this harness OWNS NO POSTGRES LIFECYCLE: it
+# sets no EXIT/INT/TERM trap and runs no db-bootstrap/db-reset/db-migrate. It
+# assumes a live, already-migrated database supplied by the caller (bin/test, or
+# a developer who has run db-bootstrap then db-reset). Managing the shared
+# cluster here would interfere with bin/test's subsequent Gradle phase.
 export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
@@ -76,7 +74,7 @@ pass_test "fixture convo created (convo_id=$CONVO_ID)"
 # convo_requests insert (REQUEST_ID and the CASCADE_* subtree), which now
 # require a non-NULL system_prompt_id. Like the users/students/convos fixtures,
 # its fixed (name, version) collides if the harness runs twice without a DB
-# recreate; it relies on bin/test's db-destroy -> db-init -> db-migrate.
+# recreate; it relies on bin/test's db-reset (db-drop -> db-create -> db-migrate).
 SYSTEM_PROMPT_ID=$(
   echo "INSERT INTO system_prompts (name, version, body)
         VALUES ('convos-fixture-prompt', 'v1', 'You are a helpful coach.')

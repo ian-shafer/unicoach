@@ -4,8 +4,8 @@ A Kotlin/Ktor backend with a native PostgreSQL database and an iOS Swift client.
 
 ## Prerequisites
 
-Install [nix](https://nixos.org/download) — it provides every project tool (Java 21,
-PostgreSQL 18, Python 3, Deno, ktlint, git) as a reproducible package set.
+Install [nix](https://nixos.org/download) — it provides every project tool (Java
+21, PostgreSQL 18, Python 3, Deno, ktlint, git) as a reproducible package set.
 
 ```sh
 bin/dev-bootstrap   # verifies nix is installed and prints activation instructions
@@ -35,13 +35,16 @@ The shell hook prints the active tool versions on entry:
 
 ## Initial Setup
 
-Copy the environment template and initialise the database cluster. This is a
-one-time step per machine.
+Copy the environment template and bootstrap the shared PostgreSQL cluster.
+`bin/db-bootstrap` is a **one-time, per-machine** step: it initialises the
+cluster (at `POSTGRES_DATA_DIR`, shared by every worktree) and creates the
+application role. Database creation and migration are cheap, repeatable steps.
 
 ```sh
 cp .env.template .env      # fill in any local overrides (safe defaults are provided)
-bin/db-init                # initialises the postgres cluster, role, database, and schema_migrations table
-bin/db-migrate             # applies all pending SQL migrations
+bin/db-bootstrap           # ONCE per machine: initialise the cluster + application role
+bin/db-create              # create the application database + schema_migrations table
+bin/db-migrate             # apply all pending SQL migrations
 ```
 
 ## Building
@@ -75,7 +78,7 @@ Each service has a matching `up`, `down`, `bounce`, and `check` script.
 ### PostgreSQL
 
 ```sh
-bin/postgres-up            # starts the postgres daemon (requires bin/db-init to have been run first)
+bin/postgres-up            # starts the postgres daemon (requires bin/db-bootstrap to have been run first)
 bin/postgres-down          # gracefully stops postgres
 bin/postgres-bounce        # restarts postgres
 bin/postgres-check         # exits 0 if postgres is accepting connections, 1 otherwise
@@ -117,12 +120,18 @@ Logs are written to `var/log/<service>.log`. PIDs are tracked in
 ## Database
 
 ```sh
-bin/db-init                # idempotent: cluster init + role + database + schema_migrations
+bin/db-bootstrap           # ONCE per machine: idempotent cluster init + application role
+bin/db-create              # idempotent: create the database, grants, and schema_migrations
 bin/db-migrate             # applies all pending SQL migrations in lexicographical order
+bin/db-reset               # drop + create + migrate: a clean, fully-migrated database
 bin/db-status              # shows applied / unapplied migrations
 bin/db-repl                # opens a psql session against the application database
-bin/db-destroy             # drops the application database (requires --yes-i-really-want-to-do-this)
+bin/db-drop                # drops the application database (requires --yes-i-really-want-to-do-this)
 ```
+
+`bin/db-bootstrap` touches the shared cluster and is rare; `bin/db-drop`,
+`bin/db-create`, and `bin/db-reset` operate on a single database and are cheap
+to run often (e.g. `bin/test` runs `db-reset` every invocation).
 
 Migration files live in `db/schema/` and must follow the naming convention
 `NNNN.<slug>.sql` (e.g. `0001.create-users.sql`).
@@ -142,9 +151,12 @@ bin/q-truncate             # clears all jobs (requires --yes-i-really-want-to-do
 
 ### JVM unit tests
 
-Runs all Gradle tests against the test database (`unicoach-test`). Starts
-postgres, destroys and re-creates the test database, applies migrations, then
-executes the test suite.
+Runs all Gradle tests against this worktree's own test database (named
+`unicoach-test-<worktree-dir>`, derived in `.env.test`). Assumes
+`bin/db-bootstrap` has already been run once; it then `db-reset`s the test
+database (drop + create + migrate) and executes the suite. Because each worktree
+has its own test database on the shared cluster, `bin/test` can run concurrently
+across worktrees without collision.
 
 ```sh
 bin/test                   # equivalent to ./gradlew test
@@ -175,10 +187,10 @@ bin/pre-commit             # lint check only (no modifications); used as the git
 
 Format configuration:
 
-| Tool | Config | Scope |
-|---|---|---|
-| ktlint | `.editorconfig` | `**/*.kt`, `**/*.kts` |
-| deno fmt | `deno.json` | `**/*.md` |
+| Tool     | Config          | Scope                 |
+| -------- | --------------- | --------------------- |
+| ktlint   | `.editorconfig` | `**/*.kt`, `**/*.kts` |
+| deno fmt | `deno.json`     | `**/*.md`             |
 
 ## Project Structure
 
@@ -195,26 +207,56 @@ ios-app/              Swift/SwiftUI iOS client
 specs/                feature design documents
 var/log/              service log files (gitignored)
 var/run/              PID and lock files (gitignored)
-var/postgres/         PostgreSQL data directory (gitignored)
 ```
+
+The PostgreSQL data directory lives **outside** any checkout at
+`$HOME/var/unicoach/postgres` (`POSTGRES_DATA_DIR`), so a single cluster is
+shared by every worktree.
 
 ## Environment Variables
 
 Copy `.env.template` to `.env`. Key variables:
 
-| Variable | Description | Default |
-|---|---|---|
-| `PORT` | REST server listen port | `8080` |
-| `SERVER_PORT` | Derived from `PORT` (used by rest-server.conf) | `$PORT` |
-| `POSTGRES_DATA_DIR` | PostgreSQL cluster directory | `$PROJECT_ROOT/var/postgres` |
-| `POSTGRES_DB` | Application database name | `unicoach` |
-| `POSTGRES_USER` | PostgreSQL superuser | `postgres` |
-| `PGHOST` | libpq host (all psql/pg_isready calls) | `localhost` |
-| `DATABASE_USER` | Application role | `unicoach` |
-| `DATABASE_PASSWORD` | Application role password | `password` |
-| `JWT_SECRET` | Token signing secret | — |
-| `JWT_ISSUER` | Token issuer URI | — |
+| Variable            | Description                                            | Default                       |
+| ------------------- | ------------------------------------------------------ | ----------------------------- |
+| `PORT`              | REST server listen port                                | `8080`                        |
+| `SERVER_PORT`       | Derived from `PORT` (used by rest-server.conf)         | `$PORT`                       |
+| `POSTGRES_DATA_DIR` | PostgreSQL cluster directory (shared by all worktrees) | `$HOME/var/unicoach/postgres` |
+| `POSTGRES_PORT`     | PostgreSQL listen port (required; no in-code default)  | `5432`                        |
+| `POSTGRES_DB`       | Application database name                              | `unicoach`                    |
+| `POSTGRES_USER`     | PostgreSQL superuser                                   | `postgres`                    |
+| `PGHOST`            | libpq host (all psql/pg_isready calls)                 | `localhost`                   |
+| `DATABASE_USER`     | Application role                                       | `unicoach`                    |
+| `DATABASE_PASSWORD` | Application role password                              | `password`                    |
+| `JWT_SECRET`        | Token signing secret                                   | —                             |
+| `JWT_ISSUER`        | Token issuer URI                                       | —                             |
 
-`.env.test` mirrors `.env` with test-specific overrides (`PORT=8081`,
-`POSTGRES_DB=unicoach-test`). Both environments share the same postgres cluster;
-isolation is at the database level.
+`POSTGRES_PORT` is **required** and must be set in the env file — scripts and
+the JVM crash hard if it is missing rather than silently defaulting.
+
+`.env.test` mirrors `.env` with test-specific overrides (`PORT=8081`). Its
+`POSTGRES_DB` is derived **per worktree** (`unicoach-test-<worktree-dir>`) so
+parallel test runs never collide. Dev and test (and every worktree) share the
+same postgres cluster; isolation is at the database level.
+
+## Parallel development with worktrees
+
+Run several features — or several `/rfc-pipeline` instances — at once, each in
+its own [git worktree](https://git-scm.com/docs/git-worktree). All worktrees
+share one PostgreSQL cluster (`POSTGRES_DATA_DIR` is an absolute,
+checkout-independent path), and isolation happens at the database level.
+
+```sh
+git worktree add -b my-feature ../unicoach-my-feature main
+cd ../unicoach-my-feature
+nix develop -c bin/test        # uses its own DB: unicoach-test-unicoach-my-feature
+```
+
+- **`bin/db-bootstrap` is run once per machine**, not per worktree — the cluster
+  and role are shared.
+- Each worktree's `bin/test` resets only its own per-worktree test database, so
+  test runs are safe to execute concurrently across worktrees.
+- **Caution:** `bin/postgres-down` stops the shared cluster for _every_
+  worktree.
+- To give a worktree a fully isolated cluster instead, override both
+  `POSTGRES_DATA_DIR` and `POSTGRES_PORT` in that worktree's `.env`/`.env.test`.

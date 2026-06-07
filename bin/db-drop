@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+db-drop [options]
+
+Drops the application database (DROP DATABASE IF EXISTS ... WITH FORCE).
+Idempotent. The postgres cluster and its data directory are left intact;
+only the single database named by POSTGRES_DB is removed.
+
+Options:
+  --yes-i-really-want-to-do-this: Disable confirmation prompt
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+skip_prompt=false
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) help ;;
+    --yes-i-really-want-to-do-this) skip_prompt=true ;;
+    *) fatal "db-drop does not accept positional arguments: [$arg]" ;;
+  esac
+done
+
+if [ "$skip_prompt" = false ]; then
+  require_dangerous_confirmation "drop the application database and all its data"
+fi
+
+log-info "Dropping database [$POSTGRES_DB]..."
+"$PROJECT_ROOT/bin/postgres-up" >/dev/null
+echo "DROP DATABASE IF EXISTS \"$POSTGRES_DB\" WITH (FORCE);" | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
+log-info "Database [$POSTGRES_DB] successfully dropped."

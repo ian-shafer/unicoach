@@ -32,4 +32,4 @@ if [ "$status" != "DEAD_LETTERED" ]; then
   fatal "Job [$job_id] is not in DEAD_LETTERED status (current: [$status])"
 fi
 
-echo "UPDATE jobs SET status = 'SCHEDULED', scheduled_at = NOW() WHERE id = '$job_id';" | "$PROJECT_ROOT/bin/db-update" || exit 2
+echo "UPDATE jobs SET status = 'SCHEDULED', scheduled_at = NOW() WHERE id = '$job_id';" | "$PROJECT_ROOT/bin/db-write" || exit 2

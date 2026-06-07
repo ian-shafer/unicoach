@@ -1,13 +1,40 @@
 #!/usr/bin/env bash
-export ENV_FILE="$(dirname "$0")/../.env.test"
-source "$(dirname "$0")/common"
-source "$(dirname "$0")/tests-common"
+# db-scripts-tests runs against its OWN private, throwaway PostgreSQL cluster
+# (private data dir + unique port), NOT the shared cluster. This harness
+# deliberately exercises cluster lifecycle — postgres-down, db-drop,
+# re-provisioning — so it must never stop or wipe the cluster that other
+# worktrees share. The private cluster is torn down and deleted on exit.
+set -euo pipefail
 
-trap 'bin/postgres-down >/dev/null 2>&1 || true' EXIT INT TERM
+THIS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-cleanPostgresData() {
-  rm -rf "$POSTGRES_DATA_DIR" || true
-}
+# Private env: throwaway data dir, a PID-derived port (dynamic/private range) to
+# avoid colliding with the shared cluster or a concurrent run, and a dedicated DB.
+# mktemp only creates the final XXXXXX component, so the base must already exist —
+# ensure it does (nix sets TMPDIR to a per-shell path that is not always present).
+TMP_BASE="${TMPDIR:-/tmp}"
+mkdir -p "$TMP_BASE"
+PRIVATE_ROOT="$(mktemp -d "$TMP_BASE/unicoach-db-scripts-tests.XXXXXX")"
+PRIVATE_ENV="$PRIVATE_ROOT/env"
+cat > "$PRIVATE_ENV" <<EOF
+POSTGRES_USER=postgres
+POSTGRES_DB=unicoach-db-scripts-test
+POSTGRES_HOST_AUTH_METHOD=trust
+PGHOST=localhost
+POSTGRES_DATA_DIR=$PRIVATE_ROOT/pg
+POSTGRES_ADMIN_DB=postgres
+POSTGRES_PORT=$(( 49152 + ($$ % 16000) ))
+DATABASE_USER=unicoach
+DATABASE_PASSWORD=password
+EOF
+
+export ENV_FILE="$PRIVATE_ENV"
+source "$THIS_DIR/common"
+source "$THIS_DIR/tests-common"
+
+# Tear down the PRIVATE cluster and delete its data on exit. Safe — it is ours
+# alone (private port + data dir), unrelated to the shared cluster.
+trap 'bin/postgres-down >/dev/null 2>&1 || true; rm -rf "$PRIVATE_ROOT" >/dev/null 2>&1 || true' EXIT INT TERM
 
 wait_for_postgres() {
   for i in {1..15}; do
@@ -18,11 +45,9 @@ wait_for_postgres() {
   exit 1
 }
 
-bin/postgres-down >/dev/null || true
-cleanPostgresData
-bin/postgres-up >/dev/null
-
-wait_for_postgres
+# Bootstrap the private cluster (initdb + role) and provision its database.
+bin/db-bootstrap >/dev/null
+bin/db-create >/dev/null
 
 # Set up testing table
 bin/db-run rw "CREATE TABLE db_scripts_test (id INT PRIMARY KEY, val TEXT);" >/dev/null
@@ -46,13 +71,13 @@ test_db_query_via_positional() {
   bin/db-query "SELECT * FROM db_scripts_test WHERE id = 2;" | grep "rw" >/dev/null
 }
 
-test_db_update_via_stdin() {
-  echo "INSERT INTO db_scripts_test (id, val) VALUES (3, 'stdin');" | bin/db-update >/dev/null
+test_db_write_via_stdin() {
+  echo "INSERT INTO db_scripts_test (id, val) VALUES (3, 'stdin');" | bin/db-write >/dev/null
   bin/db-query "SELECT val FROM db_scripts_test WHERE id = 3;" | grep "stdin" >/dev/null
 }
 
-test_db_update_via_positional() {
-  bin/db-update "INSERT INTO db_scripts_test (id, val) VALUES (4, 'positional');" >/dev/null
+test_db_write_via_positional() {
+  bin/db-write "INSERT INTO db_scripts_test (id, val) VALUES (4, 'positional');" >/dev/null
   bin/db-query "SELECT val FROM db_scripts_test WHERE id = 4;" | grep "positional" >/dev/null
 }
 
@@ -81,8 +106,8 @@ assert_success "db-run ro blocks mutation" test_db_run_ro_blocks_mutation
 assert_success "db-run rw allows mutation" test_db_run_rw_allows_mutation
 assert_success "db-query via stdin" test_db_query_via_stdin
 assert_success "db-query via positional" test_db_query_via_positional
-assert_success "db-update via stdin" test_db_update_via_stdin
-assert_success "db-update via positional" test_db_update_via_positional
+assert_success "db-write via stdin" test_db_write_via_stdin
+assert_success "db-write via positional" test_db_write_via_positional
 assert_success "db-repl interactive shell" test_db_repl_interactive_shell
 assert_success "psql error propagation" test_psql_error_propagation
 assert_success "psql stderr output" test_psql_stderr_output
@@ -105,7 +130,7 @@ test_db_lifecycle_wipes_data() {
   # Restart postgres after the unreachable test above
   bin/postgres-up >/dev/null
   wait_for_postgres
-  bin/db-init
+  bin/db-create
 
   # Write dummy data and ensure we can read it
   bin/db-run rw "CREATE TABLE IF NOT EXISTS lifecycle_test (id INT);"
@@ -116,43 +141,46 @@ test_db_lifecycle_wipes_data() {
     return 1
   fi
 
-  # Destroy the database
-  bin/db-destroy --yes-i-really-want-to-do-this
+  # Drop the database
+  bin/db-drop --yes-i-really-want-to-do-this
 
-  # Ensure the database is permanently offline / data destroyed
+  # Ensure the dropped database is gone / data destroyed
   if bin/db-query "SELECT * FROM lifecycle_test;" 2>/dev/null; then
-    fail_test "db-query erroneously succeeded after db-destroy"
+    fail_test "db-query erroneously succeeded after db-drop"
     return 1
   fi
 
-  # Bring it back up
-  bin/db-init
+  # Recreate it
+  bin/db-create
 
   if bin/db-query "SELECT * FROM schema_migrations limit 1;" 2>&1 | grep -q "relation.*schema_migrations.*does not exist"; then
-    fail_test "db-init failed to recreate schema_migrations table"
+    fail_test "db-create failed to recreate schema_migrations table"
     return 1
   fi
-  pass_test "db-destroy and db-init completed successfully"
+  pass_test "db-drop and db-create completed successfully"
 }
 test_db_lifecycle_wipes_data
 
-test_db_init_idempotent() {
-  bin/db-destroy --yes-i-really-want-to-do-this
-  bin/db-init
+test_db_provisioning_idempotent() {
+  bin/db-drop --yes-i-really-want-to-do-this
+  bin/db-create
 
-  # Ensure it exits 0 and does not emit extraneous errors
-  out=$(bin/db-init 2>&1)
-  if [ $? -ne 0 ]; then
-    fail_test "db-init failed on second execution: $out"
+  # Re-running bootstrap and create must both exit 0 with no errors.
+  if ! out=$(bin/db-bootstrap 2>&1); then
+    fail_test "db-bootstrap failed on re-run: $out"
     return 1
   fi
-  pass_test "db-init is idempotent"
+  if ! out=$(bin/db-create 2>&1); then
+    fail_test "db-create failed on re-run: $out"
+    return 1
+  fi
+  pass_test "db-bootstrap and db-create are idempotent"
 }
-test_db_init_idempotent
+test_db_provisioning_idempotent
 
 test_db_status_formats() {
-  bin/db-destroy --yes-i-really-want-to-do-this
-  bin/db-init
+  bin/db-drop --yes-i-really-want-to-do-this
+  bin/db-create
 
   export DB_SCHEMA_DIR="/tmp/test_migrations_status_$$"
   mkdir -p "$DB_SCHEMA_DIR"
@@ -186,8 +214,8 @@ test_db_status_formats
 
 echo "==== Testing Migration Engine ===="
 setup_migration_test() {
-  bin/db-destroy --yes-i-really-want-to-do-this >/dev/null 2>&1 || true
-  bin/db-init
+  bin/db-drop --yes-i-really-want-to-do-this >/dev/null 2>&1 || true
+  bin/db-create
   export DB_SCHEMA_DIR="/tmp/test_migrations_$$"
   mkdir -p "$DB_SCHEMA_DIR"
 }

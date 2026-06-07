@@ -3,23 +3,19 @@ export ENV_FILE="$(dirname "$0")/../.env.test"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
-trap 'bin/postgres-down >/dev/null 2>&1 || true' EXIT INT TERM
-
-cleanPostgresData() {
-  rm -rf "$POSTGRES_DATA_DIR" || true
-}
-
-bin/postgres-down >/dev/null || true
-cleanPostgresData
-bin/postgres-up >/dev/null
-
-bin/db-init
+# Ensure the shared cluster + role exist (idempotent), then start from a clean,
+# fully-migrated per-worktree test DB. We never stop or wipe the shared cluster —
+# isolation is at the database level (see .env.test's POSTGRES_DB).
+bin/db-bootstrap >/dev/null
+bin/db-reset >/dev/null
 
 add_job() {
   local type="$1"
   local status="$2"
   local max_attempts="${3:-3}"
-  bin/db-run rw "INSERT INTO jobs (job_type, payload, status, max_attempts, scheduled_at) VALUES ('$type', '{}', '$status', $max_attempts, NOW()) RETURNING id;" | grep -v id | grep -v "\-\-" | sed 's/ //g' | tail -n 2 | head -n 1
+  # -tA prints the RETURNING uuid followed by psql's "INSERT 0 1" command tag;
+  # extract just the UUID so the caller gets a clean id regardless of that tag.
+  bin/db-run rw "INSERT INTO jobs (job_type, payload, status, max_attempts, scheduled_at) VALUES ('$type', '{}', '$status', $max_attempts, NOW()) RETURNING id;" -tA | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1
 }
 
 add_attempt() {
@@ -203,7 +199,7 @@ test_q_retry_rejects_non_dead_lettered() {
 test_q_retry_preserves_attempt_history() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   local j=$(add_job "type.a" "DEAD_LETTERED")
-  add_attempt "$j" 1 "TERMINAL_FAILURE"
+  add_attempt "$j" 1 "PERMANENT_FAILURE"
   bin/q-retry "$j" >/dev/null
   local count=$(echo "SELECT count(*) FROM job_attempts WHERE job_id = '$j';" | bin/db-query -tA)
   if [ "$count" != "1" ]; then return 1; fi
