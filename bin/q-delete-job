@@ -22,7 +22,10 @@ fi
 job_id="$1"
 query="WITH deleted AS (DELETE FROM jobs WHERE id = '$job_id' RETURNING id) SELECT count(*) FROM deleted;"
 
-res=$(echo "$query" | "$PROJECT_ROOT/bin/db-query" -tA) || exit 2
+# The CTE deletes, so it must run read-write. db-query is the read-only wrapper
+# (default_transaction_read_only=on) and would reject it; db-run rw both mutates
+# and returns the deleted-row count via -tA.
+res=$(echo "$query" | "$PROJECT_ROOT/bin/db-run" rw -tA) || exit 2
 
 if [ "$res" = "0" ]; then
   fatal "Job [$job_id] not found"
