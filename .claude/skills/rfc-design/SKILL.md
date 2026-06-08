@@ -32,6 +32,33 @@ feature in the codebase.
   words, and subjective adjectives (e.g., do not use words like "elegant",
   "robust", or "seamless"). However, you MUST strictly use only the headers
   defined in the RFC Requirements section.
+
+- **Concision & Non-Redundancy**: "Be concise" is not enough on its own — apply
+  these concrete, checkable rules. They are as binding as the header
+  requirements.
+  - **Essence first**: Every design element (table, type, endpoint, decision,
+    migration) MUST open with ONE plain declarative sentence stating what it
+    *is* — the structure or the choice itself — before any rationale. State the
+    thing, then justify it. A reader must grasp what is being built from the
+    first line of each element. Do not circle a concept across several
+    qualified sentences without ever stating it flatly.
+  - **Single source of truth**: Each fact, decision, and rationale appears in
+    exactly ONE place. Do not state a design choice in the Executive Summary,
+    re-explain it in Detailed Design, and justify it a third time in an
+    appendix. Where a later section depends on an earlier decision, reference it
+    in a few words — do not re-derive it. `Files Modified`, `Implementation
+    Plan`, and `Tests` reference design decisions tersely; they never restate
+    the reasoning behind them.
+  - **No rationale appendix**: Do NOT add a standalone `Decisions`, `Rationale`,
+    `Alternatives`, or `Trade-offs` section. Fold each decision's justification
+    inline, in one or two sentences, at the point in `Detailed Design` where the
+    design is specified. A separate decisions list duplicates the design and is
+    the single largest source of bloat.
+  - **Rejected-alternatives budget**: Explaining why you are NOT doing something
+    is expensive and earns its space only rarely. Include it ONLY when a
+    competent reader would otherwise plausibly choose the rejected path, and
+    then in at most ONE sentence. Never write a standalone paragraph about a
+    road not taken.
 -   **Structural Specifications Only**: Strictly exclude concrete implementation
     code (e.g., function bodies, control flow, markup templates, stylesheet
     rules). Restrict design specifications to declarative schemas and

@@ -68,8 +68,12 @@ Verify the RFC contains these exact required headers:
 - `## Implementation Plan`
 - `## Files Modified`
 
-Extra sections are permitted. Missing or misspelled required headers: flag as
-`Critical` or `Major`. Do not stop to ask the user — proceed with the remaining
+Extra sections are permitted **only if they do not duplicate required-section
+content**. In particular, flag a standalone `Decisions`, `Rationale`,
+`Alternatives`, or `Trade-offs` appendix as a `Major` finding when its content
+restates choices already specified in `Detailed Design`; the rationale belongs
+inline in `Detailed Design`, not in a parallel appendix (see §9). Missing or
+misspelled required headers: flag as `Critical` or `Major`. Do not stop to ask the user — proceed with the remaining
 review. Note: If a required header is present but its content is simply `N/A`, this is perfectly acceptable provided the section is legitimately not applicable, **with the strict exception of `Detailed Design` which must almost never be N/A (unless purely exploratory). Flag an invalid `N/A` in Detailed Design as `Critical`.** Do not flag valid `N/A`s as missing or incomplete.
 
 ### 3. Executive Summary
@@ -140,12 +144,32 @@ Go beyond bullet-point mapping. Evaluate sufficiency and logical consistency:
 - **Implied Dependencies**: If the design implies changes to systems or
   libraries not mentioned in the RFC, flag as `Critical`.
 
-### 9. Tone Check
+### 9. Tone, Concision & Non-Redundancy Check
+
+This is the **subtractive** half of the review. Most other criteria push the RFC
+to grow; this one forces it to shrink. Apply it as rigorously as the rest — an
+RFC that is twice as long as it needs to be is a finding, not a virtue.
 
 - Flag subjective fluff words (e.g., "elegant", "robust", "seamless").
 - Flag lack of quantification: "low latency" → demand a target in
   milliseconds. "Handles high load" → demand QPS targets.
 - Flag hand-wavy or non-committal language.
+- **Cross-section redundancy** (`Major`): Flag any fact, decision, or rationale
+  stated in more than one section. A choice explained in the Executive Summary,
+  again in Detailed Design, and again in an appendix is ONE finding per
+  duplicated fact, with the recommendation to keep it in exactly one place and
+  reference it tersely elsewhere.
+- **Buried essence** (`Major`): Flag any design element (table, type, endpoint,
+  decision, migration) that does not open with a single plain declarative
+  sentence stating what it *is*. If the reader cannot tell what is being built
+  from the first line of an element — because it leads with qualification or
+  rationale and only circles the actual structure — demand an essence-first
+  rewrite.
+- **Rejected-alternatives bloat** (`Minor`, or `Major` if egregious): Flag any
+  "why we are NOT doing X" prose longer than one sentence, and any such prose
+  where a competent reader would not plausibly have chosen the rejected path.
+  The default recommendation is to cut it; the alternative is to compress it to
+  a single clause.
 
 ### 10. Advanced Considerations
 
