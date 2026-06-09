@@ -171,6 +171,11 @@ Evaluate overall spec density against `spec-writer/SKILL.md §3 Core Philosophy`
   `Minor`.
 - **No Fluff**: Flag subjective adjectives ("elegant", "robust", "seamless") or
   hedging language ("in this module, we have...") as `Nit`.
+- **No cross-layer leaks**: Flag any reference to an ephemeral RFC artifact that
+  a spec reader cannot resolve from the spec itself — most commonly RFC
+  decision-IDs such as `(D-3)` or `(D-8 / D-9)`. A spec is a durable,
+  self-contained blueprint; the *reason* must be stated inline, never cited by
+  RFC decision label. Flag as `Minor`.
 
 ### 9. Link and Reference Accuracy
 

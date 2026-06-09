@@ -212,8 +212,8 @@ subsection.
 ### `convos` — Extensions
 
 `convos` is the **entity-that-owns-logs**: a standard entity (advanced
-timestamps + logical deletes) with OCC versioning and version history **disabled
-(D-3)**, owning three append-only log children (`convo_requests`,
+timestamps + logical deletes) with OCC versioning and version history
+**disabled**, owning three append-only log children (`convo_requests`,
 `convo_responses`, `convo_responses_raw`).
 
 - **Ownership**:
@@ -221,19 +221,19 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
   CASCADE`. A
   student owns many conversations (1:many). The CASCADE is inert while
   `prevent_physical_delete()` blocks physical deletes; it wires the future
-  physical-erasure path (D-4).
+  physical-erasure path.
 - **Advanced timestamps**: full 4-timestamp pattern (`created_at`,
   `row_created_at`, `updated_at`, `row_updated_at`), maintained by
   `update_timestamp()`.
 - **Logical deletes**: `deleted_at TIMESTAMPTZ NULL`; physical deletes blocked
   by `prevent_physical_delete()`. The active-list index `convos_student_id_idx`
   is partial (`WHERE deleted_at IS NULL`).
-- **Versioning disabled (D-3)**: no `version` column, no `enforce_versioning()`,
+- **Versioning disabled**: no `version` column, no `enforce_versioning()`,
   no `convos_versions` sibling — the transcript logs are the authoritative
   history.
-- **`name` mandatory & canonical (D-8 / D-9)**: `name TEXT NOT NULL` with **no
-  default** (D-8) — every conversation MUST be created with an explicit name.
-  Stored trimmed and non-empty (D-9): `convos_name_trimmed_check`
+- **`name` mandatory & canonical**: `name TEXT NOT NULL` with **no
+  default** — every conversation MUST be created with an explicit name.
+  Stored trimmed and non-empty: `convos_name_trimmed_check`
   (`name = trim(name)`), `convos_name_not_empty_check`
   (`length(trim(name)) >
   0`), `convos_name_length_check`
@@ -251,7 +251,7 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
   `convo_id UUID NOT NULL REFERENCES convos(id) ON DELETE
   CASCADE`. One row =
   one turn sent to the model.
-- **System-prompt pin (D-6)**:
+- **System-prompt pin**:
   `system_prompt_id UUID NOT NULL REFERENCES
   system_prompts(id) ON DELETE RESTRICT`.
   Each turn pins the exact immutable prompt that produced it; because the
@@ -259,16 +259,16 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
   `(name, version, body)` sent. `RESTRICT` (not the child-ward `CASCADE` of the
   other `convo_*` FKs): the pin points at a shared parent, so a `system_prompts`
   row MUST NOT be deleted while any turn cites it.
-- **Provider allowlist (D-7)**: `provider` is TEXT + CHECK
+- **Provider allowlist**: `provider` is TEXT + CHECK
   (`provider IN ('anthropic')`), pinned per-turn — NOT a native pg enum. Extend
   the allowlist in a later migration as providers are added.
-- **Content opaque & bounded (D-6)**: `content JSONB NOT NULL`, the new user
+- **Content opaque & bounded**: `content JSONB NOT NULL`, the new user
   input. The DB MUST NOT constrain its internal shape. Bounded to 1 MiB
   (`octet_length(content::text) <= 1048576`). Prior history is deliberately NOT
   re-stored per row (the stateless API resends it each turn).
 - **`request_params`**: `JSONB NULL`; when present MUST be a JSON object
   (`jsonb_typeof = 'object'`).
-- **Free-text (D-9)**: `model_requested` is NOT NULL, ≤255, trimmed, and
+- **Free-text**: `model_requested` is NOT NULL, ≤255, trimmed, and
   non-empty.
 
 ### `convo_responses` — Append-Only Log
@@ -292,7 +292,7 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
 - **Numeric sanity**: `input_tokens`, `output_tokens`, `cache_read_tokens`,
   `cache_write_tokens`, and `latency_ms` are nullable and, when present, MUST be
   `>= 0`.
-- **Free-text (D-9)**: `stop_reason` NOT NULL, ≤64, trimmed, non-empty;
+- **Free-text**: `stop_reason` NOT NULL, ≤64, trimmed, non-empty;
   `model_resolved` and `provider_request_id` are nullable but, when present,
   ≤255, trimmed, non-empty (NULL means absent; `''` is illegal).
 
@@ -336,7 +336,7 @@ sibling-versions table, and no log trigger.
   index.
 - **`name` / `version` canonical**: both NOT NULL, ≤255, non-empty, and trimmed
   (six named CHECKs, the project TEXT-column convention).
-- **`body` bounded, NOT trimmed (D-5)**: `body TEXT NOT NULL`, non-empty
+- **`body` bounded, NOT trimmed**: `body TEXT NOT NULL`, non-empty
   (`system_prompts_body_not_empty_check`) and ≤1 MiB
   (`system_prompts_body_size_check`), but deliberately NOT trimmed — it is the
   verbatim artifact sent to the model with no raw-payload backup behind it, so
