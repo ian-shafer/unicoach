@@ -159,8 +159,9 @@ has its own test database on the shared cluster, `bin/test` can run concurrently
 across worktrees without collision.
 
 ```sh
-bin/test                   # equivalent to ./gradlew test
-bin/test :rest-server:test # run tests for a specific module
+bin/test                   # full suite (every module)
+bin/test rest-server       # run tests for a specific module
+bin/test rest-server --tests "ed.unicoach.rest.AuthRoutingTest" # filter within one module
 ```
 
 ### Script / integration tests

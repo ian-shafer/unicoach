@@ -8,8 +8,8 @@ never invoke Gradle directly — shell scripts in `bin/` are the sole interface.
 - **`bin/build`** compiles all modules in dependency order. Each
   `bin/build-<module>` script runs exactly one `./gradlew` task: `:module:assemble`
   for libraries, `:module:installDist` for applications.
-- **`bin/test`** bootstraps a fresh test database, then delegates to
-  `./gradlew test`.
+- **`bin/test`** bootstraps a fresh test database, then runs explicit per-module
+  `:module:test` tasks.
 - **`bin/format`** and **`bin/pre-commit`** run ktlint via Gradle.
 
 Build and run are strictly separated. Gradle produces artifacts (JARs or
@@ -111,7 +111,8 @@ queue-worker ← common, db, service, queue, net
   - `exceptionFormat = TestExceptionFormat.FULL`
   - `events("failed")`
 - `bin/test` is the canonical entry point for running Gradle tests. It
-  bootstraps a fresh test database before delegating to `./gradlew test`.
+  bootstraps a fresh test database before running explicit per-module
+  `:module:test` tasks.
 
 ---
 

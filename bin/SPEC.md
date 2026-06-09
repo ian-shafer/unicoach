@@ -53,12 +53,19 @@ EOF
 - Called with an error message: prints the message to stderr, prints usage,
   exits `1`.
 
+> **Sanctioned deviation:** `bin/test`'s `help()` error branch exits `2`, not
+> the template's `1`, to keep caller-side usage errors distinct from a test-run
+> failure's `1`. This is the Exit Codes multi-code rule below applied directly;
+> see §III "Test Suites".
+
 ### Exit Codes
 
 - `0`: success.
 - Non-zero: MUST be documented in the script's `help()` output. Scripts MUST
   define distinct non-zero codes when there are multiple failure reasons, so
-  calling scripts can distinguish why a dependency failed.
+  calling scripts can distinguish why a dependency failed. `bin/test` is the
+  canonical instance: usage errors exit `2` (its `help()` error branch), a
+  test-run failure propagates `gradlew`'s `1` through `exec`.
 
 ### Logging
 
@@ -328,12 +335,33 @@ Four lifecycle-ownership models exist:
 
 #### Test Suites
 
-- **`bin/test`**: Test orchestrator. Assumes `db-bootstrap` was already run once
-  by hand. Under `set -e`, runs in order: `postgres-up` → `db-reset` →
-  `db-tests` → `exec gradlew`. The `db-tests` step runs sequentially (never
-  backgrounded), after migration and before the terminal `exec`; a non-zero
-  shell-harness exit aborts the run before Gradle ever starts. Postgres is left
-  up so the Gradle suite observes the same migrated database.
+- **`bin/test`**: Test orchestrator owning a closed, validated CLI. It parses
+  its own options and never forwards raw arguments to `gradlew` (no `--`
+  passthrough). Positional arguments are friendly module names
+  (`common db net queue queue-worker rest-server service email` — a hardcoded
+  set kept in sync with `settings.gradle.kts` by hand), each mapped to an
+  explicit `:<module>:test` task; repeats are de-duplicated. Unknown modules and
+  unknown options are rejected, never forwarded. **Core invariant:** `bin/test`
+  always emits at least one `:<module>:test` task — naming no module runs every
+  module — so the flags-only/zero-task argv that made `gradlew` print a false
+  "BUILD SUCCESSFUL" over zero tests is structurally impossible. Mapped options
+  (`--tests GLOB` — requires exactly one module — `--force`, `--verbose`,
+  `--continue`; see `--help` for spellings) follow the task list in fixed order.
+  Argument validation completes **before** any side effect, so an invalid
+  invocation (unknown module/option, `--tests` without exactly one module) fails
+  without resetting the test database. Exit codes: usage errors exit `2` (the
+  `help()` error branch, §II sanctioned deviation); a test run that executed but
+  did not all pass propagates `gradlew`'s `1` unchanged through `exec`; success
+  and `--help` exit `0`; downstream lifecycle failures propagate their own codes
+  via `set -e`. After validation, under `set -e`, runs in order: `postgres-up` →
+  `db-reset` → `db-tests` → `exec gradlew` with the constructed task list. The
+  `db-tests` step runs sequentially (never backgrounded), after migration and
+  before the terminal `exec`; a non-zero shell-harness exit aborts the run
+  before Gradle ever starts. Postgres is left up so the Gradle suite observes
+  the same migrated database. To filter to a single test, use the module +
+  filter form `bin/test <module> --tests "<glob>"` (e.g.
+  `bin/test queue --tests "*JobsDaoTest"`); the old bare-FQN positional shape
+  (`bin/test ed.unicoach.queue.JobsDaoTest`) is dropped.
 - **`bin/test-fuzz`**: Runs schemathesis fuzz tests against the REST API.
 - **`bin/scripts-tests`**: Tests scripts in `bin/`.
 - **`bin/db-scripts-tests`**: Tests `db-run`, `db-query`, `db-write`, `db-repl`,
@@ -402,3 +430,4 @@ instructions. Does not install anything.
 - [x] [RFC-23: Native Daemon Scripts](../rfc/23-native-daemon-scripts.md)
 - [x] [RFC-32: Coaching Conversations](../rfc/32-coaching-conversations.md)
 - [x] [RFC-33: System Prompts](../rfc/33-system-prompts.md)
+- [x] [RFC-35: bin/test owns its CLI](../rfc/35-bin-test-owns-cli.md)

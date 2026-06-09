@@ -34,12 +34,12 @@ the test DB before invoking Gradle:
 
 ```sh
 nix develop -c bin/test                       # full suite
-nix develop -c bin/test :service:test         # pass-through args go to gradlew
-nix develop -c bin/test :rest-server:test --tests "ed.unicoach.rest.AuthRoutingTest"
+nix develop -c bin/test rest-server           # one module
+nix develop -c bin/test rest-server --tests "ed.unicoach.rest.AuthRoutingTest"
 ```
 
-`bin/test` recreates the **local test database** on every run (`db-destroy` →
-`db-init` → `db-migrate`) — expected, non-destructive to anything but the test DB.
+`bin/test` recreates the **local test database** on every run (`db-reset (drop →
+create → migrate)`) — expected, non-destructive to anything but the test DB.
 
 ## Transient pipeline output
 
