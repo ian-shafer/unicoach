@@ -202,3 +202,4 @@ credential verification is handled in this layer.
 - [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md) (deleted `AuthResult`/`MeResult`/`LogoutResult`; service layer returns `Result<T>`)
 - [x] [RFC-26: Login](../../../../../../../rfc/26-login.md)
 - [x] [RFC-28: Coroutine Context Refactor](../../../../../../../rfc/28-coroutine-context.md)
+- [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md) (repointed `EmailAddress`/`ValidationResult`/`ValidationError` imports from `db.models` to `common.models`; no behavior change)

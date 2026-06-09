@@ -1,12 +1,12 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.StudentVersionId
 import ed.unicoach.db.models.UserId
-import ed.unicoach.db.models.ValidationResult
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID

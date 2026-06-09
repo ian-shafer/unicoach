@@ -1,10 +1,10 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.UserId
-import ed.unicoach.db.models.ValidationResult
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach

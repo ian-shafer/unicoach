@@ -1,5 +1,7 @@
 package ed.unicoach.auth
 
+import ed.unicoach.common.models.EmailAddress
+import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.NotFoundException
@@ -7,13 +9,11 @@ import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.AuthMethod
-import ed.unicoach.db.models.EmailAddress
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
-import ed.unicoach.db.models.ValidationResult
 import ed.unicoach.util.Argon2Hasher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
@@ -220,70 +220,75 @@ class AuthServiceTest {
     }
 
   @Test
-  fun `login with valid credentials yields Success`() = runTest {
-    val email = "login_test@example.com"
-    val password = "Password123"
-    authService.register(email, "Login Test", password, null, 86400L, null, null)
+  fun `login with valid credentials yields Success`() =
+    runTest {
+      val email = "login_test@example.com"
+      val password = "Password123"
+      authService.register(email, "Login Test", password, null, 86400L, null, null)
 
-    val result = authService.login(email, password, null, 86400L, null, null)
-    assertTrue(result.isSuccess)
-    val loginResult = result.getOrNull()
-    assertTrue(loginResult is LoginResult.Success)
-    assertTrue(loginResult.user.email.value == email)
-  }
-
-  @Test
-  fun `login with invalid email yields UserNotFound`() = runTest {
-    val result = authService.login("nonexistent@example.com", "Password123", null, 86400L, null, null)
-    assertTrue(result.isSuccess)
-    assertTrue(result.getOrNull() is LoginResult.UserNotFound)
-  }
+      val result = authService.login(email, password, null, 86400L, null, null)
+      assertTrue(result.isSuccess)
+      val loginResult = result.getOrNull()
+      assertTrue(loginResult is LoginResult.Success)
+      assertTrue(loginResult.user.email.value == email)
+    }
 
   @Test
-  fun `login with invalid password yields PasswordMismatch`() = runTest {
-    val email = "login_bad_pwd@example.com"
-    authService.register(email, "Bad Pwd", "Password123", null, 86400L, null, null)
-
-    val result = authService.login(email, "WrongPassword", null, 86400L, null, null)
-    assertTrue(result.isSuccess)
-    assertTrue(result.getOrNull() is LoginResult.PasswordMismatch)
-  }
+  fun `login with invalid email yields UserNotFound`() =
+    runTest {
+      val result = authService.login("nonexistent@example.com", "Password123", null, 86400L, null, null)
+      assertTrue(result.isSuccess)
+      assertTrue(result.getOrNull() is LoginResult.UserNotFound)
+    }
 
   @Test
-  fun `login with old cookie revokes old session and creates new`() = runTest {
-    val email = "login_old_cookie@example.com"
-    val password = "Password123"
-    val regResult = authService.register(email, "Old Cookie", password, null, 86400L, null, null)
-    val oldToken = (regResult.getOrNull() as RegisterResult.Success).token
+  fun `login with invalid password yields PasswordMismatch`() =
+    runTest {
+      val email = "login_bad_pwd@example.com"
+      authService.register(email, "Bad Pwd", "Password123", null, 86400L, null, null)
 
-    val result = authService.login(email, password, oldToken, 86400L, null, null)
-    assertTrue(result.isSuccess)
-    val loginResult = result.getOrNull() as LoginResult.Success
-
-    // Old token should be revoked
-    val oldHash = TokenHash.fromRawToken(oldToken)
-    val findResult = SessionsDao.findByTokenHash(sqlSession, oldHash)
-    assertTrue(findResult.isFailure && findResult.exceptionOrNull() is NotFoundException)
-
-    // New token should be valid
-    val newHash = TokenHash.fromRawToken(loginResult.token)
-    val newFindResult = SessionsDao.findByTokenHash(sqlSession, newHash)
-    assertTrue(newFindResult.isSuccess)
-  }
+      val result = authService.login(email, "WrongPassword", null, 86400L, null, null)
+      assertTrue(result.isSuccess)
+      assertTrue(result.getOrNull() is LoginResult.PasswordMismatch)
+    }
 
   @Test
-  fun `login with nonexistent old cookie creates new session without error`() = runTest {
-    val email = "login_fake_old_cookie@example.com"
-    val password = "Password123"
-    authService.register(email, "Fake Old Cookie", password, null, 86400L, null, null)
+  fun `login with old cookie revokes old session and creates new`() =
+    runTest {
+      val email = "login_old_cookie@example.com"
+      val password = "Password123"
+      val regResult = authService.register(email, "Old Cookie", password, null, 86400L, null, null)
+      val oldToken = (regResult.getOrNull() as RegisterResult.Success).token
 
-    val fakeOldToken = "some_nonexistent_token"
-    val result = authService.login(email, password, fakeOldToken, 86400L, null, null)
-    assertTrue(result.isSuccess)
-    val loginResult = result.getOrNull() as LoginResult.Success
+      val result = authService.login(email, password, oldToken, 86400L, null, null)
+      assertTrue(result.isSuccess)
+      val loginResult = result.getOrNull() as LoginResult.Success
 
-    val newHash = TokenHash.fromRawToken(loginResult.token)
-    val newFindResult = SessionsDao.findByTokenHash(sqlSession, newHash)
-    assertTrue(newFindResult.isSuccess)
-  }
+      // Old token should be revoked
+      val oldHash = TokenHash.fromRawToken(oldToken)
+      val findResult = SessionsDao.findByTokenHash(sqlSession, oldHash)
+      assertTrue(findResult.isFailure && findResult.exceptionOrNull() is NotFoundException)
+
+      // New token should be valid
+      val newHash = TokenHash.fromRawToken(loginResult.token)
+      val newFindResult = SessionsDao.findByTokenHash(sqlSession, newHash)
+      assertTrue(newFindResult.isSuccess)
+    }
+
+  @Test
+  fun `login with nonexistent old cookie creates new session without error`() =
+    runTest {
+      val email = "login_fake_old_cookie@example.com"
+      val password = "Password123"
+      authService.register(email, "Fake Old Cookie", password, null, 86400L, null, null)
+
+      val fakeOldToken = "some_nonexistent_token"
+      val result = authService.login(email, password, fakeOldToken, 86400L, null, null)
+      assertTrue(result.isSuccess)
+      val loginResult = result.getOrNull() as LoginResult.Success
+
+      val newHash = TokenHash.fromRawToken(loginResult.token)
+      val newFindResult = SessionsDao.findByTokenHash(sqlSession, newHash)
+      assertTrue(newFindResult.isSuccess)
+    }
 }

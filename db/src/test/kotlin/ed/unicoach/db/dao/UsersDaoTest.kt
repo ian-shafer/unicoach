@@ -1,12 +1,12 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.EmailAddress
+import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.AuthMethod
-import ed.unicoach.db.models.EmailAddress
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.UserId
-import ed.unicoach.db.models.ValidationResult
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -155,7 +155,7 @@ class UsersDaoTest {
       object : SqlSession {
         override fun prepareStatement(sql: String) = connection.prepareStatement(sql)
       }
-    val emailProvider = ed.unicoach.db.models.EmailAddress.Companion
+    val emailProvider = ed.unicoach.common.models.EmailAddress.Companion
     val nameProvider = ed.unicoach.db.models.PersonName.Companion
     val passProvider = ed.unicoach.db.models.PasswordHash.Companion
 
@@ -191,7 +191,7 @@ class UsersDaoTest {
       }
     val email =
       (
-        ed.unicoach.db.models.EmailAddress
+        ed.unicoach.common.models.EmailAddress
           .create("occ@example.com") as ValidationResult.Valid
       ).value
     val name =
@@ -258,7 +258,7 @@ class UsersDaoTest {
     val targetEmailText = "overlap@example.com"
     val email =
       (
-        ed.unicoach.db.models.EmailAddress
+        ed.unicoach.common.models.EmailAddress
           .create(targetEmailText) as ValidationResult.Valid
       ).value
     val name =
@@ -322,7 +322,7 @@ class UsersDaoTest {
       }
     val email =
       (
-        ed.unicoach.db.models.EmailAddress
+        ed.unicoach.common.models.EmailAddress
           .create("revert@example.com") as ValidationResult.Valid
       ).value
     val pass =

@@ -1,12 +1,13 @@
 package ed.unicoach.student
 
+import ed.unicoach.common.models.EmailAddress
+import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.AuthMethod
-import ed.unicoach.db.models.EmailAddress
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PartialDate
@@ -16,7 +17,6 @@ import ed.unicoach.db.models.StudentVersionId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
-import ed.unicoach.db.models.ValidationResult
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterAll

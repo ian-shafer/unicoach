@@ -1,5 +1,7 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.models.ValidationError
+import ed.unicoach.common.models.ValidationResult
 import org.junit.jupiter.api.Test
 import java.time.Month
 import kotlin.test.assertEquals

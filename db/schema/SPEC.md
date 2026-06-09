@@ -15,8 +15,8 @@ The schema is the primary enforcement layer for application invariants. Every
 constraint that can be expressed in DDL — check constraints, unique indexes,
 foreign keys, NOT NULL — MUST be defined in the database, not deferred to
 application code. Where possible, the database MUST generate derived values at
-the DDL level (e.g., primary keys via `uuidv7()`, timestamps via
-`DEFAULT NOW()` or trigger) rather than accepting them from application code.
+the DDL level (e.g., primary keys via `uuidv7()`, timestamps via `DEFAULT NOW()`
+or trigger) rather than accepting them from application code.
 
 PostgreSQL's clock is the single source of truth for time in the system.
 Application code MUST NOT supply its own point-in-time values (e.g.,
@@ -30,16 +30,16 @@ retrieved from PostgreSQL.
 ### Global Schema Invariants
 
 - `bin/db-migrate` MUST apply schema files in strict lexicographical order.
-  Files currently use a 4-digit numeric prefix convention
-  (e.g., `0000.shared-functions.sql`, `0001.create-users.sql`) but any naming
-  scheme that sorts correctly is acceptable.
+  Files currently use a 4-digit numeric prefix convention (e.g.,
+  `0000.shared-functions.sql`, `0001.create-users.sql`) but any naming scheme
+  that sorts correctly is acceptable.
 - The schema MUST be append-only. Down migrations (rollbacks) are NEVER
   supported. Reversion requires a full `db-destroy` + `db-init` + `db-migrate`
   cycle and MUST only be performed in non-production environments.
 - `bin/db-migrate` MUST execute each migration file inside its own isolated SQL
   transaction. The transaction MUST include both the DDL operations and the
-  `schema_migrations` tracking-table update. A failure MUST roll back the
-  entire transaction and MUST NOT apply subsequent files.
+  `schema_migrations` tracking-table update. A failure MUST roll back the entire
+  transaction and MUST NOT apply subsequent files.
 - `bin/db-migrate` MUST skip any migration whose `version_id` already exists in
   `schema_migrations`, making re-runs idempotent.
 
@@ -59,8 +59,8 @@ Defined in `0000.shared-functions.sql` unless noted otherwise.
   exactly `OLD.version + 1`.
 - `prevent_physical_delete()` raises `ERRCODE = 'P0001'` on any DELETE trigger
   invocation.
-- `prevent_immutable_updates()` raises `ERRCODE = 'P0001'` if an UPDATE
-  attempts to change `id`, `created_at`, or `row_created_at`.
+- `prevent_immutable_updates()` raises `ERRCODE = 'P0001'` if an UPDATE attempts
+  to change `id`, `created_at`, or `row_created_at`.
 - `prevent_log_update()` raises `ERRCODE = 'P0001'` on any UPDATE trigger
   invocation, enforcing the append-only contract on log tables. Defined in
   `0006` (not `0000`), via idempotent `CREATE OR REPLACE`. Distinct from
@@ -87,8 +87,8 @@ Every entity table starts from a base pattern:
 - **Immutability guard**: `prevent_immutable_updates()` blocks changes to `id`
   and `created_at` (and `row_created_at` when present).
 - **Trigger naming**: BEFORE triggers execute in alphabetical name order. The
-  convention `trigger_00`, `trigger_00a`, `trigger_01`, ... MUST be preserved
-  to guarantee correct execution sequence.
+  convention `trigger_00`, `trigger_00a`, `trigger_01`, ... MUST be preserved to
+  guarantee correct execution sequence.
 
 Entity tables enable additional capabilities via **mix-ins**:
 
@@ -105,32 +105,34 @@ Entity tables enable additional capabilities via **mix-ins**:
   predicates (`WHERE deleted_at IS NULL`).
 
 An entity table MAY instead be an **immutable (insert-only) variant**: created
-once, never updated or deleted. It carries creation-only timestamps (`created_at`
-+ `row_created_at`, no `updated_at`/`row_updated_at`), no `version`, and no
-`deleted_at`. A `BEFORE UPDATE` trigger (`prevent_immutable_entity_update()`) and
-a `BEFORE DELETE` trigger (`prevent_immutable_entity_delete()`) reject every
-mutation, making all columns — domain fields included — immutable. A "new version"
-is a new row with a new `id`, never an in-place edit.
+once, never updated or deleted. It carries creation-only timestamps —
+`created_at` and `row_created_at`, no `updated_at`/`row_updated_at` — no
+`version`, and no `deleted_at`. A `BEFORE UPDATE` trigger
+(`prevent_immutable_entity_update()`) and a `BEFORE DELETE` trigger
+(`prevent_immutable_entity_delete()`) reject every mutation, making all columns
+— domain fields included — immutable. A "new version" is a new row with a new
+`id`, never an in-place edit.
 
 #### Table Summary
 
-| Table | Type | Adv. Timestamps | OCC Versioning | Version History | Logical Deletes |
-|---|---|---|---|---|---|
-| `users` | Entity | ✅ | ✅ | ✅ | ✅ |
-| `users_versions` | Support | — | — | — | — |
-| `students` | Entity | ✅ | ✅ | ✅ | ✅ |
-| `students_versions` | Support | — | — | — | — |
-| `sessions` | Entity | ✅ | ✅ | ❌ | ❌ |
-| `jobs` | Non-entity | ❌ | ❌ | ❌ | ❌ |
-| `job_attempts` | Non-entity | ❌ | ❌ | ❌ | ❌ |
-| `convos` | Entity | ✅ | ❌ | ❌ | ✅ |
-| `convo_requests` | Log | — | — | — | — |
-| `convo_responses` | Log | — | — | — | — |
-| `convo_responses_raw` | Log | — | — | — | — |
-| `system_prompts` | Immutable Entity | — | — | — | — |
+| Table                 | Type             | Adv. Timestamps | OCC Versioning | Version History | Logical Deletes |
+| --------------------- | ---------------- | --------------- | -------------- | --------------- | --------------- |
+| `users`               | Entity           | ✅              | ✅             | ✅              | ✅              |
+| `users_versions`      | Support          | —               | —              | —               | —               |
+| `students`            | Entity           | ✅              | ✅             | ✅              | ✅              |
+| `students_versions`   | Support          | —               | —              | —               | —               |
+| `sessions`            | Entity           | ✅              | ✅             | ❌              | ❌              |
+| `jobs`                | Non-entity       | ❌              | ❌             | ❌              | ❌              |
+| `job_attempts`        | Non-entity       | ❌              | ❌             | ❌              | ❌              |
+| `convos`              | Entity           | ✅              | ❌             | ❌              | ✅              |
+| `convo_requests`      | Log              | —               | —              | —               | —               |
+| `convo_responses`     | Log              | —               | —              | —               | —               |
+| `convo_responses_raw` | Log              | —               | —              | —               | —               |
+| `system_prompts`      | Immutable Entity | —               | —              | —               | —               |
+| `email_sends`         | Log              | —               | —              | —               | —               |
 
-**Log** tables are append-only (see the `convo_*` subsections below): write-once,
-never updated or deleted, carrying none of the entity mix-ins.
+**Log** tables are append-only (see the `convo_*` subsections below):
+write-once, never updated or deleted, carrying none of the entity mix-ins.
 
 **Immutable-entity** tables (`system_prompts`) are insert-only: created once,
 never updated or deleted. They carry creation-only timestamps (`created_at` +
@@ -151,8 +153,8 @@ subsection.
 
 ### `students` — Extensions
 
-- **1:1 ownership**: `user_id UUID NOT NULL REFERENCES users(id)`. A user owns at
-  most one student profile.
+- **1:1 ownership**: `user_id UUID NOT NULL REFERENCES users(id)`. A user owns
+  at most one student profile.
 - **Total uniqueness on owner**: `students_user_id_unique_idx` is a **total**
   (non-partial) unique index on `user_id` — a `user_id` MUST NOT appear twice
   even across soft-deletes. There is no legitimate re-creation path: account
@@ -163,8 +165,8 @@ subsection.
   (both NULL) — admitting exactly three precisions: year, year+month, or
   year+month+day. Enforced by three check constraints:
   - `grad_month_range`: month, when present, MUST be `BETWEEN 1 AND 12`.
-  - `grad_day_requires_month`: a non-null day REQUIRES a non-null month
-    (no day-without-month precision).
+  - `grad_day_requires_month`: a non-null day REQUIRES a non-null month (no
+    day-without-month precision).
   - `grad_date_valid`: when a day is present, the (year, month, day) triple MUST
     form a real calendar date. Verified via `make_date(...)`, which is
     `IMMUTABLE` and therefore legal in a CHECK. An impossible date (e.g. Feb 31,
@@ -179,8 +181,8 @@ subsection.
 ### `sessions` — Extensions
 
 - **Physical deletes permitted**: No `prevent_physical_delete()` trigger.
-- **Token storage**: `token_hash` is `BYTEA` (SHA-256). The plain-text token
-  is NEVER stored. Unique via `sessions_token_hash_idx`.
+- **Token storage**: `token_hash` is `BYTEA` (SHA-256). The plain-text token is
+  NEVER stored. Unique via `sessions_token_hash_idx`.
 - **Anonymous sessions**: `user_id` is NULLABLE. `ON DELETE CASCADE` from
   `users` deletes associated sessions. Transitioning an anonymous session to
   authenticated MUST be done via application UPDATE (setting `user_id` and
@@ -196,8 +198,8 @@ subsection.
   (simpler variant without the logical/physical split).
 - `status` MUST be one of: `'SCHEDULED'`, `'RUNNING'`, `'COMPLETED'`,
   `'DEAD_LETTERED'`.
-- `notify_jobs()` trigger emits `pg_notify('jobs_channel', NEW.job_type)`
-  AFTER INSERT OR UPDATE when `NEW.status = 'SCHEDULED'`.
+- `notify_jobs()` trigger emits `pg_notify('jobs_channel', NEW.job_type)` AFTER
+  INSERT OR UPDATE when `NEW.status = 'SCHEDULED'`.
 
 ### `job_attempts` — Non-Standard Table
 
@@ -214,25 +216,29 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
 (D-3)**, owning three append-only log children (`convo_requests`,
 `convo_responses`, `convo_responses_raw`).
 
-- **Ownership**: `student_id UUID NOT NULL REFERENCES students(id) ON DELETE
-  CASCADE`. A student owns many conversations (1:many). The CASCADE is inert
-  while `prevent_physical_delete()` blocks physical deletes; it wires the future
+- **Ownership**:
+  `student_id UUID NOT NULL REFERENCES students(id) ON DELETE
+  CASCADE`. A
+  student owns many conversations (1:many). The CASCADE is inert while
+  `prevent_physical_delete()` blocks physical deletes; it wires the future
   physical-erasure path (D-4).
 - **Advanced timestamps**: full 4-timestamp pattern (`created_at`,
   `row_created_at`, `updated_at`, `row_updated_at`), maintained by
   `update_timestamp()`.
-- **Logical deletes**: `deleted_at TIMESTAMPTZ NULL`; physical deletes blocked by
-  `prevent_physical_delete()`. The active-list index `convos_student_id_idx` is
-  partial (`WHERE deleted_at IS NULL`).
+- **Logical deletes**: `deleted_at TIMESTAMPTZ NULL`; physical deletes blocked
+  by `prevent_physical_delete()`. The active-list index `convos_student_id_idx`
+  is partial (`WHERE deleted_at IS NULL`).
 - **Versioning disabled (D-3)**: no `version` column, no `enforce_versioning()`,
   no `convos_versions` sibling — the transcript logs are the authoritative
   history.
 - **`name` mandatory & canonical (D-8 / D-9)**: `name TEXT NOT NULL` with **no
   default** (D-8) — every conversation MUST be created with an explicit name.
   Stored trimmed and non-empty (D-9): `convos_name_trimmed_check`
-  (`name = trim(name)`), `convos_name_not_empty_check` (`length(trim(name)) >
-  0`), `convos_name_length_check` (`length(name) <= 255`). There is no trim
-  trigger; callers MUST supply already-trimmed values or the check rejects them.
+  (`name = trim(name)`), `convos_name_not_empty_check`
+  (`length(trim(name)) >
+  0`), `convos_name_length_check`
+  (`length(name) <= 255`). There is no trim trigger; callers MUST supply
+  already-trimmed values or the check rejects them.
 
 ### `convo_requests` — Append-Only Log
 
@@ -241,15 +247,18 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
 - **Identity / ordering**: `id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`
   (internal, monotonic). Replayed via `convo_requests_convo_id_created_at_idx`
   on `(convo_id, created_at)`.
-- **Ownership**: `convo_id UUID NOT NULL REFERENCES convos(id) ON DELETE
-  CASCADE`. One row = one turn sent to the model.
-- **System-prompt pin (D-6)**: `system_prompt_id UUID NOT NULL REFERENCES
-  system_prompts(id) ON DELETE RESTRICT`. Each turn pins the exact immutable
-  prompt that produced it; because the referenced row is immutable, the `id`
-  resolves forever to the precise `(name, version, body)` sent. `RESTRICT` (not
-  the child-ward `CASCADE` of the other `convo_*` FKs): the pin points at a
-  shared parent, so a `system_prompts` row MUST NOT be deleted while any turn
-  cites it.
+- **Ownership**:
+  `convo_id UUID NOT NULL REFERENCES convos(id) ON DELETE
+  CASCADE`. One row =
+  one turn sent to the model.
+- **System-prompt pin (D-6)**:
+  `system_prompt_id UUID NOT NULL REFERENCES
+  system_prompts(id) ON DELETE RESTRICT`.
+  Each turn pins the exact immutable prompt that produced it; because the
+  referenced row is immutable, the `id` resolves forever to the precise
+  `(name, version, body)` sent. `RESTRICT` (not the child-ward `CASCADE` of the
+  other `convo_*` FKs): the pin points at a shared parent, so a `system_prompts`
+  row MUST NOT be deleted while any turn cites it.
 - **Provider allowlist (D-7)**: `provider` is TEXT + CHECK
   (`provider IN ('anthropic')`), pinned per-turn — NOT a native pg enum. Extend
   the allowlist in a later migration as providers are added.
@@ -266,8 +275,10 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
 
 - **Append-only**: `prevent_log_update()` / `prevent_log_delete()` guards, same
   as `convo_requests`.
-- **1:1 with request**: `request_id BIGINT NOT NULL UNIQUE REFERENCES
-  convo_requests(id) ON DELETE CASCADE` — exactly one response per request.
+- **1:1 with request**:
+  `request_id BIGINT NOT NULL UNIQUE REFERENCES
+  convo_requests(id) ON DELETE CASCADE`
+  — exactly one response per request.
 - **Errors are recorded, never dropped**: a failed turn is stored as a row with
   `stop_reason = 'error'`. `convo_responses_content_presence_check`
   (`content IS NOT NULL OR stop_reason = 'error'`) and
@@ -288,10 +299,11 @@ timestamps + logical deletes) with OCC versioning and version history **disabled
 ### `convo_responses_raw` — Append-Only Log
 
 - **Append-only**: `prevent_log_update()` / `prevent_log_delete()` guards.
-- **At-most-one per response**: `response_id BIGINT NOT NULL PRIMARY KEY
-  REFERENCES convo_responses(id) ON DELETE CASCADE` — the FK is the PK, so each
-  response has zero or one raw rows. A transport-failure response legitimately
-  has zero.
+- **At-most-one per response**:
+  `response_id BIGINT NOT NULL PRIMARY KEY
+  REFERENCES convo_responses(id) ON DELETE CASCADE`
+  — the FK is the PK, so each response has zero or one raw rows. A
+  transport-failure response legitimately has zero.
 - **Payload**: `payload JSONB NOT NULL` — the verbatim provider response body,
   isolated so it can be archived/dropped later without rewriting hot
   `convo_responses` rows.
@@ -310,11 +322,12 @@ sibling-versions table, and no log trigger.
   blanket UPDATE block makes `id`, `created_at`, and `row_created_at` immutable
   with no separate guard.
 - **Creation-only timestamps**: `created_at` (logical authoring time) and
-  `row_created_at` (physical insert time), both `TIMESTAMPTZ NOT NULL DEFAULT
-  NOW()`; no `updated_at`/`row_updated_at`. `created_at` MAY be supplied
-  explicitly to backfill a prompt's original authoring date — the one documented
-  exception to §I's clock-authority rule — in which case it reads back earlier
-  than the defaulted `row_created_at`.
+  `row_created_at` (physical insert time), both
+  `TIMESTAMPTZ NOT NULL DEFAULT
+  NOW()`; no `updated_at`/`row_updated_at`.
+  `created_at` MAY be supplied explicitly to backfill a prompt's original
+  authoring date — the one documented exception to §I's clock-authority rule —
+  in which case it reads back earlier than the defaulted `row_created_at`.
 - **`(name, version)` uniqueness**: `system_prompts_name_version_unique` — a
   `(name, version)` pair maps to exactly one immutable `body` forever. `name` is
   the logical family (e.g. `coach`); `version` is a plain immutable label (e.g.
@@ -329,6 +342,46 @@ sibling-versions table, and no log trigger.
   verbatim artifact sent to the model with no raw-payload backup behind it, so
   leading/trailing whitespace MUST be preserved as authored.
 
+### `email_sends` — Append-Only Log
+
+The append-only ledger of **terminal** transactional-email outcomes: one
+immutable row per resolved send. It records terminal outcomes ONLY — a
+successful send (`SENT`) or a permanent rejection (`REJECTED`). Transient
+failures are NEVER logged here; retry is the queue's domain (`job_attempts`),
+and dual-logging would create two sources of truth for one logical message.
+
+- **Append-only**: rows MUST NOT be updated or deleted. `prevent_log_update()`
+  (`trigger_00`) and `prevent_log_delete()` (`trigger_01`) raise `P0001`. A
+  corrected or superseded outcome is a new row, never an in-place edit.
+- **Identity**: `id UUID NOT NULL PRIMARY KEY DEFAULT uuidv7()` — time-ordered
+  (`UUIDv7`, not `BIGINT` identity) because the id is externally surfaced, not
+  an internal-only cross-reference like the `convo_*` logs.
+- **Ordered replay**: replay order is `ORDER BY created_at, id`; `created_at`
+  carries the ordering meaning and the time-ordered `id` is the deterministic
+  tiebreaker for rows sharing a transaction timestamp. No stream FK and no
+  per-stream `seq`: this is a single flat ledger, not a partitioned stream.
+- **Ingest/event timestamps**: both `created_at` (logical send time) and
+  `row_created_at` (physical insert time), `TIMESTAMPTZ NOT NULL DEFAULT NOW()`;
+  no `updated_at`/`row_updated_at` (write-once). PostgreSQL's clock is the
+  source of truth (§I).
+- **Status domain (terminal-only)**:
+  `status TEXT NOT NULL CHECK (status IN
+  ('SENT', 'REJECTED'))`. The CHECK is
+  the durable contract that only terminal outcomes enter the ledger.
+- **Outcome-conditional fields (writer-side invariant)**: `provider_message_id`
+  (provider's id, set when `SENT`) and `error_message` (rejection reason, set
+  when `REJECTED`) are both nullable. The DB does NOT cross-check either against
+  `status`; their presence is a writer-side invariant, not a CHECK.
+- **Captured envelope**: `recipient_email`, `sender_email`, `subject`, and
+  `body` are all `NOT NULL` — the message is captured verbatim at write time so
+  the record is self-contained for later audit. `body` is the plain-text body.
+- **Provider provenance (intentionally unconstrained)**:
+  `provider TEXT NOT
+  NULL` pins the adapter identity that produced the outcome
+  (e.g. log-only). It is deliberately NOT constrained by a CHECK or enum — the
+  adapter set is open-ended, unlike the closed `provider` allowlist on
+  `convo_requests`.
+
 ---
 
 ## III. Behavioral Contracts
@@ -339,9 +392,9 @@ sibling-versions table, and no log trigger.
 
 - **Trigger type**: `BEFORE UPDATE`
 - **Expects columns**: `updated_at`, `row_updated_at`
-- **Side effects**: Sets `NEW.row_updated_at = NOW()` on every invocation.
-  Sets `NEW.updated_at = NOW()` unless the logical-timestamp bypass is active
-  (see §II, Logical-timestamp bypass).
+- **Side effects**: Sets `NEW.row_updated_at = NOW()` on every invocation. Sets
+  `NEW.updated_at = NOW()` unless the logical-timestamp bypass is active (see
+  §II, Logical-timestamp bypass).
 - **Error handling**: None — returns `NEW`.
 - **Idempotency**: Not idempotent (timestamp advances on each call).
 
@@ -377,14 +430,15 @@ sibling-versions table, and no log trigger.
 #### `prevent_log_update()`
 
 - **Trigger type**: `BEFORE UPDATE` (on `convo_requests`, `convo_responses`,
-  `convo_responses_raw`)
+  `convo_responses_raw`, `email_sends`)
 - **Side effects**: Always raises `ERRCODE P0001` ("Log rows are append-only and
   cannot be updated.").
 - **Idempotency**: N/A.
 
 #### `prevent_log_delete()`
 
-- **Trigger type**: `BEFORE DELETE` (on the three `convo_*` log tables)
+- **Trigger type**: `BEFORE DELETE` (on the four log tables: the three `convo_*`
+  logs and `email_sends`)
 - **Side effects**: Always raises `ERRCODE P0001` ("Log rows cannot be deleted;
   prune by partition/retention.").
 - **Idempotency**: N/A.
@@ -406,8 +460,8 @@ sibling-versions table, and no log trigger.
 #### `trim_users_strings()`
 
 - **Trigger type**: `BEFORE INSERT OR UPDATE` on `users`
-- **Side effects**: Normalizes `email` (lowercased + trimmed), `name`
-  (trimmed), and `display_name` (trimmed if non-null).
+- **Side effects**: Normalizes `email` (lowercased + trimmed), `name` (trimmed),
+  and `display_name` (trimmed if non-null).
 - **Idempotency**: Yes — applying twice produces the same result.
 
 #### `log_user_version()`
@@ -462,9 +516,9 @@ sibling-versions table, and no log trigger.
   is why each migration and its `schema_migrations` update MUST execute in the
   same transaction (see §II, Global Schema Invariants). Created by `db-init`
   (not defined in this directory).
-- **PostgreSQL version**: Schema relies on `pg_notify`, `TIMESTAMPTZ`,
-  `JSONB`, `BYTEA`, `uuidv7()`, and `BIGINT GENERATED ALWAYS AS IDENTITY`.
-  Requires PostgreSQL 18 (provided by `pkgs.postgresql_18` in `flake.nix`).
+- **PostgreSQL version**: Schema relies on `pg_notify`, `TIMESTAMPTZ`, `JSONB`,
+  `BYTEA`, `uuidv7()`, and `BIGINT GENERATED ALWAYS AS IDENTITY`. Requires
+  PostgreSQL 18 (provided by `pkgs.postgresql_18` in `flake.nix`).
 - **`unicoach.bypass_logical_timestamp`**: See §II, Logical-timestamp bypass.
 
 ---
@@ -480,3 +534,4 @@ sibling-versions table, and no log trigger.
 - [x] [RFC-31: Student Profile](../../rfc/31-student-profile.md)
 - [x] [RFC-32: Coaching Conversations](../../rfc/32-coaching-conversations.md)
 - [x] [RFC-33: System Prompts](../../rfc/33-system-prompts.md)
+- [x] [RFC-34: Transactional Email Service](../../rfc/34-transactional-email-service.md)

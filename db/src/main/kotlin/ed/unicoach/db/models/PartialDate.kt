@@ -1,5 +1,7 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.models.ValidationError
+import ed.unicoach.common.models.ValidationResult
 import java.time.DateTimeException
 import java.time.LocalDate
 import java.time.Month

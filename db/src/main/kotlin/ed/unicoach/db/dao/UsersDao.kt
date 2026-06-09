@@ -1,8 +1,9 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.EmailAddress
+import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.DisplayName
-import ed.unicoach.db.models.EmailAddress
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
@@ -11,7 +12,6 @@ import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
 import ed.unicoach.db.models.UserVersion
 import ed.unicoach.db.models.UserVersionId
-import ed.unicoach.db.models.ValidationResult
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -36,20 +36,28 @@ object UsersDao {
 
     val authMethod =
       when {
-        passwordHashStr != null && ssoStr != null ->
+        passwordHashStr != null && ssoStr != null -> {
           AuthMethod.Both(
             (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
             (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
           )
-        passwordHashStr != null ->
+        }
+
+        passwordHashStr != null -> {
           AuthMethod.Password(
             (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
           )
-        ssoStr != null ->
+        }
+
+        ssoStr != null -> {
           AuthMethod.SSO(
             (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
           )
-        else -> throw SQLException("Invalid AuthMethod state in database")
+        }
+
+        else -> {
+          throw SQLException("Invalid AuthMethod state in database")
+        }
       }
 
     return User(
@@ -86,20 +94,28 @@ object UsersDao {
 
     val authMethod =
       when {
-        passwordHashStr != null && ssoStr != null ->
+        passwordHashStr != null && ssoStr != null -> {
           AuthMethod.Both(
             (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
             (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
           )
-        passwordHashStr != null ->
+        }
+
+        passwordHashStr != null -> {
           AuthMethod.Password(
             (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
           )
-        ssoStr != null ->
+        }
+
+        ssoStr != null -> {
           AuthMethod.SSO(
             (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
           )
-        else -> throw SQLException("Invalid AuthMethod state in database")
+        }
+
+        else -> {
+          throw SQLException("Invalid AuthMethod state in database")
+        }
       }
 
     return UserVersion(
@@ -231,10 +247,12 @@ object UsersDao {
             stmt.setString(4, method.hash.value)
             stmt.setString(5, method.providerId.value)
           }
+
           is AuthMethod.Password -> {
             stmt.setString(4, method.hash.value)
             stmt.setNull(5, java.sql.Types.VARCHAR)
           }
+
           is AuthMethod.SSO -> {
             stmt.setNull(4, java.sql.Types.VARCHAR)
             stmt.setString(5, method.providerId.value)
@@ -279,10 +297,12 @@ object UsersDao {
             stmt.setString(5, method.hash.value)
             stmt.setString(6, method.providerId.value)
           }
+
           is AuthMethod.Password -> {
             stmt.setString(5, method.hash.value)
             stmt.setNull(6, java.sql.Types.VARCHAR)
           }
+
           is AuthMethod.SSO -> {
             stmt.setNull(5, java.sql.Types.VARCHAR)
             stmt.setString(6, method.providerId.value)
@@ -447,10 +467,12 @@ object UsersDao {
             stmt.setString(5, method.hash.value)
             stmt.setString(6, method.providerId.value)
           }
+
           is AuthMethod.Password -> {
             stmt.setString(5, method.hash.value)
             stmt.setNull(6, java.sql.Types.VARCHAR)
           }
+
           is AuthMethod.SSO -> {
             stmt.setNull(5, java.sql.Types.VARCHAR)
             stmt.setString(6, method.providerId.value)
@@ -489,15 +511,20 @@ object UsersDao {
    */
   private fun mapCreateUpdateError(e: SQLException): Exception =
     when (e.sqlState) {
-      "23505" ->
+      "23505" -> {
         if (e.message?.contains("users_email_unique_active_idx") == true) {
           DuplicateEmailException()
         } else {
           ConstraintViolationException(e)
         }
-      "23514" ->
+      }
+
+      "23514" -> {
         ConstraintViolationException(e)
-      else ->
+      }
+
+      else -> {
         mapDatabaseError(e)
+      }
     }
 }

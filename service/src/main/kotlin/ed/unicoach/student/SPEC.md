@@ -180,3 +180,4 @@ via sealed interfaces that contain no HTTP types.
 ## V. History
 
 - [x] [RFC-31: Student Profile](../../../../../../../rfc/31-student-profile.md)
+- [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md) (repointed the `ValidationResult` import from `db.models` to `common.models`; no behavior change)

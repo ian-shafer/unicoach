@@ -1,5 +1,6 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.models.EmailAddress
 import java.time.Instant
 
 data class UserVersion(

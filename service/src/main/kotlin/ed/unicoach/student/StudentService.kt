@@ -1,5 +1,6 @@
 package ed.unicoach.student
 
+import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ConcurrentModificationException
 import ed.unicoach.db.dao.NotFoundException
@@ -13,7 +14,6 @@ import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentVersionId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
-import ed.unicoach.db.models.ValidationResult
 import ed.unicoach.error.FieldError
 
 class StudentService(

@@ -1,4 +1,4 @@
-package ed.unicoach.db.models
+package ed.unicoach.common.models
 
 sealed interface ValidationError {
   data object BlankString : ValidationError

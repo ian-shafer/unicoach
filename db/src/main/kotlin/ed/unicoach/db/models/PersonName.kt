@@ -1,5 +1,8 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.models.ValidationError
+import ed.unicoach.common.models.ValidationResult
+
 @JvmInline
 value class PersonName private constructor(
   val value: String,
