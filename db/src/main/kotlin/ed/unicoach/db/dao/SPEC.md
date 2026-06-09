@@ -40,6 +40,13 @@ Entity table characteristics vary by flavor:
 | `sessions` | ✗ (physical) | ✗                   | ✓                | ✓              |
 | `students` | ✓ (logical)  | ✓ (not read by DAO) | ✓                | ✓              |
 
+The "Row Timestamps" column records that `row_created_at`/`row_updated_at`
+columns exist and are maintained by database triggers. These columns are
+**not** projected by the row mappers into any domain model — although
+`SELECT *` still fetches them, no mapper reads them into a Kotlin field. The
+`version` column is mapped as a plain `Int` (`rs.getInt("version")`), not a
+value-class wrapper.
+
 #### Mapping Notes
 
 - **`users` table**: The `password_hash` and `sso_provider_id` columns are
@@ -418,3 +425,11 @@ SQLSTATE classification rules are documented in §II Postgres Error Codes.
       — Repointed `EmailAddress`/`ValidationResult` imports in `UsersDao` and
       `StudentsDao` from `ed.unicoach.db.models` to `ed.unicoach.common.models`.
       No behavioral change to any DAO contract.
+- [x] [RFC-36: Entity Model Capability Taxonomy](../../../../../../../../rfc/36-entity-model-taxonomy.md)
+      — Row mappers stopped projecting `row_created_at`/`row_updated_at` into
+      the models and read `version` as a plain `Int` (`rs.getInt("version")`);
+      version parameters/binds across `UsersDao` and `StudentsDao` became bare
+      `Int`; `SessionsDao.mapSession` maps `id` as a typed `SessionId`, and
+      `remintToken`/`extendExpiry` take `id: SessionId`. No schema change —
+      `SELECT *`/`RETURNING *` still fetch the untouched
+      `version`/`row_*_at`/`id` columns.

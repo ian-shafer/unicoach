@@ -82,7 +82,7 @@ class StudentsDaoTest {
   fun `create persists with version 1 and round-trips all three precisions`() {
     val u1 = createUser()
     val yearOnly = StudentsDao.create(session, NewStudent(u1, partialDate("2028"))).getOrThrow()
-    assertEquals(1, yearOnly.versionId.value)
+    assertEquals(1, yearOnly.version)
     assertTrue(yearOnly.expectedHighSchoolGraduationDate is PartialDate.YearOnly)
 
     val u2 = createUser()
@@ -111,7 +111,7 @@ class StudentsDaoTest {
   fun `create rejects a second student even after the first is soft-deleted`() {
     val u = createUser()
     val first = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
-    StudentsDao.delete(session, first.id, first.versionId).getOrThrow()
+    StudentsDao.delete(session, first.id, first.version).getOrThrow()
 
     val second = StudentsDao.create(session, NewStudent(u, partialDate("2029")))
     assertTrue(
@@ -179,7 +179,7 @@ class StudentsDaoTest {
     assertTrue(StudentsDao.findById(session, created.id).isSuccess)
     assertTrue(StudentsDao.findByUserId(session, u).isSuccess)
 
-    StudentsDao.delete(session, created.id, created.versionId).getOrThrow()
+    StudentsDao.delete(session, created.id, created.version).getOrThrow()
 
     assertTrue(StudentsDao.findById(session, created.id).exceptionOrNull() is NotFoundException)
     assertTrue(StudentsDao.findByUserId(session, u).exceptionOrNull() is NotFoundException)
@@ -201,10 +201,9 @@ class StudentsDaoTest {
           created.copy(expectedHighSchoolGraduationDate = partialDate("2029-09")),
         ).getOrThrow()
 
-    assertEquals(2, updated.versionId.value)
+    assertEquals(2, updated.version)
     assertEquals("2029-09", updated.expectedHighSchoolGraduationDate.toIso())
     assertTrue(updated.updatedAt >= created.updatedAt)
-    assertTrue(updated.rowUpdatedAt >= created.rowUpdatedAt)
     assertEquals(2, countVersions(created.id))
   }
 
@@ -286,40 +285,13 @@ class StudentsDaoTest {
     val u = createUser()
     val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
 
-    val deleted = StudentsDao.delete(session, created.id, created.versionId).getOrThrow()
+    val deleted = StudentsDao.delete(session, created.id, created.version).getOrThrow()
     assertNotNull(deleted.deletedAt)
-    assertEquals(2, deleted.versionId.value)
+    assertEquals(2, deleted.version)
     assertEquals(2, countVersions(created.id))
 
     val refetch = StudentsDao.findById(session, created.id)
     assertTrue(refetch.exceptionOrNull() is NotFoundException)
-  }
-
-  @Test
-  fun `timestamp bypass bumps row_updated_at but not updated_at`() {
-    val u = createUser()
-    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
-
-    connection.autoCommit = false
-    try {
-      connection.createStatement().use { it.execute("SET LOCAL unicoach.bypass_logical_timestamp = 'true'") }
-      val bypassSession =
-        object : SqlSession {
-          override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
-        }
-      val updated =
-        StudentsDao
-          .update(
-            bypassSession,
-            created.copy(expectedHighSchoolGraduationDate = partialDate("2030")),
-          ).getOrThrow()
-
-      assertEquals(created.updatedAt, updated.updatedAt, "updated_at should be unchanged under bypass")
-      assertTrue(updated.rowUpdatedAt >= created.rowUpdatedAt, "row_updated_at should still advance")
-      connection.commit()
-    } finally {
-      connection.autoCommit = true
-    }
   }
 
   @Test

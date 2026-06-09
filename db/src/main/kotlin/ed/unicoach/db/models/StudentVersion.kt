@@ -6,10 +6,10 @@ data class StudentVersion(
   override val id: StudentId,
   val userId: UserId,
   val expectedHighSchoolGraduationDate: PartialDate,
-  override val versionId: StudentVersionId,
+  override val version: Int,
   override val createdAt: Instant,
-  val rowCreatedAt: Instant,
-  override val updatedAt: Instant,
-  val rowUpdatedAt: Instant,
+  val updatedAt: Instant,
   val deletedAt: Instant?,
-) : BaseVersionEntity<StudentId, StudentVersionId>
+) : Identifiable<StudentId>,
+  Created,
+  Versioned

@@ -2,16 +2,26 @@ package ed.unicoach.db.models
 
 import java.time.Instant
 
-interface BaseEntity<ID : Any, V : Any> {
+interface Id {
+  val asString: String
+}
+
+interface Identifiable<ID : Id> {
   val id: ID
-  val versionId: V
+}
+
+interface Created {
   val createdAt: Instant
+}
+
+interface Updated {
   val updatedAt: Instant
 }
 
-interface AdvancedEntity {
-  val rowCreatedAt: Instant
-  val rowUpdatedAt: Instant
+interface Versioned {
+  val version: Int
 }
 
-interface BaseVersionEntity<ID : Any, V : Any> : BaseEntity<ID, V>
+interface SoftDeletable {
+  val deletedAt: Instant?
+}

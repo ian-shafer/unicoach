@@ -60,13 +60,14 @@ structural contract between HTTP wire format and the routing layer.
 - **I11**: `PublicStudent.id` MUST be typed as `java.util.UUID` (same rationale
   as I5: native UUID-string serialization, no nested wrapper). It MUST NOT be
   typed as the domain `StudentId` value class.
-- **I12**: `PublicStudent.version` MUST be a plain `Int`, not the domain
-  `StudentVersionId` value class. It carries the OCC version the client echoes
-  back in `UpdateStudentRequest.version` for optimistic-concurrency checks.
+- **I12**: `PublicStudent.version` MUST be a plain `Int`. It carries the OCC
+  version the client echoes back in `UpdateStudentRequest.version` for
+  optimistic-concurrency checks. (The domain version is itself a plain `Int`;
+  this DTO transports it unwrapped.)
 - **I13**: `PublicStudent` MUST expose `createdAt` and `updatedAt` as
-  `java.time.Instant`. It MUST NOT expose the row-audit timestamps
-  (`rowCreatedAt`/`rowUpdatedAt`) or `deletedAt` — those are internal audit
-  state and MUST NOT cross the HTTP boundary.
+  `java.time.Instant`. It MUST NOT expose `deletedAt` — soft-delete state is
+  internal audit state and MUST NOT cross the HTTP boundary. The domain model
+  carries no row-audit timestamps, so there is nothing further to leak.
 - **I14**: `StudentResponse` MUST wrap `PublicStudent` as its sole field (the
   same envelope shape as `MeResponse`/`RegisterResponse`). It MUST NOT inline
   student fields.

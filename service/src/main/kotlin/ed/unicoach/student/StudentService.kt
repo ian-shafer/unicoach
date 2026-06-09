@@ -11,7 +11,6 @@ import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.Student
-import ed.unicoach.db.models.StudentVersionId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
 import ed.unicoach.error.FieldError
@@ -68,7 +67,7 @@ class StudentService(
 
   suspend fun updateStudent(
     userId: UserId,
-    expectedVersion: StudentVersionId,
+    expectedVersion: Int,
     graduationDateIso: String,
   ): Result<UpdateStudentResult> {
     val parsed = PartialDate.parse(graduationDateIso)
@@ -87,7 +86,7 @@ class StudentService(
           }
         }
         val existing = existingResult.getOrThrow()
-        if (existing.versionId != expectedVersion) {
+        if (existing.version != expectedVersion) {
           return@withConnection Result.success(UpdateStudentResult.VersionConflict)
         }
 
@@ -128,8 +127,8 @@ class StudentService(
 
         val user = UsersDao.findByIdForUpdate(session, userId).getOrThrow()
 
-        StudentsDao.delete(session, student.id, student.versionId).getOrThrow()
-        UsersDao.delete(session, user.id, user.versionId).getOrThrow()
+        StudentsDao.delete(session, student.id, student.version).getOrThrow()
+        UsersDao.delete(session, user.id, user.version).getOrThrow()
         SessionsDao.revokeByTokenHash(session, currentTokenHash).getOrThrow()
 
         Result.success(DeleteStudentResult.Success)

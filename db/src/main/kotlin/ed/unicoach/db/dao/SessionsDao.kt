@@ -2,6 +2,7 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.Session
+import ed.unicoach.db.models.SessionId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
 import java.sql.ResultSet
@@ -9,7 +10,7 @@ import java.util.UUID
 
 object SessionsDao {
   private fun mapSession(rs: ResultSet): Session {
-    val id = UUID.fromString(rs.getString("id"))
+    val id = SessionId(UUID.fromString(rs.getString("id")))
     val version = rs.getInt("version")
     val createdAt = rs.getTimestamp("created_at").toInstant()
     val userIdStr = rs.getString("user_id")
@@ -89,7 +90,7 @@ object SessionsDao {
 
   fun remintToken(
     session: SqlSession,
-    id: UUID,
+    id: SessionId,
     currentVersion: Int,
     newUserId: UserId,
     newTokenHash: ByteArray,
@@ -109,7 +110,7 @@ object SessionsDao {
         stmt.setObject(2, newUserId.value)
         stmt.setBytes(3, newTokenHash)
         stmt.setLong(4, newExpirationSeconds)
-        stmt.setObject(5, id)
+        stmt.setObject(5, id.value)
         stmt.setInt(6, currentVersion)
 
         stmt.executeQuery().use { rs ->
@@ -124,7 +125,7 @@ object SessionsDao {
 
   fun extendExpiry(
     session: SqlSession,
-    id: UUID,
+    id: SessionId,
     currentVersion: Int,
   ): Result<Session> =
     executeSafely {
@@ -138,7 +139,7 @@ object SessionsDao {
       session.prepareStatement(sql).use { stmt ->
         val nextVersion = currentVersion + 1
         stmt.setInt(1, nextVersion)
-        stmt.setObject(2, id)
+        stmt.setObject(2, id.value)
         stmt.setInt(3, currentVersion)
 
         stmt.executeQuery().use { rs ->

@@ -5,7 +5,6 @@ import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
-import ed.unicoach.db.models.StudentVersionId
 import ed.unicoach.db.models.UserId
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -42,11 +41,9 @@ object StudentsDao {
       id = StudentId(UUID.fromString(rs.getString("id"))),
       userId = UserId(UUID.fromString(rs.getString("user_id"))),
       expectedHighSchoolGraduationDate = mapGraduationDate(rs),
-      versionId = StudentVersionId(rs.getInt("version")),
+      version = rs.getInt("version"),
       createdAt = rs.getTimestamp("created_at").toInstant(),
-      rowCreatedAt = rs.getTimestamp("row_created_at").toInstant(),
       updatedAt = rs.getTimestamp("updated_at").toInstant(),
-      rowUpdatedAt = rs.getTimestamp("row_updated_at").toInstant(),
       deletedAt = rs.getTimestamp("deleted_at")?.toInstant(),
     )
 
@@ -204,10 +201,10 @@ object StudentsDao {
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
-        stmt.setInt(1, student.versionId.value + 1)
+        stmt.setInt(1, student.version + 1)
         bindGraduationDate(stmt, 2, student.expectedHighSchoolGraduationDate)
         stmt.setObject(5, student.id.value)
-        stmt.setInt(6, student.versionId.value)
+        stmt.setInt(6, student.version)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
@@ -226,7 +223,7 @@ object StudentsDao {
   fun delete(
     session: SqlSession,
     id: StudentId,
-    currentVersion: StudentVersionId,
+    currentVersion: Int,
   ): Result<Student> =
     try {
       val sql =
@@ -237,9 +234,9 @@ object StudentsDao {
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
-        stmt.setInt(1, currentVersion.value + 1)
+        stmt.setInt(1, currentVersion + 1)
         stmt.setObject(2, id.value)
-        stmt.setInt(3, currentVersion.value)
+        stmt.setInt(3, currentVersion)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {

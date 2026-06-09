@@ -2,7 +2,6 @@ package ed.unicoach.rest.routing
 
 import ed.unicoach.auth.AuthService
 import ed.unicoach.db.models.Student
-import ed.unicoach.db.models.StudentVersionId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.error.FieldError
@@ -34,7 +33,7 @@ private fun toPublicStudent(student: Student): PublicStudent =
   PublicStudent(
     id = student.id.value,
     expectedHighSchoolGraduationDate = student.expectedHighSchoolGraduationDate.toIso(),
-    version = student.versionId.value,
+    version = student.version,
     createdAt = student.createdAt,
     updatedAt = student.updatedAt,
   )
@@ -129,7 +128,7 @@ class StudentRouteHandler(
       studentService
         .updateStudent(
           userId = user.id,
-          expectedVersion = StudentVersionId(request.version),
+          expectedVersion = request.version,
           graduationDateIso = request.expectedHighSchoolGraduationDate,
         ).getOrThrow()
 

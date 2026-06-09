@@ -11,7 +11,6 @@ import ed.unicoach.db.models.SsoProviderId
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
 import ed.unicoach.db.models.UserVersion
-import ed.unicoach.db.models.UserVersionId
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -19,11 +18,9 @@ import java.util.UUID
 object UsersDao {
   private fun mapUser(rs: ResultSet): User {
     val id = UserId(UUID.fromString(rs.getString("id")))
-    val versionId = UserVersionId(rs.getInt("version"))
+    val version = rs.getInt("version")
     val createdAt = rs.getTimestamp("created_at").toInstant()
-    val rowCreatedAt = rs.getTimestamp("row_created_at").toInstant()
     val updatedAt = rs.getTimestamp("updated_at").toInstant()
-    val rowUpdatedAt = rs.getTimestamp("row_updated_at").toInstant()
     val deletedAt = rs.getTimestamp("deleted_at")?.toInstant()
 
     val email = (EmailAddress.create(rs.getString("email")) as ValidationResult.Valid).value
@@ -62,11 +59,9 @@ object UsersDao {
 
     return User(
       id = id,
-      versionId = versionId,
+      version = version,
       createdAt = createdAt,
-      rowCreatedAt = rowCreatedAt,
       updatedAt = updatedAt,
-      rowUpdatedAt = rowUpdatedAt,
       deletedAt = deletedAt,
       email = email,
       name = name,
@@ -77,11 +72,9 @@ object UsersDao {
 
   private fun mapUserVersion(rs: ResultSet): UserVersion {
     val id = UserId(UUID.fromString(rs.getString("id")))
-    val versionId = UserVersionId(rs.getInt("version"))
+    val version = rs.getInt("version")
     val createdAt = rs.getTimestamp("created_at").toInstant()
-    val rowCreatedAt = rs.getTimestamp("row_created_at").toInstant()
     val updatedAt = rs.getTimestamp("updated_at").toInstant()
-    val rowUpdatedAt = rs.getTimestamp("row_updated_at").toInstant()
     val deletedAt = rs.getTimestamp("deleted_at")?.toInstant()
 
     val email = (EmailAddress.create(rs.getString("email")) as ValidationResult.Valid).value
@@ -120,11 +113,9 @@ object UsersDao {
 
     return UserVersion(
       id = id,
-      versionId = versionId,
+      version = version,
       createdAt = createdAt,
-      rowCreatedAt = rowCreatedAt,
       updatedAt = updatedAt,
-      rowUpdatedAt = rowUpdatedAt,
       deletedAt = deletedAt,
       email = email,
       name = name,
@@ -208,12 +199,12 @@ object UsersDao {
   fun findVersion(
     session: SqlSession,
     id: UserId,
-    targetVersion: UserVersionId,
+    targetVersion: Int,
   ): Result<UserVersion> {
     return try {
       session.prepareStatement("SELECT * FROM users_versions WHERE id = ? AND version = ?").use { stmt ->
         stmt.setObject(1, id.value)
-        stmt.setInt(2, targetVersion.value)
+        stmt.setInt(2, targetVersion)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
             return Result.failure(NotFoundException())
@@ -286,7 +277,7 @@ object UsersDao {
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
-        val nextVersion = user.versionId.value + 1
+        val nextVersion = user.version + 1
         stmt.setInt(1, nextVersion)
         stmt.setString(2, user.email.value)
         stmt.setString(3, user.name.value)
@@ -309,7 +300,7 @@ object UsersDao {
           }
         }
         stmt.setObject(7, user.id.value)
-        stmt.setInt(8, user.versionId.value)
+        stmt.setInt(8, user.version)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
@@ -354,21 +345,21 @@ object UsersDao {
   fun delete(
     session: SqlSession,
     id: UserId,
-    currentVersion: UserVersionId,
+    currentVersion: Int,
   ): Result<User> =
     try {
       val sql =
         """
-        UPDATE users 
+        UPDATE users
         SET version = ?, deleted_at = NOW()
         WHERE id = ? AND version = ?
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
-        val nextVersion = currentVersion.value + 1
+        val nextVersion = currentVersion + 1
         stmt.setInt(1, nextVersion)
         stmt.setObject(2, id.value)
-        stmt.setInt(3, currentVersion.value)
+        stmt.setInt(3, currentVersion)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
@@ -394,20 +385,20 @@ object UsersDao {
   fun undelete(
     session: SqlSession,
     id: UserId,
-    currentVersion: UserVersionId,
+    currentVersion: Int,
   ): Result<User> =
     try {
       val sql =
         """
-        UPDATE users 
+        UPDATE users
         SET version = ?, deleted_at = NULL
         WHERE id = ? AND version = ?
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
-        stmt.setInt(1, currentVersion.value + 1)
+        stmt.setInt(1, currentVersion + 1)
         stmt.setObject(2, id.value)
-        stmt.setInt(3, currentVersion.value)
+        stmt.setInt(3, currentVersion)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
@@ -435,8 +426,8 @@ object UsersDao {
   fun revertToVersion(
     session: SqlSession,
     id: UserId,
-    targetHistoricalVersion: UserVersionId,
-    currentVersion: UserVersionId,
+    targetHistoricalVersion: Int,
+    currentVersion: Int,
   ): Result<User> {
     val versionResult = findVersion(session, id, targetHistoricalVersion)
     if (versionResult.isFailure) {
@@ -457,7 +448,7 @@ object UsersDao {
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
-        stmt.setInt(1, currentVersion.value + 1)
+        stmt.setInt(1, currentVersion + 1)
         stmt.setString(2, target.email.value)
         stmt.setString(3, target.name.value)
         if (target.displayName != null) stmt.setString(4, target.displayName.value) else stmt.setNull(4, java.sql.Types.VARCHAR)
@@ -479,7 +470,7 @@ object UsersDao {
           }
         }
         stmt.setObject(7, id.value)
-        stmt.setInt(8, currentVersion.value)
+        stmt.setInt(8, currentVersion)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {

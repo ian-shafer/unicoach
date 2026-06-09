@@ -174,7 +174,7 @@ class AuthServiceTest {
       val user = createTestUser()
 
       // Soft-delete the user
-      val deleteResult = UsersDao.delete(sqlSession, user.id, user.versionId)
+      val deleteResult = UsersDao.delete(sqlSession, user.id, user.version)
       assertTrue(deleteResult.isSuccess)
 
       val tokenHash = TokenHash(byteArrayOf(13, 23, 33))

@@ -27,13 +27,13 @@ Their contracts are owned by `common`'s SPEC.
   return `ValidationResult.Invalid(BlankString)`.
 - `SsoProviderId.create()` MUST trim whitespace. A blank-after-trim input MUST
   return `ValidationResult.Invalid(BlankString)`.
-- All `@JvmInline value class` types (`UserId`, `UserVersionId`, `StudentId`,
-  `StudentVersionId`, `DisplayName`, `PersonName`, `PasswordHash`,
-  `SsoProviderId`) MUST expose their raw value through a public `val value`
-  property.
-- `UserId` and `StudentId` wrap `UUID`; `UserVersionId` and `StudentVersionId`
-  wrap `Int`. None of these provide a factory method — they are constructed
-  directly and carry no validation logic.
+- All `@JvmInline value class` types (`UserId`, `StudentId`, `SessionId`,
+  `DisplayName`, `PersonName`, `PasswordHash`, `SsoProviderId`) MUST expose their
+  raw value through a public `val value` property.
+- `UserId`, `StudentId`, and `SessionId` each wrap `UUID` and implement `Id`,
+  deriving `asString` from `value.toString()`. None of these provide a factory
+  method — they are constructed directly and carry no validation logic. Per-row
+  versions are a plain `Int`, NOT a wrapped value class.
 
 ### TokenHash
 
@@ -87,45 +87,60 @@ Their contracts are owned by `common`'s SPEC.
 - `NewSession` MUST carry a `TokenHash`, a relative `Duration` expiration, and
   optional `userId`, `userAgent`, `initialIp`, and `metadata` fields. Sessions
   with `userId == null` represent anonymous/pre-auth sessions.
-- `User` MUST implement both `BaseEntity<UserId, UserVersionId>` and
-  `AdvancedEntity`. It MUST carry `deletedAt: Instant?`; a non-null value
-  indicates a soft-deleted user.
-- `UserVersion` MUST implement `BaseVersionEntity<UserId, UserVersionId>`. It
-  MUST carry six timestamps: `createdAt`, `updatedAt` (via `BaseVersionEntity`),
-  and `rowCreatedAt`, `rowUpdatedAt` as explicit `val` fields (NOT via
-  `AdvancedEntity` — `UserVersion` does NOT implement `AdvancedEntity`). It MUST
-  also carry `deletedAt: Instant?`.
-- `Student` MUST implement both `BaseEntity<StudentId, StudentVersionId>` and
-  `AdvancedEntity`. It MUST carry `userId: UserId`, an
-  `expectedHighSchoolGraduationDate:
-  PartialDate`, and `deletedAt: Instant?`
-  (a non-null value indicates a soft-deleted student).
-- `StudentVersion` MUST implement
-  `BaseVersionEntity<StudentId, StudentVersionId>`. It MUST carry the same
-  domain fields as `Student` (`userId`, `expectedHighSchoolGraduationDate`,
-  `deletedAt`) plus `rowCreatedAt`/`rowUpdatedAt` as explicit `val` fields (NOT
-  via `AdvancedEntity` — `StudentVersion` does NOT implement `AdvancedEntity`).
+- `User` MUST implement `Identifiable<UserId>`, `Created`, `Updated`,
+  `Versioned`, and `SoftDeletable` — the full mutable-lifecycle capability set.
+  Its `version` is a plain `Int`. It MUST carry `deletedAt: Instant?`; a non-null
+  value indicates a soft-deleted user.
+- `UserVersion` MUST implement `Identifiable<UserId>`, `Created`, and
+  `Versioned` only — an immutable snapshot row. Its `updatedAt: Instant` and
+  `deletedAt: Instant?` are plain `val`s capturing the values at the instant the
+  version was written, so `UserVersion` MUST NOT implement `Updated` or
+  `SoftDeletable`. Its `version` is a plain `Int`.
+- `Student` MUST implement `Identifiable<StudentId>`, `Created`, `Updated`,
+  `Versioned`, and `SoftDeletable` — the full mutable-lifecycle capability set.
+  Its `version` is a plain `Int`. It MUST carry `userId: UserId`, an
+  `expectedHighSchoolGraduationDate: PartialDate`, and `deletedAt: Instant?` (a
+  non-null value indicates a soft-deleted student).
+- `StudentVersion` MUST implement `Identifiable<StudentId>`, `Created`, and
+  `Versioned` only — an immutable snapshot row mirroring `UserVersion`. It MUST
+  carry the same domain fields as `Student` (`userId`,
+  `expectedHighSchoolGraduationDate`) plus `updatedAt: Instant` and
+  `deletedAt: Instant?` as plain snapshot `val`s, so it MUST NOT implement
+  `Updated` or `SoftDeletable`. Its `version` is a plain `Int`.
 - `NewStudent` MUST carry a `userId: UserId` and a validated
   `expectedHighSchoolGraduationDate: PartialDate`. It is the sole input type for
   student creation.
-- `Session` MUST include `expiresAt: Instant` as a mandatory field. It MUST NOT
-  include a token value or raw token hash — only the opaque UUID session `id`
-  and `version` are stored on the model.
+- `Session` MUST implement `Identifiable<SessionId>`, `Created`, and `Versioned`
+  — a versioned, immutable row. Its `id` is a typed `SessionId` (wrapping
+  `UUID`), and its `version` is a plain `Int`. It MUST include
+  `expiresAt: Instant` as a mandatory field. It MUST NOT include a token value or
+  raw token hash — only the typed session `id` and `version` are stored on the
+  model.
+- No model in this package carries `rowCreatedAt`/`rowUpdatedAt` properties. The
+  `row_created_at`/`row_updated_at` Postgres columns and the triggers that
+  maintain them REMAIN in the database; they are deliberately NOT projected into
+  the domain models. This model-vs-DB split MUST hold: adding a row-timestamp
+  property to any model here is a layering violation, and dropping the DB
+  columns/triggers is a separate schema concern that this layer does NOT track.
 
-### Entity Interfaces
+### Capability Interfaces
 
-- `BaseEntity<ID, V>` mandates `id: ID`, `versionId: V`, `createdAt`, and
-  `updatedAt` on every implementor. Both `ID` and `V` are bounded `: Any`
-  (non-null) type parameters; the entity's identity and version-key types MUST
-  be carried explicitly rather than hardcoded, so each implementor pairs its own
-  id type with its own version-id type (e.g. `UserId`/`UserVersionId`,
-  `StudentId`/`StudentVersionId`). `User` and `Student` are the current
-  implementors.
-- `AdvancedEntity` provides row-level audit timestamps (`rowCreatedAt`,
-  `rowUpdatedAt`) distinct from domain-level `createdAt`/`updatedAt`. Types
-  implementing `AdvancedEntity` MUST carry all four timestamps.
-- `BaseVersionEntity<ID, V>` extends `BaseEntity<ID, V>` and is used exclusively
-  for version-history records.
+The entity supertypes are one-capability-each interfaces in
+[Entity.kt](./Entity.kt); a data class declares only the capabilities it
+actually has. There MUST be no welded multi-capability supertype.
+
+- `Id` — marker for identity types, exposing a derived `asString: String`
+  backing-agnostic view (e.g. `UUID.toString()`). Implementors MUST retain their
+  typed `value`; `asString` MUST be derived, never stored.
+- `Identifiable<ID : Id>` — mandates `id: ID`; every persisted row, including
+  append-only version rows, carries a typed identity bound to `Id`.
+- `Created` — mandates `createdAt: Instant`; every row.
+- `Updated` — mandates `updatedAt: Instant`; mutable rows only.
+- `Versioned` — mandates `version: Int` (OCC counter). The version is a plain
+  `Int`, NOT a domain-typed key; there MUST be no version-id wrapper value class.
+- `SoftDeletable` — mandates `deletedAt: Instant?`; logical-delete rows only.
+- There MUST be no row-timestamp capability — see the row-timestamp invariant
+  under Aggregate Records.
 
 ### Validation Outcomes
 
@@ -218,6 +233,16 @@ Their contracts are owned by `common`'s SPEC.
   this is a fatal misconfiguration, not a recoverable error.
 - **Idempotent**: Yes — same token always produces the same hash.
 
+### `Id.asString` (derived property)
+
+- **Side Effects**: None (pure formatting).
+- **Behavior**: Returns a backing-agnostic string view of the identity value
+  (e.g. `value.toString()` for the UUID-backed `UserId`/`StudentId`/`SessionId`).
+  Intended for logging, serialization, and generic code that must not depend on the
+  concrete backing type.
+- **Error Handling**: Total — no parsing, no failure mode, never throws.
+- **Idempotent**: Yes.
+
 ### `NewSession` (data class)
 
 - **Side Effects**: None (pure data carrier).
@@ -292,3 +317,12 @@ Their contracts are owned by `common`'s SPEC.
       factories (`DisplayName`, `PersonName`, `PasswordHash`, `SsoProviderId`,
       `PartialDate`) and `User`/`UserVersion`/`NewUser` now import these symbols
       from `common`.
+- [x] [RFC-36: Entity Model Capability Taxonomy](../../../../../../../../rfc/36-entity-model-taxonomy.md)
+      — Replaced the welded `BaseEntity`/`AdvancedEntity`/`BaseVersionEntity`
+      supertypes with one-capability-each interfaces (`Id`,
+      `Identifiable<ID : Id>`, `Created`, `Updated`, `Versioned`,
+      `SoftDeletable`). Collapsed per-row version to a plain `Int` and deleted
+      the `UserVersionId`/`StudentVersionId` value classes. Added the typed
+      `SessionId` value class and made `Session.id` typed. Dropped the
+      `rowCreatedAt`/`rowUpdatedAt` model properties (the DB columns and
+      triggers remain).

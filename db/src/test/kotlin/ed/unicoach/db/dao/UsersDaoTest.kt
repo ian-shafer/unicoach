@@ -288,7 +288,7 @@ class UsersDaoTest {
     val firstUser = firstCreate.getOrNull()!!
 
     // 2. Delete first user
-    val deleteResult = UsersDao.delete(session1, firstUser.id, firstUser.versionId)
+    val deleteResult = UsersDao.delete(session1, firstUser.id, firstUser.version)
     assertTrue(deleteResult.isSuccess)
     val deletedUser = deleteResult.getOrNull()!!
 
@@ -307,7 +307,7 @@ class UsersDaoTest {
     assertTrue(secondCreate.isSuccess)
 
     // 4. Attempt undelete on the first user, which should trigger a domain uniqueness failure
-    val undeleteResult = UsersDao.undelete(session1, firstUser.id, deletedUser.versionId)
+    val undeleteResult = UsersDao.undelete(session1, firstUser.id, deletedUser.version)
     assertTrue(
       undeleteResult.isFailure && undeleteResult.exceptionOrNull() is DuplicateEmailException,
       "Expected DuplicateEmailException, got $undeleteResult",
@@ -376,14 +376,14 @@ class UsersDaoTest {
       UsersDao.revertToVersion(
         session1,
         v3User.id,
-        targetHistoricalVersion = v1User.versionId,
-        currentVersion = v3User.versionId,
+        targetHistoricalVersion = v1User.version,
+        currentVersion = v3User.version,
       )
     assertTrue(revertResult.isSuccess)
     val v4User = revertResult.getOrNull()!!
 
     // Validate V1 restored cleanly into V4
     assertTrue(v4User.name == nameV1, "Name was safely restored to V1 configuration")
-    assertTrue(v4User.versionId.value == v3User.versionId.value + 1, "Version mathematically incremented accurately")
+    assertTrue(v4User.version == v3User.version + 1, "Version mathematically incremented accurately")
   }
 }

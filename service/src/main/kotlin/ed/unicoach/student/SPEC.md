@@ -97,14 +97,14 @@ via sealed interfaces that contain no HTTP types.
 - **Idempotency**: Fully idempotent (read-only).
 - **Error mapping**: Any other DAO failure / uncaught exception → `Result.failure(e)`.
 
-### `StudentService.updateStudent(userId: UserId, expectedVersion: StudentVersionId, graduationDateIso: String): Result<UpdateStudentResult>` — See [StudentService.kt](./StudentService.kt)
+### `StudentService.updateStudent(userId: UserId, expectedVersion: Int, graduationDateIso: String): Result<UpdateStudentResult>` — See [StudentService.kt](./StudentService.kt)
 
 - **Side Effects**: On a version match, one `UPDATE` on `students` via
   `StudentsDao.update`. No write when validation fails, the student is absent, or
   the version is stale.
 - **Validation**: `PartialDate.parse` runs first; failure →
   `UpdateStudentResult.ValidationFailure` with no DB access.
-- **Concurrency**: Reads the current student, compares `versionId` to
+- **Concurrency**: Reads the current student, compares its `version` to
   `expectedVersion`; mismatch → `VersionConflict` before any `UPDATE`.
 - **Idempotency**: Not idempotent — a successful update bumps the persisted version.
 - **Error mapping**:
@@ -181,3 +181,4 @@ via sealed interfaces that contain no HTTP types.
 
 - [x] [RFC-31: Student Profile](../../../../../../../rfc/31-student-profile.md)
 - [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md) (repointed the `ValidationResult` import from `db.models` to `common.models`; no behavior change)
+- [x] [RFC-36: Entity Model Capability Taxonomy](../../../../../../../rfc/36-entity-model-taxonomy.md)

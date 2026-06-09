@@ -13,7 +13,6 @@ import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
-import ed.unicoach.db.models.StudentVersionId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
@@ -145,7 +144,7 @@ class StudentServiceTest {
       val u = createUser()
       val created = (service.createStudent(u.id, "2028").getOrThrow() as CreateStudentResult.Success).student
 
-      val result = service.updateStudent(u.id, created.versionId, "2029-09").getOrThrow()
+      val result = service.updateStudent(u.id, created.version, "2029-09").getOrThrow()
       assertTrue(result is UpdateStudentResult.Success)
       assertEquals("2029-09", result.student.expectedHighSchoolGraduationDate.toIso())
     }
@@ -155,9 +154,9 @@ class StudentServiceTest {
     runTest {
       val u = createUser()
       val created = (service.createStudent(u.id, "2028").getOrThrow() as CreateStudentResult.Success).student
-      service.updateStudent(u.id, created.versionId, "2029").getOrThrow()
+      service.updateStudent(u.id, created.version, "2029").getOrThrow()
 
-      val stale = service.updateStudent(u.id, created.versionId, "2030").getOrThrow()
+      val stale = service.updateStudent(u.id, created.version, "2030").getOrThrow()
       assertTrue(stale is UpdateStudentResult.VersionConflict)
     }
 
@@ -165,7 +164,7 @@ class StudentServiceTest {
   fun `updateStudent returns NotFound when user has no student`() =
     runTest {
       val u = createUser()
-      val result = service.updateStudent(u.id, StudentVersionId(1), "2029").getOrThrow()
+      val result = service.updateStudent(u.id, 1, "2029").getOrThrow()
       assertTrue(result is UpdateStudentResult.NotFound)
     }
 
@@ -174,7 +173,7 @@ class StudentServiceTest {
     runTest {
       val u = createUser()
       val created = (service.createStudent(u.id, "2028").getOrThrow() as CreateStudentResult.Success).student
-      val result = service.updateStudent(u.id, created.versionId, "garbage").getOrThrow()
+      val result = service.updateStudent(u.id, created.version, "garbage").getOrThrow()
       assertTrue(result is UpdateStudentResult.ValidationFailure)
     }
 

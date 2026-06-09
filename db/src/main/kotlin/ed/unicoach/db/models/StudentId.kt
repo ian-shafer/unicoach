@@ -5,9 +5,6 @@ import java.util.UUID
 @JvmInline
 value class StudentId(
   val value: UUID,
-)
-
-@JvmInline
-value class StudentVersionId(
-  val value: Int,
-)
+) : Id {
+  override val asString get() = value.toString()
+}
