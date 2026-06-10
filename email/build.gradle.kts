@@ -8,6 +8,7 @@ dependencies {
   implementation(project(":db"))
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.slf4j.api)
+  implementation(libs.aws.sesv2)
   compileOnly(libs.postgresql)
 
   testImplementation(libs.kotlin.test.junit5)

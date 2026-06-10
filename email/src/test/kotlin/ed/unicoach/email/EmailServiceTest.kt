@@ -77,7 +77,13 @@ class EmailServiceTest {
     EmailConfig
       .from(
         com.typesafe.config.ConfigFactory
-          .parseString("email.defaultFrom = \"$defaultFrom\""),
+          .parseString(
+            """
+            email.defaultFrom = "$defaultFrom"
+            email.provider = "log"
+            email.ses.region = "us-east-1"
+            """.trimIndent(),
+          ),
       ).getOrThrow()
 
   private fun countRows(): Int {
