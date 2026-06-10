@@ -6,11 +6,12 @@
 PostgreSQL database. Stateless DAO singletons provide every read and write
 operation:
 
-| DAO           | Table(s)                  |
-| ------------- | ------------------------- |
-| `UsersDao`    | `users`, `users_versions` |
-| `SessionsDao` | `sessions`                |
-| `StudentsDao` | `students`                |
+| DAO           | Table(s)                                                             |
+| ------------- | -------------------------------------------------------------------- |
+| `UsersDao`    | `users`, `users_versions`                                            |
+| `SessionsDao` | `sessions`                                                           |
+| `StudentsDao` | `students`                                                           |
+| `ConvosDao`   | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw` |
 
 Every DAO method accepts a `SqlSession` as its first parameter. Connection
 pooling, transaction boundaries, and commit/rollback are managed exclusively by
@@ -39,13 +40,13 @@ Entity table characteristics vary by flavor:
 | `users`    | ✓ (logical)  | ✓                   | ✓                | ✓              |
 | `sessions` | ✗ (physical) | ✗                   | ✓                | ✓              |
 | `students` | ✓ (logical)  | ✓ (not read by DAO) | ✓                | ✓              |
+| `convos`   | ✓ (logical)  | ✗                   | ✗                | ✓              |
 
 The "Row Timestamps" column records that `row_created_at`/`row_updated_at`
-columns exist and are maintained by database triggers. These columns are
-**not** projected by the row mappers into any domain model — although
-`SELECT *` still fetches them, no mapper reads them into a Kotlin field. The
-`version` column is mapped as a plain `Int` (`rs.getInt("version")`), not a
-value-class wrapper.
+columns exist and are maintained by database triggers. These columns are **not**
+projected by the row mappers into any domain model — although `SELECT *` still
+fetches them, no mapper reads them into a Kotlin field. The `version` column is
+mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
 
 #### Mapping Notes
 
@@ -63,6 +64,12 @@ value-class wrapper.
   `ValidationResult.Invalid` on this read path indicates row corruption, not
   user input; it MUST be surfaced as a `PermanentError` mapping failure
   (`DatabaseException`), never as a user-facing validation failure.
+- **`convos` table**: The persisted `name` is reconstructed via
+  `ConvoName.create` (`parseConvoName`). The DB CHECK constraints already
+  guarantee a non-empty, trimmed, ≤ 255-char name, so a
+  `ValidationResult.Invalid` on this read path indicates row corruption, not
+  user input; it MUST be raised as a `SQLException` and surfaced as a
+  `PermanentError` mapping failure, never as a user-facing validation failure.
 
 ### Transaction Boundary
 
@@ -83,6 +90,12 @@ value-class wrapper.
   `PermanentError.NotFound` (row absent).
 - "Force" methods (e.g., `revokeByTokenHash`) MAY skip version guards when the
   business logic does not require OCC.
+- `ConvosDao` mutations (`create`, `rename`, `delete`, `undelete`) MUST NOT
+  include a version guard: `convos` has no `version` column, so convo writes are
+  last-write-wins. `rename`/`delete`/`undelete` gate solely on the soft-delete
+  state in the `WHERE` clause (`deleted_at IS NULL` for `rename`/`delete`,
+  `IS NOT NULL` for `undelete`) and return `NotFoundException` when zero rows
+  match.
 
 ### Immutable Columns
 
@@ -102,6 +115,31 @@ value-class wrapper.
   `includeDeleted = true`. `StudentsDao.findByUserIdForUpdate` filters
   `deleted_at IS NULL` unconditionally in SQL; `StudentsDao.findByIdForUpdate`
   locks by primary key without a soft-delete filter.
+- `ConvosDao` reads take an explicit `scope: SoftDeleteScope = ACTIVE` (`ACTIVE`
+  → `deleted_at IS NULL`, `DELETED` → `deleted_at IS NOT NULL`, `ALL` → no
+  filter). `listByStudent` and `listTurns` apply the scope as a SQL predicate;
+  `findById` fetches by primary key and applies the scope in application code
+  (`scopeAdmits`), returning `NotFoundException()` when the row's `deleted_at`
+  does not satisfy the scope.
+- `ConvosDao.listTurns` MUST scope on the owning convo's `c.deleted_at` (the
+  parent entity), NOT on the append-only log rows — turns of a soft-deleted
+  convo are hidden under `ACTIVE`.
+
+### Coaching Turn Writes (`ConvosDao`)
+
+- A coaching turn MUST be written as two separate calls — `appendRequest` then
+  `appendResponse` — each within its own caller transaction. The DAO MUST NOT
+  expose a combined "write whole turn" method: the request is durably recorded
+  before the model is called, so a request with no reply survives as an orphan
+  request (later joined to a `null` response by `listTurns`).
+- `appendResponse` MUST insert the `convo_responses` row and, when `rawPayload`
+  is non-null, the `convo_responses_raw` sibling within the single transaction
+  the caller provides; the response and its raw row are atomic together. A null
+  `rawPayload` is the transport-error turn (`stop_reason = "error"`,
+  `content = null`) and writes only the response row.
+- `appendResponse` MUST take `convoId` from the caller-supplied
+  `NewConvoResponse` and MUST NOT issue a derivation `SELECT` to re-read it from
+  the parent request; `convo_responses.convo_id` is denormalized.
 
 ### Postgres Error Codes
 
@@ -137,6 +175,30 @@ All other `SQLException` are classified into `TransientError` or
 
 Non-`SQLException` (e.g., `ClassCastException`) defaults to `DatabaseException`
 (Permanent) — these indicate application bugs.
+
+#### `ConvosDao` (`mapConvoError`)
+
+The write paths (`create`, `rename`, `appendRequest`, `appendResponse`) route
+`SQLException` through `mapConvoError`; reads and the soft-delete mutations
+(`delete`, `undelete`) route through `mapDatabaseError`. `mapConvoError`
+introduces **no new `DaoException` type** — it reuses `NotFoundException` and
+`ConstraintViolationException` only.
+
+- `23503` (FK violation) → `NotFoundException`, with the message resolved from
+  the violated constraint name matched against the exception message:
+  - `convos_student_id_fkey` → "Owning student not found"
+  - `convo_requests_convo_id_fkey` → "Convo not found"
+  - `convo_requests_system_prompt_id_fkey` → "System prompt not found"
+  - `convo_responses_request_id_fkey` → "Request not found"
+  - `convo_responses_convo_id_fkey` → "Convo not found"
+  - unmatched constraint name → bare `NotFoundException()`.
+- `23505` (unique violation — the `convo_responses.request_id` 1:1 guard, or the
+  `convo_responses_raw.response_id` primary key) and `23514` (any
+  `convos`/`convo_requests`/`convo_responses` CHECK, e.g. the 1 MiB content
+  bound, the `provider IN ('anthropic')` allowlist, the content/model presence
+  checks, or the non-negative token/latency checks) →
+  `ConstraintViolationException`.
+- All other SQLSTATE → `mapDatabaseError` (the shared classification above).
 
 ### Physical Record Bypass
 
@@ -364,6 +426,105 @@ through `mapDatabaseError`. Each grad-date column trio is reconstructed into a
 
 ---
 
+### `ConvosDao` — [`ConvosDao.kt`](./ConvosDao.kt)
+
+All methods are `object`-level over the coaching-conversation tables. Write
+paths discriminate SQLSTATE via the private `mapConvoError`; all other failures
+route through `mapDatabaseError`. The `SoftDeleteScope` predicates are fixed SQL
+fragments carrying no caller data; no user data is string-interpolated into SQL.
+
+#### `findById(session, id, scope = ACTIVE): Result<Convo>`
+
+- **Side Effects**: Read only.
+- **Error Handling**: `Result.failure(NotFoundException())` if the row is absent
+  or its `deleted_at` does not satisfy `scope` (filtered in application code via
+  `scopeAdmits`).
+- **Idempotency**: Yes.
+
+#### `listByStudent(session, studentId, scope = ACTIVE): Result<List<Convo>>`
+
+- **Side Effects**: Read only. Filters `deleted_at` by `scope` in SQL; orders by
+  `created_at, id`.
+- **Error Handling**: Returns `Result.success(emptyList())` when no convos
+  match; `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
+
+#### `create(session, convo: NewConvo): Result<Convo>`
+
+- **Side Effects**: Write — inserts one `convos` row (`RETURNING *`). Database
+  generates `id` (`uuidv7()`) and timestamps.
+- **Error Handling**: `mapConvoError` —
+  `NotFoundException("Owning student not
+  found")` on the `student_id` FK
+  violation; `ConstraintViolationException` on a name CHECK violation.
+- **Idempotency**: No.
+
+#### `rename(session, id, name): Result<Convo>`
+
+- **Side Effects**: Read/write — updates `name` where `deleted_at IS NULL`
+  (`RETURNING *`). No version guard.
+- **Error Handling**: `Result.failure(NotFoundException())` when zero rows match
+  (absent or soft-deleted); `ConstraintViolationException` on a name CHECK.
+- **Idempotency**: No (the timestamp trigger bumps `updated_at` each call).
+
+#### `delete(session, id): Result<Convo>`
+
+- **Side Effects**: Read/write — soft-deletes (`deleted_at = NOW()`) where
+  `deleted_at IS NULL` (`RETURNING *`).
+- **Error Handling**: `Result.failure(NotFoundException())` when already deleted
+  or absent.
+- **Idempotency**: No — a second call returns `NotFound`.
+
+#### `undelete(session, id): Result<Convo>`
+
+- **Side Effects**: Read/write — clears `deleted_at` where
+  `deleted_at IS NOT
+  NULL` (`RETURNING *`).
+- **Error Handling**: `Result.failure(NotFoundException())` when already active
+  or absent.
+- **Idempotency**: No — a second call returns `NotFound`.
+
+#### `appendRequest(session, request: NewConvoRequest): Result<ConvoRequest>`
+
+- **Side Effects**: Write — inserts one `convo_requests` row (`RETURNING *`).
+  First half of a coaching turn; committed before the model is called.
+- **Error Handling**: `mapConvoError` — `NotFoundException` on the `convo_id` or
+  `system_prompt_id` FK violation; `ConstraintViolationException` on a CHECK
+  (e.g. the 1 MiB content bound, the `provider` allowlist).
+- **Idempotency**: No.
+
+#### `appendResponse(session, response: NewConvoResponse, rawPayload): Result<ConvoResponse>`
+
+- **Side Effects**: Write — inserts one `convo_responses` row and, when
+  `rawPayload != null`, the `convo_responses_raw` sibling, both within the
+  caller's single transaction (atomic together). `convoId` is taken from
+  `NewConvoResponse`; no derivation SELECT.
+- **Error Handling**: `mapConvoError` — `NotFoundException` on the `request_id`
+  or `convo_id` FK violation; `ConstraintViolationException` on the `request_id`
+  UNIQUE (duplicate response) or a content/model/token CHECK.
+- **Idempotency**: No — the `request_id` UNIQUE constraint rejects a second
+  response for the same request.
+
+#### `listTurns(session, convoId, scope = ACTIVE): Result<List<ConvoTurn>>`
+
+- **Side Effects**: Read only. LEFT JOINs `convo_requests` to `convo_responses`,
+  scoping on the owning convo's `c.deleted_at` by `scope`; orders by
+  `r.created_at, r.id`.
+- **Error Handling**: `ConvoTurn.response` is `null` when the request has no
+  response row yet (request committed before the response was written). The
+  verbatim raw payload is deliberately excluded from turns — fetch it on demand
+  via `findRawByResponseId`. `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
+
+#### `findRawByResponseId(session, responseId): Result<ConvoResponseRaw>`
+
+- **Side Effects**: Read only.
+- **Error Handling**: `Result.failure(NotFoundException())` when no raw row
+  exists (including error turns, which write no raw sibling).
+- **Idempotency**: Yes.
+
+---
+
 ### Result Types — Kotlin `Result<T>`
 
 All DAO methods return standard Kotlin `Result<T>`. Exceptions are wrapped in
@@ -433,3 +594,13 @@ SQLSTATE classification rules are documented in §II Postgres Error Codes.
       `remintToken`/`extendExpiry` take `id: SessionId`. No schema change —
       `SELECT *`/`RETURNING *` still fetch the untouched
       `version`/`row_*_at`/`id` columns.
+- [x] [RFC-38: Convos DAO](../../../../../../../../rfc/38-convos-dao.md) — Added
+      `ConvosDao` over the coaching-conversation tables (`convos`,
+      `convo_requests`, `convo_responses`, `convo_responses_raw`) with
+      `SoftDeleteScope`-aware reads (`findById`, `listByStudent`, `listTurns`),
+      the two-transaction coaching turn (`appendRequest`, then
+      `appendResponse` + optional raw sibling atomic within the caller
+      transaction), on-demand `findRawByResponseId`, no OCC/`version` guard on
+      `convos`, and the `mapConvoError` SQLSTATE map (`23503`→per-FK
+      `NotFoundException`, `23505`/`23514`→`ConstraintViolationException`); no
+      new `DaoException` type.
