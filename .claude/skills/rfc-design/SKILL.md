@@ -23,6 +23,24 @@ feature in the codebase.
   cross-reference actual source code to ensure your design aligns with the
   current reality of the codebase. Do not design in a vacuum based on stale
   RFCs.
+- **Code and applied migrations are the ground truth; RFCs are not.** An RFC
+  records intent at the time it was written; a later RFC or migration may have
+  superseded it. Whenever the design depends on an existing schema, column,
+  type, signature, or constraint, verify it against the applied schema and
+  source — NEVER the RFC that originally introduced it. The migrations under
+  `db/schema/` are authoritative; because they are imperative and cumulative (a
+  later migration alters what an earlier one created), the current shape of a
+  table is the result of replaying the whole chain — so inspecting the live table
+  definition is often the easier, declarative way to read that same applied
+  state. When an RFC and the code disagree, the code wins; the design MUST follow
+  current reality and note the divergence explicitly.
+- **Trust `SPEC.md` files for orientation; confirm load-bearing decisions
+  against the code.** Each directory's `SPEC.md` is a maintained specification of
+  what that code does and guarantees — typically kept in sync, so trust it as the
+  first and primary read for current behaviour, intent, and invariants, far
+  better than an older RFC. For the decisions the design genuinely hangs on,
+  still confirm the specific fact against the actual code, which remains the
+  ground truth if the two ever diverge.
 - **Living Draft**: During the interview phases, you MUST maintain a 'living
   draft' of the RFC using artifacts or code blocks so the architect can see the
   state accumulating as you converse.
