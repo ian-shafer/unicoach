@@ -8,3 +8,6 @@ ios-app/UnicoachiOS.xcodeproj/project.xcworkspace/xcuserdata/ian.xcuserdatad/Use
 
 # Transient RFC-pipeline output (RFC backups, diff artifacts)
 /.scratch/
+
+# Deno lockfile regenerated on every deno run/eval (OpenAPI spec validation)
+/deno.lock
