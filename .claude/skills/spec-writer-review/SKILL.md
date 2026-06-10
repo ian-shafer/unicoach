@@ -89,9 +89,17 @@ This is the highest-signal section. Evaluate rigorously:
   NOT`, `NEVER`. Flag any invariant using `should`, `try to`, `ideally`, or
   similar weak language as `Major`.
 - **Completeness**: Cross-reference the actual source files in the target
-  directory. Identify behavioral constraints present in the code that are
-  **absent** from the Invariants section. Flag missing invariants as `Critical`
-  (if a core contract) or `Major` (if a significant edge case).
+  directory. Identify durable *guarantees* present in the code that are
+  **absent** from the Invariants section — a guarantee earns an invariant only
+  if a plausible wrong change would violate it AND there is a deliberate reason
+  it must hold. Flag missing invariants as `Critical` (if a core contract) or
+  `Major` (if a significant edge case). A type's supertype list, the capability
+  interfaces it implements, or its field roster is NOT, by itself, a missing
+  invariant — restating it is transcription (see Transcription Smell). The test:
+  "`Convo` MUST NOT implement `Versioned`" (OCC deliberately disabled) is a
+  guarantee worth flagging if absent; "`ConvoResponse` MUST implement
+  `Identifiable<ConvoResponseId>`" is transcription — no plausible change strips
+  an entity of its identity, and the data class declaration already states it.
 - **Accuracy**: Flag any invariant that contradicts the current code as
   `Critical`.
 - **Scope**: Flag invariants that describe *how* the system was built (narrative
@@ -110,11 +118,19 @@ This is the highest-signal section. Evaluate rigorously:
   universal principles are noise that dilute real invariants. Recommend deletion,
   not rewording.
 - **Transcription Smell**: Flag invariants that merely restate an implementation
-  call or hard-code a default value, rather than the guarantee that survives a
-  refactor, as `Minor`. Forbidding a specific *mechanism* (e.g. "MUST NOT contain
-  `withContext`") is also transcription; note that the fix is often deletion — if
-  the underlying rule is a universal principle, do not reword it into one (see
-  Signal / Generality).
+  call, hard-code a default value, or mirror a type's declaration — rather than
+  the guarantee that survives a refactor — as `Minor`. The most common form in
+  this codebase is **capability/shape transcription**: "`X` MUST implement
+  `Identifiable<…>`/`Created`/`Updated`", "carries fields `a`, `b`, `c`", or any
+  bullet that just re-lists a data class's supertypes or property roster. The
+  source already states all of that; an invariant must instead capture the
+  *deliberate decision* a refactor could wrongly undo — e.g. the ABSENCE of a
+  capability ("MUST NOT implement `Versioned`"), an append-only constraint
+  ("`Created` only — never `Updated` or `SoftDeletable`"), or a backing-type
+  choice ("wraps `Long`, MUST NOT be modeled as `UUID`"). Forbidding a specific
+  *mechanism* (e.g. "MUST NOT contain `withContext`") is also transcription; note
+  that the fix is often deletion — if the underlying rule is a universal
+  principle, do not reword it into one (see Signal / Generality).
 
 ### 5. Behavioral Contracts
 
