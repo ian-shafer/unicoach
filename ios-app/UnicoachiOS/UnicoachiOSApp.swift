@@ -17,6 +17,11 @@ struct UnicoachiOSApp: App {
                         onLoginSuccess: viewModel.onLoginSuccess,
                         onRegisterSuccess: viewModel.onRegisterSuccess
                     )
+                case .onboarding(let user):
+                    OnboardingView(
+                        studentClient: viewModel.studentClient,
+                        onComplete: { viewModel.onOnboardingComplete(user) }
+                    )
                 case .authenticated(let user):
                     HomeView(user: user, onLogout: viewModel.logout)
                 case .serverError:

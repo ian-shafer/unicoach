@@ -9,7 +9,7 @@ struct LoginView: View {
         case email, password
     }
 
-    init(authClient: AuthClientProtocol, onLoginSuccess: @escaping (PublicUser) -> Void, onSwitchToRegister: @escaping () -> Void) {
+    init(authClient: AuthClientProtocol, onLoginSuccess: @escaping (PublicUser) async -> Void, onSwitchToRegister: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: LoginViewModel(authClient: authClient, onLoginSuccess: onLoginSuccess))
         self.onSwitchToRegister = onSwitchToRegister
     }

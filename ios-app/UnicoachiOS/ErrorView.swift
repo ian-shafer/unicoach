@@ -24,7 +24,6 @@ struct ErrorView: View {
             if let retryAction {
                 Button("Try Again", action: retryAction)
                     .buttonStyle(PrimaryButtonStyle())
-                    .padding(.horizontal, DSSpacing.xl)
             }
         }
         .background(Color.dsBackground)

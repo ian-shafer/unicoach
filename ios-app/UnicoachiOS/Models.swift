@@ -46,3 +46,19 @@ struct LoginResponse: Codable {
 struct MeResponse: Codable {
     let user: PublicUser
 }
+
+struct CreateStudentRequest: Codable {
+    let expectedHighSchoolGraduationDate: String
+}
+
+struct PublicStudent: Codable, Equatable {
+    let id: UUID
+    let expectedHighSchoolGraduationDate: String
+    let version: Int
+    let createdAt: Date
+    let updatedAt: Date
+}
+
+struct StudentResponse: Codable {
+    let student: PublicStudent
+}

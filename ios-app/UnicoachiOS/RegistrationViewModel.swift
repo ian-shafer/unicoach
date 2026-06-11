@@ -11,9 +11,9 @@ class RegistrationViewModel: ObservableObject {
     @Published var infrastructureError: InfrastructureError?
     
     private let authClient: AuthClientProtocol
-    let onRegisterSuccess: (PublicUser) -> Void
-    
-    init(authClient: AuthClientProtocol, onRegisterSuccess: @escaping (PublicUser) -> Void) {
+    let onRegisterSuccess: (PublicUser) async -> Void
+
+    init(authClient: AuthClientProtocol, onRegisterSuccess: @escaping (PublicUser) async -> Void) {
         self.authClient = authClient
         self.onRegisterSuccess = onRegisterSuccess
     }
@@ -41,7 +41,7 @@ class RegistrationViewModel: ObservableObject {
         
         do {
             let response = try await authClient.register(request: request)
-            onRegisterSuccess(response.user)
+            await onRegisterSuccess(response.user)
         } catch let error as ErrorResponse {
             if error.code == "TIMEOUT" {
                 self.infrastructureError = .timeout

@@ -6,9 +6,7 @@
 design **tokens** (color, typography, spacing, radius) and the reusable **view
 components** that consume them. This is a leaf module: it renders styled,
 accessible UI primitives and owns no application state, navigation, or I/O.
-Its consumers — `LoginView`, `RegistrationView`, `HomeView`, `ErrorView` — and
-the `ErrorResponse.fieldError(for:)` helper in `Models.swift` live outside this
-directory and are out of scope for this spec.
+Its consumers live outside this directory and are out of scope for this spec.
 
 - [Theme.swift](./Theme.swift) — token definitions.
 - [Components.swift](./Components.swift) — components and their `#Preview` providers.
@@ -47,10 +45,15 @@ directory and are out of scope for this spec.
 - **Opt-in accessibility identifiers/labels.** When an `accessibilityIdentifier`,
   `accessibilityLabel`, or `progressAccessibilityIdentifier` parameter is `nil`,
   the component MUST apply **no** corresponding modifier (SwiftUI default
-  preserved). It NEVER substitutes a fabricated default identifier/label. This
-  is enforced by conditional-application wrappers (`OptionalIdentifier` /
-  `OptionalLabel`), so a `nil` argument is a true no-op rather than a default
-  substitution.
+  preserved): a `nil` argument is a true no-op, never a default substitution.
+  It NEVER substitutes a fabricated default identifier/label.
+
+- **Intrinsic button inset.** `PrimaryButtonStyle` and `DestructiveButtonStyle`
+  MUST apply a horizontal inset within the style itself, drawn from the
+  `DSSpacing` scale, in addition to expanding to the parent's proposed width.
+  In a content-sized container (e.g. `ContentUnavailableView` actions) the
+  rendered button MUST still have horizontal breathing room around its label;
+  the styles NEVER rely on the parent to provide width.
 
 - **Loading implies disabled.** While `LoadingButton.isLoading` is `true`, the
   button MUST be disabled and its title MUST be replaced by a `ProgressView`;
@@ -96,16 +99,18 @@ directory and are out of scope for this spec.
 
   The error-state field border reuses `dsError`; there is no separate token for it.
 
-- **Typography tokens** (`Font` extension) map to relative text styles:
+- **Typography tokens** (`Font` extension) map to relative system text styles
+  (per the Dynamic Type invariant). `Theme.swift` is the authoritative source of
+  each token's text style and weight.
 
-  | Token        | Text style    | Weight      | Usage                  |
-  | ------------ | ------------- | ----------- | ---------------------- |
-  | `dsTitleXL`  | `.largeTitle` | `.bold`     | Screen / welcome title |
-  | `dsTitle`    | `.title2`     | `.semibold` | Section heading        |
-  | `dsBody`     | `.body`       | `.regular`  | Field input text       |
-  | `dsLabel`    | `.subheadline`| `.medium`   | Field labels           |
-  | `dsCaption`  | `.caption`    | `.regular`  | Errors / hints         |
-  | `dsButton`   | `.headline`   | `.semibold` | Button titles          |
+  | Token        | Role                   |
+  | ------------ | ---------------------- |
+  | `dsTitleXL`  | Screen / welcome title |
+  | `dsTitle`    | Section heading        |
+  | `dsBody`     | Field input text       |
+  | `dsLabel`    | Field labels           |
+  | `dsCaption`  | Errors / hints         |
+  | `dsButton`   | Button titles          |
 
 - **`DSSpacing`** — a fixed, monotonically increasing spacing scale (`CGFloat`),
   ordered `xs < sm < md < lg < xl`. `Theme.swift` is the authoritative source of
@@ -127,11 +132,15 @@ All signatures below are normative; bodies are implementation detail. Components
 are pure SwiftUI `View`/`ButtonStyle` values with **no side effects** beyond
 invoking caller-supplied closures — no network, persistence, or external I/O.
 
-- **`PrimaryButtonStyle: ButtonStyle`** — full-width; `brandAccent` background,
+- **`PrimaryButtonStyle: ButtonStyle`** — stretches edge-to-edge in a full-width
+  parent and renders with an intrinsic horizontal inset in a content-sized
+  container (see the intrinsic-button-inset invariant); `brandAccent` background,
   `brandOnAccent` label, `dsButton` font, `DSRadius.button` radius. Renders
   distinct pressed and disabled states via reduced opacity; the disabled state
   takes visual precedence over pressed. Used for the primary action.
-- **`DestructiveButtonStyle: ButtonStyle`** — full-width; tonal `dsError`
+- **`DestructiveButtonStyle: ButtonStyle`** — stretches edge-to-edge in a
+  full-width parent and renders with an intrinsic horizontal inset in a
+  content-sized container (see the intrinsic-button-inset invariant); tonal `dsError`
   foreground on a `dsSurface` + low-opacity `dsError` fill, `dsButton` font,
   `DSRadius.button` radius. Renders pressed and disabled states via reduced
   opacity, with the disabled state taking visual precedence over pressed.
@@ -194,3 +203,4 @@ invoking caller-supplied closures — no network, persistence, or external I/O.
 ## V. History (Traceability Matrix)
 
 - [x] [RFC 30: Auth UI Design System (iOS)](../../../rfc/30-auth-ui-styling.md)
+- [x] [RFC 42: iOS Student-Profile Onboarding](../../../rfc/42-ios-student-profile-onboarding.md)

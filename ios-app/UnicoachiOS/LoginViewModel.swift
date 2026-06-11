@@ -9,9 +9,9 @@ class LoginViewModel: ObservableObject {
     @Published var infrastructureError: InfrastructureError?
     
     let authClient: AuthClientProtocol
-    let onLoginSuccess: (PublicUser) -> Void
-    
-    init(authClient: AuthClientProtocol, onLoginSuccess: @escaping (PublicUser) -> Void) {
+    let onLoginSuccess: (PublicUser) async -> Void
+
+    init(authClient: AuthClientProtocol, onLoginSuccess: @escaping (PublicUser) async -> Void) {
         self.authClient = authClient
         self.onLoginSuccess = onLoginSuccess
     }
@@ -31,7 +31,7 @@ class LoginViewModel: ObservableObject {
         let request = LoginRequest(email: email, password: password)
         do {
             let response = try await authClient.login(request: request)
-            onLoginSuccess(response.user)
+            await onLoginSuccess(response.user)
         } catch let error as ErrorResponse {
             if error.code == "TIMEOUT" {
                 infrastructureError = .timeout

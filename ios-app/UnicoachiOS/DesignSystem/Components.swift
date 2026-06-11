@@ -11,6 +11,10 @@ struct PrimaryButtonStyle: ButtonStyle {
         configuration.label
             .font(.dsButton)
             .foregroundStyle(Color.brandOnAccent)
+            // Intrinsic horizontal inset so the capsule has breathing room even in
+            // content-sized containers (e.g. ContentUnavailableView actions); the
+            // maxWidth below still stretches it edge-to-edge in full-width forms.
+            .padding(.horizontal, DSSpacing.lg)
             .frame(maxWidth: .infinity)
             .padding(.vertical, DSSpacing.md)
             .background(Color.brandAccent)
@@ -33,6 +37,10 @@ struct DestructiveButtonStyle: ButtonStyle {
         configuration.label
             .font(.dsButton)
             .foregroundStyle(Color.dsError)
+            // Intrinsic horizontal inset so the capsule has breathing room even in
+            // content-sized containers; the maxWidth below still stretches it
+            // edge-to-edge in full-width forms.
+            .padding(.horizontal, DSSpacing.lg)
             .frame(maxWidth: .infinity)
             .padding(.vertical, DSSpacing.md)
             .background(

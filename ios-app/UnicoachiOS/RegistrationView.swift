@@ -12,7 +12,7 @@ struct RegistrationView: View {
 
     @FocusState private var focusedField: FocusField?
 
-    init(authClient: AuthClientProtocol, onRegisterSuccess: @escaping (PublicUser) -> Void, onSwitchToLogin: @escaping () -> Void) {
+    init(authClient: AuthClientProtocol, onRegisterSuccess: @escaping (PublicUser) async -> Void, onSwitchToLogin: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: RegistrationViewModel(authClient: authClient, onRegisterSuccess: onRegisterSuccess))
         self.onSwitchToLogin = onSwitchToLogin
     }

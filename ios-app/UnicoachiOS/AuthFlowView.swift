@@ -3,8 +3,8 @@ import SwiftUI
 struct AuthFlowView: View {
     let authClient: AuthClientProtocol
     @State private var showingRegistration = false
-    let onLoginSuccess: (PublicUser) -> Void
-    let onRegisterSuccess: (PublicUser) -> Void
+    let onLoginSuccess: (PublicUser) async -> Void
+    let onRegisterSuccess: (PublicUser) async -> Void
     
     var body: some View {
         if showingRegistration {

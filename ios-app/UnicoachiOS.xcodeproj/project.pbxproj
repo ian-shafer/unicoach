@@ -32,6 +32,15 @@
 		AAAA00010000000000000B01 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00010000000000000F01 /* Theme.swift */; };
 		AAAA00010000000000000B02 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00010000000000000F02 /* Components.swift */; };
 		AAAA00010000000000000B03 /* ErrorResponseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00010000000000000F03 /* ErrorResponseTests.swift */; };
+		BBBB00010000000000000B01 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F01 /* APIClient.swift */; };
+		BBBB00010000000000000B02 /* StudentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F02 /* StudentClient.swift */; };
+		BBBB00010000000000000B03 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F03 /* OnboardingViewModel.swift */; };
+		BBBB00010000000000000B04 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F04 /* OnboardingView.swift */; };
+		BBBB00010000000000000B05 /* APIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F05 /* APIClientTests.swift */; };
+		BBBB00010000000000000B06 /* StudentClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F06 /* StudentClientTests.swift */; };
+		BBBB00010000000000000B07 /* MockStudentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F07 /* MockStudentClient.swift */; };
+		BBBB00010000000000000B08 /* OnboardingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */; };
+		BBBB00010000000000000B09 /* RandomFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F09 /* RandomFixtures.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -72,6 +81,15 @@
 		AAAA00010000000000000F01 /* Theme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		AAAA00010000000000000F02 /* Components.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		AAAA00010000000000000F03 /* ErrorResponseTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ErrorResponseTests.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F01 /* APIClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F02 /* StudentClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StudentClient.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F03 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F04 /* OnboardingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F05 /* APIClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = APIClientTests.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F06 /* StudentClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StudentClientTests.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F07 /* MockStudentClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockStudentClient.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingViewModelTests.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F09 /* RandomFixtures.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RandomFixtures.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -123,6 +141,10 @@
 				11EB23D4BA12D429EC020603 /* HomeView.swift */,
 				6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */,
 				CEA408B564E10F9E132951E2 /* CookieStorageProtocol.swift */,
+				BBBB00010000000000000F01 /* APIClient.swift */,
+				BBBB00010000000000000F02 /* StudentClient.swift */,
+				BBBB00010000000000000F03 /* OnboardingViewModel.swift */,
+				BBBB00010000000000000F04 /* OnboardingView.swift */,
 				AAAA00010000000000000A01 /* DesignSystem */,
 			);
 			name = UnicoachiOS;
@@ -164,6 +186,11 @@
 				D62AAE67DF17D5BF66357229 /* LoginViewModelTests.swift */,
 				008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */,
 				AAAA00010000000000000F03 /* ErrorResponseTests.swift */,
+				BBBB00010000000000000F05 /* APIClientTests.swift */,
+				BBBB00010000000000000F06 /* StudentClientTests.swift */,
+				BBBB00010000000000000F07 /* MockStudentClient.swift */,
+				BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */,
+				BBBB00010000000000000F09 /* RandomFixtures.swift */,
 			);
 			name = UnicoachiOSTests;
 			path = UnicoachiOSTests;
@@ -285,6 +312,10 @@
 				E18E82B50D2DECBF36C8CCFC /* CookieStorageProtocol.swift in Sources */,
 				AAAA00010000000000000B01 /* Theme.swift in Sources */,
 				AAAA00010000000000000B02 /* Components.swift in Sources */,
+				BBBB00010000000000000B01 /* APIClient.swift in Sources */,
+				BBBB00010000000000000B02 /* StudentClient.swift in Sources */,
+				BBBB00010000000000000B03 /* OnboardingViewModel.swift in Sources */,
+				BBBB00010000000000000B04 /* OnboardingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -298,6 +329,11 @@
 				B49688497600EA7DC3C15E64 /* LoginViewModelTests.swift in Sources */,
 				63C0E03A53327D2F2C1DF54B /* AppViewModelTests.swift in Sources */,
 				AAAA00010000000000000B03 /* ErrorResponseTests.swift in Sources */,
+				BBBB00010000000000000B05 /* APIClientTests.swift in Sources */,
+				BBBB00010000000000000B06 /* StudentClientTests.swift in Sources */,
+				BBBB00010000000000000B07 /* MockStudentClient.swift in Sources */,
+				BBBB00010000000000000B08 /* OnboardingViewModelTests.swift in Sources */,
+				BBBB00010000000000000B09 /* RandomFixtures.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

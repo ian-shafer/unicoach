@@ -39,7 +39,8 @@ class AuthClientTests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]
         session = URLSession(configuration: config)
-        authClient = AuthClient(baseURL: URL(string: "http://localhost:8080")!, session: session)
+        let apiClient = APIClient(baseURL: URL(string: "http://localhost:8080")!, session: session)
+        authClient = AuthClient(apiClient: apiClient)
     }
     
     func testSuccessfulRegistration() async throws {
