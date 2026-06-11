@@ -15,8 +15,10 @@ object StudentsDao {
    * Reconstructs the [PartialDate] from the decomposed columns. The DB
    * constraints already guarantee a valid partial date is persisted, so an
    * `Invalid` result here indicates row corruption, not user input. Surfaced as
-   * a [DatabaseException] (a [ed.unicoach.error.PermanentError] mapping error),
-   * never a user-facing validation failure.
+   * a [CorruptPersistedValueException] (a [ed.unicoach.error.PermanentError])
+   * carrying the offending decomposed columns and the structured
+   * [ed.unicoach.common.models.ValidationError], never a user-facing validation
+   * failure.
    */
   private fun mapGraduationDate(rs: ResultSet): PartialDate {
     val year = rs.getInt("expected_high_school_graduation_year")
@@ -31,7 +33,10 @@ object StudentsDao {
       }
 
       is ValidationResult.Invalid -> {
-        throw SQLException("Persisted graduation date columns do not form a valid partial date")
+        throw CorruptPersistedValueException(
+          value = "year=$year month=$month day=$day",
+          error = result.error,
+        )
       }
     }
   }

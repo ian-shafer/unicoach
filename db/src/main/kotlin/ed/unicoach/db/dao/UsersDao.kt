@@ -53,7 +53,7 @@ object UsersDao {
         }
 
         else -> {
-          throw SQLException("Invalid AuthMethod state in database")
+          throw CorruptPersistedAuthMethodException(userId = id)
         }
       }
 
@@ -107,7 +107,7 @@ object UsersDao {
         }
 
         else -> {
-          throw SQLException("Invalid AuthMethod state in database")
+          throw CorruptPersistedAuthMethodException(userId = id)
         }
       }
 

@@ -19,18 +19,19 @@ Their contracts are owned by `common`'s SPEC.
 
 ### Value Types (Inline Classes)
 
-- `DisplayName.create()` MUST trim whitespace. A blank-after-trim input MUST
-  return `ValidationResult.Invalid(BlankString)`.
-- `PersonName.create()` MUST trim whitespace. A blank-after-trim input MUST
-  return `ValidationResult.Invalid(BlankString)`.
-- `PasswordHash.create()` MUST trim whitespace. A blank-after-trim input MUST
-  return `ValidationResult.Invalid(BlankString)`.
-- `SsoProviderId.create()` MUST trim whitespace. A blank-after-trim input MUST
-  return `ValidationResult.Invalid(BlankString)`.
-- `ConvoName.create()` MUST trim whitespace. A blank-after-trim input MUST
-  return `ValidationResult.Invalid(BlankString)`. An input exceeding 255
-  characters after trim MUST return `ValidationResult.Invalid(TooLong)`.
-  `ConvoName`'s constructor is private; `create()` is the sole construction path.
+- [`DisplayName.create()`](./DisplayName.kt) MUST trim whitespace. A
+  blank-after-trim input MUST return `ValidationResult.Invalid(Blank)`.
+- [`PersonName.create()`](./PersonName.kt) MUST trim whitespace. A
+  blank-after-trim input MUST return `ValidationResult.Invalid(Blank)`.
+- [`PasswordHash.create()`](./PasswordHash.kt) MUST trim whitespace. A
+  blank-after-trim input MUST return `ValidationResult.Invalid(Blank)`.
+- [`SsoProviderId.create()`](./SsoProviderId.kt) MUST trim whitespace. A
+  blank-after-trim input MUST return `ValidationResult.Invalid(Blank)`.
+- [`ConvoName.create()`](./ConvoName.kt) MUST trim whitespace. A
+  blank-after-trim input MUST return `ValidationResult.Invalid(Blank)`. An
+  input exceeding 255 characters after trim MUST return
+  `ValidationResult.Invalid(TooLong(maxLength = 255))`. `ConvoName`'s
+  constructor is private; `create()` is the sole construction path.
 - All `@JvmInline value class` types (`UserId`, `StudentId`, `SessionId`,
   `DisplayName`, `PersonName`, `PasswordHash`, `SsoProviderId`, `ConvoId`,
   `ConvoRequestId`, `ConvoResponseId`, `SystemPromptId`, `ConvoName`) MUST expose
@@ -47,8 +48,8 @@ Their contracts are owned by `common`'s SPEC.
 
 ### TokenHash
 
-- `TokenHash` MUST enforce a non-empty `ByteArray` value at construction time;
-  an empty array MUST throw `IllegalArgumentException`.
+- [`TokenHash`](./TokenHash.kt) MUST enforce a non-empty `ByteArray` value at
+  construction time; an empty array MUST throw `IllegalArgumentException`.
 - `TokenHash.equals()` MUST use `ByteArray.contentEquals()`, not reference
   equality, to ensure structural token comparison.
 - `TokenHash.hashCode()` MUST use `ByteArray.contentHashCode()`.
@@ -59,19 +60,19 @@ Their contracts are owned by `common`'s SPEC.
 
 ### AuthMethod
 
-- `AuthMethod` is a sealed interface with exactly three variants: `Password`,
-  `SSO`, and `Both`. Adding variants MUST require a coordinated DAO and
-  migration change.
+- [`AuthMethod`](./AuthMethod.kt) is a sealed interface with exactly three
+  variants: `Password`, `SSO`, and `Both`. Adding variants MUST require a
+  coordinated DAO and migration change.
 - A `Password` variant MUST carry a `PasswordHash`. An `SSO` variant MUST carry
   a `SsoProviderId`. A `Both` variant MUST carry both.
 
 ### PartialDate
 
-- `PartialDate` is a domain-agnostic, `java.time`-backed sealed interface
-  modeling a variable-precision calendar value with exactly three variants:
-  `YearOnly` (year), `YearAndMonth` (year + month), and `FullDate` (year +
-  month + day). It carries no domain semantics (birthdate, deadline, graduation)
-  and MUST remain reusable.
+- [`PartialDate`](./PartialDate.kt) is a domain-agnostic, `java.time`-backed
+  sealed interface modeling a variable-precision calendar value with exactly
+  three variants: `YearOnly` (year), `YearAndMonth` (year + month), and
+  `FullDate` (year + month + day). It carries no domain semantics (birthdate,
+  deadline, graduation) and MUST remain reusable.
 - Every variant MUST expose `year: Year`, `month: Month?`, and `day: Int?`, with
   the unset components null at the variant's precision (`YearOnly` has null
   `month`/`day`; `YearAndMonth` has null `day`).
@@ -85,9 +86,12 @@ Their contracts are owned by `common`'s SPEC.
   `toIso()` are symmetric round-trips at every precision.
 - `PartialDate` MUST be constructed only via the `parse()` / `of()` factory
   methods or its variant constructors; neither factory throws — all failures are
-  expressed as `ValidationResult.Invalid`. Both factories use
-  `ValidationError.InvalidFormat` for every rejection; no new `ValidationError`
-  variant is introduced.
+  expressed as `ValidationResult.Invalid`. Every rejection from either factory
+  MUST return `Invalid(InvalidFormat)` carrying a description of the expected
+  forms.
+- Every `InvalidFormat` emitted by `parse()` and `of()` MUST carry the one
+  canonical expected-form description, defined exactly once on `PartialDate`. A
+  new rejection site MUST NOT introduce ad-hoc, divergent expected-form text.
 
 ### Aggregate Records
 
@@ -96,6 +100,7 @@ lifecycle class. The load-bearing guarantees are the capabilities a type
 DELIBERATELY OMITS and its input/snapshot contracts — never the mere presence of
 an identity, timestamp, or field, which the data class declarations already
 state.
+
 
 - **Mutable entities** — `User` and `Student` — are the only types here that are
   both `Versioned` and `SoftDeletable`: their `version` is an OCC counter and
@@ -178,14 +183,14 @@ actually has. There MUST be no welded multi-capability supertype.
 
 - **Side Effects**: None.
 - **Behavior**: Trims input, validates non-blank.
-- **Error Handling**: Returns `Invalid(BlankString)` for blank input after trim.
+- **Error Handling**: Returns `Invalid(Blank)` for blank input after trim.
 - **Idempotent**: Yes.
 
 ### `PersonName.create(value: String): ValidationResult<PersonName>`
 
 - **Side Effects**: None.
 - **Behavior**: Trims input, validates non-blank.
-- **Error Handling**: Returns `Invalid(BlankString)` for blank input after trim.
+- **Error Handling**: Returns `Invalid(Blank)` for blank input after trim.
 - **Idempotent**: Yes.
 
 ### `PasswordHash.create(value: String): ValidationResult<PasswordHash>`
@@ -194,14 +199,14 @@ actually has. There MUST be no welded multi-capability supertype.
 - **Behavior**: Trims input, validates non-blank. Does NOT hash the value —
   wraps a pre-computed hash string (caller is responsible for hashing before
   calling).
-- **Error Handling**: Returns `Invalid(BlankString)` for blank input after trim.
+- **Error Handling**: Returns `Invalid(Blank)` for blank input after trim.
 - **Idempotent**: Yes.
 
 ### `SsoProviderId.create(value: String): ValidationResult<SsoProviderId>`
 
 - **Side Effects**: None.
 - **Behavior**: Trims input, validates non-blank.
-- **Error Handling**: Returns `Invalid(BlankString)` for blank input after trim.
+- **Error Handling**: Returns `Invalid(Blank)` for blank input after trim.
 - **Idempotent**: Yes.
 
 ### `ConvoName.create(value: String): ValidationResult<ConvoName>`
@@ -227,7 +232,8 @@ actually has. There MUST be no welded multi-capability supertype.
   impossible calendar days.
 - **Error Handling**: Every rejection — failing regex, out-of-range month,
   impossible calendar day (`DateTimeParseException`/`DateTimeException`) —
-  returns `Invalid(InvalidFormat)`. No exception escapes the method.
+  returns `Invalid(InvalidFormat)` carrying the canonical expected-form
+  description. No exception escapes the method.
 - **Idempotent**: Yes. The accepted form equals `toIso()` output, so
   `parse(x.toIso())` round-trips at every precision.
 
@@ -241,7 +247,8 @@ actually has. There MUST be no welded multi-capability supertype.
   `java.time` (`Month.of` / `LocalDate.of`).
 - **Error Handling**: `day != null && month == null`, an out-of-range month, or
   an impossible calendar day (`DateTimeException`) returns
-  `Invalid(InvalidFormat)`. Because callers feed `of()` only components that
+  `Invalid(InvalidFormat)` carrying the canonical expected-form description.
+  Because callers feed `of()` only components that
   already satisfy the persistence layer's integrity guarantees, an `Invalid`
   from `of()` on a read path indicates row corruption, not user input.
 - **Idempotent**: Yes.
@@ -377,3 +384,10 @@ actually has. There MUST be no welded multi-capability supertype.
       domain-agnostic `SoftDeleteScope` read enum. Carved out
       `kotlinx.serialization.json` pure value types (`JsonElement`, `JsonObject`)
       from the no-framework-imports invariant to model JSONB columns.
+- [x] [RFC-40: Validation Error Reporting](../../../../../../../../rfc/40-validation-error-reporting.md)
+      — Renamed the blank-input rejection to `Blank` at the four string-factory
+      emit sites (`DisplayName`, `PersonName`, `PasswordHash`, `SsoProviderId`)
+      and at `ConvoName`; enriched `InvalidFormat` with the expected-form
+      description at `PartialDate`'s rejection sites via a single canonical
+      constant, and `ConvoName`'s `TooLong` rejection now carries its
+      `maxLength`.

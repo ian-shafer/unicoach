@@ -13,8 +13,8 @@ value class ConvoName private constructor(
     fun create(value: String): ValidationResult<ConvoName> {
       val t = value.trim()
       return when {
-        t.isBlank() -> ValidationResult.Invalid(ValidationError.BlankString)
-        t.length > MAX_LENGTH -> ValidationResult.Invalid(ValidationError.TooLong)
+        t.isBlank() -> ValidationResult.Invalid(ValidationError.Blank)
+        t.length > MAX_LENGTH -> ValidationResult.Invalid(ValidationError.TooLong(maxLength = MAX_LENGTH))
         else -> ValidationResult.Valid(ConvoName(t))
       }
     }

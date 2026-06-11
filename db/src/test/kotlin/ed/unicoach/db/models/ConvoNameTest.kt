@@ -15,11 +15,11 @@ class ConvoNameTest {
   }
 
   @Test
-  fun `create returns Invalid BlankString for blank-after-trim input`() {
+  fun `create returns Invalid Blank for blank-after-trim input`() {
     val result = ConvoName.create("   ")
     assertTrue(
-      result is ValidationResult.Invalid && result.error is ValidationError.BlankString,
-      "Expected Invalid(BlankString), got $result",
+      result is ValidationResult.Invalid && result.error is ValidationError.Blank,
+      "Expected Invalid(Blank), got $result",
     )
   }
 

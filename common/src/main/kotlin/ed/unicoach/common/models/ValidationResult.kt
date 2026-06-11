@@ -1,11 +1,15 @@
 package ed.unicoach.common.models
 
 sealed interface ValidationError {
-  data object BlankString : ValidationError
+  data object Blank : ValidationError
 
-  data object InvalidFormat : ValidationError
+  data class InvalidFormat(
+    val expected: String,
+  ) : ValidationError
 
-  data object TooLong : ValidationError
+  data class TooLong(
+    val maxLength: Int,
+  ) : ValidationError
 }
 
 sealed interface ValidationResult<out T> {

@@ -6,15 +6,24 @@ import kotlin.test.assertTrue
 
 class EmailAddressTest {
   @Test
-  fun `blank input is rejected as BlankString`() {
+  fun `blank input is rejected as Blank`() {
     val result = EmailAddress.create("   ")
-    assertTrue(result is ValidationResult.Invalid && result.error is ValidationError.BlankString)
+    assertTrue(result is ValidationResult.Invalid && result.error is ValidationError.Blank)
   }
 
   @Test
   fun `input without an at sign is rejected as InvalidFormat`() {
     val result = EmailAddress.create("noat")
     assertTrue(result is ValidationResult.Invalid && result.error is ValidationError.InvalidFormat)
+  }
+
+  @Test
+  fun `invalid-format error carries the expected email shape`() {
+    val result = EmailAddress.create("nope")
+    assertTrue(result is ValidationResult.Invalid)
+    val error = result.error
+    assertTrue(error is ValidationError.InvalidFormat)
+    assertEquals("local@domain", error.expected)
   }
 
   @Test

@@ -11,7 +11,7 @@ value class DisplayName private constructor(
     fun create(value: String): ValidationResult<DisplayName> {
       val t = value.trim()
       return if (t.isBlank()) {
-        ValidationResult.Invalid(ValidationError.BlankString)
+        ValidationResult.Invalid(ValidationError.Blank)
       } else {
         ValidationResult.Valid(DisplayName(t))
       }

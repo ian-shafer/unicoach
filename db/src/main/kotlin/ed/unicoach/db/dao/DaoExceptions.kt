@@ -1,5 +1,7 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.ValidationError
+import ed.unicoach.db.models.UserId
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 
@@ -38,6 +40,17 @@ class DatabaseException(
 ) : DaoException("General database error", cause),
   PermanentError
 
+class CorruptPersistedValueException(
+  val value: String,
+  val error: ValidationError,
+) : DaoException("Persisted value failed reconstruction"),
+  PermanentError
+
+class CorruptPersistedAuthMethodException(
+  val userId: UserId,
+) : DaoException("Persisted user row has no auth method"),
+  PermanentError
+
 class LockAcquisitionFailureException(
   message: String = "Lock acquisition failure",
 ) : DaoException(message),
@@ -49,6 +62,7 @@ class ConcurrentModificationException(
   TransientError
 
 fun mapDatabaseError(e: Exception): Exception {
+  if (e is DaoException) return e
   val sqlState = (e as? java.sql.SQLException)?.sqlState
   return if (sqlState != null && isTransientSqlState(sqlState)) {
     TransientDatabaseException(e)

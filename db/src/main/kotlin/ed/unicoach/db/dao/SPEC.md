@@ -52,7 +52,11 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
 
 - **`users` table**: The `password_hash` and `sso_provider_id` columns are
   synthesized into a sealed `AuthMethod` (variants: `Password`, `SSO`, or
-  `Both`).
+  `Both`). The DB constraints already guarantee at least one column is
+  non-NULL, so a row where both are NULL indicates row corruption, not user
+  input; mapping MUST throw `CorruptPersistedAuthMethodException` — a
+  `PermanentError` `DaoException` carrying the offending row's `UserId` —
+  never a user-facing validation failure.
 - Complex columns (e.g., `email`, `name`, `display_name`) are mapped into
   strongly-typed value classes (e.g., `EmailAddress`, `PersonName`) using their
   respective `.create()` factories, unwrapping `ValidationResult.Valid`.
@@ -62,8 +66,11 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
   NULL-state preserved through `ResultSet.wasNull`. The DB constraints already
   guarantee the persisted columns form a valid partial date, so a
   `ValidationResult.Invalid` on this read path indicates row corruption, not
-  user input; it MUST be surfaced as a `PermanentError` mapping failure
-  (`DatabaseException`), never as a user-facing validation failure.
+  user input; it MUST be surfaced as `CorruptPersistedValueException` — a
+  `PermanentError` `DaoException` carrying the offending decomposed column
+  values and the structured `ValidationError` — never as a user-facing
+  validation failure. The raw offending value rides on the exception, not on
+  `ValidationError`.
 - **`convos` table**: The persisted `name` is reconstructed via
   `ConvoName.create` (`parseConvoName`). The DB CHECK constraints already
   guarantee a non-empty, trimmed, ≤ 255-char name, so a
@@ -100,7 +107,7 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
 ### Immutable Columns
 
 - `id` and `{row_,}created_at` MUST NEVER appear in any `UPDATE ... SET` clause.
-- `{row_,}updated_at` and `version` are managed by database triggers and SHOULD
+- `{row_,}updated_at` and `version` are managed by database triggers and MUST
   NOT be set by DAO code (except `version` in the `SET` clause for OCC, which
   the trigger validates).
 
@@ -152,10 +159,11 @@ Specific error code mappings:
   `WHERE deleted_at IS NULL` predicate), so a soft-deleted student still
   reserves its owner's slot.
 - `23505` (other index) → `Result.failure(ConstraintViolationException())`.
-- `22008` (datetime field overflow) and `23514` (check violation) →
-  `Result.failure(ConstraintViolationException())`. On `StudentsDao` these
-  surface the `students` grad-date constraints as a permanent,
-  caller-correctable validation failure.
+- `22008` (datetime field overflow; `StudentsDao` only) and `23514` (check
+  violation) → `Result.failure(ConstraintViolationException())`. On
+  `StudentsDao` these surface the `students` grad-date constraints as a
+  permanent, caller-correctable validation failure. `UsersDao` routes `22008`
+  through the generic classification (→ `DatabaseException`).
 - `23503` (foreign key violation) on `StudentsDao` create/update →
   `Result.failure(NotFoundException())` (owning user absent).
 - `55P03` in any `*ForUpdate` method (issued via `SELECT ... FOR UPDATE NOWAIT`)
@@ -173,8 +181,15 @@ All other `SQLException` are classified into `TransientError` or
 | `57P*`          | Transient | Operator intervention             |
 | Everything else | Permanent | Syntax error, type mismatch       |
 
-Non-`SQLException` (e.g., `ClassCastException`) defaults to `DatabaseException`
-(Permanent) — these indicate application bugs.
+`mapDatabaseError` MUST return an already-domain-typed `DaoException`
+unchanged — it NEVER re-wraps one in `DatabaseException` or
+`TransientDatabaseException`. Corruption exceptions thrown inside row mappers
+(`CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`)
+therefore cross the catch-all `catch` boundary intact.
+
+Non-`DaoException` throwables that are also not `SQLException` (e.g.,
+`ClassCastException`) default to `DatabaseException` (Permanent) — these
+indicate application bugs.
 
 #### `ConvosDao` (`mapConvoError`)
 
@@ -326,6 +341,8 @@ All methods delegate through `executeSafely`. All session mutations target the
 
 - **Side Effects**: Write — inserts one row. `expires_at` is computed from the
   caller-supplied `expiration` duration.
+- **Error Handling**: No contractual errors. `Result.failure(DatabaseException)`
+  if `RETURNING` yields no row; all other failures classified per §II.
 - **Idempotency**: No.
 
 #### `remintToken(session, id, currentVersion, newUserId, newTokenHash, newExpirationSeconds): Result<Session>`
@@ -338,7 +355,8 @@ All methods delegate through `executeSafely`. All session mutations target the
 
 #### `extendExpiry(session, id, currentVersion): Result<Session>`
 
-- **Side Effects**: Read/write — extends expiry by 7 days.
+- **Side Effects**: Read/write — resets `expires_at` to 7 days from now
+  (absolute reset, not additive).
 - **Error Handling**: `Result.failure(NotFoundException())` on version mismatch,
   row absent, or already revoked.
 - **Idempotency**: No.
@@ -353,6 +371,7 @@ All methods delegate through `executeSafely`. All session mutations target the
 #### `expireZombieSessions(session): Result<Unit>`
 
 - **Side Effects**: Write — physically deletes all expired or revoked rows.
+- **Error Handling**: No contractual errors; failures classified per §II.
 - **Idempotency**: Yes.
 
 ---
@@ -528,8 +547,9 @@ fragments carrying no caller data; no user data is string-interpolated into SQL.
 ### Result Types — Kotlin `Result<T>`
 
 All DAO methods return standard Kotlin `Result<T>`. Exceptions are wrapped in
-`Result.failure()` and are derived from `DaoException` (which extends
-`RuntimeException` and may implement `TransientError` or `PermanentError`).
+`Result.failure()` and are derived from `DaoException` — defined in
+[DaoExceptions.kt](./DaoExceptions.kt) — which extends `RuntimeException` and
+may implement `TransientError` or `PermanentError`.
 
 SQLSTATE classification rules are documented in §II Postgres Error Codes.
 
@@ -604,3 +624,9 @@ SQLSTATE classification rules are documented in §II Postgres Error Codes.
       `convos`, and the `mapConvoError` SQLSTATE map (`23503`→per-FK
       `NotFoundException`, `23505`/`23514`→`ConstraintViolationException`); no
       new `DaoException` type.
+- [x] [RFC-40: Validation Error Reporting](../../../../../../../../rfc/40-validation-error-reporting.md)
+      — Added `CorruptPersistedValueException` and
+      `CorruptPersistedAuthMethodException` to `DaoExceptions.kt`; added the
+      `DaoException` pass-through guard in `mapDatabaseError`; row mappers now
+      throw corruption exceptions when persisted state fails domain
+      re-validation.

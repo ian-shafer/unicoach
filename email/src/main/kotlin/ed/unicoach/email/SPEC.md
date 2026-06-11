@@ -30,8 +30,9 @@ or transaction management lives in this package.
 - If the configured sender fails validation, `send` MUST return a permanent
   failure **before** invoking the provider, and MUST write no ledger row.
 - A `Sent` provider outcome MUST write exactly one ledger row with status `SENT`
-  (`providerMessageId` set, error message null) and return success carrying the
-  ledger row id and the provider message id.
+  (`providerMessageId` = the outcome's provider message id (nullable), error
+  message null) and return success carrying the ledger row id and the provider
+  message id.
 - A `Rejected` provider outcome MUST write exactly one ledger row with status
   `REJECTED` (error message = the provider's reason, `providerMessageId` null)
   and return a permanent failure.
@@ -58,12 +59,13 @@ or transaction management lives in this package.
 
 - `EmailSubject` and `EmailBody` MUST be constructed only via their `create`
   factory; the private constructor MUST NOT be reachable from outside the class.
-- `EmailSubject.create` MUST reject blank input as `Invalid(BlankString)` and
-  input exceeding `MAX_SUBJECT_LENGTH` (255) as `Invalid(TooLong)`; otherwise
-  `Valid`.
-- `EmailBody.create` MUST reject blank input as `Invalid(BlankString)` and input
-  exceeding `MAX_BODY_LENGTH` (65536 characters) as `Invalid(TooLong)`;
-  otherwise `Valid`. The bound is a character count, NOT a byte count.
+- `EmailSubject.create` MUST reject blank input as `Invalid(Blank)` and input
+  exceeding `MAX_SUBJECT_LENGTH` (255) as `Invalid(TooLong)` carrying the
+  violated maximum length; otherwise `Valid`.
+- `EmailBody.create` MUST reject blank input as `Invalid(Blank)` and input
+  exceeding `MAX_BODY_LENGTH` (65536 characters) as `Invalid(TooLong)` carrying
+  the violated maximum length; otherwise `Valid`. The bound is a character
+  count, NOT a byte count.
 - `create` factories MUST NEVER throw; all rejections MUST be expressed as
   `ValidationResult.Invalid`.
 - `OutboundEmail` MUST carry only already-validated domain types (`EmailAddress`
@@ -97,7 +99,8 @@ or transaction management lives in this package.
     failures, and any unrecognized error → `TransientFailure(reason)`.
 - An error the adapter does not recognize MUST map to `TransientFailure`, NEVER
   `Rejected`: a bounded retry is safer than silently dropping a deliverable
-  message. Each `reason` MUST carry the SES exception message verbatim.
+  message. Each `reason` MUST carry the SES exception message verbatim, falling
+  back to the exception class name when the message is absent.
 - `SesEmailProvider` MUST pin the UTF-8 charset on both subject and body
   content; it MUST NOT rely on the SES default (7-bit ASCII), which would mangle
   the non-ASCII text the value types admit.
@@ -124,7 +127,8 @@ or transaction management lives in this package.
 - Permanent, expected domain rejections MUST be modeled as `Rejected`/`Sent`
   outcomes and the `PermanentError`-tagged exceptions; retriable failures MUST
   be modeled as `TransientFailure` and the `TransientError`-tagged exception.
-  The three exceptions MUST carry the marker traits exactly as:
+  The three exceptions ([EmailExceptions.kt](./EmailExceptions.kt)) MUST carry
+  the marker traits exactly as:
   - `EmailConfigException : PermanentError` (invalid configured sender)
   - `EmailRejectedException : PermanentError` (provider permanent rejection)
   - `EmailDeliveryException : TransientError` (provider transient failure)
@@ -221,8 +225,8 @@ See [SesEmailProvider.kt](./SesEmailProvider.kt),
   throttling/quota, transport, and unrecognized errors → `TransientFailure`.
 - **Error Handling**: SES outcomes are returned as `ProviderResult` values,
   never thrown. Each `Rejected`/`TransientFailure` `reason` is the SES exception
-  message verbatim. An unrecognized error resolves to `TransientFailure`, not
-  `Rejected`.
+  message verbatim, falling back to the exception class name when the message is
+  absent. An unrecognized error resolves to `TransientFailure`, not `Rejected`.
 - **Idempotency**: No. Each `send` is one SES transmission; a retry
   re-transmits.
 
@@ -276,8 +280,8 @@ See [EmailSubject.kt](./EmailSubject.kt), [EmailBody.kt](./EmailBody.kt).
 - **Behavior**: Validate non-blank and within the maximum character length, then
   wrap. `EmailSubject` bound is `MAX_SUBJECT_LENGTH` (255); `EmailBody` bound is
   `MAX_BODY_LENGTH` (65536 characters).
-- **Error Handling**: `Invalid(BlankString)` for blank; `Invalid(TooLong)` for
-  over-length; never throws.
+- **Error Handling**: `Invalid(Blank)` for blank; `Invalid(TooLong)` carrying
+  the violated maximum length for over-length; never throws.
 - **Idempotent**: Yes.
 
 ### Collaborators (referenced, not owned here)
@@ -313,9 +317,9 @@ See [EmailSubject.kt](./EmailSubject.kt), [EmailBody.kt](./EmailBody.kt).
     `EMAIL_PROVIDER`);
   - `email.ses.region` (`"us-east-1"`, override `EMAIL_SES_REGION`);
   - `email.ses.accessKeyId` / `email.ses.secretAccessKey` — no packaged default,
-    set only via `EMAIL_SES_ACCESS_KEY_ID` / `EMAIL_SES_SECRET_ACCESS_KEY`;
-    absent unless both env vars are supplied (then static credentials, else the
-    AWS default credential chain).
+    set only via `EMAIL_SES_ACCESS_KEY_ID` / `EMAIL_SES_SECRET_ACCESS_KEY`; each
+    key is present only when its own env var is set. Static credentials are used
+    only when both are present, else the AWS default credential chain.
 
   `email.conf` MUST be on the `AppConfig.load(...)` resource list at any
   construction site; DB-backed tests load `common.conf`, `db.conf`,
@@ -335,8 +339,9 @@ See [EmailSubject.kt](./EmailSubject.kt), [EmailBody.kt](./EmailBody.kt).
       sender, transmit-then-record ordering, terminal-only ledger writes), the
       `EmailProvider` port and `ProviderResult` outcomes, the
       `LogOnlyEmailProvider` adapter (`id = "log"`), value types
-      `EmailSubject`/`EmailBody`/`OutboundEmail`/`SentEmail`, `EmailSendStatus`,
-      `EmailConfig`, and the `PermanentError`/`TransientError`-tagged
+      `EmailSubject`/`EmailBody`/`OutboundEmail`/`SentEmail`,
+      [`EmailSendStatus`](./EmailSendStatus.kt), `EmailConfig`, and the
+      `PermanentError`/`TransientError`-tagged
       exceptions. Consumes `EmailAddress`/`ValidationResult` relocated from `db`
       to `common`.
 - [x] [RFC-37: Amazon SES Email Provider](../../../../../../../rfc/37-ses-email-provider.md)
@@ -347,3 +352,6 @@ See [EmailSubject.kt](./EmailSubject.kt), [EmailBody.kt](./EmailBody.kt).
       credentials); and `SesConfig` plus the `email.provider`/`email.ses`
       configuration surface. Left idempotency, dedup, and production wiring
       deferred to the future queue RFC (consistent with RFC 34).
+- [x] [RFC-40: Validation Error Reporting](../../../../../../../rfc/40-validation-error-reporting.md)
+      — Renamed the blank rejection to `Blank`; `TooLong` rejections now carry
+      the violated `maxLength`.

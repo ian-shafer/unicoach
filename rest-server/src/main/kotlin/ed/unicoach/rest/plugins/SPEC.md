@@ -44,11 +44,20 @@ request/response in the `rest-server`. The plugins cover:
 - An unhandled `PayloadTooLargeException` MUST produce a `413 Payload Too Large`
   response with `code = "payload_too_large"`.
 - An unhandled `BadRequestException` MUST produce a `400 Bad Request` response
-  with `code = "bad_request"` and the fixed message `"Invalid JSON payload
-  structure"` (not derived from the cause).
+  with `code = "bad_request"` and a fixed message never derived from the
+  cause — Jackson parsing internals MUST NOT reach the client.
 - An unhandled `PermanentError` MUST produce `code = "permanent_error"` with a
-  status by subtype: `NotFoundException` → `404`, `DuplicateEmailException` →
-  `409`, any other `PermanentError` → `400`.
+  status partitioned by fault ownership:
+  - Server-fault subtypes — database faults and persisted-state corruption
+    (`DatabaseException`, `CorruptPersistedValueException`,
+    `CorruptPersistedAuthMethodException`) — MUST produce `500`. Persisted-state
+    corruption MUST NOT be presented as a client error; it is the server's
+    fault.
+  - Client-fault subtypes MUST keep their specific statuses:
+    `NotFoundException` → `404`, `DuplicateEmailException` → `409`.
+  - All remaining `PermanentError` subtypes MUST produce `400` — they are
+    client faults. A refactor flipping this fallback to `500` would wrongly
+    blame the server for client errors.
 - An unhandled `TransientError` MUST produce a `503 Service Unavailable`
   response with `code = "internal_error"`.
 - Any other `Throwable` MUST produce a `500 Internal Server Error` with
@@ -67,16 +76,15 @@ request/response in the `rest-server`. The plugins cover:
   `ignorePathPrefixes`.
 - The plugin MUST NOT enqueue when the response HTTP status is outside the
   `200–299` range.
-- Enqueue logic MUST run on `Dispatchers.IO` inside a fire-and-forget coroutine
-  launched on the application scope (`call.application.launch`).
+- Enqueue work MUST run in a fire-and-forget coroutine off the request
+  pipeline — application-scoped and IO-bound, never blocking the response.
 - The plugin MUST NEVER propagate exceptions to the caller — all errors MUST be
   caught, logged at `error` level, and swallowed.
 - On server shutdown, in-flight fire-and-forget coroutines are silently
   cancelled by Ktor. This is an accepted trade-off; the next request
   re-enqueues.
-- `SessionExpiryPluginConfig` MUST declare `sessionConfig` and `queueService`
-  as `lateinit var`. Accessing either field without prior assignment MUST throw
-  `UninitializedPropertyAccessException` at plugin startup.
+- Plugin installation MUST fail at startup if `sessionConfig` or `queueService`
+  is unassigned — both are required configuration with no defaults.
 - The token hash transmitted in the queue payload MUST be the SHA-256 hash of
   the raw cookie value, Base64-encoded (standard, not URL-safe), computed via
   `TokenHash.fromRawToken(token)`.
@@ -127,7 +135,8 @@ request/response in the `rest-server`. The plugins cover:
   | `PayloadTooLargeException` | 413 | `"payload_too_large"` | `"Request body exceeds the maximum allowed size"` |
   | `BadRequestException` | 400 | `"bad_request"` | `"Invalid JSON payload structure"` (fixed) |
   | `UnsupportedMediaTypeException` | 415 | `"unsupported_media_type"` | `cause.message ?: "Unsupported media type"` |
-  | `PermanentError` | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (other) | `"permanent_error"` | `cause.message ?: "Bad request"` |
+  | `PermanentError` (client fault) | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (any other subtype) | `"permanent_error"` | `cause.message ?: "Bad request"` |
+  | `PermanentError` (server fault: `DatabaseException`, `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`) | 500 | `"permanent_error"` | `cause.message ?: "Bad request"` |
   | `TransientError` | 503 | `"internal_error"` | `cause.message ?: "Internal server error"` |
 
 - **Dispatch**: `StatusPages` routes to the handler for the most specific
@@ -227,3 +236,4 @@ request/response in the `rest-server`. The plugins cover:
 - [x] [RFC-24: Result Types](../../../../../../../../rfc/24-result-types.md) — reworked `StatusPages.kt` exception mapping (`permanent_error` / `internal_error` codes, subtype-driven status).
 - [x] [RFC-29: Request Payload Limits](../../../../../../../../rfc/29-request-payload-limits.md) — introduced `RequestSizeLimit.kt`; added the `413`/`PayloadTooLargeException` handler in `StatusPages.kt`.
 - [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md) — registered the Jackson `JavaTimeModule` and disabled `WRITE_DATES_AS_TIMESTAMPS` in `Serialization.kt` so `Instant` response fields serialize as ISO-8601 strings.
+- [x] [RFC-40: Validation Error Reporting](../../../../../../../../rfc/40-validation-error-reporting.md) — mapped server-fault `PermanentError`s (`DatabaseException`, `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`) to `500` in `StatusPages.kt`; client-fault mappings unchanged.

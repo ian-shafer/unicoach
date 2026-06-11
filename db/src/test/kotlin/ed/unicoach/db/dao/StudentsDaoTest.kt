@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
@@ -165,6 +166,62 @@ class StudentsDaoTest {
       assertNotNull(insertRaw(2028, 13, null), "month 13 should be rejected")
       assertNotNull(insertRaw(2028, null, 15), "orphan day should be rejected")
       assertNotNull(insertRaw(2028, 2, 31), "Feb 31 should be rejected")
+    } finally {
+      connection.rollback()
+      connection.autoCommit = true
+    }
+  }
+
+  @Test
+  fun `findById on a corrupt graduation date returns failure with CorruptPersistedValueException`() {
+    val u = createUser()
+
+    // The CHECK constraints mirror PartialDate.of, so a corrupt row is unreachable
+    // through a constraint-valid insert. Force it transactionally: drop the two
+    // constraints the month-null/day-non-null row violates, insert the corrupt row,
+    // read it back through the same connection, then roll everything back. DDL is
+    // transactional in Postgres, so the dropped constraints and corrupt row vanish.
+    connection.autoCommit = false
+    try {
+      connection.createStatement().use { stmt ->
+        stmt.execute("ALTER TABLE students DROP CONSTRAINT grad_day_requires_month")
+        stmt.execute("ALTER TABLE students DROP CONSTRAINT grad_date_valid")
+      }
+
+      val studentId =
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO students (user_id, expected_high_school_graduation_year,
+              expected_high_school_graduation_month, expected_high_school_graduation_day)
+            VALUES (?, ?, NULL, ?)
+            RETURNING id
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, u.value)
+            stmt.setInt(2, 2028)
+            stmt.setInt(3, 15)
+            stmt.executeQuery().use { rs ->
+              rs.next()
+              StudentId(UUID.fromString(rs.getString("id")))
+            }
+          }
+
+      val result = StudentsDao.findById(session, studentId)
+      assertTrue(result.isFailure, "Expected failure for a corrupt graduation date, got $result")
+      val error = result.exceptionOrNull()
+      assertTrue(
+        error is CorruptPersistedValueException,
+        "Expected CorruptPersistedValueException, got $error",
+      )
+      assertTrue(
+        error.error is ValidationError.InvalidFormat,
+        "Expected the carried error to be InvalidFormat, got ${error.error}",
+      )
+      assertTrue(
+        error.value.contains("month=null") && error.value.contains("day=15"),
+        "Expected the carried value to name the offending columns, got '${error.value}'",
+      )
     } finally {
       connection.rollback()
       connection.autoCommit = true

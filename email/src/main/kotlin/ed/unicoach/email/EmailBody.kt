@@ -14,8 +14,8 @@ value class EmailBody private constructor(
 
     fun create(value: String): ValidationResult<EmailBody> =
       when {
-        value.isBlank() -> ValidationResult.Invalid(ValidationError.BlankString)
-        value.length > MAX_BODY_LENGTH -> ValidationResult.Invalid(ValidationError.TooLong)
+        value.isBlank() -> ValidationResult.Invalid(ValidationError.Blank)
+        value.length > MAX_BODY_LENGTH -> ValidationResult.Invalid(ValidationError.TooLong(maxLength = MAX_BODY_LENGTH))
         else -> ValidationResult.Valid(EmailBody(value))
       }
   }

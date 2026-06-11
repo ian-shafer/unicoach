@@ -57,10 +57,15 @@ sealed interface PartialDate {
     // Zero-padded canonical forms only: YYYY, YYYY-MM, YYYY-MM-DD.
     private val CANONICAL = Regex("""^\d{4}(-\d{2}(-\d{2})?)?$""")
 
+    // The canonical zero-padded forms [parse] accepts and [of] mirrors. Defined
+    // once and supplied to every InvalidFormat site so the expected shape is not
+    // duplicated across them.
+    const val EXPECTED_FORM = "YYYY | YYYY-MM | YYYY-MM-DD"
+
     /** Wire string -> domain. Accepts only the zero-padded canonical ISO forms. */
     fun parse(iso: String): ValidationResult<PartialDate> {
       if (!CANONICAL.matches(iso)) {
-        return ValidationResult.Invalid(ValidationError.InvalidFormat)
+        return ValidationResult.Invalid(ValidationError.InvalidFormat(expected = EXPECTED_FORM))
       }
       return try {
         val parsed =
@@ -80,9 +85,9 @@ sealed interface PartialDate {
           }
         ValidationResult.Valid(parsed)
       } catch (e: DateTimeParseException) {
-        ValidationResult.Invalid(ValidationError.InvalidFormat)
+        ValidationResult.Invalid(ValidationError.InvalidFormat(expected = EXPECTED_FORM))
       } catch (e: DateTimeException) {
-        ValidationResult.Invalid(ValidationError.InvalidFormat)
+        ValidationResult.Invalid(ValidationError.InvalidFormat(expected = EXPECTED_FORM))
       }
     }
 
@@ -93,7 +98,7 @@ sealed interface PartialDate {
       day: Int?,
     ): ValidationResult<PartialDate> {
       if (day != null && month == null) {
-        return ValidationResult.Invalid(ValidationError.InvalidFormat)
+        return ValidationResult.Invalid(ValidationError.InvalidFormat(expected = EXPECTED_FORM))
       }
       return try {
         val parsed =
@@ -104,7 +109,7 @@ sealed interface PartialDate {
           }
         ValidationResult.Valid(parsed)
       } catch (e: DateTimeException) {
-        ValidationResult.Invalid(ValidationError.InvalidFormat)
+        ValidationResult.Invalid(ValidationError.InvalidFormat(expected = EXPECTED_FORM))
       }
     }
   }

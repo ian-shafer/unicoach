@@ -12,8 +12,8 @@ value class EmailSubject private constructor(
 
     fun create(value: String): ValidationResult<EmailSubject> =
       when {
-        value.isBlank() -> ValidationResult.Invalid(ValidationError.BlankString)
-        value.length > MAX_SUBJECT_LENGTH -> ValidationResult.Invalid(ValidationError.TooLong)
+        value.isBlank() -> ValidationResult.Invalid(ValidationError.Blank)
+        value.length > MAX_SUBJECT_LENGTH -> ValidationResult.Invalid(ValidationError.TooLong(maxLength = MAX_SUBJECT_LENGTH))
         else -> ValidationResult.Valid(EmailSubject(value))
       }
   }

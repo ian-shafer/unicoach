@@ -8,8 +8,8 @@ value class EmailAddress private constructor(
     fun create(value: String): ValidationResult<EmailAddress> {
       val t = value.trim().lowercase()
       return when {
-        t.isBlank() -> ValidationResult.Invalid(ValidationError.BlankString)
-        !hasInteriorAtSign(t) -> ValidationResult.Invalid(ValidationError.InvalidFormat)
+        t.isBlank() -> ValidationResult.Invalid(ValidationError.Blank)
+        !hasInteriorAtSign(t) -> ValidationResult.Invalid(ValidationError.InvalidFormat(expected = "local@domain"))
         else -> ValidationResult.Valid(EmailAddress(t))
       }
     }

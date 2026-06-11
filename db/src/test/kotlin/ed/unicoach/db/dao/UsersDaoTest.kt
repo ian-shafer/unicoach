@@ -386,4 +386,40 @@ class UsersDaoTest {
     assertTrue(v4User.name == nameV1, "Name was safely restored to V1 configuration")
     assertTrue(v4User.version == v3User.version + 1, "Version mathematically incremented accurately")
   }
+
+  @Test
+  fun `findVersion on a both-null auth row returns failure with CorruptPersistedAuthMethodException`() {
+    val rawId = java.util.UUID.randomUUID()
+    val userId = UserId(rawId)
+
+    // Insert a normal user; the versioning trigger writes its version-1 row into
+    // users_versions. The base users table forbids the both-null auth state via
+    // users_auth_method_check, but users_versions has no such constraint, so we
+    // null both auth columns there to force the corruption reachable via findVersion.
+    connection.createStatement().use { stmt ->
+      stmt.execute(
+        "INSERT INTO users (id, email, name, password_hash) VALUES ('$rawId', 'corrupt-$rawId@test.com', 'Corrupt User', 'ahash')",
+      )
+    }
+    connection
+      .prepareStatement(
+        "UPDATE users_versions SET password_hash = NULL, sso_provider_id = NULL WHERE id = ? AND version = ?",
+      ).use { stmt ->
+        stmt.setObject(1, rawId)
+        stmt.setInt(2, 1)
+        stmt.executeUpdate()
+      }
+
+    val result = UsersDao.findVersion(session, userId, targetVersion = 1)
+    assertTrue(result.isFailure, "Expected failure for a both-null auth version row, got $result")
+    val error = result.exceptionOrNull()
+    assertTrue(
+      error is CorruptPersistedAuthMethodException,
+      "Expected CorruptPersistedAuthMethodException, got $error",
+    )
+    assertTrue(
+      error.userId == userId,
+      "Expected the carried userId to equal the inserted id, got ${error.userId}",
+    )
+  }
 }

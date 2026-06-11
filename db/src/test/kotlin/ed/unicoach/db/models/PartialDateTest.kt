@@ -86,4 +86,28 @@ class PartialDateTest {
     assertTrue(PartialDate.of(2028, 13, null) is ValidationResult.Invalid)
     assertTrue(PartialDate.of(2028, null, 15) is ValidationResult.Invalid)
   }
+
+  @Test
+  fun `parse rejects with InvalidFormat carrying the canonical forms`() {
+    val outOfRange = PartialDate.parse("2028-13")
+    assertTrue(outOfRange is ValidationResult.Invalid)
+    val rangeError = outOfRange.error
+    assertTrue(rangeError is ValidationError.InvalidFormat)
+    assertEquals("YYYY | YYYY-MM | YYYY-MM-DD", rangeError.expected)
+
+    val nonCanonical = PartialDate.parse("notadate")
+    assertTrue(nonCanonical is ValidationResult.Invalid)
+    val shapeError = nonCanonical.error
+    assertTrue(shapeError is ValidationError.InvalidFormat)
+    assertEquals("YYYY | YYYY-MM | YYYY-MM-DD", shapeError.expected)
+  }
+
+  @Test
+  fun `of rejects day-without-month with InvalidFormat carrying the canonical forms`() {
+    val result = PartialDate.of(2028, null, 15)
+    assertTrue(result is ValidationResult.Invalid)
+    val error = result.error
+    assertTrue(error is ValidationError.InvalidFormat)
+    assertEquals("YYYY | YYYY-MM | YYYY-MM-DD", error.expected)
+  }
 }
