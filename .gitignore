@@ -6,8 +6,9 @@ var/
 *.swp
 ios-app/UnicoachiOS.xcodeproj/project.xcworkspace/xcuserdata/ian.xcuserdatad/UserInterfaceState.xcuserstate
 
-# Transient RFC-pipeline output (RFC backups, diff artifacts)
-/.scratch/
+# Transient RFC-pipeline output (RFC backups, diff artifacts, build/test logs).
+# Non-anchored so .scratch/ under any subdirectory (e.g. ios-app/.scratch/) is ignored.
+.scratch/
 
 # Deno lockfile regenerated on every deno run/eval (OpenAPI spec validation)
 /deno.lock

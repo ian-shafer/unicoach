@@ -150,6 +150,24 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.authState, .authenticated(user))
     }
 
+    func testOnStudentProfileRequiredRoutesAuthenticatedToOnboarding() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        viewModel.authState = .authenticated(user)
+
+        viewModel.onStudentProfileRequired()
+
+        XCTAssertEqual(viewModel.authState, .onboarding(user))
+        XCTAssertEqual(mockStudentClient.fetchProfileCallCount, 0)
+    }
+
+    func testOnStudentProfileRequiredNoOpFromNonAuthenticated() async {
+        viewModel.authState = .unauthenticated
+
+        viewModel.onStudentProfileRequired()
+
+        XCTAssertEqual(viewModel.authState, .unauthenticated)
+    }
+
     func testLogoutTransitionsToUnauthenticatedOnFailure() async {
         viewModel.authState = .authenticated(PublicUser(id: UUID(), email: "test@example.com", name: "Test"))
         mockClient.logoutResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Error", fieldErrors: nil))

@@ -2,8 +2,16 @@ import Foundation
 import os
 
 final class APIClient: @unchecked Sendable {
+    /// Inter-chunk idle timeout for streaming requests. Larger than the request
+    /// session's `10`: a short timeout would abort a slow time-to-first-token.
+    static let streamIdleTimeout: TimeInterval = 60
+
     let baseURL: URL
     let session: URLSession
+    /// A second session for streaming requests. A dedicated session is used
+    /// because a per-request `timeoutInterval` cannot reliably extend a
+    /// session-level value, and streaming needs the longer idle timeout.
+    let streamSession: URLSession
     private let logger = Logger(subsystem: "com.unicoach.UnicoachiOS", category: "APIClient")
 
     /// Decoder configured for the server's ISO-8601 `Instant` timestamps (Jackson
@@ -12,7 +20,7 @@ final class APIClient: @unchecked Sendable {
     /// on a whole second. The default `.deferredToDate` strategy expects a numeric
     /// timestamp and fails on these; plain `.iso8601` rejects fractional seconds.
     /// So we try a fractional then a no-fraction formatter.
-    private let jsonDecoder: JSONDecoder = {
+    let jsonDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -46,11 +54,17 @@ final class APIClient: @unchecked Sendable {
     init(baseURL: URL = URL(string: "http://localhost:8080")!, session: URLSession? = nil) {
         self.baseURL = baseURL
         if let session = session {
+            // Injected (tests): the same session backs both request and stream paths.
             self.session = session
+            self.streamSession = session
         } else {
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 10.0
-            self.session = URLSession(configuration: config)
+            let requestConfig = URLSessionConfiguration.default
+            requestConfig.timeoutIntervalForRequest = 10.0
+            self.session = URLSession(configuration: requestConfig)
+
+            let streamConfig = URLSessionConfiguration.default
+            streamConfig.timeoutIntervalForRequest = APIClient.streamIdleTimeout
+            self.streamSession = URLSession(configuration: streamConfig)
         }
     }
 
@@ -101,12 +115,8 @@ final class APIClient: @unchecked Sendable {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: urlRequest)
-        } catch let nsError as NSError where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
-            logger.error("Request timed out: [\(method, privacy: .public)] [\(path, privacy: .public)]")
-            throw ErrorResponse(code: "TIMEOUT", message: String(localized: "Network request timed out."), fieldErrors: nil)
         } catch {
-            logger.error("Network error: [\(method, privacy: .public)] [\(path, privacy: .public)]: [\(error, privacy: .public)]")
-            throw ErrorResponse(code: "NETWORK_ERROR", message: error.localizedDescription, fieldErrors: nil)
+            throw transportError(error)
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -116,6 +126,63 @@ final class APIClient: @unchecked Sendable {
 
         logger.debug("Received HTTP status [\(httpResponse.statusCode, privacy: .public)] for [\(method, privacy: .public)] [\(path, privacy: .public)]")
         return (data, httpResponse)
+    }
+
+    /// Issues a streaming `POST` request, returning the live byte stream once
+    /// headers arrive. Builds the request exactly as `perform` does (`POST`,
+    /// `Content-Type: application/json`, encoded body) plus an `Accept` header.
+    /// Connection-phase transport failures map through `transportError`; a
+    /// non-`HTTPURLResponse` throws `UNKNOWN`. On a status mismatch, the buffered
+    /// body is drained and the decoded `ErrorResponse` (or `SERVER_ERROR` on an
+    /// unparseable body) is thrown. SSE semantics remain the caller's job.
+    func stream<B: Encodable>(_ path: String, body: B, accept: String, expectedStatus: Int) async throws -> URLSession.AsyncBytes {
+        guard let url = URL(string: path, relativeTo: baseURL) else {
+            throw URLError(.badURL)
+        }
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue(accept, forHTTPHeaderField: "Accept")
+        urlRequest.httpBody = try JSONEncoder().encode(body)
+
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await streamSession.bytes(for: urlRequest)
+        } catch {
+            throw transportError(error)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            logger.error("Non-HTTP response: [POST] [\(path, privacy: .public)]")
+            throw ErrorResponse(code: "UNKNOWN", message: String(localized: "Unknown response type"), fieldErrors: nil)
+        }
+
+        logger.debug("Received HTTP status [\(httpResponse.statusCode, privacy: .public)] for [POST] [\(path, privacy: .public)]")
+
+        if httpResponse.statusCode != expectedStatus {
+            var data = Data()
+            for try await byte in bytes {
+                data.append(byte)
+            }
+            throw decodeError(data: data)
+        }
+        return bytes
+    }
+
+    /// Maps a transport-layer failure into the shared error vocabulary:
+    /// `NSURLErrorTimedOut` → `TIMEOUT`, anything else → `NETWORK_ERROR`. Used by
+    /// `perform`/`stream` for connection-phase failures and by `ConversationClient`
+    /// for failures thrown mid-iteration by `AsyncBytes` (outside `stream()`).
+    func transportError(_ error: Error) -> ErrorResponse {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
+            logger.error("Request timed out: [\(error, privacy: .public)]")
+            return ErrorResponse(code: "TIMEOUT", message: String(localized: "Network request timed out."), fieldErrors: nil)
+        }
+        logger.error("Network error: [\(error, privacy: .public)]")
+        return ErrorResponse(code: "NETWORK_ERROR", message: error.localizedDescription, fieldErrors: nil)
     }
 
     private func decodeError(data: Data) -> ErrorResponse {

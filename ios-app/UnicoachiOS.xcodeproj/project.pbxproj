@@ -41,6 +41,14 @@
 		BBBB00010000000000000B07 /* MockStudentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F07 /* MockStudentClient.swift */; };
 		BBBB00010000000000000B08 /* OnboardingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */; };
 		BBBB00010000000000000B09 /* RandomFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F09 /* RandomFixtures.swift */; };
+		AAAA00020000000000000B01 /* SSEParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F01 /* SSEParser.swift */; };
+		AAAA00020000000000000B02 /* ConversationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F02 /* ConversationClient.swift */; };
+		AAAA00020000000000000B03 /* NewConversationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F03 /* NewConversationViewModel.swift */; };
+		AAAA00020000000000000B04 /* NewConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F04 /* NewConversationView.swift */; };
+		AAAA00020000000000000B05 /* SSEParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F05 /* SSEParserTests.swift */; };
+		AAAA00020000000000000B06 /* ConversationClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F06 /* ConversationClientTests.swift */; };
+		AAAA00020000000000000B07 /* NewConversationViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F07 /* NewConversationViewModelTests.swift */; };
+		AAAA00020000000000000B08 /* MockConversationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F08 /* MockConversationClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -90,6 +98,14 @@
 		BBBB00010000000000000F07 /* MockStudentClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockStudentClient.swift; sourceTree = "<group>"; };
 		BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingViewModelTests.swift; sourceTree = "<group>"; };
 		BBBB00010000000000000F09 /* RandomFixtures.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RandomFixtures.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F01 /* SSEParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F02 /* ConversationClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationClient.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F03 /* NewConversationViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NewConversationViewModel.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F04 /* NewConversationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NewConversationView.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F05 /* SSEParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SSEParserTests.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F06 /* ConversationClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationClientTests.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F07 /* NewConversationViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NewConversationViewModelTests.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F08 /* MockConversationClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockConversationClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -145,6 +161,10 @@
 				BBBB00010000000000000F02 /* StudentClient.swift */,
 				BBBB00010000000000000F03 /* OnboardingViewModel.swift */,
 				BBBB00010000000000000F04 /* OnboardingView.swift */,
+				AAAA00020000000000000F01 /* SSEParser.swift */,
+				AAAA00020000000000000F02 /* ConversationClient.swift */,
+				AAAA00020000000000000F03 /* NewConversationViewModel.swift */,
+				AAAA00020000000000000F04 /* NewConversationView.swift */,
 				AAAA00010000000000000A01 /* DesignSystem */,
 			);
 			name = UnicoachiOS;
@@ -191,6 +211,10 @@
 				BBBB00010000000000000F07 /* MockStudentClient.swift */,
 				BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */,
 				BBBB00010000000000000F09 /* RandomFixtures.swift */,
+				AAAA00020000000000000F05 /* SSEParserTests.swift */,
+				AAAA00020000000000000F06 /* ConversationClientTests.swift */,
+				AAAA00020000000000000F07 /* NewConversationViewModelTests.swift */,
+				AAAA00020000000000000F08 /* MockConversationClient.swift */,
 			);
 			name = UnicoachiOSTests;
 			path = UnicoachiOSTests;
@@ -316,6 +340,10 @@
 				BBBB00010000000000000B02 /* StudentClient.swift in Sources */,
 				BBBB00010000000000000B03 /* OnboardingViewModel.swift in Sources */,
 				BBBB00010000000000000B04 /* OnboardingView.swift in Sources */,
+				AAAA00020000000000000B01 /* SSEParser.swift in Sources */,
+				AAAA00020000000000000B02 /* ConversationClient.swift in Sources */,
+				AAAA00020000000000000B03 /* NewConversationViewModel.swift in Sources */,
+				AAAA00020000000000000B04 /* NewConversationView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -334,6 +362,10 @@
 				BBBB00010000000000000B07 /* MockStudentClient.swift in Sources */,
 				BBBB00010000000000000B08 /* OnboardingViewModelTests.swift in Sources */,
 				BBBB00010000000000000B09 /* RandomFixtures.swift in Sources */,
+				AAAA00020000000000000B05 /* SSEParserTests.swift in Sources */,
+				AAAA00020000000000000B06 /* ConversationClientTests.swift in Sources */,
+				AAAA00020000000000000B07 /* NewConversationViewModelTests.swift in Sources */,
+				AAAA00020000000000000B08 /* MockConversationClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

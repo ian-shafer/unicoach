@@ -62,3 +62,62 @@ struct PublicStudent: Codable, Equatable {
 struct StudentResponse: Codable {
     let student: PublicStudent
 }
+
+// MARK: - Conversation domain models
+
+enum MessageRole: String, Codable, Sendable {
+    case user
+    case coach
+}
+
+struct Message: Codable, Sendable, Identifiable, Equatable {
+    let id: String        // opaque; never parsed
+    let role: MessageRole
+    let content: String
+    let createdAt: Date
+}
+
+struct Conversation: Codable, Sendable, Identifiable, Equatable {
+    let id: UUID         // contract: uuid-format string; decoded as UUID
+    let name: String
+    let createdAt: Date
+    let updatedAt: Date
+    let lastActivityAt: Date?
+    let archivedAt: Date?
+}
+
+struct CreateConversationRequest: Codable, Sendable {
+    let message: String
+    let name: String?     // always nil this iteration; server derives the name
+}
+
+// MARK: - Stream domain event
+
+enum ConversationStreamEvent: Sendable {
+    case conversation(Conversation, userMessage: Message)
+    case delta(String)
+    case completed(Message)
+}
+
+// MARK: - Wire DTOs (SSE frame decoding)
+
+struct ConversationCreatedFrame: Codable {
+    let type: String
+    let conversation: Conversation
+    let userMessage: Message
+}
+
+struct MessageDeltaFrame: Codable {
+    let type: String
+    let text: String
+}
+
+struct MessageCompletedFrame: Codable {
+    let type: String
+    let message: Message
+}
+
+struct StreamErrorFrame: Codable {
+    let type: String
+    let error: ErrorResponse
+}

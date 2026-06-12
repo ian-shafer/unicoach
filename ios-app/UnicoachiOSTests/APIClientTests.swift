@@ -182,4 +182,115 @@ class APIClientTests: XCTestCase {
             XCTAssertEqual(error.code, "CONFLICT")
         }
     }
+
+    // MARK: - stream
+
+    private func drain(_ bytes: URLSession.AsyncBytes) async throws -> Data {
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+        }
+        return data
+    }
+
+    func testStreamRequestShape() async throws {
+        let payload = SamplePayload(value: "hello")
+        let expectation = expectation(description: "request inspected")
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/stream")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+            let body = request.resolvedBody!
+            let decoded = try JSONDecoder().decode(SamplePayload.self, from: body)
+            XCTAssertEqual(decoded, payload)
+            expectation.fulfill()
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+
+        let bytes = try await apiClient.stream("/api/v1/stream", body: payload, accept: "text/event-stream", expectedStatus: 200)
+        _ = try await drain(bytes)
+        await fulfillment(of: [expectation], timeout: 2)
+    }
+
+    func testStreamSuccessReplaysBody() async throws {
+        let bodyText = "data: one\n\ndata: two\n\n"
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(bodyText.utf8))
+        }
+
+        let bytes = try await apiClient.stream("/api/v1/stream", body: SamplePayload(value: "x"), accept: "text/event-stream", expectedStatus: 200)
+        let data = try await drain(bytes)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), bodyText)
+    }
+
+    func testStreamStatusMismatchThrowsErrorResponse() async throws {
+        let errorPayload = ErrorResponse(code: "student_profile_required", message: "no profile", fieldErrors: nil)
+        let errorData = try JSONEncoder().encode(errorPayload)
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await apiClient.stream("/api/v1/stream", body: SamplePayload(value: "x"), accept: "text/event-stream", expectedStatus: 200)
+            XCTFail("Should have thrown")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "student_profile_required")
+        }
+    }
+
+    func testStreamStatusMismatchNonJSONThrowsServerError() async throws {
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, "Internal Server Error".data(using: .utf8)!)
+        }
+
+        do {
+            _ = try await apiClient.stream("/api/v1/stream", body: SamplePayload(value: "x"), accept: "text/event-stream", expectedStatus: 200)
+            XCTFail("Should have thrown")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "SERVER_ERROR")
+        }
+    }
+
+    func testStreamConnectionTimeoutThrowsTimeout() async throws {
+        MockURLProtocol.requestHandler = { _ in
+            throw NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut, userInfo: nil)
+        }
+
+        do {
+            _ = try await apiClient.stream("/api/v1/stream", body: SamplePayload(value: "x"), accept: "text/event-stream", expectedStatus: 200)
+            XCTFail("Should have thrown")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "TIMEOUT")
+        }
+    }
+
+    func testStreamConnectionFailureThrowsNetworkError() async throws {
+        MockURLProtocol.requestHandler = { _ in
+            throw NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet, userInfo: nil)
+        }
+
+        do {
+            _ = try await apiClient.stream("/api/v1/stream", body: SamplePayload(value: "x"), accept: "text/event-stream", expectedStatus: 200)
+            XCTFail("Should have thrown")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "NETWORK_ERROR")
+        }
+    }
+
+    // MARK: - transportError
+
+    func testTransportErrorMapsTimedOut() {
+        let nsError = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut, userInfo: nil)
+        XCTAssertEqual(apiClient.transportError(nsError).code, "TIMEOUT")
+    }
+
+    func testTransportErrorMapsOtherToNetworkError() {
+        let nsError = NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost, userInfo: nil)
+        XCTAssertEqual(apiClient.transportError(nsError).code, "NETWORK_ERROR")
+    }
 }

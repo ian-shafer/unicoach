@@ -23,7 +23,12 @@ struct UnicoachiOSApp: App {
                         onComplete: { viewModel.onOnboardingComplete(user) }
                     )
                 case .authenticated(let user):
-                    HomeView(user: user, onLogout: viewModel.logout)
+                    HomeView(
+                        user: user,
+                        conversationClient: viewModel.conversationClient,
+                        onProfileRequired: viewModel.onStudentProfileRequired,
+                        onLogout: viewModel.logout
+                    )
                 case .serverError:
                     ErrorView(
                         title: "Something Went Wrong",

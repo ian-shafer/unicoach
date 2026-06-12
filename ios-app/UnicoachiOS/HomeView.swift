@@ -2,45 +2,72 @@ import SwiftUI
 
 struct HomeView: View {
     let user: PublicUser
+    let conversationClient: ConversationClientProtocol
+    let onProfileRequired: () -> Void
     let onLogout: () async -> Void
     @State private var isLoggingOut = false
 
     var body: some View {
-        VStack(spacing: DSSpacing.md) {
-            Text("Welcome, \(user.name)!")
-                .font(.dsTitleXL)
-                .foregroundStyle(Color.dsTextPrimary)
-                .padding(.top, DSSpacing.xl)
+        NavigationStack {
+            VStack(spacing: DSSpacing.md) {
+                Text("Welcome, \(user.name)!")
+                    .font(.dsTitleXL)
+                    .foregroundStyle(Color.dsTextPrimary)
+                    .padding(.top, DSSpacing.xl)
 
-            Text(user.email)
-                .font(.dsLabel)
-                .foregroundStyle(Color.dsTextSecondary)
+                Text(user.email)
+                    .font(.dsLabel)
+                    .foregroundStyle(Color.dsTextSecondary)
 
-            Spacer()
+                Spacer()
 
-            LoadingButton(
-                "Log Out",
-                isLoading: isLoggingOut,
-                role: .destructive,
-                action: {
-                    isLoggingOut = true
-                    Task {
-                        await onLogout()
-                        isLoggingOut = false
-                    }
+                NavigationLink {
+                    NewConversationView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
+                } label: {
+                    Text("Start Coaching")
+                        .font(.dsButton)
+                        .foregroundStyle(Color.brandOnAccent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, DSSpacing.md)
+                        .background(Color.brandAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous))
                 }
-            )
-            .padding(.bottom, DSSpacing.xl)
+                .accessibilityIdentifier("startCoachingButton")
+                .accessibilityLabel("Start Coaching")
+
+                LoadingButton(
+                    "Log Out",
+                    isLoading: isLoggingOut,
+                    role: .destructive,
+                    action: {
+                        isLoggingOut = true
+                        Task {
+                            await onLogout()
+                            isLoggingOut = false
+                        }
+                    }
+                )
+                .padding(.bottom, DSSpacing.xl)
+            }
+            .padding(.horizontal, DSSpacing.lg)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.dsBackground)
         }
-        .padding(.horizontal, DSSpacing.lg)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.dsBackground)
+    }
+}
+
+private final class HomePreviewConversationClient: ConversationClientProtocol, @unchecked Sendable {
+    func streamConversation(request: CreateConversationRequest)
+        -> AsyncThrowingStream<ConversationStreamEvent, Error> {
+        AsyncThrowingStream { $0.finish() }
     }
 }
 
 #Preview {
     HomeView(
         user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User"),
+        conversationClient: HomePreviewConversationClient(),
+        onProfileRequired: {},
         onLogout: {}
     )
 }
