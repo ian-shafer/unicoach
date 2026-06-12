@@ -2,10 +2,11 @@
 
 ## I. Overview
 
-`bin/` contains all shell scripts for the Unicoach application. Scripts fall
-into five categories: build, daemon control, linting, CLIs, and testing. Every
-script sources `bin/common` to establish `$PROJECT_ROOT` and a shared
-environment.
+`bin/` contains the operational scripts for the Unicoach application. Scripts
+fall into five categories: build, daemon control, linting, CLIs, and testing.
+Every shell script sources `bin/common` to establish `$PROJECT_ROOT` and a
+shared environment. The single non-shell script, `bin/compile-skills.py`, is
+exempt from the shell-script invariants in §II.
 
 ---
 
@@ -13,8 +14,10 @@ environment.
 
 ### Common Invariants
 
-Every script MUST source `bin/common` as its first non-comment, non-shebang
-line. `bin/common` establishes the following environment:
+Every shell script MUST source `bin/common` as its first non-comment,
+non-shebang line, optionally preceded by an `export ENV_FILE=…` assignment — the
+only sanctioned pre-source statement (used by `bin/test` and the test harnesses;
+see §III "Test Scripts"). `bin/common` establishes the following environment:
 
 - Sets `set -euo pipefail`.
 - Resolves and exports `PROJECT_ROOT` to the repository root.
@@ -23,6 +26,8 @@ line. `bin/common` establishes the following environment:
   environment. Fatals if the file does not exist.
 - Exports `PGPORT="$POSTGRES_PORT"`. `POSTGRES_PORT` is required; under `set -u`
   an unset value aborts here rather than defaulting.
+- Exports `DB_SCHEMA_DIR` (defaults to `$PROJECT_ROOT/db/schema`), consumed by
+  `db-migrate` and `db-status`.
 
 ### Help Interface
 
@@ -69,16 +74,13 @@ EOF
 
 ### Logging
 
-All log output MUST go to stderr. Each log function MUST prefix its output with
-the log level in brackets. Five levels:
+All log output MUST go to stderr. Three functions:
 
-| Level   | Function    | Side Effects                                    |
-| ------- | ----------- | ----------------------------------------------- |
-| `DEBUG` | `log-debug` | None.                                           |
-| `INFO`  | `log-info`  | None.                                           |
-| `WARN`  | `log-warn`  | None.                                           |
-| `ERROR` | `log-error` | None.                                           |
-| `FATAL` | `fatal`     | Exits with the given status code (default `1`). |
+| Function      | Prefix      | Side Effects                                    |
+| ------------- | ----------- | ----------------------------------------------- |
+| `log-info`    | None.       | None.                                           |
+| `log-warning` | `[WARNING]` | None.                                           |
+| `fatal`       | `[FATAL]`   | Exits with the given status code (default `1`). |
 
 ### Path Resolution
 
@@ -107,10 +109,8 @@ sources `bin/common`:
 
 | Function                         | Signature                               | Output / Return | Notes                                                                                                                                                                                       |
 | -------------------------------- | --------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `log-debug`                      | `log-debug <msg…>`                      | stderr          | Prefixes `[DEBUG]`.                                                                                                                                                                         |
-| `log-info`                       | `log-info <msg…>`                       | stderr          | Prefixes `[INFO]`.                                                                                                                                                                          |
-| `log-warn`                       | `log-warn <msg…>`                       | stderr          | Prefixes `[WARN]`.                                                                                                                                                                          |
-| `log-error`                      | `log-error <msg…>`                      | stderr          | Prefixes `[ERROR]`.                                                                                                                                                                         |
+| `log-info`                       | `log-info <msg…>`                       | stderr          | No prefix.                                                                                                                                                                                  |
+| `log-warning`                    | `log-warning <msg…>`                    | stderr          | Prefixes `[WARNING]`.                                                                                                                                                                       |
 | `fatal`                          | `fatal [-s \|--status-code <n>] <msg…>` | stderr; exits   | Prefixes `[FATAL]`; exits with `<n>` (default `1`).                                                                                                                                         |
 | `read-file-or-die`               | `read-file-or-die <file> [<code>]`      | stdout          | Cats file or calls `fatal -s <code>`.                                                                                                                                                       |
 | `parse-duration-to-seconds`      | `parse-duration-to-seconds <dur>`       | stdout          | Converts `30s`/`5m`/`2h`/`1d` → integer seconds; bare integers treated as seconds.                                                                                                          |
@@ -214,7 +214,7 @@ Current daemons: `rest-server`, `queue-worker`.
 | `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists. |
 | `<svc>-down`            | Delegates to `daemon-down`.                                                                                                              |
 | `<svc>-bounce`          | Delegates to `daemon-bounce`.                                                                                                            |
-| `<svc>-check`           | Runs service-specific health check (possibly none), then delegates to `daemon-check` for PID liveness check.                             |
+| `<svc>-check`           | Runs the service's health check — an HTTP probe (`rest-server`) or PID liveness via `daemon-check` (`queue-worker`).                     |
 | `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                         |
 
 ---
@@ -229,7 +229,10 @@ on the first module failure.
 Each `bin/build-<module>` script runs exactly one `./gradlew` task via `exec`:
 `:module:assemble` for libraries, `:module:installDist` for daemons.
 
-To add a new Gradle module:
+A new Gradle module gets a `bin/build-<module>` script only when `bin/build`
+must assemble its artifact directly; library modules consumed transitively by
+the daemons (`email`, `chat`) are deliberately omitted. To add a directly-built
+module:
 
 1. Create `bin/build-<module>` following the existing template.
 2. Insert it at the correct position in the ordered sequence inside `bin/build`.
@@ -338,30 +341,30 @@ Four lifecycle-ownership models exist:
 - **`bin/test`**: Test orchestrator owning a closed, validated CLI. It parses
   its own options and never forwards raw arguments to `gradlew` (no `--`
   passthrough). Positional arguments are friendly module names
-  (`common db net queue queue-worker rest-server service email` — a hardcoded
-  set kept in sync with `settings.gradle.kts` by hand), each mapped to an
-  explicit `:<module>:test` task; repeats are de-duplicated. Unknown modules and
-  unknown options are rejected, never forwarded. **Core invariant:** `bin/test`
-  always emits at least one `:<module>:test` task — naming no module runs every
-  module — so the flags-only/zero-task argv that made `gradlew` print a false
-  "BUILD SUCCESSFUL" over zero tests is structurally impossible. Mapped options
-  (`--tests GLOB` — requires exactly one module — `--force`, `--verbose`,
-  `--continue`; see `--help` for spellings) follow the task list in fixed order.
-  Argument validation completes **before** any side effect, so an invalid
-  invocation (unknown module/option, `--tests` without exactly one module) fails
-  without resetting the test database. Exit codes: usage errors exit `2` (the
-  `help()` error branch, §II sanctioned deviation); a test run that executed but
-  did not all pass propagates `gradlew`'s `1` unchanged through `exec`; success
-  and `--help` exit `0`; downstream lifecycle failures propagate their own codes
-  via `set -e`. After validation, under `set -e`, runs in order: `postgres-up` →
-  `db-reset` → `db-tests` → `exec gradlew` with the constructed task list. The
-  `db-tests` step runs sequentially (never backgrounded), after migration and
-  before the terminal `exec`; a non-zero shell-harness exit aborts the run
-  before Gradle ever starts. Postgres is left up so the Gradle suite observes
-  the same migrated database. To filter to a single test, use the module +
-  filter form `bin/test <module> --tests "<glob>"` (e.g.
-  `bin/test queue --tests "*JobsDaoTest"`); the old bare-FQN positional shape
-  (`bin/test ed.unicoach.queue.JobsDaoTest`) is dropped.
+  (`common db net queue queue-worker rest-server service email chat` — a
+  hardcoded set kept in sync with `settings.gradle.kts` by hand), each mapped to
+  an explicit `:<module>:test` task; repeats are de-duplicated. Unknown modules
+  and unknown options are rejected, never forwarded. **Core invariant:**
+  `bin/test` always emits at least one `:<module>:test` task — naming no module
+  runs every module — so the flags-only/zero-task argv that made `gradlew` print
+  a false "BUILD SUCCESSFUL" over zero tests is structurally impossible. Mapped
+  options (`--tests GLOB` — requires exactly one module — `--force`,
+  `--verbose`, `--continue`; see `--help` for spellings) follow the task list in
+  fixed order. Argument validation completes **before** any side effect, so an
+  invalid invocation (unknown module/option, `--tests` without exactly one
+  module) fails without resetting the test database. Exit codes: usage errors
+  exit `2` (the `help()` error branch, §II sanctioned deviation); a test run
+  that executed but did not all pass propagates `gradlew`'s `1` unchanged
+  through `exec`; success and `--help` exit `0`; downstream lifecycle failures
+  propagate their own codes via `set -e`. After validation, under `set -e`, runs
+  in order: `postgres-up` → `db-reset` → `db-tests` → `exec gradlew` with the
+  constructed task list. The `db-tests` step runs sequentially (never
+  backgrounded), after migration and before the terminal `exec`; a non-zero
+  shell-harness exit aborts the run before Gradle ever starts. Postgres is left
+  up so the Gradle suite observes the same migrated database. To filter to a
+  single test, use the module + filter form `bin/test <module> --tests "<glob>"`
+  (e.g. `bin/test queue --tests "*JobsDaoTest"`); the old bare-FQN positional
+  shape (`bin/test ed.unicoach.queue.JobsDaoTest`) is dropped.
 - **`bin/test-fuzz`**: Runs schemathesis fuzz tests against the REST API.
 - **`bin/scripts-tests`**: Tests scripts in `bin/`.
 - **`bin/db-scripts-tests`**: Tests `db-run`, `db-query`, `db-write`, `db-repl`,
@@ -388,6 +391,11 @@ Four lifecycle-ownership models exist:
 **`bin/dev-bootstrap`**: verifies `nix` is installed and prints activation
 instructions. Does not install anything.
 
+**`bin/compile-skills.py`**: Python; exempt from the shell-script invariants in
+§II (sources nothing, defines no `help()`). Regenerates the aggregated
+`.agents/skills/*-review-chain/SKILL.md` files from the `*-review-*`
+micro-skills. Idempotent; overwrites the generated files in place.
+
 ---
 
 ## IV. Infrastructure & Environment
@@ -402,7 +410,8 @@ instructions. Does not install anything.
   `export ENV_FILE=".../.env.test"` before sourcing `common`; `db-tests`
   defaults to `.env.test` but honors a caller-supplied `ENV_FILE`.
 - **Required env**: `POSTGRES_PORT` MUST be set (no in-code default);
-  `bin/common` exports it as `PGPORT` for all libpq clients.
+  `bin/common` exports it as `PGPORT` for all libpq clients. `DB_SCHEMA_DIR` is
+  optional; `bin/common` exports it, defaulting to `$PROJECT_ROOT/db/schema`.
 - **Shared cluster, per-database isolation**: every git worktree shares one
   PostgreSQL cluster at the checkout-independent absolute path
   `$HOME/var/unicoach/postgres` (`POSTGRES_DATA_DIR`). Isolation is at the
@@ -413,21 +422,16 @@ instructions. Does not install anything.
 
 ## V. History
 
+- [x] [RFC-02: Hello World OpenAPI Spec](../rfc/02-hello-world-open-api-spec.md)
 - [x] [RFC-03: Daemon Scripts](../rfc/03-daemon-scripts.md)
 - [x] [RFC-04: Postgres Daemon Scripts](../rfc/04-postgres-daemon-scripts.md)
 - [x] [RFC-05: DB Scripts](../rfc/05-db-scripts.md)
-- [x] [RFC-06: Users Table](../rfc/06-users-table.md)
-- [x] [RFC-08: Auth Registration](../rfc/08-auth-registration.md)
-- [x] [RFC-13: Auth Me](../rfc/13-auth-me.md)
-- [x] [RFC-14: DB Module](../rfc/14-db-module.md)
-- [x] [RFC-15: Queue Data Layer](../rfc/15-queue-data-layer.md)
 - [x] [RFC-17: Queue Worker Daemon](../rfc/17-queue-worker-daemon.md)
 - [x] [RFC-18: Docker Infrastructure Hardening](../rfc/18-docker-infrastructure-hardening.md)
 - [x] [RFC-19: Daemon Health Marker](../rfc/19-daemon-health-marker.md)
 - [x] [RFC-20: Test Environment Isolation](../rfc/20-test-environment-isolation.md)
-- [x] [RFC-21: Session Expiry Queue](../rfc/21-session-expiry-queue.md)
-- [x] [RFC-22: Auth Logout](../rfc/22-auth-logout.md)
 - [x] [RFC-23: Native Daemon Scripts](../rfc/23-native-daemon-scripts.md)
 - [x] [RFC-32: Coaching Conversations](../rfc/32-coaching-conversations.md)
 - [x] [RFC-33: System Prompts](../rfc/33-system-prompts.md)
 - [x] [RFC-35: bin/test owns its CLI](../rfc/35-bin-test-owns-cli.md)
+- [x] [RFC-43: Chat Provider](../rfc/43-chat-provider.md)

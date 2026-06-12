@@ -30,12 +30,13 @@ retrieved from PostgreSQL.
 ### Global Schema Invariants
 
 - `bin/db-migrate` MUST apply schema files in strict lexicographical order.
-  Files currently use a 4-digit numeric prefix convention (e.g.,
-  `0000.shared-functions.sql`, `0001.create-users.sql`) but any naming scheme
-  that sorts correctly is acceptable.
+  Filenames MUST match `NNNN.kebab-case-name.sql` — a 4-digit numeric prefix, a
+  dot, and a lowercase kebab-case name (e.g., `0000.shared-functions.sql`).
+  `bin/db-migrate` rejects non-conforming filenames with a fatal error.
 - The schema MUST be append-only. Down migrations (rollbacks) are NEVER
-  supported. Reversion requires a full `db-destroy` + `db-init` + `db-migrate`
-  cycle and MUST only be performed in non-production environments.
+  supported. Reversion requires a full `bin/db-reset` cycle (`db-drop` →
+  `db-create` → `db-migrate`) and MUST only be performed in non-production
+  environments.
 - `bin/db-migrate` MUST execute each migration file inside its own isolated SQL
   transaction. The transaction MUST include both the DDL operations and the
   `schema_migrations` tracking-table update. A failure MUST roll back the entire
@@ -45,7 +46,8 @@ retrieved from PostgreSQL.
 
 ### Shared Functions
 
-Defined in `0000.shared-functions.sql` unless noted otherwise.
+Defined in [`0000.shared-functions.sql`](./0000.shared-functions.sql) unless
+noted otherwise.
 
 - `update_timestamp()` sets `row_updated_at = NOW()` on every update. It also
   sets `updated_at = NOW()` unless the logical-timestamp bypass is active.
@@ -63,17 +65,18 @@ Defined in `0000.shared-functions.sql` unless noted otherwise.
   to change `id`, `created_at`, or `row_created_at`.
 - `prevent_log_update()` raises `ERRCODE = 'P0001'` on any UPDATE trigger
   invocation, enforcing the append-only contract on log tables. Defined in
-  `0006` (not `0000`), via idempotent `CREATE OR REPLACE`. Distinct from
-  `prevent_physical_delete()` — different message, append-only (not soft-delete)
-  semantics.
+  [`0006`](./0006.create-coaching-conversations.sql) (not `0000`), via
+  idempotent `CREATE OR REPLACE`. Distinct from `prevent_physical_delete()` —
+  different message, append-only (not soft-delete) semantics.
 - `prevent_log_delete()` raises `ERRCODE = 'P0001'` on any DELETE trigger
   invocation. Defined in `0006` (not `0000`).
 - `prevent_immutable_entity_update()` raises `ERRCODE = 'P0001'` on any UPDATE
   trigger invocation, enforcing the insert-only contract on immutable-entity
-  tables. Defined in `0007` (not `0000`), via idempotent `CREATE OR REPLACE`.
-  Distinct from `prevent_immutable_updates()`: that guard blocks only `id`,
-  `created_at`, and `row_created_at`, leaving domain columns mutable; this one
-  blocks every update, including domain columns.
+  tables. Defined in [`0007`](./0007.create-system-prompts.sql) (not `0000`),
+  via idempotent `CREATE OR REPLACE`. Distinct from
+  `prevent_immutable_updates()`: that guard blocks only `id`, `created_at`, and
+  `row_created_at`, leaving domain columns mutable; this one blocks every
+  update, including domain columns.
 - `prevent_immutable_entity_delete()` raises `ERRCODE = 'P0001'` on any DELETE
   trigger invocation. Defined in `0007` (not `0000`).
 
@@ -148,8 +151,12 @@ subsection.
   corresponding check constraints.
 - **Email uniqueness**: Unique among active users via partial unique index
   (`users_email_unique_active_idx WHERE deleted_at IS NULL`).
-- **Version history**: `users_versions` rows MUST NOT be physically deleted
-  (`ON DELETE RESTRICT`).
+- **Email bounds/format**: `email` MUST be ≤254 chars and contain `'@'`
+  (`LIKE '%@%'`).
+- **Version history**: a `users` row MUST NOT be physically deleted while
+  `users_versions` rows cite it (`ON DELETE RESTRICT` on the version FK). The
+  version rows themselves carry no DB-level delete guard; their preservation is
+  a writer-side invariant.
 
 ### `students` — Extensions
 
@@ -173,8 +180,10 @@ subsection.
     Feb 29 in a non-leap year) raises `ERRCODE 22008` (datetime_field_overflow),
     distinct from the `23514` (check_violation) raised by the other two
     constraints.
-- **Version history**: `students_versions` rows MUST NOT be physically deleted
-  (`ON DELETE RESTRICT`).
+- **Version history**: a `students` row MUST NOT be physically deleted while
+  `students_versions` rows cite it (`ON DELETE RESTRICT` on the version FK). The
+  version rows themselves carry no DB-level delete guard; their preservation is
+  a writer-side invariant.
 - **No string normalization**: No free-text columns, so no trim trigger is
   attached (unlike `users`).
 
@@ -184,11 +193,13 @@ subsection.
 - **Token storage**: `token_hash` is `BYTEA` (SHA-256). The plain-text token is
   NEVER stored. Unique via `sessions_token_hash_idx`.
 - **Anonymous sessions**: `user_id` is NULLABLE. `ON DELETE CASCADE` from
-  `users` deletes associated sessions. Transitioning an anonymous session to
-  authenticated MUST be done via application UPDATE (setting `user_id` and
-  rotating `token_hash`).
+  `users` deletes associated sessions. `user_id` is updatable, so an anonymous
+  session can transition to authenticated via UPDATE; the schema does not
+  constrain that transition further.
 - **Lifecycle**: Managed via `is_revoked` (boolean, default `false`) and
   `expires_at` (NOT NULL, indexed).
+- **Bounds**: `user_agent` ≤512 chars, `initial_ip` ≤64 chars, and `metadata`
+  ≤2048 bytes (via `pg_column_size`) — all CHECK-enforced.
 
 ### `jobs` — Non-Standard Table
 
@@ -200,14 +211,18 @@ subsection.
   `'DEAD_LETTERED'`.
 - `notify_jobs()` trigger emits `pg_notify('jobs_channel', NEW.job_type)` AFTER
   INSERT OR UPDATE when `NEW.status = 'SCHEDULED'`.
+- **Bounds**: `job_type` ≤128 chars; `payload` ≤64 KiB — both CHECK-enforced.
 
 ### `job_attempts` — Non-Standard Table
 
 - Append-only record of job execution attempts. No triggers.
 - `(job_id, attempt_number)` MUST be unique.
+- `status` MUST be one of: `'SUCCESS'`, `'RETRIABLE_FAILURE'`,
+  `'PERMANENT_FAILURE'` (`job_attempts_status_valid_check`).
 - `finished_at` defaults to `NOW()` at insert time; application code MUST NOT
   supply this value.
 - `ON DELETE CASCADE` from `jobs`.
+- **Bounds**: `error_message` ≤4096 chars (CHECK-enforced).
 
 ### `convos` — Extensions
 
@@ -258,8 +273,12 @@ timestamps + logical deletes) with OCC versioning and version history
   other `convo_*` FKs): the pin points at a shared parent, so a `system_prompts`
   row MUST NOT be deleted while any turn cites it.
 - **Provider allowlist**: `provider` is TEXT + CHECK
-  (`provider IN ('anthropic')`), pinned per-turn — NOT a native pg enum. Extend
-  the allowlist in a later migration as providers are added.
+  (`provider IN ('anthropic', 'log')`), pinned per-turn — NOT a native pg enum.
+  `'log'` is the identity of the chat module's no-network stub adapter, so
+  dev/test turns are recorded with truthful, visibly synthetic provenance rather
+  than masquerading as `'anthropic'`. Widening reuses the constraint name
+  `convo_requests_provider_valid_check` (drop + re-add). Extend the allowlist in
+  a later migration as providers are added.
 - **Content opaque & bounded**: `content JSONB NOT NULL`, the new user input.
   The DB MUST NOT constrain its internal shape. Bounded to 1 MiB
   (`octet_length(content::text) <= 1048576`). Prior history is deliberately NOT
@@ -503,19 +522,17 @@ and dual-logging would create two sources of truth for one logical message.
 - **`DB_SCHEMA_DIR`** environment variable: Consumed by the `db-migrate` shell
   script. Defaults to `$PROJECT_ROOT/db/schema`. Test suites MUST override this
   to an isolated temp directory to prevent cross-contamination.
-- **`pg_uuidv7` PostgreSQL extension**: The `uuidv7()` function is provided by
-  the `pg_uuidv7` extension (or equivalent). This extension MUST be installed in
-  the database before any schema migration runs. It is not defined in this
-  directory.
 - **`schema_migrations` tracking table**: The source of truth for the current
   state of the PostgreSQL schema. `bin/db-migrate` determines which migrations
   to apply by querying this table — it does not inspect the schema itself. This
   is why each migration and its `schema_migrations` update MUST execute in the
-  same transaction (see §II, Global Schema Invariants). Created by `db-init`
-  (not defined in this directory).
+  same transaction (see §II, Global Schema Invariants). Created by
+  `bin/db-create` (not defined in this directory).
 - **PostgreSQL version**: Schema relies on `pg_notify`, `TIMESTAMPTZ`, `JSONB`,
-  `BYTEA`, `uuidv7()`, and `BIGINT GENERATED ALWAYS AS IDENTITY`. Requires
-  PostgreSQL 18 (provided by `pkgs.postgresql_18` in `flake.nix`).
+  `BYTEA`, and `BIGINT GENERATED ALWAYS AS IDENTITY`, and on `uuidv7()`, which
+  is native to PostgreSQL 18 — no extension is required, and the schema MUST NOT
+  be run on pre-18 servers. PostgreSQL 18 is provided by `pkgs.postgresql_18` in
+  `flake.nix`.
 - **`unicoach.bypass_logical_timestamp`**: See §II, Logical-timestamp bypass.
 
 ---
@@ -525,10 +542,10 @@ and dual-logging would create two sources of truth for one logical message.
 - [x] [RFC-05: Database Scripts](../../rfc/05-db-scripts.md)
 - [x] [RFC-06: Users Table](../../rfc/06-users-table.md)
 - [x] [RFC-11: Sessions](../../rfc/11-sessions.md)
-- [x] [RFC-14: Extract Database Module](../../rfc/14-db-module.md)
 - [x] [RFC-15: Queue Data Layer](../../rfc/15-queue-data-layer.md)
 - [x] [RFC-16: Queue Worker Framework](../../rfc/16-queue-worker-framework.md)
 - [x] [RFC-31: Student Profile](../../rfc/31-student-profile.md)
 - [x] [RFC-32: Coaching Conversations](../../rfc/32-coaching-conversations.md)
 - [x] [RFC-33: System Prompts](../../rfc/33-system-prompts.md)
 - [x] [RFC-34: Transactional Email Service](../../rfc/34-transactional-email-service.md)
+- [x] [RFC-43: Provider-Agnostic LLM Chat Provider](../../rfc/43-chat-provider.md)

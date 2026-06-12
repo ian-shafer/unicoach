@@ -381,6 +381,18 @@ EOF
 }
 assert_success "convo_requests: provider 'anthropic' accepted" test_convo_requests_provider_anthropic_ok
 
+test_convo_requests_provider_log_ok() {
+  local out
+  out=$(run_test_sql << EOF
+    INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
+    VALUES ('$CONVO_ID', 'log', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb);
+EOF
+  )
+  echo "$out" | grep -q 'ERROR' && { echo "output was: $out"; return 1; }
+  return 0
+}
+assert_success "convo_requests: provider 'log' accepted" test_convo_requests_provider_log_ok
+
 test_convo_requests_content_any_json_shape() {
   local out
   out=$(run_test_sql << EOF
