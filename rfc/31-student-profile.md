@@ -284,7 +284,7 @@ resource is owner-resolved.
 | POST   | `/api/v1/students`    | `201` `StudentResponse`       | `400` validation, `409` already exists, `401` unauth                     |
 | GET    | `/api/v1/students/me` | `200` `StudentResponse`       | `404` no profile, `401` unauth                                           |
 | PATCH  | `/api/v1/students/me` | `200` `StudentResponse`       | `400` validation, `404` no profile, `409` version conflict, `401` unauth |
-| DELETE | `/api/v1/students/me` | `204` (clears session cookie) | `404` no profile, `401` unauth                                          |
+| DELETE | `/api/v1/students/me` | `204` (clears session cookie) | `404` no profile, `401` unauth                                           |
 
 ```kotlin
 // rest-server/.../rest/models/

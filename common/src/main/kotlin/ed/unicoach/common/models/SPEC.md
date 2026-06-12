@@ -24,10 +24,10 @@ any module may use them without taking a dependency on any other module.
   NOT exception machinery: a recoverable rejection MUST be returned as
   `Invalid`, never thrown.
 - `ValidationError` MUST be a sealed interface whose variants are the closed,
-  named set of validation-failure reasons (currently `Blank`,
-  `InvalidFormat`, `TooLong`). A failure MUST be carried as a distinct variant,
-  not as a free-form string or error code, so callers can branch exhaustively on
-  the reason.
+  named set of validation-failure reasons (currently `Blank`, `InvalidFormat`,
+  `TooLong`). A failure MUST be carried as a distinct variant, not as a
+  free-form string or error code, so callers can branch exhaustively on the
+  reason.
 - A validation failure MUST carry the requirement it enforces — the expected
   format for `InvalidFormat`, the limit for `TooLong` — sufficient for a caller
   to render a precise message without access to the rejected input. This
@@ -54,8 +54,8 @@ any module may use them without taking a dependency on any other module.
   that normalized string.
 - A valid address MUST be non-blank after trimming and MUST contain a single
   required interior `@` — at least one character on each side. `create()` MUST
-  reject, in order: blank-after-trim as `Invalid(Blank)`, then absence of
-  an interior `@` (no `@`, or `@` at the first or last index) as
+  reject, in order: blank-after-trim as `Invalid(Blank)`, then absence of an
+  interior `@` (no `@`, or `@` at the first or last index) as
   `Invalid(InvalidFormat)`; otherwise `Valid(EmailAddress)`. Validation is
   intentionally permissive — it is interior-`@` presence, not the full RFC 5322
   grammar.
@@ -74,10 +74,10 @@ any module may use them without taking a dependency on any other module.
   returns `Valid(EmailAddress)` wrapping the normalized string. The
   normalization is observable: the stored `value` is trimmed and lowercased, not
   the raw input.
-- **Error Handling**: Returns `Invalid(Blank)` when the input is blank
-  after trimming; returns `Invalid(InvalidFormat(...))` when the normalized
-  value lacks an interior `@`, with the variant carrying the expected address
-  shape. No exception is thrown for invalid input. `TooLong` is a defined
+- **Error Handling**: Returns `Invalid(Blank)` when the input is blank after
+  trimming; returns `Invalid(InvalidFormat(...))` when the normalized value
+  lacks an interior `@`, with the variant carrying the expected address shape.
+  No exception is thrown for invalid input. `TooLong` is a defined
   `ValidationError` variant but is NOT produced by this factory.
 - **Idempotent**: Yes. Calling with the same input always yields an equal
   result; the normalized output is itself a fixed point (`create(x.value)`

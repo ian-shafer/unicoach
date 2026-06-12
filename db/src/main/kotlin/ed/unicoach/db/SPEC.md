@@ -6,8 +6,8 @@ This package is the **connection-pooling and configuration root** of the `db`
 Gradle module. It owns two responsibilities: (1) parsing database connection
 parameters from HOCON into a typed `DatabaseConfig`, and (2) wrapping a HikariCP
 connection pool behind a `Database` facade that enforces transactional semantics
-and exposes a `SqlSession` abstraction to all DAOs. No domain logic resides here;
-this package is pure infrastructure consumed by `dao/` and `models/`.
+and exposes a `SqlSession` abstraction to all DAOs. No domain logic resides
+here; this package is pure infrastructure consumed by `dao/` and `models/`.
 
 ---
 
@@ -17,22 +17,25 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
   transaction.** `withConnection` disables `autoCommit`, commits on normal
   return, and rolls back on any exception.
 - **`Database.withConnection` MUST restore the connection's original
-  `autoCommit` state in the `finally` block** before returning the connection
-  to the Hikari pool, regardless of success or failure.
-- **`Database.withConnection` MUST return the connection to the Hikari pool
-  (via `conn.close()`) in the `finally` block** even when the block or commit
-  raises an exception.
+  `autoCommit` state in the `finally` block** before returning the connection to
+  the Hikari pool, regardless of success or failure.
+- **`Database.withConnection` MUST return the connection to the Hikari pool (via
+  `conn.close()`) in the `finally` block** even when the block or commit raises
+  an exception.
 - **`Database.withConnection` MUST execute its transaction on the injected
   dispatcher (default `Dispatchers.IO`), never the caller's coroutine context.**
   Callers MUST NOT wrap the call in their own `withContext(Dispatchers.IO)`.
 - **`Database.withConnection` MUST commit on normal return of `block`, before
   the connection is returned to the pool.** Commit ordering is tied to `block`
   completion, not to any consuming layer's lifecycle.
-- **[`Database.createRawConnection`](./Database.kt) MUST bypass the Hikari pool.** It connects
-  directly via `DriverManager.getConnection` using the pool's URL, username, and
-  password. Callers (e.g., `QueueWorker`'s `LISTEN` coroutine) are responsible
-  for lifecycle management of the returned `Connection`.
-- **`DatabaseConfig` MUST be constructed only through `DatabaseConfig.from(config)`.** The primary constructor is `private`; no caller may instantiate it directly.
+- **[`Database.createRawConnection`](./Database.kt) MUST bypass the Hikari
+  pool.** It connects directly via `DriverManager.getConnection` using the
+  pool's URL, username, and password. Callers (e.g., `QueueWorker`'s `LISTEN`
+  coroutine) are responsible for lifecycle management of the returned
+  `Connection`.
+- **`DatabaseConfig` MUST be constructed only through
+  `DatabaseConfig.from(config)`.** The primary constructor is `private`; no
+  caller may instantiate it directly.
 - **`DatabaseConfig.from` MUST return `Result.failure` if `database.jdbcUrl` or
   `database.user` is blank.** Both fields are validated via `getNonBlankString`.
 - **`DatabaseConfig` MUST treat an absent `database.password` path as `null`.**
@@ -48,12 +51,13 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
 
 ### `DatabaseConfig.from(config: Config): Result<DatabaseConfig>`
 
-- **Side Effects**: None. Pure parse — reads HOCON keys, constructs value object.
+- **Side Effects**: None. Pure parse — reads HOCON keys, constructs value
+  object.
 - **Config keys consumed**:
   - `database.jdbcUrl` — required, non-blank string.
   - `database.user` — required, non-blank string.
-  - `database.password` — optional path; `null` if absent, any string
-    (including empty) if present.
+  - `database.password` — optional path; `null` if absent, any string (including
+    empty) if present.
   - `database.maximumPoolSize` — required integer.
   - `database.connectionTimeout` — required long (milliseconds).
 - **Error Handling**: Returns `Result.failure(Throwable)` if any required key is
@@ -79,7 +83,7 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
 
 ---
 
-### `suspend Database.withConnection(block: (`[`SqlSession`](./dao/SqlSession.kt)`) -> T): T`
+### `suspend Database.withConnection(block: (` [`SqlSession`](./dao/SqlSession.kt) `) -> T): T`
 
 - **Side Effects**: Suspends and offloads the entire transaction onto the
   injected dispatcher (default `Dispatchers.IO`). Within that context: opens a
@@ -93,8 +97,8 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
   `block` is valid only for the duration of `block`. It MUST NOT be stored or
   used outside the lambda.
 - **Error Handling**: Any exception from `block`, `commit()`, or `rollback()` is
-  rethrown to the caller. DAO callers are responsible for wrapping these in their
-  own result types (e.g., `DatabaseFailure`).
+  rethrown to the caller. DAO callers are responsible for wrapping these in
+  their own result types (e.g., `DatabaseFailure`).
 - **Idempotent**: no — executes a database transaction; side effects on
   persistent state.
 
@@ -132,11 +136,13 @@ this package is pure infrastructure consumed by `dao/` and `models/`.
   every `AppConfig.load(...)` call for any module that instantiates `Database`.
 - **Environment variables** (substituted by HOCON):
   - `POSTGRES_DB` — database name suffix appended to the JDBC URL base.
-  - `DATABASE_USER` — required. `db.conf` binds `database.user = ${?DATABASE_USER}`
-    with no literal default, so an unset var yields a blank `database.user` and
-    `DatabaseConfig.from` returns `Result.failure`.
+  - `DATABASE_USER` — required. `db.conf` binds
+    `database.user = ${?DATABASE_USER}` with no literal default, so an unset var
+    yields a blank `database.user` and `DatabaseConfig.from` returns
+    `Result.failure`.
   - `DATABASE_PASSWORD` — optional override for `database.password`.
-  - `DATABASE_MAXIMUM_POOL_SIZE` — optional override for pool size (default: 10).
+  - `DATABASE_MAXIMUM_POOL_SIZE` — optional override for pool size (default:
+    10).
 - **Defaults** (defined in `db.conf`):
   - `database.maximumPoolSize = 10`
   - `database.connectionTimeout = 30000` (30 seconds, in milliseconds)

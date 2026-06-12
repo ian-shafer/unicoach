@@ -6,15 +6,15 @@ Gradle (Kotlin DSL) is the build system for the Unicoach JVM backend. Humans
 never invoke Gradle directly — shell scripts in `bin/` are the sole interface.
 
 - **`bin/build`** compiles all modules in dependency order. Each
-  `bin/build-<module>` script runs exactly one `./gradlew` task: `:module:assemble`
-  for libraries, `:module:installDist` for applications.
+  `bin/build-<module>` script runs exactly one `./gradlew` task:
+  `:module:assemble` for libraries, `:module:installDist` for applications.
 - **`bin/test`** bootstraps a fresh test database, then runs explicit per-module
   `:module:test` tasks.
 - **`bin/format`** and **`bin/pre-commit`** run ktlint via Gradle.
 
 Build and run are strictly separated. Gradle produces artifacts (JARs or
-`installDist` launch scripts); daemon wrappers in `bin/` consume those
-artifacts to start services. `./gradlew run` is never used.
+`installDist` launch scripts); daemon wrappers in `bin/` consume those artifacts
+to start services. `./gradlew run` is never used.
 
 The JDK (Temurin 21) is provided by `flake.nix`. All dependency and plugin
 versions are centralized in a single version catalog
@@ -32,32 +32,31 @@ versions are centralized in a single version catalog
 
 - [`gradle/libs.versions.toml`](gradle/libs.versions.toml) is the single source
   of truth for every dependency and plugin version.
-- Module build files MUST reference dependencies via `libs.*` accessors
-  (e.g., `libs.ktor.server.core`) and plugins via `libs.plugins.*` accessors
-  (e.g., `libs.plugins.kotlin.jvm`). Hard-coded version strings in
-  `build.gradle.kts` files are banned.
+- Module build files MUST reference dependencies via `libs.*` accessors (e.g.,
+  `libs.ktor.server.core`) and plugins via `libs.plugins.*` accessors (e.g.,
+  `libs.plugins.kotlin.jvm`). Hard-coded version strings in `build.gradle.kts`
+  files are banned.
 
 ### Multi-Module Architecture
 
-- The project is a multi-module Gradle build. Every module MUST be registered
-  in [`settings.gradle.kts`](settings.gradle.kts).
+- The project is a multi-module Gradle build. Every module MUST be registered in
+  [`settings.gradle.kts`](settings.gradle.kts).
 - Modules are either **libraries** or **daemons**:
   - **Library**: produces a JAR built via `:module:assemble`.
-  - **Daemon**: produces an executable distribution via
-    `:module:installDist`. MUST apply the `application` plugin and declare a
-    `mainClass`.
+  - **Daemon**: produces an executable distribution via `:module:installDist`.
+    MUST apply the `application` plugin and declare a `mainClass`.
 
 #### Current Modules
 
-| Module | Type | Plugins (beyond kotlin-jvm) |
-|---|---|---|
-| `common` | Library | ktlint, kotlin-serialization, java-library |
-| `db` | Library | ktlint |
-| `service` | Library | ktlint |
-| `queue` | Library | ktlint, kotlin-serialization |
-| `net` | Library | ktlint, kotlin-serialization |
-| `rest-server` | Daemon | ktor, kotlin-serialization |
-| `queue-worker` | Daemon | — |
+| Module         | Type    | Plugins (beyond kotlin-jvm)                |
+| -------------- | ------- | ------------------------------------------ |
+| `common`       | Library | ktlint, kotlin-serialization, java-library |
+| `db`           | Library | ktlint                                     |
+| `service`      | Library | ktlint                                     |
+| `queue`        | Library | ktlint, kotlin-serialization               |
+| `net`          | Library | ktlint, kotlin-serialization               |
+| `rest-server`  | Daemon  | ktor, kotlin-serialization                 |
+| `queue-worker` | Daemon  | —                                          |
 
 ### Dependency Graph
 
@@ -89,8 +88,8 @@ queue-worker ← common, db, service, queue, net
 - Every module MUST apply `libs.plugins.kotlin.jvm`.
 - `ktlint` is applied globally via the root `allprojects` block. Individual
   modules MAY redundantly declare it, but it is not required.
-- `kotlin-serialization` MUST be applied in any module that uses
-  `@Serializable` annotations.
+- `kotlin-serialization` MUST be applied in any module that uses `@Serializable`
+  annotations.
 - The `ktor` plugin MUST only be applied to modules that embed a Ktor server.
   Currently: `rest-server`.
 
@@ -101,8 +100,8 @@ queue-worker ← common, db, service, queue, net
 1. **ktlint enforcement**: applied to `allprojects`.
 2. **Repository declaration**: `mavenCentral()` for `allprojects`.
 3. **System property forwarding**: for all `subprojects` with the `application`
-   plugin, the `run` task forwards `RUN_DIR`, `SERVICE_NAME`, and
-   `HEALTH_NONCE` from environment variables to JVM system properties.
+   plugin, the `run` task forwards `RUN_DIR`, `SERVICE_NAME`, and `HEALTH_NONCE`
+   from environment variables to JVM system properties.
 
 ### Test Configuration
 
@@ -128,20 +127,18 @@ common → db → service → queue → net → rest-server → queue-worker
 
 Each `bin/build-<module>` script runs exactly one Gradle task:
 
-| Module Type | Gradle Task | Output |
-|---|---|---|
-| Library | `:module:assemble` | JAR in `module/build/libs/` |
+| Module Type | Gradle Task           | Output                                               |
+| ----------- | --------------------- | ---------------------------------------------------- |
+| Library     | `:module:assemble`    | JAR in `module/build/libs/`                          |
 | Application | `:module:installDist` | Launch scripts in `module/build/install/module/bin/` |
 
 Application modules (`rest-server`, `queue-worker`) are started by their
-`bin/*-up` wrappers, which expect the `installDist` binary to already exist.
-The wrappers MUST NOT invoke `./gradlew run` — build and run are strictly
-separated.
+`bin/*-up` wrappers, which expect the `installDist` binary to already exist. The
+wrappers MUST NOT invoke `./gradlew run` — build and run are strictly separated.
 
 ### Adding a New Module
 
-1. Create `<module>/build.gradle.kts` with `libs.plugins.kotlin.jvm` at
-   minimum.
+1. Create `<module>/build.gradle.kts` with `libs.plugins.kotlin.jvm` at minimum.
 2. Add `include("<module>")` to `settings.gradle.kts`.
 3. Add any new dependencies to `gradle/libs.versions.toml`.
 4. Create `bin/build-<module>` following the existing template.
@@ -153,15 +150,14 @@ separated.
 1. Add the version to `[versions]` in `gradle/libs.versions.toml` (if not
    already present).
 2. Add the library coordinate to `[libraries]` using `version.ref`.
-3. Reference via `libs.<alias>` in the consuming module's
-   `build.gradle.kts`.
+3. Reference via `libs.<alias>` in the consuming module's `build.gradle.kts`.
 
 ---
 
 ## IV. Infrastructure & Environment
 
-- **Gradle version**: 8.11.1, distributed via the committed wrapper
-  (`gradlew`, `gradle/wrapper/`).
+- **Gradle version**: 8.11.1, distributed via the committed wrapper (`gradlew`,
+  `gradle/wrapper/`).
 - **JDK**: Temurin 21, provided by `flake.nix`. Host-machine JDK resolution
   outside of Nix is not supported.
 - **Daemon**: Disabled (`org.gradle.daemon=false` in `gradle.properties`).

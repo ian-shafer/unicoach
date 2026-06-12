@@ -52,11 +52,11 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
 
 - **`users` table**: The `password_hash` and `sso_provider_id` columns are
   synthesized into a sealed `AuthMethod` (variants: `Password`, `SSO`, or
-  `Both`). The DB constraints already guarantee at least one column is
-  non-NULL, so a row where both are NULL indicates row corruption, not user
-  input; mapping MUST throw `CorruptPersistedAuthMethodException` — a
-  `PermanentError` `DaoException` carrying the offending row's `UserId` —
-  never a user-facing validation failure.
+  `Both`). The DB constraints already guarantee at least one column is non-NULL,
+  so a row where both are NULL indicates row corruption, not user input; mapping
+  MUST throw `CorruptPersistedAuthMethodException` — a `PermanentError`
+  `DaoException` carrying the offending row's `UserId` — never a user-facing
+  validation failure.
 - Complex columns (e.g., `email`, `name`, `display_name`) are mapped into
   strongly-typed value classes (e.g., `EmailAddress`, `PersonName`) using their
   respective `.create()` factories, unwrapping `ValidationResult.Valid`.
@@ -181,9 +181,9 @@ All other `SQLException` are classified into `TransientError` or
 | `57P*`          | Transient | Operator intervention             |
 | Everything else | Permanent | Syntax error, type mismatch       |
 
-`mapDatabaseError` MUST return an already-domain-typed `DaoException`
-unchanged — it NEVER re-wraps one in `DatabaseException` or
-`TransientDatabaseException`. Corruption exceptions thrown inside row mappers
+`mapDatabaseError` MUST return an already-domain-typed `DaoException` unchanged
+— it NEVER re-wraps one in `DatabaseException` or `TransientDatabaseException`.
+Corruption exceptions thrown inside row mappers
 (`CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`)
 therefore cross the catch-all `catch` boundary intact.
 

@@ -28,14 +28,14 @@ Their contracts are owned by `common`'s SPEC.
 - [`SsoProviderId.create()`](./SsoProviderId.kt) MUST trim whitespace. A
   blank-after-trim input MUST return `ValidationResult.Invalid(Blank)`.
 - [`ConvoName.create()`](./ConvoName.kt) MUST trim whitespace. A
-  blank-after-trim input MUST return `ValidationResult.Invalid(Blank)`. An
-  input exceeding 255 characters after trim MUST return
+  blank-after-trim input MUST return `ValidationResult.Invalid(Blank)`. An input
+  exceeding 255 characters after trim MUST return
   `ValidationResult.Invalid(TooLong(maxLength = 255))`. `ConvoName`'s
   constructor is private; `create()` is the sole construction path.
 - All `@JvmInline value class` types (`UserId`, `StudentId`, `SessionId`,
   `DisplayName`, `PersonName`, `PasswordHash`, `SsoProviderId`, `ConvoId`,
-  `ConvoRequestId`, `ConvoResponseId`, `SystemPromptId`, `ConvoName`) MUST expose
-  their raw value through a public `val value` property.
+  `ConvoRequestId`, `ConvoResponseId`, `SystemPromptId`, `ConvoName`) MUST
+  expose their raw value through a public `val value` property.
 - `UserId`, `StudentId`, and `SessionId` each wrap `UUID` and implement `Id`,
   deriving `asString` from `value.toString()`. None of these provide a factory
   method — they are constructed directly and carry no validation logic. Per-row
@@ -101,15 +101,14 @@ DELIBERATELY OMITS and its input/snapshot contracts — never the mere presence 
 an identity, timestamp, or field, which the data class declarations already
 state.
 
-
 - **Mutable entities** — `User` and `Student` — are the only types here that are
   both `Versioned` and `SoftDeletable`: their `version` is an OCC counter and
   their `deletedAt: Instant?` marks a soft delete when non-null. `Student`
   additionally holds a validated `expectedHighSchoolGraduationDate: PartialDate`
   (a `PartialDate`, never a raw date string). Stripping `Versioned` or
   `SoftDeletable` from either is a schema/lifecycle violation.
-- **Version-snapshot rows** — `UserVersion` and `StudentVersion` — are immutable:
-  `Created` and `Versioned` only, and MUST NOT implement `Updated` or
+- **Version-snapshot rows** — `UserVersion` and `StudentVersion` — are
+  immutable: `Created` and `Versioned` only, and MUST NOT implement `Updated` or
   `SoftDeletable` even though they carry `updatedAt: Instant` and
   `deletedAt: Instant?` as plain `val`s capturing the values at the instant the
   version was written. Each MUST mirror the domain fields of its live entity.
@@ -137,10 +136,11 @@ state.
   `expires_at`), not an absolute timestamp; a null `userId` marks an
   anonymous/pre-auth session.
 - No model in this package carries `rowCreatedAt`/`rowUpdatedAt`. The
-  `row_created_at`/`row_updated_at` Postgres columns and their triggers REMAIN in
-  the database but are deliberately NOT projected into the domain models. Adding
-  a row-timestamp property to any model here is a layering violation; dropping
-  the DB columns/triggers is a separate schema concern this layer does NOT track.
+  `row_created_at`/`row_updated_at` Postgres columns and their triggers REMAIN
+  in the database but are deliberately NOT projected into the domain models.
+  Adding a row-timestamp property to any model here is a layering violation;
+  dropping the DB columns/triggers is a separate schema concern this layer does
+  NOT track.
 
 ### Capability Interfaces
 
@@ -156,7 +156,8 @@ actually has. There MUST be no welded multi-capability supertype.
 - `Created` — mandates `createdAt: Instant`; every row.
 - `Updated` — mandates `updatedAt: Instant`; mutable rows only.
 - `Versioned` — mandates `version: Int` (OCC counter). The version is a plain
-  `Int`, NOT a domain-typed key; there MUST be no version-id wrapper value class.
+  `Int`, NOT a domain-typed key; there MUST be no version-id wrapper value
+  class.
 - `SoftDeletable` — mandates `deletedAt: Instant?`; logical-delete rows only.
 - `SoftDeleteScope` is a domain-agnostic read-time enum companion to
   `SoftDeletable` with exactly three variants: `ACTIVE` (rows with
@@ -248,9 +249,9 @@ actually has. There MUST be no welded multi-capability supertype.
 - **Error Handling**: `day != null && month == null`, an out-of-range month, or
   an impossible calendar day (`DateTimeException`) returns
   `Invalid(InvalidFormat)` carrying the canonical expected-form description.
-  Because callers feed `of()` only components that
-  already satisfy the persistence layer's integrity guarantees, an `Invalid`
-  from `of()` on a read path indicates row corruption, not user input.
+  Because callers feed `of()` only components that already satisfy the
+  persistence layer's integrity guarantees, an `Invalid` from `of()` on a read
+  path indicates row corruption, not user input.
 - **Idempotent**: Yes.
 
 ### `TokenHash(value: ByteArray)` constructor
@@ -276,9 +277,9 @@ actually has. There MUST be no welded multi-capability supertype.
 
 - **Side Effects**: None (pure formatting).
 - **Behavior**: Returns a backing-agnostic string view of the identity value
-  (e.g. `value.toString()` for the UUID-backed `UserId`/`StudentId`/`SessionId`).
-  Intended for logging, serialization, and generic code that must not depend on the
-  concrete backing type.
+  (e.g. `value.toString()` for the UUID-backed
+  `UserId`/`StudentId`/`SessionId`). Intended for logging, serialization, and
+  generic code that must not depend on the concrete backing type.
 - **Error Handling**: Total — no parsing, no failure mode, never throws.
 - **Idempotent**: Yes.
 
@@ -374,16 +375,18 @@ actually has. There MUST be no welded multi-capability supertype.
       `rowCreatedAt`/`rowUpdatedAt` model properties (the DB columns and
       triggers remain).
 - [x] [RFC-38: Convos DAO](../../../../../../../../rfc/38-convos-dao.md) —
-      Introduced the `Convo` aggregate (`Updated` + `SoftDeletable`, deliberately
-      NOT `Versioned`) and its append-only log records `ConvoRequest`,
-      `ConvoResponse`, `ConvoResponseRaw`, the read-side `ConvoTurn` pairing, and
-      the `NewConvo`/`NewConvoRequest`/`NewConvoResponse` input types. Added the
+      Introduced the `Convo` aggregate (`Updated` + `SoftDeletable`,
+      deliberately NOT `Versioned`) and its append-only log records
+      `ConvoRequest`, `ConvoResponse`, `ConvoResponseRaw`, the read-side
+      `ConvoTurn` pairing, and the
+      `NewConvo`/`NewConvoRequest`/`NewConvoResponse` input types. Added the
       `ConvoId`/`SystemPromptId` (`UUID`-backed) and
-      `ConvoRequestId`/`ConvoResponseId` (`Long`/BIGINT-backed) id value classes,
-      the `ConvoName` validated value type (adds the `TooLong` rejection), and the
-      domain-agnostic `SoftDeleteScope` read enum. Carved out
-      `kotlinx.serialization.json` pure value types (`JsonElement`, `JsonObject`)
-      from the no-framework-imports invariant to model JSONB columns.
+      `ConvoRequestId`/`ConvoResponseId` (`Long`/BIGINT-backed) id value
+      classes, the `ConvoName` validated value type (adds the `TooLong`
+      rejection), and the domain-agnostic `SoftDeleteScope` read enum. Carved
+      out `kotlinx.serialization.json` pure value types (`JsonElement`,
+      `JsonObject`) from the no-framework-imports invariant to model JSONB
+      columns.
 - [x] [RFC-40: Validation Error Reporting](../../../../../../../../rfc/40-validation-error-reporting.md)
       — Renamed the blank-input rejection to `Blank` at the four string-factory
       emit sites (`DisplayName`, `PersonName`, `PasswordHash`, `SsoProviderId`)

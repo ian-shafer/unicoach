@@ -19,18 +19,18 @@ JVM serialization.
   strategy).
 - **INV-3**: `AppConfig.load` MUST wrap all parsing logic in `runCatching` and
   MUST return `Result<Config>`. It MUST NOT throw directly.
-- **INV-4**: The merged config MUST be passed through `ConfigFactory.load()`
-  so that environment-variable substitutions defined in `.conf` files are
-  resolved via OS environment variables automatically. Manual
-  `System.getenv()` calls are NEVER used inside `AppConfig`.
+- **INV-4**: The merged config MUST be passed through `ConfigFactory.load()` so
+  that environment-variable substitutions defined in `.conf` files are resolved
+  via OS environment variables automatically. Manual `System.getenv()` calls are
+  NEVER used inside `AppConfig`.
 - **INV-5**: `SecretString` MUST be a plain `class`, NEVER a `data class`.
-  Kotlin's generated `copy()`, `componentN()`, and default `toString()`
-  MUST NOT exist on this type.
+  Kotlin's generated `copy()`, `componentN()`, and default `toString()` MUST NOT
+  exist on this type.
 - **INV-6**: `SecretString.toString()` MUST always return the literal string
   `"********"`, regardless of the underlying value.
-- **INV-7**: `SecretString.equals()` and `SecretString.hashCode()` MUST
-  delegate only to `value`, enabling safe use in equality checks without
-  exposing the raw secret via reflection-based frameworks.
+- **INV-7**: `SecretString.equals()` and `SecretString.hashCode()` MUST delegate
+  only to `value`, enabling safe use in equality checks without exposing the raw
+  secret via reflection-based frameworks.
 - **INV-8**: `Config.getNonBlankString(path: String)` MUST throw
   `IllegalArgumentException` (via `require`) when the resolved string is blank
   or empty. It MUST NOT return blank strings silently.
@@ -48,19 +48,19 @@ JVM serialization.
 See [`AppConfig.kt`](./AppConfig.kt).
 
 - **Side Effects**: Reads named classpath resources using
-  `ConfigFactory.parseResourcesAnySyntax`. No network calls, no file-system
-  side effects beyond classpath resolution.
-- **Merge Semantics**: Resources are iterated in **reversed** index order,
-  each folded into `mergedConfig` via `withFallback`. This means
-  `resources[last]` has the highest priority. The resulting merged config is
-  then passed to `ConfigFactory.load()` which applies system environment
-  variable substitutions.
+  `ConfigFactory.parseResourcesAnySyntax`. No network calls, no file-system side
+  effects beyond classpath resolution.
+- **Merge Semantics**: Resources are iterated in **reversed** index order, each
+  folded into `mergedConfig` via `withFallback`. This means `resources[last]`
+  has the highest priority. The resulting merged config is then passed to
+  `ConfigFactory.load()` which applies system environment variable
+  substitutions.
 - **Error Handling**: Returns `Result.failure(e)` for any exception thrown
   during parsing (e.g., `ConfigException`, `IOException` for a missing
-  resource). Callers MUST unwrap with `.getOrThrow()` or explicit error
-  handling — silent swallowing of failures is forbidden by convention.
-- **Idempotent**: Yes. Given identical inputs, repeated calls produce
-  equivalent `Config` values.
+  resource). Callers MUST unwrap with `.getOrThrow()` or explicit error handling
+  — silent swallowing of failures is forbidden by convention.
+- **Idempotent**: Yes. Given identical inputs, repeated calls produce equivalent
+  `Config` values.
 
 ### `Config.getNonBlankString(path: String): String`
 
@@ -83,8 +83,8 @@ See [`SecretString.kt`](./SecretString.kt).
   value is non-blank before wrapping.
 - **Side Effects**: None.
 - **`toString()`**: Always returns `"********"`. Logging frameworks, Kotlin
-  string templates, and reflection-based serializers that call `toString()`
-  MUST NOT expose the raw secret.
+  string templates, and reflection-based serializers that call `toString()` MUST
+  NOT expose the raw secret.
 - **`equals(other)`**: Returns `true` iff `other` is a `SecretString` and
   `other.value == this.value`.
 - **`hashCode()`**: Returns `value.hashCode()`.
@@ -99,13 +99,13 @@ See [`SecretString.kt`](./SecretString.kt).
   or use `Config` types receive this dependency transitively.
 - **Classpath Resources**: `AppConfig.load` resolves resources by name using
   `ConfigFactory.parseResourcesAnySyntax`, which searches the JVM classpath.
-  Each module MUST bundle its own `.conf` file in
-  `src/main/resources/` for it to be available at runtime.
-- **Environment Variable Resolution**: `.conf` files MUST use HOCON
-  substitution syntax (`${ENV_VAR}`) to bind deployment-specific values.
-  The `.env.*` files (e.g., `.env.test`) act as the sole source of mutable
-  deployment bounds, loaded into the process environment before JVM startup.
-  No `System.getenv()` calls are permitted inside this package.
+  Each module MUST bundle its own `.conf` file in `src/main/resources/` for it
+  to be available at runtime.
+- **Environment Variable Resolution**: `.conf` files MUST use HOCON substitution
+  syntax (`${ENV_VAR}`) to bind deployment-specific values. The `.env.*` files
+  (e.g., `.env.test`) act as the sole source of mutable deployment bounds,
+  loaded into the process environment before JVM startup. No `System.getenv()`
+  calls are permitted inside this package.
 
 ---
 

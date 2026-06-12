@@ -19,8 +19,9 @@ shared utility, and adds the first production `JobType` variant.
 
 ### Session Model Change
 
-The `Session` data class in `db/src/main/kotlin/ed/unicoach/db/models/Session.kt`
-currently omits `expires_at`. Add `expiresAt: Instant` to the model:
+The `Session` data class in
+`db/src/main/kotlin/ed/unicoach/db/models/Session.kt` currently omits
+`expires_at`. Add `expiresAt: Instant` to the model:
 
 ```kotlin
 data class Session(
@@ -160,15 +161,15 @@ classpath causes a hard startup failure. `rest-server` does not load `net.conf`
 
 Note: The sliding window threshold (`2 days`) and the extension duration
 (`7 days`, hard-coded in `SessionsDao.extendExpiry()`) are intentionally
-decoupled. The threshold controls *when* to trigger an extension; the extension
+decoupled. The threshold controls _when_ to trigger an extension; the extension
 duration is the session TTL, governed by the DAO.
 
 ### SessionExpiryPayload
 
-Located at
-`queue/src/main/kotlin/ed/unicoach/queue/SessionExpiryPayload.kt`. This class
-lives in the `queue` module (not `net`) so that both `rest-server` (enqueuer)
-and `net` (handler) can access it without creating a cross-dependency:
+Located at `queue/src/main/kotlin/ed/unicoach/queue/SessionExpiryPayload.kt`.
+This class lives in the `queue` module (not `net`) so that both `rest-server`
+(enqueuer) and `net` (handler) can access it without creating a
+cross-dependency:
 
 ```kotlin
 @Serializable
@@ -262,16 +263,16 @@ Key behaviors:
 - **No metadata writes**: The handler does not write to the session's `metadata`
   JSONB column. Deduplication relies entirely on OCC versioning and the sliding
   window check.
-- **Blocking JDBC is safe here**: The `execute()` function is `suspend` but calls
-  `database.withConnection` (blocking JDBC) without a `withContext(Dispatchers.IO)`
-  wrapper. This is safe because `QueueWorker` already dispatches handler execution
-  on an IO-bound context.
+- **Blocking JDBC is safe here**: The `execute()` function is `suspend` but
+  calls `database.withConnection` (blocking JDBC) without a
+  `withContext(Dispatchers.IO)` wrapper. This is safe because `QueueWorker`
+  already dispatches handler execution on an IO-bound context.
 
 ### SessionExpiryPlugin
 
 Located at
-`rest-server/src/main/kotlin/ed/unicoach/rest/plugins/SessionExpiryPlugin.kt`.
-A Ktor application plugin that fires after each response is sent.
+`rest-server/src/main/kotlin/ed/unicoach/rest/plugins/SessionExpiryPlugin.kt`. A
+Ktor application plugin that fires after each response is sent.
 
 ```kotlin
 class SessionExpiryPluginConfig {
@@ -336,9 +337,9 @@ Key behaviors:
   immediately.
 - **Filtered by path denylist**: Requests whose path matches any prefix in
   `ignorePathPrefixes` are skipped. Only requests with a 2xx response status
-  trigger enqueue. Health probes, static assets, and error responses are
-  skipped to avoid unbounded queue write amplification. The denylist is
-  configured in `rest-server.conf` under the `sessionExpiry` block.
+  trigger enqueue. Health probes, static assets, and error responses are skipped
+  to avoid unbounded queue write amplification. The denylist is configured in
+  `rest-server.conf` under the `sessionExpiry` block.
 - **Error-level logging**: Enqueue failures are logged at `error` level since
   they indicate a database issue worth investigating.
 
@@ -346,11 +347,12 @@ Key behaviors:
 
 #### rest-server
 
-`rest-server/build.gradle.kts` MUST add `alias(libs.plugins.kotlin.serialization)`
-to its `plugins` block. The `SessionExpiryPlugin` calls
-`SessionExpiryPayload(...).asJson()`, where `asJson()` is an `inline reified`
-function that requires the kotlinx-serialization compiler plugin at the call
-site to generate the serializer for `SessionExpiryPayload`.
+`rest-server/build.gradle.kts` MUST add
+`alias(libs.plugins.kotlin.serialization)` to its `plugins` block. The
+`SessionExpiryPlugin` calls `SessionExpiryPayload(...).asJson()`, where
+`asJson()` is an `inline reified` function that requires the
+kotlinx-serialization compiler plugin at the call site to generate the
+serializer for `SessionExpiryPayload`.
 
 `rest-server/src/main/resources/rest-server.conf` MUST add a `sessionExpiry`
 block with the `ignorePathPrefixes` list:
@@ -415,8 +417,8 @@ made by concurrent UoW commits.
 
 ### Error Handling and Edge Cases
 
-- **Server shutdown during enqueue**: The fire-and-forget coroutine is cancelled.
-  No job is created. The next request re-enqueues.
+- **Server shutdown during enqueue**: The fire-and-forget coroutine is
+  cancelled. No job is created. The next request re-enqueues.
 - **Handler runs after session deletion**: `findByTokenHash()` returns
   `NotFound`. Handler returns `Success`. No retry.
 - **Concurrent duplicate jobs**: Multiple requests enqueue for the same session.
@@ -442,25 +444,25 @@ made by concurrent UoW commits.
 `net/src/test/kotlin/ed/unicoach/net/handlers/SessionExpiryHandlerTest.kt`:
 
 Tests use a real PostgreSQL database. `@BeforeAll` loads config via
-`AppConfig.load("common.conf", "db.conf")`, creates `DatabaseConfig.from(config)`,
-and instantiates `Database(dbConfig)`. `@AfterAll` calls `database.close()` to
-shut down the HikariCP pool. Each test truncates `sessions CASCADE` and
-`jobs CASCADE` in `@BeforeEach` via a raw `database.withConnection` call.
+`AppConfig.load("common.conf", "db.conf")`, creates
+`DatabaseConfig.from(config)`, and instantiates `Database(dbConfig)`.
+`@AfterAll` calls `database.close()` to shut down the HikariCP pool. Each test
+truncates `sessions CASCADE` and `jobs CASCADE` in `@BeforeEach` via a raw
+`database.withConnection` call.
 
 - **`handler extends session expiry when within sliding window`**: Create a
   session with `expiration = Duration.ofDays(1)` (expires in 1 day, within the
-  2-day sliding window). Capture the original `expiresAt`. Encode the token
-  hash as Base64 and build the payload `JsonObject`. Call
-  `handler.execute(payload)`. Assert `JobResult.Success`. Read the session
-  back via `findByTokenHash()` and assert `expiresAt` is after the original
-  value. Do NOT compare against `Instant.now()` — the application and database
-  clocks may differ.
+  2-day sliding window). Capture the original `expiresAt`. Encode the token hash
+  as Base64 and build the payload `JsonObject`. Call `handler.execute(payload)`.
+  Assert `JobResult.Success`. Read the session back via `findByTokenHash()` and
+  assert `expiresAt` is after the original value. Do NOT compare against
+  `Instant.now()` — the application and database clocks may differ.
 
 - **`handler skips extension when expiry is outside sliding window`**: Create a
   session with `expiration = Duration.ofDays(7)` (expires in 7 days, well
   outside the 2-day window). Call `handler.execute(payload)`. Assert
-  `JobResult.Success`. Read the session back and assert `expiresAt` is
-  unchanged (still approximately 7 days from creation, not re-extended).
+  `JobResult.Success`. Read the session back and assert `expiresAt` is unchanged
+  (still approximately 7 days from creation, not re-extended).
 
 - **`handler returns Success when session is not found`**: Build a payload with
   a token hash that does not match any session. Call `handler.execute(payload)`.
@@ -470,16 +472,16 @@ shut down the HikariCP pool. Each test truncates `sessions CASCADE` and
   sliding window. Execute the handler once to extend the session (bumps
   version). Execute the handler a second time. Assert `JobResult.Success` on
   both calls. Read the session back and assert `version == 2` (extended only
-  once). The second execution sees `expiresAt` outside the sliding window
-  and returns `Success` as a no-op, proving idempotency.
+  once). The second execution sees `expiresAt` outside the sliding window and
+  returns `Success` as a no-op, proving idempotency.
 
 - **`handler returns PermanentFailure on malformed payload`**: Build a
   `JsonObject` with missing or mistyped fields (e.g., `{"wrong": 123}`). Call
   `handler.execute(payload)`. Assert `JobResult.PermanentFailure`.
 
-- **`handler returns PermanentFailure on invalid Base64`**: Build a
-  `JsonObject` with `{"tokenHash": "%%%not-base64%%"}`. Call
-  `handler.execute(payload)`. Assert `JobResult.PermanentFailure`.
+- **`handler returns PermanentFailure on invalid Base64`**: Build a `JsonObject`
+  with `{"tokenHash": "%%%not-base64%%"}`. Call `handler.execute(payload)`.
+  Assert `JobResult.PermanentFailure`.
 
 ### Plugin Unit Tests
 
@@ -493,9 +495,8 @@ installed with a test `SessionConfig` (known cookie name). A minimal route
   request to `/api/v1/ping` with no cookies. Assert `queueService.enqueue()` is
   never called.
 
-- **`plugin does not enqueue for non-API paths`**: Send a request to
-  `/health` with a valid session cookie. Assert `queueService.enqueue()` is
-  never called.
+- **`plugin does not enqueue for non-API paths`**: Send a request to `/health`
+  with a valid session cookie. Assert `queueService.enqueue()` is never called.
 
 - **`plugin does not enqueue for non-2xx responses`**: Register a route that
   returns 401. Send a request to that route with a valid session cookie. Assert
@@ -507,9 +508,9 @@ installed with a test `SessionConfig` (known cookie name). A minimal route
   and a payload containing the Base64-encoded SHA-256 hash of the cookie value.
 
 - **`plugin logs error and does not crash on enqueue failure`**: Configure the
-  mock `queueService.enqueue()` to return `EnqueueResult.DatabaseFailure`.
-  Send a request to `/api/v1/ping` with a valid session cookie. Assert the
-  response is still 200 (the plugin does not interfere with response delivery).
+  mock `queueService.enqueue()` to return `EnqueueResult.DatabaseFailure`. Send
+  a request to `/api/v1/ping` with a valid session cookie. Assert the response
+  is still 200 (the plugin does not interfere with response delivery).
 
 ### Existing Test Updates
 
@@ -517,9 +518,9 @@ installed with a test `SessionConfig` (known cookie name). A minimal route
   `expiry extension actively shifts expiry forwards securely` test MUST be
   updated to assert the new `expiresAt` field on the returned `Session` object
   (verify `extended.expiresAt` is after `original.expiresAt`). Do NOT compare
-  against `Instant.now()` — the application and database clocks may differ.
-  The other two tests require no changes — the new `expiresAt` field is
-  populated automatically by `mapSession()`.
+  against `Instant.now()` — the application and database clocks may differ. The
+  other two tests require no changes — the new `expiresAt` field is populated
+  automatically by `mapSession()`.
 
 ## Implementation Plan
 
@@ -554,22 +555,22 @@ installed with a test `SessionConfig` (known cookie name). A minimal route
    six test cases. Verify: `./bin/test ed.unicoach.net.handlers`.
 
 7. **Implement `SessionExpiryPlugin`**: Add
-    `alias(libs.plugins.kotlin.serialization)` to
-    `rest-server/build.gradle.kts`. Create the Ktor plugin in
-    `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/SessionExpiryPlugin.kt`.
-    Verify: `./gradlew :rest-server:build` compiles.
+   `alias(libs.plugins.kotlin.serialization)` to `rest-server/build.gradle.kts`.
+   Create the Ktor plugin in
+   `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/SessionExpiryPlugin.kt`.
+   Verify: `./gradlew :rest-server:build` compiles.
 
 8. **Wire plugin in rest-server**: Update
-    `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt` to create
-    `QueueService` and install the plugin in the `embeddedServer` lambda. Verify:
-    `./gradlew :rest-server:build` compiles.
+   `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt` to create
+   `QueueService` and install the plugin in the `embeddedServer` lambda. Verify:
+   `./gradlew :rest-server:build` compiles.
 
-9. **Implement plugin tests**: Create `SessionExpiryPluginTest.kt` with all
-   five test cases. Verify:
+9. **Implement plugin tests**: Create `SessionExpiryPluginTest.kt` with all five
+   test cases. Verify:
    `./bin/test ed.unicoach.rest.plugins.SessionExpiryPluginTest`.
 
-10. **Wire handler in queue-worker**: Add
-    `implementation(project(":net"))` to `queue-worker/build.gradle.kts`. Update
+10. **Wire handler in queue-worker**: Add `implementation(project(":net"))` to
+    `queue-worker/build.gradle.kts`. Update
     `queue-worker/src/main/kotlin/ed/unicoach/worker/Application.kt` to add
     `"net.conf"` to `AppConfig.load(...)`, parse `NetConfig`, and register
     `SessionExpiryHandler` with the configured threshold. Verify:
@@ -594,6 +595,9 @@ installed with a test `SessionConfig` (known cookie name). A minimal route
 - `net/src/main/kotlin/ed/unicoach/net/NetConfig.kt` [NEW]
 - `queue/src/main/kotlin/ed/unicoach/queue/SessionExpiryPayload.kt` [NEW]
 - `net/src/main/kotlin/ed/unicoach/net/handlers/SessionExpiryHandler.kt` [NEW]
-- `net/src/test/kotlin/ed/unicoach/net/handlers/SessionExpiryHandlerTest.kt` [NEW]
-- `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/SessionExpiryPlugin.kt` [NEW]
-- `rest-server/src/test/kotlin/ed/unicoach/rest/plugins/SessionExpiryPluginTest.kt` [NEW]
+- `net/src/test/kotlin/ed/unicoach/net/handlers/SessionExpiryHandlerTest.kt`
+  [NEW]
+- `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/SessionExpiryPlugin.kt`
+  [NEW]
+- `rest-server/src/test/kotlin/ed/unicoach/rest/plugins/SessionExpiryPluginTest.kt`
+  [NEW]

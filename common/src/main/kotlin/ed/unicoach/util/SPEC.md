@@ -2,8 +2,8 @@
 
 ## I. Overview
 
-Domain-agnostic cryptographic and validation utilities shared across all modules.
-This package provides three facilities: password hashing via Argon2id
+Domain-agnostic cryptographic and validation utilities shared across all
+modules. This package provides three facilities: password hashing via Argon2id
 (`Argon2Hasher`), stateless JWT minting (`JwtGenerator`), and a generic
 validation contract (`Validator<T>` / `ValidationErrors`). It has no knowledge
 of HTTP semantics, domain entities, or persistence.
@@ -21,9 +21,9 @@ of HTTP semantics, domain entities, or persistence.
   CPU-bound pool.
 - Both `hash` and `verify` MUST be wrapped in `withTimeout(timeoutMs)`. The
   default timeout MUST be `2000 ms`.
-- The plaintext password char array MUST be wiped via `argon2.wipeArray()`
-  in a `finally` block regardless of outcome — NEVER left in memory after the
-  call completes.
+- The plaintext password char array MUST be wiped via `argon2.wipeArray()` in a
+  `finally` block regardless of outcome — NEVER left in memory after the call
+  completes.
 - Default tuning parameters MUST be: `iterations = 3`, `memory = 65536 KiB`,
   `parallelism = 1`. All four tunables (`iterations`, `memory`, `parallelism`,
   `timeoutMs`) MUST be injectable at construction time, as MUST the execution
@@ -52,8 +52,10 @@ of HTTP semantics, domain entities, or persistence.
 
 - `Validator<T>` MUST be a pure interface with a single method
   `validate(input: T): ValidationErrors`.
-- `ValidationErrors` MUST aggregate both free-form string errors (`errors:
-  List<String>`) and structured field-level errors (`fieldErrors:
+- `ValidationErrors` MUST aggregate both free-form string errors
+  (`errors:
+  List<String>`) and structured field-level errors
+  (`fieldErrors:
   List<FieldError>`).
 - `ValidationErrors.hasErrors()` MUST return `true` if and only if either list
   is non-empty.

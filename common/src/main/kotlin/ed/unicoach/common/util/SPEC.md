@@ -18,8 +18,8 @@ is `DataSize`, a non-negative byte count. See [DataSize.kt](./DataSize.kt).
   `require` in `init`). A negative `DataSize` is therefore unrepresentable, not
   merely discouraged.
 - **INV-3**: No construction path MUST bypass the non-negativity check. The only
-  public way to obtain a `DataSize` MUST be the `DataSize.ofBytes(Long)` factory,
-  so every instance has been validated.
+  public way to obtain a `DataSize` MUST be the `DataSize.ofBytes(Long)`
+  factory, so every instance has been validated.
 - **INV-4**: The public surface MUST remain minimal — the `bytes` accessor and
   the `ofBytes` factory only. The type MUST NOT acquire size-string parsing
   (`fromString`), unit constructors (`ofKibibytes`), or unit-conversion (`to*`)
@@ -57,8 +57,8 @@ See [DataSize.kt](./DataSize.kt).
 
 - **No module-specific dependencies.** `DataSize` relies only on the Kotlin
   standard library; it adds no entry to `common/build.gradle.kts`.
-- **Test-engine requirement**: `common`'s unit tests (including
-  `DataSizeTest`) are JUnit 5 tests discovered only when
+- **Test-engine requirement**: `common`'s unit tests (including `DataSizeTest`)
+  are JUnit 5 tests discovered only when
   `tasks.withType<Test> { useJUnitPlatform() }` is declared in
   `common/build.gradle.kts`. Absent that block, Gradle's default runner silently
   skips them and the suite reports success without executing them.

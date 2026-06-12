@@ -2,12 +2,12 @@
 
 ## I. Overview
 
-This directory is the **authentication domain layer**. It owns the business logic
-for user registration, session-bound user resolution (`/me`), session revocation
-(logout), and background zombie-session cleanup. It bridges the HTTP boundary
-(handled by `rest-server`) and the data layer (handled by `service/db`), exposing
-pure domain results via sealed interfaces that contain no HTTP types. Login
-credential verification is handled in this layer.
+This directory is the **authentication domain layer**. It owns the business
+logic for user registration, session-bound user resolution (`/me`), session
+revocation (logout), and background zombie-session cleanup. It bridges the HTTP
+boundary (handled by `rest-server`) and the data layer (handled by
+`service/db`), exposing pure domain results via sealed interfaces that contain
+no HTTP types. Login credential verification is handled in this layer.
 
 ---
 
@@ -15,26 +15,28 @@ credential verification is handled in this layer.
 
 ### General
 
-- `AuthService` MUST NOT import or reference any Ktor, HTTP, or REST-layer types.
-- All `AuthService` methods MUST wrap their entire body in `try/catch(Exception)`
-  and return `Result.failure(e)` on any uncaught exception.
+- `AuthService` MUST NOT import or reference any Ktor, HTTP, or REST-layer
+  types.
+- All `AuthService` methods MUST wrap their entire body in
+  `try/catch(Exception)` and return `Result.failure(e)` on any uncaught
+  exception.
 - `AuthService` MUST NOT own or hold a raw `java.sql.Connection` — all DB access
   MUST go through `Database.withConnection`.
 
 ### Registration
 
-- `AuthService.register()` MUST validate input via `RegistrationValidator` before
-  any database call. If validation fails, it MUST return
+- `AuthService.register()` MUST validate input via `RegistrationValidator`
+  before any database call. If validation fails, it MUST return
   `RegisterResult.ValidationFailure` without touching the DB.
-- If `UsersDao.create()` returns `DuplicateEmailException`, `AuthService`
-  MUST return `RegisterResult.DuplicateEmail`, not a database error.
+- If `UsersDao.create()` returns `DuplicateEmailException`, `AuthService` MUST
+  return `RegisterResult.DuplicateEmail`, not a database error.
 - `AuthService.register()` MUST mint a token and create a session (or remint the
   caller's existing session when `oldCookieToken` is supplied) on success.
 
 ### Session Resolution (`getCurrentUser`)
 
-- `AuthService.getCurrentUser()` MUST return `Result.success(null)` for
-  all of: token not found, expired token, revoked token, anonymous session
+- `AuthService.getCurrentUser()` MUST return `Result.success(null)` for all of:
+  token not found, expired token, revoked token, anonymous session
   (`user_id = null`), and soft-deleted user. Every one of these is signalled by
   the DAO as a `NotFoundException`; any other DAO failure MUST surface as
   `Result.failure(e)`.
@@ -43,8 +45,8 @@ credential verification is handled in this layer.
 
 ### Logout
 
-- `AuthService.logout()` MUST be idempotent. A `NotFoundException` MUST be mapped
-  to a `Result.success(Unit)`.
+- `AuthService.logout()` MUST be idempotent. A `NotFoundException` MUST be
+  mapped to a `Result.success(Unit)`.
 - `AuthService.logout()` MUST NOT clear cookies — that is the routing layer's
   responsibility.
 
@@ -79,8 +81,8 @@ credential verification is handled in this layer.
 
 ### `AuthService.register(email, name, password, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<RegisterResult>` — See [AuthService.kt](./AuthService.kt)
 
-- **Side Effects**: Writes one row to `users` via `UsersDao.create()`, then mints
-  a token and creates or remints a session via `SessionsDao`.
+- **Side Effects**: Writes one row to `users` via `UsersDao.create()`, then
+  mints a token and creates or remints a session via `SessionsDao`.
 - **Validation**: `RegistrationValidator` is called first; returns
   `RegisterResult.ValidationFailure(errors, fieldErrors)` without DB access if
   validation fails.
@@ -90,7 +92,8 @@ credential verification is handled in this layer.
   `RegisterResult.DuplicateEmail` on the second call.
 - **Error mapping**:
   - `Success` → `Result.success(RegisterResult.Success(user, newToken))`
-  - `DuplicateEmailException` → `Result.success(RegisterResult.DuplicateEmail(email))`
+  - `DuplicateEmailException` →
+    `Result.success(RegisterResult.DuplicateEmail(email))`
   - Uncaught exception → `Result.failure(e)`
 
 ### `AuthService.getCurrentUser(tokenHash: TokenHash): Result<User?>` — See [AuthService.kt](./AuthService.kt)
@@ -98,22 +101,22 @@ credential verification is handled in this layer.
 - **Side Effects**: Two read-only DB queries (`SessionsDao.findByTokenHash`,
   `UsersDao.findById`). No writes.
 - **Session lookup**: `SessionsDao.findByTokenHash` filters expired and revoked
-  sessions. `NotFoundException` → `Result.success(null)`.
-  Other exceptions → `Result.failure(e)`.
+  sessions. `NotFoundException` → `Result.success(null)`. Other exceptions →
+  `Result.failure(e)`.
 - **Anonymous session**: If `session.userId == null` → `Result.success(null)`.
 - **User lookup**: `UsersDao.findById` with `includeDeleted = false`.
-  `NotFoundException` → `Result.success(null)`.
-  `Success` → `Result.success(user)`.
+  `NotFoundException` → `Result.success(null)`. `Success` →
+  `Result.success(user)`.
 - **Idempotency**: Fully idempotent (read-only).
 - **Error mapping** (uncaught): `Result.failure(e)`.
 
 ### `AuthService.logout(tokenHash: TokenHash): Result<Unit>` — See [AuthService.kt](./AuthService.kt)
 
 - **Side Effects**: One blind `UPDATE` on `sessions` via
-  `SessionsDao.revokeByTokenHash()`. Sets `is_revoked = true`,
-  increments `version`.
-- **Idempotency**: Idempotent. `NotFoundException` (already revoked or missing) maps to
-  `Result.success(Unit)`.
+  `SessionsDao.revokeByTokenHash()`. Sets `is_revoked = true`, increments
+  `version`.
+- **Idempotency**: Idempotent. `NotFoundException` (already revoked or missing)
+  maps to `Result.success(Unit)`.
 - **Error mapping**:
   - `Success` → `Result.success(Unit)`
   - `NotFoundException` → `Result.success(Unit)`
@@ -146,15 +149,17 @@ credential verification is handled in this layer.
 
 ### `RegisterResult` (sealed interface) — See [RegisterResult.kt](./RegisterResult.kt)
 
-| Variant | Carries | When returned |
-|---|---|---|
-| `Success` | `user: User`, `token: String` | Successful registration |
-| `ValidationFailure` | `errors: List<String>`, `fieldErrors: List<FieldError>` | Validator rejects input |
-| `DuplicateEmail` | `email: String` | DB unique constraint hit on email |
+| Variant             | Carries                                                 | When returned                     |
+| ------------------- | ------------------------------------------------------- | --------------------------------- |
+| `Success`           | `user: User`, `token: String`                           | Successful registration           |
+| `ValidationFailure` | `errors: List<String>`, `fieldErrors: List<FieldError>` | Validator rejects input           |
+| `DuplicateEmail`    | `email: String`                                         | DB unique constraint hit on email |
 
 ### `AuthService.login(...)` — See [AuthService.kt](./AuthService.kt)
 
-- **Side Effects**: One read-only DB query for the user via `UsersDao.findByEmail()`. If successful, optionally revokes the old session and creates a new session via `SessionsDao.create()`.
+- **Side Effects**: One read-only DB query for the user via
+  `UsersDao.findByEmail()`. If successful, optionally revokes the old session
+  and creates a new session via `SessionsDao.create()`.
 - **Idempotency**: Not idempotent. Creating a session mutates the database.
 - **Error mapping**:
   - `Success` → `Result.success(LoginResult.Success(user, newToken))`
@@ -166,13 +171,13 @@ credential verification is handled in this layer.
 
 ### `LoginResult` (sealed interface) — See [LoginResult.kt](./LoginResult.kt)
 
-| Variant | Carries | When returned |
-|---|---|---|
-| `Success` | `user: User`, `token: String` | Successful login |
-| `InvalidEmail` | `error: ValidationError` | Email format is invalid |
-| `UserNotFound` | None | User does not exist |
-| `PasswordNotSet` | None | User uses SSO only |
-| `PasswordMismatch` | None | Incorrect password |
+| Variant            | Carries                       | When returned           |
+| ------------------ | ----------------------------- | ----------------------- |
+| `Success`          | `user: User`, `token: String` | Successful login        |
+| `InvalidEmail`     | `error: ValidationError`      | Email format is invalid |
+| `UserNotFound`     | None                          | User does not exist     |
+| `PasswordNotSet`   | None                          | User uses SSO only      |
+| `PasswordMismatch` | None                          | Incorrect password      |
 
 ---
 
@@ -199,7 +204,11 @@ credential verification is handled in this layer.
 - [x] [RFC-11: Sessions](../../../../../../../rfc/11-sessions.md)
 - [x] [RFC-13: Auth Me](../../../../../../../rfc/13-auth-me.md)
 - [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md)
-- [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md) (deleted `AuthResult`/`MeResult`/`LogoutResult`; service layer returns `Result<T>`)
+- [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md)
+      (deleted `AuthResult`/`MeResult`/`LogoutResult`; service layer returns
+      `Result<T>`)
 - [x] [RFC-26: Login](../../../../../../../rfc/26-login.md)
 - [x] [RFC-28: Coroutine Context Refactor](../../../../../../../rfc/28-coroutine-context.md)
-- [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md) (repointed `EmailAddress`/`ValidationResult`/`ValidationError` imports from `db.models` to `common.models`; no behavior change)
+- [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md)
+      (repointed `EmailAddress`/`ValidationResult`/`ValidationError` imports
+      from `db.models` to `common.models`; no behavior change)

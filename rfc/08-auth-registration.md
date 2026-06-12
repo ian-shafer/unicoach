@@ -262,63 +262,61 @@ instance.
 
 ## Implementation Plan
 
-1.  **Module Initialization & Dependency Sourcing:**
-    - Initialize the `common` AND `service` modules via `settings.gradle.kts`.
-    - Install `argon2-jvm` (verifying `jna` transitives align logically) and
-      `java-jwt` (v4.x) into `common/build.gradle.kts`. Update
-      `gradle/libs.versions.toml` to structurally bind `HikariCP`, `argon2-jvm`,
-      and `java-jwt` versions explicitly.
-    - Install `HikariCP` strictly into `service/build.gradle.kts`. Map
-      `testImplementation(libs.postgresql)`, `junit` logically ensuring database
-      assertions map independently correctly organically.
-    - **Hexagonal Relocation:** Move the `postgresql` JDBC dependency completely
-      out of `rest-server` and definitively into `service`. Shift
-      `ed/unicoach/db/*` (Dao, Models, SqlSession) sequentially into the
-      `service` module recursively.
-    - Setup module dependencies defensively tracking
-      `implementation(project(...))` loops.
-    - (_Verification: `./gradlew classes` successfully compiles the newly
-      arranged artifact graph._)
-2.  **Configuration Wiring:** Update `rest-server.conf` adding HOCON properties
-    accurately handling `jwt` and `argon2` tuning blocks. Update
-    `application-test.conf`.
-3.  **General Utility Implementation:** Implement `Argon2Hasher` as an
-    injectable class and construct a generic `Validator<T>` logically abstracted
-    structurally mapping directly into the base `common` module. Write
-    `Database.kt` to implement a `withConnection` wrapper handling Hikari
-    connection pools using strict `try/catch/finally` transaction rollbacks.
-    - **CRITICAL CONSTRAINT:** Implement `Argon2HasherTest.kt` and
-      `JwtGeneratorTest.kt` before proceeding.
-4.  **Domain Orchestration Implementation (`service`):** Define `AuthResult.kt`.
-    Write `AuthService.kt` defining a `register` function shifting computation
-    context into `withContext(Dispatchers.IO)` around the Argon2 operation
-    before calling `Database.withConnection` and executing `UsersDao.create`.
-    - **CRITICAL CONSTRAINT:** Implement `AuthServiceTest.kt` testing valid
-      sequences and boundaries. This step is incomplete until the unit test is
-      written.
-5.  **Semantic Models Implementation (`rest-server`):** Generate clean
-    HTTP-bound `RegisterRequest`, `PublicUser`, `RegisterResponse`, and
-    `ErrorResponse` artifacts uniquely.
-6.  **Route Controller Registration & Serialization:** Develop
-    `Serialization.kt` explicitly registering Jackson mapping bounds. Develop
-    `StatusPages.kt`. Develop `AuthRoutes.kt` cleanly resolving HTTP payloads by
-    forwarding cleanly to `AuthService.register()` logically mapping output
-    responses automatically.
-7.  **Integration Testing Bounds:** Create `AuthRoutingTest.kt`, isolating the
-    PostgreSQL database. Use integration assertions confirming valid and mapped
-    `400/409` states.
-    - **CRITICAL CONSTRAINT:** Implement `AuthRoutingTest.kt` enforcing all 7
-      validation scenarios referenced in the `Tests` section. Verify via
-      `./bin/test`.
-8.  **Dependency Matrix Update:** Explicitly attach `configureSerialization()`,
-    `configureStatusPages()`, and generic `auth` loops into target module
-    mapping in `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt`
-    structurally routing endpoints recursively structurally connecting
-    `Routing.kt`. (_Verification: Run `./bin/test` ensuring the application
-    server boots naturally handling integration logic fully without injection
-    exceptions._)
-9.  **API Documentation:** Update `api-specs/openapi.yaml` to define the new
-    endpoints natively.
+1. **Module Initialization & Dependency Sourcing:**
+   - Initialize the `common` AND `service` modules via `settings.gradle.kts`.
+   - Install `argon2-jvm` (verifying `jna` transitives align logically) and
+     `java-jwt` (v4.x) into `common/build.gradle.kts`. Update
+     `gradle/libs.versions.toml` to structurally bind `HikariCP`, `argon2-jvm`,
+     and `java-jwt` versions explicitly.
+   - Install `HikariCP` strictly into `service/build.gradle.kts`. Map
+     `testImplementation(libs.postgresql)`, `junit` logically ensuring database
+     assertions map independently correctly organically.
+   - **Hexagonal Relocation:** Move the `postgresql` JDBC dependency completely
+     out of `rest-server` and definitively into `service`. Shift
+     `ed/unicoach/db/*` (Dao, Models, SqlSession) sequentially into the
+     `service` module recursively.
+   - Setup module dependencies defensively tracking
+     `implementation(project(...))` loops.
+   - (_Verification: `./gradlew classes` successfully compiles the newly
+     arranged artifact graph._)
+2. **Configuration Wiring:** Update `rest-server.conf` adding HOCON properties
+   accurately handling `jwt` and `argon2` tuning blocks. Update
+   `application-test.conf`.
+3. **General Utility Implementation:** Implement `Argon2Hasher` as an injectable
+   class and construct a generic `Validator<T>` logically abstracted
+   structurally mapping directly into the base `common` module. Write
+   `Database.kt` to implement a `withConnection` wrapper handling Hikari
+   connection pools using strict `try/catch/finally` transaction rollbacks.
+   - **CRITICAL CONSTRAINT:** Implement `Argon2HasherTest.kt` and
+     `JwtGeneratorTest.kt` before proceeding.
+4. **Domain Orchestration Implementation (`service`):** Define `AuthResult.kt`.
+   Write `AuthService.kt` defining a `register` function shifting computation
+   context into `withContext(Dispatchers.IO)` around the Argon2 operation before
+   calling `Database.withConnection` and executing `UsersDao.create`.
+   - **CRITICAL CONSTRAINT:** Implement `AuthServiceTest.kt` testing valid
+     sequences and boundaries. This step is incomplete until the unit test is
+     written.
+5. **Semantic Models Implementation (`rest-server`):** Generate clean HTTP-bound
+   `RegisterRequest`, `PublicUser`, `RegisterResponse`, and `ErrorResponse`
+   artifacts uniquely.
+6. **Route Controller Registration & Serialization:** Develop `Serialization.kt`
+   explicitly registering Jackson mapping bounds. Develop `StatusPages.kt`.
+   Develop `AuthRoutes.kt` cleanly resolving HTTP payloads by forwarding cleanly
+   to `AuthService.register()` logically mapping output responses automatically.
+7. **Integration Testing Bounds:** Create `AuthRoutingTest.kt`, isolating the
+   PostgreSQL database. Use integration assertions confirming valid and mapped
+   `400/409` states.
+   - **CRITICAL CONSTRAINT:** Implement `AuthRoutingTest.kt` enforcing all 7
+     validation scenarios referenced in the `Tests` section. Verify via
+     `./bin/test`.
+8. **Dependency Matrix Update:** Explicitly attach `configureSerialization()`,
+   `configureStatusPages()`, and generic `auth` loops into target module mapping
+   in `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt` structurally
+   routing endpoints recursively structurally connecting `Routing.kt`.
+   (_Verification: Run `./bin/test` ensuring the application server boots
+   naturally handling integration logic fully without injection exceptions._)
+9. **API Documentation:** Update `api-specs/openapi.yaml` to define the new
+   endpoints natively.
 
 ## Files Modified
 

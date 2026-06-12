@@ -31,8 +31,8 @@ calls and map service outcomes onto HTTP responses.
   `rejectUnsupportedMethods(...)` listing exactly its allowed methods, so all
   other methods return `405 Method Not Allowed` with an `Allow` header.
 - `POST /api/v1/auth/register` uses `post("/register")` and MUST NOT call
-  `rejectUnsupportedMethods` — Ktor handles method rejection natively for
-  leaf `post()` handlers.
+  `rejectUnsupportedMethods` — Ktor handles method rejection natively for leaf
+  `post()` handlers.
 - The student resource is **owner-resolved**: routes MUST NOT expose a path id.
   `POST` targets the collection (`/api/v1/students`); `GET`/`PATCH`/`DELETE`
   target the singleton `/api/v1/students/me`.
@@ -46,9 +46,9 @@ calls and map service outcomes onto HTTP responses.
 - For **session hand-off** (`register`, `login`), the raw `oldCookieToken` is
   forwarded verbatim to the service, which owns the remint decision. This is the
   only path on which an unhashed token leaves the routing layer.
-- Raw tokens MUST NOT be validated against a format/regex at the routing
-  layer — any value is hashed and looked up, which matches 0 rows for invalid
-  tokens. This prevents distinguishing "wrong format" from "not found."
+- Raw tokens MUST NOT be validated against a format/regex at the routing layer —
+  any value is hashed and looked up, which matches 0 rows for invalid tokens.
+  This prevents distinguishing "wrong format" from "not found."
 
 ### Session Cookie
 
@@ -67,9 +67,14 @@ calls and map service outcomes onto HTTP responses.
 
 ### Error Mapping
 
-- Route logic MUST call `getOrThrow()` on `Result<T>` types returned by the service layer.
-- `Exception` instances are propagated outwards and handled globally by the Ktor `StatusPages` plugin.
-- Known domain outcomes (e.g. `RegisterResult.ValidationFailure`, `RegisterResult.DuplicateEmail`, `CreateStudentResult.AlreadyExists`, `UpdateStudentResult.VersionConflict`) MUST be handled explicitly in exhaustive `when` branches over the sealed result type.
+- Route logic MUST call `getOrThrow()` on `Result<T>` types returned by the
+  service layer.
+- `Exception` instances are propagated outwards and handled globally by the Ktor
+  `StatusPages` plugin.
+- Known domain outcomes (e.g. `RegisterResult.ValidationFailure`,
+  `RegisterResult.DuplicateEmail`, `CreateStudentResult.AlreadyExists`,
+  `UpdateStudentResult.VersionConflict`) MUST be handled explicitly in
+  exhaustive `when` branches over the sealed result type.
 
 ### Session Hand-off (Register / Login)
 
@@ -78,8 +83,8 @@ calls and map service outcomes onto HTTP responses.
   anonymous session rather than orphan it. The routing layer does NOT decide
   whether to remint or create — it only hands the old token across.
 - The cookie set on a successful `register`/`login` MUST be the opaque token
-  returned by the service outcome (`outcome.token`), never a value minted in
-  the routing layer.
+  returned by the service outcome (`outcome.token`), never a value minted in the
+  routing layer.
 
 ### Student Owner Resolution
 
@@ -96,8 +101,9 @@ calls and map service outcomes onto HTTP responses.
 - "Authenticated but no profile" is a distinct, expected outcome: `GET`/`PATCH`/
   `DELETE` on `/me` MUST return `404 STUDENT_NOT_FOUND`, never `401`.
 - `DELETE /api/v1/students/me` MUST resolve the user and forward **both** the
-  `User.id` and the session `tokenHash` to `StudentService.deleteStudentAndAccount()`,
-  so the account/session teardown is owner-scoped to the presented session.
+  `User.id` and the session `tokenHash` to
+  `StudentService.deleteStudentAndAccount()`, so the account/session teardown is
+  owner-scoped to the presented session.
 
 ---
 
@@ -114,8 +120,9 @@ calls and map service outcomes onto HTTP responses.
 
 ### `POST /api/v1/auth/register` — [`AuthRoutes.kt`](./AuthRoutes.kt)
 
-- **Request**: JSON body `{"email": string, "password": string, "name": string}`.
-  Deserialized as `RegisterRequest`.
+- **Request**: JSON body
+  `{"email": string, "password": string, "name": string}`. Deserialized as
+  `RegisterRequest`.
 - **Side effects**:
   - Calls `AuthService.register()`, forwarding `oldCookieToken`, the session
     expiration, the `User-Agent` header, and the remote host. All persistence
@@ -125,12 +132,12 @@ calls and map service outcomes onto HTTP responses.
     returned by the service (`outcome.token`).
 - **Response mapping**:
 
-  | Condition | Status | Body |
-  |-----------|--------|------|
-  | `RegisterResult.Success` | `201 Created` | `RegisterResponse { user: PublicUser }` |
-  | `RegisterResult.ValidationFailure` | `400 Bad Request` | `ErrorResponse(code="validation_failed", fieldErrors=[...])` |
-  | `RegisterResult.DuplicateEmail` | `409 Conflict` | `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])` |
-  | Exceptions thrown by `.getOrThrow()` | (propagated) | Mapped by `StatusPages` |
+  | Condition                            | Status            | Body                                                            |
+  | ------------------------------------ | ----------------- | --------------------------------------------------------------- |
+  | `RegisterResult.Success`             | `201 Created`     | `RegisterResponse { user: PublicUser }`                         |
+  | `RegisterResult.ValidationFailure`   | `400 Bad Request` | `ErrorResponse(code="validation_failed", fieldErrors=[...])`    |
+  | `RegisterResult.DuplicateEmail`      | `409 Conflict`    | `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])` |
+  | Exceptions thrown by `.getOrThrow()` | (propagated)      | Mapped by `StatusPages`                                         |
 
 - **Idempotency**: Not idempotent — duplicate email returns `409`.
 
@@ -138,18 +145,19 @@ calls and map service outcomes onto HTTP responses.
 
 ### `POST /api/v1/auth/login` — [`AuthRoutes.kt`](./AuthRoutes.kt)
 
-- **Request**: JSON body `{"email": string, "password": string}`.
-  Deserialized as `LoginRequest`.
+- **Request**: JSON body `{"email": string, "password": string}`. Deserialized
+  as `LoginRequest`.
 - **Side effects**:
-  - Calls `AuthService.login()` — verifies credentials and manages session state.
+  - Calls `AuthService.login()` — verifies credentials and manages session
+    state.
   - Writes `Set-Cookie` header with the new opaque raw token upon success.
 - **Response mapping**:
 
-  | Condition | Status | Body |
-  |-----------|--------|------|
-  | `LoginResult.Success` | `200 OK` | `LoginResponse { user: PublicUser }` |
-  | All other `LoginResult` variants | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
-  | Exceptions thrown by `.getOrThrow()` | (propagated) | Mapped by `StatusPages` |
+  | Condition                            | Status             | Body                                 |
+  | ------------------------------------ | ------------------ | ------------------------------------ |
+  | `LoginResult.Success`                | `200 OK`           | `LoginResponse { user: PublicUser }` |
+  | All other `LoginResult` variants     | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
+  | Exceptions thrown by `.getOrThrow()` | (propagated)       | Mapped by `StatusPages`              |
 
 - **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
   `rejectUnsupportedMethods(HttpMethod.Post)`).
@@ -165,12 +173,12 @@ calls and map service outcomes onto HTTP responses.
   writes.
 - **Response mapping**:
 
-  | Condition | Status | Body |
-  |-----------|--------|------|
-  | Cookie absent | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
-  | User successfully fetched | `200 OK` | `MeResponse { user: PublicUser }` |
-  | User returned `null` | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
-  | Exceptions thrown by `.getOrThrow()` | (propagated) | Mapped by `StatusPages` |
+  | Condition                            | Status             | Body                                 |
+  | ------------------------------------ | ------------------ | ------------------------------------ |
+  | Cookie absent                        | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
+  | User successfully fetched            | `200 OK`           | `MeResponse { user: PublicUser }`    |
+  | User returned `null`                 | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
+  | Exceptions thrown by `.getOrThrow()` | (propagated)       | Mapped by `StatusPages`              |
 
 - **Method restriction**: Non-GET methods → `405 Method Not Allowed` (via
   `rejectUnsupportedMethods(HttpMethod.Get)`).
@@ -186,11 +194,11 @@ calls and map service outcomes onto HTTP responses.
   session cookie on `204`.
 - **Response mapping**:
 
-  | Condition | Status | Cookie Cleared? | Body |
-  |-----------|--------|-----------------|------|
-  | Cookie absent | `204 No Content` | Yes | None |
-  | Success | `204 No Content` | Yes | None |
-  | Exceptions thrown by `.getOrThrow()` | (propagated) | **No** | Mapped by `StatusPages` |
+  | Condition                            | Status           | Cookie Cleared? | Body                    |
+  | ------------------------------------ | ---------------- | --------------- | ----------------------- |
+  | Cookie absent                        | `204 No Content` | Yes             | None                    |
+  | Success                              | `204 No Content` | Yes             | None                    |
+  | Exceptions thrown by `.getOrThrow()` | (propagated)     | **No**          | Mapped by `StatusPages` |
 
 - **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
   `rejectUnsupportedMethods(HttpMethod.Post)`).
@@ -217,13 +225,13 @@ calls and map service outcomes onto HTTP responses.
   `StudentService.createStudent(userId, ...)` — creates the caller's profile.
 - **Response mapping**:
 
-  | Condition | Status | Body |
-  |-----------|--------|------|
-  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")` |
-  | `CreateStudentResult.Success` | `201 Created` | `StudentResponse { student: PublicStudent }` |
-  | `CreateStudentResult.ValidationFailure` | `400 Bad Request` | `ErrorResponse(code="VALIDATION_ERROR", fieldErrors=[...])` |
-  | `CreateStudentResult.AlreadyExists` | `409 Conflict` | `ErrorResponse(code="STUDENT_ALREADY_EXISTS")` |
-  | Exceptions thrown by `.getOrThrow()` | per `StatusPages` | Processed by `StatusPages` |
+  | Condition                                 | Status             | Body                                                        |
+  | ----------------------------------------- | ------------------ | ----------------------------------------------------------- |
+  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")`                        |
+  | `CreateStudentResult.Success`             | `201 Created`      | `StudentResponse { student: PublicStudent }`                |
+  | `CreateStudentResult.ValidationFailure`   | `400 Bad Request`  | `ErrorResponse(code="VALIDATION_ERROR", fieldErrors=[...])` |
+  | `CreateStudentResult.AlreadyExists`       | `409 Conflict`     | `ErrorResponse(code="STUDENT_ALREADY_EXISTS")`              |
+  | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | Processed by `StatusPages`                                  |
 
 - **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
   `rejectUnsupportedMethods(HttpMethod.Post)`).
@@ -235,18 +243,19 @@ calls and map service outcomes onto HTTP responses.
 ### `GET /api/v1/students/me` — [`StudentRoutes.kt`](./StudentRoutes.kt)
 
 - **Request**: No body. Owner resolved from the session cookie.
-- **Side effects**: Calls `StudentService.getStudentForUser(userId)` — read only.
+- **Side effects**: Calls `StudentService.getStudentForUser(userId)` — read
+  only.
 - **Response mapping**:
 
-  | Condition | Status | Body |
-  |-----------|--------|------|
-  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")` |
-  | Profile found | `200 OK` | `StudentResponse { student: PublicStudent }` |
-  | Profile is `null` | `404 Not Found` | `ErrorResponse(code="STUDENT_NOT_FOUND")` |
-  | Exceptions thrown by `.getOrThrow()` | per `StatusPages` | Processed by `StatusPages` |
+  | Condition                                 | Status             | Body                                         |
+  | ----------------------------------------- | ------------------ | -------------------------------------------- |
+  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")`         |
+  | Profile found                             | `200 OK`           | `StudentResponse { student: PublicStudent }` |
+  | Profile is `null`                         | `404 Not Found`    | `ErrorResponse(code="STUDENT_NOT_FOUND")`    |
+  | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | Processed by `StatusPages`                   |
 
-- **Method restriction**: Only `GET`/`PATCH`/`DELETE` allowed on `/me`; others
-  → `405 Method Not Allowed`.
+- **Method restriction**: Only `GET`/`PATCH`/`DELETE` allowed on `/me`; others →
+  `405 Method Not Allowed`.
 - **Idempotency**: Yes — read-only, no mutations.
 
 ---
@@ -257,18 +266,19 @@ calls and map service outcomes onto HTTP responses.
   `{"expectedHighSchoolGraduationDate": string, "version": int}`. Deserialized
   as `UpdateStudentRequest`. Owner resolved from the session cookie; `version`
   carries the caller's expected OCC version.
-- **Side effects**: Calls `StudentService.updateStudent(userId, expectedVersion, ...)`
-  — conditionally updates the caller's profile under OCC.
+- **Side effects**: Calls
+  `StudentService.updateStudent(userId, expectedVersion, ...)` — conditionally
+  updates the caller's profile under OCC.
 - **Response mapping**:
 
-  | Condition | Status | Body |
-  |-----------|--------|------|
-  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")` |
-  | `UpdateStudentResult.Success` | `200 OK` | `StudentResponse { student: PublicStudent }` |
-  | `UpdateStudentResult.ValidationFailure` | `400 Bad Request` | `ErrorResponse(code="VALIDATION_ERROR", fieldErrors=[...])` |
-  | `UpdateStudentResult.NotFound` | `404 Not Found` | `ErrorResponse(code="STUDENT_NOT_FOUND")` |
-  | `UpdateStudentResult.VersionConflict` | `409 Conflict` | `ErrorResponse(code="VERSION_CONFLICT")` |
-  | Exceptions thrown by `.getOrThrow()` | per `StatusPages` | Processed by `StatusPages` |
+  | Condition                                 | Status             | Body                                                        |
+  | ----------------------------------------- | ------------------ | ----------------------------------------------------------- |
+  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")`                        |
+  | `UpdateStudentResult.Success`             | `200 OK`           | `StudentResponse { student: PublicStudent }`                |
+  | `UpdateStudentResult.ValidationFailure`   | `400 Bad Request`  | `ErrorResponse(code="VALIDATION_ERROR", fieldErrors=[...])` |
+  | `UpdateStudentResult.NotFound`            | `404 Not Found`    | `ErrorResponse(code="STUDENT_NOT_FOUND")`                   |
+  | `UpdateStudentResult.VersionConflict`     | `409 Conflict`     | `ErrorResponse(code="VERSION_CONFLICT")`                    |
+  | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | Processed by `StatusPages`                                  |
 
 - **Method restriction**: as for `/me` above.
 - **Idempotency**: Not idempotent under OCC — a stale `version` returns
@@ -285,12 +295,12 @@ calls and map service outcomes onto HTTP responses.
   caller's profile and account. On `Success`, clears the session cookie.
 - **Response mapping**:
 
-  | Condition | Status | Cookie Cleared? | Body |
-  |-----------|--------|-----------------|------|
-  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | No | `ErrorResponse(code="UNAUTHORIZED")` |
-  | `DeleteStudentResult.Success` | `204 No Content` | **Yes** | None |
-  | `DeleteStudentResult.NotFound` | `404 Not Found` | No | `ErrorResponse(code="STUDENT_NOT_FOUND")` |
-  | Exceptions thrown by `.getOrThrow()` | per `StatusPages` | No | Processed by `StatusPages` |
+  | Condition                                 | Status             | Cookie Cleared? | Body                                      |
+  | ----------------------------------------- | ------------------ | --------------- | ----------------------------------------- |
+  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | No              | `ErrorResponse(code="UNAUTHORIZED")`      |
+  | `DeleteStudentResult.Success`             | `204 No Content`   | **Yes**         | None                                      |
+  | `DeleteStudentResult.NotFound`            | `404 Not Found`    | No              | `ErrorResponse(code="STUDENT_NOT_FOUND")` |
+  | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | No              | Processed by `StatusPages`                |
 
 - **Method restriction**: as for `/me` above.
 - **Idempotency**: Not idempotent at the resource level — after a successful
@@ -303,21 +313,21 @@ calls and map service outcomes onto HTTP responses.
 This directory contains no module-specific infrastructure requirements beyond
 those inherited from the parent `rest` module. Relevant configuration:
 
-| HOCON key | Source | Used by |
-|-----------|--------|---------|
-| `session.cookieName` | `rest-server.conf` | Cookie read/write in all routes |
-| `session.cookieDomain` | `rest-server.conf` | Cookie `Domain` attribute |
-| `session.cookieSecure` | `rest-server.conf` | Cookie `Secure` flag |
-| `session.expiration` | `rest-server.conf` | Session TTL; forwarded to `AuthService.register()`/`login()` as `sessionExpirationSeconds` |
+| HOCON key              | Source             | Used by                                                                                    |
+| ---------------------- | ------------------ | ------------------------------------------------------------------------------------------ |
+| `session.cookieName`   | `rest-server.conf` | Cookie read/write in all routes                                                            |
+| `session.cookieDomain` | `rest-server.conf` | Cookie `Domain` attribute                                                                  |
+| `session.cookieSecure` | `rest-server.conf` | Cookie `Secure` flag                                                                       |
+| `session.expiration`   | `rest-server.conf` | Session TTL; forwarded to `AuthService.register()`/`login()` as `sessionExpirationSeconds` |
 
-All four values are parsed by `SessionConfig.from(config)` in the parent
-`auth/` package and injected into both route handlers as `sessionConfig`.
+All four values are parsed by `SessionConfig.from(config)` in the parent `auth/`
+package and injected into both route handlers as `sessionConfig`.
 
 ### Injected Dependencies
 
 - **`AuthService`** (`service` module): Provides `register()`, `login()`,
-  `getCurrentUser()`, and `logout()`. Used by both handlers — `StudentRouteHandler`
-  uses it solely for owner resolution.
+  `getCurrentUser()`, and `logout()`. Used by both handlers —
+  `StudentRouteHandler` uses it solely for owner resolution.
 - **`StudentService`** (`service` module): Provides `createStudent()`,
   `getStudentForUser()`, `updateStudent()`, and `deleteStudentAndAccount()`.
 - **`SessionConfig`** (`rest/auth/` package): Cookie parameters.
@@ -326,8 +336,15 @@ All four values are parsed by `SessionConfig.from(config)` in the parent
 
 ## V. History
 
-- [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md) — Established the `/register` endpoint contract (`RegisterRequest`/`RegisterResponse` shape). Originally referenced `rest-server/.../routes/AuthRoutes.kt`; those contracts migrated to the current `routing/` path via RFC-11.
-- [x] [RFC-10: Auth Login](../../../../../../../../rfc/10-auth-login.md) — Introduced the original `POST /api/v1/auth/login` route surface (JWT-based) on the predecessor `routes/AuthRoutes.kt` path; superseded by the session-based login of RFC-26.
+- [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md)
+      — Established the `/register` endpoint contract
+      (`RegisterRequest`/`RegisterResponse` shape). Originally referenced
+      `rest-server/.../routes/AuthRoutes.kt`; those contracts migrated to the
+      current `routing/` path via RFC-11.
+- [x] [RFC-10: Auth Login](../../../../../../../../rfc/10-auth-login.md) —
+      Introduced the original `POST /api/v1/auth/login` route surface
+      (JWT-based) on the predecessor `routes/AuthRoutes.kt` path; superseded by
+      the session-based login of RFC-26.
 - [x] [RFC-11: Sessions](../../../../../../../../rfc/11-sessions.md)
 - [x] [RFC-13: Auth Me](../../../../../../../../rfc/13-auth-me.md)
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../../rfc/21-session-expiry-queue.md)
@@ -335,6 +352,20 @@ All four values are parsed by `SessionConfig.from(config)` in the parent
 - [x] [RFC-24: Result Types](../../../../../../../../rfc/24-result-types.md)
 - [x] [RFC-25: Auth Routes Refactor](../../../../../../../../rfc/25-auth-routes-refactor.md)
 - [x] [RFC-26: Login](../../../../../../../../rfc/26-login.md)
-- [x] [RFC-29: Request Payload Limits](../../../../../../../../rfc/29-request-payload-limits.md) — Removed the in-route `Content-Length`/4KB payload check from `AuthRoutes.kt`; body-size enforcement now lives in the `plugins/` request-size limit and the `413` `StatusPages` mapping. Routing no longer reads any payload bound.
-- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md) — Added `StudentRoutes.kt`: the owner-resolved student profile resource (`POST /api/v1/students`, `GET`/`PATCH`/`DELETE /api/v1/students/me`) with `201`/`200`/`204` success and `400`/`404`/`409`/`401` errors; `DELETE` clears the session cookie. Renamed `RegisterOutcome` → `RegisterResult` in the register handler.
-- [x] [RFC-36: Entity Model Capability Taxonomy](../../../../../../../../rfc/36-entity-model-taxonomy.md) — Collapsed the per-row student version from a wrapper value class to a plain `Int` at the model boundary, so `StudentRoutes.kt` passes `request.version` directly and reads `student.version` when building the response. The `version: Int` JSON wire contract (`UpdateStudentRequest`/`StudentResponse`) is unchanged.
+- [x] [RFC-29: Request Payload Limits](../../../../../../../../rfc/29-request-payload-limits.md)
+      — Removed the in-route `Content-Length`/4KB payload check from
+      `AuthRoutes.kt`; body-size enforcement now lives in the `plugins/`
+      request-size limit and the `413` `StatusPages` mapping. Routing no longer
+      reads any payload bound.
+- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md)
+      — Added `StudentRoutes.kt`: the owner-resolved student profile resource
+      (`POST /api/v1/students`, `GET`/`PATCH`/`DELETE /api/v1/students/me`) with
+      `201`/`200`/`204` success and `400`/`404`/`409`/`401` errors; `DELETE`
+      clears the session cookie. Renamed `RegisterOutcome` → `RegisterResult` in
+      the register handler.
+- [x] [RFC-36: Entity Model Capability Taxonomy](../../../../../../../../rfc/36-entity-model-taxonomy.md)
+      — Collapsed the per-row student version from a wrapper value class to a
+      plain `Int` at the model boundary, so `StudentRoutes.kt` passes
+      `request.version` directly and reads `student.version` when building the
+      response. The `version: Int` JSON wire contract
+      (`UpdateStudentRequest`/`StudentResponse`) is unchanged.

@@ -7,9 +7,9 @@ revokes the current session and clears the session cookie. The endpoint extracts
 the opaque session token from the cookie header, hashes it via SHA-256, and
 performs a blind `UPDATE` on the `sessions` table setting `is_revoked = true`.
 The endpoint is fully idempotent: it returns `204 No Content` regardless of
-whether a session was found, already revoked, expired, or the cookie was missing.
-The cookie is always cleared on the response. The only non-204 response is
-`500 Internal Server Error` on database failure. No queue is required — the
+whether a session was found, already revoked, expired, or the cookie was
+missing. The cookie is always cleared on the response. The only non-204 response
+is `500 Internal Server Error` on database failure. No queue is required — the
 revocation is a single synchronous write. The existing `expireZombieSessions()`
 cleanup job already garbage-collects revoked rows.
 
@@ -19,8 +19,8 @@ cleanup job already garbage-collects revoked rows.
 
 A new `revokeByTokenHash` method MUST be added to `SessionsDao`. It performs a
 blind `UPDATE` — no preceding `SELECT` is required. The method sets
-`is_revoked = true` and increments `version` by 1. The `WHERE` clause matches
-on `token_hash = ?` AND `is_revoked = false`. It does NOT filter by
+`is_revoked = true` and increments `version` by 1. The `WHERE` clause matches on
+`token_hash = ?` AND `is_revoked = false`. It does NOT filter by
 `expires_at > NOW()` — revoking an already-expired session is harmless and
 avoids an unnecessary predicate.
 
@@ -32,7 +32,8 @@ The SQL sets `version = version + 1` inline, which satisfies the existing
 `enforce_versioning` trigger (`NEW.version = OLD.version + 1`). The statement
 uses `RETURNING *` to populate `SessionUpdateResult.Success` with the updated
 `Session`. If 0 rows are affected (token not found or already revoked), the
-method returns `SessionUpdateResult.NotFound("Session not found or already revoked")`.
+method returns
+`SessionUpdateResult.NotFound("Session not found or already revoked")`.
 
 The existing `SessionUpdateResult` sealed interface (Success, NotFound,
 DatabaseFailure) is reused without modification.
@@ -48,8 +49,8 @@ added to `AuthService`. The method wraps the database interaction in
 2. Open a database connection via `database.withConnection`.
 3. Call `SessionsDao.revokeByTokenHash(session, tokenHash)`.
 4. If `SessionUpdateResult.Success`, return `LogoutResult.Success`.
-5. If `SessionUpdateResult.NotFound`, return `LogoutResult.Success`
-   (idempotent — the session is already gone or revoked).
+5. If `SessionUpdateResult.NotFound`, return `LogoutResult.Success` (idempotent
+   — the session is already gone or revoked).
 6. If `SessionUpdateResult.DatabaseFailure`, return
    `LogoutResult.DatabaseFailure`.
 
@@ -90,8 +91,8 @@ No request body. The session identity is derived entirely from the cookie.
 #### Cookie Extraction
 
 The route handler reads `call.request.cookies[sessionConfig.cookieName]`. If the
-cookie is absent, the handler skips the service call entirely, clears the cookie,
-and responds `204`.
+cookie is absent, the handler skips the service call entirely, clears the
+cookie, and responds `204`.
 
 #### Token Hashing
 
@@ -108,8 +109,8 @@ Pass the `TokenHash` to `AuthService.logout()`.
 
 - `LogoutResult.Success` → `204 No Content` with cookie cleared.
 - `LogoutResult.DatabaseFailure` → `500 Internal Server Error` with
-  `ErrorResponse("internal_error", "An internal error occurred")`. The cookie
-  is NOT cleared on failure — the session might still be valid, and clearing the
+  `ErrorResponse("internal_error", "An internal error occurred")`. The cookie is
+  NOT cleared on failure — the session might still be valid, and clearing the
   cookie would strand the client without a way to retry.
 
 #### Cookie Clearing
@@ -160,10 +161,10 @@ existing `rejectUnsupportedMethods(HttpMethod.Post)` utility.
 The `SessionExpiryPlugin` fires on `ResponseSent` for every 2xx response that
 carries a session cookie in the request. The logout endpoint responds `204` — a
 2xx status — and the original cookie is still present in `call.request.cookies`.
-Without mitigation, the plugin would enqueue a wasted
-`SESSION_EXTEND_EXPIRY` job for the token that was just revoked. The job is
-benign (`findByTokenHash` filters `is_revoked = false`, so the handler returns
-`JobResult.Success` with no mutation), but the enqueue is unnecessary work.
+Without mitigation, the plugin would enqueue a wasted `SESSION_EXTEND_EXPIRY`
+job for the token that was just revoked. The job is benign (`findByTokenHash`
+filters `is_revoked = false`, so the handler returns `JobResult.Success` with no
+mutation), but the enqueue is unnecessary work.
 
 To eliminate the wasted enqueue and make the intent explicit,
 `/api/v1/auth/logout` MUST be added to the `sessionExpiry.ignorePathPrefixes`
@@ -184,23 +185,23 @@ the existing test setup pattern in `SessionsDaoTest.kt`.
 
 - **`revokeByTokenHash revokes active session`**: Create a session with
   `is_revoked = false`. Call `revokeByTokenHash(session, tokenHash)`. Assert
-  `SessionUpdateResult.Success`. Assert the returned session has
-  `version == 2`. Verify the session is no longer returned by
-  `findByTokenHash()` (which filters `is_revoked = false`).
+  `SessionUpdateResult.Success`. Assert the returned session has `version == 2`.
+  Verify the session is no longer returned by `findByTokenHash()` (which filters
+  `is_revoked = false`).
 
 - **`revokeByTokenHash returns NotFound for nonexistent token`**: Call
   `revokeByTokenHash(session, unknownTokenHash)`. Assert
   `SessionUpdateResult.NotFound`.
 
-- **`revokeByTokenHash returns NotFound for already-revoked session`**: Create
-  a session. Revoke it. Call `revokeByTokenHash` again with the same token hash.
+- **`revokeByTokenHash returns NotFound for already-revoked session`**: Create a
+  session. Revoke it. Call `revokeByTokenHash` again with the same token hash.
   Assert `SessionUpdateResult.NotFound`.
 
 ### Service Tests (`AuthServiceTest.kt` — Modified)
 
-New `logout` tests require a real PostgreSQL database with seeded sessions. Tests
-MUST use the existing `AppConfig.load()` + `DatabaseConfig.from()` pattern and
-the `TRUNCATE TABLE sessions, users CASCADE` in `@BeforeEach`.
+New `logout` tests require a real PostgreSQL database with seeded sessions.
+Tests MUST use the existing `AppConfig.load()` + `DatabaseConfig.from()` pattern
+and the `TRUNCATE TABLE sessions, users CASCADE` in `@BeforeEach`.
 
 - **`logout revokes active session`**: Create a user, create a session with that
   user's ID and a known token hash. Call `authService.logout(tokenHash)`. Assert
@@ -223,12 +224,11 @@ the `TRUNCATE TABLE sessions, users CASCADE` in `@BeforeEach`.
   cookie. Issue `GET /api/v1/auth/me` with the original cookie and assert
   `401 Unauthorized` (session is now revoked).
 
-- **`logout without cookie returns 204`**: Issue
-  `POST /api/v1/auth/logout` with no cookie header. Assert `204 No Content`.
+- **`logout without cookie returns 204`**: Issue `POST /api/v1/auth/logout` with
+  no cookie header. Assert `204 No Content`.
 
-- **`logout with invalid cookie returns 204`**: Issue
-  `POST /api/v1/auth/logout` with a garbage cookie value. Assert
-  `204 No Content`.
+- **`logout with invalid cookie returns 204`**: Issue `POST /api/v1/auth/logout`
+  with a garbage cookie value. Assert `204 No Content`.
 
 - **`GET to logout returns 405`**: Issue `GET /api/v1/auth/logout`. Assert
   `405 Method Not Allowed`.
@@ -247,8 +247,8 @@ the `TRUNCATE TABLE sessions, users CASCADE` in `@BeforeEach`.
    - _Verify_: `./bin/test ed.unicoach.db.dao.SessionsDaoTest`.
 
 3. **Add `LogoutResult` sealed interface**: Create
-   `service/src/main/kotlin/ed/unicoach/auth/LogoutResult.kt` with `Success`
-   and `DatabaseFailure` variants.
+   `service/src/main/kotlin/ed/unicoach/auth/LogoutResult.kt` with `Success` and
+   `DatabaseFailure` variants.
    - _Verify_: `./gradlew :service:classes` compiles.
 
 4. **Add `AuthService.logout()` method**: Implement the revocation pipeline that
@@ -271,10 +271,10 @@ the `TRUNCATE TABLE sessions, users CASCADE` in `@BeforeEach`.
    `AuthRoutingTest.kt`.
    - _Verify_: `./bin/test ed.unicoach.rest.AuthRoutingTest`.
 
-8. **Add `/api/v1/auth/logout` to `ignorePathPrefixes`**: Append the path to
-   the `sessionExpiry.ignorePathPrefixes` list in `rest-server.conf` so the
-   `SessionExpiryPlugin` does not enqueue a wasted expiry job for a
-   just-revoked session.
+8. **Add `/api/v1/auth/logout` to `ignorePathPrefixes`**: Append the path to the
+   `sessionExpiry.ignorePathPrefixes` list in `rest-server.conf` so the
+   `SessionExpiryPlugin` does not enqueue a wasted expiry job for a just-revoked
+   session.
    - _Verify_: `grep logout rest-server/src/main/resources/rest-server.conf`.
 
 9. **Update OpenAPI spec**: Add `POST /api/v1/auth/logout` path with `204` and

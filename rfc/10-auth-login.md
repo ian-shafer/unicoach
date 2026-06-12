@@ -257,37 +257,37 @@ Token (JWT), matching the initialization semantics of the registration flow.
 
 ## Implementation Plan
 
-1.  **General Utility Updates (`common`):**
-    - Modify `Argon2Hasher.kt` to include the `verify(hash, plaintext): Boolean`
-      method.
-    - Introduce a hardcoded structurally sound `DUMMY_HASH` string within
-      `Argon2Hasher` to absorb penalty cycles safely natively.
-    - Write unit tests in `Argon2HasherTest.kt`.
-2.  **Database Updates (`service`):**
-    - Enhance `UsersDao.kt` by adding
-      `findByEmail(session: SqlSession, email: EmailAddress): User?`.
-    - Enhance `UsersDaoTest.kt` verifying positive and null states strictly
-      testing database retrieval paths independently logically.
-3.  **Domain Orchestration Updates (`service`):**
-    - Extend `AuthResult.kt` to define `data object Unauthorized : AuthResult`.
-    - Enhance `AuthService.kt` to implement the `login(email, password)`
-      coroutine mathematically invoking `withContext(Dispatchers.IO)` cleanly
-      mapping `Argon2Hasher.verify`.
-    - Modify `AuthServiceTest.kt` to thoroughly validate the ghost-hash
-      invocation behavior recursively natively.
-4.  **Semantic Models Update (`rest-server`):**
-    - Create `LoginRequest.kt` and `LoginResponse.kt` artifacts uniquely bound
-      mapping strictly logically natively.
-5.  **Route Controller Registration (`rest-server`):**
-    - Modify `AuthRoutes.kt` to handle `post("/login")`.
-    - Intercept `AuthResult.Unauthorized` explicitly routing to
-      `respondAppError(..., HttpStatusCode.Unauthorized)` correctly mapping
-      natively.
-6.  **Integration Testing Bounds:**
-    - Enhance `AuthRoutingTest.kt` to encapsulate all testing criteria outlined
-      cleanly natively executing the time variance analysis forcefully.
-7.  **API Documentation:** Update `api-specs/openapi.yaml` to define `/login`
-    natively.
+1. **General Utility Updates (`common`):**
+   - Modify `Argon2Hasher.kt` to include the `verify(hash, plaintext): Boolean`
+     method.
+   - Introduce a hardcoded structurally sound `DUMMY_HASH` string within
+     `Argon2Hasher` to absorb penalty cycles safely natively.
+   - Write unit tests in `Argon2HasherTest.kt`.
+2. **Database Updates (`service`):**
+   - Enhance `UsersDao.kt` by adding
+     `findByEmail(session: SqlSession, email: EmailAddress): User?`.
+   - Enhance `UsersDaoTest.kt` verifying positive and null states strictly
+     testing database retrieval paths independently logically.
+3. **Domain Orchestration Updates (`service`):**
+   - Extend `AuthResult.kt` to define `data object Unauthorized : AuthResult`.
+   - Enhance `AuthService.kt` to implement the `login(email, password)`
+     coroutine mathematically invoking `withContext(Dispatchers.IO)` cleanly
+     mapping `Argon2Hasher.verify`.
+   - Modify `AuthServiceTest.kt` to thoroughly validate the ghost-hash
+     invocation behavior recursively natively.
+4. **Semantic Models Update (`rest-server`):**
+   - Create `LoginRequest.kt` and `LoginResponse.kt` artifacts uniquely bound
+     mapping strictly logically natively.
+5. **Route Controller Registration (`rest-server`):**
+   - Modify `AuthRoutes.kt` to handle `post("/login")`.
+   - Intercept `AuthResult.Unauthorized` explicitly routing to
+     `respondAppError(..., HttpStatusCode.Unauthorized)` correctly mapping
+     natively.
+6. **Integration Testing Bounds:**
+   - Enhance `AuthRoutingTest.kt` to encapsulate all testing criteria outlined
+     cleanly natively executing the time variance analysis forcefully.
+7. **API Documentation:** Update `api-specs/openapi.yaml` to define `/login`
+   natively.
 
 ## Files Modified
 

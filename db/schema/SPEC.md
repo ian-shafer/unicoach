@@ -228,17 +228,15 @@ timestamps + logical deletes) with OCC versioning and version history
 - **Logical deletes**: `deleted_at TIMESTAMPTZ NULL`; physical deletes blocked
   by `prevent_physical_delete()`. The active-list index `convos_student_id_idx`
   is partial (`WHERE deleted_at IS NULL`).
-- **Versioning disabled**: no `version` column, no `enforce_versioning()`,
-  no `convos_versions` sibling — the transcript logs are the authoritative
-  history.
-- **`name` mandatory & canonical**: `name TEXT NOT NULL` with **no
-  default** — every conversation MUST be created with an explicit name.
-  Stored trimmed and non-empty: `convos_name_trimmed_check`
-  (`name = trim(name)`), `convos_name_not_empty_check`
-  (`length(trim(name)) >
-  0`), `convos_name_length_check`
-  (`length(name) <= 255`). There is no trim trigger; callers MUST supply
-  already-trimmed values or the check rejects them.
+- **Versioning disabled**: no `version` column, no `enforce_versioning()`, no
+  `convos_versions` sibling — the transcript logs are the authoritative history.
+- **`name` mandatory & canonical**: `name TEXT NOT NULL` with **no default** —
+  every conversation MUST be created with an explicit name. Stored trimmed and
+  non-empty: `convos_name_trimmed_check` (`name = trim(name)`),
+  `convos_name_not_empty_check` (`length(trim(name)) >
+  0`),
+  `convos_name_length_check` (`length(name) <= 255`). There is no trim trigger;
+  callers MUST supply already-trimmed values or the check rejects them.
 
 ### `convo_requests` — Append-Only Log
 
@@ -262,14 +260,13 @@ timestamps + logical deletes) with OCC versioning and version history
 - **Provider allowlist**: `provider` is TEXT + CHECK
   (`provider IN ('anthropic')`), pinned per-turn — NOT a native pg enum. Extend
   the allowlist in a later migration as providers are added.
-- **Content opaque & bounded**: `content JSONB NOT NULL`, the new user
-  input. The DB MUST NOT constrain its internal shape. Bounded to 1 MiB
+- **Content opaque & bounded**: `content JSONB NOT NULL`, the new user input.
+  The DB MUST NOT constrain its internal shape. Bounded to 1 MiB
   (`octet_length(content::text) <= 1048576`). Prior history is deliberately NOT
   re-stored per row (the stateless API resends it each turn).
 - **`request_params`**: `JSONB NULL`; when present MUST be a JSON object
   (`jsonb_typeof = 'object'`).
-- **Free-text**: `model_requested` is NOT NULL, ≤255, trimmed, and
-  non-empty.
+- **Free-text**: `model_requested` is NOT NULL, ≤255, trimmed, and non-empty.
 
 ### `convo_responses` — Append-Only Log
 

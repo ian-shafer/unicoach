@@ -2,13 +2,13 @@
 
 ## I. Overview
 
-This directory is the **student domain layer**. It owns the business logic for the
-owner-scoped student profile: creating a student for a user, reading the user's
-student, updating the expected high-school graduation date under optimistic
-concurrency control, and atomically deleting both the student and its owning user
-account with current-session revocation. It bridges the HTTP boundary (handled by
-`rest-server`) and the data layer (handled by `db`), exposing pure domain results
-via sealed interfaces that contain no HTTP types.
+This directory is the **student domain layer**. It owns the business logic for
+the owner-scoped student profile: creating a student for a user, reading the
+user's student, updating the expected high-school graduation date under
+optimistic concurrency control, and atomically deleting both the student and its
+owning user account with current-session revocation. It bridges the HTTP
+boundary (handled by `rest-server`) and the data layer (handled by `db`),
+exposing pure domain results via sealed interfaces that contain no HTTP types.
 
 ---
 
@@ -16,12 +16,13 @@ via sealed interfaces that contain no HTTP types.
 
 ### General
 
-- `StudentService` MUST NOT import or reference any Ktor, HTTP, or REST-layer types.
+- `StudentService` MUST NOT import or reference any Ktor, HTTP, or REST-layer
+  types.
 - Every `StudentService` method MUST surface any exception raised during DB
   access as `Result.failure(e)`; no exception may escape a method as a thrown
   exception.
-- `StudentService` MUST NOT own or hold a raw `java.sql.Connection` — all DB access
-  MUST go through `Database.withConnection`.
+- `StudentService` MUST NOT own or hold a raw `java.sql.Connection` — all DB
+  access MUST go through `Database.withConnection`.
 - Wire date strings MUST be validated through `PartialDate.parse` **before** any
   database call; a parse failure MUST short-circuit to the result's
   `ValidationFailure` variant without opening a DB connection.
@@ -50,13 +51,13 @@ via sealed interfaces that contain no HTTP types.
 
 ### Delete-Cascade
 
-- `deleteStudentAndAccount()` MUST be **all-or-nothing**: the student soft-delete,
-  the user soft-delete, and the current-session revocation MUST execute inside a
-  single `Database.withConnection` transaction. Any failure MUST roll back the
-  transaction so that neither row is modified.
-- The student and the owning user MUST be row-locked (via the DAO's
-  `*ForUpdate` lookups) before either is soft-deleted, serializing concurrent
-  delete/update attempts on the same account.
+- `deleteStudentAndAccount()` MUST be **all-or-nothing**: the student
+  soft-delete, the user soft-delete, and the current-session revocation MUST
+  execute inside a single `Database.withConnection` transaction. Any failure
+  MUST roll back the transaction so that neither row is modified.
+- The student and the owning user MUST be row-locked (via the DAO's `*ForUpdate`
+  lookups) before either is soft-deleted, serializing concurrent delete/update
+  attempts on the same account.
 - When the user owns no student, `deleteStudentAndAccount()` MUST return
   `DeleteStudentResult.NotFound` and MUST NOT modify the user row.
 - The method MUST revoke the caller's current session by token hash; it MUST NOT
@@ -67,9 +68,9 @@ via sealed interfaces that contain no HTTP types.
 
 - No `CreateStudentResult`, `UpdateStudentResult`, or `DeleteStudentResult`
   variant MUST contain HTTP status codes or Ktor types.
-- Expected domain states (already-exists, not-found, version conflict, validation
-  failure) MUST be modeled as result variants returned via `Result.success`, never
-  as `Result.failure`.
+- Expected domain states (already-exists, not-found, version conflict,
+  validation failure) MUST be modeled as result variants returned via
+  `Result.success`, never as `Result.failure`.
 
 ---
 
@@ -85,31 +86,35 @@ via sealed interfaces that contain no HTTP types.
   `CreateStudentResult.AlreadyExists`.
 - **Error mapping**:
   - DAO success → `Result.success(CreateStudentResult.Success(student))`
-  - `StudentAlreadyExistsException` → `Result.success(CreateStudentResult.AlreadyExists)`
+  - `StudentAlreadyExistsException` →
+    `Result.success(CreateStudentResult.AlreadyExists)`
   - Other DAO failure / uncaught exception → `Result.failure(e)`
 
 ### `StudentService.getStudentForUser(userId: UserId): Result<Student?>` — See [StudentService.kt](./StudentService.kt)
 
 - **Side Effects**: One read-only query via `StudentsDao.findByUserId` (excludes
   soft-deleted rows). No writes.
-- **Absence**: A `NotFoundException` maps to `Result.success(null)` — absence is a
-  successful, expected outcome, not an error.
+- **Absence**: A `NotFoundException` maps to `Result.success(null)` — absence is
+  a successful, expected outcome, not an error.
 - **Idempotency**: Fully idempotent (read-only).
-- **Error mapping**: Any other DAO failure / uncaught exception → `Result.failure(e)`.
+- **Error mapping**: Any other DAO failure / uncaught exception →
+  `Result.failure(e)`.
 
 ### `StudentService.updateStudent(userId: UserId, expectedVersion: Int, graduationDateIso: String): Result<UpdateStudentResult>` — See [StudentService.kt](./StudentService.kt)
 
 - **Side Effects**: On a version match, one `UPDATE` on `students` via
-  `StudentsDao.update`. No write when validation fails, the student is absent, or
-  the version is stale.
+  `StudentsDao.update`. No write when validation fails, the student is absent,
+  or the version is stale.
 - **Validation**: `PartialDate.parse` runs first; failure →
   `UpdateStudentResult.ValidationFailure` with no DB access.
 - **Concurrency**: Reads the current student, compares its `version` to
   `expectedVersion`; mismatch → `VersionConflict` before any `UPDATE`.
-- **Idempotency**: Not idempotent — a successful update bumps the persisted version.
+- **Idempotency**: Not idempotent — a successful update bumps the persisted
+  version.
 - **Error mapping**:
   - DAO success → `Result.success(UpdateStudentResult.Success(student))`
-  - Absent student (`NotFoundException`) → `Result.success(UpdateStudentResult.NotFound)`
+  - Absent student (`NotFoundException`) →
+    `Result.success(UpdateStudentResult.NotFound)`
   - Stale version (pre-check or `ConcurrentModificationException`) →
     `Result.success(UpdateStudentResult.VersionConflict)`
   - Other DAO failure / uncaught exception → `Result.failure(e)`
@@ -125,46 +130,47 @@ via sealed interfaces that contain no HTTP types.
 - **Absence**: When the user owns no student, returns
   `Result.success(DeleteStudentResult.NotFound)` with no mutation.
 - **Idempotency**: Not idempotent. A successful call soft-deletes the only
-  student the user can own and cascades to the account, so a second call finds no
-  student and returns `DeleteStudentResult.NotFound`.
+  student the user can own and cascades to the account, so a second call finds
+  no student and returns `DeleteStudentResult.NotFound`.
 - **Error mapping**:
   - All steps succeed → `Result.success(DeleteStudentResult.Success)`
-  - Absent student (`NotFoundException`) → `Result.success(DeleteStudentResult.NotFound)`
+  - Absent student (`NotFoundException`) →
+    `Result.success(DeleteStudentResult.NotFound)`
   - Any other failure / uncaught exception → `Result.failure(e)` (transaction
     rolled back)
 
 ### `CreateStudentResult` (sealed interface) — See [CreateStudentResult.kt](./CreateStudentResult.kt)
 
-| Variant | Carries | When returned |
-|---|---|---|
-| `Success` | `student: Student` | Student persisted |
-| `ValidationFailure` | `fieldErrors: List<FieldError>` | Graduation date rejected by `PartialDate.parse` |
-| `AlreadyExists` | None | User already owns a student (total unique constraint) |
+| Variant             | Carries                         | When returned                                         |
+| ------------------- | ------------------------------- | ----------------------------------------------------- |
+| `Success`           | `student: Student`              | Student persisted                                     |
+| `ValidationFailure` | `fieldErrors: List<FieldError>` | Graduation date rejected by `PartialDate.parse`       |
+| `AlreadyExists`     | None                            | User already owns a student (total unique constraint) |
 
 ### `UpdateStudentResult` (sealed interface) — See [UpdateStudentResult.kt](./UpdateStudentResult.kt)
 
-| Variant | Carries | When returned |
-|---|---|---|
-| `Success` | `student: Student` | Update persisted |
+| Variant             | Carries                         | When returned                                   |
+| ------------------- | ------------------------------- | ----------------------------------------------- |
+| `Success`           | `student: Student`              | Update persisted                                |
 | `ValidationFailure` | `fieldErrors: List<FieldError>` | Graduation date rejected by `PartialDate.parse` |
-| `NotFound` | None | Authenticated user owns no student |
-| `VersionConflict` | None | `expectedVersion` is stale (OCC) |
+| `NotFound`          | None                            | Authenticated user owns no student              |
+| `VersionConflict`   | None                            | `expectedVersion` is stale (OCC)                |
 
 ### `DeleteStudentResult` (sealed interface) — See [DeleteStudentResult.kt](./DeleteStudentResult.kt)
 
-| Variant | Carries | When returned |
-|---|---|---|
-| `Success` | None | Student and owning user soft-deleted, session revoked |
-| `NotFound` | None | Authenticated user owns no student |
+| Variant    | Carries | When returned                                         |
+| ---------- | ------- | ----------------------------------------------------- |
+| `Success`  | None    | Student and owning user soft-deleted, session revoked |
+| `NotFound` | None    | Authenticated user owns no student                    |
 
 ---
 
 ## IV. Infrastructure & Environment
 
-- **Module**: `service` (Gradle). `StudentService` depends only on `Database` and
-  the `db` data-access layer (`StudentsDao`, `UsersDao`, `SessionsDao`, domain
-  models) plus `FieldError` from `common`. It is constructed with an injected
-  `Database` instance.
+- **Module**: `service` (Gradle). `StudentService` depends only on `Database`
+  and the `db` data-access layer (`StudentsDao`, `UsersDao`, `SessionsDao`,
+  domain models) plus `FieldError` from `common`. It is constructed with an
+  injected `Database` instance.
 - **Database**: Requires a live PostgreSQL connection pool via `Database`
   (HikariCP). The cascade relies on `Database.withConnection` providing a single
   transaction so that the student soft-delete, user soft-delete, and session
@@ -180,5 +186,7 @@ via sealed interfaces that contain no HTTP types.
 ## V. History
 
 - [x] [RFC-31: Student Profile](../../../../../../../rfc/31-student-profile.md)
-- [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md) (repointed the `ValidationResult` import from `db.models` to `common.models`; no behavior change)
+- [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md)
+      (repointed the `ValidationResult` import from `db.models` to
+      `common.models`; no behavior change)
 - [x] [RFC-36: Entity Model Capability Taxonomy](../../../../../../../rfc/36-entity-model-taxonomy.md)

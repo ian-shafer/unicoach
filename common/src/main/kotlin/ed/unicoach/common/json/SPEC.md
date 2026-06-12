@@ -2,19 +2,20 @@
 
 ## I. Overview
 
-This directory is the **JSON serialization utility layer** for the `common` module.
-It provides two domain-agnostic Kotlin extension functions — `asJson()` and
-`deserialize()` — that wrap `kotlinx.serialization.json` primitives to convert
-between `@Serializable` data classes and `JsonObject` values. All modules that
-require typed JSON payload handling depend on these utilities.
-See [JsonExtensions.kt](./JsonExtensions.kt).
+This directory is the **JSON serialization utility layer** for the `common`
+module. It provides two domain-agnostic Kotlin extension functions — `asJson()`
+and `deserialize()` — that wrap `kotlinx.serialization.json` primitives to
+convert between `@Serializable` data classes and `JsonObject` values. All
+modules that require typed JSON payload handling depend on these utilities. See
+[JsonExtensions.kt](./JsonExtensions.kt).
 
 ---
 
 ## II. Invariants
 
-- The module MUST expose `asJson()` as an extension on any `@Serializable` type `T`,
-  returning a `JsonObject` via `Json.encodeToJsonElement(this) as JsonObject`.
+- The module MUST expose `asJson()` as an extension on any `@Serializable` type
+  `T`, returning a `JsonObject` via
+  `Json.encodeToJsonElement(this) as JsonObject`.
 - The module MUST expose `deserialize()` as an extension on `JsonObject`,
   returning a typed `T` via `Json.decodeFromJsonElement(this)`.
 - Both functions MUST be declared `inline` with a `reified` type parameter so
@@ -45,11 +46,13 @@ See [JsonExtensions.kt](./JsonExtensions.kt).
 - **Side Effects**: None. No DB writes, no network calls, no file I/O.
 - **Error Handling**:
   - Throws `kotlinx.serialization.SerializationException` if the `JsonObject`
-    structure does not match `T`'s schema (missing required fields, wrong types).
+    structure does not match `T`'s schema (missing required fields, wrong
+    types).
   - Throws `kotlinx.serialization.MissingFieldException` (a subtype of
     `SerializationException`) for absent required fields.
   - Callers MUST handle or propagate these exceptions.
-- **Idempotency**: Yes. Pure function; same input always produces the same output.
+- **Idempotency**: Yes. Pure function; same input always produces the same
+  output.
 
 ### `T.asJson()`
 
@@ -65,7 +68,8 @@ See [JsonExtensions.kt](./JsonExtensions.kt).
     expected for well-formed callers.
   - Callers MUST only invoke this function on types whose serialized form is a
     JSON object.
-- **Idempotency**: Yes. Pure function; same input always produces the same output.
+- **Idempotency**: Yes. Pure function; same input always produces the same
+  output.
 
 ---
 
@@ -75,17 +79,19 @@ See [JsonExtensions.kt](./JsonExtensions.kt).
   `api(libs.kotlinx.serialization.json)` in `common/build.gradle.kts`, exposing
   it transitively to all modules that depend on `common`.
 - **Compiler Plugin**: `org.jetbrains.kotlin.plugin.serialization` (alias
-  `libs.plugins.kotlin.serialization`) MUST be applied in `common/build.gradle.kts`.
-  The plugin version MUST use `version.ref = "kotlin"` — an independent version
-  entry causes a compile error.
+  `libs.plugins.kotlin.serialization`) MUST be applied in
+  `common/build.gradle.kts`. The plugin version MUST use
+  `version.ref = "kotlin"` — an independent version entry causes a compile
+  error.
 - **Version Pinning**: The runtime library (`kotlinx-serialization-json`) and
   the compiler plugin have **separate version numbers**. The plugin is pinned to
   the Kotlin compiler version; the library is pinned independently. As of Kotlin
   `2.3.20`, the correct library version is `1.11.0`. To update: consult the
   [kotlinx.serialization releases page](https://github.com/Kotlin/kotlinx.serialization/releases)
   and verify compatibility with the project's Kotlin version.
-- **No module-specific environment variables or config files.** All configuration
-  is compile-time (Gradle) and runtime-stdlib (the default `Json` singleton).
+- **No module-specific environment variables or config files.** All
+  configuration is compile-time (Gradle) and runtime-stdlib (the default `Json`
+  singleton).
 
 ---
 

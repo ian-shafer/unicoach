@@ -396,14 +396,15 @@ needed.
   new `bin/db-tests` aggregator runs it, and `bin/test` is extended to invoke
   `bin/db-tests`. **Lifecycle contract:** `bin/db-convos-tests` assumes a live,
   already-migrated database and **owns no Postgres lifecycle** — it sets **no
-  `EXIT`/`INT`/`TERM` trap** and runs no `postgres-up`/`postgres-down`/`rm -rf
-  $POSTGRES_DATA_DIR`/`db-init`/`db-migrate` (this is the one deliberate
-  divergence from `bin/db-users-tests`, whose self-contained lifecycle would
-  tear Postgres down out from under the Gradle phase — see Implementation Plan
-  step 3). The aggregator `bin/db-tests` likewise owns no lifecycle; the
-  caller (`bin/test`, or a developer who has already run `db-init`/`db-migrate`)
-  guarantees the migrated DB. No DAO, `Result` types, or domain models are
-  introduced (out of scope).
+  `EXIT`/`INT`/`TERM` trap** and runs no
+  `postgres-up`/`postgres-down`/`rm -rf
+  $POSTGRES_DATA_DIR`/`db-init`/`db-migrate`
+  (this is the one deliberate divergence from `bin/db-users-tests`, whose
+  self-contained lifecycle would tear Postgres down out from under the Gradle
+  phase — see Implementation Plan step 3). The aggregator `bin/db-tests`
+  likewise owns no lifecycle; the caller (`bin/test`, or a developer who has
+  already run `db-init`/`db-migrate`) guarantees the migrated DB. No DAO,
+  `Result` types, or domain models are introduced (out of scope).
 
 ### Error Handling / Edge Cases
 
@@ -441,16 +442,17 @@ D-4), never an ad-hoc application `DELETE`.
 
 Schema-only RFC → tests are a **shell harness**, `bin/db-convos-tests`, modeled
 on `bin/db-users-tests` (RFC #06) but with one deliberate divergence: it **does
-not manage the Postgres lifecycle** (no `postgres-up`/`postgres-down`, no `rm
--rf $POSTGRES_DATA_DIR`, no `EXIT`/`INT`/`TERM` trap, no `db-init`/`db-migrate`).
-It assumes a live, already-migrated database — the caller (`bin/test` or the
-developer) provides it — and asserts schema behavior purely through SQL via
-`bin/db-run rw` / `bin/db-query` and the `assert_success` / `assert_failure`
-helpers from `bin/tests-common`. This divergence is required because the harness
-runs inside `bin/test`'s already-migrated DB; copying `db-users-tests`'s
-self-contained lifecycle (with its EXIT-trap `postgres-down`) would tear
-Postgres down before the Gradle phase. No JVM, DAO, or domain models are
-involved (out of scope).
+not manage the Postgres lifecycle** (no `postgres-up`/`postgres-down`, no
+`rm
+-rf $POSTGRES_DATA_DIR`, no `EXIT`/`INT`/`TERM` trap, no
+`db-init`/`db-migrate`). It assumes a live, already-migrated database — the
+caller (`bin/test` or the developer) provides it — and asserts schema behavior
+purely through SQL via `bin/db-run rw` / `bin/db-query` and the `assert_success`
+/ `assert_failure` helpers from `bin/tests-common`. This divergence is required
+because the harness runs inside `bin/test`'s already-migrated DB; copying
+`db-users-tests`'s self-contained lifecycle (with its EXIT-trap `postgres-down`)
+would tear Postgres down before the Gradle phase. No JVM, DAO, or domain models
+are involved (out of scope).
 
 `bin/db-run` executes psql with `ON_ERROR_STOP=1`, so a statement rejected by a
 constraint or trigger exits non-zero: `assert_failure` confirms rejection,
@@ -458,9 +460,9 @@ constraint or trigger exits non-zero: `assert_failure` confirms rejection,
 distinguished (an immutability trigger vs. a CHECK), the harness greps the error
 for the **named constraint or trigger message** — part of the schema contract.
 Exact SQLSTATE→domain-error mapping is deferred to the future DAO RFC's JUnit
-tests; this harness asserts the schema-level accept/reject behavior. A fixture inserts
-a `users` row (email/name/password_hash, per `bin/db-users-tests`), then a
-`students` row referencing that `user_id` and supplying the NOT NULL
+tests; this harness asserts the schema-level accept/reject behavior. A fixture
+inserts a `users` row (email/name/password_hash, per `bin/db-users-tests`), then
+a `students` row referencing that `user_id` and supplying the NOT NULL
 `expected_high_school_graduation_year` (a `students` insert without a valid
 `user_id` fails `23503`, and without the grad year fails `23502`), capturing the
 returned `students.id` as the `student_id` used by every `convos` case. The
@@ -509,14 +511,17 @@ Assertions (each an `assert_success` / `assert_failure` case):
   array is rejected (`convo_requests_request_params_is_object_check`).
 - A 256-char `model_requested` is rejected; a blank `system_prompt_version` is
   rejected; a `model_requested` or `system_prompt_version` with leading or
-  trailing whitespace is rejected (`convo_requests_model_requested_trimmed_check`
-  / `convo_requests_system_prompt_version_trimmed_check`).
+  trailing whitespace is rejected
+  (`convo_requests_model_requested_trimmed_check` /
+  `convo_requests_system_prompt_version_trimmed_check`).
 - A `content` payload over 1 MiB is rejected
   (`convo_requests_content_size_check`).
 - Insert with a non-existent `convo_id` is rejected (FK).
 - `UPDATE` of any column is rejected, and the error matches the
-  `prevent_log_update()` message (`Log rows are append-only and cannot be
-  updated.`); `DELETE` is rejected, matching the `prevent_log_delete()` message
+  `prevent_log_update()` message
+  (`Log rows are append-only and cannot be
+  updated.`); `DELETE` is rejected,
+  matching the `prevent_log_delete()` message
   (`Log rows cannot be deleted; prune by partition/retention.`) — distinguishing
   the new log guards from the entity `prevent_physical_delete()` message.
 
@@ -542,8 +547,9 @@ Assertions (each an `assert_success` / `assert_failure` case):
   `stop_reason`, `model_resolved`, or `provider_request_id` is rejected
   (`convo_responses_stop_reason_not_empty_check` /
   `convo_responses_model_resolved_not_empty_check` /
-  `convo_responses_provider_request_id_not_empty_check`). A NULL `model_resolved`
-  or `provider_request_id` remains accepted (absence is `NULL`, not `''`).
+  `convo_responses_provider_request_id_not_empty_check`). A NULL
+  `model_resolved` or `provider_request_id` remains accepted (absence is `NULL`,
+  not `''`).
 - Insert with a non-existent `request_id` or `convo_id` is rejected (FK).
 - `UPDATE` and `DELETE` are rejected (`prevent_log_update` /
   `prevent_log_delete`).

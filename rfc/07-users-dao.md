@@ -53,8 +53,8 @@ natively, we leverage a native algebraic `ValidationResult<T>` structure.
 
 - **Entities**:
   - `data class NewUser(val email: EmailAddress, val name: PersonName, val displayName: DisplayName?, val authMethod: AuthMethod)`
-    - > **Design Decision regarding Database Generated UUIDs**: We explicitly
-      > omit client UUID generation from `NewUser`, opting to let the Postgres
+    - **Design Decision regarding Database Generated UUIDs**: We explicitly omit
+      > client UUID generation from `NewUser`, opting to let the Postgres
       > database safely populate the `uuidv7()` default on row insertion. While
       > functional event-driven systems often favor client-generated UUIDs to
       > guarantee deterministic API idempotency natively across retry limits,

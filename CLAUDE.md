@@ -2,11 +2,13 @@
 
 ## Development environment: Nix flakes
 
-This project's entire toolchain is provided by a **Nix flake** (`flake.nix`) — the
-JVM, Postgres, and all CLIs live in the dev shell, **not** on the bare system PATH.
-There is **no `.envrc`/direnv**, so the shell is **not** auto-activated.
+This project's entire toolchain is provided by a **Nix flake** (`flake.nix`) —
+the JVM, Postgres, and all CLIs live in the dev shell, **not** on the bare
+system PATH. There is **no `.envrc`/direnv**, so the shell is **not**
+auto-activated.
 
-**Always run toolchain commands inside the dev shell**, either by entering it once:
+**Always run toolchain commands inside the dev shell**, either by entering it
+once:
 
 ```sh
 nix develop
@@ -21,9 +23,10 @@ nix develop -c ktlint --version
 nix develop -c psql ...
 ```
 
-Running `./gradlew` (or `java`, `psql`, `ktlint`, `deno`, `python3`) directly will
-fail with errors like **"Unable to locate a Java Runtime"** — that means the dev
-shell was not active, not that the tool is missing. Re-run via `nix develop -c`.
+Running `./gradlew` (or `java`, `psql`, `ktlint`, `deno`, `python3`) directly
+will fail with errors like **"Unable to locate a Java Runtime"** — that means
+the dev shell was not active, not that the tool is missing. Re-run via
+`nix develop -c`.
 
 ## Running tests
 
@@ -38,8 +41,10 @@ nix develop -c bin/test rest-server           # one module
 nix develop -c bin/test rest-server --tests "ed.unicoach.rest.AuthRoutingTest"
 ```
 
-`bin/test` recreates the **local test database** on every run (`db-reset (drop →
-create → migrate)`) — expected, non-destructive to anything but the test DB.
+`bin/test` recreates the **local test database** on every run
+(`db-reset (drop →
+create → migrate)`) — expected, non-destructive to anything
+but the test DB.
 
 ## Transient pipeline output
 

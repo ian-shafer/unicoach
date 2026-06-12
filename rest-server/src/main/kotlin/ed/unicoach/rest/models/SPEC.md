@@ -12,8 +12,8 @@ structural contract between HTTP wire format and the routing layer.
 
 ## II. Invariants
 
-- **I1**: Every type in this package MUST be a Kotlin `data class`. No
-  `object`, `sealed class`, or mutable class is permitted here.
+- **I1**: Every type in this package MUST be a Kotlin `data class`. No `object`,
+  `sealed class`, or mutable class is permitted here.
 - **I2**: Types MUST NOT import or depend on any domain value class from
   `service` (e.g., `UserId`, `EmailAddress`, `StudentId`, `PartialDate`). All
   fields MUST use platform-neutral JVM types (`String`, `java.util.UUID`,
@@ -27,7 +27,8 @@ structural contract between HTTP wire format and the routing layer.
   Any version of `RegisterResponse` carrying `val token: String` is incorrect.
 - **I5**: `PublicUser.id` MUST be typed as `java.util.UUID`, not a domain value
   class wrapper (e.g., `UserId`). Jackson serializes `UUID` to a plain UUID
-  string natively; wrapping it would produce a nested object `{"id":{"value":"…"}}`.
+  string natively; wrapping it would produce a nested object
+  `{"id":{"value":"…"}}`.
 - **I6**: `LoginResponse` MUST NOT contain a `token` field. As with
   `RegisterResponse` (I4), the session token is transmitted exclusively via the
   `Set-Cookie` header per RFC-11. `LoginResponse` MUST wrap `PublicUser` as its
@@ -95,8 +96,8 @@ structural contract between HTTP wire format and the routing layer.
 - **Side Effects**: None at this layer. Validation and normalization occur in
   `AuthService`.
 - **Error Handling**: Jackson deserialization failures (missing fields, wrong
-  types) propagate to `StatusPages` which maps them to `400 Bad Request` with
-  an `ErrorResponse`.
+  types) propagate to `StatusPages` which maps them to `400 Bad Request` with an
+  `ErrorResponse`.
 - **Idempotency**: N/A (inbound DTO only).
 - **Logging constraint**: Logging pipelines MUST mask or redact `password` to
   prevent plaintext secrets appearing in traces.
@@ -113,7 +114,8 @@ structural contract between HTTP wire format and the routing layer.
 
 ### `MeResponse` — [`MeResponse.kt`](./MeResponse.kt)
 
-- **Purpose**: Serialized as the `200 OK` response body for `GET /api/v1/auth/me`.
+- **Purpose**: Serialized as the `200 OK` response body for
+  `GET /api/v1/auth/me`.
 - **Fields**: `user: PublicUser`.
 - **Side Effects**: None. Pure outbound DTO.
 - **Error Handling**: N/A.
@@ -121,7 +123,8 @@ structural contract between HTTP wire format and the routing layer.
 
 ### `LoginRequest` — [`LoginRequest.kt`](./LoginRequest.kt)
 
-- **Purpose**: Deserialized from the login request body (`POST /api/v1/auth/login`).
+- **Purpose**: Deserialized from the login request body
+  (`POST /api/v1/auth/login`).
 - **Fields**: `email: String`, `password: String`.
 - **Side Effects**: None at this layer. Credential verification and session
   issuance occur in `AuthService`.
@@ -145,7 +148,8 @@ structural contract between HTTP wire format and the routing layer.
 
 - **Purpose**: Uniform error envelope returned on all failure responses across
   all REST routes. Ensures structural compatibility across endpoints.
-- **Fields**: `code: String`, `message: String`, `fieldErrors: List<[FieldError](../../../../../../../../common/src/main/kotlin/ed/unicoach/error/FieldError.kt)>? = null`.
+- **Fields**: `code: String`, `message: String`,
+  `fieldErrors: List<[FieldError](../../../../../../../../common/src/main/kotlin/ed/unicoach/error/FieldError.kt)>? = null`.
 - **Side Effects**: None. Pure outbound DTO.
 - **Error Handling**: `fieldErrors` is only present on `400 Bad Request`
   responses from validation failures. All other error responses serialize with
@@ -175,10 +179,11 @@ structural contract between HTTP wire format and the routing layer.
 - **Purpose**: Deserialized from the `PATCH /api/v1/students/me` request body.
 - **Fields**: `expectedHighSchoolGraduationDate: String` (per I9/I10),
   `version: Int` — the expected OCC version the client last observed.
-- **Side Effects**: None at this layer. Validation and the optimistic-concurrency
-  check occur in `StudentService`/`StudentsDao`.
-- **Error Handling**: A stale `version` surfaces as `409 VERSION_CONFLICT`; a bad
-  date as `400 VALIDATION_ERROR`; an absent profile as `404 STUDENT_NOT_FOUND`.
+- **Side Effects**: None at this layer. Validation and the
+  optimistic-concurrency check occur in `StudentService`/`StudentsDao`.
+- **Error Handling**: A stale `version` surfaces as `409 VERSION_CONFLICT`; a
+  bad date as `400 VALIDATION_ERROR`; an absent profile as
+  `404 STUDENT_NOT_FOUND`.
 - **Idempotency**: N/A (inbound DTO only).
 
 ### `PublicStudent` — [`StudentResponse.kt`](./StudentResponse.kt)
@@ -214,9 +219,9 @@ structural contract between HTTP wire format and the routing layer.
   `rest-server/.../plugins/Serialization.kt`. Jackson MUST be configured with:
   - `KotlinModule` (for Kotlin data class support)
   - `DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES = true`
-  - `DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES = true`
-  These settings enforce an allowlist principle: surplus or missing JSON fields
-  are hard failures, not silent ignores.
+  - `DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES = true` These
+    settings enforce an allowlist principle: surplus or missing JSON fields are
+    hard failures, not silent ignores.
 - **UUID Serialization**: `PublicUser.id` and `PublicStudent.id` are typed as
   `java.util.UUID`. Jackson serializes `UUID` as a plain UUID string by default
   with `KotlinModule` active. No custom serializer is required.
@@ -233,8 +238,21 @@ structural contract between HTTP wire format and the routing layer.
 
 ## V. History
 
-- [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md) — Introduced `RegisterRequest`, `PublicUser`, `RegisterResponse`, and `ErrorResponse` (with `FieldError` dependency).
-- [x] [RFC-10: Auth Login](../../../../../../../../rfc/10-auth-login.md) — Introduced `LoginRequest` and `LoginResponse`.
-- [x] [RFC-11: Sessions](../../../../../../../../rfc/11-sessions.md) — Superseded the JWT token flow. Token fields were dropped from `RegisterResponse` and `LoginResponse`; cookie-based session transport became canonical. Both login DTOs remain, now reduced to their cookie-session shape (`LoginResponse { user: PublicUser }`).
-- [x] [RFC-13: Auth Me](../../../../../../../../rfc/13-auth-me.md) — Introduced `MeResponse`.
-- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md) — Introduced `CreateStudentRequest`, `UpdateStudentRequest`, `StudentResponse`, and `PublicStudent`. Established the graduation date as a zero-padded ISO variable-precision wire `String` (I9/I10), `PublicStudent.id` as `UUID` and `version` as plain `Int` (I11/I12), and `Instant` timestamps serialized via `JavaTimeModule`.
+- [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md)
+      — Introduced `RegisterRequest`, `PublicUser`, `RegisterResponse`, and
+      `ErrorResponse` (with `FieldError` dependency).
+- [x] [RFC-10: Auth Login](../../../../../../../../rfc/10-auth-login.md) —
+      Introduced `LoginRequest` and `LoginResponse`.
+- [x] [RFC-11: Sessions](../../../../../../../../rfc/11-sessions.md) —
+      Superseded the JWT token flow. Token fields were dropped from
+      `RegisterResponse` and `LoginResponse`; cookie-based session transport
+      became canonical. Both login DTOs remain, now reduced to their
+      cookie-session shape (`LoginResponse { user: PublicUser }`).
+- [x] [RFC-13: Auth Me](../../../../../../../../rfc/13-auth-me.md) — Introduced
+      `MeResponse`.
+- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md)
+      — Introduced `CreateStudentRequest`, `UpdateStudentRequest`,
+      `StudentResponse`, and `PublicStudent`. Established the graduation date as
+      a zero-padded ISO variable-precision wire `String` (I9/I10),
+      `PublicStudent.id` as `UUID` and `version` as plain `Int` (I11/I12), and
+      `Instant` timestamps serialized via `JavaTimeModule`.

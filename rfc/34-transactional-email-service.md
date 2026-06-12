@@ -102,19 +102,19 @@ and `prevent_log_delete()` are created in migration `0006` and, because
 migrations apply in lexical order on every database, are present before `0008`
 runs; `0008` references them rather than redefining them.
 
-| Column                | Type          | Constraints                                      | Meaning                                  |
-| :-------------------- | :------------ | :----------------------------------------------- | :--------------------------------------- |
-| `id`                  | `UUID`        | `PRIMARY KEY DEFAULT uuidv7()`                   | Identity; time-ordered                   |
-| `created_at`          | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                         | Logical send time                        |
-| `row_created_at`      | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                         | Physical insert time                     |
-| `recipient_email`     | `TEXT`        | `NOT NULL`                                       | Destination (`EmailAddress.value`)       |
-| `sender_email`        | `TEXT`        | `NOT NULL`                                       | Configured sender (`EmailAddress.value`) |
-| `subject`             | `TEXT`        | `NOT NULL`                                       | Subject line                             |
-| `body`                | `TEXT`        | `NOT NULL`                                       | Plain-text body                          |
-| `status`              | `TEXT`        | `NOT NULL CHECK (status IN ('SENT','REJECTED'))` | Terminal outcome                         |
+| Column                | Type          | Constraints                                                         | Meaning                                      |
+| :-------------------- | :------------ | :------------------------------------------------------------------ | :------------------------------------------- |
+| `id`                  | `UUID`        | `PRIMARY KEY DEFAULT uuidv7()`                                      | Identity; time-ordered                       |
+| `created_at`          | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                            | Logical send time                            |
+| `row_created_at`      | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()`                                            | Physical insert time                         |
+| `recipient_email`     | `TEXT`        | `NOT NULL`                                                          | Destination (`EmailAddress.value`)           |
+| `sender_email`        | `TEXT`        | `NOT NULL`                                                          | Configured sender (`EmailAddress.value`)     |
+| `subject`             | `TEXT`        | `NOT NULL`                                                          | Subject line                                 |
+| `body`                | `TEXT`        | `NOT NULL`                                                          | Plain-text body                              |
+| `status`              | `TEXT`        | `NOT NULL CHECK (status IN ('SENT','REJECTED'))`                    | Terminal outcome                             |
 | `provider`            | `TEXT`        | `NOT NULL` (intentionally unconstrained; adapter set is open-ended) | Adapter identity, e.g. `log` (`provider.id`) |
-| `provider_message_id` | `TEXT`        | nullable                                         | Provider's id; set when `SENT`           |
-| `error_message`       | `TEXT`        | nullable                                         | Rejection reason; set when `REJECTED`    |
+| `provider_message_id` | `TEXT`        | nullable                                                            | Provider's id; set when `SENT`               |
+| `error_message`       | `TEXT`        | nullable                                                            | Rejection reason; set when `REJECTED`        |
 
 Triggers:
 
@@ -393,9 +393,9 @@ eventual construction site (deferred); the DB-backed tests load `common.conf`,
   `"x@y.io"`. (The `${?EMAIL_DEFAULT_FROM}` substitution is HOCON's
   load-time-from-process-environment behavior, not this module's logic, and is
   explicitly out of scope for a unit test.)
-- `AppConfig.load("common.conf", "db.conf", "email.conf")` succeeds and
-  `from()` on the merged `Config` yields `defaultFrom == "noreply@unicoach.app"`
-  (the packaged default), proving `email.conf` is on the classpath and merges.
+- `AppConfig.load("common.conf", "db.conf", "email.conf")` succeeds and `from()`
+  on the merged `Config` yields `defaultFrom == "noreply@unicoach.app"` (the
+  packaged default), proving `email.conf` is on the classpath and merges.
 - `from()` does not validate the address (a malformed `defaultFrom` still yields
   a successful `EmailConfig`).
 
@@ -422,10 +422,10 @@ eventual construction site (deferred); the DB-backed tests load `common.conf`,
 ### `EmailService` (`email`, DB-backed, fake `EmailProvider`)
 
 - Provider `Sent` → exactly one `SENT` ledger row whose `provider` column equals
-  the fake provider's `id`; returns `Result.success(SentEmail)` carrying `id` and
-  `providerMessageId`. The fake exposes a distinctive `id` (e.g. `"fake"`, not
-  `"log"`), pinning that the column is sourced from `provider.id` rather than a
-  hardcoded literal.
+  the fake provider's `id`; returns `Result.success(SentEmail)` carrying `id`
+  and `providerMessageId`. The fake exposes a distinctive `id` (e.g. `"fake"`,
+  not `"log"`), pinning that the column is sourced from `provider.id` rather
+  than a hardcoded literal.
 - Provider `Rejected` → exactly one `REJECTED` ledger row with
   `error_message == reason` and `provider` equal to the fake's `id`; returns
   `Result.failure`, cause `is PermanentError`.

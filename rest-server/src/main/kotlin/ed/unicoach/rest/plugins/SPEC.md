@@ -38,14 +38,16 @@ request/response in the `rest-server`. The plugins cover:
 
 - The server MUST install `StatusPages` via `configureStatusPages()` before any
   route handles a request.
-- An unhandled `UnsupportedMediaTypeException` MUST produce a `415
-  Unsupported Media Type` response with an `ErrorResponse` body (`code =
+- An unhandled `UnsupportedMediaTypeException` MUST produce a
+  `415
+  Unsupported Media Type` response with an `ErrorResponse` body
+  (`code =
   "unsupported_media_type"`).
 - An unhandled `PayloadTooLargeException` MUST produce a `413 Payload Too Large`
   response with `code = "payload_too_large"`.
 - An unhandled `BadRequestException` MUST produce a `400 Bad Request` response
-  with `code = "bad_request"` and a fixed message never derived from the
-  cause — Jackson parsing internals MUST NOT reach the client.
+  with `code = "bad_request"` and a fixed message never derived from the cause —
+  Jackson parsing internals MUST NOT reach the client.
 - An unhandled `PermanentError` MUST produce `code = "permanent_error"` with a
   status partitioned by fault ownership:
   - Server-fault subtypes — database faults and persisted-state corruption
@@ -53,11 +55,11 @@ request/response in the `rest-server`. The plugins cover:
     `CorruptPersistedAuthMethodException`) — MUST produce `500`. Persisted-state
     corruption MUST NOT be presented as a client error; it is the server's
     fault.
-  - Client-fault subtypes MUST keep their specific statuses:
-    `NotFoundException` → `404`, `DuplicateEmailException` → `409`.
-  - All remaining `PermanentError` subtypes MUST produce `400` — they are
-    client faults. A refactor flipping this fallback to `500` would wrongly
-    blame the server for client errors.
+  - Client-fault subtypes MUST keep their specific statuses: `NotFoundException`
+    → `404`, `DuplicateEmailException` → `409`.
+  - All remaining `PermanentError` subtypes MUST produce `400` — they are client
+    faults. A refactor flipping this fallback to `500` would wrongly blame the
+    server for client errors.
 - An unhandled `TransientError` MUST produce a `503 Service Unavailable`
   response with `code = "internal_error"`.
 - Any other `Throwable` MUST produce a `500 Internal Server Error` with
@@ -76,8 +78,8 @@ request/response in the `rest-server`. The plugins cover:
   `ignorePathPrefixes`.
 - The plugin MUST NOT enqueue when the response HTTP status is outside the
   `200–299` range.
-- Enqueue work MUST run in a fire-and-forget coroutine off the request
-  pipeline — application-scoped and IO-bound, never blocking the response.
+- Enqueue work MUST run in a fire-and-forget coroutine off the request pipeline
+  — application-scoped and IO-bound, never blocking the response.
 - The plugin MUST NEVER propagate exceptions to the caller — all errors MUST be
   caught, logged at `error` level, and swallowed.
 - On server shutdown, in-flight fire-and-forget coroutines are silently
@@ -97,9 +99,9 @@ request/response in the `rest-server`. The plugins cover:
   single application-scope `install(RequestBodyLimit)` in
   `configureRequestSizeLimit()`. There MUST NOT be any per-route opt-in — a
   route added in the future is covered without per-route wiring.
-- The applicable limit MUST be selected per request by exact `call.request.path()`
-  match against `routeOverrides` (slash- and case-sensitive); a path with no
-  matching entry MUST resolve to `defaultMax`.
+- The applicable limit MUST be selected per request by exact
+  `call.request.path()` match against `routeOverrides` (slash- and
+  case-sensitive); a path with no matching entry MUST resolve to `defaultMax`.
 - A request body exceeding the applicable limit (declared `Content-Length` or
   streamed bytes) MUST raise `PayloadTooLargeException`, mapped to `413` by
   StatusPages.
@@ -130,14 +132,14 @@ request/response in the `rest-server`. The plugins cover:
   no network calls.
 - **Handled Exceptions**:
 
-  | Exception | HTTP Status | `ErrorResponse.code` | `ErrorResponse.message` |
-  |---------------------------------|---------------------|----------------------|------------------------------------------------|
-  | `PayloadTooLargeException` | 413 | `"payload_too_large"` | `"Request body exceeds the maximum allowed size"` |
-  | `BadRequestException` | 400 | `"bad_request"` | `"Invalid JSON payload structure"` (fixed) |
-  | `UnsupportedMediaTypeException` | 415 | `"unsupported_media_type"` | `cause.message ?: "Unsupported media type"` |
-  | `PermanentError` (client fault) | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (any other subtype) | `"permanent_error"` | `cause.message ?: "Bad request"` |
-  | `PermanentError` (server fault: `DatabaseException`, `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`) | 500 | `"permanent_error"` | `cause.message ?: "Bad request"` |
-  | `TransientError` | 503 | `"internal_error"` | `cause.message ?: "Internal server error"` |
+  | Exception                                                                                                                     | HTTP Status                                                                           | `ErrorResponse.code`       | `ErrorResponse.message`                           |
+  | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------- |
+  | `PayloadTooLargeException`                                                                                                    | 413                                                                                   | `"payload_too_large"`      | `"Request body exceeds the maximum allowed size"` |
+  | `BadRequestException`                                                                                                         | 400                                                                                   | `"bad_request"`            | `"Invalid JSON payload structure"` (fixed)        |
+  | `UnsupportedMediaTypeException`                                                                                               | 415                                                                                   | `"unsupported_media_type"` | `cause.message ?: "Unsupported media type"`       |
+  | `PermanentError` (client fault)                                                                                               | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (any other subtype) | `"permanent_error"`        | `cause.message ?: "Bad request"`                  |
+  | `PermanentError` (server fault: `DatabaseException`, `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`) | 500                                                                                   | `"permanent_error"`        | `cause.message ?: "Bad request"`                  |
+  | `TransientError`                                                                                                              | 503                                                                                   | `"internal_error"`         | `cause.message ?: "Internal server error"`        |
 
 - **Dispatch**: `StatusPages` routes to the handler for the most specific
   superclass; the `PayloadTooLargeException`, `BadRequestException`, and
@@ -156,29 +158,29 @@ request/response in the `rest-server`. The plugins cover:
 - **Plugin Name**: `"SessionExpiryPlugin"` (used by Ktor's internal registry).
 - **Configuration** (`SessionExpiryPluginConfig`):
 
-  | Field                | Type              | Required | Default        |
-  |----------------------|-------------------|----------|----------------|
-  | `sessionConfig`      | `SessionConfig`   | Yes      | `lateinit`     |
-  | `queueService`       | `QueueService`    | Yes      | `lateinit`     |
-  | `ignorePathPrefixes` | `Set<String>`     | No       | `emptySet()`   |
+  | Field                | Type            | Required | Default      |
+  | -------------------- | --------------- | -------- | ------------ |
+  | `sessionConfig`      | `SessionConfig` | Yes      | `lateinit`   |
+  | `queueService`       | `QueueService`  | Yes      | `lateinit`   |
+  | `ignorePathPrefixes` | `Set<String>`   | No       | `emptySet()` |
 
 - **Hook**: `on(ResponseSent)`
 
-- **Execution Flow** (all guards evaluated in order; first failure short-circuits):
+- **Execution Flow** (all guards evaluated in order; first failure
+  short-circuits):
 
   1. Read cookie `cookieName` from request. If absent → return.
   2. Read `call.request.uri`. If any `ignorePathPrefixes` element is a prefix →
      return.
   3. Read `call.response.status()?.value`. If null or outside `200..299` →
      return.
-  4. Launch `call.application.launch(Dispatchers.IO)`:
-     a. Hash cookie: `TokenHash.fromRawToken(token)`.
-     b. Base64-encode hash bytes (standard encoder).
-     c. Build `SessionExpiryPayload(tokenHash = encodedHash).asJson()`.
-     d. Call `queueService.enqueue(JobType.SESSION_EXTEND_EXPIRY, payload)`.
-     e. On `EnqueueResult.DatabaseFailure` → log error. On
-        `EnqueueResult.Success` → no-op.
-     f. On any uncaught exception → log error and swallow.
+  4. Launch `call.application.launch(Dispatchers.IO)`: a. Hash cookie:
+     `TokenHash.fromRawToken(token)`. b. Base64-encode hash bytes (standard
+     encoder). c. Build
+     `SessionExpiryPayload(tokenHash = encodedHash).asJson()`. d. Call
+     `queueService.enqueue(JobType.SESSION_EXTEND_EXPIRY, payload)`. e. On
+     `EnqueueResult.DatabaseFailure` → log error. On `EnqueueResult.Success` →
+     no-op. f. On any uncaught exception → log error and swallow.
 
 - **Side Effects**: One write to the job queue (PostgreSQL `jobs` table) per
   qualifying request, executed asynchronously on `Dispatchers.IO`.
@@ -194,7 +196,8 @@ request/response in the `rest-server`. The plugins cover:
 
 ### `configureRequestSizeLimit()` ([RequestSizeLimit.kt](./RequestSizeLimit.kt))
 
-- **Signature**: `fun Application.configureRequestSizeLimit(config: RequestSizeConfig)`
+- **Signature**:
+  `fun Application.configureRequestSizeLimit(config: RequestSizeConfig)`
 - **Side Effects**: Installs the Ktor `RequestBodyLimit` plugin once at
   application scope with a path-aware `bodyLimit` callback. No database writes,
   no network calls.
@@ -229,11 +232,25 @@ request/response in the `rest-server`. The plugins cover:
 
 ## V. History
 
-- [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md) — introduced `Serialization.kt` and `StatusPages.kt`.
-- [x] [RFC-09: Global Config](../../../../../../../../rfc/09-global-config.md) — introduced `JwtConfig.kt` (subsequently deleted).
-- [x] [RFC-11: Sessions](../../../../../../../../rfc/11-sessions.md) — deleted `JwtConfig.kt` (replaced by `SessionConfig`-based auth).
-- [x] [RFC-21: Session Expiry Queue](../../../../../../../../rfc/21-session-expiry-queue.md) — introduced `SessionExpiryPlugin.kt`.
-- [x] [RFC-24: Result Types](../../../../../../../../rfc/24-result-types.md) — reworked `StatusPages.kt` exception mapping (`permanent_error` / `internal_error` codes, subtype-driven status).
-- [x] [RFC-29: Request Payload Limits](../../../../../../../../rfc/29-request-payload-limits.md) — introduced `RequestSizeLimit.kt`; added the `413`/`PayloadTooLargeException` handler in `StatusPages.kt`.
-- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md) — registered the Jackson `JavaTimeModule` and disabled `WRITE_DATES_AS_TIMESTAMPS` in `Serialization.kt` so `Instant` response fields serialize as ISO-8601 strings.
-- [x] [RFC-40: Validation Error Reporting](../../../../../../../../rfc/40-validation-error-reporting.md) — mapped server-fault `PermanentError`s (`DatabaseException`, `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`) to `500` in `StatusPages.kt`; client-fault mappings unchanged.
+- [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md)
+      — introduced `Serialization.kt` and `StatusPages.kt`.
+- [x] [RFC-09: Global Config](../../../../../../../../rfc/09-global-config.md) —
+      introduced `JwtConfig.kt` (subsequently deleted).
+- [x] [RFC-11: Sessions](../../../../../../../../rfc/11-sessions.md) — deleted
+      `JwtConfig.kt` (replaced by `SessionConfig`-based auth).
+- [x] [RFC-21: Session Expiry Queue](../../../../../../../../rfc/21-session-expiry-queue.md)
+      — introduced `SessionExpiryPlugin.kt`.
+- [x] [RFC-24: Result Types](../../../../../../../../rfc/24-result-types.md) —
+      reworked `StatusPages.kt` exception mapping (`permanent_error` /
+      `internal_error` codes, subtype-driven status).
+- [x] [RFC-29: Request Payload Limits](../../../../../../../../rfc/29-request-payload-limits.md)
+      — introduced `RequestSizeLimit.kt`; added the
+      `413`/`PayloadTooLargeException` handler in `StatusPages.kt`.
+- [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md)
+      — registered the Jackson `JavaTimeModule` and disabled
+      `WRITE_DATES_AS_TIMESTAMPS` in `Serialization.kt` so `Instant` response
+      fields serialize as ISO-8601 strings.
+- [x] [RFC-40: Validation Error Reporting](../../../../../../../../rfc/40-validation-error-reporting.md)
+      — mapped server-fault `PermanentError`s (`DatabaseException`,
+      `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`)
+      to `500` in `StatusPages.kt`; client-fault mappings unchanged.

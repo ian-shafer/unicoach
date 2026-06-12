@@ -4,9 +4,9 @@
 
 This package is the **platform-wide cryptographic utility layer** for the
 `service` module. Its singular responsibility is to provide stateless,
-general-purpose primitive helpers — currently limited to secure token
-generation — that are agnostic of any domain concept (sessions, auth,
-password reset, etc.) and are injected via constructor DI wherever needed.
+general-purpose primitive helpers — currently limited to secure token generation
+— that are agnostic of any domain concept (sessions, auth, password reset, etc.)
+and are injected via constructor DI wherever needed.
 
 ---
 
@@ -14,8 +14,8 @@ password reset, etc.) and are injected via constructor DI wherever needed.
 
 - The package MUST contain only general-purpose helpers with zero domain
   knowledge (no session, auth, or user concepts).
-- `TokenGenerator` MUST generate tokens using `java.security.SecureRandom` —
-  no `java.util.Random` or other non-CSPRNG sources are permitted.
+- `TokenGenerator` MUST generate tokens using `java.security.SecureRandom` — no
+  `java.util.Random` or other non-CSPRNG sources are permitted.
 - `TokenGenerator` MUST produce exactly **256 bits of entropy** (a 32-byte
   `ByteArray`).
 - The raw bytes MUST be encoded using `Base64Url` (URL-safe alphabet) **without
@@ -40,8 +40,8 @@ See [`TokenGenerator.kt`](./TokenGenerator.kt).
 
 **Constructor**
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
+| Parameter      | Type                         | Default          | Description                                           |
+| -------------- | ---------------------------- | ---------------- | ----------------------------------------------------- |
 | `secureRandom` | `java.security.SecureRandom` | `SecureRandom()` | Entropy source; injectable for deterministic testing. |
 
 **`generateToken(): String`**

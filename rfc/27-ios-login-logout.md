@@ -2,10 +2,10 @@
 
 ## Executive Summary
 
-This specification defines the iOS app flows for email/password login and logout,
-building on the registration-only app established in RFC-12. It introduces
-session-aware root navigation driven by a `UserAuthState` enum, a startup
-`/me` session check, `LoginView`/`LoginViewModel` for credential entry,
+This specification defines the iOS app flows for email/password login and
+logout, building on the registration-only app established in RFC-12. It
+introduces session-aware root navigation driven by a `UserAuthState` enum, a
+startup `/me` session check, `LoginView`/`LoginViewModel` for credential entry,
 `HomeView` for the authenticated state with logout, and a reusable `ErrorView`
 for infrastructure failures. The `AuthClient` is refactored to extract a shared
 HTTP helper and expanded with `login()`, `logout()`, and `me()` methods. The
@@ -39,16 +39,16 @@ the `AuthClient` instance and exposes `checkSession()`, `onLoginSuccess(_:)`,
 On launch, `UnicoachiOSApp` renders based on `AppViewModel.authState`:
 
 1. Initial state is `.loading` — a spinner is displayed.
-2. `.task` fires `AppViewModel.checkSession()`, which calls
-   `AuthClient.me()` (`GET /api/v1/auth/me`).
+2. `.task` fires `AppViewModel.checkSession()`, which calls `AuthClient.me()`
+   (`GET /api/v1/auth/me`).
 3. State transitions:
 
-| `/me` outcome | `UserAuthState` |
-|---|---|
-| `200 OK` with valid `MeResponse` | `.authenticated(user)` |
-| `401 Unauthorized` | `.unauthenticated` |
-| `NSURLErrorNotConnectedToInternet`, `NSURLErrorTimedOut`, `NSURLErrorCannotFindHost` | `.noConnectivity` |
-| Any other HTTP status or decode failure | `.serverError` |
+| `/me` outcome                                                                        | `UserAuthState`        |
+| ------------------------------------------------------------------------------------ | ---------------------- |
+| `200 OK` with valid `MeResponse`                                                     | `.authenticated(user)` |
+| `401 Unauthorized`                                                                   | `.unauthenticated`     |
+| `NSURLErrorNotConnectedToInternet`, `NSURLErrorTimedOut`, `NSURLErrorCannotFindHost` | `.noConnectivity`      |
+| Any other HTTP status or decode failure                                              | `.serverError`         |
 
 Cookie persistence is handled automatically by `HTTPCookieStorage.shared` via
 `URLSessionConfiguration.default`. A session cookie set during a prior
@@ -60,7 +60,8 @@ registration or login survives app relaunch without manual storage.
 
 - `.loading` → `ProgressView`
 - `.unauthenticated` → `AuthFlowView(authClient: viewModel.authClient, ...)`
-- `.authenticated(let user)` → `HomeView(user: user, onLogout: viewModel.logout)`
+- `.authenticated(let user)` →
+  `HomeView(user: user, onLogout: viewModel.logout)`
 - `.serverError` → `ErrorView` with "Something Went Wrong" copy and retry
 - `.noConnectivity` → `ErrorView` with "No Connection" copy and retry
 
@@ -68,8 +69,8 @@ registration or login survives app relaunch without manual storage.
 
 `AuthFlowView` holds a `@State private var showingRegistration: Bool = false`
 and swaps between `LoginView` and `RegistrationView` as peer views with a
-transition animation. No `NavigationStack` is used — these are peer screens,
-not a parent-child hierarchy.
+transition animation. No `NavigationStack` is used — these are peer screens, not
+a parent-child hierarchy.
 
 ```swift
 struct AuthFlowView: View {
@@ -103,8 +104,9 @@ boilerplate. This RFC refactors it to extract two private helpers:
   — handles URL construction, request encoding, HTTP dispatch, status code
   validation, success/error JSON decoding, and error classification (timeout,
   network, server, decode failures).
-- `performVoidRequest(method:path:expectedStatus:) async throws`
-  — same pipeline but expects no response body (for `logout`), but still attempts to decode `ErrorResponse` from the body if the status is not the expected status.
+- `performVoidRequest(method:path:expectedStatus:) async throws` — same pipeline
+  but expects no response body (for `logout`), but still attempts to decode
+  `ErrorResponse` from the body if the status is not the expected status.
 
 The existing `register()` method is refactored to delegate to `performRequest`.
 
@@ -121,22 +123,22 @@ protocol AuthClientProtocol: Sendable {
 
 - **`login()`**: `POST /api/v1/auth/login`. Expected status: `200`. Body:
   `LoginRequest`. Returns `LoginResponse`.
-- **`logout()`**: `POST /api/v1/auth/logout`. Expected status: `204`. No
-  request body, no response body. The server clears the cookie via
+- **`logout()`**: `POST /api/v1/auth/logout`. Expected status: `204`. No request
+  body, no response body. The server clears the cookie via
   `Set-Cookie: Max-Age=0`; `URLSession` processes this automatically.
 - **`me()`**: `GET /api/v1/auth/me`. Expected status: `200`. No request body.
   Returns `MeResponse`.
 
 Error classification within the helper:
 
-| Condition | `ErrorResponse.code` |
-|---|---|
-| `NSURLErrorTimedOut` | `"TIMEOUT"` |
-| `NSURLErrorNotConnectedToInternet`, `NSURLErrorCannotFindHost` | `"NETWORK_ERROR"` |
-| Non-`HTTPURLResponse` | `"UNKNOWN"` |
-| HTTP ≠ expected + valid JSON error body | Decoded from body |
-| HTTP ≠ expected + unparseable body | `"SERVER_ERROR"` |
-| HTTP = expected + decode failure | `"DECODE_ERROR"` |
+| Condition                                                      | `ErrorResponse.code` |
+| -------------------------------------------------------------- | -------------------- |
+| `NSURLErrorTimedOut`                                           | `"TIMEOUT"`          |
+| `NSURLErrorNotConnectedToInternet`, `NSURLErrorCannotFindHost` | `"NETWORK_ERROR"`    |
+| Non-`HTTPURLResponse`                                          | `"UNKNOWN"`          |
+| HTTP ≠ expected + valid JSON error body                        | Decoded from body    |
+| HTTP ≠ expected + unparseable body                             | `"SERVER_ERROR"`     |
+| HTTP = expected + decode failure                               | `"DECODE_ERROR"`     |
 
 ### Data Models
 
@@ -180,11 +182,11 @@ enum InfrastructureError: Identifiable {
 
 Property values:
 
-| Case | `title` | `description` | `systemImage` |
-|---|---|---|---|
-| `.serverError` | `"Something Went Wrong"` | `"We couldn't reach the server. Please try again later."` | `"exclamationmark.triangle"` |
-| `.noConnectivity` | `"No Connection"` | `"Check your internet connection and try again."` | `"wifi.slash"` |
-| `.timeout` | `"Request Timed Out"` | `"The server took too long to respond. Please try again."` | `"clock.badge.exclamationmark"` |
+| Case              | `title`                  | `description`                                              | `systemImage`                   |
+| ----------------- | ------------------------ | ---------------------------------------------------------- | ------------------------------- |
+| `.serverError`    | `"Something Went Wrong"` | `"We couldn't reach the server. Please try again later."`  | `"exclamationmark.triangle"`    |
+| `.noConnectivity` | `"No Connection"`        | `"Check your internet connection and try again."`          | `"wifi.slash"`                  |
+| `.timeout`        | `"Request Timed Out"`    | `"The server took too long to respond. Please try again."` | `"clock.badge.exclamationmark"` |
 
 ### ErrorView
 
@@ -212,6 +214,7 @@ struct ErrorView: View {
 ```
 
 Used in two contexts:
+
 - **Root coordinator**: Full-screen for startup failures (`.serverError`,
   `.noConnectivity`). "Try Again" re-fires `checkSession()`.
 - **Form submissions**: Presented via `.fullScreenCover(item:)` over the
@@ -225,8 +228,8 @@ A SwiftUI `Form` with two fields:
 - **Email**: `TextField` with `.emailAddress` keyboard,
   `.textInputAutocapitalization(.never)`, `.disableAutocorrection(true)`.
 - **Password**: `SecureField`.
-- **Focus**: `@FocusState` advancing Email → Password on Return. Password
-  Return triggers login action.
+- **Focus**: `@FocusState` advancing Email → Password on Return. Password Return
+  triggers login action.
 - **Submit button**: Disabled during `isLoading`. Shows `ProgressView` when
   loading.
 - **Error display**: Inline error text below the form for `401` responses
@@ -235,17 +238,18 @@ A SwiftUI `Form` with two fields:
 - **Navigation**: "Don't have an account? Register" text button at the bottom,
   invoking `onSwitchToRegister` callback.
 - **Accessibility**: `.accessibilityIdentifier` and `.accessibilityLabel` on
-  every interactive element: `loginEmailField` / `"Email"`,
-  `loginPasswordField` / `"Password"`, `loginButton` / `"Log In"`,
-  `switchToRegisterButton` / `"Register"`.
+  every interactive element: `loginEmailField` / `"Email"`, `loginPasswordField`
+  / `"Password"`, `loginButton` / `"Log In"`, `switchToRegisterButton` /
+  `"Register"`.
 
 ### LoginViewModel
 
 `@MainActor class LoginViewModel: ObservableObject`:
 
-- `@Published var email`, `password`, `isLoading`, `errorResponse: ErrorResponse?`,
-  `infrastructureError: InfrastructureError?`
-- Constructor: `init(authClient: AuthClientProtocol, onLoginSuccess: @escaping (PublicUser) -> Void)`
+- `@Published var email`, `password`, `isLoading`,
+  `errorResponse: ErrorResponse?`, `infrastructureError: InfrastructureError?`
+- Constructor:
+  `init(authClient: AuthClientProtocol, onLoginSuccess: @escaping (PublicUser) -> Void)`
 - **Local validation**: Rejects if either field is empty → sets
   `errorResponse(code: "VALIDATION")`. No minimum password length check — that
   is a registration concern.
@@ -261,8 +265,8 @@ A SwiftUI `Form` with two fields:
      `infrastructureError = .noConnectivity`.
   8. On `ErrorResponse` with `code == "SERVER_ERROR"`: set
      `infrastructureError = .serverError`.
-  9. On all other `ErrorResponse`: set `errorResponse` (user-fixable — 401,
-     400, etc.).
+  9. On all other `ErrorResponse`: set `errorResponse` (user-fixable — 401, 400,
+     etc.).
 
 ### HomeView
 
@@ -270,33 +274,43 @@ Minimal post-login screen:
 
 - Displays `user.name` and `user.email` from `PublicUser`.
 - "Log Out" button.
-- On logout tap: `HomeView` manages a local `@State private var isLoggingOut = false` to show a brief loading state on the button. It sets `isLoggingOut = true`, then `await`s the `onLogout` closure. The network call (`AuthClient.logout()`) and fallback cookie clearing (`HTTPCookieStorage.shared.removeCookies(since:)`) are centralized within `AppViewModel.logout()`. `HomeView` remains purely presentational with no `AuthClient` dependency.
+- On logout tap: `HomeView` manages a local
+  `@State private var isLoggingOut = false` to show a brief loading state on the
+  button. It sets `isLoggingOut = true`, then `await`s the `onLogout` closure.
+  The network call (`AuthClient.logout()`) and fallback cookie clearing
+  (`HTTPCookieStorage.shared.removeCookies(since:)`) are centralized within
+  `AppViewModel.logout()`. `HomeView` remains purely presentational with no
+  `AuthClient` dependency.
 
 ### RegistrationView / RegistrationViewModel Updates
 
 - `RegistrationViewModel` gains an `onRegisterSuccess: (PublicUser) -> Void`
   callback parameter. On successful registration, it invokes this callback
   instead of clearing form fields.
-- `RegistrationViewModel` gains a `@Published var infrastructureError:
-  InfrastructureError?` property. Error classification logic mirrors
-  `LoginViewModel` — codes `"TIMEOUT"`, `"NETWORK_ERROR"`, `"SERVER_ERROR"` map
-  to `infrastructureError`; all others map to `errorResponse`.
+- `RegistrationViewModel` gains a
+  `@Published var infrastructureError:
+  InfrastructureError?` property. Error
+  classification logic mirrors `LoginViewModel` — codes `"TIMEOUT"`,
+  `"NETWORK_ERROR"`, `"SERVER_ERROR"` map to `infrastructureError`; all others
+  map to `errorResponse`.
 - `RegistrationView` gains a `.fullScreenCover(item:)` for infrastructure
   errors.
-- `RegistrationView` gains an `onSwitchToLogin` callback and a "Already have
-  an account? Log in" text button.
+- `RegistrationView` gains an `onSwitchToLogin` callback and a "Already have an
+  account? Log in" text button.
 
 ### Error Handling Summary
 
 Errors split into two categories based on who can fix them:
 
 **User-fixable** (inline/alert via `errorResponse`):
+
 - `401 Unauthorized` — wrong credentials
 - `400 Bad Request` — malformed input
 - `409 Conflict` — duplicate email (registration)
 - Local validation failures
 
 **Infrastructure** (`.fullScreenCover()` via `infrastructureError`):
+
 - `5xx` server errors
 - Network timeouts
 - No connectivity
@@ -314,31 +328,31 @@ No new dependencies. All required infrastructure uses native Apple frameworks:
 Existing tests are retained. New tests added using the established
 `MockURLProtocol` pattern with ephemeral `URLSession`:
 
-- **`testLoginSuccess`**: Mock returns `200` with `LoginResponse` JSON.
-  Assert decoded `PublicUser` fields match.
+- **`testLoginSuccess`**: Mock returns `200` with `LoginResponse` JSON. Assert
+  decoded `PublicUser` fields match.
 - **`testLoginUnauthorized`**: Mock returns `401` with
   `ErrorResponse(code: "unauthorized")` JSON. Assert thrown
   `ErrorResponse.code == "unauthorized"`.
 - **`testLoginServerError`**: Mock returns `500` with non-JSON body. Assert
   thrown `ErrorResponse.code == "SERVER_ERROR"`.
-- **`testLogoutSuccess`**: Mock returns `204` with empty body. Assert no
-  error thrown.
-- **`testMeSuccess`**: Mock returns `200` with `MeResponse` JSON. Assert
-  decoded `PublicUser` fields match.
-- **`testMeUnauthorized`**: Mock returns `401` with `ErrorResponse` JSON.
-  Assert thrown `ErrorResponse.code == "unauthorized"`.
+- **`testLogoutSuccess`**: Mock returns `204` with empty body. Assert no error
+  thrown.
+- **`testMeSuccess`**: Mock returns `200` with `MeResponse` JSON. Assert decoded
+  `PublicUser` fields match.
+- **`testMeUnauthorized`**: Mock returns `401` with `ErrorResponse` JSON. Assert
+  thrown `ErrorResponse.code == "unauthorized"`.
 - **`testLoginRequestEncoding`**: Assert login sends `POST` with
   `Content-Type: application/json`.
 - **`testMeRequestEncoding`**: Assert me sends `GET` with no request body.
-- **`testLogoutRequestEncoding`**: Assert logout sends `POST` with no
-  request body.
+- **`testLogoutRequestEncoding`**: Assert logout sends `POST` with no request
+  body.
 
 ### LoginViewModel Tests (`LoginViewModelTests.swift` — New)
 
 Uses `MockAuthClient` conforming to `AuthClientProtocol`:
 
-- **`testEmptyFieldsRejectedLocally`**: Set email, leave password empty.
-  Assert `errorResponse?.code == "VALIDATION"`. Assert no network call.
+- **`testEmptyFieldsRejectedLocally`**: Set email, leave password empty. Assert
+  `errorResponse?.code == "VALIDATION"`. Assert no network call.
 - **`testSuccessfulLoginInvokesCallback`**: Configure mock to return
   `LoginResponse`. Assert `onLoginSuccess` closure is called with correct
   `PublicUser`.
@@ -349,43 +363,43 @@ Uses `MockAuthClient` conforming to `AuthClientProtocol`:
   `ErrorResponse(code: "SERVER_ERROR")`. Assert
   `infrastructureError == .serverError`, `errorResponse` is nil.
 - **`testTimeoutSetsInfrastructureError`**: Configure mock to throw
-  `ErrorResponse(code: "TIMEOUT")`. Assert
-  `infrastructureError == .timeout`.
-- **`testLoadingStateToggles`**: Use `DelayedAuthClient` pattern from
-  existing `RegistrationViewModelTests`. Assert `isLoading == true` during
-  network call, `false` after.
+  `ErrorResponse(code: "TIMEOUT")`. Assert `infrastructureError == .timeout`.
+- **`testLoadingStateToggles`**: Use `DelayedAuthClient` pattern from existing
+  `RegistrationViewModelTests`. Assert `isLoading == true` during network call,
+  `false` after.
 
 ### AppViewModel Tests (`AppViewModelTests.swift` — New)
 
 Uses `MockAuthClient`:
 
-- **`testCheckSessionAuthenticatedOnSuccess`**: Configure mock `me()` to
-  return `MeResponse` with user. Assert
-  `authState == .authenticated(user)`.
-- **`testCheckSessionUnauthenticatedOn401`**: Configure mock `me()` to
-  throw `ErrorResponse(code: "unauthorized")`. Assert
-  `authState == .unauthenticated`.
-- **`testCheckSessionNoConnectivityOnTimeout`**: Configure mock `me()` to
-  throw `ErrorResponse(code: "TIMEOUT")`. Assert
-  `authState == .noConnectivity`.
-- **`testCheckSessionServerErrorOnServerFailure`**: Configure mock `me()`
-  to throw `ErrorResponse(code: "SERVER_ERROR")`. Assert
+- **`testCheckSessionAuthenticatedOnSuccess`**: Configure mock `me()` to return
+  `MeResponse` with user. Assert `authState == .authenticated(user)`.
+- **`testCheckSessionUnauthenticatedOn401`**: Configure mock `me()` to throw
+  `ErrorResponse(code: "unauthorized")`. Assert `authState == .unauthenticated`.
+- **`testCheckSessionNoConnectivityOnTimeout`**: Configure mock `me()` to throw
+  `ErrorResponse(code: "TIMEOUT")`. Assert `authState == .noConnectivity`.
+- **`testCheckSessionServerErrorOnServerFailure`**: Configure mock `me()` to
+  throw `ErrorResponse(code: "SERVER_ERROR")`. Assert
   `authState == .serverError`.
 - **`testLogoutTransitionsToUnauthenticatedOnFailure`**: Configure mock
   `logout()` to throw. Assert `authState == .unauthenticated` regardless.
 
 ### RegistrationViewModel Tests (`RegistrationViewModelTests.swift` — Modified)
 
-- **`testSuccessfulRegistrationInvokesCallback`**: Replace current
-  "clear fields" assertion with assertion that `onRegisterSuccess` closure
-  is called with correct `PublicUser`.
+- **`testSuccessfulRegistrationInvokesCallback`**: Replace current "clear
+  fields" assertion with assertion that `onRegisterSuccess` closure is called
+  with correct `PublicUser`.
 - **`testServerErrorSetsInfrastructureError`**: Configure mock to throw
   `ErrorResponse(code: "SERVER_ERROR")`. Assert
   `infrastructureError == .serverError`.
 
 ### MockAuthClient Extraction
 
-`MockAuthClient` is extracted from `RegistrationViewModelTests.swift` into a dedicated test utility file `MockAuthClient.swift` so it can be shared with `LoginViewModelTests` and `AppViewModelTests`. It is expanded with configurable `loginResult`, `logoutResult`, and `meResult` properties for the three new protocol methods.
+`MockAuthClient` is extracted from `RegistrationViewModelTests.swift` into a
+dedicated test utility file `MockAuthClient.swift` so it can be shared with
+`LoginViewModelTests` and `AppViewModelTests`. It is expanded with configurable
+`loginResult`, `logoutResult`, and `meResult` properties for the three new
+protocol methods.
 
 ## Implementation Plan
 
@@ -407,8 +421,8 @@ Uses `MockAuthClient`:
      `xcodebuild test -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS -destination 'platform=iOS Simulator,name=iPhone 16'`
      — all existing tests pass.
 
-4. **Add `login()`, `logout()`, `me()` to `AuthClient`** — Implement the
-   three new methods using the extracted helper. Update `AuthClientProtocol`.
+4. **Add `login()`, `logout()`, `me()` to `AuthClient`** — Implement the three
+   new methods using the extracted helper. Update `AuthClientProtocol`.
    - _Verify_:
      `xcodebuild -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS build`
 
@@ -449,8 +463,8 @@ Uses `MockAuthClient`:
     - _Verify_:
       `xcodebuild -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS build`
 
-13. **Create `HomeView.swift`** — User info display, logout button with
-    loading state, optimistic logout on failure.
+13. **Create `HomeView.swift`** — User info display, logout button with loading
+    state, optimistic logout on failure.
     - _Verify_:
       `xcodebuild -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS build`
 
@@ -459,24 +473,26 @@ Uses `MockAuthClient`:
     - _Verify_:
       `xcodebuild -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS build`
 
-15. **Update `RegistrationViewModel`** — Replace "clear fields" success
-    behavior with `onRegisterSuccess` callback. Add `infrastructureError`
-    property and classification logic.
+15. **Update `RegistrationViewModel`** — Replace "clear fields" success behavior
+    with `onRegisterSuccess` callback. Add `infrastructureError` property and
+    classification logic.
     - _Verify_:
       `xcodebuild -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS build`
 
-16. **Update `RegistrationView`** — Add `.fullScreenCover()` for
-    infrastructure errors. Add "Already have an account? Log in" link. Wire
-    `onRegisterSuccess` and `onSwitchToLogin` callbacks.
+16. **Update `RegistrationView`** — Add `.fullScreenCover()` for infrastructure
+    errors. Add "Already have an account? Log in" link. Wire `onRegisterSuccess`
+    and `onSwitchToLogin` callbacks.
     - _Verify_:
       `xcodebuild -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS build`
 
-17. **Update `RegistrationViewModelTests`** — Adapt existing tests for
-    callback pattern. Add infrastructure error classification test.
+17. **Update `RegistrationViewModelTests`** — Adapt existing tests for callback
+    pattern. Add infrastructure error classification test.
     - _Verify_:
       `xcodebuild test -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS -destination 'platform=iOS Simulator,name=iPhone 16'`
 
-18. **Extract and Expand `MockAuthClient`** — Move `MockAuthClient` to a new shared `MockAuthClient.swift` file. Add `login()`, `logout()`, `me()` stubs with configurable results.
+18. **Extract and Expand `MockAuthClient`** — Move `MockAuthClient` to a new
+    shared `MockAuthClient.swift` file. Add `login()`, `logout()`, `me()` stubs
+    with configurable results.
     - _Verify_:
       `xcodebuild test -workspace ios-app/UnicoachiOS.xcodeproj/project.xcworkspace -scheme UnicoachiOS -destination 'platform=iOS Simulator,name=iPhone 16'`
 

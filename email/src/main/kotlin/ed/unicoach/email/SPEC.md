@@ -341,9 +341,8 @@ See [EmailSubject.kt](./EmailSubject.kt), [EmailBody.kt](./EmailBody.kt).
       `LogOnlyEmailProvider` adapter (`id = "log"`), value types
       `EmailSubject`/`EmailBody`/`OutboundEmail`/`SentEmail`,
       [`EmailSendStatus`](./EmailSendStatus.kt), `EmailConfig`, and the
-      `PermanentError`/`TransientError`-tagged
-      exceptions. Consumes `EmailAddress`/`ValidationResult` relocated from `db`
-      to `common`.
+      `PermanentError`/`TransientError`-tagged exceptions. Consumes
+      `EmailAddress`/`ValidationResult` relocated from `db` to `common`.
 - [x] [RFC-37: Amazon SES Email Provider](../../../../../../../rfc/37-ses-email-provider.md)
       — Added the first transmitting adapter `SesEmailProvider` (`id = "ses"`,
       sesv2-backed, UTF-8-pinned, `AutoCloseable`) behind the `SesSendOperation`
