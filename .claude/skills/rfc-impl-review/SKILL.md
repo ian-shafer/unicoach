@@ -72,6 +72,15 @@ You MUST mark the final verdict as `🔴 REVISION REQUIRED` and specify the
 missing test implementations as critical action items. Do not approve the
 implementation until the tests are implemented and passing.
 
+**Guard Branch Exercise:** For every "must fatal / must reject / must refuse on
+precondition X" behaviour in the RFC (port guards, auth gates, malformed-input
+rejections, defensive fatals), you MUST independently **trigger precondition X**
+yourself (bind the port, send the malformed body, supply the bad credential) and
+confirm the refusal fires — do NOT trust a happy-path-only verification, since
+such a guard is silent on every run where its precondition is absent. Treat any
+guard that was only happy-path-tested as an unverified finding and mark the
+verdict `🔴 REVISION REQUIRED`.
+
 ### Phase 3. Chain Delegation
 
 You MUST delegate the deep structural and code reviews to the dedicated macro

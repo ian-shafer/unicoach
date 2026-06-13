@@ -37,6 +37,14 @@ For the implementation, you must strictly follow this workflow:
 2. **Execute Tests**: You must verify the implementation code compiles and all
    related test suites pass (e.g., by running `bin/test`). If tests fail,
    systematically debug and fix them.
+2a. **Trigger Every Guard**: When the RFC's acceptance criteria include any
+   "must fatal / must reject / must refuse on precondition X" behaviour (port
+   guards, auth gates, malformed-input rejections, defensive fatals), a green
+   happy-path run is necessary but **NOT sufficient** — such a guard is silent
+   whenever its precondition is absent, so a broken one passes every normal run.
+   You MUST verify each guard by actually **triggering precondition X** (bind the
+   port, send the malformed body, supply the bad credential) and confirming the
+   refusal actually fires.
 3. **DO NOT TOUCH SPECS**: You are strictly forbidden from modifying any `SPEC.md` 
    files during the implementation phase. Even if the RFC explicitly instructs you 
    to update a `SPEC.md`, you must ignore that instruction. Spec synchronization 
