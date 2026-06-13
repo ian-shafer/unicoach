@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.Convo
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
@@ -9,6 +10,7 @@ import ed.unicoach.db.models.ConvoResponse
 import ed.unicoach.db.models.ConvoResponseId
 import ed.unicoach.db.models.ConvoResponseRaw
 import ed.unicoach.db.models.ConvoTurn
+import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.NewConvoResponse
@@ -49,6 +51,7 @@ object ConvosDao {
       createdAt = rs.getTimestamp("created_at").toInstant(),
       updatedAt = rs.getTimestamp("updated_at").toInstant(),
       deletedAt = rs.getTimestamp("deleted_at")?.toInstant(),
+      archivedAt = rs.getTimestamp("archived_at")?.toInstant(),
     )
 
   /**
@@ -144,6 +147,16 @@ object ConvosDao {
       SoftDeleteScope.ACTIVE -> "$column IS NULL"
       SoftDeleteScope.DELETED -> "$column IS NOT NULL"
       SoftDeleteScope.ALL -> "TRUE"
+    }
+
+  private fun archivePredicate(
+    scope: ArchiveScope,
+    column: String,
+  ): String =
+    when (scope) {
+      ArchiveScope.UNARCHIVED -> "$column IS NULL"
+      ArchiveScope.ARCHIVED -> "$column IS NOT NULL"
+      ArchiveScope.ALL -> "TRUE"
     }
 
   // ---------------------------------------------------------------------------
@@ -318,6 +331,142 @@ object ConvosDao {
     } catch (e: Exception) {
       Result.failure(mapDatabaseError(e))
     }
+
+  /**
+   * Archives a convo: idempotent toggle that keeps the original `archived_at`
+   * on re-archive (`COALESCE`). Rejects soft-deleted rows ([NotFoundException]
+   * when no active row matches). Suppresses the `update_timestamp` trigger via
+   * the bypass GUC so `updated_at` does not advance (the contract pins
+   * "updatedAt advances on rename only"). Because `SET LOCAL` persists for the
+   * remainder of the transaction, a caller combining rename and archive in one
+   * transaction MUST rename first.
+   */
+  fun archive(
+    session: SqlSession,
+    id: ConvoId,
+  ): Result<Convo> = setArchivedAt(session, id, archive = true)
+
+  /**
+   * Unarchives a convo: idempotent toggle clearing `archived_at` (also succeeds
+   * on a never-archived row). Rejects soft-deleted rows. Suppresses the
+   * `updated_at` trigger as [archive] does.
+   */
+  fun unarchive(
+    session: SqlSession,
+    id: ConvoId,
+  ): Result<Convo> = setArchivedAt(session, id, archive = false)
+
+  private fun setArchivedAt(
+    session: SqlSession,
+    id: ConvoId,
+    archive: Boolean,
+  ): Result<Convo> =
+    try {
+      // Precedent: UsersDao.updatePhysicalRecord. SET LOCAL holds for the rest
+      // of the transaction, so a combined rename+archive must rename first.
+      session
+        .prepareStatement("SET LOCAL unicoach.bypass_logical_timestamp = 'true'")
+        .use { it.execute() }
+      val setClause = if (archive) "archived_at = COALESCE(archived_at, NOW())" else "archived_at = NULL"
+      val sql =
+        """
+        UPDATE convos
+        SET $setClause
+        WHERE id = ? AND deleted_at IS NULL
+        RETURNING *
+        """.trimIndent()
+      session.prepareStatement(sql).use { stmt ->
+        stmt.setObject(1, id.value)
+        stmt.executeQuery().use { rs ->
+          if (rs.next()) {
+            Result.success(mapConvo(rs))
+          } else {
+            Result.failure(NotFoundException())
+          }
+        }
+      }
+    } catch (e: SQLException) {
+      Result.failure(mapConvoError(e))
+    } catch (e: Exception) {
+      Result.failure(mapDatabaseError(e))
+    }
+
+  /**
+   * Lists a student's convos with each row's derived `lastActivityAt`
+   * (`MAX(convo_requests.created_at)`, null with no turns). Filters by
+   * [archive] and excludes soft-deleted rows per [scope]. One query: a LEFT
+   * JOIN grouped by convo, ordered most-recent-activity first with a
+   * deterministic tiebreak.
+   */
+  fun listByStudentWithActivity(
+    session: SqlSession,
+    studentId: StudentId,
+    archive: ArchiveScope = ArchiveScope.UNARCHIVED,
+    scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
+  ): Result<List<ConvoWithActivity>> =
+    try {
+      val sql =
+        """
+        SELECT c.*, MAX(r.created_at) AS last_activity_at
+        FROM convos c
+        LEFT JOIN convo_requests r ON r.convo_id = c.id
+        WHERE c.student_id = ?
+          AND ${scopePredicate(scope, "c.deleted_at")}
+          AND ${archivePredicate(archive, "c.archived_at")}
+        GROUP BY c.id
+        ORDER BY MAX(r.created_at) DESC NULLS LAST, c.created_at DESC, c.id
+        """.trimIndent()
+      session.prepareStatement(sql).use { stmt ->
+        stmt.setObject(1, studentId.value)
+        stmt.executeQuery().use { rs ->
+          val rows = mutableListOf<ConvoWithActivity>()
+          while (rs.next()) {
+            rows.add(mapConvoWithActivity(rs))
+          }
+          Result.success(rows)
+        }
+      }
+    } catch (e: Exception) {
+      Result.failure(mapDatabaseError(e))
+    }
+
+  /**
+   * Loads one convo with its derived `lastActivityAt`, honouring [scope].
+   * [NotFoundException] when no row matches.
+   */
+  fun findByIdWithActivity(
+    session: SqlSession,
+    id: ConvoId,
+    scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
+  ): Result<ConvoWithActivity> =
+    try {
+      val sql =
+        """
+        SELECT c.*, MAX(r.created_at) AS last_activity_at
+        FROM convos c
+        LEFT JOIN convo_requests r ON r.convo_id = c.id
+        WHERE c.id = ? AND ${scopePredicate(scope, "c.deleted_at")}
+        GROUP BY c.id
+        """.trimIndent()
+      session.prepareStatement(sql).use { stmt ->
+        stmt.setObject(1, id.value)
+        stmt.executeQuery().use { rs ->
+          if (rs.next()) {
+            Result.success(mapConvoWithActivity(rs))
+          } else {
+            Result.failure(NotFoundException())
+          }
+        }
+      }
+    } catch (e: Exception) {
+      Result.failure(mapDatabaseError(e))
+    }
+
+  private fun mapConvoWithActivity(rs: ResultSet): ConvoWithActivity =
+    ConvoWithActivity(
+      convo = mapConvo(rs),
+      lastActivityAt = rs.getTimestamp("last_activity_at")?.toInstant(),
+    )
 
   // ---------------------------------------------------------------------------
   // Logs — write (two transaction boundaries)

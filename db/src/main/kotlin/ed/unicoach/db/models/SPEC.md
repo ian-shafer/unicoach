@@ -119,10 +119,29 @@ state.
   deliberately disabled for this aggregate (the `convos` table has no `version`
   column), unlike `User`/`Student`. Its `deletedAt: Instant?` carries the usual
   soft-delete semantics.
+- `Convo` carries `archivedAt: Instant?` as a plain `val` — an archive axis
+  INDEPENDENT of and orthogonal to soft-delete: archive is a reversible
+  user-facing shelf state (set/clear `archived_at`), NOT a `SoftDeletable`
+  capability. The two nullable timestamps MUST stay distinct columns and MUST
+  NOT be collapsed into one another. `archivedAt` keeps the model 1:1 with the
+  `convos` table and MUST NOT be promoted to a typed wrapper.
 - `ConvoRequest`, `ConvoResponse`, and `ConvoResponseRaw` are append-only log
   rows: each is `Created` only and MUST NEVER be `Updated` or `SoftDeletable`.
   `ConvoResponseRaw` keeps the verbatim provider `payload` separate from the
   normalized `ConvoResponse` and MUST NOT be folded into it.
+- `SystemPrompt` is an immutable catalog row (`Identifiable` + `Created` only):
+  rows are authored by migration and MUST NEVER be `Updated`, `Versioned`, or
+  `SoftDeletable` — the catalog is append-only and rows are never mutated in
+  place. Its `version: String` is a catalog version LABEL, NOT an OCC counter,
+  and MUST NOT be modeled as the `Versioned` capability. It reuses the existing
+  `SystemPromptId` value class.
+- `ConvoWithActivity` is a pure read PROJECTION, not a persisted entity: it
+  wraps a `Convo` plus a derived `lastActivityAt: Instant?`. It MUST NOT
+  implement any capability interface and MUST NOT be treated as a row type.
+  `lastActivityAt` is `MAX(convo_requests.created_at)` over ALL request rows —
+  failed turns included, since a failed attempt is still activity — and is null
+  for a conversation with no turns. It MUST NOT be narrowed to successful turns
+  only.
 - `ConvoTurn.response` MUST be nullable: a request and its response are written
   in separate transactions, so a committed request can exist with no response
   row (provider in flight, or the response transaction never ran).
@@ -164,6 +183,12 @@ actually has. There MUST be no welded multi-capability supertype.
   `deletedAt IS NULL`), `DELETED` (rows with `deletedAt IS NOT NULL`), and `ALL`
   (no `deletedAt` filter). It carries no domain semantics and MUST remain
   reusable by any DAO over a soft-deletable entity.
+- `ArchiveScope` is the read-time filter for the archive axis — the sibling of
+  `SoftDeleteScope`, selecting rows by `archived_at` — with exactly three
+  variants: `UNARCHIVED` (`archived_at IS NULL`), `ARCHIVED`
+  (`archived_at IS NOT NULL`), and `ALL` (no filter). It is a SEPARATE,
+  orthogonal axis from `SoftDeleteScope`; the two MUST NOT be merged into one
+  enum.
 - There MUST be no row-timestamp capability — see the row-timestamp invariant
   under Aggregate Records.
 
@@ -394,3 +419,11 @@ actually has. There MUST be no welded multi-capability supertype.
       description at `PartialDate`'s rejection sites via a single canonical
       constant, and `ConvoName`'s `TooLong` rejection now carries its
       `maxLength`.
+- [x] [RFC-45: Coaching Service](../../../../../../../../rfc/45-coaching-service.md)
+      — Added `archivedAt: Instant?` to `Convo` (reversible archive axis,
+      orthogonal to soft-delete; keeps the model 1:1 with the `convos` table).
+      Introduced `ArchiveScope` (read-time filter sibling of `SoftDeleteScope`),
+      `ConvoWithActivity` (pure listing projection wrapping a `Convo` plus a
+      derived `lastActivityAt` = `MAX(convo_requests.created_at)` over all
+      turns, failed included), and the `SystemPrompt` catalog row model
+      (append-only, `Created` only, reusing the existing `SystemPromptId`).

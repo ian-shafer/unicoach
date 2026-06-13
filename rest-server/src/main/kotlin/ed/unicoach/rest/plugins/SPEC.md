@@ -99,9 +99,13 @@ request/response in the `rest-server`. The plugins cover:
   single application-scope `install(RequestBodyLimit)` in
   `configureRequestSizeLimit()`. There MUST NOT be any per-route opt-in — a
   route added in the future is covered without per-route wiring.
-- The applicable limit MUST be selected per request by exact
-  `call.request.path()` match against `routeOverrides` (slash- and
-  case-sensitive); a path with no matching entry MUST resolve to `defaultMax`.
+- The applicable limit MUST be selected per request by a fixed resolution
+  order: **exact-path override** (`routeOverrides`) → **longest matching path
+  prefix** (`routePrefixOverrides`) → `defaultMax`. An exact match MUST win over
+  any prefix match; among competing prefixes the longest matching key MUST win.
+  Matching is slash- and case-sensitive. This guarantees a dynamic path such as
+  `/api/v1/conversations/{id}/messages` resolves to its prefix's limit while an
+  exact entry for a specific path still takes precedence.
 - A request body exceeding the applicable limit (declared `Content-Length` or
   streamed bytes) MUST raise `PayloadTooLargeException`, mapped to `413` by
   StatusPages.
@@ -201,9 +205,8 @@ request/response in the `rest-server`. The plugins cover:
 - **Side Effects**: Installs the Ktor `RequestBodyLimit` plugin once at
   application scope with a path-aware `bodyLimit` callback. No database writes,
   no network calls.
-- **Limit Selection**: returns
-  `config.routeOverrides[call.request.path()]?.bytes ?: config.defaultMax.bytes`
-  — exact-path lookup with default fallback.
+- **Limit Selection**: delegated to `resolveLimit(config, path)`, which resolves
+  in order exact override → longest matching prefix override → `defaultMax`.
 - **Error Handling**: a body exceeding the applicable limit raises
   `io.ktor.server.plugins.PayloadTooLargeException`, mapped to `413` by
   `configureStatusPages()`.
@@ -254,3 +257,7 @@ request/response in the `rest-server`. The plugins cover:
       — mapped server-fault `PermanentError`s (`DatabaseException`,
       `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`)
       to `500` in `StatusPages.kt`; client-fault mappings unchanged.
+- [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../../rfc/45-coaching-service.md)
+      — extended `RequestSizeLimit.kt` body-limit resolution to exact override →
+      longest matching prefix (`RequestSizeConfig.routePrefixOverrides`) →
+      `defaultMax`, so dynamic conversation paths receive the correct limit.

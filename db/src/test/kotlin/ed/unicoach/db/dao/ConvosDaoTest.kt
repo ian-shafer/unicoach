@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationResult
+import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
 import ed.unicoach.db.models.ConvoResponseId
@@ -599,5 +600,160 @@ class ConvosDaoTest {
         return rs.getInt(1)
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // archived_at + activity listings (RFC 45)
+  // ---------------------------------------------------------------------------
+
+  /** Runs [block] inside one explicit transaction so multi-statement DAO calls (SET LOCAL + UPDATE) are atomic. */
+  private fun <T> inTx(block: () -> T): T {
+    connection.autoCommit = false
+    return try {
+      val result = block()
+      connection.commit()
+      result
+    } catch (e: Exception) {
+      connection.rollback()
+      throw e
+    } finally {
+      connection.autoCommit = true
+    }
+  }
+
+  /** Inserts a request row with an explicit created_at so activity ordering is deterministic. */
+  private fun appendRequestAt(
+    convoId: ConvoId,
+    createdAtIso: String,
+  ) {
+    val promptId = createSystemPrompt()
+    connection
+      .prepareStatement(
+        """
+        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, created_at)
+        VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, ?::timestamptz)
+        """.trimIndent(),
+      ).use { stmt ->
+        stmt.setObject(1, convoId.value)
+        stmt.setObject(2, promptId.value)
+        stmt.setString(3, createdAtIso)
+        stmt.executeUpdate()
+      }
+  }
+
+  @Test
+  fun `mapConvo carries archivedAt`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    ConvosDao.archive(session, convo.id).getOrThrow()
+    val found = ConvosDao.findById(session, convo.id).getOrThrow()
+    assertNotNull(found.archivedAt)
+  }
+
+  @Test
+  fun `archive sets archived_at once (idempotent toggle)`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val first = ConvosDao.archive(session, convo.id).getOrThrow()
+    val second = ConvosDao.archive(session, convo.id).getOrThrow()
+    assertNotNull(first.archivedAt)
+    assertEquals(first.archivedAt, second.archivedAt)
+  }
+
+  @Test
+  fun `unarchive clears archived_at including on a never-archived row`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    ConvosDao.archive(session, convo.id).getOrThrow()
+    val cleared = ConvosDao.unarchive(session, convo.id).getOrThrow()
+    assertNull(cleared.archivedAt)
+    // Idempotent on a never-archived (already cleared) row.
+    val again = ConvosDao.unarchive(session, convo.id).getOrThrow()
+    assertNull(again.archivedAt)
+  }
+
+  @Test
+  fun `archive and unarchive reject deleted convos`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    ConvosDao.delete(session, convo.id).getOrThrow()
+    assertTrue(ConvosDao.archive(session, convo.id).exceptionOrNull() is NotFoundException)
+    assertTrue(ConvosDao.unarchive(session, convo.id).exceptionOrNull() is NotFoundException)
+  }
+
+  @Test
+  fun `archive does not advance updatedAt while rename does`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    // archive runs SET LOCAL + UPDATE; the bypass GUC only holds within one
+    // transaction, so this must run with autocommit off (as production's
+    // Database.withConnection does). The harness session is otherwise autocommit.
+    val afterArchive = inTx { ConvosDao.archive(session, convo.id).getOrThrow() }
+    assertEquals(convo.updatedAt, afterArchive.updatedAt)
+
+    val afterRename = ConvosDao.rename(session, convo.id, name("Renamed")).getOrThrow()
+    assertTrue(afterRename.updatedAt.isAfter(convo.updatedAt), "rename should advance updatedAt")
+  }
+
+  @Test
+  fun `listByStudentWithActivity filters by ArchiveScope`() {
+    val student = createStudent()
+    val active = ConvosDao.create(session, newConvo(student, "active")).getOrThrow()
+    val archived = ConvosDao.create(session, newConvo(student, "archived")).getOrThrow()
+    val deleted = ConvosDao.create(session, newConvo(student, "deleted")).getOrThrow()
+    ConvosDao.archive(session, archived.id).getOrThrow()
+    ConvosDao.delete(session, deleted.id).getOrThrow()
+
+    val unarchived = ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.UNARCHIVED).getOrThrow()
+    assertEquals(listOf(active.id), unarchived.map { it.convo.id })
+
+    val arch = ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ARCHIVED).getOrThrow()
+    assertEquals(listOf(archived.id), arch.map { it.convo.id })
+
+    val all = ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL).getOrThrow()
+    assertEquals(setOf(active.id, archived.id), all.map { it.convo.id }.toSet())
+  }
+
+  @Test
+  fun `listByStudentWithActivity derives lastActivityAt`() {
+    val student = createStudent()
+    val withTurns = ConvosDao.create(session, newConvo(student, "withTurns")).getOrThrow()
+    val noTurns = ConvosDao.create(session, newConvo(student, "noTurns")).getOrThrow()
+    appendRequestAt(withTurns.id, "2024-01-01T00:00:00Z")
+    appendRequestAt(withTurns.id, "2024-02-01T00:00:00Z")
+
+    val rows = ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL).getOrThrow()
+    val withTurnsRow = rows.first { it.convo.id == withTurns.id }
+    val noTurnsRow = rows.first { it.convo.id == noTurns.id }
+    assertEquals(java.time.Instant.parse("2024-02-01T00:00:00Z"), withTurnsRow.lastActivityAt)
+    assertNull(noTurnsRow.lastActivityAt)
+  }
+
+  @Test
+  fun `listByStudentWithActivity orders by activity desc with nulls last`() {
+    val student = createStudent()
+    val older = ConvosDao.create(session, newConvo(student, "older")).getOrThrow()
+    val newer = ConvosDao.create(session, newConvo(student, "newer")).getOrThrow()
+    val none = ConvosDao.create(session, newConvo(student, "none")).getOrThrow()
+    appendRequestAt(older.id, "2024-01-01T00:00:00Z")
+    appendRequestAt(newer.id, "2024-03-01T00:00:00Z")
+
+    val rows = ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL).getOrThrow()
+    assertEquals(listOf(newer.id, older.id, none.id), rows.map { it.convo.id })
+  }
+
+  @Test
+  fun `findByIdWithActivity returns the projection and NotFound for missing or deleted`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    appendRequestAt(convo.id, "2024-01-01T00:00:00Z")
+
+    val found = ConvosDao.findByIdWithActivity(session, convo.id).getOrThrow()
+    assertEquals(convo.id, found.convo.id)
+    assertEquals(java.time.Instant.parse("2024-01-01T00:00:00Z"), found.lastActivityAt)
+
+    assertTrue(ConvosDao.findByIdWithActivity(session, ConvoId(UUID.randomUUID())).exceptionOrNull() is NotFoundException)
+    ConvosDao.delete(session, convo.id).getOrThrow()
+    assertTrue(ConvosDao.findByIdWithActivity(session, convo.id).exceptionOrNull() is NotFoundException)
   }
 }

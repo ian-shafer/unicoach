@@ -1,6 +1,11 @@
 package ed.unicoach.rest
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.chat.ChatConfig
+import ed.unicoach.chat.ChatProvider
+import ed.unicoach.chat.ChatProviderFactory
+import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.CoachingService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -25,7 +30,7 @@ import io.ktor.server.netty.Netty
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "service.conf", "rest-server.conf", "queue.conf")
+      .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf")
       .getOrThrow()
 
   val dbConfig =
@@ -45,6 +50,16 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val queueConfig =
     QueueConfig
+      .from(config)
+      .getOrThrow()
+
+  val chatProvider =
+    ChatProviderFactory
+      .fromConfig(ChatConfig.from(config).getOrThrow())
+      .getOrThrow()
+
+  val coachingConfig =
+    CoachingConfig
       .from(config)
       .getOrThrow()
 
@@ -70,7 +85,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         database.close()
       }
 
-      appModule(database, sessionConfig, requestSizeConfig)
+      appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig)
 
       install(SessionExpiryPlugin) {
         this.sessionConfig = sessionConfig
@@ -99,6 +114,8 @@ fun Application.appModule(
   database: Database,
   sessionConfig: SessionConfig,
   requestSizeConfig: RequestSizeConfig,
+  chatProvider: ChatProvider,
+  coachingConfig: CoachingConfig,
 ) {
   configureSerialization()
   configureStatusPages()
@@ -108,6 +125,7 @@ fun Application.appModule(
   val tokenGenerator = TokenGenerator()
   val authService = AuthService(database, argon2Hasher, tokenGenerator)
   val studentService = ed.unicoach.student.StudentService(database)
+  val coachingService = CoachingService(database, chatProvider, coachingConfig)
 
-  configureRouting(authService, studentService, sessionConfig)
+  configureRouting(authService, studentService, coachingService, sessionConfig)
 }

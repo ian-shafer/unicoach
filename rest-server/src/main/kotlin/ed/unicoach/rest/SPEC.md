@@ -5,8 +5,10 @@
 The HTTP presentation layer of the unicoach platform. It hosts the Ktor/Netty
 embedded server, wires all application plugins, and exposes the REST API surface
 under `/api/v1`. It owns construction of the application's services
-(`AuthService`, `StudentService`) and injects them into the route handlers. It
-translates between domain results (from `service` and `db`) and HTTP responses,
+(`AuthService`, `StudentService`, `CoachingService`) and injects them into the
+route handlers, including fail-fast boot-time construction of the chat provider
+the coaching service depends on. It translates between domain results (from
+`service` and `db`) and HTTP responses,
 managing session cookie lifecycle and asynchronous session expiry enqueueing. It
 does not contain domain logic.
 
@@ -27,9 +29,16 @@ does not contain domain logic.
 ### Configuration
 
 - `startServer()` MUST load configs in this exact order:
-  `"common.conf", "db.conf", "service.conf", "rest-server.conf", "queue.conf"`.
+  `"common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf"`.
+  `chat.conf` (resource supplied by the `:chat` dependency) MUST be in the load
+  list so that `chat.provider` is surfaced to `ChatConfig.from(config)`.
 - `SessionConfig.from(config)` MUST fail-fast (`getOrThrow()`) at startup if the
   `session` HOCON block is absent or misconfigured.
+- The chat provider and coaching config MUST be constructed at boot, fail-fast:
+  `ChatProviderFactory.fromConfig(ChatConfig.from(config))` and
+  `CoachingConfig.from(config)` are each resolved with `getOrThrow()` before the
+  server binds, so a missing/invalid `chat.provider` or coaching config crashes
+  the process rather than failing on the first conversation request.
 - `SessionConfig` MUST extract exactly four fields from the `session` block:
   `expiration` (Duration), `cookieName` (String), `cookieDomain` (String),
   `cookieSecure` (Boolean).
@@ -47,9 +56,10 @@ does not contain domain logic.
 ### Routing
 
 - All API routes MUST be nested under `/api/v1`.
-- The `/api/v1/auth/*` and `/api/v1/students/*` route groups MUST each be
-  registered by their own route handler (`AuthRouteHandler.registerRoutes`,
-  `StudentRouteHandler.registerRoutes`). This directory owns only the wiring and
+- The `/api/v1/auth/*`, `/api/v1/students/*`, and `/api/v1/conversations/*`
+  route groups MUST each be registered by their own route handler
+  (`AuthRouteHandler.registerRoutes`, `StudentRouteHandler.registerRoutes`,
+  `ConvoRouteHandler.registerRoutes`). This directory owns only the wiring and
   service construction; the per-route HTTP contracts (methods, status codes,
   request/response DTOs, `rejectUnsupportedMethods` placement) live in
   [`routing/SPEC.md`](./routing/SPEC.md).
@@ -129,24 +139,30 @@ does not contain domain logic.
   server binds.
 - **Idempotency**: Not idempotent — calling twice binds two server instances.
 
-### `Application.appModule(database, sessionConfig, requestSizeConfig)` — [`Application.kt`](./Application.kt)
+### `Application.appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig)` — [`Application.kt`](./Application.kt)
 
 - **Side effects**: Installs `ContentNegotiation` (Jackson), `StatusPages`, and
   the application-scope request-body-size limit via
-  `configureRequestSizeLimit(requestSizeConfig)`; builds `AuthService` and
-  `StudentService`, and registers all routes via `configureRouting`.
+  `configureRequestSizeLimit(requestSizeConfig)`; builds `AuthService`,
+  `StudentService`, and `CoachingService(database, chatProvider, coachingConfig)`,
+  and registers all routes via `configureRouting`.
+- **Inputs**: The pre-constructed `chatProvider` and `coachingConfig` are passed
+  in (built fail-fast by `startServer`), so `appModule` itself performs no chat
+  config parsing.
 - **Scope**: Intentionally excludes `SessionExpiryPlugin` installation. Tests
   calling `appModule()` directly bypass the queue-write side effect.
 - **Idempotency**: Not idempotent — Ktor plugin installation is not idempotent
   if called twice on the same Application.
 
-### `Application.configureRouting(authService, studentService, sessionConfig)` — [`Routing.kt`](./Routing.kt)
+### `Application.configureRouting(authService, studentService, coachingService, sessionConfig)` — [`Routing.kt`](./Routing.kt)
 
 - **Routes registered**:
   - `GET /hello` → `200 OK` with plain UTF-8 text body.
   - All `/api/v1/auth/*` routes via `AuthRouteHandler.registerRoutes(...)`.
   - All `/api/v1/students/*` routes via
     `StudentRouteHandler.registerRoutes(...)`.
+  - All `/api/v1/conversations/*` routes via
+    `ConvoRouteHandler.registerRoutes(...)`.
 - **Side effects**: Route table registration — installs handlers into the Ktor
   routing tree.
 - **Idempotency**: Not idempotent — calling twice installs duplicate routes.
@@ -244,8 +260,10 @@ Required keys in `rest-server.conf`:
 
 ### Config Load Order
 
-`AppConfig.load("common.conf", "db.conf", "service.conf", "rest-server.conf", "queue.conf")`
+`AppConfig.load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf")`
 
+- `chat.conf` is supplied by the `:chat` dependency and surfaces `chat.provider`
+  (default `"log"`; production config pins `"anthropic"`).
 - `net.conf` is NOT loaded by `rest-server` — only `queue-worker` loads it.
 
 ### Runtime Dependencies
@@ -259,8 +277,10 @@ Required keys in `rest-server.conf`:
 
 ### Module Dependencies
 
-`rest-server` depends on: `common`, `db`, `service`, `queue`. It does NOT depend
-on `net`.
+`rest-server` depends on: `common`, `db`, `service`, `chat`, `queue`. It does
+NOT depend on `net`. (`CoachingService` and `CoachingConfig` live in the
+`service` module's `coaching` package; `ChatProvider`/`ChatConfig`/
+`ChatProviderFactory` come from `chat`.)
 
 ---
 
@@ -287,3 +307,9 @@ on `net`.
 - [x] [RFC-31: Student Profile](../../../../../../../rfc/31-student-profile.md)
       — Wired `StudentService` construction in `appModule` and registered the
       `/api/v1/students/*` route group via `configureRouting`.
+- [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../rfc/45-coaching-service.md)
+      — Added `chat.conf` to the config load list; wired fail-fast boot
+      construction of the chat provider and `CoachingConfig`; threaded
+      `chatProvider`/`coachingConfig` into `appModule` to build `CoachingService`;
+      registered the `/api/v1/conversations/*` group via `ConvoRouteHandler` in
+      `configureRouting`. First production callsite of the `:chat` module.

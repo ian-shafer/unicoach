@@ -9,6 +9,7 @@ data class Convo(
   override val createdAt: Instant,
   override val updatedAt: Instant,
   override val deletedAt: Instant?,
+  val archivedAt: Instant?,
 ) : Identifiable<ConvoId>,
   Created,
   Updated,

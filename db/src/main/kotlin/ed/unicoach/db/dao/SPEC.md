@@ -6,12 +6,13 @@
 PostgreSQL database. Stateless DAO singletons provide every read and write
 operation:
 
-| DAO           | Table(s)                                                             |
-| ------------- | -------------------------------------------------------------------- |
-| `UsersDao`    | `users`, `users_versions`                                            |
-| `SessionsDao` | `sessions`                                                           |
-| `StudentsDao` | `students`                                                           |
-| `ConvosDao`   | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw` |
+| DAO                | Table(s)                                                             |
+| ------------------ | -------------------------------------------------------------------- |
+| `UsersDao`         | `users`, `users_versions`                                            |
+| `SessionsDao`      | `sessions`                                                           |
+| `StudentsDao`      | `students`                                                           |
+| `ConvosDao`        | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw` |
+| `SystemPromptsDao` | `system_prompts` (read-only catalog)                                 |
 
 Every DAO method accepts a `SqlSession` as its first parameter. Connection
 pooling, transaction boundaries, and commit/rollback are managed exclusively by
@@ -77,6 +78,12 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
   `ValidationResult.Invalid` on this read path indicates row corruption, not
   user input; it MUST be raised as a `SQLException` and surfaced as a
   `PermanentError` mapping failure, never as a user-facing validation failure.
+  `mapConvo` projects the nullable `archived_at` timestamp into `Convo`
+  alongside `deleted_at`; the two are independent lifecycle axes.
+- **`system_prompts` table**: `SystemPromptsDao` maps every column verbatim
+  (`name`, `version`, `body` as plain `String`); the table carries no
+  soft-delete, version, or validated value-class columns, so its mapper has no
+  corruption-throwing read path.
 
 ### Transaction Boundary
 
@@ -97,10 +104,11 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
   `PermanentError.NotFound` (row absent).
 - "Force" methods (e.g., `revokeByTokenHash`) MAY skip version guards when the
   business logic does not require OCC.
-- `ConvosDao` mutations (`create`, `rename`, `delete`, `undelete`) MUST NOT
-  include a version guard: `convos` has no `version` column, so convo writes are
-  last-write-wins. `rename`/`delete`/`undelete` gate solely on the soft-delete
-  state in the `WHERE` clause (`deleted_at IS NULL` for `rename`/`delete`,
+- `ConvosDao` mutations (`create`, `rename`, `delete`, `undelete`, `archive`,
+  `unarchive`) MUST NOT include a version guard: `convos` has no `version`
+  column, so convo writes are last-write-wins. `rename`/`delete`/`undelete`/
+  `archive`/`unarchive` gate solely on the soft-delete state in the `WHERE`
+  clause (`deleted_at IS NULL` for `rename`/`delete`/`archive`/`unarchive`,
   `IS NOT NULL` for `undelete`) and return `NotFoundException` when zero rows
   match.
 
@@ -131,6 +139,38 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
 - `ConvosDao.listTurns` MUST scope on the owning convo's `c.deleted_at` (the
   parent entity), NOT on the append-only log rows — turns of a soft-deleted
   convo are hidden under `ACTIVE`.
+- The `*WithActivity` reads (`listByStudentWithActivity`,
+  `findByIdWithActivity`) MUST exclude soft-deleted convos per their `scope`
+  predicate on `c.deleted_at`. `listByStudentWithActivity` additionally filters
+  on the orthogonal `archived_at` axis via an `ArchiveScope` predicate
+  (`UNARCHIVED` → `archived_at IS NULL`, `ARCHIVED` → `IS NOT NULL`, `ALL` → no
+  filter), defaulting to `UNARCHIVED`.
+
+### Archive (`ConvosDao`)
+
+- `archived_at` is a lifecycle axis **independent** of soft-delete: a convo MAY
+  be archived, deleted, both, or neither. Archive does NOT hide a convo from the
+  soft-delete scopes and vice versa.
+- `archive` and `unarchive` MUST be idempotent toggles. `archive` sets
+  `archived_at = COALESCE(archived_at, NOW())` (re-archiving preserves the
+  original archive instant); `unarchive` sets `archived_at = NULL` (succeeds even
+  on a never-archived row). Neither carries a `version` guard.
+- Both MUST reject soft-deleted rows — the `WHERE id = ? AND deleted_at IS NULL`
+  clause returns `NotFoundException` when the row is absent or soft-deleted.
+- Both MUST first issue
+  `SET LOCAL unicoach.bypass_logical_timestamp = 'true'` so the
+  `update_timestamp` trigger does NOT advance `updated_at` — `updated_at`
+  advances on `rename` only (precedent: `UsersDao.updatePhysicalRecord`).
+- `SET LOCAL` persists for the remainder of the caller transaction. A caller
+  combining `rename` and an archive toggle in one transaction MUST `rename`
+  first, or the rename's `updated_at` bump is suppressed.
+- `listByStudentWithActivity` and `findByIdWithActivity` MUST derive
+  `lastActivityAt` from `MAX(convo_requests.created_at)` (NULL when the convo has
+  no turns) via a single `LEFT JOIN` grouped by convo. The MAX includes failed
+  and orphan-request turns — recency reflects any request row, not only
+  successfully answered ones. `listByStudentWithActivity` MUST order by activity
+  descending with `NULLS LAST`, then `created_at` descending, then `id` (a
+  deterministic tiebreak).
 
 ### Coaching Turn Writes (`ConvosDao`)
 
@@ -193,10 +233,11 @@ indicate application bugs.
 
 #### `ConvosDao` (`mapConvoError`)
 
-The write paths (`create`, `rename`, `appendRequest`, `appendResponse`) route
-`SQLException` through `mapConvoError`; reads and the soft-delete mutations
-(`delete`, `undelete`) route through `mapDatabaseError`. `mapConvoError`
-introduces **no new `DaoException` type** — it reuses `NotFoundException` and
+The write paths (`create`, `rename`, `archive`, `unarchive`, `appendRequest`,
+`appendResponse`) route `SQLException` through `mapConvoError`; reads (including
+the `*WithActivity` reads) and the soft-delete mutations (`delete`, `undelete`)
+route through `mapDatabaseError`. `mapConvoError` introduces **no new
+`DaoException` type** — it reuses `NotFoundException` and
 `ConstraintViolationException` only.
 
 - `23503` (FK violation) → `NotFoundException`, with the message resolved from
@@ -217,12 +258,12 @@ introduces **no new `DaoException` type** — it reuses `NotFoundException` and
 
 ### Physical Record Bypass
 
-- `UsersDao.updatePhysicalRecord` MUST prepend
-  `SET LOCAL
-  unicoach.bypass_logical_timestamp = 'true'` via
-  `session.prepareStatement` before executing the standard `doUpdate` path. This
-  flag is scoped to the current transaction and MUST NOT bleed into subsequent
-  transactions.
+- `UsersDao.updatePhysicalRecord` and `ConvosDao.archive`/`unarchive` MUST
+  prepend `SET LOCAL unicoach.bypass_logical_timestamp = 'true'` via
+  `session.prepareStatement` before executing their `UPDATE`. The flag suppresses
+  the `update_timestamp` trigger so `updated_at`/`row_updated_at` does not
+  advance. It is scoped to the current transaction (`SET LOCAL`) and MUST NOT
+  bleed into subsequent transactions.
 
 ---
 
@@ -503,6 +544,43 @@ fragments carrying no caller data; no user data is string-interpolated into SQL.
   or absent.
 - **Idempotency**: No — a second call returns `NotFound`.
 
+#### `archive(session, id): Result<Convo>`
+
+- **Side Effects**: Read/write — sets `bypass_logical_timestamp`, then sets
+  `archived_at = COALESCE(archived_at, NOW())` where `deleted_at IS NULL`
+  (`RETURNING *`). No version guard. Does NOT advance `updated_at`.
+- **Error Handling**: `Result.failure(NotFoundException())` when the row is
+  absent or soft-deleted. `mapConvoError` on other `SQLException`.
+- **Idempotency**: Yes — re-archiving an already-archived row preserves the
+  original `archived_at` and succeeds.
+
+#### `unarchive(session, id): Result<Convo>`
+
+- **Side Effects**: Read/write — sets `bypass_logical_timestamp`, then sets
+  `archived_at = NULL` where `deleted_at IS NULL` (`RETURNING *`). No version
+  guard. Does NOT advance `updated_at`.
+- **Error Handling**: `Result.failure(NotFoundException())` when the row is
+  absent or soft-deleted. `mapConvoError` on other `SQLException`.
+- **Idempotency**: Yes — succeeds on an already-active (never-archived) row.
+
+#### `listByStudentWithActivity(session, studentId, archive = UNARCHIVED, scope = ACTIVE): Result<List<ConvoWithActivity>>`
+
+- **Side Effects**: Read only. Single `LEFT JOIN convo_requests` grouped by
+  convo; derives `lastActivityAt = MAX(convo_requests.created_at)` (null with no
+  turns). Filters `c.deleted_at` by `scope` and `c.archived_at` by `archive`.
+  Orders by activity `DESC NULLS LAST`, then `created_at DESC`, then `id`.
+- **Error Handling**: Returns `Result.success(emptyList())` when none match;
+  `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
+
+#### `findByIdWithActivity(session, id, scope = ACTIVE): Result<ConvoWithActivity>`
+
+- **Side Effects**: Read only. Same `LEFT JOIN`/`MAX` derivation as
+  `listByStudentWithActivity`, scoped on `c.deleted_at`.
+- **Error Handling**: `Result.failure(NotFoundException())` when no row matches
+  the scope; `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
+
 #### `appendRequest(session, request: NewConvoRequest): Result<ConvoRequest>`
 
 - **Side Effects**: Write — inserts one `convo_requests` row (`RETURNING *`).
@@ -540,6 +618,22 @@ fragments carrying no caller data; no user data is string-interpolated into SQL.
 - **Side Effects**: Read only.
 - **Error Handling**: `Result.failure(NotFoundException())` when no raw row
   exists (including error turns, which write no raw sibling).
+- **Idempotency**: Yes.
+
+---
+
+### `SystemPromptsDao` — [`SystemPromptsDao.kt`](./SystemPromptsDao.kt)
+
+Read-only reader over the immutable `system_prompts` catalog. Rows are authored
+by migration, never by the application, so this DAO exposes **no write
+methods**. Stateless `object`; failures route through `mapDatabaseError`.
+
+#### `findByNameAndVersion(session, name, version): Result<SystemPrompt>`
+
+- **Side Effects**: Read only. Resolves the catalog row for the `(name, version)`
+  UNIQUE key.
+- **Error Handling**: `Result.failure(NotFoundException())` when no row matches;
+  `mapDatabaseError` on failure.
 - **Idempotency**: Yes.
 
 ---
@@ -630,3 +724,13 @@ SQLSTATE classification rules are documented in §II Postgres Error Codes.
       `DaoException` pass-through guard in `mapDatabaseError`; row mappers now
       throw corruption exceptions when persisted state fails domain
       re-validation.
+- [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../../rfc/45-coaching-service.md)
+      — Added `SystemPromptsDao` (read-only `system_prompts` catalog reader;
+      `findByNameAndVersion`). Added `ConvosDao.archive`/`unarchive` (idempotent
+      `archived_at` toggles via `COALESCE(…, NOW())` / `NULL`, gated on
+      `deleted_at IS NULL`, suppressing the `update_timestamp` trigger with the
+      `bypass_logical_timestamp` GUC so `updated_at` does not advance) and the
+      activity-derived reads `listByStudentWithActivity` (with `ArchiveScope`
+      filtering) / `findByIdWithActivity` (single `LEFT JOIN` deriving
+      `lastActivityAt = MAX(convo_requests.created_at)`); `mapConvo` now projects
+      `archived_at`.

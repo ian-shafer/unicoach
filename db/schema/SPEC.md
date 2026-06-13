@@ -243,6 +243,13 @@ timestamps + logical deletes) with OCC versioning and version history
 - **Logical deletes**: `deleted_at TIMESTAMPTZ NULL`; physical deletes blocked
   by `prevent_physical_delete()`. The active-list index `convos_student_id_idx`
   is partial (`WHERE deleted_at IS NULL`).
+- **Archive state**: `archived_at TIMESTAMPTZ NULL` (`archived_at IS NOT NULL` =
+  archived). It is **mutable** — `prevent_immutable_updates()` deliberately does
+  NOT cover it — so the archive/unarchive toggle is an in-place UPDATE, not a new
+  row. The archive axis is **independent of `deleted_at`**: archiving is
+  reversible, soft-delete is terminal, and the two states compose freely. The
+  `convos_student_id_idx` partial predicate continues to serve listing filters on
+  both axes; no separate `archived_at` index exists.
 - **Versioning disabled**: no `version` column, no `enforce_versioning()`, no
   `convos_versions` sibling — the transcript logs are the authoritative history.
 - **`name` mandatory & canonical**: `name TEXT NOT NULL` with **no default** —
@@ -357,6 +364,12 @@ sibling-versions table, and no log trigger.
   (`system_prompts_body_size_check`), but deliberately NOT trimmed — it is the
   verbatim artifact sent to the model with no raw-payload backup behind it, so
   leading/trailing whitespace MUST be preserved as authored.
+- **Seeded catalog**: the table is seeded with the first prompt, `(name='coach',
+  version='v1')`, carrying architect-approved body copy. The seed is
+  application-level reference data (§I) and, being an immutable-entity row, is
+  itself immutable: it is NEVER edited in place. A revised coach prompt is a new
+  `coach/v2` row, leaving `coach/v1` — and every `convo_requests` turn that pinned
+  it — intact.
 
 ### `email_sends` — Append-Only Log
 
@@ -549,3 +562,4 @@ and dual-logging would create two sources of truth for one logical message.
 - [x] [RFC-33: System Prompts](../../rfc/33-system-prompts.md)
 - [x] [RFC-34: Transactional Email Service](../../rfc/34-transactional-email-service.md)
 - [x] [RFC-43: Provider-Agnostic LLM Chat Provider](../../rfc/43-chat-provider.md)
+- [x] [RFC-45: Coaching Service and Conversation REST Surface](../../rfc/45-coaching-service.md)

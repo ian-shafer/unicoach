@@ -72,6 +72,29 @@ structural contract between HTTP wire format and the routing layer.
 - **I14**: `StudentResponse` MUST wrap `PublicStudent` as its sole field (the
   same envelope shape as `MeResponse`/`RegisterResponse`). It MUST NOT inline
   student fields.
+- **I15**: Each conversation/message DTO MUST live in its own file, named to
+  mirror the corresponding OpenAPI schema (`Conversation`, `Message`,
+  `CreateConversationRequest`, `PostMessageRequest`, `UpdateConversationRequest`,
+  `ConversationResponse`, `ConversationListResponse`, `CreateConversationResponse`,
+  `PostMessageResponse`, `MessageListResponse`). The wire shape is the schema
+  contract; a rename here that diverges from the schema breaks the generated
+  client.
+- **I16**: `Conversation.id` and `Message.id` MUST be typed as `String`, NOT
+  `java.util.UUID`. Unlike `PublicUser.id`/`PublicStudent.id` (I5/I11), these
+  identifiers cross the boundary as opaque strings; the type makes no commitment
+  to UUID form and MUST NOT be narrowed to `UUID`.
+- **I17**: `UpdateConversationRequest` fields (`name: String?`, `archived:
+  Boolean?`) MUST be nullable with `null` defaults. A one-field PATCH is valid,
+  so `FAIL_ON_MISSING_CREATOR_PROPERTIES` (see §IV) MUST NOT reject a body that
+  omits the other field. The "at least one field present" rule is enforced in
+  the route handler, NOT by this DTO.
+- **I18**: Each SSE event DTO in [`StreamEvent.kt`](./StreamEvent.kt)
+  (`ConversationCreatedEvent`, `UserMessageEvent`, `MessageDeltaEvent`,
+  `MessageCompletedEvent`, `StreamErrorEvent`) MUST carry a fixed `type`
+  discriminator `String` with a default matching its OpenAPI mapping. Each is
+  serialized concretely as its own type; this package MUST NOT introduce Jackson
+  polymorphic configuration (`@JsonTypeInfo`/`@JsonSubTypes`) or a sealed
+  hierarchy to dispatch on `type`.
 
 ---
 
@@ -210,6 +233,55 @@ structural contract between HTTP wire format and the routing layer.
 - **Error Handling**: N/A.
 - **Idempotency**: N/A (outbound DTO only).
 
+### Conversation & Message wire types
+
+- **`Conversation`** — [`Conversation.kt`](./Conversation.kt): read-only
+  projection of a coaching conversation. `id` is an opaque `String` (I16);
+  `lastActivityAt`/`archivedAt` are nullable `Instant`. Embedded by every
+  conversation response envelope.
+- **`Message`** — [`Message.kt`](./Message.kt): read-only projection of a single
+  turn. `id` opaque `String` (I16); `role` is a wire `String`, not a domain
+  enum. Embedded by message and stream responses.
+- **Side Effects / Idempotency**: None; pure value types.
+
+### Conversation request DTOs
+
+- **`CreateConversationRequest`** — [`CreateConversationRequest.kt`](./CreateConversationRequest.kt):
+  body of `POST /api/v1/conversations`. `message: String`, `name: String? = null`.
+- **`PostMessageRequest`** — [`PostMessageRequest.kt`](./PostMessageRequest.kt):
+  body of `POST /api/v1/conversations/{id}/messages`. Sole field `message: String`.
+- **`UpdateConversationRequest`** — [`UpdateConversationRequest.kt`](./UpdateConversationRequest.kt):
+  body of `PATCH /api/v1/conversations/{id}`. Both fields nullable-with-default
+  per I17; "at least one present" is a route-handler check, not a DTO constraint.
+- **Side Effects**: None at this layer; validation and persistence occur in the
+  coaching service.
+- **Error Handling**: Missing/wrong-typed JSON propagates to `StatusPages` as
+  `400 Bad Request`. A `PATCH` body with neither field present is rejected by the
+  route handler.
+- **Idempotency**: N/A (inbound DTOs only).
+
+### Conversation response envelopes
+
+- **`ConversationResponse`** (`conversation`), **`ConversationListResponse`**
+  (`conversations: List<Conversation>`), **`CreateConversationResponse`**
+  (`conversation`, `userMessage`, `coachMessage`), **`PostMessageResponse`**
+  (`userMessage`, `coachMessage`), **`MessageListResponse`**
+  (`messages: List<Message>`). Each is a pure outbound envelope wrapping the
+  `Conversation`/`Message` projections above.
+- **Side Effects / Error Handling / Idempotency**: None; pure outbound DTOs.
+
+### SSE event DTOs — [`StreamEvent.kt`](./StreamEvent.kt)
+
+- **Purpose**: Payloads for the streaming endpoints
+  (`POST /api/v1/conversations/stream`, `POST /api/v1/conversations/{id}/messages/stream`),
+  one DTO per `event:` frame: `ConversationCreatedEvent`, `UserMessageEvent`,
+  `MessageDeltaEvent`, `MessageCompletedEvent`, `StreamErrorEvent`.
+- **Discriminator**: Each carries a fixed `type` `String` default (I18); frames
+  are serialized concretely with no polymorphic Jackson config.
+- **Side Effects / Idempotency**: None; pure outbound DTOs. `StreamErrorEvent`
+  wraps the shared [`ErrorResponse`](./ErrorResponse.kt) envelope rather than
+  defining a parallel error shape.
+
 ---
 
 ## IV. Infrastructure & Environment
@@ -250,9 +322,22 @@ structural contract between HTTP wire format and the routing layer.
       cookie-session shape (`LoginResponse { user: PublicUser }`).
 - [x] [RFC-13: Auth Me](../../../../../../../../rfc/13-auth-me.md) — Introduced
       `MeResponse`.
+- [x] [RFC-26: Login](../../../../../../../../rfc/26-login.md) — Re-established
+      the login surface, (re)introducing `LoginRequest` and `LoginResponse` in
+      their cookie-session shape.
 - [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md)
       — Introduced `CreateStudentRequest`, `UpdateStudentRequest`,
       `StudentResponse`, and `PublicStudent`. Established the graduation date as
       a zero-padded ISO variable-precision wire `String` (I9/I10),
       `PublicStudent.id` as `UUID` and `version` as plain `Int` (I11/I12), and
       `Instant` timestamps serialized via `JavaTimeModule`.
+- [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../../rfc/45-coaching-service.md)
+      — Introduced the conversation/message wire types (`Conversation`,
+      `Message`), the request DTOs (`CreateConversationRequest`,
+      `PostMessageRequest`, `UpdateConversationRequest`), the response envelopes
+      (`ConversationResponse`, `ConversationListResponse`,
+      `CreateConversationResponse`, `PostMessageResponse`, `MessageListResponse`),
+      and the SSE event DTOs in `StreamEvent.kt`. Established one-file-per-schema
+      naming (I15), opaque `String` ids (I16), nullable-with-default PATCH fields
+      (I17), and fixed per-event `type` discriminators without polymorphic
+      Jackson config (I18).

@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import ed.unicoach.rest.routing.AuthRouteHandler
+import ed.unicoach.rest.routing.ConvoRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -29,10 +30,12 @@ fun Route.rejectUnsupportedMethods(vararg methods: HttpMethod) {
 fun Application.configureRouting(
   authService: ed.unicoach.auth.AuthService,
   studentService: ed.unicoach.student.StudentService,
+  coachingService: ed.unicoach.coaching.CoachingService,
   sessionConfig: ed.unicoach.rest.auth.SessionConfig,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
+  val convoRouteHandler = ConvoRouteHandler(authService, studentService, coachingService, sessionConfig)
   routing {
     route("/hello") {
       get {
@@ -45,5 +48,6 @@ fun Application.configureRouting(
     }
     authRouteHandler.registerRoutes(this)
     studentRouteHandler.registerRoutes(this)
+    convoRouteHandler.registerRoutes(this)
   }
 }

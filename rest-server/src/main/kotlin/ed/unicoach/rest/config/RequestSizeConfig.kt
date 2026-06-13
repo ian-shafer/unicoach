@@ -6,6 +6,7 @@ import ed.unicoach.common.util.DataSize
 data class RequestSizeConfig(
   val defaultMax: DataSize,
   val routeOverrides: Map<String, DataSize>,
+  val routePrefixOverrides: Map<String, DataSize> = emptyMap(),
 ) {
   companion object {
     fun from(config: Config): Result<RequestSizeConfig> {
@@ -18,21 +19,27 @@ data class RequestSizeConfig(
 
         val defaultMax = DataSize.ofBytes(requestSizeConfig.getBytes("maxSize"))
 
-        val routeOverrides =
-          if (requestSizeConfig.hasPath("routeOverrides")) {
-            val overridesConfig = requestSizeConfig.getConfig("routeOverrides")
-            overridesConfig
-              .root()
-              .keys
-              .associateWith { path -> DataSize.ofBytes(overridesConfig.getBytes("\"$path\"")) }
-          } else {
-            emptyMap()
-          }
+        val routeOverrides = readOverrides(requestSizeConfig, "routeOverrides")
+        val routePrefixOverrides = readOverrides(requestSizeConfig, "routePrefixOverrides")
 
-        Result.success(RequestSizeConfig(defaultMax, routeOverrides))
+        Result.success(RequestSizeConfig(defaultMax, routeOverrides, routePrefixOverrides))
       } catch (e: Exception) {
         Result.failure(e)
       }
     }
+
+    private fun readOverrides(
+      requestSizeConfig: Config,
+      key: String,
+    ): Map<String, DataSize> =
+      if (requestSizeConfig.hasPath(key)) {
+        val overridesConfig = requestSizeConfig.getConfig(key)
+        overridesConfig
+          .root()
+          .keys
+          .associateWith { path -> DataSize.ofBytes(overridesConfig.getBytes("\"$path\"")) }
+      } else {
+        emptyMap()
+      }
   }
 }

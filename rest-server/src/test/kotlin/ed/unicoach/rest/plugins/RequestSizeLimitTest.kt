@@ -88,4 +88,36 @@ class RequestSizeLimitTest {
         }
       assertEquals(HttpStatusCode.OK, defaultResponse.status)
     }
+
+  @Test
+  fun `prefix override applies with longest-prefix resolution and exact wins`() {
+    val config =
+      RequestSizeConfig(
+        defaultMax = DataSize.ofBytes(8192),
+        routeOverrides = mapOf("/api/v1/conversations/special" to DataSize.ofBytes(2048)),
+        routePrefixOverrides =
+          mapOf(
+            "/api/v1" to DataSize.ofBytes(16384),
+            "/api/v1/conversations" to DataSize.ofBytes(524288),
+          ),
+      )
+
+    // Longest matching prefix wins over a shorter one.
+    assertEquals(524288L, resolveLimit(config, "/api/v1/conversations/abc/messages"))
+    assertEquals(16384L, resolveLimit(config, "/api/v1/students"))
+    // Exact override wins over any prefix.
+    assertEquals(2048L, resolveLimit(config, "/api/v1/conversations/special"))
+  }
+
+  @Test
+  fun `non-matching paths use the default`() {
+    val config =
+      RequestSizeConfig(
+        defaultMax = DataSize.ofBytes(8192),
+        routeOverrides = emptyMap(),
+        routePrefixOverrides = mapOf("/api/v1/conversations" to DataSize.ofBytes(524288)),
+      )
+    assertEquals(8192L, resolveLimit(config, "/api/v1/auth/login"))
+    assertEquals(8192L, resolveLimit(config, "/unrelated"))
+  }
 }

@@ -998,4 +998,37 @@ EOF
 }
 assert_success "cascade: physical DELETE FROM convos rejected, subtree intact (inert)" test_cascade_inert_on_convos_delete
 
+# ==========================================================================
+echo "==== archived_at (RFC 45) ===="
+# ==========================================================================
+
+test_convos_archived_at_exists_nullable_default_null() {
+  # Inserting without the column reads back NULL: the column exists, is
+  # nullable, and defaults NULL.
+  local out
+  out=$(run_test_sql_ta << EOF
+    INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Archive default')
+    RETURNING (archived_at IS NULL);
+EOF
+  )
+  echo "$out" | grep -q '^t$' || { echo "output was: $out"; return 1; }
+}
+assert_success "convos: archived_at exists, nullable, defaults NULL" test_convos_archived_at_exists_nullable_default_null
+
+test_convos_archive_round_trip() {
+  # SET archived_at = NOW() then back to NULL both succeed: a mutable column on
+  # a guarded entity (prevent_immutable_updates does not cover it).
+  local out
+  out=$(run_test_sql_ta << EOF
+    INSERT INTO convos (id, student_id, name) VALUES (uuidv7(), '$STUDENT_ID', 'Archive trip')
+    RETURNING id \\gset
+    UPDATE convos SET archived_at = NOW() WHERE id = :'id';
+    UPDATE convos SET archived_at = NULL WHERE id = :'id';
+    SELECT (archived_at IS NULL) FROM convos WHERE id = :'id';
+EOF
+  )
+  echo "$out" | grep -q '^t$' || { echo "output was: $out"; return 1; }
+}
+assert_success "convos: archive round-trip (set NOW() then NULL) succeeds" test_convos_archive_round_trip
+
 end_tests
