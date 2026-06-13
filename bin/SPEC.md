@@ -16,8 +16,11 @@ exempt from the shell-script invariants in §II.
 
 Every shell script MUST source `bin/common` as its first non-comment,
 non-shebang line, optionally preceded by an `export ENV_FILE=…` assignment — the
-only sanctioned pre-source statement (used by `bin/test` and the test harnesses;
-see §III "Test Scripts"). `bin/common` establishes the following environment:
+only sanctioned pre-source statement. `bin/test` and most test harnesses use it
+to select `.env.test`; `bin/test-fuzz` points it at `.env.fuzz` so the whole
+child-process tree (postgres-up, db-reset, build-rest-server, rest-server-up/down)
+binds to the dedicated fuzz DB and port 8082 (see §III "Test Scripts").
+`bin/common` establishes the following environment:
 
 - Sets `set -euo pipefail`.
 - Resolves and exports `PROJECT_ROOT` to the repository root.
@@ -93,6 +96,15 @@ The PostgreSQL cluster is shared by every git worktree; isolation is
 per-database only. Test harnesses that use the shared cluster MUST NOT stop or
 wipe it. A harness that needs cluster-lifecycle control MUST stand up its own
 private cluster (private `POSTGRES_DATA_DIR` + port).
+
+### Port Liveness
+
+A script that must determine whether a TCP port is already served MUST probe it
+with a python3 TCP `connect_ex` (`connect_ex == 0` iff something accepts the
+connection) — occupant-agnostic and reliable. It MUST NOT use `nc -z` (reports
+bound ports as closed on BSD/macOS) or an HTTP `curl` probe (misses a non-HTTP
+listener). `bin/test-fuzz` applies this as a port guard: it fatals on an
+already-served target port before building or booting its own rest-server.
 
 ---
 
@@ -302,7 +314,8 @@ Most test scripts set `export ENV_FILE=".../.env.test"` before sourcing
 defers to a caller-supplied value, and `db-scripts-tests` instead points
 `ENV_FILE` at a generated private env file (its own throwaway cluster).
 Harnesses that make assertions source `bin/tests-common` for assertion helpers.
-Four lifecycle-ownership models exist:
+`bin/test-fuzz` instead points `ENV_FILE` at `.env.fuzz` (its own dedicated fuzz
+DB and port). Five lifecycle-ownership models exist:
 
 - **Private-cluster harnesses** (`db-scripts-tests`) MUST provision their OWN
   throwaway cluster (private `POSTGRES_DATA_DIR` + PID-derived `POSTGRES_PORT`),
@@ -321,6 +334,11 @@ Four lifecycle-ownership models exist:
   `postgres-up`/`postgres-down`, no `db-reset`/`db-migrate`, no cluster wipe —
   and MUST NOT register a teardown trap. They MUST assume a live,
   already-migrated database supplied by the caller.
+- **Dedicated-DB daemon harness** (`test-fuzz`) MUST bind `ENV_FILE` to
+  `.env.fuzz` (its own per-worktree fuzz DB + port 8082), reach a clean state
+  via `postgres-up` + `db-reset` against that dedicated DB, build and boot a
+  fresh rest-server, and register an EXIT/INT/TERM trap that tears down ONLY the
+  daemon it started. It uses the shared cluster but MUST NOT stop or wipe it.
 
 #### `bin/tests-common` — Assertion API
 
@@ -365,7 +383,25 @@ Four lifecycle-ownership models exist:
   single test, use the module + filter form `bin/test <module> --tests "<glob>"`
   (e.g. `bin/test queue --tests "*JobsDaoTest"`); the old bare-FQN positional
   shape (`bin/test ed.unicoach.queue.JobsDaoTest`) is dropped.
-- **`bin/test-fuzz`**: Runs schemathesis fuzz tests against the REST API.
+- **`bin/test-fuzz`**: Authenticated contract-referee fuzzer. Boots a
+  freshly-built rest-server on its own fuzz DB/port (`.env.fuzz`) and runs
+  Schemathesis against the committed `api-specs/openapi.yaml`. Ordered lifecycle
+  under `set -e`: provision a pinned `schemathesis==4.21.5` venv (`var/fuzz/venv`,
+  gitignored, on the flake python3; idempotent when the version already matches)
+  → port-guard (fatal if `$PORT` is already served, before any build/boot) →
+  `postgres-up` → `db-reset` the dedicated fuzz DB → `build-rest-server` →
+  `rest-server-up` → register a uniquely-named user and capture its
+  `UNICOACH_SESSION` cookie → run Schemathesis as a child (not `exec`) so the
+  EXIT/INT/TERM trap tears down the rest-server. The captured cookie is injected
+  via `-H "Cookie: …"` on every request, exercising the authenticated surface.
+  Excludes, by category: unimplemented routes (`/api/v1/conversations*`),
+  session-destructive operations (`logoutUser`, `deleteStudentMe`), and two
+  non-applicable checks (`ignored_auth`, `unsupported_method`); all
+  data-conformance checks stay live. As a referee it surfaces — never masks —
+  non-conformance: against today's server it EXITS NON-ZERO by design, reporting
+  documented server defects deferred to a future server-fix RFC, and exits `0`
+  only once the server is conformant. Per-defect detail lives in the script
+  header.
 - **`bin/scripts-tests`**: Tests scripts in `bin/`.
 - **`bin/db-scripts-tests`**: Tests `db-run`, `db-query`, `db-write`, `db-repl`,
   `db-bootstrap`, `db-create`, `db-migrate`, `db-status`, `db-drop` against its
@@ -405,18 +441,25 @@ micro-skills. Idempotent; overwrites the generated files in place.
   `python3`, `deno`, `ktlint`, `git`).
 - **Runtime directories**: `var/run/` (PID files `<service>.pid` and lock dirs
   `<service>.daemon.lock`) and `var/log/` (service logs) are created on demand
-  by `daemon-up` and `postgres-up`.
-- **Environment files**: `.env` (dev), `.env.test` (test). Test scripts set
+  by `daemon-up` and `postgres-up`. `bin/test-fuzz` creates `var/fuzz/` on
+  demand (gitignored Schemathesis venv, JUnit report, cookie jar).
+- **Environment files**: `.env` (dev), `.env.test` (test), `.env.fuzz` (fuzz;
+  `PORT=8082`, `POSTGRES_DB=unicoach-fuzz-<worktree>`). Test scripts set
   `export ENV_FILE=".../.env.test"` before sourcing `common`; `db-tests`
-  defaults to `.env.test` but honors a caller-supplied `ENV_FILE`.
+  defaults to `.env.test` but honors a caller-supplied `ENV_FILE`; `test-fuzz`
+  sets `export ENV_FILE=".../.env.fuzz"`.
 - **Required env**: `POSTGRES_PORT` MUST be set (no in-code default);
   `bin/common` exports it as `PGPORT` for all libpq clients. `DB_SCHEMA_DIR` is
   optional; `bin/common` exports it, defaulting to `$PROJECT_ROOT/db/schema`.
+  `PORT` sets the per-env service port (`.env`=8080, `.env.test`=8081,
+  `.env.fuzz`=8082); each env file derives the daemon bind variable
+  `SERVER_PORT=$PORT`. `test-fuzz` reads `$PORT` for its port guard, boot,
+  registration, and fuzz target.
 - **Shared cluster, per-database isolation**: every git worktree shares one
   PostgreSQL cluster at the checkout-independent absolute path
   `$HOME/var/unicoach/postgres` (`POSTGRES_DATA_DIR`). Isolation is at the
-  database level; `.env.test` derives a per-worktree test DB
-  `unicoach-test-<worktree-dir>`.
+  database level; `.env.test` and `.env.fuzz` each derive a per-worktree DB
+  (`unicoach-test-<worktree-dir>`, `unicoach-fuzz-<worktree-dir>`).
 
 ---
 
@@ -435,3 +478,4 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - [x] [RFC-33: System Prompts](../rfc/33-system-prompts.md)
 - [x] [RFC-35: bin/test owns its CLI](../rfc/35-bin-test-owns-cli.md)
 - [x] [RFC-43: Chat Provider](../rfc/43-chat-provider.md)
+- [x] [RFC-47: Authenticated Contract-Referee Fuzzing](../rfc/47-authenticated-contract-fuzz.md)
