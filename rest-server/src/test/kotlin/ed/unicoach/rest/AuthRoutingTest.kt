@@ -232,93 +232,108 @@ class AuthRoutingTest {
     }
 
   // --- /login endpoint tests ---
-  
-  @Test
-  fun `valid login simulation returns 200 and sets cookie`() = runBlocking {
-    val email = uniqueEmail()
-    val password = "Password123!"
-    val req = RegisterRequest(email, password, "Login Test User")
-
-    client.post(buildUrl("/api/v1/auth/register")) {
-      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-      setBody(mapper.writeValueAsString(req))
-    }
-
-    val loginReq = ed.unicoach.rest.models.LoginRequest(email, password)
-    val loginResponse = client.post(buildUrl("/api/v1/auth/login")) {
-      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-      setBody(mapper.writeValueAsString(loginReq))
-    }
-
-    assertEquals(HttpStatusCode.OK, loginResponse.status)
-    val setCookie = loginResponse.headers[HttpHeaders.SetCookie]
-    assertTrue(setCookie != null, "Missing Set-Cookie header from login")
-    
-    val body = loginResponse.bodyAsText()
-    assertTrue(body.contains(email))
-  }
 
   @Test
-  fun `session overwrite verification returns new cookie and invalidates old`() = runBlocking {
-    val email = uniqueEmail()
-    val password = "Password123!"
-    val req = RegisterRequest(email, password, "Login Session Overwrite User")
+  fun `valid login simulation returns 200 and sets cookie`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val password = "Password123!"
+      val req = RegisterRequest(email, password, "Login Test User")
 
-    val registerResponse = client.post(buildUrl("/api/v1/auth/register")) {
-      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-      setBody(mapper.writeValueAsString(req))
+      client.post(buildUrl("/api/v1/auth/register")) {
+        header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+        setBody(mapper.writeValueAsString(req))
+      }
+
+      val loginReq =
+        ed.unicoach.rest.models
+          .LoginRequest(email, password)
+      val loginResponse =
+        client.post(buildUrl("/api/v1/auth/login")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody(mapper.writeValueAsString(loginReq))
+        }
+
+      assertEquals(HttpStatusCode.OK, loginResponse.status)
+      val setCookie = loginResponse.headers[HttpHeaders.SetCookie]
+      assertTrue(setCookie != null, "Missing Set-Cookie header from login")
+
+      val body = loginResponse.bodyAsText()
+      assertTrue(body.contains(email))
     }
-    
-    val oldSetCookie = registerResponse.headers[HttpHeaders.SetCookie]!!
-    val oldCookiePair = oldSetCookie.split(";").first().trim()
-
-    val loginReq = ed.unicoach.rest.models.LoginRequest(email, password)
-    val loginResponse = client.post(buildUrl("/api/v1/auth/login")) {
-      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-      header(HttpHeaders.Cookie, oldCookiePair)
-      setBody(mapper.writeValueAsString(loginReq))
-    }
-
-    assertEquals(HttpStatusCode.OK, loginResponse.status)
-    val newSetCookie = loginResponse.headers[HttpHeaders.SetCookie]!!
-    val newCookiePair = newSetCookie.split(";").first().trim()
-
-    assertTrue(oldCookiePair != newCookiePair, "A new session cookie should be issued")
-
-    // The old cookie should no longer be valid for /me
-    val oldMeResponse = client.get(buildUrl("/api/v1/auth/me")) {
-      header(HttpHeaders.Cookie, oldCookiePair)
-    }
-    assertEquals(HttpStatusCode.Unauthorized, oldMeResponse.status)
-
-    // The new cookie should be valid
-    val newMeResponse = client.get(buildUrl("/api/v1/auth/me")) {
-      header(HttpHeaders.Cookie, newCookiePair)
-    }
-    assertEquals(HttpStatusCode.OK, newMeResponse.status)
-  }
 
   @Test
-  fun `malformed credentials returns 401`() = runBlocking {
-    val email = uniqueEmail()
-    val password = "Password123!"
-    val req = RegisterRequest(email, password, "Login Bad Pwd User")
+  fun `session overwrite verification returns new cookie and invalidates old`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val password = "Password123!"
+      val req = RegisterRequest(email, password, "Login Session Overwrite User")
 
-    client.post(buildUrl("/api/v1/auth/register")) {
-      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-      setBody(mapper.writeValueAsString(req))
+      val registerResponse =
+        client.post(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody(mapper.writeValueAsString(req))
+        }
+
+      val oldSetCookie = registerResponse.headers[HttpHeaders.SetCookie]!!
+      val oldCookiePair = oldSetCookie.split(";").first().trim()
+
+      val loginReq =
+        ed.unicoach.rest.models
+          .LoginRequest(email, password)
+      val loginResponse =
+        client.post(buildUrl("/api/v1/auth/login")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, oldCookiePair)
+          setBody(mapper.writeValueAsString(loginReq))
+        }
+
+      assertEquals(HttpStatusCode.OK, loginResponse.status)
+      val newSetCookie = loginResponse.headers[HttpHeaders.SetCookie]!!
+      val newCookiePair = newSetCookie.split(";").first().trim()
+
+      assertTrue(oldCookiePair != newCookiePair, "A new session cookie should be issued")
+
+      // The old cookie should no longer be valid for /me
+      val oldMeResponse =
+        client.get(buildUrl("/api/v1/auth/me")) {
+          header(HttpHeaders.Cookie, oldCookiePair)
+        }
+      assertEquals(HttpStatusCode.Unauthorized, oldMeResponse.status)
+
+      // The new cookie should be valid
+      val newMeResponse =
+        client.get(buildUrl("/api/v1/auth/me")) {
+          header(HttpHeaders.Cookie, newCookiePair)
+        }
+      assertEquals(HttpStatusCode.OK, newMeResponse.status)
     }
 
-    val loginReq = ed.unicoach.rest.models.LoginRequest(email, "WrongPassword123")
-    val loginResponse = client.post(buildUrl("/api/v1/auth/login")) {
-      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-      setBody(mapper.writeValueAsString(loginReq))
-    }
+  @Test
+  fun `malformed credentials returns 401`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val password = "Password123!"
+      val req = RegisterRequest(email, password, "Login Bad Pwd User")
 
-    assertEquals(HttpStatusCode.Unauthorized, loginResponse.status)
-    val body = loginResponse.bodyAsText()
-    assertTrue(body.contains("unauthorized"))
-  }
+      client.post(buildUrl("/api/v1/auth/register")) {
+        header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+        setBody(mapper.writeValueAsString(req))
+      }
+
+      val loginReq =
+        ed.unicoach.rest.models
+          .LoginRequest(email, "WrongPassword123")
+      val loginResponse =
+        client.post(buildUrl("/api/v1/auth/login")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody(mapper.writeValueAsString(loginReq))
+        }
+
+      assertEquals(HttpStatusCode.Unauthorized, loginResponse.status)
+      val body = loginResponse.bodyAsText()
+      assertTrue(body.contains("unauthorized"))
+    }
 
   // --- /logout endpoint tests ---
 

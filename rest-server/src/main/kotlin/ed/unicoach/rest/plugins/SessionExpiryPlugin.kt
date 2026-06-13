@@ -59,10 +59,12 @@ val SessionExpiryPlugin =
               )
           ) {
             is EnqueueResult.Success -> { /* no-op */ }
-            is EnqueueResult.DatabaseFailure ->
+
+            is EnqueueResult.DatabaseFailure -> {
               LoggerFactory
                 .getLogger("SessionExpiryPlugin")
                 .error("Failed to enqueue session expiry job: {}", result.error)
+            }
           }
         } catch (e: Exception) {
           // Fire-and-forget. Log and swallow.

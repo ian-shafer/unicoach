@@ -36,7 +36,7 @@ fi
 log-info "Formatting Kotlin and Markdown code concurrently..."
 
 # Run Kotlin formatting in background
-ktlint --format "**/*.kt" "**/*.kts" &
+ktlint --format "**/*.kt" "**/*.kts" "!var/**" "!build/**" "!.gradle/**" &
 KOTLIN_PID=$!
 
 deno fmt "**/*.md" &

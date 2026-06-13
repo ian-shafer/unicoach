@@ -58,47 +58,48 @@ class SessionCleanupTest {
     }
 
   @Test
-  fun `execute synchronously deletes expired and revoked sessions`() = runTest {
-    val job = SessionCleanupJob(database)
+  fun `execute synchronously deletes expired and revoked sessions`() =
+    runTest {
+      val job = SessionCleanupJob(database)
 
-    val hashValid = byteArrayOf(1)
-    val hashExpired = byteArrayOf(2)
+      val hashValid = byteArrayOf(1)
+      val hashExpired = byteArrayOf(2)
 
-    SessionsDao.create(
-      sqlSession,
-      NewSession(
-        userId = null,
-        tokenHash =
-          ed.unicoach.db.models
-            .TokenHash(hashValid),
-        userAgent = "A",
-        initialIp = "1",
-        metadata = null,
-        expiration = Duration.ofDays(7),
-      ),
-    )
+      SessionsDao.create(
+        sqlSession,
+        NewSession(
+          userId = null,
+          tokenHash =
+            ed.unicoach.db.models
+              .TokenHash(hashValid),
+          userAgent = "A",
+          initialIp = "1",
+          metadata = null,
+          expiration = Duration.ofDays(7),
+        ),
+      )
 
-    SessionsDao.create(
-      sqlSession,
-      NewSession(
-        userId = null,
-        tokenHash =
-          ed.unicoach.db.models
-            .TokenHash(hashExpired),
-        userAgent = "B",
-        initialIp = "2",
-        metadata = null,
-        expiration = Duration.ofSeconds(-1),
-      ),
-    )
+      SessionsDao.create(
+        sqlSession,
+        NewSession(
+          userId = null,
+          tokenHash =
+            ed.unicoach.db.models
+              .TokenHash(hashExpired),
+          userAgent = "B",
+          initialIp = "2",
+          metadata = null,
+          expiration = Duration.ofSeconds(-1),
+        ),
+      )
 
-    // It should purge the 0 second one
-    job.execute()
+      // It should purge the 0 second one
+      job.execute()
 
-    val validResult = SessionsDao.findByTokenHash(sqlSession, TokenHash(hashValid))
-    assertTrue(validResult.isSuccess)
+      val validResult = SessionsDao.findByTokenHash(sqlSession, TokenHash(hashValid))
+      assertTrue(validResult.isSuccess)
 
-    val expiredResult = SessionsDao.findByTokenHash(sqlSession, TokenHash(hashExpired))
-    assertTrue(expiredResult.isFailure && expiredResult.exceptionOrNull() is ed.unicoach.db.dao.NotFoundException)
-  }
+      val expiredResult = SessionsDao.findByTokenHash(sqlSession, TokenHash(hashExpired))
+      assertTrue(expiredResult.isFailure && expiredResult.exceptionOrNull() is ed.unicoach.db.dao.NotFoundException)
+    }
 }

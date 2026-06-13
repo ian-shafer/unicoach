@@ -227,10 +227,12 @@ class QueueWorker(
               val res = jobsDao.completeJob(session, claimedJob.id)
               check(res is JobUpdateResult.Success) { "Failed to complete job: $res" }
             }
+
             is JobResult.PermanentFailure -> {
               val res = jobsDao.deadLetterJob(session, claimedJob.id)
               check(res is JobUpdateResult.Success) { "Failed to dead-letter job: $res" }
             }
+
             is JobResult.RetriableFailure -> {
               val maxAttempts = claimedJob.maxAttempts ?: config.maxAttempts
               if (attemptNumber >= maxAttempts) {

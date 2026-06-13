@@ -4,12 +4,12 @@ import ed.unicoach.auth.AuthService
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.models.ErrorResponse
+import ed.unicoach.rest.models.LoginRequest
+import ed.unicoach.rest.models.LoginResponse
 import ed.unicoach.rest.models.MeResponse
 import ed.unicoach.rest.models.PublicUser
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.RegisterResponse
-import ed.unicoach.rest.models.LoginRequest
-import ed.unicoach.rest.models.LoginResponse
 import ed.unicoach.rest.rejectUnsupportedMethods
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -62,15 +62,17 @@ class AuthRouteHandler(
 
     val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
 
-    val outcome = authService.register(
-      email = request.email,
-      name = request.name,
-      password = request.password,
-      oldCookieToken = oldCookieToken,
-      sessionExpirationSeconds = sessionConfig.expiration.seconds,
-      userAgent = call.request.headers["User-Agent"],
-      initialIp = call.request.origin.remoteHost,
-    ).getOrThrow()
+    val outcome =
+      authService
+        .register(
+          email = request.email,
+          name = request.name,
+          password = request.password,
+          oldCookieToken = oldCookieToken,
+          sessionExpirationSeconds = sessionConfig.expiration.seconds,
+          userAgent = call.request.headers["User-Agent"],
+          initialIp = call.request.origin.remoteHost,
+        ).getOrThrow()
 
     respondRegisterOutcome(outcome)
   }
@@ -159,14 +161,16 @@ class AuthRouteHandler(
     val request = call.receive<LoginRequest>()
     val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
 
-    val outcome = authService.login(
-      email = request.email,
-      password = request.password,
-      oldCookieToken = oldCookieToken,
-      sessionExpirationSeconds = sessionConfig.expiration.seconds,
-      userAgent = call.request.headers["User-Agent"],
-      initialIp = call.request.origin.remoteHost,
-    ).getOrThrow()
+    val outcome =
+      authService
+        .login(
+          email = request.email,
+          password = request.password,
+          oldCookieToken = oldCookieToken,
+          sessionExpirationSeconds = sessionConfig.expiration.seconds,
+          userAgent = call.request.headers["User-Agent"],
+          initialIp = call.request.origin.remoteHost,
+        ).getOrThrow()
 
     respondLoginOutcome(outcome)
   }
@@ -203,7 +207,8 @@ class AuthRouteHandler(
   }
 
   private suspend fun RoutingContext.respondLoginUnauthorized(outcome: ed.unicoach.auth.LoginResult) {
-    call.application.environment.log.info("Login failed: $outcome")
+    call.application.environment.log
+      .info("Login failed: $outcome")
     call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Invalid email or password", null))
   }
 }

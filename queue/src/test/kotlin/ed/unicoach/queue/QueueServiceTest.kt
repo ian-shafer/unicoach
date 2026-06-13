@@ -63,40 +63,44 @@ class QueueServiceTest {
   private fun simplePayload(): JsonObject = JsonObject(mapOf("k" to JsonPrimitive("v")))
 
   @Test
-  fun `enqueue creates SCHEDULED job with immediate scheduled_at`() = runTest {
-    val result = service.enqueue(JobType.TEST_JOB, simplePayload())
-    assertTrue(result is EnqueueResult.Success)
-    val job = result.job
-    assertEquals(JobStatus.SCHEDULED, job.status)
-    assertNotNull(job.id)
-  }
+  fun `enqueue creates SCHEDULED job with immediate scheduled_at`() =
+    runTest {
+      val result = service.enqueue(JobType.TEST_JOB, simplePayload())
+      assertTrue(result is EnqueueResult.Success)
+      val job = result.job
+      assertEquals(JobStatus.SCHEDULED, job.status)
+      assertNotNull(job.id)
+    }
 
   @Test
-  fun `enqueue with delay sets future scheduled_at`() = runTest {
-    val result = service.enqueue(JobType.TEST_JOB, simplePayload(), delay = 1.hours)
-    assertTrue(result is EnqueueResult.Success)
-    val job = result.job
-    assertTrue(
-      job.scheduledAt.isAfter(
-        java.time.Instant
-          .now()
-          .plusSeconds(3500),
-      ),
-      "scheduled_at should be ~1h in future",
-    )
-  }
+  fun `enqueue with delay sets future scheduled_at`() =
+    runTest {
+      val result = service.enqueue(JobType.TEST_JOB, simplePayload(), delay = 1.hours)
+      assertTrue(result is EnqueueResult.Success)
+      val job = result.job
+      assertTrue(
+        job.scheduledAt.isAfter(
+          java.time.Instant
+            .now()
+            .plusSeconds(3500),
+        ),
+        "scheduled_at should be ~1h in future",
+      )
+    }
 
   @Test
-  fun `enqueue with custom max_attempts stores value on job`() = runTest {
-    val result = service.enqueue(JobType.TEST_JOB, simplePayload(), maxAttempts = 3)
-    assertTrue(result is EnqueueResult.Success)
-    assertEquals(3, result.job.maxAttempts)
-  }
+  fun `enqueue with custom max_attempts stores value on job`() =
+    runTest {
+      val result = service.enqueue(JobType.TEST_JOB, simplePayload(), maxAttempts = 3)
+      assertTrue(result is EnqueueResult.Success)
+      assertEquals(3, result.job.maxAttempts)
+    }
 
   @Test
-  fun `enqueue with null max_attempts stores NULL`() = runTest {
-    val result = service.enqueue(JobType.TEST_JOB, simplePayload(), maxAttempts = null)
-    assertTrue(result is EnqueueResult.Success)
-    assertNull(result.job.maxAttempts)
-  }
+  fun `enqueue with null max_attempts stores NULL`() =
+    runTest {
+      val result = service.enqueue(JobType.TEST_JOB, simplePayload(), maxAttempts = null)
+      assertTrue(result is EnqueueResult.Success)
+      assertNull(result.job.maxAttempts)
+    }
 }
