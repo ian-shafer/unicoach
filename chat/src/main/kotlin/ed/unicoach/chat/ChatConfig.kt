@@ -6,15 +6,19 @@ import com.typesafe.config.Config
 // EmailConfig. `from` fails when the key is absent or unreadable —
 // Result.failure carrying the underlying typesafe ConfigException unmapped.
 // It does not validate the value — the factory is the single place an unknown
-// selector is rejected.
+// selector is rejected. Delegates chat.anthropic to AnthropicConfig.from.
 class ChatConfig private constructor(
   val provider: String,
+  val anthropic: AnthropicConfig,
 ) {
   companion object {
     // Reads chat.provider verbatim (packaged default "log").
     fun from(config: Config): Result<ChatConfig> =
       runCatching {
-        ChatConfig(provider = config.getString("chat.provider"))
+        ChatConfig(
+          provider = config.getString("chat.provider"),
+          anthropic = AnthropicConfig.from(config).getOrThrow(),
+        )
       }
   }
 }

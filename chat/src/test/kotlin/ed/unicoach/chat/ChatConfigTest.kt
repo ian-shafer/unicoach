@@ -20,7 +20,17 @@ class ChatConfigTest {
 
   @Test
   fun `from reads the provider verbatim`() {
-    val config = ConfigFactory.parseString("chat.provider = \"anthropic\"")
+    val config =
+      ConfigFactory.parseString(
+        """
+        chat.provider = "anthropic"
+        chat.anthropic {
+          baseUrl = "https://api.anthropic.com"
+          connectTimeoutMs = 10000
+          socketTimeoutMs = 60000
+        }
+        """.trimIndent(),
+      )
 
     val chatConfig = ChatConfig.from(config).getOrThrow()
 

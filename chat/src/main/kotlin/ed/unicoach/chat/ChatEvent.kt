@@ -48,6 +48,18 @@ sealed interface ChatEvent {
     val usage: TokenUsage?,
   ) : ChatEvent
 
+  // An SSE frame outside the modeled event set: event name + payload, verbatim.
+  // Never folded into the accumulated message (no folding rule can exist for an
+  // unknown shape) — visible to stream collectors, absent from
+  // Completed.rawPayload. Provider-agnostic: any adapter's unmodeled frames
+  // take this path. Distinct from ContentDelta.Opaque, which is an unrecognized
+  // delta type inside a modeled, index-bearing content_block_delta frame; Raw
+  // is an unrecognized event kind with no index to correlate.
+  data class Raw(
+    val event: String,
+    val data: JsonElement,
+  ) : ChatEvent
+
   // Exactly one Terminal ends every stream.
   sealed interface Terminal : ChatEvent
 
