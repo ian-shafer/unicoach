@@ -46,6 +46,17 @@ nix develop -c bin/test rest-server --tests "ed.unicoach.rest.AuthRoutingTest"
 create → migrate)`) — expected, non-destructive to anything
 but the test DB.
 
+## RFCs
+
+Feature work is designed in numbered RFCs under `rfc/` (`NN-title.md`). The
+binding convention: **a committed/implemented RFC is immutable — NEVER edit
+it.** The design still evolves, but a changed decision lands in a **new,
+higher-numbered RFC that supersedes the earlier one**, carried by the code and
+`SPEC.md`; the earlier RFC's file is left exactly as committed. Code + applied
+migrations are the source of truth for current behaviour — when an RFC and the
+code disagree, the code wins. See [`rfc/README.md`](rfc/README.md) for the full
+convention.
+
 ## Transient pipeline output
 
 Transient output from the RFC pipeline — RFC backup snapshots and the

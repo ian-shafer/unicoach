@@ -41,6 +41,11 @@ For the implementation, you must strictly follow this workflow:
    files during the implementation phase. Even if the RFC explicitly instructs you 
    to update a `SPEC.md`, you must ignore that instruction. Spec synchronization 
    is handled by a separate pipeline phase.
+3a. **DO NOT EDIT THE RFC**: The RFC you are implementing is an immutable record —
+   you MUST NOT modify it (or any other RFC under `rfc/`). Implement against it;
+   never rewrite it. If the RFC is wrong or ambiguous, pause and ask the architect
+   (per Critical Behaviours) rather than editing the file. Changes to a decision
+   are made in a new superseding RFC, not by editing this one. See `rfc/README.md`.
 4. **NO GIT COMMITS**: You **MUST NOT** make any git commits. Leave all
    modifications in the local working directory. The architect or external
    review skills will evaluate the raw uncommitted diffs.
