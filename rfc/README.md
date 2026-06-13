@@ -10,19 +10,23 @@ intended to work at the time it was written.
 been implemented.** A committed RFC is historical record, not a living document.
 
 This does not mean the design is frozen — designs evolve constantly. It means
-the _mechanism_ for changing a decision is **a new, higher-numbered RFC that
-supersedes the earlier one**, stating the supersession explicitly. The change is
-then carried by:
-
-- the **new RFC** (the record of the new decision), and
-- the **living artifacts** it touches — the code, and the relevant `SPEC.md`.
-
-Never reach back into an earlier RFC to revise it. If RFC 44 changes a contract
-RFC 43 introduced, that change lives in RFC 44 ("supersedes RFC 43's …; the code
-/ `SPEC.md` is the contract"); RFC 43's file is left exactly as committed.
+the _mechanism_ for changing a decision is **a new, higher-numbered RFC**: it
+states the new decision and carries it into the **living artifacts** — the code
+and the relevant `SPEC.md`. Never reach back into an earlier RFC to revise it.
 
 The only freely-editable RFC is the one currently being authored and **not yet
 committed** — the draft in its `/rfc-design` worktree.
+
+## Reference the source of truth, not other RFCs
+
+An RFC's prose references the **`SPEC.md` and the code** — never another RFC.
+This holds even when the RFC changes an earlier decision: state the change
+against the contract _as it lives in the code / `SPEC.md`_ (e.g. "extends the
+closed `ChatEvent` taxonomy in `ChatEvent.kt`"), not as "supersedes RFC NN." A
+committed RFC is a point-in-time record that may already be stale, so citing one
+as authority points at the wrong thing — the SPEC and code are what an
+implementer must match. For the precedent or structure a new adapter mirrors,
+cite the existing module's code and `SPEC.md`, not the RFC that introduced it.
 
 ## Source of truth
 

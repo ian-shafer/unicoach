@@ -23,16 +23,19 @@ feature in the codebase.
   cross-reference actual source code to ensure your design aligns with the
   current reality of the codebase. Do not design in a vacuum based on stale
   RFCs.
-- **Committed RFCs are immutable; supersede, never edit.** A committed/
-  implemented RFC is historical record — NEVER edit it. Designs still evolve, but
-  the mechanism is a NEW, higher-numbered RFC that supersedes the earlier one,
-  stating the supersession explicitly, with the change carried by the code and
-  `SPEC.md`. If the RFC you are authoring changes a contract an earlier RFC
-  introduced, say so in YOUR RFC ("supersedes RFC NN's …; the code / `SPEC.md` is
-  the contract") and leave the earlier RFC's file exactly as committed. Do NOT
-  treat an earlier RFC's design as a fixed constraint to defend, and do NOT reach
-  back to revise it. The only editable RFC is the uncommitted draft you are
-  writing. See `rfc/README.md`.
+- **Committed RFCs are immutable; supersede in a new RFC, never edit.** A
+  committed/implemented RFC is historical record — NEVER edit it, do NOT reach
+  back to revise it, and do NOT treat an earlier RFC's design as a fixed
+  constraint to defend. Designs still evolve, but the mechanism is a NEW,
+  higher-numbered RFC that carries the change into the code and `SPEC.md`.
+- **An RFC's prose references the `SPEC.md` and code — NEVER another RFC.** This
+  holds even when your RFC changes an earlier decision: state the change against
+  the contract _as it lives in the code / `SPEC.md`_ (e.g. "extends the closed
+  `ChatEvent` taxonomy in `ChatEvent.kt`"), not as "supersedes RFC NN." For any
+  precedent or structure your adapter mirrors, cite the existing module's code
+  and `SPEC.md`, not the RFC that introduced it. A committed RFC may already be
+  stale; the SPEC and code are what an implementer must match. The only editable
+  RFC is the uncommitted draft you are writing. See `rfc/README.md`.
 - **Code and applied migrations are the ground truth; RFCs are not.** An RFC
   records intent at the time it was written; a later RFC or migration may have
   superseded it. Whenever the design depends on an existing schema, column,

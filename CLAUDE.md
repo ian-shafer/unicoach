@@ -51,11 +51,12 @@ but the test DB.
 Feature work is designed in numbered RFCs under `rfc/` (`NN-title.md`). The
 binding convention: **a committed/implemented RFC is immutable — NEVER edit
 it.** The design still evolves, but a changed decision lands in a **new,
-higher-numbered RFC that supersedes the earlier one**, carried by the code and
-`SPEC.md`; the earlier RFC's file is left exactly as committed. Code + applied
-migrations are the source of truth for current behaviour — when an RFC and the
-code disagree, the code wins. See [`rfc/README.md`](rfc/README.md) for the full
-convention.
+higher-numbered RFC** that carries the change into the code and `SPEC.md`; the
+earlier RFC's file is left exactly as committed. **An RFC's prose references the
+`SPEC.md` and code — never another RFC**, even when changing an earlier
+decision. Code + applied migrations are the source of truth for current
+behaviour — when an RFC and the code disagree, the code wins. See
+[`rfc/README.md`](rfc/README.md) for the full convention.
 
 ## Transient pipeline output
 
