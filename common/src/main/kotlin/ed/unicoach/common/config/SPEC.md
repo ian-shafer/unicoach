@@ -21,8 +21,9 @@ JVM serialization.
   MUST return `Result<Config>`. It MUST NOT throw directly.
 - **INV-4**: The merged config MUST be passed through `ConfigFactory.load()` so
   that environment-variable substitutions defined in `.conf` files are resolved
-  via OS environment variables automatically. Manual `System.getenv()` calls are
-  NEVER used inside `AppConfig`.
+  via OS environment variables automatically. `System.getenv()` MUST NOT be used
+  to resolve config *values*; it is permitted SOLELY to bootstrap the overlay
+  path (reading `XDG_CONFIG_HOME` in `overlayFile()`).
 - **INV-5**: `SecretString` MUST be a plain `class`, NEVER a `data class`.
   Kotlin's generated `copy()`, `componentN()`, and default `toString()` MUST NOT
   exist on this type.
@@ -34,10 +35,14 @@ JVM serialization.
 - **INV-8**: `Config.getNonBlankString(path: String)` MUST throw
   `IllegalArgumentException` (via `require`) when the resolved string is blank
   or empty. It MUST NOT return blank strings silently.
-- **INV-9**: There MUST be exactly one `.conf` file per module. Environment-
-  specific config files (e.g., `common-test.conf`) are NEVER created.
-  Environment variation is expressed solely through environment variables
-  substituted via HOCON `${ENV_VAR}` syntax.
+- **INV-9**: There MUST be exactly one in-tree `.conf` file per module.
+  Environment-specific config files (e.g., `common-test.conf`) are NEVER
+  created. Host- and environment-specific variation is expressed through HOCON
+  `${ENV_VAR}` substitution and through the sanctioned out-of-tree `local.conf`
+  overlay — NEVER through additional in-tree `.conf` files.
+- **INV-10**: The overlay file path and its contents MUST NEVER be logged. The
+  overlay is the sanctioned on-host home for local secrets and key overrides;
+  exposing its path or values defeats that purpose.
 
 ---
 
@@ -48,13 +53,23 @@ JVM serialization.
 See [`AppConfig.kt`](./AppConfig.kt).
 
 - **Side Effects**: Reads named classpath resources using
-  `ConfigFactory.parseResourcesAnySyntax`. No network calls, no file-system side
-  effects beyond classpath resolution.
+  `ConfigFactory.parseResourcesAnySyntax`, and reads at most one out-of-tree
+  overlay file (`<base>/unicoach/local.conf`) via `ConfigFactory.parseFile`. No
+  network calls.
 - **Merge Semantics**: Resources are iterated in **reversed** index order, each
-  folded into `mergedConfig` via `withFallback`. This means `resources[last]`
-  has the highest priority. The resulting merged config is then passed to
-  `ConfigFactory.load()` which applies system environment variable
-  substitutions.
+  folded into `mergedConfig` via `withFallback`, so `resources[last]` has the
+  highest priority among classpath resources. The optional overlay is then
+  folded at higher precedence than every classpath resource via
+  `overlay.withFallback(mergedConfig)`. The result is passed to
+  `ConfigFactory.load()`, which layers JVM system properties on top and applies
+  environment-variable substitutions. Net precedence, highest to lowest: JVM
+  system properties → overlay → `resources[last]` → … → `resources[0]`.
+- **Overlay Resolution**: The overlay lives at `<base>/unicoach/local.conf`,
+  where `<base>` is the first non-blank of: the `unicoach.config.dir` system
+  property, the `XDG_CONFIG_HOME` environment variable, or `${user.home}/.config`.
+  An absent overlay file is a non-fatal no-op. A present-but-malformed overlay
+  surfaces as `Result.failure` carrying the underlying typesafe `ConfigException`
+  unmapped (consistent with INV-3 fail-fast).
 - **Error Handling**: Returns `Result.failure(e)` for any exception thrown
   during parsing (e.g., `ConfigException`, `IOException` for a missing
   resource). Callers MUST unwrap with `.getOrThrow()` or explicit error handling
@@ -104,11 +119,18 @@ See [`SecretString.kt`](./SecretString.kt).
 - **Environment Variable Resolution**: `.conf` files MUST use HOCON substitution
   syntax (`${ENV_VAR}`) to bind deployment-specific values. The `.env.*` files
   (e.g., `.env.test`) act as the sole source of mutable deployment bounds,
-  loaded into the process environment before JVM startup. No `System.getenv()`
-  calls are permitted inside this package.
+  loaded into the process environment before JVM startup. `System.getenv()` is
+  used only to bootstrap the overlay path (`XDG_CONFIG_HOME`), never to resolve
+  config values.
+- **Local Overlay**: An optional out-of-tree HOCON file at
+  `<base>/unicoach/local.conf` supplies on-host secrets and key overrides at
+  higher precedence than classpath resources (see the `AppConfig.load`
+  contract for path resolution and precedence). It is absent in CI/test
+  environments, where its absence is a non-fatal no-op.
 
 ---
 
 ## V. History
 
 - [x] [RFC-09: Global Config](../../../../../../../../rfc/09-global-config.md)
+- [x] [RFC-46: Local Config Overlay](../../../../../../../../rfc/46-local-config-overlay.md)
