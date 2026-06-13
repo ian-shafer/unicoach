@@ -4,11 +4,11 @@
 
 The **UnicoachiOS** target is the student-facing native iOS client for the
 Unicoach REST server. Its domain covers **registration**, **login/logout**,
-**cookie-based session restoration**, **student-profile onboarding**, and
-**starting a coaching conversation** (first-turn SSE streaming). A root state
+**cookie-based session restoration**, **student-profile onboarding**, and a
+**multi-turn coaching conversation** (SSE-streamed turns). A root state
 machine (`UserAuthState`) routes the user between an auth flow (login/register),
 a one-time onboarding screen that creates the student profile, and the
-authenticated home screen, which pushes `NewConversationView` to start a
+authenticated home screen, which pushes `ConversationView` to hold a multi-turn
 coaching conversation. Visual tokens and shared UI components are specified
 separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
 
@@ -19,9 +19,9 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
 ### Architecture
 
 - The app MUST enforce strict **MVVM** layering: Views (`RegistrationView`,
-  `LoginView`, `OnboardingView`, `NewConversationView`, …) → ViewModels
+  `LoginView`, `OnboardingView`, `ConversationView`, …) → ViewModels
   (`RegistrationViewModel`, `LoginViewModel`, `OnboardingViewModel`,
-  `NewConversationViewModel`, `AppViewModel`) → Clients (`AuthClient`,
+  `ConversationViewModel`, `AppViewModel`) → Clients (`AuthClient`,
   `StudentClient`, `ConversationClient`). Views MUST NOT call network APIs
   directly.
 - Every ViewModel MUST be annotated `@MainActor` to guarantee all `@Published`
@@ -87,15 +87,31 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
 - At end of stream, a complete buffered frame whose terminating blank line was
   cut off MUST be flushed; a genuinely partial frame MUST be dropped.
 - CRLF-delimited bodies MUST parse identically to LF-delimited bodies.
+- **Opener strictness is per-endpoint.** The start endpoint's stream MUST open
+  with a `conversation` frame; the follow-up endpoint's with a `user_message`
+  frame. A frame carrying the OTHER endpoint's opener is off-contract and MUST
+  decode to `SERVER_ERROR` — it is NEVER accepted.
 
-### First-turn stream lifecycle
+### Turn lifecycle
 
-- The first-turn stream MUST yield `conversation` → `delta`\* → terminal
-  (`message` | `error`). A turn is COMPLETE only when the terminal `message`
-  frame arrives.
-- On any failure, already-streamed coach text MUST be retained for display and
-  the turn MUST remain retryable. A completed turn MUST NOT be re-submittable
-  (UI disable plus the `send()` guard).
+- A conversation is an append-only thread of turns (`[ChatTurn]`); each turn
+  pairs one student message with the coach reply it elicits. At most ONE turn
+  may be in flight at a time — `isStreaming` gates both `send()` and `retry()`.
+- Each turn's stream MUST yield an opener (`conversation` on the first turn,
+  `user_message` on follow-ups) → `delta`\* → terminal (`message` | `error`). A
+  turn is COMPLETE only when the terminal `message` frame arrives.
+- **Establishment-gated dispatch.** The established `conversation` is `nil` until
+  the first turn COMPLETES, and dispatch keys on it: `nil` → start endpoint
+  (`streamConversation`); non-`nil` → follow-up endpoint (`postMessage` against
+  the established id). The first turn's conversation MUST be held in
+  `pendingConversation` and committed to `conversation` ONLY on the terminal
+  `message` frame — NEVER on the opener: a first turn that fails server-side is
+  soft-deleted, so an unestablished retry MUST re-create via the start endpoint
+  and NEVER reuse the dead id.
+- **Retry-in-place.** A failed turn (no terminal `message`) MUST remain
+  retryable in place: `retry()` clears that turn's failure, partial coach text,
+  and prior coach message, then re-streams the same student message under the
+  establishment rule above. A COMPLETED turn MUST NOT be re-submittable.
 
 ### Date decoding (wire contract)
 
@@ -120,8 +136,8 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
   (`/api/v1/conversations*`) emit lowercase codes (`student_profile_required`).
   Code matching MUST be exact and per-route: `checkSession` matches
   `"unauthorized"` (from `/auth/me`); `resolveProfileState` matches
-  `"UNAUTHORIZED"` (from `/students/me`); `NewConversationViewModel` matches
-  lowercase server codes (`"student_profile_required"`) and UPPERCASE
+  `"UNAUTHORIZED"` (from `/students/me`); `ConversationViewModel.handle()` matches
+  the lowercase server code (`"student_profile_required"`) and UPPERCASE
   client-synthesized codes case-sensitively. Tests MUST pin both casings
   (`AppViewModelTests`). Normalizing either side breaks session routing and
   re-onboarding routing silently.
@@ -306,24 +322,35 @@ See [`ConversationClient.swift`](./ConversationClient.swift).
 
 ```
 func streamConversation(request: CreateConversationRequest) -> AsyncThrowingStream<ConversationStreamEvent, Error>
+func postMessage(conversationId: UUID, request: PostMessageRequest) -> AsyncThrowingStream<ConversationStreamEvent, Error>
 ```
 
-- `POST /api/v1/conversations/stream` (`Accept: text/event-stream`), expected
-  status 200, via `APIClient.stream`. Owns ONLY the SSE-specific concerns:
-  empty-line-preserving line splitting, frame assembly (`SSEFrameAssembler`),
-  and frame→event decoding by the `type` discriminator — no `URLRequest`,
-  `URLSession`, or transport configuration of its own.
+- Both endpoints `POST` with `Accept: text/event-stream`, expected status 200,
+  via `APIClient.stream`: `streamConversation` → `/api/v1/conversations/stream`
+  (opens the conversation); `postMessage` →
+  `/api/v1/conversations/{id}/messages/stream` (a follow-up turn on an
+  established conversation).
+- **Shared pump**: A single `(path, body, opener)` SSE pump backs both endpoints,
+  differing ONLY in path, request body, and the legal opener. It owns ONLY the
+  SSE-specific concerns: empty-line-preserving line splitting (`sseLines`), frame
+  assembly (`SSEFrameAssembler`), and frame→event decoding by the `type`
+  discriminator — no `URLRequest`, `URLSession`, or transport configuration of
+  its own.
+- **Opener strictness**: Frame decoding is gated by the endpoint's legal opener
+  (§II SSE framing): `conversation` decodes only on `streamConversation`,
+  `user_message` only on `postMessage`; the off-contract opener → `"SERVER_ERROR"`.
 - **Concurrency**: Byte iteration runs in its own non-main-actor `Task`; the
   `@MainActor` consumer only awaits events. Consumer cancellation propagates via
   `onTermination` → `task.cancel()`; a `CancellationError` finishes the stream
   WITHOUT error — leaving the screen mid-stream is not a failure.
 - **Termination**: The terminal `message` frame finishes the stream and stops
-  reading.
+  reading; a stream that ends with no terminal frame finishes cleanly (no error).
 - **Failure modes**: a `type:"error"` frame → the carried `ErrorResponse` is
-  thrown; an unknown `type` or undecodable payload → `"SERVER_ERROR"`; a
-  mid-iteration `AsyncBytes` failure occurs outside `APIClient.stream()` and is
+  thrown; an unknown/off-contract `type` or undecodable payload → `"SERVER_ERROR"`;
+  a mid-iteration `AsyncBytes` failure occurs outside `APIClient.stream()` and is
   mapped through the shared `transportError` → `"TIMEOUT"` / `"NETWORK_ERROR"`.
-- **Idempotency**: No — each call creates a conversation server-side.
+- **Idempotency**: No — `streamConversation` creates a conversation;
+  `postMessage` appends a turn server-side.
 
 ---
 
@@ -366,8 +393,9 @@ func onOnboardingComplete(_ user: PublicUser)
 func onStudentProfileRequired()
 ```
 
-- **Trigger**: `NewConversationViewModel` via `HomeView`'s `onProfileRequired`
-  callback, on a `409 student_profile_required` from the stream endpoint. No
+- **Trigger**: `ConversationViewModel.handle()` via `HomeView`'s
+  `onProfileRequired` callback, on a `409 student_profile_required` from the
+  stream endpoint (the optimistic turn is dropped). No
   network call — the 409 itself proves the profile is absent (§II Profile
   gating). Re-enters `.onboarding(user)` from `.authenticated`; a no-op from any
   other state.
@@ -451,33 +479,51 @@ See [`OnboardingViewModel.swift`](./OnboardingViewModel.swift).
 
 ---
 
-### `NewConversationViewModel`
+### `ConversationViewModel`
 
-See [`NewConversationViewModel.swift`](./NewConversationViewModel.swift).
+See [`ConversationViewModel.swift`](./ConversationViewModel.swift). Drives an
+append-only `turns: [ChatTurn]` thread; `conversation` is `nil` until the first
+turn completes (§II Turn lifecycle). `ChatTurn` carries the student message,
+`coachStreamingText`, an optional canonical `coachMessage`, and an optional
+`failure: TurnFailure`.
 
 ```
 @MainActor func send() async
+@MainActor func retry(_ id: ChatTurn.ID) async
 ```
 
 - **Init**: Requires a `ConversationClientProtocol` and an
   `onProfileRequired: () -> Void` callback.
-- **First-turn-only guard**: Returns immediately if `coachMessage != nil` — a
-  completed turn is never re-submitted. A FAILED turn (no terminal `message`)
-  may retry.
-- **Local validation** (no network call): a whitespace/newline-trimmed message
-  that is empty or exceeds 100_000 characters → `errorResponse` with
-  `code: "VALIDATION"` and a `fieldErrors` entry for the `"message"` field.
-- **Event handling**: `.conversation` stores the conversation and user message
-  and clears the composer; `.delta` appends to `coachStreamingText` (retained on
-  failure); `.completed` sets the canonical `coachMessage`.
-- **Failure split** (case-sensitive): `"student_profile_required"` → invokes
-  `onProfileRequired()` and publishes NOTHING; `"TIMEOUT"` →
-  `infrastructureError = .timeout`; `"NETWORK_ERROR"` → `.noConnectivity`;
-  `"SERVER_ERROR"` → `.serverError`; any other `ErrorResponse` → published
-  `errorResponse`; non-`ErrorResponse` throw → `.serverError`.
+- **In-flight gate**: Both `send()` and `retry()` return immediately if
+  `isStreaming` — only one turn streams at a time.
+- **`send()`**: Clears `validationError`, then locally validates the trimmed
+  `messageText` (no network call) — empty or exceeds 100_000 characters →
+  `validationError` with `code: "VALIDATION"` and a `"message"` field error, then
+  returns. Otherwise appends an optimistic `ChatTurn` (synthetic `Message`, UUID
+  id), clears the composer, and streams the turn.
+- **`retry(id:)`**: Clears the target turn's `failure`, partial
+  `coachStreamingText`, and `coachMessage`, then re-streams its existing student
+  message under the establishment rule (§II Turn lifecycle).
+- **Event handling** (per turn): `.conversation` stashes `pendingConversation`
+  and REPLACES the optimistic user message with the server copy; `.userMessage`
+  replaces the user message on follow-up turns; `.delta` appends to the turn's
+  `coachStreamingText`; `.completed` sets the turn's canonical `coachMessage` and
+  — on the first turn only — commits `pendingConversation` to `conversation`.
+- **Failure model**: A turn-scoped failure is a `TurnFailure` attached to
+  `ChatTurn.failure` — `.server(ErrorResponse)` for a coach `error` frame or
+  `.infrastructure(InfrastructureError)` for a transport-class failure. This VM
+  does NOT publish the `errorResponse` / `infrastructureError` pair the
+  auth/onboarding VMs use; `validationError` is its only VM-level published error
+  (a pre-send banner).
+- **Failure split** (`handle`, case-sensitive): `"student_profile_required"` →
+  invokes `onProfileRequired()` and REMOVES the optimistic turn (no failure
+  published); `"TIMEOUT"` → `.infrastructure(.timeout)`; `"NETWORK_ERROR"` →
+  `.infrastructure(.noConnectivity)`; `"SERVER_ERROR"` and any non-`ErrorResponse`
+  throw → `.infrastructure(.serverError)`; any other `ErrorResponse` →
+  `.server(error)`.
 - **Concurrency**: `isStreaming` is guarded by `defer`.
-- **Idempotency**: No — each call submits a new first turn (subject to the
-  first-turn-only guard).
+- **Idempotency**: No — each `send()` appends a new turn; `retry()` re-dispatches
+  an existing failed turn.
 
 ---
 
@@ -534,24 +580,30 @@ See [`HomeView.swift`](./HomeView.swift). Owns a `NavigationStack`. Takes the
 authenticated user, a `ConversationClientProtocol`, an `onProfileRequired`
 callback, and an `onLogout` callback. Displays the user's name and email, a
 Start Coaching `NavigationLink` (identifier `startCoachingButton`) that pushes
-`NewConversationView`, and a destructive Log Out `LoadingButton` that awaits the
+`ConversationView`, and a destructive Log Out `LoadingButton` that awaits the
 injected `onLogout` callback. Re-entering `.onboarding` tears down the
 `NavigationStack` — and any pushed conversation screen — with it.
 
-#### `NewConversationView`
+#### `ConversationView`
 
-See [`NewConversationView.swift`](./NewConversationView.swift). Pushed from
+See [`ConversationView.swift`](./ConversationView.swift). Pushed from
 `HomeView`'s Start Coaching link.
 
-- **Composer**: Disabled while streaming OR after a completed turn; enabled
-  again after a failure — the retry affordance.
+- **Thread**: Renders `ForEach(viewModel.turns)`; each turn shows the student
+  bubble, the coach bubble (once streaming text or a completed message exists), a
+  streaming indicator on the in-flight turn, and — on failure — an inline failure
+  view with a Retry button. Auto-scrolls to the newest turn.
+- **Composer**: Disabled ONLY while a turn is streaming (`isStreaming`); a
+  completed turn re-enables it for the next turn, and a failed turn is retried in
+  place from its own Retry button.
 - **Bubble rendering**: The coach bubble prefers the canonical
   `coachMessage.content` over the live streaming buffer.
-- **Error display**: Domain `errorResponse` message in a `FormErrorBanner`;
-  infrastructure errors render INLINE — no `fullScreenCover`, unlike
-  login/registration.
+- **Error display**: A pre-send `validationError` renders in a `FormErrorBanner`
+  above the composer; per-turn failures render INLINE in the thread (a
+  `FormErrorBanner` for `.server`, an icon+title+description for
+  `.infrastructure`) — no `fullScreenCover`, unlike login/registration.
 - **Accessibility identifiers**: `messageField`, `sendButton`, `userBubble`,
-  `coachBubble`, `streamingIndicator`.
+  `coachBubble`, `streamingIndicator`, `retryButton`.
 
 #### `ErrorView`
 
@@ -581,9 +633,11 @@ and UI layers, paired per endpoint:
 - Session restore: `MeResponse` (wraps `PublicUser`).
 - Student profile: `CreateStudentRequest` / `StudentResponse` (wraps
   `PublicStudent`).
-- Conversation: domain models `Conversation`, `Message`, `MessageRole`;
-  `CreateConversationRequest`; the domain event `ConversationStreamEvent`; and
-  the four wire frames (`ConversationCreatedFrame`, `MessageDeltaFrame`,
+- Conversation: domain models `Conversation`, `Message`, `MessageRole`
+  (`user` | `coach`); the request DTOs `CreateConversationRequest` (start) and
+  `PostMessageRequest` (follow-up); the domain event `ConversationStreamEvent`
+  (`conversation` | `userMessage` | `delta` | `completed`); and the five wire
+  frames (`ConversationCreatedFrame`, `UserMessageFrame`, `MessageDeltaFrame`,
   `MessageCompletedFrame`, `StreamErrorFrame`) decoded by their `type`
   discriminator. `Message.id` is an opaque `String` and is NEVER parsed;
   `Conversation.id` decodes as `UUID`; `CreateConversationRequest.name` is
@@ -643,3 +697,4 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 - [x] [RFC-30: Auth UI Design System (iOS)](../../rfc/30-auth-ui-styling.md)
 - [x] [RFC-41: iOS Start Coaching Conversation](../../rfc/41-ios-start-coaching-conversation.md)
 - [x] [RFC-42: iOS Student-Profile Onboarding](../../rfc/42-ios-student-profile-onboarding.md)
+- [x] [RFC-48: iOS multi-turn coaching conversation](../../rfc/48-ios-multi-turn-conversation.md)

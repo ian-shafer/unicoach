@@ -21,7 +21,7 @@ struct FieldError: Codable, Equatable {
     let message: String
 }
 
-struct ErrorResponse: Codable, Error, Identifiable {
+struct ErrorResponse: Codable, Error, Identifiable, Equatable {
     var id: String { code }
     let code: String
     let message: String
@@ -91,10 +91,15 @@ struct CreateConversationRequest: Codable, Sendable {
     let name: String?     // always nil this iteration; server derives the name
 }
 
+struct PostMessageRequest: Codable, Sendable {
+    let message: String
+}
+
 // MARK: - Stream domain event
 
 enum ConversationStreamEvent: Sendable {
     case conversation(Conversation, userMessage: Message)
+    case userMessage(Message)
     case delta(String)
     case completed(Message)
 }
@@ -104,6 +109,11 @@ enum ConversationStreamEvent: Sendable {
 struct ConversationCreatedFrame: Codable {
     let type: String
     let conversation: Conversation
+    let userMessage: Message
+}
+
+struct UserMessageFrame: Codable {
+    let type: String
     let userMessage: Message
 }
 

@@ -22,7 +22,7 @@ struct HomeView: View {
                 Spacer()
 
                 NavigationLink {
-                    NewConversationView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
+                    ConversationView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
                 } label: {
                     Text("Start Coaching")
                         .font(.dsButton)
@@ -58,6 +58,11 @@ struct HomeView: View {
 
 private final class HomePreviewConversationClient: ConversationClientProtocol, @unchecked Sendable {
     func streamConversation(request: CreateConversationRequest)
+        -> AsyncThrowingStream<ConversationStreamEvent, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+
+    func postMessage(conversationId: UUID, request: PostMessageRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
         AsyncThrowingStream { $0.finish() }
     }

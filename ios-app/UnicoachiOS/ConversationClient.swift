@@ -4,6 +4,8 @@ import os
 protocol ConversationClientProtocol: Sendable {
     func streamConversation(request: CreateConversationRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error>
+    func postMessage(conversationId: UUID, request: PostMessageRequest)
+        -> AsyncThrowingStream<ConversationStreamEvent, Error>
 }
 
 /// A thin endpoint binding over the injected `APIClient`, owning only what is
@@ -17,12 +19,40 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
         self.apiClient = apiClient
     }
 
+    /// The opener frame an endpoint may legally emit. The follow-up endpoint opens
+    /// with `user_message`; the start endpoint opens with `conversation`. A frame
+    /// matching the other endpoint's opener is off-contract → `SERVER_ERROR`.
+    private enum Opener {
+        case conversation
+        case userMessage
+    }
+
     func streamConversation(request: CreateConversationRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
+        runStream(path: "/api/v1/conversations/stream", body: request, opener: .conversation)
+    }
+
+    func postMessage(conversationId: UUID, request: PostMessageRequest)
+        -> AsyncThrowingStream<ConversationStreamEvent, Error> {
+        runStream(
+            path: "/api/v1/conversations/\(conversationId.uuidString)/messages/stream",
+            body: request,
+            opener: .userMessage
+        )
+    }
+
+    /// Shared SSE pump for both endpoints: opens the stream, splits lines, assembles
+    /// frames, decodes them (gated by the endpoint's legal `opener`), and finishes
+    /// on the terminal frame. Only the path, request body, and accepted opener differ.
+    private func runStream<B: Encodable & Sendable>(
+        path: String,
+        body: B,
+        opener: Opener
+    ) -> AsyncThrowingStream<ConversationStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await self.runStream(request: request, continuation: continuation)
+                    try await self.pump(path: path, body: body, opener: opener, continuation: continuation)
                 } catch let error as ErrorResponse {
                     continuation.finish(throwing: error)
                 } catch is CancellationError {
@@ -40,13 +70,15 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
         }
     }
 
-    private func runStream(
-        request: CreateConversationRequest,
+    private func pump<B: Encodable & Sendable>(
+        path: String,
+        body: B,
+        opener: Opener,
         continuation: AsyncThrowingStream<ConversationStreamEvent, Error>.Continuation
     ) async throws {
         let bytes = try await apiClient.stream(
-            "/api/v1/conversations/stream",
-            body: request,
+            path,
+            body: body,
             accept: "text/event-stream",
             expectedStatus: 200
         )
@@ -58,14 +90,14 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
         // a frame. Each `\n`-delimited line (including empty ones) is fed through.
         for try await line in bytes.sseLines {
             guard let frame = assembler.consume(line: line) else { continue }
-            if try yield(frame: frame, to: continuation) { return }
+            if try yield(frame: frame, opener: opener, to: continuation) { return }
         }
         // A well-formed SSE body ends with the frame terminator (`\n\n`), so the
         // final boundary line was already delivered above. If the body was cut off
         // mid-frame (no trailing blank line) any complete buffered frame is flushed
         // here; a genuinely partial frame is dropped by the assembler.
         if let frame = assembler.flushPending() {
-            if try yield(frame: frame, to: continuation) { return }
+            if try yield(frame: frame, opener: opener, to: continuation) { return }
         }
         // Stream ended without a terminal `message` or `error` frame.
         continuation.finish()
@@ -77,9 +109,10 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
     /// caller's `catch`).
     private func yield(
         frame: ServerSentEvent,
+        opener: Opener,
         to continuation: AsyncThrowingStream<ConversationStreamEvent, Error>.Continuation
     ) throws -> Bool {
-        let event = try decodeFrame(frame)
+        let event = try decodeFrame(frame, opener: opener)
         continuation.yield(event)
         if case .completed = event {
             continuation.finish()
@@ -89,10 +122,12 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
     }
 
     /// Decodes one SSE frame's `data:` JSON into a domain event by its `type`
-    /// discriminator. A `type:"error"` frame is thrown as the carried
-    /// `ErrorResponse`; an unknown/off-contract `type` (or undecodable payload)
-    /// is a malformed frame → thrown `SERVER_ERROR`.
-    private func decodeFrame(_ frame: ServerSentEvent) throws -> ConversationStreamEvent {
+    /// discriminator, gated by the endpoint's legal `opener`. A `type:"error"`
+    /// frame is thrown as the carried `ErrorResponse`; an unknown/off-contract
+    /// `type` (or undecodable payload) is a malformed frame → thrown `SERVER_ERROR`.
+    /// `conversation` is legal only on the start endpoint; `user_message` only on
+    /// the follow-up endpoint; the other opener is off-contract → `SERVER_ERROR`.
+    private func decodeFrame(_ frame: ServerSentEvent, opener: Opener) throws -> ConversationStreamEvent {
         guard let payload = frame.data.data(using: .utf8) else {
             throw Self.malformedFrameError
         }
@@ -105,9 +140,12 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
 
         do {
             switch discriminator {
-            case "conversation":
+            case "conversation" where opener == .conversation:
                 let created = try apiClient.jsonDecoder.decode(ConversationCreatedFrame.self, from: payload)
                 return .conversation(created.conversation, userMessage: created.userMessage)
+            case "user_message" where opener == .userMessage:
+                let userMessage = try apiClient.jsonDecoder.decode(UserMessageFrame.self, from: payload)
+                return .userMessage(userMessage.userMessage)
             case "delta":
                 let delta = try apiClient.jsonDecoder.decode(MessageDeltaFrame.self, from: payload)
                 return .delta(delta.text)
@@ -118,7 +156,8 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
                 let errorFrame = try apiClient.jsonDecoder.decode(StreamErrorFrame.self, from: payload)
                 throw errorFrame.error
             default:
-                // Unknown/off-contract type (including `user_message` on this endpoint).
+                // Unknown type, or an opener off-contract for this endpoint
+                // (`user_message` on start, `conversation` on follow-up).
                 throw Self.malformedFrameError
             }
         } catch let error as ErrorResponse {

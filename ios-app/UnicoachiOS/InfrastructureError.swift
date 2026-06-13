@@ -1,6 +1,6 @@
 import Foundation
 
-enum InfrastructureError: Identifiable {
+enum InfrastructureError: Identifiable, Equatable {
     case serverError
     case noConnectivity
     case timeout
