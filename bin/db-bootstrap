@@ -55,18 +55,8 @@ fi
 "$PROJECT_ROOT/bin/postgres-up"
 
 # ── 3. Create the application role (idempotent + race-tolerant) ───────────────
-# A plain SELECT-then-CREATE has a TOCTOU race when two worktrees bootstrap the
-# shared cluster at once. Creating inside a DO block that swallows the duplicate
-# makes concurrent bootstraps safe.
-log-info "Ensuring role [$DATABASE_USER] exists..."
-cat << SQL | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
-DO \$\$
-BEGIN
-  CREATE ROLE "$DATABASE_USER" WITH LOGIN PASSWORD '$DATABASE_PASSWORD';
-EXCEPTION WHEN duplicate_object OR unique_violation THEN
-  RAISE NOTICE 'role "%" already exists, skipping', '$DATABASE_USER';
-END
-\$\$;
-SQL
+# Delegated to db-create-role, the single source of truth for role creation. It
+# runs the duplicate-swallowing DO block, so concurrent bootstraps stay safe.
+"$PROJECT_ROOT/bin/db-create-role"
 
 log-info "db-bootstrap complete (cluster + role [$DATABASE_USER])."

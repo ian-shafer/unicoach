@@ -34,6 +34,15 @@
             # makes the macOS /usr/bin/git stub unable to find subcommands.
             # Including git here puts a fully self-consistent git on PATH.
             pkgs.git
+
+            # OpenTofu — the open-source, drop-in Terraform engine used to apply
+            # the AWS infrastructure under infra/. Chosen over HashiCorp
+            # Terraform because the latter's BSL license would force allowUnfree.
+            pkgs.opentofu
+
+            # AWS CLI v2 — used by bin/deploy (S3 upload, SSM Run Command) and
+            # for out-of-band secret seeding into SSM Parameter Store.
+            pkgs.awscli2
           ];
 
           shellHook = ''

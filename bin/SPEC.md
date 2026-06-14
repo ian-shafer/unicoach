@@ -3,14 +3,14 @@
 ## I. Overview
 
 `bin/` contains the operational scripts for the Unicoach application. Scripts
-fall into six categories: build, daemon control, linting, CLIs, testing, and
-iOS deploy (system Xcode). Every shell script sources `bin/common` to establish
-`$PROJECT_ROOT` and a shared environment — **except** the system-Xcode iOS
-scripts (`build-ios`, `install-ios`, `ios-scripts-tests`) and the dev-shell
-predicate (`is-nix`), which source only `bin/functions` because `bin/common`
-requires the Nix dev shell they must run outside of (see §II). The single
-non-shell script, `bin/compile-skills.py`, is exempt from the shell-script
-invariants in §II.
+fall into seven categories: build, daemon control, linting, CLIs, testing, iOS
+deploy (system Xcode), and infrastructure & deploy. Every shell script sources
+`bin/common` to establish `$PROJECT_ROOT` and a shared environment — **except**
+the system-Xcode iOS scripts (`build-ios`, `install-ios`, `ios-scripts-tests`)
+and the dev-shell predicate (`is-nix`), which source only `bin/functions`
+because `bin/common` requires the Nix dev shell they must run outside of (see
+§II). The single non-shell script, `bin/compile-skills.py`, is exempt from the
+shell-script invariants in §II.
 
 ---
 
@@ -22,9 +22,9 @@ Every shell script MUST source `bin/common` as its first non-comment,
 non-shebang line, optionally preceded by an `export ENV_FILE=…` assignment — the
 only sanctioned pre-source statement. `bin/test` and most test harnesses use it
 to select `.env.test`; `bin/test-fuzz` points it at `.env.fuzz` so the whole
-child-process tree (postgres-up, db-reset, build-rest-server, rest-server-up/down)
-binds to the dedicated fuzz DB and port 8082 (see §III "Test Scripts").
-`bin/common` establishes the following environment:
+child-process tree (postgres-up, db-reset, build-rest-server,
+rest-server-up/down) binds to the dedicated fuzz DB and port 8082 (see §III
+"Test Scripts"). `bin/common` establishes the following environment:
 
 - Sets `set -euo pipefail`.
 - Resolves and exports `PROJECT_ROOT` to the repository root.
@@ -76,6 +76,12 @@ EOF
 > the template's `1`, to keep caller-side usage errors distinct from a test-run
 > failure's `1`. This is the Exit Codes multi-code rule below applied directly;
 > see §III "Test Suites".
+
+> **Sanctioned deviation:** the `infra-*` wrappers (`infra-init`, `infra-plan`,
+> `infra-apply`, `infra-output`, `infra-bootstrap`) define no `help()`. Each is
+> a one-line `exec tofu -chdir=… "$@"` passthrough, so `-h`/`--help` is
+> forwarded to `tofu`, which owns the usage text. See §III "Infrastructure &
+> Deploy Scripts".
 
 ### Exit Codes
 
@@ -207,8 +213,9 @@ lifecycle (and PID file).
 
 `bin/db-bootstrap` is the one-time, per-machine first step for setting up the
 unicoach environment: it initialises the shared cluster and creates the
-application role. Thereafter `bin/db-reset` (or `bin/db-create` then
-`bin/db-migrate`) provisions and migrates the per-worktree database.
+application role (delegating to `bin/db-create-role`). Thereafter `bin/db-reset`
+(or `bin/db-create` then `bin/db-migrate`) provisions and migrates the
+per-worktree database.
 
 `bin/postgres-*` scripts can be used to manage the lifecycle of the PostgreSQL
 server.
@@ -282,23 +289,26 @@ guard message wins over a missing-env error.
   `ios-app/env/<env>.env` for `UNICOACH_DESTINATION` (`UNICOACH_CONFIGURATION`
   optional, default `Debug`). Derives
   `UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}` from the repo
-  `.env` (the single host source the server also reads); `APP_DOMAIN` defaults to
-  `localhost`. A simulator build (destination contains `Simulator`) skips
+  `.env` (the single host source the server also reads); `APP_DOMAIN` defaults
+  to `localhost`. A simulator build (destination contains `Simulator`) skips
   signing; a device build additionally sources `ios-app/env/signing.env` for
-  `UNICOACH_DEVELOPMENT_TEAM` (required) and forwards `CODE_SIGN_STYLE=Automatic
-  -allowProvisioningUpdates`. Fatals before invoking `xcodebuild` on: dev shell,
-  missing env file, missing `signing.env`/team, or a bare-IP `APP_DOMAIN`
-  (invalid cookie `Domain`, RFC 6265).
+  `UNICOACH_DEVELOPMENT_TEAM` (required) and forwards
+  `CODE_SIGN_STYLE=Automatic
+  -allowProvisioningUpdates`. Fatals before
+  invoking `xcodebuild` on: dev shell, missing env file, missing
+  `signing.env`/team, or a bare-IP `APP_DOMAIN` (invalid cookie `Domain`, RFC
+  6265).
 - **`install-ios [--launch] [env]`**: Installs the most recent device build to a
   physical iPhone via `xcrun devicectl device install app` (replaces any prior
   install in place — idempotent). Device-only; a simulator env is rejected.
   Resolves the `.app` under
   `ios-app/build/DerivedData/Build/Products/<config>-iphoneos/`, failing fast if
   absent (directs to `build-ios`). Device id comes from `UNICOACH_DEVICE`
-  (`signing.env`) or single-device auto-detect via `xcrun devicectl list
-  devices` — fatals on zero or multiple devices. `--launch` additionally runs
-  `xcrun devicectl device process launch` for bundle id
-  `com.unicoach.UnicoachiOS`.
+  (`signing.env`) or single-device auto-detect via
+  `xcrun devicectl list
+  devices` — fatals on zero or multiple devices.
+  `--launch` additionally runs `xcrun devicectl device process launch` for
+  bundle id `com.unicoach.UnicoachiOS`.
 
 ---
 
@@ -306,8 +316,15 @@ guard message wins over a missing-env error.
 
 - **`db-bootstrap`**: One-time, per-machine setup. Idempotent and race-tolerant
   (concurrent worktrees cannot collide). `initdb`s the shared cluster if absent,
-  ensures it is running (`postgres-up`), and creates the application role.
-  Creates no database.
+  ensures it is running (`postgres-up`), and creates the application role by
+  delegating to `db-create-role`. Creates no database.
+- **`db-create-role`**: Single source of truth for application-role creation.
+  Creates the `DATABASE_USER` LOGIN role (password `DATABASE_PASSWORD`) via a
+  `DO` block that swallows `duplicate_object`/`unique_violation`, so it is
+  idempotent and race-tolerant. Connects as the master role (`POSTGRES_USER`) to
+  the admin database (`POSTGRES_ADMIN_DB`, default `postgres`). Runs no
+  `initdb`, so unlike `db-bootstrap` it is safe against a managed cluster (e.g.
+  RDS). Accepts no positional arguments.
 - **`db-create`**: Idempotent. Assumes the cluster and role exist (crashes hard
   otherwise). Creates `POSTGRES_DB`, grants `CONNECT` + schema access, sets
   `ALTER DEFAULT PRIVILEGES`, and creates `schema_migrations`. Applies no
@@ -332,6 +349,31 @@ guard message wins over a missing-env error.
   FORCE`). Idempotent. Leaves the cluster and
   data directory intact. Gated by `require_dangerous_confirmation` unless
   `--yes-i-really-want-to-do-this`.
+
+---
+
+### Infrastructure & Deploy Scripts
+
+OpenTofu is the sole source of AWS resource definitions; these scripts carry no
+resource logic. All source `bin/common`, so a valid `$ENV_FILE` with
+`POSTGRES_PORT` set is required even to run a pure-`tofu` action.
+
+- **`infra-init`**, **`infra-plan`**, **`infra-apply`**, **`infra-output`**:
+  thin `exec tofu -chdir="$PROJECT_ROOT/infra" <verb> "$@"` wrappers. Extra args
+  (and `-h`/`--help`) pass through to `tofu`.
+- **`infra-bootstrap`**: `exec tofu -chdir="$PROJECT_ROOT/infra/bootstrap" "$@"`
+  — fronts the one-time state-backend setup. Run once as `infra-bootstrap init`
+  then `infra-bootstrap apply`. The subcommand and extra args pass through.
+- **`deploy`**: single operator entry point for shipping a release. Sequence:
+  `bin/build` both `installDist` distributions → assemble a repo-relative
+  tarball (`rest-server`/`queue-worker` dists, `db/schema`, and the `db-*`
+  scripts the on-instance migrations shell out to) → `aws s3 cp` to the
+  `artifacts_bucket` → `aws ssm send-command` running `deploy-on-instance` on
+  `instance_id`. Bucket and instance id are read from `tofu output -raw`, so a
+  completed `infra-apply` and an active AWS session are prerequisites. Region
+  resolves from `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`. Rejects
+  positional args and unknown options. Side-effecting and not idempotent — each
+  run ships a new, timestamp-keyed bundle.
 
 ---
 
@@ -394,9 +436,10 @@ DB and port). Five lifecycle-ownership models exist:
   source neither `bin/common` nor any cluster script. They shim
   `xcodebuild`/`xcrun` onto `PATH` (recording argv to a temp file) and redirect
   the scripts at fixtures via `UNICOACH_ENV_DIR`/`UNICOACH_DOTENV`/
-  `UNICOACH_PRODUCTS_DIR`, so no real build or hardware runs. They `unset
-  IN_NIX_SHELL` at startup and simulate the dev shell per-invocation with
-  `IN_NIX_SHELL=impure`.
+  `UNICOACH_PRODUCTS_DIR`, so no real build or hardware runs. They
+  `unset
+  IN_NIX_SHELL` at startup and simulate the dev shell per-invocation
+  with `IN_NIX_SHELL=impure`.
 
 #### `bin/tests-common` — Assertion API
 
@@ -444,28 +487,30 @@ DB and port). Five lifecycle-ownership models exist:
 - **`bin/test-fuzz`**: Authenticated contract-referee fuzzer. Boots a
   freshly-built rest-server on its own fuzz DB/port (`.env.fuzz`) and runs
   Schemathesis against the committed `api-specs/openapi.yaml`. Ordered lifecycle
-  under `set -e`: provision a pinned `schemathesis==4.21.5` venv (`var/fuzz/venv`,
-  gitignored, on the flake python3; idempotent when the version already matches)
-  → port-guard (fatal if `$PORT` is already served, before any build/boot) →
-  `postgres-up` → `db-reset` the dedicated fuzz DB → `build-rest-server` →
-  `rest-server-up` → register a uniquely-named user and capture its
-  `UNICOACH_SESSION` cookie → run Schemathesis as a child (not `exec`) so the
-  EXIT/INT/TERM trap tears down the rest-server. The captured cookie is injected
-  via `-H "Cookie: …"` on every request, exercising the authenticated surface.
-  Excludes, by category: unimplemented routes (`/api/v1/conversations*`),
-  session-destructive operations (`logoutUser`, `deleteStudentMe`), and two
-  non-applicable checks (`ignored_auth`, `unsupported_method`); all
-  data-conformance checks stay live. As a referee it surfaces — never masks —
-  non-conformance: against today's server it EXITS NON-ZERO by design, reporting
-  documented server defects deferred to a future server-fix RFC, and exits `0`
-  only once the server is conformant. Per-defect detail lives in the script
-  header.
+  under `set -e`: provision a pinned `schemathesis==4.21.5` venv
+  (`var/fuzz/venv`, gitignored, on the flake python3; idempotent when the
+  version already matches) → port-guard (fatal if `$PORT` is already served,
+  before any build/boot) → `postgres-up` → `db-reset` the dedicated fuzz DB →
+  `build-rest-server` → `rest-server-up` → register a uniquely-named user and
+  capture its `UNICOACH_SESSION` cookie → run Schemathesis as a child (not
+  `exec`) so the EXIT/INT/TERM trap tears down the rest-server. The captured
+  cookie is injected via `-H "Cookie: …"` on every request, exercising the
+  authenticated surface. Excludes, by category: unimplemented routes
+  (`/api/v1/conversations*`), session-destructive operations (`logoutUser`,
+  `deleteStudentMe`), and two non-applicable checks (`ignored_auth`,
+  `unsupported_method`); all data-conformance checks stay live. As a referee it
+  surfaces — never masks — non-conformance: against today's server it EXITS
+  NON-ZERO by design, reporting documented server defects deferred to a future
+  server-fix RFC, and exits `0` only once the server is conformant. Per-defect
+  detail lives in the script header.
 - **`bin/scripts-tests`**: Tests scripts in `bin/`.
 - **`bin/db-scripts-tests`**: Tests `db-run`, `db-query`, `db-write`, `db-repl`,
   `db-bootstrap`, `db-create`, `db-migrate`, `db-status`, `db-drop` against its
   OWN private throwaway cluster (private data dir + PID-derived port), never the
   shared cluster.
-- **`bin/db-users-tests`**: Tests the functionality of the `users` table.
+- **`bin/db-users-tests`**: Tests `db-create-role` (LOGIN-role creation and
+  idempotence, exercised against a sentinel role via a temp `ENV_FILE` so the
+  shared `DATABASE_USER` is never disturbed) and the `users` table.
 - **`bin/q-scripts-tests`**: Tests `q-status`, `q-enqueue`, `q-inspect`,
   `q-retry`, `q-delete-job`, `q-truncate`.
 - **`bin/db-tests`**: Aggregator that runs the shell DB schema harnesses
@@ -524,7 +569,10 @@ micro-skills. Idempotent; overwrites the generated files in place.
   `PORT` sets the per-env service port (`.env`=8080, `.env.test`=8081,
   `.env.fuzz`=8082); each env file derives the daemon bind variable
   `SERVER_PORT=$PORT`. `test-fuzz` reads `$PORT` for its port guard, boot,
-  registration, and fuzz target.
+  registration, and fuzz target. `db-create-role` (and `db-bootstrap` via it)
+  additionally require `DATABASE_USER`, `DATABASE_PASSWORD`, and
+  `POSTGRES_USER`, and honor `POSTGRES_ADMIN_DB` (default `postgres`). `deploy`
+  additionally honors `AWS_REGION`/`AWS_DEFAULT_REGION` (default `us-east-1`).
 - **Shared cluster, per-database isolation**: every git worktree shares one
   PostgreSQL cluster at the checkout-independent absolute path
   `$HOME/var/unicoach/postgres` (`POSTGRES_DATA_DIR`). Isolation is at the
@@ -549,4 +597,5 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - [x] [RFC-35: bin/test owns its CLI](../rfc/35-bin-test-owns-cli.md)
 - [x] [RFC-43: Chat Provider](../rfc/43-chat-provider.md)
 - [x] [RFC-47: Authenticated Contract-Referee Fuzzing](../rfc/47-authenticated-contract-fuzz.md)
+- [x] [RFC-50: Deploy the Backend REST API to AWS](../rfc/50-deploy-rest-api-aws.md)
 - [x] [RFC-51: iOS Deploy to Physical Device](../rfc/51-ios-deploy-to-device.md)

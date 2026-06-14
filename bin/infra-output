@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Thin wrapper over `tofu -chdir=infra output`. Carries no resource logic — the
+# HCL under infra/ is the sole source of resource definitions. Extra args (e.g. an
+# output name, or -raw) pass through.
+source "$(dirname "$0")/common"
+
+exec tofu -chdir="$PROJECT_ROOT/infra" output "$@"

@@ -9,6 +9,52 @@ source "$(dirname "$0")/tests-common"
 bin/db-bootstrap >/dev/null
 bin/db-reset >/dev/null
 
+echo "==== Testing db-create-role idempotence ===="
+
+# Exercise db-create-role against a sentinel role so we never disturb the shared
+# DATABASE_USER (in the test env that role is the superuser `postgres`, and other
+# worktrees may be testing concurrently on the same cluster). DATABASE_USER is
+# re-sourced from ENV_FILE inside bin/common, so a plain env-var override is
+# clobbered — we point db-create-role at a temp ENV_FILE that sources .env.test
+# and then overrides only DATABASE_USER. Derive the sentinel from the
+# per-worktree test DB so concurrent runs stay isolated, and keep it within
+# PostgreSQL's 63-byte identifier limit.
+ROLE_TEST_USER="role_test_$(echo "$POSTGRES_DB" | tr -c 'a-z0-9' '_' | cut -c1-40)"
+ROLE_TEST_ENV_FILE="$(mktemp)"
+trap 'rm -f "$ROLE_TEST_ENV_FILE"' EXIT
+{
+  echo "source \"$PROJECT_ROOT/.env.test\""
+  echo "DATABASE_USER=$ROLE_TEST_USER"
+} > "$ROLE_TEST_ENV_FILE"
+
+drop_role_test_user() {
+  printf 'DROP ROLE IF EXISTS "%s";' "$ROLE_TEST_USER" \
+    | bin/db-write -d "${POSTGRES_ADMIN_DB:-postgres}" >/dev/null 2>&1
+}
+
+role_test_user_can_login() {
+  local out
+  out=$(printf "SELECT rolcanlogin FROM pg_roles WHERE rolname = '%s';" "$ROLE_TEST_USER" \
+    | bin/db-query -d "${POSTGRES_ADMIN_DB:-postgres}" -tA 2>&1)
+  [ "$out" = "t" ] || { echo "rolcanlogin output was: $out"; return 1; }
+}
+
+test_create_role_creates_login_role() {
+  drop_role_test_user
+  ENV_FILE="$ROLE_TEST_ENV_FILE" bin/db-create-role >/dev/null 2>&1 || return 1
+  role_test_user_can_login
+}
+assert_success "db-create-role creates a LOGIN role" test_create_role_creates_login_role
+
+test_create_role_idempotent() {
+  # Second run must exit 0 (duplicate swallowed) and leave the role intact.
+  ENV_FILE="$ROLE_TEST_ENV_FILE" bin/db-create-role >/dev/null 2>&1 || return 1
+  role_test_user_can_login
+}
+assert_success "db-create-role is idempotent (re-run exits 0)" test_create_role_idempotent
+
+drop_role_test_user
+
 echo "==== Testing Users Table Initialization ===="
 
 test_users_table_exists() {

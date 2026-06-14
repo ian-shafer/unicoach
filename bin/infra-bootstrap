@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Thin wrapper over `tofu -chdir=infra/bootstrap …`. Fronts the one-time
+# state-backend bootstrap; run once as `bin/infra-bootstrap init` then
+# `bin/infra-bootstrap apply`. Carries no resource logic — the HCL under
+# infra/bootstrap/ is the sole source of resource definitions. The subcommand and
+# any extra args pass through.
+source "$(dirname "$0")/common"
+
+exec tofu -chdir="$PROJECT_ROOT/infra/bootstrap" "$@"

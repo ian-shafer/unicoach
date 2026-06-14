@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Thin wrapper over `tofu -chdir=infra apply`. Carries no resource logic — the HCL
+# under infra/ is the sole source of resource definitions. Extra args pass through.
+source "$(dirname "$0")/common"
+
+exec tofu -chdir="$PROJECT_ROOT/infra" apply "$@"

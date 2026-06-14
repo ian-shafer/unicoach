@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars (gitignored) and adjust as needed. Every value below
+# is the variables.tf default; uncomment a line only to override it.
+
+# region            = "us-east-1"
+# api_domain        = "api.unicoachapp.com"
+# hosted_zone_name  = "unicoachapp.com"
+# instance_type     = "t4g.small"
+# db_instance_class = "db.t4g.micro"
+# db_engine_version = "18"
+# app_db_user       = "unicoach"

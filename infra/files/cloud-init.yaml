@@ -1,0 +1,51 @@
+#cloud-config
+# Bootstraps the unicoach application host: installs the JVM runtime and psql,
+# creates the unicoach system user and /opt/unicoach layout, and installs the
+# systemd units plus the render-env / deploy-on-instance scripts. All file bodies
+# are injected verbatim from the committed infra/files/* sources via filebase64,
+# so cloud-init is the only place that knows the host layout, not a second copy.
+
+write_files:
+  - path: /etc/unicoach/deploy.env
+    owner: root:root
+    permissions: "0644"
+    content: |
+      SSM_PREFIX=${ssm_prefix}
+      AWS_REGION=${region}
+
+  - path: /etc/systemd/system/unicoach-rest-server.service
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${filebase64("${module_path}/files/unicoach-rest-server.service")}
+
+  - path: /etc/systemd/system/unicoach-queue-worker.service
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${filebase64("${module_path}/files/unicoach-queue-worker.service")}
+
+  - path: /opt/unicoach/bin/render-env
+    owner: root:root
+    permissions: "0755"
+    encoding: b64
+    content: ${filebase64("${module_path}/files/render-env.sh")}
+
+  - path: /opt/unicoach/bin/deploy-on-instance
+    owner: root:root
+    permissions: "0755"
+    encoding: b64
+    content: ${filebase64("${module_path}/files/deploy-on-instance.sh")}
+
+runcmd:
+  # JVM runtime (Amazon Corretto 21) and the PostgreSQL client for migrations.
+  - dnf install -y java-21-amazon-corretto-headless postgresql16
+  # Application system user (no login shell) and the release layout.
+  - useradd --system --home-dir /opt/unicoach --shell /usr/sbin/nologin unicoach || true
+  - mkdir -p /opt/unicoach/releases /opt/unicoach/bin /etc/unicoach
+  - chown -R unicoach:unicoach /opt/unicoach/releases
+  # Enable both units now; they stay inactive until the first deploy creates the
+  # current symlink, then `systemctl restart` (run by deploy-on-instance) starts them.
+  - systemctl daemon-reload
+  - systemctl enable unicoach-rest-server.service
+  - systemctl enable unicoach-queue-worker.service

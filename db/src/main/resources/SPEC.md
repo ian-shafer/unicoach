@@ -20,17 +20,23 @@ connection pool.
   self-contained block. The `database` stanza MUST NOT be split across multiple
   `.conf` files on the `db` module's classpath.
 - `database.jdbcUrl` MUST be constructed as the HOCON expression
-  `"jdbc:postgresql://localhost:"${POSTGRES_PORT}"/"${POSTGRES_DB}`. Only the
-  scheme and host (`jdbc:postgresql://localhost:`) are hardcoded literals; the
-  port is injected via the REQUIRED substitution `${POSTGRES_PORT}` and the
-  database name via the REQUIRED substitution `${POSTGRES_DB}`. Both
-  substitutions MUST resolve at config load: if either `POSTGRES_PORT` or
-  `POSTGRES_DB` is unset, HOCON MUST throw
-  `Could not resolve substitution to a
-  value` at load time
-  (`AppConfig.load()`), before `DatabaseConfig.from()` runs. This hard load-time
-  failure is intentional — there is NO silent fallback (the port is not
-  defaulted to `5432`).
+  `"jdbc:postgresql://"${database.host}":"${POSTGRES_PORT}"/"${POSTGRES_DB}`.
+  Only the scheme and separators (`jdbc:postgresql://`, `:`, `/`) are hardcoded
+  literals; the host is interpolated from `database.host`, the port is injected
+  via the REQUIRED substitution `${POSTGRES_PORT}`, and the database name via
+  the REQUIRED substitution `${POSTGRES_DB}`. The `${POSTGRES_PORT}` and
+  `${POSTGRES_DB}` substitutions MUST resolve at config load: if either is
+  unset, HOCON MUST throw `Could not resolve substitution to a value` at load
+  time (`AppConfig.load()`), before `DatabaseConfig.from()` runs. This hard
+  load-time failure is intentional — there is NO silent fallback (the port is
+  not defaulted to `5432`). `database.host`, by contrast, ALWAYS resolves
+  because it carries a default (see the `database.host` invariant below).
+- `database.host` MUST default to the literal `"localhost"` and MUST be
+  overridable via the OPTIONAL substitution `${?DATABASE_HOST}`. Because the
+  default is unconditional, `database.host` MUST ALWAYS resolve — it has NO
+  load-time failure mode (unlike `POSTGRES_PORT`/`POSTGRES_DB`). When
+  `DATABASE_HOST` is unset, the `${?DATABASE_HOST}` override is a no-op and the
+  `"localhost"` default stands. `database.jdbcUrl` interpolates this value.
 - `database.user` MUST be present and non-blank. It MUST resolve via
   `${?DATABASE_USER}` (optional substitution). Absent at runtime →
   `DatabaseConfig.from()` returns a `Failure` via `getNonBlankString`.
@@ -58,7 +64,8 @@ connection pool.
 
 | Key                          | HOCON Form                                                        | Required                                       | Default    | Override Env Var                                |
 | ---------------------------- | ----------------------------------------------------------------- | ---------------------------------------------- | ---------- | ----------------------------------------------- |
-| `database.jdbcUrl`           | `"jdbc:postgresql://localhost:"${POSTGRES_PORT}"/"${POSTGRES_DB}` | MUST be non-blank; both substitutions REQUIRED | None       | `POSTGRES_PORT` (port), `POSTGRES_DB` (db name) |
+| `database.host`              | `"localhost"` + `${?DATABASE_HOST}`                               | Always resolves (defaulted)                    | `localhost` | `DATABASE_HOST`                                |
+| `database.jdbcUrl`           | `"jdbc:postgresql://"${database.host}":"${POSTGRES_PORT}"/"${POSTGRES_DB}` | MUST be non-blank; `POSTGRES_PORT`/`POSTGRES_DB` REQUIRED | None | `POSTGRES_PORT` (port), `POSTGRES_DB` (db name) |
 | `database.user`              | `${?DATABASE_USER}`                                               | MUST be non-blank                              | None       | `DATABASE_USER`                                 |
 | `database.password`          | `${?DATABASE_PASSWORD}`                                           | Optional                                       | Absent     | `DATABASE_PASSWORD`                             |
 | `database.maximumPoolSize`   | `10` + `${?DATABASE_MAXIMUM_POOL_SIZE}`                           | Yes                                            | `10`       | `DATABASE_MAXIMUM_POOL_SIZE`                    |
@@ -105,6 +112,7 @@ application classpath when `rest-server` assembles the fat JAR.
 
 | Variable                     | Role                                                               | Fail Behavior                                                                                                             |
 | ---------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_HOST`              | Supplies the host in the JDBC URL (e.g. RDS endpoint); optional override | Absent → `database.host` defaults to `localhost`; pool connects to local Postgres                                          |
 | `POSTGRES_PORT`              | Supplies the port in the JDBC URL (required substitution)          | Unset → HOCON throws `Could not resolve substitution to a value: ${POSTGRES_PORT}` at config load (no fallback to `5432`) |
 | `POSTGRES_DB`                | Supplies the database name in the JDBC URL (required substitution) | Unset → HOCON throws `Could not resolve substitution to a value: ${POSTGRES_DB}` at config load                           |
 | `DATABASE_USER`              | PostgreSQL username                                                | `DatabaseConfig.from()` returns `Failure`                                                                                 |
@@ -121,3 +129,4 @@ silently shadow or conflict with `db.conf` at runtime.
 ## V. History
 
 - [x] [RFC-14: Extract Database Module](../../../../rfc/14-db-module.md)
+- [x] [RFC-50: Deploy the Backend REST API to AWS](../../../../rfc/50-deploy-rest-api-aws.md)

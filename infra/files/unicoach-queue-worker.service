@@ -1,0 +1,15 @@
+[Unit]
+Description=unicoach background queue worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unicoach
+EnvironmentFile=/etc/unicoach/env
+ExecStart=/opt/unicoach/current/queue-worker/bin/queue-worker
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# deploy: the single operator entry point for shipping a release. Contains no AWS
+# resource definitions (those are OpenTofu's). Sequence:
+#   1. bin/build           — produce both installDist distributions locally.
+#   2. assemble a bundle   — tarball preserving repo-relative paths.
+#   3. upload to S3        — the artifacts bucket (OpenTofu output).
+#   4. SSM Run Command     — execute deploy-on-instance on the host (output id).
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+deploy [options]
+
+Builds, bundles, uploads, and triggers an on-instance deploy via SSM Run Command.
+Requires an active AWS session and a completed `bin/infra-apply` (reads the
+artifacts bucket and instance id from OpenTofu outputs).
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "deploy does not accept positional arguments: $*"
+fi
+
+# Region for the S3 upload and SSM call. Override with AWS_REGION (or the standard
+# AWS_DEFAULT_REGION); defaults to the infra region default.
+AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+
+# ── 1. Build both distributions ───────────────────────────────────────────────
+"$PROJECT_ROOT/bin/build"
+
+REST_DIST="rest-server/build/install/rest-server"
+WORKER_DIST="queue-worker/build/install/queue-worker"
+
+for dist in "$REST_DIST" "$WORKER_DIST"; do
+  [ -d "$PROJECT_ROOT/$dist" ] || fatal "Missing distribution [$dist]; did bin/build succeed?"
+done
+
+# ── 2. Assemble the bundle (repo-relative paths) ──────────────────────────────
+# The on-instance migration scripts source bin/common -> bin/functions and shell
+# out to the bin/db-* family; bin/db-status and bin/db-create both invoke
+# bin/db-query for their existence checks, so it must be included.
+BUNDLE_ID="$(date -u +%Y%m%d%H%M%S)"
+BUNDLE_PATH="$(mktemp -t unicoach-deploy.XXXXXX).tar.gz"
+trap 'rm -f "$BUNDLE_PATH"' EXIT
+
+BUNDLE_PATHS=(
+  "$REST_DIST"
+  "$WORKER_DIST"
+  "db/schema"
+  "bin/common"
+  "bin/functions"
+  "bin/db-create-role"
+  "bin/db-create"
+  "bin/db-migrate"
+  "bin/db-status"
+  "bin/db-write"
+  "bin/db-query"
+  "bin/db-run"
+)
+
+for path in "${BUNDLE_PATHS[@]}"; do
+  [ -e "$PROJECT_ROOT/$path" ] || fatal "Bundle path missing [$path]."
+done
+
+log-info "Assembling deploy bundle [$BUNDLE_ID]..."
+tar -czf "$BUNDLE_PATH" -C "$PROJECT_ROOT" "${BUNDLE_PATHS[@]}"
+
+# ── 3. Upload to the artifacts bucket ─────────────────────────────────────────
+ARTIFACTS_BUCKET="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw artifacts_bucket)"
+[ -n "$ARTIFACTS_BUCKET" ] || fatal "Could not read artifacts_bucket from OpenTofu outputs."
+
+BUNDLE_KEY="releases/unicoach-$BUNDLE_ID.tar.gz"
+BUNDLE_S3_URI="s3://$ARTIFACTS_BUCKET/$BUNDLE_KEY"
+
+log-info "Uploading bundle to [$BUNDLE_S3_URI]..."
+aws s3 cp --region "$AWS_REGION" "$BUNDLE_PATH" "$BUNDLE_S3_URI"
+
+# ── 4. Trigger the on-instance deploy via SSM Run Command ─────────────────────
+INSTANCE_ID="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw instance_id)"
+[ -n "$INSTANCE_ID" ] || fatal "Could not read instance_id from OpenTofu outputs."
+
+log-info "Issuing SSM Run Command to [$INSTANCE_ID]..."
+COMMAND_ID="$(aws ssm send-command \
+  --region "$AWS_REGION" \
+  --instance-ids "$INSTANCE_ID" \
+  --document-name "AWS-RunShellScript" \
+  --comment "unicoach deploy $BUNDLE_ID" \
+  --parameters "commands=[\"/opt/unicoach/bin/deploy-on-instance $BUNDLE_S3_URI\"]" \
+  --query "Command.CommandId" \
+  --output text)"
+
+log-info "SSM command [$COMMAND_ID] dispatched. Tail with:"
+log-info "  aws ssm get-command-invocation --region $AWS_REGION --command-id $COMMAND_ID --instance-id $INSTANCE_ID"
