@@ -326,6 +326,66 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(mock.streamConversationRequests.count, 1)
     }
 
+    // MARK: - canSend
+
+    func testCanSendFalseOnEmptyMessage() async {
+        let mock = MockConversationClient()
+        let vm = makeViewModel(mock)
+
+        XCTAssertEqual(vm.messageText, "")
+        XCTAssertFalse(vm.canSend)
+    }
+
+    func testCanSendFalseOnWhitespaceOnlyMessage() async {
+        let mock = MockConversationClient()
+        let vm = makeViewModel(mock)
+        vm.messageText = "   \n\t"
+
+        XCTAssertFalse(vm.canSend)
+    }
+
+    func testCanSendTrueOnNonEmptyMessage() async {
+        let mock = MockConversationClient()
+        let vm = makeViewModel(mock)
+        vm.messageText = "Hello"
+
+        XCTAssertTrue(vm.canSend)
+    }
+
+    func testCanSendFalseWhileStreaming() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        var script = startScript(conversation: convo)
+        script.perEventDelay = .milliseconds(30)
+        mock.scripts = [script]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Hi"
+
+        let task = Task { await vm.send() }
+        try? await Task.sleep(for: .milliseconds(10))
+        XCTAssertTrue(vm.isStreaming)
+        // Non-empty text but an in-flight stream gates the button off.
+        vm.messageText = "Again"
+        XCTAssertFalse(vm.canSend)
+
+        await task.value
+    }
+
+    func testCanSendTrueAfterCompletedTurn() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.scripts = [startScript(conversation: convo)]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Hi"
+
+        await vm.send()
+        XCTAssertFalse(vm.isStreaming)
+
+        // Multi-turn: a completed turn must NOT disable the composer.
+        vm.messageText = "Again"
+        XCTAssertTrue(vm.canSend)
+    }
+
     // MARK: - Cancellation
 
     func testCancellationStopsMutationAndResetsStreaming() async {

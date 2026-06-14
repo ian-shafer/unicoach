@@ -1,8 +1,16 @@
 import SwiftUI
 
+private struct SendButtonWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct ConversationView: View {
     @StateObject private var viewModel: ConversationViewModel
     @FocusState private var isComposerFocused: Bool
+    @State private var sendButtonWidth: CGFloat = 0
 
     init(conversationClient: ConversationClientProtocol, onProfileRequired: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: ConversationViewModel(
@@ -17,6 +25,7 @@ struct ConversationView: View {
             validationArea
             composer
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.dsBackground)
         .navigationTitle("Coaching")
         .navigationBarTitleDisplayMode(.inline)
@@ -44,6 +53,7 @@ struct ConversationView: View {
                 withAnimation { proxy.scrollTo(lastId, anchor: .bottom) }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// A value that changes whenever new content lands at the bottom of the
@@ -158,31 +168,38 @@ struct ConversationView: View {
     // MARK: - Composer
 
     private var composer: some View {
-        HStack(spacing: DSSpacing.sm) {
-            TextField("Message", text: $viewModel.messageText, axis: .vertical)
-                .font(.dsBody)
-                .foregroundStyle(Color.dsTextPrimary)
-                .padding(DSSpacing.md)
-                .background(Color.dsSurface)
-                .clipShape(RoundedRectangle(cornerRadius: DSRadius.field, style: .continuous))
-                .focused($isComposerFocused)
-                .disabled(isComposerDisabled)
-                .accessibilityIdentifier("messageField")
-                .accessibilityLabel("Message")
-
-            LoadingButton(
-                "Send",
-                isLoading: viewModel.isStreaming,
-                role: .primary,
-                accessibilityIdentifier: "sendButton",
-                accessibilityLabel: "Send",
-                action: send
-            )
-            .frame(width: 96)
+        TextField("Message", text: $viewModel.messageText, axis: .vertical)
+            .font(.dsBody)
+            .foregroundStyle(Color.dsTextPrimary)
+            .padding(DSSpacing.md)
+            .padding(.trailing, sendButtonWidth + DSSpacing.sm)
+            .background(Color.dsSurface)
+            .clipShape(RoundedRectangle(cornerRadius: DSRadius.field, style: .continuous))
+            .focused($isComposerFocused)
             .disabled(isComposerDisabled)
-        }
-        .padding(DSSpacing.md)
-        .background(Color.dsBackground)
+            .accessibilityIdentifier("messageField")
+            .accessibilityLabel("Message")
+            .overlay(alignment: .bottomTrailing) {
+                CircularIconButton(
+                    systemImage: "arrow.up",
+                    isLoading: viewModel.isStreaming,
+                    accessibilityIdentifier: "sendButton",
+                    accessibilityLabel: "Send",
+                    action: send
+                )
+                .disabled(!viewModel.canSend)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: SendButtonWidthKey.self, value: proxy.size.width)
+                    }
+                )
+                .padding(DSSpacing.sm)
+            }
+            .onPreferenceChange(SendButtonWidthKey.self) { width in
+                sendButtonWidth = width
+            }
+            .padding(DSSpacing.md)
+            .background(Color.dsBackground)
     }
 
     private func send() {

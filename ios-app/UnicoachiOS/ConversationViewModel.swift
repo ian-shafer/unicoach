@@ -46,6 +46,15 @@ final class ConversationViewModel: ObservableObject {
         self.onProfileRequired = onProfileRequired
     }
 
+    /// Presentational gate for the send button. Multi-turn: the only blocks are
+    /// an in-flight stream and an empty message — a completed turn does NOT
+    /// disable sending (follow-ups are allowed). `send()`'s own isStreaming and
+    /// empty/length guards remain the authoritative defense.
+    var canSend: Bool {
+        !isStreaming
+            && !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     func send() async {
         // One turn in flight at a time.
         if isStreaming {

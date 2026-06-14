@@ -155,6 +155,88 @@ private struct OptionalLabel: ViewModifier {
     }
 }
 
+// MARK: - CircularIconButton
+
+struct CircularIconButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    init() {}
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.dsButton)
+            .foregroundStyle(Color.brandOnAccent)
+            // Symmetric padding around the intrinsic glyph; combined with
+            // .clipShape(Circle()) this yields a circle sized from its content
+            // (no fixed point size or raw diameter), satisfying the module's
+            // token-only and Dynamic-Type invariants.
+            .padding(DSSpacing.sm)
+            .background(Color.brandAccent)
+            .clipShape(Circle())
+            .opacity(opacity(isPressed: configuration.isPressed))
+    }
+
+    private func opacity(isPressed: Bool) -> Double {
+        if !isEnabled { return 0.5 }
+        return isPressed ? 0.8 : 1.0
+    }
+}
+
+struct CircularIconButton: View {
+    private let systemImage: String
+    private let isLoading: Bool
+    private let accessibilityIdentifier: String?
+    private let accessibilityLabelText: String?
+    private let progressAccessibilityIdentifier: String?
+    private let action: () -> Void
+
+    init(
+        systemImage: String,
+        isLoading: Bool,
+        accessibilityIdentifier: String? = nil,
+        accessibilityLabel: String? = nil,
+        progressAccessibilityIdentifier: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.systemImage = systemImage
+        self.isLoading = isLoading
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.accessibilityLabelText = accessibilityLabel
+        self.progressAccessibilityIdentifier = progressAccessibilityIdentifier
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            if isLoading {
+                progressView
+            } else {
+                Image(systemName: systemImage)
+            }
+        }
+        .disabled(isLoading)
+        .buttonStyle(CircularIconButtonStyle())
+        .modifier(OptionalIdentifier(identifier: accessibilityIdentifier))
+        .modifier(OptionalLabel(label: accessibilityLabelText))
+    }
+
+    @ViewBuilder
+    private var progressView: some View {
+        if let progressAccessibilityIdentifier {
+            ProgressView()
+                .progressViewStyle(.circular)
+                // ProgressView ignores the style's foregroundStyle; .tint colors
+                // the spinner so it reads against the brandAccent fill.
+                .tint(Color.brandOnAccent)
+                .accessibilityIdentifier(progressAccessibilityIdentifier)
+        } else {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .tint(Color.brandOnAccent)
+        }
+    }
+}
+
 // MARK: - LabeledField
 
 struct LabeledField<Value: Hashable>: View {
@@ -314,6 +396,13 @@ private var buttonPreview: some View {
             .disabled(true)
         LoadingButton("Log Out", isLoading: false, role: .destructive) {}
         LoadingButton("Log Out", isLoading: true, role: .destructive) {}
+
+        HStack(spacing: DSSpacing.md) {
+            CircularIconButton(systemImage: "arrow.up", isLoading: false) {}
+            CircularIconButton(systemImage: "arrow.up", isLoading: true) {}
+            CircularIconButton(systemImage: "arrow.up", isLoading: false) {}
+                .disabled(true)
+        }
     }
     .padding(DSSpacing.lg)
     .frame(maxWidth: .infinity, maxHeight: .infinity)

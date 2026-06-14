@@ -181,6 +181,14 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
   whenever `year` or `month` changes.
 - The selectable year window is the initialization year −4 … +8.
 
+### Window rendering
+
+- `Info.plist` MUST declare a `UILaunchScreen` key (an empty dictionary
+  suffices). Its presence opts the app into native full-screen rendering;
+  removing it reverts every screen to legacy letterbox compatibility mode (a
+  reduced-height canvas with black bands). This is an app-wide invariant and
+  MUST NOT be removed absent a replacement launch storyboard.
+
 ### Transport security
 
 - `Info.plist` MUST configure
@@ -496,6 +504,11 @@ turn completes (§II Turn lifecycle). `ChatTurn` carries the student message,
   `onProfileRequired: () -> Void` callback.
 - **In-flight gate**: Both `send()` and `retry()` return immediately if
   `isStreaming` — only one turn streams at a time.
+- **Send gating (`canSend`)**: A computed, non-publishing presentational gate
+  for the send button = `!isStreaming` AND trimmed `messageText` non-empty. It
+  carries NO completed-turn guard — a completed turn MUST NOT disable the next
+  send (multi-turn). `canSend` governs ONLY button tappability; `send()`'s own
+  `isStreaming` and empty/length guards remain the authoritative defense.
 - **`send()`**: Clears `validationError`, then locally validates the trimmed
   `messageText` (no network call) — empty or exceeds 100_000 characters →
   `validationError` with `code: "VALIDATION"` and a `"message"` field error, then
@@ -593,9 +606,19 @@ See [`ConversationView.swift`](./ConversationView.swift). Pushed from
   bubble, the coach bubble (once streaming text or a completed message exists), a
   streaming indicator on the in-flight turn, and — on failure — an inline failure
   view with a Retry button. Auto-scrolls to the newest turn.
-- **Composer**: Disabled ONLY while a turn is streaming (`isStreaming`); a
-  completed turn re-enables it for the next turn, and a failed turn is retried in
-  place from its own Retry button.
+- **Layout**: The root `VStack` and the thread `ScrollView` MUST fill all
+  vertical space the navigation container offers (both carry
+  `maxHeight: .infinity`); the thread scrolls within that space while the
+  composer keeps its intrinsic height and pins to the bottom edge.
+- **Composer**: A single vertically-growing `TextField` with the send button —
+  a `CircularIconButton` (see [DesignSystem/SPEC.md](./DesignSystem/SPEC.md)) —
+  overlaid bottom-trailing. The field's trailing inset MUST track the button's
+  rendered width (plus its edge inset) so input never underlaps the button at
+  any Dynamic Type size; a fixed/hardcoded inset is forbidden. The input field
+  is disabled ONLY while a turn is streaming (`isStreaming`); the send button's
+  enabled state is bound to `ConversationViewModel.canSend`. A completed turn
+  re-enables both for the next turn, and a failed turn is retried in place from
+  its own Retry button.
 - **Bubble rendering**: The coach bubble prefers the canonical
   `coachMessage.content` over the live streaming buffer.
 - **Error display**: A pre-send `validationError` renders in a `FormErrorBanner`
@@ -698,3 +721,4 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 - [x] [RFC-41: iOS Start Coaching Conversation](../../rfc/41-ios-start-coaching-conversation.md)
 - [x] [RFC-42: iOS Student-Profile Onboarding](../../rfc/42-ios-student-profile-onboarding.md)
 - [x] [RFC-48: iOS multi-turn coaching conversation](../../rfc/48-ios-multi-turn-conversation.md)
+- [x] [RFC-49: iOS Chat UX Improvements](../../rfc/49-ios-chat-ux-improvements.md)
