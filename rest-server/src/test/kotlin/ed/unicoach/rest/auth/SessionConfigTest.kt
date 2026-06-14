@@ -55,4 +55,25 @@ class SessionConfigTest {
     val result = SessionConfig.from(rawConfig)
     assertTrue(result.isFailure)
   }
+
+  @Test
+  fun `derives cookieDomain from APP_DOMAIN substitution in rest-server conf`() {
+    val config =
+      ConfigFactory.parseString("APP_DOMAIN = cookie.example.test")
+        .withFallback(ConfigFactory.parseResources("rest-server.conf"))
+        .resolve()
+
+    val result = SessionConfig.from(config)
+    assertTrue(result.isSuccess)
+    assertEquals("cookie.example.test", result.getOrThrow().cookieDomain)
+  }
+
+  @Test
+  fun `cookieDomain defaults to localhost when APP_DOMAIN is unset`() {
+    val config = ConfigFactory.parseResources("rest-server.conf").resolve()
+
+    val result = SessionConfig.from(config)
+    assertTrue(result.isSuccess)
+    assertEquals("localhost", result.getOrThrow().cookieDomain)
+  }
 }

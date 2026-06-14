@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# build-ios runs under SYSTEM Xcode (xcodebuild), NOT the Nix dev shell. It
+# therefore deliberately does NOT source bin/common (which requires .env /
+# Postgres / the Nix shell) — only bin/functions for log-info/fatal.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/bin/functions"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+build-ios [env]
+
+Builds the UnicoachiOS app for an environment defined under ios-app/env/, and
+(for device targets) signs it via Xcode automatic signing. Runs under system
+Xcode, not the Nix dev shell.
+
+  env   Environment name (default: local). Sources ios-app/env/<env>.env, which
+        must define UNICOACH_DESTINATION (UNICOACH_CONFIGURATION optional,
+        defaults to Debug).
+
+The backend URL is DERIVED, not configured per-env: the repo .env supplies
+APP_DOMAIN/SERVER_PORT (the same single source the server reads), and the build
+bakes UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}. APP_DOMAIN
+defaults to localhost; a bare IP literal is rejected (invalid cookie Domain).
+
+An env is a simulator build iff its UNICOACH_DESTINATION contains "Simulator";
+otherwise it is a device build, which additionally sources ios-app/env/signing.env
+for UNICOACH_DEVELOPMENT_TEAM (required) and UNICOACH_DEVICE (optional).
+
+Options:
+  -h, --help   Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) help "Unknown option: $1" ;;
+  esac
+done
+
+# Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
+# xcrun is shadowed by a stub and DEVELOPER_DIR/SDKROOT point into the Nix store,
+# so the build would silently target the wrong toolchain. Detection lives in
+# bin/is-nix; the refusal is here. Placed before any env/signing/tool logic so
+# this message wins even when an env file is also missing.
+if "$PROJECT_ROOT/bin/is-nix" --quiet; then
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/build-ios local), not via 'nix develop -c'."
+fi
+
+ENV_NAME="${1:-local}"
+if [ "$#" -gt 1 ]; then
+  help "build-ios accepts at most one positional argument (env): $*"
+fi
+
+# ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
+# (used by bin/ios-scripts-tests to point at a temp fixture dir).
+ENV_DIR="${UNICOACH_ENV_DIR:-$PROJECT_ROOT/ios-app/env}"
+ENV_FILE="$ENV_DIR/$ENV_NAME.env"
+if [ ! -f "$ENV_FILE" ]; then
+  fatal "Environment file not found [$ENV_FILE]. Available envs: copy ios-app/env/local.env.example to ios-app/env/local.env, or pass an existing env (e.g. simulator)."
+fi
+
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+: "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in $ENV_FILE}"
+UNICOACH_CONFIGURATION="${UNICOACH_CONFIGURATION:-Debug}"
+
+# The backend URL is DERIVED, not configured per-env: source the repo .env (the
+# single source of APP_DOMAIN/SERVER_PORT the server also reads) and compose
+# http://$APP_DOMAIN:${SERVER_PORT:-8080}. UNICOACH_DOTENV overrides the .env
+# path (used by bin/ios-scripts-tests to point at a temp fixture). APP_DOMAIN
+# defaults to localhost when unset, so simulator use needs zero configuration.
+DOTENV="${UNICOACH_DOTENV:-$PROJECT_ROOT/.env}"
+if [ -f "$DOTENV" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$DOTENV"
+  set +a
+fi
+APP_DOMAIN="${APP_DOMAIN:-localhost}"
+SERVER_PORT="${SERVER_PORT:-8080}"
+
+# A bare IP (IPv4 or IPv6 literal) is an invalid cookie Domain per RFC 6265 and
+# could never persist a session, so reject it before invoking xcodebuild.
+# localhost and DNS hostnames are accepted.
+if [[ "$APP_DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || [[ "$APP_DOMAIN" == *:* ]]; then
+  fatal "APP_DOMAIN [$APP_DOMAIN] is a bare IP literal, which is an invalid cookie Domain (RFC 6265) and cannot persist a session. Set APP_DOMAIN in $DOTENV to a DNS hostname (e.g. a Tailscale MagicDNS name)."
+fi
+
+UNICOACH_BACKEND_URL="http://$APP_DOMAIN:$SERVER_PORT"
+
+# Signing args accumulate only for device builds. A simulator build (destination
+# containing "Simulator") does not sign and needs no Apple team.
+SIGNING_ARGS=()
+if [[ "$UNICOACH_DESTINATION" != *Simulator* ]]; then
+  SIGNING_ENV="$ENV_DIR/signing.env"
+  if [ ! -f "$SIGNING_ENV" ]; then
+    fatal "Device build requires signing credentials, but [$SIGNING_ENV] is missing. Copy ios-app/env/signing.env.example to ios-app/env/signing.env and fill in UNICOACH_DEVELOPMENT_TEAM."
+  fi
+  set -a
+  # shellcheck source=/dev/null
+  source "$SIGNING_ENV"
+  set +a
+  if [ -z "${UNICOACH_DEVELOPMENT_TEAM:-}" ]; then
+    fatal "UNICOACH_DEVELOPMENT_TEAM is not set in [$SIGNING_ENV]; a device build cannot be signed without an Apple Developer team id."
+  fi
+  SIGNING_ARGS=(
+    "DEVELOPMENT_TEAM=$UNICOACH_DEVELOPMENT_TEAM"
+    "CODE_SIGN_STYLE=Automatic"
+    -allowProvisioningUpdates
+  )
+fi
+
+log-info "Building UnicoachiOS [env=$ENV_NAME] [configuration=$UNICOACH_CONFIGURATION] [destination=$UNICOACH_DESTINATION] [backend=$UNICOACH_BACKEND_URL]..."
+
+exec xcodebuild \
+  -project "$PROJECT_ROOT/ios-app/UnicoachiOS.xcodeproj" \
+  -scheme UnicoachiOS \
+  -configuration "$UNICOACH_CONFIGURATION" \
+  -destination "$UNICOACH_DESTINATION" \
+  -derivedDataPath "$PROJECT_ROOT/ios-app/build/DerivedData" \
+  "UNICOACH_BACKEND_URL=$UNICOACH_BACKEND_URL" \
+  ${SIGNING_ARGS[@]+"${SIGNING_ARGS[@]}"} \
+  build

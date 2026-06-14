@@ -51,7 +51,7 @@ final class APIClient: @unchecked Sendable {
         return formatter
     }()
 
-    init(baseURL: URL = URL(string: "http://localhost:8080")!, session: URLSession? = nil) {
+    init(baseURL: URL = defaultBackendURL(), session: URLSession? = nil) {
         self.baseURL = baseURL
         if let session = session {
             // Injected (tests): the same session backs both request and stream paths.

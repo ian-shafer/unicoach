@@ -70,6 +70,20 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
 - `APIClient` MUST declare `@unchecked Sendable`; all owned state MUST be `let`
   after `init`.
 
+### Backend base URL
+
+- `APIClient`'s base URL MUST resolve through `resolveBackendURL`
+  (`BackendURL.swift`). Resolution MUST be total: a `nil`, empty,
+  whitespace-only, or unparseable `UnicoachBackendURL` value MUST yield the
+  `http://localhost:8080` fallback and MUST NEVER crash (NEVER force-unwrap a
+  parsed URL). A value is accepted ONLY if, after trimming, it parses to a `URL`
+  with both a non-nil `scheme` and a non-nil `host`; every other input uses the
+  fallback.
+- In production, `APIClient.init`'s `baseURL` defaults to `defaultBackendURL()`,
+  which reads the `UnicoachBackendURL` `Info.plist` key (baked at build time
+  from the `UNICOACH_BACKEND_URL` build setting). Tests inject an explicit
+  `baseURL`, so the resolver path is exercised in production only.
+
 ### Streaming transport
 
 - Streaming MUST use a second, dedicated `URLSession` with a 60-second
@@ -194,7 +208,7 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
 - `Info.plist` MUST configure
   `NSAppTransportSecurity →
   NSAllowsArbitraryLoads: true` to permit plain HTTP
-  connections to a local development server.
+  connections to a LAN/Tailscale development host.
 
 ### Accessibility / UI
 
@@ -216,6 +230,26 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
 ---
 
 ## III. Behavioral Contracts
+
+### `BackendURL.swift`
+
+See [`BackendURL.swift`](./BackendURL.swift).
+
+```
+func resolveBackendURL(_ infoValue: String?) -> URL
+func defaultBackendURL() -> URL
+```
+
+- `resolveBackendURL` is **pure** — no side effects. It trims `infoValue` and
+  returns the parsed `URL` only when the trimmed string is non-empty and parses
+  to a URL with both a `scheme` and a `host`; every other input (nil, empty,
+  whitespace-only, scheme-less, host-less, unparseable) returns the
+  `http://localhost:8080` fallback. It NEVER throws or crashes.
+- `defaultBackendURL` performs exactly one side effect: a
+  `Bundle.main.object(forInfoDictionaryKey: "UnicoachBackendURL")` read, whose
+  result it resolves through `resolveBackendURL`. It is the production default
+  for `APIClient.init`'s `baseURL`.
+- **Idempotency**: Both are referentially transparent for a fixed bundle value.
 
 ### `APIClient`
 
@@ -680,17 +714,21 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 - **Bundle ID**: `com.unicoach.UnicoachiOS` (defined in
   [`Info.plist`](./Info.plist)).
 - **App display name**: `Unicoach`.
-- **Default base URL**: `http://localhost:8080`, overridable via constructor
-  injection.
+- **Backend base URL**: Resolved at launch by `defaultBackendURL()` from the
+  `UnicoachBackendURL` `Info.plist` key, baked at build time from the
+  `UNICOACH_BACKEND_URL` build setting (`Info.plist` value
+  `$(UNICOACH_BACKEND_URL)`). When the key is unset, empty, or unparseable, the
+  resolver falls back to `http://localhost:8080`. Overridable via constructor
+  injection (tests pass an explicit `baseURL`).
 - **Transport timeouts**: the request session uses a 10-second
   `timeoutIntervalForRequest`; the stream session uses the 60-second inter-chunk
   idle timeout `APIClient.streamIdleTimeout` (a `static let`, NOT
   constructor-injectable). Both sessions are built in `APIClient.init` when none
   is injected; the sessions themselves are injectable, and an injected session
   backs both paths.
-- **Transport security**: `NSAllowsArbitraryLoads: true` — required for local
-  HTTP development; MUST NOT be removed without updating the networking stack to
-  use HTTPS and providing a server certificate.
+- **Transport security**: `NSAllowsArbitraryLoads: true` — required for plain
+  HTTP to a LAN/Tailscale dev host; MUST NOT be removed without updating the
+  networking stack to use HTTPS and providing a server certificate.
 - **Cookie storage**: Injected via `CookieStorageProtocol` (production:
   `HTTPCookieStorage.shared`).
 - **Test isolation**: Client tests (`APIClient` / `AuthClient` / `StudentClient`
@@ -722,3 +760,4 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 - [x] [RFC-42: iOS Student-Profile Onboarding](../../rfc/42-ios-student-profile-onboarding.md)
 - [x] [RFC-48: iOS multi-turn coaching conversation](../../rfc/48-ios-multi-turn-conversation.md)
 - [x] [RFC-49: iOS Chat UX Improvements](../../rfc/49-ios-chat-ux-improvements.md)
+- [x] [RFC-51: iOS Deploy to Physical Device](../../rfc/51-ios-deploy-to-device.md)

@@ -41,6 +41,8 @@
 		BBBB00010000000000000B07 /* MockStudentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F07 /* MockStudentClient.swift */; };
 		BBBB00010000000000000B08 /* OnboardingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */; };
 		BBBB00010000000000000B09 /* RandomFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F09 /* RandomFixtures.swift */; };
+		BBBB00010000000000000B0A /* BackendURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F0A /* BackendURL.swift */; };
+		BBBB00010000000000000B0B /* BackendURLTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB00010000000000000F0B /* BackendURLTests.swift */; };
 		AAAA00020000000000000B01 /* SSEParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F01 /* SSEParser.swift */; };
 		AAAA00020000000000000B02 /* ConversationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F02 /* ConversationClient.swift */; };
 		AAAA00020000000000000B03 /* ConversationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F03 /* ConversationViewModel.swift */; };
@@ -98,6 +100,8 @@
 		BBBB00010000000000000F07 /* MockStudentClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockStudentClient.swift; sourceTree = "<group>"; };
 		BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingViewModelTests.swift; sourceTree = "<group>"; };
 		BBBB00010000000000000F09 /* RandomFixtures.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RandomFixtures.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F0A /* BackendURL.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BackendURL.swift; sourceTree = "<group>"; };
+		BBBB00010000000000000F0B /* BackendURLTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BackendURLTests.swift; sourceTree = "<group>"; };
 		AAAA00020000000000000F01 /* SSEParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
 		AAAA00020000000000000F02 /* ConversationClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationClient.swift; sourceTree = "<group>"; };
 		AAAA00020000000000000F03 /* ConversationViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationViewModel.swift; sourceTree = "<group>"; };
@@ -158,6 +162,7 @@
 				6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */,
 				CEA408B564E10F9E132951E2 /* CookieStorageProtocol.swift */,
 				BBBB00010000000000000F01 /* APIClient.swift */,
+				BBBB00010000000000000F0A /* BackendURL.swift */,
 				BBBB00010000000000000F02 /* StudentClient.swift */,
 				BBBB00010000000000000F03 /* OnboardingViewModel.swift */,
 				BBBB00010000000000000F04 /* OnboardingView.swift */,
@@ -207,6 +212,7 @@
 				008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */,
 				AAAA00010000000000000F03 /* ErrorResponseTests.swift */,
 				BBBB00010000000000000F05 /* APIClientTests.swift */,
+				BBBB00010000000000000F0B /* BackendURLTests.swift */,
 				BBBB00010000000000000F06 /* StudentClientTests.swift */,
 				BBBB00010000000000000F07 /* MockStudentClient.swift */,
 				BBBB00010000000000000F08 /* OnboardingViewModelTests.swift */,
@@ -337,6 +343,7 @@
 				AAAA00010000000000000B01 /* Theme.swift in Sources */,
 				AAAA00010000000000000B02 /* Components.swift in Sources */,
 				BBBB00010000000000000B01 /* APIClient.swift in Sources */,
+				BBBB00010000000000000B0A /* BackendURL.swift in Sources */,
 				BBBB00010000000000000B02 /* StudentClient.swift in Sources */,
 				BBBB00010000000000000B03 /* OnboardingViewModel.swift in Sources */,
 				BBBB00010000000000000B04 /* OnboardingView.swift in Sources */,
@@ -358,6 +365,7 @@
 				63C0E03A53327D2F2C1DF54B /* AppViewModelTests.swift in Sources */,
 				AAAA00010000000000000B03 /* ErrorResponseTests.swift in Sources */,
 				BBBB00010000000000000B05 /* APIClientTests.swift in Sources */,
+				BBBB00010000000000000B0B /* BackendURLTests.swift in Sources */,
 				BBBB00010000000000000B06 /* StudentClientTests.swift in Sources */,
 				BBBB00010000000000000B07 /* MockStudentClient.swift in Sources */,
 				BBBB00010000000000000B08 /* OnboardingViewModelTests.swift in Sources */,
@@ -445,6 +453,7 @@
 		0D1705A270B0DA04542FDFF6 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				UNICOACH_BACKEND_URL = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
@@ -549,6 +558,7 @@
 		C595F6A89934E357601CD4F9 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				UNICOACH_BACKEND_URL = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;

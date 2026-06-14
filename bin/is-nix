@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# is-nix is a standalone predicate reporting whether the caller is inside the
+# Nix dev shell. It sources ONLY bin/functions (never bin/common, which requires
+# the very dev shell this predicate is meant to detect). The exit code is the
+# contract; a human status line goes to stderr via log-info. Mirrors the
+# bin/postgres-check convention.
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/functions"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+is-nix [options]
+
+Exits 0 if the caller is inside the Nix dev shell (IN_NIX_SHELL non-empty),
+1 otherwise. Sources only bin/functions, so it is safe to call from scripts that
+must NOT enter the dev shell (e.g. bin/build-ios, bin/install-ios).
+
+Options:
+  -q, --quiet     Suppress the status line; report only via exit code.
+  -v, --verbose   Additionally list the enabled packages parsed from the
+                  exported nativeBuildInputs (ignored under -q).
+  -h, --help      Help
+EOF
+  exit "$exit_code"
+}
+
+QUIET=0
+VERBOSE=0
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -q|--quiet) QUIET=1; shift ;;
+  -v|--verbose) VERBOSE=1; shift ;;
+  -*) fatal "Unknown option: $1" ;;
+  esac
+done
+
+# nativeBuildInputs holds space-separated /nix/store/<hash>-<name> paths; the
+# package name is the basename with the leading <hash>- stripped.
+list_packages() {
+  local path name
+  for path in ${nativeBuildInputs:-}; do
+    name="${path##*/}"      # /nix/store/<hash>-<name> -> <hash>-<name>
+    name="${name#*-}"       # <hash>-<name> -> <name>
+    log-info "$name"
+  done
+}
+
+if [ -n "${IN_NIX_SHELL:-}" ]; then
+  if [ "$QUIET" -eq 0 ]; then
+    log-info "nix enabled"
+    if [ "$VERBOSE" -eq 1 ]; then
+      list_packages
+    fi
+  fi
+  exit 0
+else
+  if [ "$QUIET" -eq 0 ]; then
+    log-info "nix NOT enabled"
+  fi
+  exit 1
+fi

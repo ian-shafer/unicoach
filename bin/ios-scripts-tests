@@ -1,0 +1,404 @@
+#!/usr/bin/env bash
+# ios-scripts-tests exercises bin/is-nix, bin/build-ios, and bin/install-ios
+# WITHOUT any real Xcode build or hardware. xcodebuild and xcrun are shimmed onto
+# PATH via a temp dir; the shims record their argv to a file the assertions
+# inspect. The ios-app/env/<env>.env files are pointed at a temp fixture dir via
+# UNICOACH_ENV_DIR, and the repo .env (the APP_DOMAIN/SERVER_PORT source) is
+# pointed at a temp fixture file via UNICOACH_DOTENV, so the assertions drive the
+# DERIVED UNICOACH_BACKEND_URL without touching the real .env.
+#
+# Sources ONLY bin/functions and bin/tests-common — no bin/common, no Postgres,
+# no Nix dev shell (these scripts run under system Xcode, not the dev shell).
+set -euo pipefail
+
+# Make happy-path cases deterministic even when this harness is itself launched
+# via `nix develop -c`: clear the inside-Nix marker. "Inside Nix" is simulated
+# per-invocation by prefixing a script call with IN_NIX_SHELL=impure (an
+# external-command assignment, so it scopes to that child only).
+unset IN_NIX_SHELL
+
+THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$THIS_DIR/.." && pwd)"
+source "$THIS_DIR/functions"
+source "$THIS_DIR/tests-common"
+
+TMP_BASE="${TMPDIR:-/tmp}"
+mkdir -p "$TMP_BASE"
+WORK="$(mktemp -d "$TMP_BASE/unicoach-ios-scripts-tests.XXXXXX")"
+trap 'rm -rf "$WORK" >/dev/null 2>&1 || true' EXIT INT TERM
+
+SHIM_DIR="$WORK/shims"
+ENV_DIR="$WORK/env"
+PRODUCTS_DIR="$WORK/products"
+ARGV_LOG="$WORK/argv.log"
+DOTENV="$WORK/dotenv"
+mkdir -p "$SHIM_DIR" "$ENV_DIR" "$PRODUCTS_DIR"
+
+# --- Shims -------------------------------------------------------------------
+# xcodebuild: record every arg (one per line) prefixed with "xcodebuild", succeed.
+cat > "$SHIM_DIR/xcodebuild" <<EOF
+#!/usr/bin/env bash
+{ echo "xcodebuild"; for a in "\$@"; do echo "\$a"; done; } >> "$ARGV_LOG"
+exit 0
+EOF
+
+# xcrun: record argv, succeed. For "devicectl list devices" it prints whatever
+# the per-test DEVICECTL_LIST_OUTPUT fixture file holds, so device auto-detect
+# can be driven to 0/1/2 devices without hardware.
+cat > "$SHIM_DIR/xcrun" <<EOF
+#!/usr/bin/env bash
+{ echo "xcrun"; for a in "\$@"; do echo "\$a"; done; } >> "$ARGV_LOG"
+if [ "\${1:-}" = "devicectl" ] && [ "\${2:-}" = "list" ] && [ "\${3:-}" = "devices" ]; then
+  if [ -n "\${DEVICECTL_LIST_OUTPUT:-}" ] && [ -f "\${DEVICECTL_LIST_OUTPUT}" ]; then
+    cat "\${DEVICECTL_LIST_OUTPUT}"
+  fi
+fi
+exit 0
+EOF
+chmod +x "$SHIM_DIR/xcodebuild" "$SHIM_DIR/xcrun"
+
+# --- Fixtures ----------------------------------------------------------------
+# Env files now carry ONLY the destination; the backend URL is derived from the
+# .env fixture's APP_DOMAIN/SERVER_PORT.
+cat > "$ENV_DIR/simulator.env" <<'EOF'
+UNICOACH_DESTINATION="platform=iOS Simulator,name=iPhone 17 Pro"
+EOF
+
+cat > "$ENV_DIR/device.env" <<'EOF'
+UNICOACH_DESTINATION="generic/platform=iOS"
+EOF
+
+# Write the repo-.env fixture that bin/build-ios sources (via UNICOACH_DOTENV).
+# Args: APP_DOMAIN value (empty => omit the line), optional SERVER_PORT value.
+write_dotenv() {
+  : > "$DOTENV"
+  if [ -n "${1:-}" ]; then
+    echo "APP_DOMAIN=$1" >> "$DOTENV"
+  fi
+  if [ -n "${2:-}" ]; then
+    echo "SERVER_PORT=$2" >> "$DOTENV"
+  fi
+}
+
+FIXTURE_TEAM="TEAMFIXTURE9"
+write_signing_env() {
+  cat > "$ENV_DIR/signing.env" <<EOF
+UNICOACH_DEVELOPMENT_TEAM=$FIXTURE_TEAM
+EOF
+}
+write_signing_env_with_device() {
+  cat > "$ENV_DIR/signing.env" <<EOF
+UNICOACH_DEVELOPMENT_TEAM=$FIXTURE_TEAM
+UNICOACH_DEVICE=$1
+EOF
+}
+
+# Stage a Debug-iphoneos UnicoachiOS.app so install-ios finds a built app.
+stage_built_app() {
+  mkdir -p "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app"
+}
+
+# Two-device devicectl output fixture for the ambiguous-device case.
+TWO_DEVICES="$WORK/two-devices.txt"
+cat > "$TWO_DEVICES" <<'EOF'
+Devices:
+iPhone A (model)  00000000-1111111111111111  available
+iPhone B (model)  22222222-3333333333333333  available
+EOF
+
+reset_log() { : > "$ARGV_LOG"; }
+
+# Run a bin script with the shims first on PATH and env/products overrides set.
+# IN_NIX is honoured to simulate the dev shell for the guard cases: when set, it
+# is exported into the child as IN_NIX_SHELL ONLY for that invocation.
+# nix_prefix emits the `env`-style argument that simulates the dev shell for a
+# single child: `IN_NIX_SHELL=<IN_NIX>` when IN_NIX is set, nothing otherwise.
+# `env -u` cannot be used unconditionally because the harness already unset the
+# var; the empty expansion simply contributes no argument.
+run_build() {
+  reset_log
+  env PATH="$SHIM_DIR:$PATH" \
+    UNICOACH_ENV_DIR="$ENV_DIR" \
+    UNICOACH_DOTENV="$DOTENV" \
+    ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} \
+    "$PROJECT_ROOT/bin/build-ios" "$@"
+}
+run_install() {
+  reset_log
+  env PATH="$SHIM_DIR:$PATH" \
+    UNICOACH_ENV_DIR="$ENV_DIR" \
+    UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
+    DEVICECTL_LIST_OUTPUT="${DEVICECTL_LIST_OUTPUT:-}" \
+    ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} \
+    "$PROJECT_ROOT/bin/install-ios" "$@"
+}
+
+# Run bin/is-nix directly, honouring IN_NIX as the simulated marker.
+run_is_nix() {
+  env ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} "$PROJECT_ROOT/bin/is-nix" "$@"
+}
+
+# Assert a literal line is present in the recorded argv log. `--` guards patterns
+# that begin with a dash (e.g. -allowProvisioningUpdates) from being parsed as
+# grep flags.
+log_has() { grep -Fxq -e "$1" "$ARGV_LOG"; }
+# Assert a literal line is ABSENT from the recorded argv log.
+log_lacks() { ! grep -Fxq -e "$1" "$ARGV_LOG"; }
+# Assert the argv log records NO invocation of the named tool (its prefix line).
+log_no_tool() { ! grep -Fxq -e "$1" "$ARGV_LOG"; }
+
+# ============================== is-nix tests =================================
+
+test_isnix_quiet_inside() {
+  local out
+  out="$(IN_NIX=impure run_is_nix -q 2>&1)" && local rc=0 || local rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  [ -z "$out" ] || return 1
+  return 0
+}
+
+test_isnix_quiet_outside() {
+  local out rc
+  out="$(run_is_nix -q 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] || return 1
+  [ -z "$out" ] || return 1
+  return 0
+}
+
+test_isnix_default_inside() {
+  local out rc
+  out="$(IN_NIX=impure run_is_nix 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  echo "$out" | grep -q "nix enabled"
+}
+
+test_isnix_default_outside() {
+  local out rc
+  out="$(run_is_nix 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] || return 1
+  echo "$out" | grep -q "nix NOT enabled"
+}
+
+test_isnix_verbose_lists_packages() {
+  local out rc
+  out="$(IN_NIX_SHELL=impure nativeBuildInputs="/nix/store/abc123-foo-1.0 /nix/store/def456-bar-2.0" \
+    "$PROJECT_ROOT/bin/is-nix" -v 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  echo "$out" | grep -qx "foo-1.0" || return 1
+  echo "$out" | grep -qx "bar-2.0" || return 1
+  return 0
+}
+
+test_isnix_bogus_option() {
+  local out rc
+  out="$("$PROJECT_ROOT/bin/is-nix" --bogus 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -qi "unknown option"
+}
+
+# ========================== dev-shell guard tests ============================
+
+test_build_guard_simulator() {
+  write_dotenv ""   # localhost default
+  local out rc
+  out="$(IN_NIX=impure run_build simulator 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "build-ios" || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  # Guard fires before any tool: no xcodebuild line recorded.
+  log_no_tool "xcodebuild"
+}
+
+test_build_guard_precedence_over_missing_env() {
+  # Even with a nonexistent env (which would normally be the failure), the guard
+  # message must win because it precedes env resolution.
+  local out rc
+  out="$(IN_NIX=impure run_build nonexistent-env 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  # Must NOT be the missing-env message.
+  if echo "$out" | grep -q "nonexistent-env.env"; then return 1; fi
+  log_no_tool "xcodebuild"
+}
+
+test_install_guard_device() {
+  write_signing_env
+  stage_built_app
+  local out rc
+  out="$(IN_NIX=impure run_install device 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "install-ios" || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  log_no_tool "xcrun"
+}
+
+# ============================ build-ios tests ================================
+
+test_build_missing_env_file() {
+  write_dotenv ""
+  local out
+  if out="$(run_build nonexistent-env 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "nonexistent-env.env"
+}
+
+test_build_device_env_absent_signing() {
+  write_dotenv "mymac.example.ts.net"
+  rm -f "$ENV_DIR/signing.env"
+  local out
+  if out="$(run_build device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "signing.env"
+}
+
+test_build_device_env_absent_team() {
+  write_dotenv "mymac.example.ts.net"
+  # signing.env present but with no team.
+  cat > "$ENV_DIR/signing.env" <<'EOF'
+UNICOACH_DEVELOPMENT_TEAM=
+EOF
+  local out
+  if out="$(run_build device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "UNICOACH_DEVELOPMENT_TEAM"
+}
+
+test_build_simulator_no_signing() {
+  write_dotenv ""   # unset APP_DOMAIN => localhost default
+  rm -f "$ENV_DIR/signing.env"
+  run_build simulator >/dev/null 2>&1 || return 1
+  log_has "platform=iOS Simulator,name=iPhone 17 Pro" || return 1
+  # Backend URL is DERIVED from the .env fixture (localhost default).
+  log_has "UNICOACH_BACKEND_URL=http://localhost:8080" || return 1
+  # Signing must NOT be forwarded for a simulator build.
+  log_lacks "CODE_SIGN_STYLE=Automatic" || return 1
+  log_lacks "-allowProvisioningUpdates" || return 1
+  if grep -q "^DEVELOPMENT_TEAM=" "$ARGV_LOG"; then return 1; fi
+  return 0
+}
+
+test_build_device_forwards_signing() {
+  write_dotenv "mymac.example.ts.net"
+  write_signing_env
+  run_build device >/dev/null 2>&1 || return 1
+  log_has "generic/platform=iOS" || return 1
+  log_has "DEVELOPMENT_TEAM=$FIXTURE_TEAM" || return 1
+  log_has "CODE_SIGN_STYLE=Automatic" || return 1
+  log_has "-allowProvisioningUpdates" || return 1
+  # Backend URL is DERIVED from APP_DOMAIN in the .env fixture.
+  log_has "UNICOACH_BACKEND_URL=http://mymac.example.ts.net:8080" || return 1
+  return 0
+}
+
+test_build_derives_port_from_server_port() {
+  write_dotenv "mymac.example.ts.net" "9090"
+  write_signing_env
+  run_build device >/dev/null 2>&1 || return 1
+  log_has "UNICOACH_BACKEND_URL=http://mymac.example.ts.net:9090" || return 1
+  return 0
+}
+
+test_build_bare_ip_rejected() {
+  write_dotenv "192.168.1.42"
+  write_signing_env
+  local out
+  if out="$(run_build device 2>&1)"; then return 1; fi
+  echo "$out" | grep -qi "DNS hostname" || return 1
+  # Rejected before any build.
+  log_no_tool "xcodebuild"
+}
+
+# ============================ install-ios tests =============================
+
+test_install_no_built_app() {
+  write_signing_env
+  rm -rf "$PRODUCTS_DIR/Debug-iphoneos"
+  local out
+  if out="$(run_install device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "build-ios"
+}
+
+test_install_simulator_env_rejected() {
+  write_signing_env
+  stage_built_app
+  local out
+  if out="$(run_install simulator 2>&1)"; then return 1; fi
+  echo "$out" | grep -qi "simulator"
+}
+
+test_install_device_absent_signing() {
+  stage_built_app
+  rm -f "$ENV_DIR/signing.env"
+  local out
+  if out="$(run_install device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "signing.env"
+}
+
+test_install_with_device_set() {
+  local udid="DEADBEEF-0000111122223333"
+  write_signing_env_with_device "$udid"
+  stage_built_app
+  run_install device >/dev/null 2>&1 || return 1
+  log_has "install" || return 1
+  log_has "app" || return 1
+  log_has "--device" || return 1
+  log_has "$udid" || return 1
+  log_has "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app" || return 1
+  # No --launch passed, so no process-launch invocation recorded.
+  if grep -Fxq "launch" "$ARGV_LOG" && grep -Fxq "com.unicoach.UnicoachiOS" "$ARGV_LOG"; then
+    return 1
+  fi
+  return 0
+}
+
+test_install_with_launch() {
+  local udid="DEADBEEF-0000111122223333"
+  write_signing_env_with_device "$udid"
+  stage_built_app
+  run_install --launch device >/dev/null 2>&1 || return 1
+  log_has "install" || return 1
+  log_has "process" || return 1
+  log_has "launch" || return 1
+  log_has "com.unicoach.UnicoachiOS" || return 1
+  return 0
+}
+
+test_install_ambiguous_device() {
+  write_signing_env   # no UNICOACH_DEVICE -> auto-detect
+  stage_built_app
+  local out
+  if out="$(DEVICECTL_LIST_OUTPUT="$TWO_DEVICES" run_install device 2>&1)"; then return 1; fi
+  echo "$out" | grep -qi "multiple"
+}
+
+# Note: run_install/run_build wrappers reset the argv log; export the
+# DEVICECTL_LIST_OUTPUT / IN_NIX through the env of the wrapper call above.
+
+# is-nix
+assert_success "is-nix: -q inside Nix exits 0 with no output" test_isnix_quiet_inside
+assert_success "is-nix: -q outside Nix exits 1 with no output" test_isnix_quiet_outside
+assert_success "is-nix: default inside Nix exits 0, says 'nix enabled'" test_isnix_default_inside
+assert_success "is-nix: default outside Nix exits 1, says 'nix NOT enabled'" test_isnix_default_outside
+assert_success "is-nix: -v lists package names with the <hash>- stripped" test_isnix_verbose_lists_packages
+assert_success "is-nix: unknown option fails with an unknown-option message" test_isnix_bogus_option
+
+# dev-shell guard
+assert_success "build-ios: dev-shell guard fires (simulator), no xcodebuild line" test_build_guard_simulator
+assert_success "build-ios: dev-shell guard precedes env resolution (nonexistent env)" test_build_guard_precedence_over_missing_env
+assert_success "install-ios: dev-shell guard fires (device), no xcrun line" test_install_guard_device
+
+# build-ios
+assert_success "build-ios: missing env file fails, names the missing file" test_build_missing_env_file
+assert_success "build-ios: device env with absent signing.env fails, names signing.env" test_build_device_env_absent_signing
+assert_success "build-ios: device env with empty team fails" test_build_device_env_absent_team
+assert_success "build-ios: simulator env builds without signing, derives localhost URL" test_build_simulator_no_signing
+assert_success "build-ios: device env forwards signing + derived backend + destination" test_build_device_forwards_signing
+assert_success "build-ios: derives backend port from SERVER_PORT" test_build_derives_port_from_server_port
+assert_success "build-ios: bare-IP APP_DOMAIN rejected before any build" test_build_bare_ip_rejected
+
+# install-ios
+assert_success "install-ios: no built .app fails, directs to build-ios" test_install_no_built_app
+assert_success "install-ios: simulator env rejected (device-only)" test_install_simulator_env_rejected
+assert_success "install-ios: device env with absent signing.env fails, names signing.env" test_install_device_absent_signing
+assert_success "install-ios: UNICOACH_DEVICE drives devicectl install with app path" test_install_with_device_set
+assert_success "install-ios: --launch records process launch of the bundle id" test_install_with_launch
+assert_success "install-ios: ambiguous (two) devices with no UNICOACH_DEVICE fails" test_install_ambiguous_device
+
+end_tests

@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# install-ios runs under SYSTEM Xcode (xcrun devicectl), NOT the Nix dev shell.
+# Like build-ios it does NOT source bin/common — only bin/functions.
+# Physical device only: it installs the most recent device build to an iPhone.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/bin/functions"
+
+BUNDLE_ID="com.unicoach.UnicoachiOS"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+install-ios [--launch] [env]
+
+Installs the most recent device build of UnicoachiOS to a physical iPhone via
+xcrun devicectl. Run bin/build-ios <env> first. Runs under system Xcode, not the
+Nix dev shell. Physical device only — a simulator env is rejected.
+
+  env        Environment name (default: local). Sources ios-app/env/<env>.env to
+             locate the built .app under ios-app/build/DerivedData.
+  --launch   After install, also launch the app on the device (fire-and-forget).
+
+Device selection: UNICOACH_DEVICE (from ios-app/env/signing.env) when set;
+otherwise the single connected device is auto-detected, failing if zero or more
+than one device is connected.
+
+Options:
+  -h, --help   Help
+EOF
+  exit "$exit_code"
+}
+
+LAUNCH=0
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  --launch) LAUNCH=1; shift ;;
+  -*) help "Unknown option: $1" ;;
+  esac
+done
+
+# Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
+# xcrun is shadowed by a stub with no devicectl. Detection lives in bin/is-nix;
+# the refusal is here. Placed before any env/tool logic so this message wins
+# even when an env file is also missing.
+if "$PROJECT_ROOT/bin/is-nix" --quiet; then
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/install-ios local), not via 'nix develop -c'."
+fi
+
+ENV_NAME="${1:-local}"
+if [ "$#" -gt 1 ]; then
+  help "install-ios accepts at most one positional argument (env): $*"
+fi
+
+# ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
+# (used by bin/ios-scripts-tests to point at a temp fixture dir).
+ENV_DIR="${UNICOACH_ENV_DIR:-$PROJECT_ROOT/ios-app/env}"
+ENV_FILE="$ENV_DIR/$ENV_NAME.env"
+if [ ! -f "$ENV_FILE" ]; then
+  fatal "Environment file not found [$ENV_FILE]. Copy ios-app/env/local.env.example to ios-app/env/local.env, or pass an existing env."
+fi
+
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+: "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in $ENV_FILE}"
+UNICOACH_CONFIGURATION="${UNICOACH_CONFIGURATION:-Debug}"
+
+# Device-only: the same Simulator-substring discriminator used by build-ios.
+if [[ "$UNICOACH_DESTINATION" == *Simulator* ]]; then
+  fatal "Env [$ENV_NAME] targets the simulator (UNICOACH_DESTINATION contains 'Simulator'); install-ios installs to a physical device only. Use a device env (e.g. local)."
+fi
+
+# PRODUCTS_DIR defaults to the DerivedData products tree; UNICOACH_PRODUCTS_DIR
+# overrides it (used by bin/ios-scripts-tests to stage a fixture .app).
+PRODUCTS_DIR="${UNICOACH_PRODUCTS_DIR:-$PROJECT_ROOT/ios-app/build/DerivedData/Build/Products}"
+APP="$PRODUCTS_DIR/$UNICOACH_CONFIGURATION-iphoneos/UnicoachiOS.app"
+if [ ! -d "$APP" ]; then
+  fatal "Built app not found at [$APP]. Run [bin/build-ios $ENV_NAME] first."
+fi
+
+# signing.env is the home of UNICOACH_DEVICE.
+SIGNING_ENV="$ENV_DIR/signing.env"
+if [ ! -f "$SIGNING_ENV" ]; then
+  fatal "Missing [$SIGNING_ENV]. Copy ios-app/env/signing.env.example to ios-app/env/signing.env (it is the home of UNICOACH_DEVICE)."
+fi
+set -a
+# shellcheck source=/dev/null
+source "$SIGNING_ENV"
+set +a
+
+resolve_device() {
+  if [ -n "${UNICOACH_DEVICE:-}" ]; then
+    echo "$UNICOACH_DEVICE"
+    return 0
+  fi
+  # Auto-detect: list connected devices and require exactly one. devicectl emits
+  # one "<name> (...) UDID ..." line per connected device under a header; the
+  # UDID is a hyphenated hex token on those rows.
+  local udids
+  udids="$(xcrun devicectl list devices 2>/dev/null \
+    | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f-]+' || true)"
+  local count
+  count="$(printf '%s\n' "$udids" | grep -c . || true)"
+  if [ "$count" -eq 0 ]; then
+    fatal "No connected device found. Pair and trust an iPhone (Developer Mode on), or set UNICOACH_DEVICE in $SIGNING_ENV."
+  fi
+  if [ "$count" -gt 1 ]; then
+    fatal "Multiple connected devices found ($count). Set UNICOACH_DEVICE in $SIGNING_ENV to disambiguate (xcrun devicectl list devices)."
+  fi
+  printf '%s\n' "$udids" | grep . | head -n 1
+}
+
+UDID="$(resolve_device)"
+
+log-info "Installing [$APP] to device [$UDID]..."
+xcrun devicectl device install app --device "$UDID" "$APP"
+
+if [ "$LAUNCH" -eq 1 ]; then
+  log-info "Launching [$BUNDLE_ID] on device [$UDID]..."
+  xcrun devicectl device process launch --device "$UDID" "$BUNDLE_ID"
+fi
