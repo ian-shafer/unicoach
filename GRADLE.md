@@ -95,13 +95,17 @@ queue-worker ← common, db, service, queue, net
 
 ### Root Build Configuration
 
-[`build.gradle.kts`](build.gradle.kts) (root) handles three concerns:
+[`build.gradle.kts`](build.gradle.kts) (root) handles four concerns:
 
 1. **ktlint enforcement**: applied to `allprojects`.
 2. **Repository declaration**: `mavenCentral()` for `allprojects`.
 3. **System property forwarding**: for all `subprojects` with the `application`
    plugin, the `run` task forwards `RUN_DIR`, `SERVICE_NAME`, and `HEALTH_NONCE`
    from environment variables to JVM system properties.
+4. **Test config-overlay isolation**: every `subprojects` `Test` task pins the
+   `unicoach.config.dir` system property to an in-build directory, so the
+   `AppConfig` local overlay (`<base>/unicoach/local.conf`) resolves to an
+   absent file and a developer's real host overlay can never alter test config.
 
 ### Test Configuration
 
@@ -112,6 +116,11 @@ queue-worker ← common, db, service, queue, net
 - `bin/test` is the canonical entry point for running Gradle tests. It
   bootstraps a fresh test database before running explicit per-module
   `:module:test` tasks.
+- Tests are hermetic against the `AppConfig` local overlay: the root build pins
+  `unicoach.config.dir` to an overlay-free in-build directory for every `Test`
+  task, so a developer's real `~/.config/unicoach/local.conf` cannot leak into
+  the test JVM and override packaged config (e.g. swapping the `log` chat
+  provider for a live one).
 
 ---
 

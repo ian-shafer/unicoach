@@ -22,4 +22,18 @@ subprojects {
       systemProperty("health.nonce", providers.environmentVariable("HEALTH_NONCE").getOrElse(""))
     }
   }
+
+  // Hermetic tests: pin AppConfig's local-overlay base (the `unicoach.config.dir`
+  // system property, highest precedence in AppConfig.overlayFile) to an in-build
+  // directory that never holds `unicoach/local.conf`. Without this, a developer's
+  // sanctioned secrets overlay at ~/.config/unicoach/local.conf (RFC 46) bleeds
+  // into the test JVM and can swap the packaged "log" chat provider for a live
+  // one, breaking tests that assert against the echo stub. AppConfigTest still
+  // overrides this per-test via System.setProperty at runtime.
+  tasks.withType<Test>().configureEach {
+    systemProperty(
+      "unicoach.config.dir",
+      layout.buildDirectory.dir("test-config-overlay").get().asFile.path,
+    )
+  }
 }

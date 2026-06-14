@@ -22,7 +22,7 @@ JVM serialization.
 - **INV-4**: The merged config MUST be passed through `ConfigFactory.load()` so
   that environment-variable substitutions defined in `.conf` files are resolved
   via OS environment variables automatically. `System.getenv()` MUST NOT be used
-  to resolve config *values*; it is permitted SOLELY to bootstrap the overlay
+  to resolve config _values_; it is permitted SOLELY to bootstrap the overlay
   path (reading `XDG_CONFIG_HOME` in `overlayFile()`).
 - **INV-5**: `SecretString` MUST be a plain `class`, NEVER a `data class`.
   Kotlin's generated `copy()`, `componentN()`, and default `toString()` MUST NOT
@@ -66,10 +66,11 @@ See [`AppConfig.kt`](./AppConfig.kt).
   system properties → overlay → `resources[last]` → … → `resources[0]`.
 - **Overlay Resolution**: The overlay lives at `<base>/unicoach/local.conf`,
   where `<base>` is the first non-blank of: the `unicoach.config.dir` system
-  property, the `XDG_CONFIG_HOME` environment variable, or `${user.home}/.config`.
-  An absent overlay file is a non-fatal no-op. A present-but-malformed overlay
-  surfaces as `Result.failure` carrying the underlying typesafe `ConfigException`
-  unmapped (consistent with INV-3 fail-fast).
+  property, the `XDG_CONFIG_HOME` environment variable, or
+  `${user.home}/.config`. An absent overlay file is a non-fatal no-op. A
+  present-but-malformed overlay surfaces as `Result.failure` carrying the
+  underlying typesafe `ConfigException` unmapped (consistent with INV-3
+  fail-fast).
 - **Error Handling**: Returns `Result.failure(e)` for any exception thrown
   during parsing (e.g., `ConfigException`, `IOException` for a missing
   resource). Callers MUST unwrap with `.getOrThrow()` or explicit error handling
@@ -124,9 +125,16 @@ See [`SecretString.kt`](./SecretString.kt).
   config values.
 - **Local Overlay**: An optional out-of-tree HOCON file at
   `<base>/unicoach/local.conf` supplies on-host secrets and key overrides at
-  higher precedence than classpath resources (see the `AppConfig.load`
-  contract for path resolution and precedence). It is absent in CI/test
-  environments, where its absence is a non-fatal no-op.
+  higher precedence than classpath resources (see the `AppConfig.load` contract
+  for path resolution and precedence).
+- **Test Hermeticity**: The overlay MUST NOT influence test outcomes. Because
+  `<base>` defaults to `${user.home}/.config`, a developer host that has a real
+  `local.conf` would otherwise leak it into the test JVM (e.g. swapping the
+  packaged `log` chat provider for a live one). The build therefore pins the
+  `unicoach.config.dir` system property to an overlay-free directory for every
+  `Test` task, so the overlay deterministically resolves to an absent file — a
+  non-fatal no-op — on any host. Test isolation is the build's guarantee, not an
+  assumption that the overlay happens to be absent.
 
 ---
 
