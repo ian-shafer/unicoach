@@ -65,8 +65,20 @@ does not contain domain logic.
   [`routing/SPEC.md`](./routing/SPEC.md).
 - `rejectUnsupportedMethods(...)`, defined in this directory, MUST return
   `405 Method Not Allowed` with an `Allow` header listing the permitted methods.
-- The `/hello` endpoint MUST NOT be removed — it is the health probe target for
-  `rest-server-check`.
+
+### Liveness
+
+- The server MUST expose an **unauthenticated, unversioned** liveness endpoint
+  at `/healthz` (NOT under `/api/v1`), registered in the top-level `routing { }`
+  block so no per-route-group auth wraps it. It MUST return `200` whenever the
+  process is up and serving HTTP.
+- The `/healthz` handler MUST NOT depend on the database, queue, chat provider,
+  or any backing service — it returns its response unconditionally. A transient
+  dependency failure MUST NEVER turn the liveness probe non-200, so a
+  health-check consumer can never kill an otherwise-serving process over a
+  dependency blip.
+- `/healthz` MUST remain exempt from the future client-key gate — a load
+  balancer polling it carries no client key.
 
 ### Session Cookie
 
@@ -90,7 +102,9 @@ does not contain domain logic.
   request re-enqueues.
 - The `ignorePathPrefixes` set MUST include at least `"/health"` and
   `"/api/v1/auth/logout"` (configured via `rest-server.conf`
-  `sessionExpiry.ignorePathPrefixes`).
+  `sessionExpiry.ignorePathPrefixes`). The `"/health"` prefix transitively
+  covers `/healthz` (`"/healthz".startsWith("/health")`), so the liveness route
+  needs no dedicated entry.
 
 ### Payload Limits
 
@@ -157,7 +171,9 @@ does not contain domain logic.
 ### `Application.configureRouting(authService, studentService, coachingService, sessionConfig)` — [`Routing.kt`](./Routing.kt)
 
 - **Routes registered**:
-  - `GET /hello` → `200 OK` with plain UTF-8 text body.
+  - `GET /healthz` → `200 OK`, `Content-Type: application/json`, constant body;
+    unauthenticated and dependency-free. Non-GET → `405` with `Allow: GET` via
+    `rejectUnsupportedMethods(HttpMethod.Get)`.
   - All `/api/v1/auth/*` routes via `AuthRouteHandler.registerRoutes(...)`.
   - All `/api/v1/students/*` routes via
     `StudentRouteHandler.registerRoutes(...)`.
@@ -313,3 +329,7 @@ NOT depend on `net`. (`CoachingService` and `CoachingConfig` live in the
       `chatProvider`/`coachingConfig` into `appModule` to build `CoachingService`;
       registered the `/api/v1/conversations/*` group via `ConvoRouteHandler` in
       `configureRouting`. First production callsite of the `:chat` module.
+- [x] [RFC-53: `/healthz` Liveness Endpoint](../../../../../../../rfc/53-healthz-liveness-endpoint.md)
+      — Replaced the placeholder `GET /hello` route with the unauthenticated,
+      unversioned `GET /healthz` liveness endpoint that depends on no backing
+      service.

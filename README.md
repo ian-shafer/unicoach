@@ -93,7 +93,7 @@ Requires postgres to be running and the app binary to have been built
 bin/rest-server-up         # starts the REST API on PORT (default 8080)
 bin/rest-server-down       # stops the REST server
 bin/rest-server-bounce     # restarts the REST server
-bin/rest-server-check      # exits 0 if /hello responds, 1 otherwise
+bin/rest-server-check      # exits 0 if /healthz responds, 1 otherwise
 ```
 
 ### Queue Worker

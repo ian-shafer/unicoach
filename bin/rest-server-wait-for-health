@@ -10,7 +10,7 @@ help() {
   cat << 'EOF'
 rest-server-wait-for-health [options]
 
-Polls rest-server-check at 1-second intervals until the /hello endpoint
+Polls rest-server-check at 1-second intervals until the /healthz endpoint
 returns HTTP 200 or the timeout elapses. Exits 0 on success, non-zero
 on timeout.
 

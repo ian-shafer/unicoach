@@ -120,7 +120,7 @@ and as `ENV_FILE` sourced by `bin/common` during migrations. The contract is the
   symlink swap is atomic (`ln -sfn`).
 
 ### Health & ingress
-- The ALB target group health check is `GET /hello` expecting `200` — the same
+- The ALB target group health check is `GET /healthz` expecting `200` — the same
   path `bin/rest-server-check` validates.
 - The ALB idle timeout is raised to **300s** so proxied SSE chat streams are not
   severed by the default 60s cutoff. Generations exceeding 300s still fail.

@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 
-class RoutingTest {
+class HealthzRoutingTest {
   companion object {
     private lateinit var testServer: EmbeddedServer<*, *>
     private lateinit var client: HttpClient
@@ -47,15 +47,22 @@ class RoutingTest {
   }
 
   @Test
-  fun testHelloWorldEndpoint() =
+  fun healthzReturns200WithStatusOkBody() {
+    runBlocking {
+      val response = client.get("http://localhost:$boundPort/healthz")
+
+      assertEquals(HttpStatusCode.OK, response.status)
+      assertEquals("application/json", response.headers[HttpHeaders.ContentType])
+      assertEquals("{\"status\":\"ok\"}", response.bodyAsText())
+    }
+  }
+
+  @Test
+  fun helloIsGone() {
     runBlocking {
       val response = client.get("http://localhost:$boundPort/hello")
 
-      // TestCase 1: HTTP response is 200 OK
-      assertEquals(HttpStatusCode.OK, response.status)
-      // TestCase 2: Content-Type header mandates utf-8
-      assertEquals("text/plain; charset=UTF-8", response.headers[HttpHeaders.ContentType])
-      // TestCase 3: Body matches unicode string
-      assertEquals("Hello, Ian. I love you 😘", response.bodyAsText())
+      assertEquals(HttpStatusCode.NotFound, response.status)
     }
+  }
 }

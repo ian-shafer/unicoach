@@ -10,7 +10,7 @@ help() {
   cat << 'EOF'
 rest-server-check [options]
 
-Exits 0 if the rest-server is healthy (GET /hello returns HTTP 200).
+Exits 0 if the rest-server is healthy (GET /healthz returns HTTP 200).
 Exits non-zero if the server is not reachable or returns an error.
 
 Options:
@@ -27,7 +27,7 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
-if curl -sf "http://localhost:${PORT:-8080}/hello" > /dev/null; then
+if curl -sf "http://localhost:${PORT:-8080}/healthz" > /dev/null; then
   log-info "rest-server is running"
 else
   log-info "rest-server is NOT running"

@@ -7,7 +7,6 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.withCharset
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.response.respondText
@@ -37,11 +36,11 @@ fun Application.configureRouting(
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
   val convoRouteHandler = ConvoRouteHandler(authService, studentService, coachingService, sessionConfig)
   routing {
-    route("/hello") {
+    route("/healthz") {
       get {
         call.respondText(
-          text = "Hello, Ian. I love you 😘",
-          contentType = ContentType.Text.Plain.withCharset(Charsets.UTF_8),
+          text = "{\"status\":\"ok\"}",
+          contentType = ContentType.Application.Json,
         )
       }
       rejectUnsupportedMethods(HttpMethod.Get)

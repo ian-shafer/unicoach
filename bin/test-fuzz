@@ -133,7 +133,7 @@ log-info "Resetting fuzz database [$POSTGRES_DB]..."
 log-info "Building rest-server..."
 "$PROJECT_ROOT/bin/build-rest-server"
 
-# 6. Boot the daemon on $PORT and wait for /hello.
+# 6. Boot the daemon on $PORT and wait for /healthz.
 log-info "Booting rest-server on port $PORT..."
 "$PROJECT_ROOT/bin/rest-server-up"
 

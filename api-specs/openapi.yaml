@@ -1,23 +1,9 @@
 openapi: 3.0.3
 info:
   title: Unicoach REST API
-  description: Foundation "Hello World" OpenAPI spec verifying the infrastructure and routing.
+  description: REST API for the Unicoach product surface (auth, students, conversations).
   version: 1.0.0
 paths:
-  /hello:
-    get:
-      summary: Hello World
-      description: Returns a friendly string validating that the Ktor REST server is alive.
-      operationId: getHello
-      responses:
-        '200':
-          description: Successful greeting
-          content:
-            text/plain; charset=utf-8:
-              schema:
-                type: string
-                example: "Hello, Ian. I love you 😘"
-
   /api/v1/auth/register:
     post:
       summary: Register a new user
