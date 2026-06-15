@@ -33,6 +33,17 @@ it reloads `cookieDomain`.
   process launched standalone cannot receive scheme environment variables, so
   the value must live in the bundle. An empty or unparseable value falls back to
   `http://localhost:8080` — which on a device is the phone itself, not your Mac.
+- The app reads its client key from an `Info.plist` key (`UnicoachClientKey`)
+  baked at build time from the `UNICOACH_CLIENT_KEY` build setting. Unlike the
+  derived `UNICOACH_BACKEND_URL`, this is a raw secret read straight from
+  `UNICOACH_CLIENT_KEY` in the repo `.env` and passed verbatim to `xcodebuild`
+  by `bin/build-ios` (blank by default — an unset variable bakes blank). When
+  non-blank the app sends it on every request as the `X-Unicoach-Client-Key`
+  header, which the server's client-key gate checks; a blank key sends no header,
+  which the disabled local gate accepts. The key must never be committed — it is
+  supplied from the environment / Secrets Manager only for builds destined for a
+  gated deployment. The baked-in key is extractable from the distributed binary;
+  this is a deliberate raise-the-bar control, not strong security.
 - `bin/build-ios <env>` builds (and, for device targets, signs) the app, baking
   the derived `UNICOACH_BACKEND_URL` into the bundle.
 - `bin/install-ios <env>` installs the most recent device build to the iPhone

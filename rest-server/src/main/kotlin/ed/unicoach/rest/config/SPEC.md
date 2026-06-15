@@ -2,9 +2,10 @@
 
 ## I. Overview
 
-This directory owns the typed, validated in-memory view of the REST server's
-**request-size limit** configuration. It reads the `server.requestSize` HOCON
-block once at startup and produces an immutable value object — a global default
+This directory owns the typed, validated in-memory views of the REST server's
+configuration — currently the **request-size limit** and the **client-key
+gate**. For the request-size limit it reads the `server.requestSize` HOCON block
+once at startup and produces an immutable value object — a global default
 size plus two optional override maps, one keyed by **exact request path** and one
 keyed by **path prefix** — that the request-limit enforcement plugin consumes.
 Exposing both an exact-match and a prefix-match map is the directory's reason to
@@ -16,6 +17,11 @@ here. Size strings in human units (`"8 KiB"`) are
 resolved to absolute byte counts here so that no consumer ever parses a size
 string. The directory does **not** enforce the limit, locate or merge config
 sources, or know anything about the HTTP pipeline that applies the result.
+
+The client-key-gate config (`ClientKeyGateConfig`) is the second value object:
+it reads the `clientKeyGate` block into a set of valid keys and a set of exempt
+allowlist paths. Both types share the same total `from(config): Result<T>`
+contract — every malformed input is a `Result.failure`, never a thrown exception.
 
 ## II. Invariants
 
@@ -42,6 +48,19 @@ sources, or know anything about the HTTP pipeline that applies the result.
 - A constructed `RequestSizeConfig` MUST be **immutable**: its `defaultMax`,
   `routeOverrides`, and `routePrefixOverrides` reflect a single point-in-time
   read of the source `Config` and never change thereafter.
+
+### `ClientKeyGateConfig`
+
+- `ClientKeyGateConfig.from` MUST be **total**: it NEVER throws. Every failure —
+  the `clientKeyGate` section being absent, or `allowlistPaths` being a scalar
+  where a list is required — MUST be returned as `Result.failure`.
+- An empty `validKeys` set MUST parse as `Result.success`, NOT a failure: an
+  empty set is the valid representation of a disabled gate, not a misconfiguration.
+- `keys` MUST be read as a single comma-separated string (not a HOCON list),
+  split on `,`, trimmed, with blank segments dropped, into `validKeys`. A scalar
+  is the override-compatible shape — an env var / secret injects one value.
+- A constructed `ClientKeyGateConfig` MUST be **immutable** — `validKeys` and
+  `allowlistPaths` reflect a single point-in-time read of the source `Config`.
 
 ## III. Behavioral Contracts
 
@@ -81,6 +100,25 @@ sources, or know anything about the HTTP pipeline that applies the result.
 - **Idempotency**: Yes. A pure function of its input `Config`; repeated calls
   with an equal `Config` yield equal results.
 
+### `ClientKeyGateConfig` (data class)
+
+- Immutable value object: `validKeys: Set<String>`, `allowlistPaths: Set<String>`.
+  Carries no behavior beyond holding the validated values.
+
+### `ClientKeyGateConfig.from(config: Config): Result<ClientKeyGateConfig>`
+
+- **Caller**: invoked at server startup with the already-loaded application `Config`.
+- **Side effects**: **None** — pure read of the supplied `Config`.
+- **Reads**: `clientKeyGate.keys` (comma-separated string → trimmed,
+  blank-dropped `validKeys` set) and `clientKeyGate.allowlistPaths` (string list
+  → `allowlistPaths` set).
+- **Error handling** (all returned as `Result.failure`, never thrown): a missing
+  `clientKeyGate` section → `IllegalArgumentException`; a mistyped
+  `allowlistPaths` → the `com.typesafe.config.ConfigException`, captured. An
+  empty `keys` value is NOT an error — it yields an empty `validKeys` and
+  `Result.success`.
+- **Idempotency**: Yes — a pure function of its input `Config`.
+
 ## IV. Infrastructure & Environment
 
 - **Config keys read** (under the application `Config`):
@@ -90,16 +128,20 @@ sources, or know anything about the HTTP pipeline that applies the result.
     strings keyed by full request path.
   - `server.requestSize.routePrefixOverrides."<prefix>"` — optional; per-prefix
     size strings keyed by a path prefix (e.g. `/api/v1/conversations`).
+  - `clientKeyGate.keys` — required comma-separated string of valid client keys
+    (empty = disabled gate).
+  - `clientKeyGate.allowlistPaths` — required string list of gate-exempt paths.
 - **Cross-module dependency**: `DataSize` (`ed.unicoach.common.util`, in the
   `common` module), the non-negative byte-count value type used for all sizes.
 - **Library dependency**: Typesafe Config (`com.typesafe.config`) for
   size-string resolution (`Config.getBytes`) and the exception types raised on
   missing or malformed values.
 - No environment variables are read by this directory. Operator overrides such
-  as `SERVER_MAX_REQUEST_SIZE` are bound at the config-source layer
-  (`rest-server.conf`), outside this module's scope.
+  as `SERVER_MAX_REQUEST_SIZE` and `UNICOACH_CLIENT_KEYS` are bound at the
+  config-source layer (`rest-server.conf`), outside this module's scope.
 
 ## V. History
 
 - [x] [RFC-29: Request Payload Size Limits](../../../../../../../../rfc/29-request-payload-limits.md)
 - [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../../rfc/45-coaching-service.md)
+- [x] [RFC-54: Client-Key Gate](../../../../../../../../rfc/54-client-key-gate.md)

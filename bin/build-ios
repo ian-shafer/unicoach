@@ -132,5 +132,6 @@ exec xcodebuild \
   -destination "$UNICOACH_DESTINATION" \
   -derivedDataPath "$PROJECT_ROOT/ios-app/build/DerivedData" \
   "UNICOACH_BACKEND_URL=$UNICOACH_BACKEND_URL" \
+  "UNICOACH_CLIENT_KEY=${UNICOACH_CLIENT_KEY:-}" \
   ${SIGNING_ARGS[@]+"${SIGNING_ARGS[@]}"} \
   build

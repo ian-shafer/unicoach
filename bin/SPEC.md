@@ -290,7 +290,11 @@ guard message wins over a missing-env error.
   optional, default `Debug`). Derives
   `UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}` from the repo
   `.env` (the single host source the server also reads); `APP_DOMAIN` defaults
-  to `localhost`. A simulator build (destination contains `Simulator`) skips
+  to `localhost`. Forwards `UNICOACH_CLIENT_KEY` from the repo `.env` to
+  `xcodebuild` verbatim as a build setting — a raw secret passed unchanged,
+  unlike the derived `UNICOACH_BACKEND_URL`; an unset value bakes blank, so the
+  app sends no client-key header. A simulator build (destination contains
+  `Simulator`) skips
   signing; a device build additionally sources `ios-app/env/signing.env` for
   `UNICOACH_DEVELOPMENT_TEAM` (required) and forwards
   `CODE_SIGN_STYLE=Automatic
@@ -548,7 +552,7 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - **System Xcode (iOS scripts)**: `build-ios`, `install-ios`, and `is-nix`
   require the **system** Xcode toolchain (`xcodebuild`, `xcrun devicectl`), NOT
   the flake, and MUST run outside `nix develop`. `build-ios` reads
-  `APP_DOMAIN`/`SERVER_PORT` from the repo `.env` and
+  `APP_DOMAIN`/`SERVER_PORT`/`UNICOACH_CLIENT_KEY` from the repo `.env` and
   `UNICOACH_DESTINATION`/`UNICOACH_CONFIGURATION` from `ios-app/env/<env>.env`;
   device builds also read `UNICOACH_DEVELOPMENT_TEAM`/`UNICOACH_DEVICE` from
   `ios-app/env/signing.env`. `is-nix` keys off `IN_NIX_SHELL` (and
@@ -599,3 +603,4 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - [x] [RFC-47: Authenticated Contract-Referee Fuzzing](../rfc/47-authenticated-contract-fuzz.md)
 - [x] [RFC-50: Deploy the Backend REST API to AWS](../rfc/50-deploy-rest-api-aws.md)
 - [x] [RFC-51: iOS Deploy to Physical Device](../rfc/51-ios-deploy-to-device.md)
+- [x] [RFC-54: Client-Key Gate](../rfc/54-client-key-gate.md)

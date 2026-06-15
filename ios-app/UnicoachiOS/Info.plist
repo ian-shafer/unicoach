@@ -6,6 +6,8 @@
 	<string>com.unicoach.UnicoachiOS</string>
 	<key>UnicoachBackendURL</key>
 	<string>$(UNICOACH_BACKEND_URL)</string>
+	<key>UnicoachClientKey</key>
+	<string>$(UNICOACH_CLIENT_KEY)</string>
 	<key>CFBundleName</key>
 	<string>Unicoach</string>
 	<key>CFBundleVersion</key>

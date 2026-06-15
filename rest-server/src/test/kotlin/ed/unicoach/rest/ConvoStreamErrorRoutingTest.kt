@@ -10,6 +10,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.CreateStudentRequest
@@ -78,11 +79,12 @@ class ConvoStreamErrorRoutingTest {
       val sessionConfig = SessionConfig.from(config).getOrThrow()
       val requestSizeConfig = RequestSizeConfig.from(config).getOrThrow()
       val coachingConfig = CoachingConfig.from(config).getOrThrow()
+      val clientKeyGateConfig = ClientKeyGateConfig.from(config).getOrThrow()
 
       testServer =
         embeddedServer(Netty, port = 0, host = "127.0.0.1") {
           environment.monitor.subscribe(ApplicationStopped) { database.close() }
-          appModule(database, sessionConfig, requestSizeConfig, fakeProvider, coachingConfig)
+          appModule(database, sessionConfig, requestSizeConfig, fakeProvider, coachingConfig, clientKeyGateConfig)
         }
       testServer.start(wait = false)
       boundPort =

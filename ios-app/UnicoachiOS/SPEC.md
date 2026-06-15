@@ -84,6 +84,21 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
   from the `UNICOACH_BACKEND_URL` build setting). Tests inject an explicit
   `baseURL`, so the resolver path is exercised in production only.
 
+### Client key
+
+- `APIClient` MUST send the build-time-baked client key on the
+  `X-Unicoach-Client-Key` header of every request it issues — on BOTH the
+  `perform` and `stream` paths — whenever the key is non-nil. A nil key (a local
+  build with a blank key) MUST send no header, which the disabled local gate
+  accepts. The key is orthogonal to the session cookie: it identifies the client
+  app, not the user.
+- The client key MUST resolve through `resolveClientKey` (`ClientKey.swift`),
+  which is total and pure: it trims the input and yields `nil` for any nil,
+  empty, or whitespace-only value, NEVER crashing. In production
+  `APIClient.init`'s `clientKey` defaults to `defaultClientKey()`, which reads
+  the `UnicoachClientKey` `Info.plist` key (baked at build time from the
+  `UNICOACH_CLIENT_KEY` build setting); tests inject an explicit key.
+
 ### Streaming transport
 
 - Streaming MUST use a second, dedicated `URLSession` with a 60-second
@@ -251,6 +266,24 @@ func defaultBackendURL() -> URL
   for `APIClient.init`'s `baseURL`.
 - **Idempotency**: Both are referentially transparent for a fixed bundle value.
 
+### `ClientKey.swift`
+
+See [`ClientKey.swift`](./ClientKey.swift).
+
+```
+func resolveClientKey(_ infoValue: String?) -> String?
+func defaultClientKey() -> String?
+```
+
+- `resolveClientKey` is **pure** — trims `infoValue` and returns the trimmed
+  string when non-empty, else `nil` (nil, empty, or whitespace-only). It NEVER
+  throws or crashes.
+- `defaultClientKey` performs exactly one side effect: a
+  `Bundle.main.object(forInfoDictionaryKey: "UnicoachClientKey")` read, resolved
+  through `resolveClientKey`. It is the production default for `APIClient.init`'s
+  `clientKey`; a blank/absent value yields `nil`, so no header is sent.
+- **Idempotency**: Both are referentially transparent for a fixed bundle value.
+
 ### `APIClient`
 
 See [`APIClient.swift`](./APIClient.swift).
@@ -261,8 +294,10 @@ func post(_ path: String) async throws -> (Data, HTTPURLResponse)
 func get(_ path: String) async throws -> (Data, HTTPURLResponse)
 ```
 
-- **Side effects**: Exactly one HTTP request per call. Body-bearing requests set
-  `Content-Type: application/json` (GETs and body-less POSTs do not). The
+- **Side effects**: Exactly one HTTP request per call, carrying the
+  `X-Unicoach-Client-Key` header when a client key is configured (non-nil).
+  Body-bearing requests set `Content-Type: application/json` (GETs and body-less
+  POSTs do not). The
   default session persists `Set-Cookie` headers into `HTTPCookieStorage.shared`;
   tests inject an ephemeral session.
 - **Failure modes** (client-synthesized codes — these NEVER originate from the
@@ -720,6 +755,11 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
   `$(UNICOACH_BACKEND_URL)`). When the key is unset, empty, or unparseable, the
   resolver falls back to `http://localhost:8080`. Overridable via constructor
   injection (tests pass an explicit `baseURL`).
+- **Client key**: Baked at build time from the `UNICOACH_CLIENT_KEY` build
+  setting into the `UnicoachClientKey` `Info.plist` key (`Info.plist` value
+  `$(UNICOACH_CLIENT_KEY)`), read at launch by `defaultClientKey()`. Blank/unset
+  bakes no key, so `APIClient` sends no `X-Unicoach-Client-Key` header (the
+  disabled local gate accepts this). Overridable via constructor injection.
 - **Transport timeouts**: the request session uses a 10-second
   `timeoutIntervalForRequest`; the stream session uses the 60-second inter-chunk
   idle timeout `APIClient.streamIdleTimeout` (a `static let`, NOT
@@ -761,3 +801,4 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 - [x] [RFC-48: iOS multi-turn coaching conversation](../../rfc/48-ios-multi-turn-conversation.md)
 - [x] [RFC-49: iOS Chat UX Improvements](../../rfc/49-ios-chat-ux-improvements.md)
 - [x] [RFC-51: iOS Deploy to Physical Device](../../rfc/51-ios-deploy-to-device.md)
+- [x] [RFC-54: Client-Key Gate](../../rfc/54-client-key-gate.md)

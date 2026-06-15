@@ -77,8 +77,20 @@ does not contain domain logic.
   dependency failure MUST NEVER turn the liveness probe non-200, so a
   health-check consumer can never kill an otherwise-serving process over a
   dependency blip.
-- `/healthz` MUST remain exempt from the future client-key gate — a load
-  balancer polling it carries no client key.
+- `/healthz` MUST remain the sole client-key-gate allowlist entry — an AWS ALB /
+  load-balancer health probe carries no client key, so the gate MUST NEVER
+  reject it with `403`.
+
+### Client-Key Gate
+
+- The client-key gate MUST be installed in `appModule` after
+  `configureSerialization` and before `configureRouting`, so it fronts every
+  registered route (a future route inherits it with no extra wiring) and its
+  `403` body serializes through the installed `ContentNegotiation`. The gate's
+  request-time behavior is owned by [`plugins/SPEC.md`](./plugins/SPEC.md).
+- `ClientKeyGateConfig.from(config)` MUST be resolved fail-fast (`getOrThrow()`)
+  at boot, so a malformed `clientKeyGate` block crashes startup rather than
+  failing on the first request.
 
 ### Session Cookie
 
@@ -153,10 +165,11 @@ does not contain domain logic.
   server binds.
 - **Idempotency**: Not idempotent — calling twice binds two server instances.
 
-### `Application.appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig)` — [`Application.kt`](./Application.kt)
+### `Application.appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig, clientKeyGateConfig)` — [`Application.kt`](./Application.kt)
 
-- **Side effects**: Installs `ContentNegotiation` (Jackson), `StatusPages`, and
-  the application-scope request-body-size limit via
+- **Side effects**: Installs `ContentNegotiation` (Jackson), the client-key gate
+  via `configureClientKeyGate(clientKeyGateConfig)` (after serialization, before
+  routing), `StatusPages`, and the application-scope request-body-size limit via
   `configureRequestSizeLimit(requestSizeConfig)`; builds `AuthService`,
   `StudentService`, and `CoachingService(database, chatProvider, coachingConfig)`,
   and registers all routes via `configureRouting`.
@@ -273,6 +286,8 @@ Required keys in `rest-server.conf`:
 | `session.cookieDomain`              | String                       | Cookie domain attribute                                                       |
 | `session.cookieSecure`              | Boolean                      | `Secure` cookie flag                                                          |
 | `sessionExpiry.ignorePathPrefixes`  | List\<String\>               | Paths excluded from expiry enqueue                                            |
+| `clientKeyGate.keys`                | String (comma-separated)     | Valid client keys; empty disables the gate (`${?UNICOACH_CLIENT_KEYS}` override) |
+| `clientKeyGate.allowlistPaths`      | List\<String\>               | Paths exempt from the gate (e.g. `["/healthz"]`)                              |
 
 ### Config Load Order
 
@@ -333,3 +348,7 @@ NOT depend on `net`. (`CoachingService` and `CoachingConfig` live in the
       — Replaced the placeholder `GET /hello` route with the unauthenticated,
       unversioned `GET /healthz` liveness endpoint that depends on no backing
       service.
+- [x] [RFC-54: Client-Key Gate](../../../../../../../rfc/54-client-key-gate.md)
+      — Loaded `ClientKeyGateConfig` fail-fast in `startServer`, threaded it
+      through `appModule`, and installed the gate after serialization and before
+      routing so it fronts every route.

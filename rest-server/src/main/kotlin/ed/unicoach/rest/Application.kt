@@ -12,8 +12,10 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.plugins.SessionExpiryPlugin
+import ed.unicoach.rest.plugins.configureClientKeyGate
 import ed.unicoach.rest.plugins.configureRequestSizeLimit
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
@@ -63,6 +65,11 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       .from(config)
       .getOrThrow()
 
+  val clientKeyGateConfig =
+    ClientKeyGateConfig
+      .from(config)
+      .getOrThrow()
+
   val database = Database(dbConfig)
 
   val queueService = QueueService(database)
@@ -85,7 +92,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         database.close()
       }
 
-      appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig)
+      appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig, clientKeyGateConfig)
 
       install(SessionExpiryPlugin) {
         this.sessionConfig = sessionConfig
@@ -116,8 +123,10 @@ fun Application.appModule(
   requestSizeConfig: RequestSizeConfig,
   chatProvider: ChatProvider,
   coachingConfig: CoachingConfig,
+  clientKeyGateConfig: ClientKeyGateConfig,
 ) {
   configureSerialization()
+  configureClientKeyGate(clientKeyGateConfig)
   configureStatusPages()
   configureRequestSizeLimit(requestSizeConfig)
 

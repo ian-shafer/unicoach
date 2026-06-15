@@ -12,6 +12,8 @@ request/response in the `rest-server`. The plugins cover:
    session expiry extension jobs.
 4. **RequestSizeLimit** — Application-scope request body size enforcement,
    rejecting oversized bodies with `413`.
+5. **ClientKeyGate** — A pre-routing interceptor that rejects any request
+   lacking a valid client key with `403`, exempting only a path allowlist.
 
 ---
 
@@ -111,6 +113,32 @@ request/response in the `rest-server`. The plugins cover:
   StatusPages.
 - An over-limit body MUST be rejected before `ContentNegotiation` runs, so it
   produces a `413` — never a Jackson `400`.
+
+### ClientKeyGate (`ClientKeyGate.kt`)
+
+- The gate MUST intercept `ApplicationCallPipeline.Plugins` — before routing —
+  so it fronts every route. A request that does not carry a valid client key
+  MUST be rejected with `403` and the pipeline MUST be `finish()`ed before any
+  route handler runs.
+- The gate MUST apply to ALL routes, including the public `auth/register` and
+  `auth/login` routes. The ONLY exemption is an exact-match path allowlist (the
+  `/healthz` health-check, so load-balancer probes pass). Matching MUST be exact,
+  not prefix: `/healthzextra` MUST NOT be exempt.
+- The gate MUST be independent of the session cookie: it MUST NOT read or depend
+  on the session, and contributes no cookie or session side effect. The client
+  key answers "is this one of my clients?"; the session answers "who is the
+  user?". A protected route requires both.
+- An empty `validKeys` set MUST disable the gate (fail open) — every request
+  passes. This is the local/CI default.
+- A rejected request MUST receive `403` with the shared
+  `ErrorResponse(code = "forbidden", ...)`. A missing header and an invalid key
+  MUST return the identical response — the gate MUST NOT reveal which condition
+  failed.
+- Key comparison MUST be constant-time and MUST NOT short-circuit on the first
+  match, so neither which key matched nor how many keys were checked is
+  observable through request timing.
+- The header name (`X-Unicoach-Client-Key`) MUST be a compile-time constant, not
+  a config value.
 
 ---
 
@@ -215,11 +243,30 @@ request/response in the `rest-server`. The plugins cover:
 
 ---
 
+### `configureClientKeyGate()` ([ClientKeyGate.kt](./ClientKeyGate.kt))
+
+- **Signature**: `fun Application.configureClientKeyGate(config: ClientKeyGateConfig)`
+- **Side Effects**: Installs one interceptor on `ApplicationCallPipeline.Plugins`.
+  No database writes, no network calls. On rejection, writes a `403` response and
+  `finish()`es the pipeline.
+- **Per-call flow**: empty `validKeys` → proceed (disabled); exact-match path in
+  `allowlistPaths` → proceed; otherwise the `X-Unicoach-Client-Key` header MUST
+  match a configured key (constant-time, over the whole set) or the call is
+  rejected `403` with `ErrorResponse(code = "forbidden")`.
+- **Idempotency**: Installs once at startup; the per-request check is read-only
+  and side-effect-free except for the rejection response.
+
+---
+
 ## IV. Infrastructure & Environment
 
 - **HOCON Key** (`rest-server.conf`): `sessionExpiry.ignorePathPrefixes` — a
   list of path prefix strings. Example: `["/health"]`. Read by `Application.kt`
   and passed to `SessionExpiryPluginConfig.ignorePathPrefixes`.
+- **HOCON Keys** (`rest-server.conf`): `clientKeyGate.keys` — comma-separated
+  valid client keys, overridden by the `UNICOACH_CLIENT_KEYS` env var (empty =
+  disabled gate); `clientKeyGate.allowlistPaths` — string list of gate-exempt
+  paths. Parsed by `ClientKeyGateConfig` and passed to `configureClientKeyGate`.
 - **Gradle Plugin** (`rest-server/build.gradle.kts`): `SessionExpiryPlugin`
   calls `SessionExpiryPayload(...).asJson()`, which requires the
   `alias(libs.plugins.kotlin.serialization)` plugin to be applied at the
@@ -261,3 +308,7 @@ request/response in the `rest-server`. The plugins cover:
       — extended `RequestSizeLimit.kt` body-limit resolution to exact override →
       longest matching prefix (`RequestSizeConfig.routePrefixOverrides`) →
       `defaultMax`, so dynamic conversation paths receive the correct limit.
+- [x] [RFC-54: Client-Key Gate](../../../../../../../../rfc/54-client-key-gate.md)
+      — introduced `ClientKeyGate.kt`: a pre-routing interceptor rejecting
+      requests without a valid client key (`403`), exempting an exact-match path
+      allowlist.

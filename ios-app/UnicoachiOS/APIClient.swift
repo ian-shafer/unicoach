@@ -7,6 +7,10 @@ final class APIClient: @unchecked Sendable {
     static let streamIdleTimeout: TimeInterval = 60
 
     let baseURL: URL
+    /// The client key baked into the bundle at build time, sent on every request
+    /// via `X-Unicoach-Client-Key` when non-nil. Nil on a local build (blank key)
+    /// means no header is sent, which the disabled local gate accepts.
+    let clientKey: String?
     let session: URLSession
     /// A second session for streaming requests. A dedicated session is used
     /// because a per-request `timeoutInterval` cannot reliably extend a
@@ -51,8 +55,9 @@ final class APIClient: @unchecked Sendable {
         return formatter
     }()
 
-    init(baseURL: URL = defaultBackendURL(), session: URLSession? = nil) {
+    init(baseURL: URL = defaultBackendURL(), clientKey: String? = defaultClientKey(), session: URLSession? = nil) {
         self.baseURL = baseURL
+        self.clientKey = clientKey
         if let session = session {
             // Injected (tests): the same session backs both request and stream paths.
             self.session = session
@@ -106,6 +111,9 @@ final class APIClient: @unchecked Sendable {
 
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = method
+        if let clientKey = clientKey {
+            urlRequest.setValue(clientKey, forHTTPHeaderField: "X-Unicoach-Client-Key")
+        }
         if let body = body {
             urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
             urlRequest.httpBody = try JSONEncoder().encode(body)
@@ -142,6 +150,9 @@ final class APIClient: @unchecked Sendable {
 
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
+        if let clientKey = clientKey {
+            urlRequest.setValue(clientKey, forHTTPHeaderField: "X-Unicoach-Client-Key")
+        }
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(accept, forHTTPHeaderField: "Accept")
         urlRequest.httpBody = try JSONEncoder().encode(body)
