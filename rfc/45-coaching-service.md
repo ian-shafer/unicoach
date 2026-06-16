@@ -420,10 +420,10 @@ resolve the system prompt row; read the replay history (`listTurns`); append the
 config.model`, `system_prompt_id` = resolved id,
 `request_params = null`, `content = ConvoContent.userContent(message)`). Commit.
 `request_params` stays null in v1: the only per-turn params are `model` and
-`maxTokens`, and `model` is already pinned in `model_requested` while `maxTokens`
-is reconstructable from config, so mirroring them into the JSONB column would
-duplicate provenance without adding any. The user turn is now durable regardless
-of what the provider does.
+`maxTokens`, and `model` is already pinned in `model_requested` while
+`maxTokens` is reconstructable from config, so mirroring them into the JSONB
+column would duplicate provenance without adding any. The user turn is now
+durable regardless of what the provider does.
 
 **Provider call (collecting `Started.reply`):** the flow is cold and
 single-collection — collecting it executes the turn. It builds
@@ -441,13 +441,13 @@ Wall-clock latency is measured around the collection for `latency_ms`.
 **Transaction 2 (terminal persistence):** exactly one `convo_responses` row is
 written for every request row, whatever the terminal:
 
-| Provider terminal                                                              | Persisted row                                                                                                                                           | Emitted                           |
-| :----------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------ | :-------------------------------- |
+| Provider terminal                                                              | Persisted row                                                                                                                                           | Emitted                                                                                                               |
+| :----------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------------------- |
 | `Completed`                                                                    | full `NewConvoResponse` from `ChatResponse` (content, model_resolved, stop_reason, tokens, provider_request_id, latency_ms) + raw row from `rawPayload` | `ReplyEvent.Completed(persisted)` on a successful write; `Failed(retriable = true)` if the write itself fails (below) |
-| `Rejected`                                                                     | `stop_reason = "error"`, `content = null`, `model_resolved = null`, tokens null, `provider_request_id` when supplied, raw row when an error body exists | `Failed(retriable = false)`       |
-| `TransientFailure`                                                             | same error row shape                                                                                                                                    | `Failed(retriable = true)`        |
-| exception escaping the flow (non-cancellation; a defect per the port contract) | same error row shape, no raw row                                                                                                                        | `Failed(retriable = true)`        |
-| cancellation (collector cancelled — client disconnect)                         | same error row shape, written under `NonCancellable` in the flow's completion handler, only if no response row was persisted yet                        | nothing (collector is gone)       |
+| `Rejected`                                                                     | `stop_reason = "error"`, `content = null`, `model_resolved = null`, tokens null, `provider_request_id` when supplied, raw row when an error body exists | `Failed(retriable = false)`                                                                                           |
+| `TransientFailure`                                                             | same error row shape                                                                                                                                    | `Failed(retriable = true)`                                                                                            |
+| exception escaping the flow (non-cancellation; a defect per the port contract) | same error row shape, no raw row                                                                                                                        | `Failed(retriable = true)`                                                                                            |
+| cancellation (collector cancelled — client disconnect)                         | same error row shape, written under `NonCancellable` in the flow's completion handler, only if no response row was persisted yet                        | nothing (collector is gone)                                                                                           |
 
 The error-row shape above (`stop_reason = "error"` with null content, model, and
 tokens) is the only shape the `convo_responses` CHECK constraints permit when
@@ -470,13 +470,12 @@ turns but not streamed ones, the rule is uniform: every provider attempt is
 exactly one persisted request/response pair, and re-attempt is user-initiated.
 `Failed.retriable` tells the client whether resending is worth suggesting.
 
-**Visibility rule.** A turn is _visible_ — projected by
-`listMessages` and replayed to the provider — iff its response row has
-`content IS NOT NULL` (success). Failed and abandoned turns stay in the
-append-only log as audit but never reach the API or the model: the user's failed
-message is gone from history after a reload, so resending it is clean and the
-model never sees half-turns or duplicates. Clients that want to prefill a retry
-keep their local copy.
+**Visibility rule.** A turn is _visible_ — projected by `listMessages` and
+replayed to the provider — iff its response row has `content IS NOT NULL`
+(success). Failed and abandoned turns stay in the append-only log as audit but
+never reach the API or the model: the user's failed message is gone from history
+after a reload, so resending it is clean and the model never sees half-turns or
+duplicates. Clients that want to prefill a retry keep their local copy.
 
 **Failed first turn deletes the conversation.** When `startConvo`'s reply
 terminates without a success, transaction 2 also soft-deletes the just-created
@@ -491,13 +490,13 @@ cooperative-cancellation contract in
 `chat/src/main/kotlin/ed/unicoach/chat/SPEC.md`) and the `NonCancellable`
 completion handler persists the error row only when no response row was written
 yet — the interlock with transaction 2: a `Completed`/`Failed` that already
-committed its row makes the finalizer a no-op, so exactly one response row exists
-per request. The turn is abandoned, invisible, and re-attemptable; no work
-outlives the request coroutine. Detaching the
-collection into an application-scoped job (so the reply completes server-side
-for a reconnecting client) was rejected as billing for replies nobody may read,
-and can be layered on later without schema change since both options share the
-two-transaction shape.
+committed its row makes the finalizer a no-op, so exactly one response row
+exists per request. The turn is abandoned, invisible, and re-attemptable; no
+work outlives the request coroutine. Detaching the collection into an
+application-scoped job (so the reply completes server-side for a reconnecting
+client) was rejected as billing for replies nobody may read, and can be layered
+on later without schema change since both options share the two-transaction
+shape.
 
 **Concurrent turns on one conversation** are not serialized: two simultaneous
 `postTurn`s each snapshot history in their own transaction 1, so neither replays
@@ -601,11 +600,10 @@ archivedAt)`
 from `ConvoWithActivity` (for the create response,
 `lastActivityAt = userTurn.createdAt` — valid without a re-query because the
 just-created convo holds exactly one request row, so `MAX(created_at)` equals
-that row); `Message` ids are role-prefixed —
-`"u_" + request.id` / `"c_" + response.id` — to keep user and coach ids disjoint
-in one opaque space (the contract pins `Message.id` as opaque and
-non-parseable, so the prefix is an internal uniqueness device, not a
-client-readable format) — with
+that row); `Message` ids are role-prefixed — `"u_" + request.id` /
+`"c_" + response.id` — to keep user and coach ids disjoint in one opaque space
+(the contract pins `Message.id` as opaque and non-parseable, so the prefix is an
+internal uniqueness device, not a client-readable format) — with
 `content = ConvoContent.renderText(...)`, `role` `user`/`coach`, and `createdAt`
 from the projected row (`request.createdAt` for a user message,
 `response.createdAt` for a coach message — the source of the chronological
@@ -623,9 +621,9 @@ override mechanism is exact-path only (`routeOverrides[call.request.path()]`)
 and cannot match `/{conversationId}/messages`, so `RequestSizeConfig` gains a
 `routePrefixOverrides: Map<String, DataSize>` section and the `RequestBodyLimit`
 lambda resolves exact match → longest matching prefix → default.
-`rest-server.conf` adds the block nested under the existing
-`server.requestSize` section that `RequestSizeConfig.from` reads (sibling of the
-current `routeOverrides`):
+`rest-server.conf` adds the block nested under the existing `server.requestSize`
+section that `RequestSizeConfig.from` reads (sibling of the current
+`routeOverrides`):
 
 ```hocon
 server {
@@ -711,11 +709,11 @@ Covered where they arise above; the remainder:
   new `SystemPrompt` model reuses; the `ErrorResponse` DTO
   (`rest-server/.../models/ErrorResponse.kt`) and the `FieldError` validation
   shape (`common/.../ed/unicoach/error/FieldError.kt`); the body-limit plugin
-  (`RequestSizeLimit.kt`); the
-  `Result<sealed outcome>` convention (`AuthService`/`StudentService`); and the
-  `Database.withConnection` coroutine/transaction context. An Anthropic adapter
-  is a separate, parallel effort behind `ChatProviderFactory`'s `anthropic`
-  selector; nothing here depends on it.
+  (`RequestSizeLimit.kt`); the `Result<sealed outcome>` convention
+  (`AuthService`/`StudentService`); and the `Database.withConnection`
+  coroutine/transaction context. An Anthropic adapter is a separate, parallel
+  effort behind `ChatProviderFactory`'s `anthropic` selector; nothing here
+  depends on it.
 
 ## Tests
 
@@ -927,8 +925,8 @@ green in the JUnit XML under `<module>/build/test-results/test/`.
 8. **`CoachingService` turn path** (`startConvo`, `postTurn`, the reply flow,
    failure semantics, cancellation finalizer, first-turn-failure soft-delete)
    - remaining `CoachingServiceTest` cases. May be landed incrementally — turn
-   happy path first (tests 1–4, 13), then the failure/cancellation/soft-delete
-   behaviors (tests 5–11, 14) — each sub-behavior gated by its named test.
+     happy path first (tests 1–4, 13), then the failure/cancellation/soft-delete
+     behaviors (tests 5–11, 14) — each sub-behavior gated by its named test.
    * Verify: `nix develop -c bin/test service`.
 9. **Request-size prefix overrides.** `RequestSizeConfig.routePrefixOverrides`
    - `RequestSizeLimit` longest-prefix resolution + `rest-server.conf` block +

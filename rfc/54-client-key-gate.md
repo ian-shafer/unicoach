@@ -14,15 +14,15 @@ wall and is out of scope.
 
 The gate is independent of the existing session cookie. The client key answers
 "is this one of my clients?"; the session cookie answers "who is the user?".
-Protected routes require both. Config holds a *set* of valid keys (loaded from a
+Protected routes require both. Config holds a _set_ of valid keys (loaded from a
 single env var, never committed) so keys can be rotated without downtime and
 issued distinctly per client, each independently revocable. The gate applies to
-all routes including the public `auth/register` and `auth/login` routes; only the
-`/healthz` health-check route is exempt so AWS ALB/target-group probes pass. The
-durable invariant the gate establishes: a central key check fronts every route
-except an explicit health-check allowlist, and it is orthogonal to user-session
-authentication. It is a deploy-time control, enabled in production solely by
-setting the env var.
+all routes including the public `auth/register` and `auth/login` routes; only
+the `/healthz` health-check route is exempt so AWS ALB/target-group probes pass.
+The durable invariant the gate establishes: a central key check fronts every
+route except an explicit health-check allowlist, and it is orthogonal to
+user-session authentication. It is a deploy-time control, enabled in production
+solely by setting the env var.
 
 ## Detailed Design
 
@@ -36,7 +36,8 @@ X-Unicoach-Client-Key: <key>
 
 The header name is a compile-time constant on both server and client, not a
 config value, and is kept separate from the `UNICOACH_SESSION` cookie (the
-compose-independently/both-required invariant is stated in the Executive Summary).
+compose-independently/both-required invariant is stated in the Executive
+Summary).
 
 ### Configuration
 
@@ -63,8 +64,8 @@ it is supplied from the task environment / Secrets Manager. Distinct keys (one
 for the iOS app, one for control tooling) are comma-joined in the same variable;
 revoking one means removing it from the list and redeploying.
 
-A config model mirrors the `RequestSizeConfig.from(config): Result<T>` pattern in
-`rest-server/src/main/kotlin/ed/unicoach/rest/config/`:
+A config model mirrors the `RequestSizeConfig.from(config): Result<T>` pattern
+in `rest-server/src/main/kotlin/ed/unicoach/rest/config/`:
 
 ```kotlin
 data class ClientKeyGateConfig(
@@ -112,9 +113,9 @@ runs before routing. Per call, in order:
 Key comparison is constant-time via `java.security.MessageDigest.isEqual`,
 comparing the UTF-8 bytes of the provided value against each configured key. The
 match folds over the entire key set without short-circuiting on the first hit
-(boolean OR accumulation), so neither which key matched nor how many were checked
-is observable through timing (`isEqual` returns early on a length mismatch,
-leaking key length — acceptable for a raise-the-bar control).
+(boolean OR accumulation), so neither which key matched nor how many were
+checked is observable through timing (`isEqual` returns early on a length
+mismatch, leaking key length — acceptable for a raise-the-bar control).
 
 Installation is wired in `Application.appModule` after `configureSerialization`
 (so the `403` body serializes through the installed `ContentNegotiation`) and
@@ -126,8 +127,8 @@ extending the existing parameter list
 ### Error response and edge cases
 
 A rejected request receives `403 Forbidden` with the existing
-`ErrorResponse(code, message)` body shape used by `configureStatusPages`, using a
-lowercase code consistent with that plugin's convention:
+`ErrorResponse(code, message)` body shape used by `configureStatusPages`, using
+a lowercase code consistent with that plugin's convention:
 
 ```json
 { "code": "forbidden", "message": "Valid client key required." }
@@ -135,10 +136,10 @@ lowercase code consistent with that plugin's convention:
 
 A missing header and an invalid key return the **same** response; the gate does
 not reveal which condition failed. The gate does not inspect or depend on the
-session cookie and contributes no cookie or session side effects: it `finish()`es
-the pipeline before any route handler runs. Session extension is independently
-unaffected because `SessionExpiryPlugin` already excludes non-2xx responses
-(`ResponseSent` on a status outside `200..299`).
+session cookie and contributes no cookie or session side effects: it
+`finish()`es the pipeline before any route handler runs. Session extension is
+independently unaffected because `SessionExpiryPlugin` already excludes non-2xx
+responses (`ResponseSent` on a status outside `200..299`).
 
 ### Dependencies
 
@@ -148,8 +149,8 @@ interceptors, and `ErrorResponse` already exist in the module.
 ### iOS client
 
 The client key is baked into the app bundle at build time using the exact
-mechanism already used for `UNICOACH_BACKEND_URL` (see `ios-app/DEPLOY.md`):
-a build setting → `Info.plist` substitution → `Bundle.main` read.
+mechanism already used for `UNICOACH_BACKEND_URL` (see `ios-app/DEPLOY.md`): a
+build setting → `Info.plist` substitution → `Bundle.main` read.
 
 - `bin/build-ios` reads `UNICOACH_CLIENT_KEY` from the repo `.env` (blank by
   default) and passes it verbatim to `xcodebuild` as a build-setting argument on
@@ -170,11 +171,12 @@ a build setting → `Info.plist` substitution → `Bundle.main` read.
   ```
 
 - A new `ios-app/UnicoachiOS/ClientKey.swift` mirrors `BackendURL.swift`'s
-  pure/impure split: a pure `func resolveClientKey(_ infoValue: String?) -> String?`
-  that trims whitespace and returns `nil` for nil/blank input (unit-testable
-  without a bundle), and `func defaultClientKey() -> String?` that reads the
-  `UnicoachClientKey` Info.plist value via
-  `Bundle.main.object(forInfoDictionaryKey:)` and delegates to `resolveClientKey`.
+  pure/impure split: a pure
+  `func resolveClientKey(_ infoValue: String?) -> String?` that trims whitespace
+  and returns `nil` for nil/blank input (unit-testable without a bundle), and
+  `func defaultClientKey() -> String?` that reads the `UnicoachClientKey`
+  Info.plist value via `Bundle.main.object(forInfoDictionaryKey:)` and delegates
+  to `resolveClientKey`.
 - `ios-app/UnicoachiOS/APIClient.swift` gains a stored client-key property,
   injectable via `init` with a default of `defaultClientKey()` (mirroring how
   `baseURL` defaults to `defaultBackendURL()`), and sets the
@@ -200,7 +202,8 @@ parsing. Existing routing tests (`AuthRoutingTest`, `StudentRoutingTest`,
 - `keys` of `"k1,k2,k3"` parses to the set `{k1, k2, k3}`.
 - Whitespace around delimited keys is trimmed: `" k1 , k2 "` → `{k1, k2}`.
 - Blank `keys` (`""`) parses to an empty `validKeys` set, returning success.
-- A `keys` value with empty segments (`"k1,,k2,"`) drops the blanks → `{k1, k2}`.
+- A `keys` value with empty segments (`"k1,,k2,"`) drops the blanks →
+  `{k1, k2}`.
 - `allowlistPaths` parses from a HOCON string list into the expected set.
 - A `Config` lacking the `clientKeyGate` section returns `Result.failure`.
 - A `Config` whose `allowlistPaths` is a scalar (not a list) returns
@@ -208,27 +211,28 @@ parsing. Existing routing tests (`AuthRoutingTest`, `StudentRoutingTest`,
 
 ### `ClientKeyGateTest` (interceptor behavior, `testApplication`)
 
-A minimal app installs `configureSerialization` and `configureClientKeyGate` with
-a known config and registers a single test route (e.g. `GET /api/v1/ping`) that
-responds with an explicit `200 OK`, plus the `/healthz` allowlisted route. Because
-the gate intercepts before routing, the test route must exist and return `200` so
-"reaches the route" is distinguishable from a gate-passed request hitting an
-unregistered path (which would `404`); the passing cases assert `200`.
+A minimal app installs `configureSerialization` and `configureClientKeyGate`
+with a known config and registers a single test route (e.g. `GET /api/v1/ping`)
+that responds with an explicit `200 OK`, plus the `/healthz` allowlisted route.
+Because the gate intercepts before routing, the test route must exist and return
+`200` so "reaches the route" is distinguishable from a gate-passed request
+hitting an unregistered path (which would `404`); the passing cases assert
+`200`.
 
-- **Valid key accepted**: request with a configured key on `X-Unicoach-Client-Key`
-  reaches the route and returns `200`.
+- **Valid key accepted**: request with a configured key on
+  `X-Unicoach-Client-Key` reaches the route and returns `200`.
 - **Each key in the set accepted**: with `validKeys = {kA, kB}`, a request with
   `kA` and a separate request with `kB` each return `200`.
 - **Invalid key rejected**: a request with an unconfigured key returns `403`
   with body `{"code":"forbidden", ...}` and does not reach the route.
 - **Missing header rejected**: a request with no `X-Unicoach-Client-Key` returns
   `403` with the identical body, indistinguishable from the invalid-key case.
-- **Health-check bypass**: a request to `/healthz` with no header and a non-empty
-  key set returns `200` (allowlist exact-match bypass).
+- **Health-check bypass**: a request to `/healthz` with no header and a
+  non-empty key set returns `200` (allowlist exact-match bypass).
 - **Non-allowlisted lookalike not bypassed**: a request to `/healthzextra` (no
   header) returns `403`, proving exact-match rather than prefix.
-- **Disabled gate (fail open)**: with `validKeys = {}` (empty), a request with no
-  header reaches the route and returns `200`.
+- **Disabled gate (fail open)**: with `validKeys = {}` (empty), a request with
+  no header reaches the route and returns `200`.
 
 ### iOS
 
@@ -240,58 +244,65 @@ iOS test is added in this RFC.
 
 ## Implementation Plan
 
-1. **Add `ClientKeyGateConfig` and the `clientKeyGate` config block.**
-   Create `rest-server/src/main/kotlin/ed/unicoach/rest/config/ClientKeyGateConfig.kt`
+1. **Add `ClientKeyGateConfig` and the `clientKeyGate` config block.** Create
+   `rest-server/src/main/kotlin/ed/unicoach/rest/config/ClientKeyGateConfig.kt`
    (data class + `from(config): Result<ClientKeyGateConfig>` parsing
    comma-split/trim/filter `keys` and the `allowlistPaths` string list; failure
    when the section is absent). Add the `clientKeyGate` block to
    `rest-server/src/main/resources/rest-server.conf`.
    - Verify: `nix develop -c ./gradlew :rest-server:compileKotlin`
-   - Verify: `nix develop -c ktlint rest-server/src/main/kotlin/ed/unicoach/rest/config/ClientKeyGateConfig.kt`
+   - Verify:
+     `nix develop -c ktlint rest-server/src/main/kotlin/ed/unicoach/rest/config/ClientKeyGateConfig.kt`
 
-2. **Add the config parsing tests.**
-   Create
+2. **Add the config parsing tests.** Create
    `rest-server/src/test/kotlin/ed/unicoach/rest/config/ClientKeyGateConfigTest.kt`
    with the `ClientKeyGateConfigTest` cases above.
-   - Verify: `nix develop -c bin/test rest-server --force --tests "ed.unicoach.rest.config.ClientKeyGateConfigTest"`
-   - Verify: `nix develop -c ktlint rest-server/src/test/kotlin/ed/unicoach/rest/config/ClientKeyGateConfigTest.kt`
+   - Verify:
+     `nix develop -c bin/test rest-server --force --tests "ed.unicoach.rest.config.ClientKeyGateConfigTest"`
+   - Verify:
+     `nix develop -c ktlint rest-server/src/test/kotlin/ed/unicoach/rest/config/ClientKeyGateConfigTest.kt`
 
-3. **Add the gate interceptor.**
-   Create `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/ClientKeyGate.kt`
-   with the `X-Unicoach-Client-Key` header constant and
+3. **Add the gate interceptor.** Create
+   `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/ClientKeyGate.kt` with
+   the `X-Unicoach-Client-Key` header constant and
    `fun Application.configureClientKeyGate(config: ClientKeyGateConfig)`
    intercepting `ApplicationCallPipeline.Plugins`: disabled-when-empty,
    exact-path allowlist bypass, constant-time `MessageDigest.isEqual` match over
-   all keys, `403` + `finish()` on failure with `ErrorResponse(code = "forbidden", ...)`.
+   all keys, `403` + `finish()` on failure with
+   `ErrorResponse(code = "forbidden", ...)`.
    - Verify: `nix develop -c ./gradlew :rest-server:compileKotlin`
-   - Verify: `nix develop -c ktlint rest-server/src/main/kotlin/ed/unicoach/rest/plugins/ClientKeyGate.kt`
+   - Verify:
+     `nix develop -c ktlint rest-server/src/main/kotlin/ed/unicoach/rest/plugins/ClientKeyGate.kt`
 
-4. **Wire the gate into the application module.**
-   In `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt`: load
+4. **Wire the gate into the application module.** In
+   `rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt`: load
    `ClientKeyGateConfig.from(config).getOrThrow()` in `startServer`, thread it
    into `appModule`'s signature and call, and call
    `configureClientKeyGate(clientKeyGateConfig)` after `configureSerialization`
    and before `configureRouting`.
    - Verify: `nix develop -c ./gradlew :rest-server:compileKotlin`
-   - Verify: `nix develop -c ktlint rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt`
+   - Verify:
+     `nix develop -c ktlint rest-server/src/main/kotlin/ed/unicoach/rest/Application.kt`
 
-5. **Add the interceptor behavior tests.**
-   Create
+5. **Add the interceptor behavior tests.** Create
    `rest-server/src/test/kotlin/ed/unicoach/rest/plugins/ClientKeyGateTest.kt`
    with the `ClientKeyGateTest` `testApplication` cases above.
-   - Verify: `nix develop -c bin/test rest-server --force --tests "ed.unicoach.rest.plugins.ClientKeyGateTest"`
-   - Verify: `nix develop -c ktlint rest-server/src/test/kotlin/ed/unicoach/rest/plugins/ClientKeyGateTest.kt`
+   - Verify:
+     `nix develop -c bin/test rest-server --force --tests "ed.unicoach.rest.plugins.ClientKeyGateTest"`
+   - Verify:
+     `nix develop -c ktlint rest-server/src/test/kotlin/ed/unicoach/rest/plugins/ClientKeyGateTest.kt`
 
-6. **Full rest-server regression (existing suite stays green, gate disabled by default).**
+6. **Full rest-server regression (existing suite stays green, gate disabled by
+   default).**
    - Verify: `nix develop -c bin/test rest-server --force`
 
-7. **iOS build-time injection and header.**
-   In `bin/build-ios`, read `UNICOACH_CLIENT_KEY` from the sourced `.env` and add
+7. **iOS build-time injection and header.** In `bin/build-ios`, read
+   `UNICOACH_CLIENT_KEY` from the sourced `.env` and add
    `"UNICOACH_CLIENT_KEY=${UNICOACH_CLIENT_KEY:-}"` to the `exec xcodebuild`
    invocation (the line that already passes `"UNICOACH_BACKEND_URL=..."`); add
-   the `UNICOACH_CLIENT_KEY = "";` default build setting to
-   both configurations in `ios-app/UnicoachiOS.xcodeproj/project.pbxproj`; add
-   the `UnicoachClientKey` key to `ios-app/UnicoachiOS/Info.plist`; create
+   the `UNICOACH_CLIENT_KEY = "";` default build setting to both configurations
+   in `ios-app/UnicoachiOS.xcodeproj/project.pbxproj`; add the
+   `UnicoachClientKey` key to `ios-app/UnicoachiOS/Info.plist`; create
    `ios-app/UnicoachiOS/ClientKey.swift`; add the injectable client-key property
    and the `X-Unicoach-Client-Key` header (both `perform` and `stream`) to
    `ios-app/UnicoachiOS/APIClient.swift`; document the variable in
@@ -299,11 +310,10 @@ iOS test is added in this RFC.
    - Verify: `UNICOACH_CLIENT_KEY=testkey bin/build-ios` (outside the nix shell;
      uses system `xcodebuild`, scheme `UnicoachiOS`) builds successfully.
 
-8. **Document the env vars.**
-   Add `UNICOACH_CLIENT_KEYS` (server, comma-separated, blank locally) and
-   `UNICOACH_CLIENT_KEY` (iOS build, blank locally) to `.env.template` with
-   comments noting they must be supplied from the environment / Secrets Manager
-   in deployment and never committed.
+8. **Document the env vars.** Add `UNICOACH_CLIENT_KEYS` (server,
+   comma-separated, blank locally) and `UNICOACH_CLIENT_KEY` (iOS build, blank
+   locally) to `.env.template` with comments noting they must be supplied from
+   the environment / Secrets Manager in deployment and never committed.
    - Verify: `nix develop -c bin/test rest-server --force` (config still loads
      with the documented-but-blank defaults)
 
@@ -315,8 +325,8 @@ New:
   config model + `from(config)` parser.
 - `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/ClientKeyGate.kt` —
   header constant + `configureClientKeyGate` interceptor.
-- `rest-server/src/test/kotlin/ed/unicoach/rest/config/ClientKeyGateConfigTest.kt` —
-  config parsing tests.
+- `rest-server/src/test/kotlin/ed/unicoach/rest/config/ClientKeyGateConfigTest.kt`
+  — config parsing tests.
 - `rest-server/src/test/kotlin/ed/unicoach/rest/plugins/ClientKeyGateTest.kt` —
   interceptor behavior tests.
 - `ios-app/UnicoachiOS/ClientKey.swift` — pure `resolveClientKey` +

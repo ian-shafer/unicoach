@@ -102,11 +102,10 @@ protocol ConversationClientProtocol: Sendable {
 pump as `streamConversation`. `APIClient.stream(_:body:accept:expectedStatus:)`
 is already generic over an arbitrary path and `Encodable` body, so no
 `APIClient` change is needed; the new binding only supplies a different path and
-body type. The pump (currently
-`runStream(request:continuation:)`) is generalized over `(path, body)` so both
-bindings share line-splitting, frame assembly, terminal detection, and the
-task/cancellation wrapper; only the URL path, request body type, and the
-accepted opener differ.
+body type. The pump (currently `runStream(request:continuation:)`) is
+generalized over `(path, body)` so both bindings share line-splitting, frame
+assembly, terminal detection, and the task/cancellation wrapper; only the URL
+path, request body type, and the accepted opener differ.
 
 Frame decoding stays strict per endpoint. The decoder is parameterized by the
 opener the endpoint may legally emit:
@@ -191,8 +190,8 @@ Published state:
    - `.delta(text)` — appends to the turn's `coachStreamingText`.
    - `.completed(message)` — sets the turn's `coachMessage`; on the first turn,
      commits `conversation = pendingConversation` (establishment).
-6. On a thrown `ErrorResponse`, maps it: `student_profile_required` (a pre-stream
-   `409` on the start path only — see Error handling) → invokes
+6. On a thrown `ErrorResponse`, maps it: `student_profile_required` (a
+   pre-stream `409` on the start path only — see Error handling) → invokes
    `onProfileRequired()` and removes the optimistic turn (the screen is being
    replaced by onboarding); any other server code → sets the target turn's
    `failure = .server(error)`. On a thrown transport error, maps it through the
@@ -204,10 +203,10 @@ Published state:
 all mutation is `turns[idx].…`), clears its `failure` and partial
 `coachStreamingText`, re-sets `isStreaming`, and re-dispatches that turn's
 `userMessage.content` into the same element. Because the first turn's failure
-soft-deletes
-the conversation server-side, retry is routed by the same establishment rule: an
-unestablished first turn re-creates via `streamConversation`; an established
-follow-up retries via `postMessage` against the same conversation id.
+soft-deletes the conversation server-side, retry is routed by the same
+establishment rule: an unestablished first turn re-creates via
+`streamConversation`; an established follow-up retries via `postMessage` against
+the same conversation id.
 
 ### View
 
@@ -221,9 +220,9 @@ follow-up retries via `postMessage` against the same conversation id.
   `isStreaming` and no `coachMessage`, then an inline failure view when
   `turn.failure != nil`. The failure view is new: it shows the failure copy plus
   a new inline retry button (`identifier: "retryButton"`) calling
-  `viewModel.retry(turn.id)`. The failure view renders by case:
-  `.server(error)` shows `error.message` (matching today's `FormErrorBanner`
-  copy); `.infrastructure(infra)` shows `infra.systemImage`, `infra.title`, and
+  `viewModel.retry(turn.id)`. The failure view renders by case: `.server(error)`
+  shows `error.message` (matching today's `FormErrorBanner` copy);
+  `.infrastructure(infra)` shows `infra.systemImage`, `infra.title`, and
   `infra.description` (matching today's `errorArea` infrastructure block).
   `InfrastructureError` no longer appears at screen level — the per-turn failure
   view is its only renderer. New content scrolls to the bottom.
@@ -264,7 +263,7 @@ to `ConversationPreviewClient` alongside the view file rename.
 - **Validation.** Empty/oversized input is rejected before a turn is appended;
   no backend call is made.
 - **`student_profile_required` is first-turn-only and pre-stream.** On the start
-  path `handleStreamCreate` returns a `409 student_profile_required` *before*
+  path `handleStreamCreate` returns a `409 student_profile_required` _before_
   opening the SSE body, so the client receives it as a non-200 thrown by
   `APIClient.stream`, never as a terminal `error` frame. The follow-up path
   `handleStreamMessage` cannot emit it: a missing profile there returns a
@@ -353,14 +352,14 @@ assertion that a `user_message` frame on the start endpoint yields
 Steps 4 and 5 land as a pair — the view and view-model renames are mutually
 required to compile, so step 4 is verified only by step 5's build, which also
 updates `project.pbxproj` so the renamed sources resolve; all other steps are
-independently buildable. iOS verification uses `xcodebuild` with
-the `UnicoachiOS` scheme against an installed simulator (substitute an available
+independently buildable. iOS verification uses `xcodebuild` with the
+`UnicoachiOS` scheme against an installed simulator (substitute an available
 destination for `<sim>`), run outside the nix dev shell.
 
 1. **Add data models.** In `Models.swift`, add `PostMessageRequest`, the
-   `.userMessage(Message)` case on `ConversationStreamEvent`, `UserMessageFrame`,
-   and `Equatable` on `ErrorResponse`; in `InfrastructureError.swift`, add
-   `Equatable`.
+   `.userMessage(Message)` case on `ConversationStreamEvent`,
+   `UserMessageFrame`, and `Equatable` on `ErrorResponse`; in
+   `InfrastructureError.swift`, add `Equatable`.
    - Verify:
      `cd ios-app && xcodebuild build -scheme UnicoachiOS -destination '<sim>'`
      fails only at the not-yet-updated client switch (expected), or compiles if
@@ -400,8 +399,8 @@ destination for `<sim>`), run outside the nix dev shell.
    `NewConversationPreviewClient` to `ConversationPreviewClient` and add its
    `postMessage`. In the same step, in `UnicoachiOS.xcodeproj/project.pbxproj`,
    rename the file references and build-phase entries for the two production
-   renames (`NewConversationView.swift`, `NewConversationViewModel.swift`) so the
-   renamed sources resolve.
+   renames (`NewConversationView.swift`, `NewConversationViewModel.swift`) so
+   the renamed sources resolve.
    - Verify:
      `cd ios-app && xcodebuild build -scheme UnicoachiOS -destination '<sim>'`
      resolves all sources with no missing-file references.

@@ -6,17 +6,17 @@
 deficiencies; the first is dominated by an app-level rendering defect.
 
 The app declares no launch screen: `Info.plist` has no `UILaunchScreen` key and
-the Xcode project contains no launch storyboard. Without one, iOS runs the app in
-legacy compatibility mode, letterboxing the whole window to ~75% height with
+the Xcode project contains no launch storyboard. Without one, iOS runs the app
+in legacy compatibility mode, letterboxing the whole window to ~75% height with
 black bands at the top and bottom on every screen (Home, Login, chat). This is
-the primary cause of the wasted vertical space. Separately,
-`ConversationView`'s root `VStack` omits a `maxHeight: .infinity` frame, so
-even under native full-screen rendering the thread does not claim all vertical
-slack the navigation container offers (unlike `HomeView`, which stretches); a
-frame cannot defeat an app-level letterbox, so this is an in-view complement, not
-the fix. Second, the send control is a full-width `LoadingButton` beside the
-input in an `HStack`, consuming horizontal space and diverging from the common
-in-field send affordance.
+the primary cause of the wasted vertical space. Separately, `ConversationView`'s
+root `VStack` omits a `maxHeight: .infinity` frame, so even under native
+full-screen rendering the thread does not claim all vertical slack the
+navigation container offers (unlike `HomeView`, which stretches); a frame cannot
+defeat an app-level letterbox, so this is an in-view complement, not the fix.
+Second, the send control is a full-width `LoadingButton` beside the input in an
+`HStack`, consuming horizontal space and diverging from the common in-field send
+affordance.
 
 This RFC makes three changes. (1) An empty `UILaunchScreen` dictionary is added
 to `Info.plist`, opting the app into native full-screen rendering and reclaiming
@@ -130,31 +130,30 @@ input.
 <dict/>
 ```
 
-The key's presence — the empty dictionary is a valid, content-free launch
-screen — signals that the app supports native full-screen rendering. Absent it,
-and with no launch storyboard in the Xcode project, iOS falls back to legacy
+The key's presence — the empty dictionary is a valid, content-free launch screen
+— signals that the app supports native full-screen rendering. Absent it, and
+with no launch storyboard in the Xcode project, iOS falls back to legacy
 compatibility mode and renders every screen letterboxed to ~75% of the window
 height with black bands at the top and bottom. This is an app-global defect, not
-specific to `ConversationView`; the key reclaims the full window on every
-screen (Home, Login, chat) and is the primary mechanism for the
-full-vertical-space goal. The project sets both `GENERATE_INFOPLIST_FILE = YES`
-and an explicit `INFOPLIST_FILE = UnicoachiOS/Info.plist` for the Debug and
-Release configurations, so the key added to the checked-in plist is merged into
-the built `Info.plist` for both; no `project.pbxproj` change is required.
+specific to `ConversationView`; the key reclaims the full window on every screen
+(Home, Login, chat) and is the primary mechanism for the full-vertical-space
+goal. The project sets both `GENERATE_INFOPLIST_FILE = YES` and an explicit
+`INFOPLIST_FILE = UnicoachiOS/Info.plist` for the Debug and Release
+configurations, so the key added to the checked-in plist is merged into the
+built `Info.plist` for both; no `project.pbxproj` change is required.
 
 ### `ConversationView` vertical fill (`ConversationView.swift`)
 
 This complements the launch-screen fix: it addresses residual in-view slack
 within `ConversationView`'s own layout, which the launch-screen key does not
 touch. With native full-screen rendering restored app-wide, the root
-`VStack(spacing: 0)` gains
-`.frame(maxWidth: .infinity, maxHeight: .infinity)` (applied before
-`.background(Color.dsBackground)`), and the `thread` `ScrollView` gains
-`.frame(maxWidth: .infinity, maxHeight: .infinity)`. The `ScrollView` thereby
-claims all vertical slack between the navigation bar and the composer; the
-`validationArea` and `composer` keep their intrinsic heights and the composer
-pins to the bottom edge. Existing top-leading alignment of the message `VStack`
-is preserved (messages accrue from the top).
+`VStack(spacing: 0)` gains `.frame(maxWidth: .infinity, maxHeight: .infinity)`
+(applied before `.background(Color.dsBackground)`), and the `thread`
+`ScrollView` gains `.frame(maxWidth: .infinity, maxHeight: .infinity)`. The
+`ScrollView` thereby claims all vertical slack between the navigation bar and
+the composer; the `validationArea` and `composer` keep their intrinsic heights
+and the composer pins to the bottom edge. Existing top-leading alignment of the
+message `VStack` is preserved (messages accrue from the top).
 
 ### `canSend` (`ConversationViewModel.swift`)
 
@@ -184,10 +183,10 @@ being triggered by a tap.
 - No new error paths. `send()`'s empty-input and max-length guards are retained;
   `canSend` only narrows when the button is tappable.
 - While streaming, `canSend` yields `false`, so the button is non-interactive
-  (matching the field's `isComposerDisabled`), and `isLoading` additionally shows
-  the in-button `ProgressView`. After a completed turn the composer re-enables
-  for the next message — `canSend` is `true` once the field is non-empty again,
-  matching the multi-turn flow.
+  (matching the field's `isComposerDisabled`), and `isLoading` additionally
+  shows the in-button `ProgressView`. After a completed turn the composer
+  re-enables for the next message — `canSend` is `true` once the field is
+  non-empty again, matching the multi-turn flow.
 - Dynamic Type: the button scales with the `dsButton` text style; the circle is
   intrinsically sized, so larger type yields a proportionally larger control
   with no clipping. Text clears the control at every size via the width-tracking
@@ -210,8 +209,8 @@ confirming the absence of black letterbox bands. The behavioral change
 
 ### `ConversationViewModelTests` (new cases)
 
-Added to `ios-app/UnicoachiOSTests/ConversationViewModelTests.swift`,
-following the existing `@MainActor` test pattern:
+Added to `ios-app/UnicoachiOSTests/ConversationViewModelTests.swift`, following
+the existing `@MainActor` test pattern:
 
 - **`canSend` false on empty message** — fresh ViewModel (`messageText == ""`) →
   `canSend == false`.
@@ -237,14 +236,14 @@ confirmation, not an automated assertion.
 ## Implementation Plan
 
 1. **Add the `UILaunchScreen` key to `ios-app/UnicoachiOS/Info.plist`.** Insert
-   an empty `UILaunchScreen` dictionary (`<key>UILaunchScreen</key><dict/>`) into
-   the top-level plist `dict`.
+   an empty `UILaunchScreen` dictionary (`<key>UILaunchScreen</key><dict/>`)
+   into the top-level plist `dict`.
    - Verify:
      `cd ios-app && xcodebuild -scheme UnicoachiOS -destination 'platform=iOS Simulator,name=iPhone 16' build`
      succeeds; then install the built app to a booted simulator
      (`xcrun simctl install booted <built-app-path>`) and launch it, confirming
-     no black letterbox bands appear at the top or bottom on the Home, Login, and
-     chat screens (content renders edge-to-edge).
+     no black letterbox bands appear at the top or bottom on the Home, Login,
+     and chat screens (content renders edge-to-edge).
 
 2. **Add `CircularIconButtonStyle` and `CircularIconButton` to
    `DesignSystem/Components.swift`.** Implement the `ButtonStyle` (token-only,
@@ -258,8 +257,8 @@ confirmation, not an automated assertion.
      `cd ios-app && xcodebuild -scheme UnicoachiOS -destination 'platform=iOS Simulator,name=iPhone 16' build`
      succeeds.
 
-3. **Add `canSend` to `ConversationViewModel.swift`.** Add the computed
-   property as specified. Leave `send()` unchanged.
+3. **Add `canSend` to `ConversationViewModel.swift`.** Add the computed property
+   as specified. Leave `send()` unchanged.
    - Verify:
      `cd ios-app && xcodebuild -scheme UnicoachiOS -destination 'platform=iOS Simulator,name=iPhone 16' build`
      succeeds.
@@ -281,8 +280,8 @@ confirmation, not an automated assertion.
      succeeds.
 
 5. **Add `canSend` unit tests to
-   `ios-app/UnicoachiOSTests/ConversationViewModelTests.swift`.** Implement
-   the five cases in the Tests section using block-bodied `@MainActor` test
+   `ios-app/UnicoachiOSTests/ConversationViewModelTests.swift`.** Implement the
+   five cases in the Tests section using block-bodied `@MainActor` test
    functions (expression-bodied async tests returning non-`Unit` are silently
    dropped by JUnit-style runners; use block bodies).
    - Verify:
@@ -297,7 +296,8 @@ confirmation, not an automated assertion.
 ## Files Modified
 
 - `ios-app/UnicoachiOS/Info.plist` — add an empty `UILaunchScreen` dictionary to
-  opt the app into native full-screen rendering (removes the app-wide letterbox).
+  opt the app into native full-screen rendering (removes the app-wide
+  letterbox).
 - `ios-app/UnicoachiOS/DesignSystem/Components.swift` — add
   `CircularIconButtonStyle: ButtonStyle` and `CircularIconButton: View`; add the
   new button to the `buttonPreview` view (`"Buttons - Light"`/`"Buttons - Dark"`
@@ -307,7 +307,7 @@ confirmation, not an automated assertion.
   retaining `.focused($isComposerFocused)`), root `VStack` and `thread`
   `ScrollView` `maxHeight: .infinity` frames, button
   `.disabled(!viewModel.canSend)`.
-- `ios-app/UnicoachiOS/ConversationViewModel.swift` — add the `canSend`
-  computed property.
+- `ios-app/UnicoachiOS/ConversationViewModel.swift` — add the `canSend` computed
+  property.
 - `ios-app/UnicoachiOSTests/ConversationViewModelTests.swift` — add the five
   `canSend` unit-test cases.

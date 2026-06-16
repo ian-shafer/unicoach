@@ -2,14 +2,14 @@
 
 ## Executive Summary
 
-`AppConfig.load` (`common/src/main/kotlin/ed/unicoach/common/config/AppConfig.kt`)
-gains an optional, out-of-source-control local overlay applied at highest
-precedence on top of the named classpath resources, before final resolution.
-The overlay is a single HOCON file at
-`${XDG_CONFIG_HOME:-$HOME/.config}/unicoach/local.conf`. It lets a developer or
-operator supply secrets (e.g. `chat.anthropic.apiKey`) and local key overrides
-on the host filesystem, without environment variables and without editing any
-tracked resource.
+`AppConfig.load`
+(`common/src/main/kotlin/ed/unicoach/common/config/AppConfig.kt`) gains an
+optional, out-of-source-control local overlay applied at highest precedence on
+top of the named classpath resources, before final resolution. The overlay is a
+single HOCON file at `${XDG_CONFIG_HOME:-$HOME/.config}/unicoach/local.conf`. It
+lets a developer or operator supply secrets (e.g. `chat.anthropic.apiKey`) and
+local key overrides on the host filesystem, without environment variables and
+without editing any tracked resource.
 
 Today `load` folds the classpath resources right-to-left via `withFallback` and
 passes the merge to `ConfigFactory.load` (config `SPEC.md`, INV-2/INV-4). This
@@ -20,9 +20,9 @@ An absent overlay is a non-fatal no-op — the prod/CI default. A
 present-but-malformed overlay surfaces as `Result.failure` carrying the
 underlying typesafe `ConfigException` unmapped, matching the existing fail-fast
 stance (config `SPEC.md`, INV-3). The overlay is an additional sanctioned home
-for local secrets such as the Anthropic API key, alongside the existing
-env-var path (`CHAT_ANTHROPIC_API_KEY` in `chat/src/main/resources/chat.conf`),
-which this RFC leaves in place.
+for local secrets such as the Anthropic API key, alongside the existing env-var
+path (`CHAT_ANTHROPIC_API_KEY` in `chat/src/main/resources/chat.conf`), which
+this RFC leaves in place.
 
 Scope is the `common` module only: the `load(vararg resources: String)`
 signature is unchanged, no module's call site changes, and no specific secret is
@@ -33,14 +33,14 @@ and belongs to a later coaching-service RFC. No new dependency.
 
 ### Overlay file: a single `local.conf`
 
-The overlay is one file, `local.conf`, overlaying everything — not a per-resource
-local file (e.g. `chat.local.conf` beside each classpath resource). HOCON merges
-by key path, not by file: a single `local.conf` containing
+The overlay is one file, `local.conf`, overlaying everything — not a
+per-resource local file (e.g. `chat.local.conf` beside each classpath resource).
+HOCON merges by key path, not by file: a single `local.conf` containing
 `chat.anthropic.apiKey = "…"` overlays onto whatever classpath layer defined
-`chat.anthropic`, regardless of which resources a given process passed to `load`.
-A single file gives the developer one place for all local secrets and overrides,
-requires one filesystem probe, and does not force the developer to know which
-classpath resource owns a key. (A per-resource scheme is declined: it
+`chat.anthropic`, regardless of which resources a given process passed to
+`load`. A single file gives the developer one place for all local secrets and
+overrides, requires one filesystem probe, and does not force the developer to
+know which classpath resource owns a key. (A per-resource scheme is declined: it
 re-introduces the multi-file sprawl the module-name mandate fights and couples
 the local file set to `load`'s argument list, which this RFC does not touch.)
 
@@ -80,8 +80,8 @@ bans `System.getenv` inside `AppConfig`; that invariant governs config **value**
 resolution (which must flow through HOCON `${ENV_VAR}` substitution), whereas
 locating the overlay **file** is bootstrap that precedes any config tree and has
 no HOCON expression. This RFC narrows INV-4 to value resolution and permits
-`getenv`/`getProperty` solely for overlay-path bootstrap; the divergence is noted
-here and reconciled into the `SPEC.md` out of band by the spec-sync phase.
+`getenv`/`getProperty` solely for overlay-path bootstrap; the divergence is
+noted here and reconciled into the `SPEC.md` out of band by the spec-sync phase.
 
 Honoring `XDG_CONFIG_HOME` (the conventional config-base seam) with zero-config
 `~/.config` fallback is the no-env-var developer UX this RFC targets; the two
@@ -145,10 +145,10 @@ before resolution.
 
 The overlay is a sanctioned on-host home for local secrets (e.g. the Anthropic
 API key). `AppConfig` performs no logging today and adds none: neither the
-overlay path nor its contents are ever logged.
-The file lives under the user's config directory, outside the working tree, so
-no `.gitignore` change is required and no tracked resource is edited; the
-implementation never writes the file. Secret rotation/management is out of scope.
+overlay path nor its contents are ever logged. The file lives under the user's
+config directory, outside the working tree, so no `.gitignore` change is
+required and no tracked resource is edited; the implementation never writes the
+file. Secret rotation/management is out of scope.
 
 ### Dependencies
 
@@ -159,20 +159,19 @@ None added. `com.typesafe:config` is already an `api` dependency of `common`
 
 Five new tests cover overlay precedence, absence, malformation, literal-vs-
 substitution, and substitution-survival, all run against a redirected base dir.
-They live in
-`common/src/test/kotlin/ed/unicoach/common/config/AppConfigTest.kt` and drive a
-redirected base dir via the `unicoach.config.dir` system property pointed at a
-JVM temp directory (`java.nio.file.Files.createTempDirectory`); each writes its
-own `<temp>/unicoach/local.conf`. No test depends on the real `~/.config`, sets
-no env var, and makes no network call. An `@AfterTest` clears
+They live in `common/src/test/kotlin/ed/unicoach/common/config/AppConfigTest.kt`
+and drive a redirected base dir via the `unicoach.config.dir` system property
+pointed at a JVM temp directory (`java.nio.file.Files.createTempDirectory`);
+each writes its own `<temp>/unicoach/local.conf`. No test depends on the real
+`~/.config`, sets no env var, and makes no network call. An `@AfterTest` clears
 `unicoach.config.dir`, deletes the temp tree, and calls
 `ConfigFactory.invalidateCaches()` (mirroring the existing substitution test).
 The existing two tests are retained unchanged.
 
 - **`overlay overrides a classpath resource key at highest precedence`**: write
-  `local.conf` with `app.name = "from-local"`; `load("merge-base.conf")`;
-  assert `app.name == "from-local"` (classpath `merge-base.conf` defines
-  `base`) and `app.region == "base-region"` (untouched classpath key survives).
+  `local.conf` with `app.name = "from-local"`; `load("merge-base.conf")`; assert
+  `app.name == "from-local"` (classpath `merge-base.conf` defines `base`) and
+  `app.region == "base-region"` (untouched classpath key survives).
 - **`absent overlay file is a non-fatal no-op`**: point `unicoach.config.dir` at
   a temp dir containing no `unicoach/local.conf`; `load("merge-base.conf")`
   succeeds and `app.name == "base"`.
@@ -181,14 +180,15 @@ The existing two tests are retained unchanged.
   `load("merge-base.conf").isFailure` and that the exception is a
   `com.typesafe.config.ConfigException`.
 - **`overlay literal wins over a classpath env substitution`**: with
-  `APP_CONFIG_TEST_OVERRIDE` unset, write `local.conf` with `app.value = "local"`;
-  `load("env-substitution.conf")` (whose `app.value = ${?APP_CONFIG_TEST_OVERRIDE}`
-  defaults to `"default"`); assert `app.value == "local"`.
+  `APP_CONFIG_TEST_OVERRIDE` unset, write `local.conf` with
+  `app.value = "local"`; `load("env-substitution.conf")` (whose
+  `app.value = ${?APP_CONFIG_TEST_OVERRIDE}` defaults to `"default"`); assert
+  `app.value == "local"`.
 - **`classpath env substitution still resolves when overlay omits the key`**:
   write a `local.conf` that does **not** set `app.value`; set system property
-  `APP_CONFIG_TEST_OVERRIDE = "from-environment"`; `load("env-substitution.conf")`;
-  assert `app.value == "from-environment"` — confirms the overlay does not
-  disturb substitution resolution.
+  `APP_CONFIG_TEST_OVERRIDE = "from-environment"`;
+  `load("env-substitution.conf")`; assert `app.value == "from-environment"` —
+  confirms the overlay does not disturb substitution resolution.
 
 The `XDG_CONFIG_HOME` env-var branch of path resolution is not unit-tested: the
 JVM cannot set its own environment. It is covered indirectly — the
@@ -201,8 +201,8 @@ by setting only `unicoach.config.dir`.
 
 ## Implementation Plan
 
-1. **Extend `AppConfig.load` with the overlay step.**
-   In `common/src/main/kotlin/ed/unicoach/common/config/AppConfig.kt`: add the
+1. **Extend `AppConfig.load` with the overlay step.** In
+   `common/src/main/kotlin/ed/unicoach/common/config/AppConfig.kt`: add the
    private `overlayFile(): java.io.File` helper implementing the three-tier base
    resolution (`unicoach.config.dir` property → `XDG_CONFIG_HOME` env →
    `${user.home}/.config`, then `/unicoach/local.conf`); inside the existing
@@ -211,16 +211,19 @@ by setting only `unicoach.config.dir`.
    `overlay.withFallback(mergedConfig)` before `ConfigFactory.load`. Update the
    `load` KDoc to state the overlay, its path, and its highest precedence.
    - Verify: `nix develop -c ./gradlew :common:compileKotlin`
-   - Verify: `nix develop -c ktlint common/src/main/kotlin/ed/unicoach/common/config/AppConfig.kt`
+   - Verify:
+     `nix develop -c ktlint common/src/main/kotlin/ed/unicoach/common/config/AppConfig.kt`
 
-2. **Add the overlay tests.**
-   In `common/src/test/kotlin/ed/unicoach/common/config/AppConfigTest.kt`: add
-   the five tests above plus the temp-dir/`unicoach.config.dir` setup and the
+2. **Add the overlay tests.** In
+   `common/src/test/kotlin/ed/unicoach/common/config/AppConfigTest.kt`: add the
+   five tests above plus the temp-dir/`unicoach.config.dir` setup and the
    `@AfterTest` teardown. Reuse the existing `merge-base.conf` and
    `env-substitution.conf` test resources as the classpath layer; create no new
    resource files (overlay files are written to the temp dir at runtime).
-   - Verify: `nix develop -c bin/test common --tests "ed.unicoach.common.config.AppConfigTest"`
-   - Verify: `nix develop -c ktlint common/src/test/kotlin/ed/unicoach/common/config/AppConfigTest.kt`
+   - Verify:
+     `nix develop -c bin/test common --tests "ed.unicoach.common.config.AppConfigTest"`
+   - Verify:
+     `nix develop -c ktlint common/src/test/kotlin/ed/unicoach/common/config/AppConfigTest.kt`
 
 3. **Full regression of the `common` module and dependents' config loads.**
    - Verify: `nix develop -c bin/test common --force`

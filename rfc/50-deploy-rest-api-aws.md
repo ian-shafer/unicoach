@@ -257,8 +257,8 @@ target the main config — `bin/infra-init`, `bin/infra-plan`, `bin/infra-apply`
 and `bin/infra-output` shell out to `tofu -chdir=infra init|plan|apply|output`,
 each baking in its verb. The fifth, `bin/infra-bootstrap`, fronts the one-time
 state-backend bootstrap and forwards its subcommand to
-`tofu -chdir=infra/bootstrap init|apply` — run once as `init` then `apply`, so it
-does not bake in a single verb. All run inside the Nix dev shell and carry no
+`tofu -chdir=infra/bootstrap init|apply` — run once as `init` then `apply`, so
+it does not bake in a single verb. All run inside the Nix dev shell and carry no
 resource logic; the HCL under `infra/` and `infra/bootstrap/` is the sole source
 of resource definitions.
 

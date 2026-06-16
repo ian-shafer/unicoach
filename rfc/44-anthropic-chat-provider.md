@@ -184,8 +184,7 @@ unknowns. `Opaque` is an unrecognized _delta type_ inside a modeled
 `content_block_delta` frame — it keeps its typed `index` and block correlation
 (and is surfaced, not dropped, per accumulation rule 6). `Raw` is an
 unrecognized _event kind_ with no `index` to correlate. The rule: unknown delta
-inside a modeled,
-index-bearing envelope → `Opaque`; unknown envelope → `Raw`.
+inside a modeled, index-bearing envelope → `Opaque`; unknown envelope → `Raw`.
 
 ### Event mapping — SSE frames → `ChatEvent`
 
@@ -195,17 +194,17 @@ field extraction and the cases those leave open. Frame `data` is parsed with the
 module's `Json` into a `JsonElement`; all extraction below is by JSON path on
 that element.
 
-| SSE event             | Extraction                                                                                                                                                                                   |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `message_start`       | `MessageStart(message.id, message.model, usage(message.usage))`                                                                                                                              |
-| `content_block_start` | `ContentBlockStart(index, content_block.type, block)` — `block` per the empty-open rule below                                                                                                |
+| SSE event             | Extraction                                                                                                                                                                                                                                         |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message_start`       | `MessageStart(message.id, message.model, usage(message.usage))`                                                                                                                                                                                    |
+| `content_block_start` | `ContentBlockStart(index, content_block.type, block)` — `block` per the empty-open rule below                                                                                                                                                      |
 | `content_block_delta` | `ContentBlockDelta(index, <delta>)`, `<delta>` by `delta.type`: `text_delta`→`Text(delta.text)`; `thinking_delta`→`Thinking(delta.thinking)`; `input_json_delta`→`ToolInput(delta.partial_json)`; any other type → `Opaque(delta object verbatim)` |
-| `content_block_stop`  | `ContentBlockStop(index)`                                                                                                                                                                    |
-| `message_delta`       | `MessageDelta(delta.stop_reason, usage(usage))` — usage is event-level and cumulative                                                                                                        |
-| `message_stop`        | `Completed(response, rawPayload)` from the accumulated message (below)                                                                                                                       |
-| `ping`                | dropped                                                                                                                                                                                      |
-| `error`               | terminal per the classification rule (below)                                                                                                                                                 |
-| any other event type  | `Raw(event, data)` — payload parsed as JSON, `JsonPrimitive` of the raw text when unparseable; one warning logged with the event name bracketed                                              |
+| `content_block_stop`  | `ContentBlockStop(index)`                                                                                                                                                                                                                          |
+| `message_delta`       | `MessageDelta(delta.stop_reason, usage(usage))` — usage is event-level and cumulative                                                                                                                                                              |
+| `message_stop`        | `Completed(response, rawPayload)` from the accumulated message (below)                                                                                                                                                                             |
+| `ping`                | dropped                                                                                                                                                                                                                                            |
+| `error`               | terminal per the classification rule (below)                                                                                                                                                                                                       |
+| any other event type  | `Raw(event, data)` — payload parsed as JSON, `JsonPrimitive` of the raw text when unparseable; one warning logged with the event name bracketed                                                                                                    |
 
 `usage(obj)` maps `input_tokens` / `output_tokens` / `cache_read_input_tokens` /
 `cache_creation_input_tokens` onto `TokenUsage`, each field null when absent.
