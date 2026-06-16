@@ -41,7 +41,10 @@ class AuthRouteHandler(
 ) {
   fun registerRoutes(route: Route) {
     route.route("/api/v1/auth") {
-      post("/register") { handleRegister() }
+      route("/register") {
+        post { handleRegister() }
+        rejectUnsupportedMethods(HttpMethod.Post)
+      }
       route("/login") {
         post { handleLogin() }
         rejectUnsupportedMethods(HttpMethod.Post)

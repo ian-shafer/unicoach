@@ -248,6 +248,32 @@ class StudentRoutingTest {
     }
 
   @Test
+  fun `update student with non-int version returns 400`() =
+    runBlocking {
+      val cookie = registerAndGetCookie()
+      client.post(buildUrl("/api/v1/students")) {
+        header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+        header(HttpHeaders.Cookie, cookie)
+        setBody(mapper.writeValueAsString(CreateStudentRequest("2028")))
+      }
+
+      // A JSON string supplied for the numeric `version` field must be rejected
+      // (ALLOW_COERCION_OF_SCALARS disabled), not coerced to 1.
+      val response =
+        client.patch(buildUrl("/api/v1/students/me")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody("""{"expectedHighSchoolGraduationDate":"2028","version":"1"}""")
+        }
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      assertTrue(
+        response.headers[HttpHeaders.ContentType]?.startsWith(ContentType.Application.Json.toString()) == true,
+        "Coercion rejection must respond application/json",
+      )
+      assertTrue(response.bodyAsText().contains("bad_request"))
+    }
+
+  @Test
   fun `PATCH students me unauthenticated returns 401`() =
     runBlocking {
       val response =

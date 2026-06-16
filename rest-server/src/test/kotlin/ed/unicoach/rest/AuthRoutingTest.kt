@@ -95,7 +95,77 @@ class AuthRoutingTest {
           header(HttpHeaders.ContentType, "text/plain")
           setBody("some raw text")
         }
-      assertEquals(HttpStatusCode.UnsupportedMediaType, response.status)
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      assertTrue(
+        response.headers[HttpHeaders.ContentType]?.startsWith(ContentType.Application.Json.toString()) == true,
+        "415 rewrite must respond application/json",
+      )
+      assertTrue(response.bodyAsText().contains("bad_request"))
+    }
+
+  @Test
+  fun `register with non-string name returns 400`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val response =
+        client.post(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"$email","password":"Password123","name":false}""")
+        }
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      assertTrue(
+        response.headers[HttpHeaders.ContentType]?.startsWith(ContentType.Application.Json.toString()) == true,
+        "Coercion rejection must respond application/json",
+      )
+      assertTrue(response.bodyAsText().contains("bad_request"))
+
+      // No user was created: a follow-up registration with the same email succeeds.
+      val followUp =
+        client.post(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"$email","password":"Password123","name":"Real Name"}""")
+        }
+      assertEquals(HttpStatusCode.Created, followUp.status)
+    }
+
+  @Test
+  fun `register with malformed email returns 400`() =
+    runBlocking {
+      val response =
+        client.post(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"useratexample.com","password":"Password123","name":"Real Name"}""")
+        }
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      assertTrue(response.bodyAsText().contains("email"), "Body should carry an email field error")
+    }
+
+  @Test
+  fun `login with null body returns 400 json`() =
+    runBlocking {
+      val response =
+        client.post(buildUrl("/api/v1/auth/login")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("null")
+        }
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      assertTrue(
+        response.headers[HttpHeaders.ContentType]?.startsWith(ContentType.Application.Json.toString()) == true,
+        "Null body rejection must respond application/json",
+      )
+      assertTrue(response.bodyAsText().contains("bad_request"))
+    }
+
+  @Test
+  fun `PUT register returns 405 with Allow`() =
+    runBlocking {
+      val response =
+        client.put(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("{}")
+        }
+      assertEquals(HttpStatusCode.MethodNotAllowed, response.status)
+      assertEquals("POST", response.headers[HttpHeaders.Allow])
     }
 
   @Test

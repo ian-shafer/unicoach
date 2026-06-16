@@ -32,6 +32,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Email already in use
           content:
@@ -75,6 +81,12 @@ paths:
                 $ref: '#/components/schemas/LoginResponse'
         '400':
           description: Malformed request body (e.g. wrong JSON value types)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
           content:
             application/json:
               schema:
@@ -136,6 +148,12 @@ paths:
               schema:
                 type: string
               description: The cleared session cookie
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal Server Error
           content:
@@ -167,6 +185,12 @@ paths:
                 $ref: '#/components/schemas/StudentResponse'
         '400':
           description: Validation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
           content:
             application/json:
               schema:
@@ -247,6 +271,12 @@ paths:
                 $ref: '#/components/schemas/StudentResponse'
         '400':
           description: Validation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
           content:
             application/json:
               schema:

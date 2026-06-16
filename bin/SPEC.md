@@ -117,11 +117,13 @@ private cluster (private `POSTGRES_DATA_DIR` + port).
 ### Port Liveness
 
 A script that must determine whether a TCP port is already served MUST probe it
-with a python3 TCP `connect_ex` (`connect_ex == 0` iff something accepts the
-connection) — occupant-agnostic and reliable. It MUST NOT use `nc -z` (reports
-bound ports as closed on BSD/macOS) or an HTTP `curl` probe (misses a non-HTTP
-listener). `bin/test-fuzz` applies this as a port guard: it fatals on an
-already-served target port before building or booting its own rest-server.
+with a pure-bash `/dev/tcp` connect (`exec 3<>/dev/tcp/127.0.0.1/$PORT` succeeds
+iff something accepts the connection) — occupant-agnostic, dependency-free, and
+reliable: it refuses instantly on a closed port with no hang and needs no
+timeout. It MUST NOT use `nc -z` (reports bound ports as closed on BSD/macOS) or
+an HTTP `curl` probe (misses a non-HTTP listener). `bin/test-fuzz` applies this
+as a port guard: it fatals on an already-served target port before building or
+booting its own rest-server.
 
 ---
 
@@ -501,12 +503,15 @@ DB and port). Five lifecycle-ownership models exist:
   cookie is injected via `-H "Cookie: …"` on every request, exercising the
   authenticated surface. Excludes, by category: unimplemented routes
   (`/api/v1/conversations*`), session-destructive operations (`logoutUser`,
-  `deleteStudentMe`), and two non-applicable checks (`ignored_auth`,
-  `unsupported_method`); all data-conformance checks stay live. As a referee it
-  surfaces — never masks — non-conformance: against today's server it EXITS
-  NON-ZERO by design, reporting documented server defects deferred to a future
-  server-fix RFC, and exits `0` only once the server is conformant. Per-defect
-  detail lives in the script header.
+  `deleteStudentMe`), and the single non-applicable check `ignored_auth` (a
+  false positive under static cookie injection); the full `--checks all` set —
+  including `unsupported_method` and every data-conformance check — otherwise
+  runs. As a referee it surfaces — never masks — non-conformance: it runs the
+  full check set and EXITS `0` against a conformant server, reporting any
+  contract drift as a non-zero exit. A `413` (an oversized body rejected by the
+  application-scope `RequestBodyLimit`) is accepted as a valid
+  `negative_data_rejection` via the committed root `schemathesis.toml`, passed
+  to Schemathesis with `--config-file`.
 - **`bin/scripts-tests`**: Tests scripts in `bin/`.
 - **`bin/db-scripts-tests`**: Tests `db-run`, `db-query`, `db-write`, `db-repl`,
   `db-bootstrap`, `db-create`, `db-migrate`, `db-status`, `db-drop` against its
@@ -603,4 +608,10 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - [x] [RFC-47: Authenticated Contract-Referee Fuzzing](../rfc/47-authenticated-contract-fuzz.md)
 - [x] [RFC-50: Deploy the Backend REST API to AWS](../rfc/50-deploy-rest-api-aws.md)
 - [x] [RFC-51: iOS Deploy to Physical Device](../rfc/51-ios-deploy-to-device.md)
+- [x] [RFC-52: Make the REST Surface Fuzz-Clean](../rfc/52-make-rest-surface-fuzz-clean.md)
+      — switched the port guard to a pure-bash `/dev/tcp` probe; dropped the
+      `unsupported_method` exclusion and the non-zero-by-design framing so the
+      referee runs `--checks all` and exits `0` against the conformant server;
+      accepts a `413` as a valid `negative_data_rejection` via
+      `schemathesis.toml`.
 - [x] [RFC-54: Client-Key Gate](../rfc/54-client-key-gate.md)

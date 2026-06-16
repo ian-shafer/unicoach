@@ -12,16 +12,24 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.*
 import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.PayloadTooLargeException
-import io.ktor.server.plugins.UnsupportedMediaTypeException
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
 
 fun Application.configureStatusPages() {
   install(StatusPages) {
-    exception<UnsupportedMediaTypeException> { call, cause ->
+    // Ktor maps an unreadable request body (JSON null, an unparseable payload, or a
+    // non-application/json content type) to a 415 *response status* via
+    // CannotTransformContentToTypeException, which is not a typed exception any
+    // handler above intercepts. Rewrite that opaque 415 (text/plain) into the
+    // contract's 400 JSON ErrorResponse. Responding 400 here does not recurse —
+    // there is no status(400) handler.
+    status(HttpStatusCode.UnsupportedMediaType) { call, _ ->
       call.respond(
-        HttpStatusCode.UnsupportedMediaType,
-        ErrorResponse(code = "unsupported_media_type", message = cause.message ?: "Unsupported media type"),
+        HttpStatusCode.BadRequest,
+        ErrorResponse(
+          code = "bad_request",
+          message = "Request body could not be read as the expected application/json payload",
+        ),
       )
     }
     exception<PayloadTooLargeException> { call, _ ->

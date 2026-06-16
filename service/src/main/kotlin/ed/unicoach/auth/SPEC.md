@@ -52,11 +52,25 @@ no HTTP types. Login credential verification is handled in this layer.
 
 ### RegistrationValidator
 
-- The validator MUST enforce: email non-blank, name non-blank, password length
-  8–128 characters inclusive, at least 1 uppercase letter, at least 1 lowercase
-  letter, and at least 1 digit.
-- `RegistrationValidator` MUST NOT perform email format validation beyond
-  blank-check — the `EmailAddress` value class owns format correctness.
+- The validator MUST enforce: email is a valid email address, name non-blank,
+  password length 8–128 Unicode code points inclusive, at least 1 ASCII
+  uppercase letter, at least 1 ASCII lowercase letter, and at least 1 ASCII
+  digit.
+- Email MUST be validated for **format**, not merely non-blank, by delegating to
+  `EmailAddress.create` (`common`). Both a blank email and a malformed one (e.g.
+  no interior `@`) MUST yield an `email` field error. This makes the downstream
+  `as ValidationResult.Valid` cast in `AuthService.register` total — the
+  validator has already proven the email parses.
+- Password length MUST be measured in Unicode **code points**
+  (`codePointCount`), never UTF-16 code units, so an astral character (surrogate
+  pair) counts once — a 7-code-point astral password MUST be rejected even
+  though it spans 10 code units.
+- The uppercase/lowercase/digit complexity classes MUST be **ASCII ranges only**
+  (`A`–`Z`, `a`–`z`, `0`–`9`), never Unicode-aware
+  `isUpperCase`/`isLowerCase`/`isDigit`. A non-ASCII letter or digit (Greek `Ω`,
+  Arabic-Indic `٣`) MUST NOT satisfy any complexity rule. This keeps the
+  validator aligned with the published `password` schema's code-point length
+  bounds and ASCII character-class pattern.
 - `RegistrationValidator.validate()` MUST collect ALL field errors before
   returning, not fail on the first violation.
 
@@ -127,13 +141,14 @@ no HTTP types. Login credential verification is handled in this layer.
 - **Side Effects**: None. Pure function.
 - **Idempotency**: Fully idempotent.
 - **Rules enforced** (all errors collected before returning):
-  - `email` blank → `FieldError("email", "Email cannot be blank")`
+  - `email` blank or malformed (rejected by `EmailAddress.create`) →
+    `FieldError("email", "Email must be a valid email address")`
   - `name` blank → `FieldError("name", "Name cannot be blank")`
-  - `password.length < 8` → password too short
-  - `password.length > 128` → password too long
-  - No uppercase char → missing uppercase
-  - No lowercase char → missing lowercase
-  - No digit → missing digit
+  - code-point length `< 8` → password too short
+  - code-point length `> 128` → password too long
+  - No ASCII uppercase (`A`–`Z`) → missing uppercase
+  - No ASCII lowercase (`a`–`z`) → missing lowercase
+  - No ASCII digit (`0`–`9`) → missing digit
 - **Returns**: `ValidationErrors(fieldErrors = ...)`. `hasErrors()` returns
   `true` when `fieldErrors` is non-empty.
 
@@ -212,3 +227,8 @@ no HTTP types. Login credential verification is handled in this layer.
 - [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md)
       (repointed `EmailAddress`/`ValidationResult`/`ValidationError` imports
       from `db.models` to `common.models`; no behavior change)
+- [x] [RFC-52: Make the REST Surface Fuzz-Clean](../../../../../../../rfc/52-make-rest-surface-fuzz-clean.md)
+      — `RegistrationValidator` now validates email **format** via
+      `EmailAddress.create` (not blank-only), measures password length in
+      Unicode code points, and restricts the complexity classes to ASCII ranges,
+      matching the published `password` schema.

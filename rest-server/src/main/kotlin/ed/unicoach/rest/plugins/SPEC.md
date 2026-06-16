@@ -29,6 +29,16 @@ request/response in the `rest-server`. The plugins cover:
 - Jackson MUST be configured with
   `DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES = true` — any JSON
   payload omitting a required constructor field MUST be rejected.
+- The Jackson mapper MUST reject JSON scalar **type-punning**, configured by
+  disabling `MapperFeature.ALLOW_COERCION_OF_SCALARS` **and** a `Textual`
+  `CoercionConfig` that fails the `Boolean`/`Integer`/`Float` input shapes. Both
+  directions MUST fail deserialization: a JSON string supplied for a
+  numeric/boolean target (e.g. `UpdateStudentRequest.version: Int`) and a JSON
+  boolean/number supplied for a `String` target (e.g. `RegisterRequest.name`). A
+  mismatched scalar MUST NOT be silently coerced to the target type (no `false`
+  → `"false"`, no `"1"` → `1`); the failure surfaces as a `400`, never a coerced
+  `2xx`. Disabling `ALLOW_COERCION_OF_SCALARS` alone does NOT cover the
+  boolean/number → `String` case — the `Textual` `CoercionConfig` is required.
 - `SerializationFeature.INDENT_OUTPUT` MUST be enabled (formatted JSON output).
 - The Jackson `JavaTimeModule` MUST be registered, and
   `SerializationFeature.WRITE_DATES_AS_TIMESTAMPS` MUST be disabled, so that
@@ -40,11 +50,14 @@ request/response in the `rest-server`. The plugins cover:
 
 - The server MUST install `StatusPages` via `configureStatusPages()` before any
   route handles a request.
-- An unhandled `UnsupportedMediaTypeException` MUST produce a
-  `415
-  Unsupported Media Type` response with an `ErrorResponse` body
-  (`code =
-  "unsupported_media_type"`).
+- An **unreadable request body** — a JSON `null`, an unparseable payload, or a
+  non-`application/json` content type — MUST uniformly produce a `400` JSON
+  `ErrorResponse` (`code = "bad_request"`). Ktor surfaces every such body as a
+  `415` **response status** (not a typed exception any `exception<>` handler can
+  intercept), so a `status(HttpStatusCode.UnsupportedMediaType)` handler MUST
+  catch it and respond `400`. The server MUST NOT emit a `415` `text/plain`
+  body. Responding `400` from the `415`-status handler MUST NOT recurse — there
+  is no `status(400)` handler.
 - An unhandled `PayloadTooLargeException` MUST produce a `413 Payload Too Large`
   response with `code = "payload_too_large"`.
 - An unhandled `BadRequestException` MUST produce a `400 Bad Request` response
@@ -101,10 +114,10 @@ request/response in the `rest-server`. The plugins cover:
   single application-scope `install(RequestBodyLimit)` in
   `configureRequestSizeLimit()`. There MUST NOT be any per-route opt-in — a
   route added in the future is covered without per-route wiring.
-- The applicable limit MUST be selected per request by a fixed resolution
-  order: **exact-path override** (`routeOverrides`) → **longest matching path
-  prefix** (`routePrefixOverrides`) → `defaultMax`. An exact match MUST win over
-  any prefix match; among competing prefixes the longest matching key MUST win.
+- The applicable limit MUST be selected per request by a fixed resolution order:
+  **exact-path override** (`routeOverrides`) → **longest matching path prefix**
+  (`routePrefixOverrides`) → `defaultMax`. An exact match MUST win over any
+  prefix match; among competing prefixes the longest matching key MUST win.
   Matching is slash- and case-sensitive. This guarantees a dynamic path such as
   `/api/v1/conversations/{id}/messages` resolves to its prefix's limit while an
   exact entry for a specific path still takes precedence.
@@ -164,19 +177,25 @@ request/response in the `rest-server`. The plugins cover:
   no network calls.
 - **Handled Exceptions**:
 
-  | Exception                                                                                                                     | HTTP Status                                                                           | `ErrorResponse.code`       | `ErrorResponse.message`                           |
-  | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------- |
-  | `PayloadTooLargeException`                                                                                                    | 413                                                                                   | `"payload_too_large"`      | `"Request body exceeds the maximum allowed size"` |
-  | `BadRequestException`                                                                                                         | 400                                                                                   | `"bad_request"`            | `"Invalid JSON payload structure"` (fixed)        |
-  | `UnsupportedMediaTypeException`                                                                                               | 415                                                                                   | `"unsupported_media_type"` | `cause.message ?: "Unsupported media type"`       |
-  | `PermanentError` (client fault)                                                                                               | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (any other subtype) | `"permanent_error"`        | `cause.message ?: "Bad request"`                  |
-  | `PermanentError` (server fault: `DatabaseException`, `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`) | 500                                                                                   | `"permanent_error"`        | `cause.message ?: "Bad request"`                  |
-  | `TransientError`                                                                                                              | 503                                                                                   | `"internal_error"`         | `cause.message ?: "Internal server error"`        |
+  | Exception                                                                                                                     | HTTP Status                                                                           | `ErrorResponse.code`  | `ErrorResponse.message`                           |
+  | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------- |
+  | `PayloadTooLargeException`                                                                                                    | 413                                                                                   | `"payload_too_large"` | `"Request body exceeds the maximum allowed size"` |
+  | `BadRequestException`                                                                                                         | 400                                                                                   | `"bad_request"`       | `"Invalid JSON payload structure"` (fixed)        |
+  | `PermanentError` (client fault)                                                                                               | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (any other subtype) | `"permanent_error"`   | `cause.message ?: "Bad request"`                  |
+  | `PermanentError` (server fault: `DatabaseException`, `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`) | 500                                                                                   | `"permanent_error"`   | `cause.message ?: "Bad request"`                  |
+  | `TransientError`                                                                                                              | 503                                                                                   | `"internal_error"`    | `cause.message ?: "Internal server error"`        |
 
+- **Status handler**: A `status(HttpStatusCode.UnsupportedMediaType)` handler
+  intercepts the `415` **response status** Ktor raises for an unreadable body
+  (JSON `null`, unparseable payload, or non-`application/json` content type) and
+  responds `400` with
+  `ErrorResponse(code = "bad_request", message = "Request
+  body could not be read as the expected application/json payload")`.
+  This is a status handler, not an `exception<>` handler — the underlying
+  `CannotTransformContentToTypeException` reaches no exception handler.
 - **Dispatch**: `StatusPages` routes to the handler for the most specific
-  superclass; the `PayloadTooLargeException`, `BadRequestException`, and
-  `UnsupportedMediaTypeException` handlers take precedence over the
-  `exception<Throwable>` catch-all.
+  superclass; the `PayloadTooLargeException` and `BadRequestException` handlers
+  take precedence over the `exception<Throwable>` catch-all.
 - **Fallback**: any `Throwable` that is neither `PermanentError` nor
   `TransientError` produces a `500 Internal Server Error` with
   `code = "internal_error"`, message `"An internal error occurred"`.
@@ -308,6 +327,13 @@ request/response in the `rest-server`. The plugins cover:
       — extended `RequestSizeLimit.kt` body-limit resolution to exact override →
       longest matching prefix (`RequestSizeConfig.routePrefixOverrides`) →
       `defaultMax`, so dynamic conversation paths receive the correct limit.
+- [x] [RFC-52: Make the REST Surface Fuzz-Clean](../../../../../../../../rfc/52-make-rest-surface-fuzz-clean.md)
+      — `Serialization.kt` rejects scalar type-punning (disabled
+      `ALLOW_COERCION_OF_SCALARS` + `Textual` `CoercionConfig`);
+      `StatusPages.kt` replaced the dead
+      `exception<UnsupportedMediaTypeException>` handler with a
+      `status(UnsupportedMediaType)` handler that maps an unreadable body to a
+      `400` JSON `bad_request` instead of a `415` `text/plain`.
 - [x] [RFC-54: Client-Key Gate](../../../../../../../../rfc/54-client-key-gate.md)
       — introduced `ClientKeyGate.kt`: a pre-routing interceptor rejecting
       requests without a valid client key (`403`), exempting an exact-match path

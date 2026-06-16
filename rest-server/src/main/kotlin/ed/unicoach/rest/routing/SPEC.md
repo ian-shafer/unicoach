@@ -36,13 +36,15 @@ calls and map service outcomes onto HTTP responses.
 - Every leaf route block that permits a fixed set of methods MUST call
   `rejectUnsupportedMethods(...)` listing exactly its allowed methods, so all
   other methods return `405 Method Not Allowed` with an `Allow` header. This
-  covers `/login`, `/auth/me`, `/logout`, `/students` (`POST` only),
-  `/students/me`, the conversation collection, `/conversations/stream`,
+  covers `/register`, `/login`, `/auth/me`, `/logout`, `/students` (`POST`
+  only), `/students/me`, the conversation collection, `/conversations/stream`,
   `/conversations/{conversationId}`, `/conversations/{conversationId}/messages`,
   and `/conversations/{conversationId}/messages/stream`.
-- `POST /api/v1/auth/register` uses `post("/register")` and MUST NOT call
-  `rejectUnsupportedMethods` — Ktor handles method rejection natively for leaf
-  `post()` handlers.
+- `POST /api/v1/auth/register` MUST reject non-`POST` verbs with `405` and an
+  RFC-9110 `Allow: POST` header via `rejectUnsupportedMethods(HttpMethod.Post)`,
+  consistent with its `/login`, `/me`, and `/logout` siblings. It MUST NOT be a
+  bare leaf `post("/register")` relying on Ktor's native method rejection, which
+  omits the `Allow` header.
 - The student resource is **owner-resolved**: routes MUST NOT expose a path id.
   `POST` targets the collection (`/api/v1/students`); `GET`/`PATCH`/`DELETE`
   target the singleton `/api/v1/students/me`.
@@ -140,8 +142,8 @@ calls and map service outcomes onto HTTP responses.
     `POST /conversations/stream`) MUST return `409`
     (`code = "student_profile_required"`) — a profile is a precondition for
     starting a conversation.
-  - **List** (`GET /conversations`) MUST return `200` with an **empty list** —
-    a profileless caller simply owns no conversations.
+  - **List** (`GET /conversations`) MUST return `200` with an **empty list** — a
+    profileless caller simply owns no conversations.
   - **All per-conversation reads/mutations** (`GET`/`PATCH`/`DELETE` on
     `/{conversationId}`, `GET`/`POST` on `…/messages`, stream-message) MUST
     return `404` (`code = "not_found"`) — the conversation is unreachable.
@@ -170,11 +172,12 @@ calls and map service outcomes onto HTTP responses.
   responses (`401`/`409`/`404`/`400`) **before** the event stream is opened. An
   error MUST NOT be reported as an in-stream `error` frame once the
   `text/event-stream` response has begun.
-- Once `streamReply` opens the stream it MUST write exactly **one opening event**
-  (`conversation` for create, `user_message` for message) first, then relay zero
-  or more `delta` frames, then terminate with exactly **one** terminal frame —
-  either a single `message` (on `ReplyEvent.Completed`) or a single `error` (on
-  `ReplyEvent.Failed`). The reply `Flow` carries exactly one terminal event.
+- Once `streamReply` opens the stream it MUST write exactly **one opening
+  event** (`conversation` for create, `user_message` for message) first, then
+  relay zero or more `delta` frames, then terminate with exactly **one**
+  terminal frame — either a single `message` (on `ReplyEvent.Completed`) or a
+  single `error` (on `ReplyEvent.Failed`). The reply `Flow` carries exactly one
+  terminal event.
 - SSE responses MUST carry `Cache-Control: no-store` and content type
   `text/event-stream`. Each event MUST be framed as
   `event: {type}\ndata: {json}\n\n` and flushed.
@@ -221,6 +224,8 @@ calls and map service outcomes onto HTTP responses.
   | `RegisterResult.DuplicateEmail`      | `409 Conflict`    | `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])` |
   | Exceptions thrown by `.getOrThrow()` | (propagated)      | Mapped by `StatusPages`                                         |
 
+- **Method restriction**: Non-POST methods → `405 Method Not Allowed` with
+  `Allow: POST` (via `rejectUnsupportedMethods(HttpMethod.Post)`).
 - **Idempotency**: Not idempotent — duplicate email returns `409`.
 
 ---
@@ -398,25 +403,26 @@ calls and map service outcomes onto HTTP responses.
 - **Idempotency**: Not idempotent — calling twice installs duplicate routes.
 
 All handlers below first resolve the caller to a `Student` (cookie → `User` →
-`Student`); the `401`/`409`/`404`/`200-empty` resolution outcomes are governed by
-the **Conversation Caller Resolution** invariants and are not re-tabulated per
-row.
+`Student`); the `401`/`409`/`404`/`200-empty` resolution outcomes are governed
+by the **Conversation Caller Resolution** invariants and are not re-tabulated
+per row.
 
 ---
 
 ### `POST /api/v1/conversations` — [`ConvoRoutes.kt`](./ConvoRoutes.kt)
 
 - **Request**: JSON `CreateConversationRequest { message, name? }`.
-- **Side effects**: Calls `CoachingService.startConvo(student.id, message, name)`,
-  then **drains** the reply `Flow` to its single terminal (buffered — the coach
-  reply is fully materialized before responding).
+- **Side effects**: Calls
+  `CoachingService.startConvo(student.id, message, name)`, then **drains** the
+  reply `Flow` to its single terminal (buffered — the coach reply is fully
+  materialized before responding).
 - **Response mapping**:
 
-  | Condition                              | Status                      | Body                                                                     |
-  | -------------------------------------- | --------------------------- | ------------------------------------------------------------------------ |
-  | `StartConvoResult.ValidationFailure`   | `400 Bad Request`           | `ErrorResponse(code="validation_failed", fieldErrors=[...])`             |
-  | `Started` → `ReplyEvent.Completed`     | `201 Created`               | `CreateConversationResponse { conversation, userMessage, coachMessage }` |
-  | `Started` → `ReplyEvent.Failed`        | `500 Internal Server Error` | `ErrorResponse(code="coach_unavailable" \| "coach_failed")`              |
+  | Condition                            | Status                      | Body                                                                     |
+  | ------------------------------------ | --------------------------- | ------------------------------------------------------------------------ |
+  | `StartConvoResult.ValidationFailure` | `400 Bad Request`           | `ErrorResponse(code="validation_failed", fieldErrors=[...])`             |
+  | `Started` → `ReplyEvent.Completed`   | `201 Created`               | `CreateConversationResponse { conversation, userMessage, coachMessage }` |
+  | `Started` → `ReplyEvent.Failed`      | `500 Internal Server Error` | `ErrorResponse(code="coach_unavailable" \| "coach_failed")`              |
 
 - **Idempotency**: Not idempotent — creates a conversation and a coach turn.
 
@@ -430,9 +436,9 @@ row.
   one terminal `message` or `error` frame.
 - **Response mapping**: Pre-flight failures are buffered HTTP before the stream
   opens — `401`/`409` (resolution), `400` (`validation_failed`). On `Started`:
-  `200 OK`, `Content-Type: text/event-stream`, `Cache-Control: no-store`, body is
-  the event sequence above. Coach failure surfaces as an in-stream `error` frame
-  (`coach_unavailable`/`coach_failed`), not an HTTP status change.
+  `200 OK`, `Content-Type: text/event-stream`, `Cache-Control: no-store`, body
+  is the event sequence above. Coach failure surfaces as an in-stream `error`
+  frame (`coach_unavailable`/`coach_failed`), not an HTTP status change.
 - **Idempotency**: Not idempotent.
 
 ---
@@ -444,11 +450,11 @@ row.
   read only.
 - **Response mapping**:
 
-  | Condition                              | Status            | Body                                                  |
-  | -------------------------------------- | ----------------- | ----------------------------------------------------- |
-  | Unknown `status` value                 | `400 Bad Request` | `ErrorResponse(code="validation_failed", field=status)` |
-  | Resolved, no profile                   | `200 OK`          | `ConversationListResponse { conversations: [] }`       |
-  | Resolved with profile                  | `200 OK`          | `ConversationListResponse { conversations: [...] }`    |
+  | Condition              | Status            | Body                                                    |
+  | ---------------------- | ----------------- | ------------------------------------------------------- |
+  | Unknown `status` value | `400 Bad Request` | `ErrorResponse(code="validation_failed", field=status)` |
+  | Resolved, no profile   | `200 OK`          | `ConversationListResponse { conversations: [] }`        |
+  | Resolved with profile  | `200 OK`          | `ConversationListResponse { conversations: [...] }`     |
 
 - **Idempotency**: Yes — read-only.
 
@@ -470,13 +476,13 @@ row.
 
 - **Request**: JSON `UpdateConversationRequest { name?, archived? }` →
   `ConvoUpdate`.
-- **Side effects**: Calls `CoachingService.updateConvo(student.id, convoId, …)` —
-  renames and/or (un)archives.
+- **Side effects**: Calls `CoachingService.updateConvo(student.id, convoId, …)`
+  — renames and/or (un)archives.
 - **Response mapping**: `200 OK` `ConversationResponse` on `Success`; `400`
   (`validation_failed`) on `ValidationFailure`; `404` (`not_found`) on malformed
   id, missing profile, or `NotFound`.
-- **Idempotency**: Idempotent in effect — re-applying the same name/archive state
-  yields the same resource.
+- **Idempotency**: Idempotent in effect — re-applying the same name/archive
+  state yields the same resource.
 
 ---
 
@@ -486,21 +492,20 @@ row.
 - **Side effects**: Calls `CoachingService.deleteConvo(student.id, convoId)`.
 - **Response mapping**: `204 No Content` on `Success`; `404` (`not_found`) on
   malformed id, missing profile, or `NotFound`.
-- **Idempotency**: Not idempotent at the resource level — a second delete returns
-  `404`.
+- **Idempotency**: Not idempotent at the resource level — a second delete
+  returns `404`.
 
 ---
 
 ### `GET /api/v1/conversations/{conversationId}/messages` — [`ConvoRoutes.kt`](./ConvoRoutes.kt)
 
 - **Request**: No body.
-- **Side effects**: Calls `CoachingService.listTurns(student.id, convoId)` — read
-  only.
-- **Response mapping**: `200 OK`
-  `MessageListResponse { messages: [...] }` on `Found`, where each turn projects
-  to a user `Message` (`u_…`) followed by a coach `Message` (`c_…`) when a
-  response exists; `404` (`not_found`) on malformed id, missing profile, or
-  `NotFound`.
+- **Side effects**: Calls `CoachingService.listTurns(student.id, convoId)` —
+  read only.
+- **Response mapping**: `200 OK` `MessageListResponse { messages: [...] }` on
+  `Found`, where each turn projects to a user `Message` (`u_…`) followed by a
+  coach `Message` (`c_…`) when a response exists; `404` (`not_found`) on
+  malformed id, missing profile, or `NotFound`.
 - **Idempotency**: Yes — read-only.
 
 ---
@@ -508,15 +513,16 @@ row.
 ### `POST /api/v1/conversations/{conversationId}/messages` — [`ConvoRoutes.kt`](./ConvoRoutes.kt)
 
 - **Request**: JSON `PostMessageRequest { message }`.
-- **Side effects**: Calls `CoachingService.postTurn(student.id, convoId, message)`,
-  then **drains** the reply `Flow` (buffered).
+- **Side effects**: Calls
+  `CoachingService.postTurn(student.id, convoId, message)`, then **drains** the
+  reply `Flow` (buffered).
 - **Response mapping**:
 
-  | Condition                              | Status                      | Body                                                  |
-  | -------------------------------------- | --------------------------- | ----------------------------------------------------- |
-  | `PostTurnResult.ValidationFailure`     | `400 Bad Request`           | `ErrorResponse(code="validation_failed", …)`          |
-  | `NotFound` / malformed id / no profile | `404 Not Found`             | `ErrorResponse(code="not_found")`                     |
-  | `Started` → `ReplyEvent.Completed`     | `201 Created`               | `PostMessageResponse { userMessage, coachMessage }`   |
+  | Condition                              | Status                      | Body                                                        |
+  | -------------------------------------- | --------------------------- | ----------------------------------------------------------- |
+  | `PostTurnResult.ValidationFailure`     | `400 Bad Request`           | `ErrorResponse(code="validation_failed", …)`                |
+  | `NotFound` / malformed id / no profile | `404 Not Found`             | `ErrorResponse(code="not_found")`                           |
+  | `Started` → `ReplyEvent.Completed`     | `201 Created`               | `PostMessageResponse { userMessage, coachMessage }`         |
   | `Started` → `ReplyEvent.Failed`        | `500 Internal Server Error` | `ErrorResponse(code="coach_unavailable" \| "coach_failed")` |
 
 - **Idempotency**: Not idempotent — appends a turn.
@@ -526,8 +532,8 @@ row.
 ### `POST /api/v1/conversations/{conversationId}/messages/stream` — [`ConvoRoutes.kt`](./ConvoRoutes.kt)
 
 - **Request**: JSON `PostMessageRequest { message }`.
-- **Side effects**: Calls `CoachingService.postTurn(...)`. On `Started`, opens an
-  SSE stream: opening `user_message` event, then `delta` frames, then one
+- **Side effects**: Calls `CoachingService.postTurn(...)`. On `Started`, opens
+  an SSE stream: opening `user_message` event, then `delta` frames, then one
   terminal `message` or `error` frame.
 - **Response mapping**: Pre-flight failures are buffered HTTP before the stream
   opens — `401`/`404` (resolution / malformed id / `NotFound`), `400`
@@ -612,3 +618,7 @@ package and injected into both route handlers as `sessionConfig`.
       malformed-id-is-`404`, opaque role-prefixed message ids, and the
       pre-flight-errors-before-the-stream / exactly-one-terminal-frame SSE
       contract.
+- [x] [RFC-52: Make the REST Surface Fuzz-Clean](../../../../../../../../rfc/52-make-rest-surface-fuzz-clean.md)
+      — wrapped `/api/v1/auth/register` in a `route("/register")` block with
+      `rejectUnsupportedMethods(HttpMethod.Post)`, so a non-POST verb now
+      returns `405` with an `Allow: POST` header, matching its auth siblings.
