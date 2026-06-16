@@ -402,7 +402,11 @@ Scripts to inspect and mutate the application work queue. All delegate to
 
 - **`bin/format`**: Runs `ktlint` (Kotlin) and `deno fmt` (Markdown)
   concurrently.
-- **`bin/pre-commit`**: Runs tests and checks code format.
+- **`bin/pre-commit`**: Runs tests and checks code format. When this commit
+  stages `api-specs/openapi.yaml`, it additionally runs `bin/test-fuzz` against
+  the REST contract — sequentially, after the concurrent checks pass — and fails
+  the commit on contract drift. `bin/dev-bootstrap` installs the git
+  `pre-commit` hook that invokes this script.
 
 ---
 
@@ -539,8 +543,9 @@ DB and port). Five lifecycle-ownership models exist:
 
 ### Developer Tools
 
-**`bin/dev-bootstrap`**: verifies `nix` is installed and prints activation
-instructions. Does not install anything.
+**`bin/dev-bootstrap`**: verifies `nix` is installed, installs the git
+`pre-commit` hook (a thin shim that delegates to `bin/pre-commit`, since
+`.git/hooks` is not version-controlled), and prints activation instructions.
 
 **`bin/compile-skills.py`**: Python; exempt from the shell-script invariants in
 §II (sources nothing, defines no `help()`). Regenerates the aggregated

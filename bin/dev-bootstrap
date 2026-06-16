@@ -46,6 +46,31 @@ if ! command -v nix >/dev/null 2>&1; then
 fi
 
 log-info "nix is installed ($(nix --version))."
+
+# Install the git pre-commit hook as a thin shim that delegates to
+# bin/pre-commit, so the committed gate (including the spec-gated bin/test-fuzz
+# run) stays the single source of truth and no logic is duplicated into .git.
+# Idempotent: rewriting the shim on every run keeps it current. .git/hooks is
+# not version-controlled, so this bootstrap step is what makes the hook present
+# in a fresh clone. Resolve the hooks dir via git so linked worktrees install
+# into the correct location.
+HOOK_DIR="$(cd "$PROJECT_ROOT" && git rev-parse --git-path hooks)"
+case "$HOOK_DIR" in
+  /*) ;;
+  *) HOOK_DIR="$PROJECT_ROOT/$HOOK_DIR" ;;
+esac
+mkdir -p "$HOOK_DIR"
+cat > "$HOOK_DIR/pre-commit" << 'HOOK'
+#!/usr/bin/env bash
+# Installed by bin/dev-bootstrap. Delegates to the committed gate script so the
+# hook never drifts from bin/pre-commit. bin/pre-commit runs bin/test-fuzz when
+# api-specs/openapi.yaml is staged. Commit from inside `nix develop` so the
+# toolchain is on PATH.
+exec "$(git rev-parse --show-toplevel)/bin/pre-commit"
+HOOK
+chmod +x "$HOOK_DIR/pre-commit"
+log-info "Installed git pre-commit hook at [$HOOK_DIR/pre-commit]."
+
 log-info ""
 log-info "Run the following to activate the development environment:"
 log-info ""

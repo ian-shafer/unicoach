@@ -63,4 +63,21 @@ if [ "$FAILED" -ne 0 ]; then
   exit 2
 fi
 
+# Fuzz the committed REST contract only when this commit changes it. test-fuzz
+# boots a freshly-built rest-server and runs Schemathesis against
+# api-specs/openapi.yaml — too heavy to run on every commit, so it is gated on
+# the spec being staged. It runs sequentially, after the concurrent checks pass,
+# so a commit already destined to fail does not pay the multi-minute fuzz cost
+# and so two gradle builds (bin/test check, build-rest-server) never contend.
+SPEC_REL_PATH="api-specs/openapi.yaml"
+if git -C "$PROJECT_ROOT" diff --cached --name-only --diff-filter=ACMR -- "$SPEC_REL_PATH" | grep -q .; then
+  log-info "[$SPEC_REL_PATH] is staged; running bin/test-fuzz against the REST contract..."
+  if ! "$PROJECT_ROOT/bin/test-fuzz"; then
+    log-info "Contract fuzzing failed. Pre-commit checks failed."
+    exit 2
+  fi
+else
+  log-info "[$SPEC_REL_PATH] unchanged; skipping contract fuzzing."
+fi
+
 log-info "Pre-commit checks passed."
