@@ -39,11 +39,12 @@ it reloads `cookieDomain`.
   `UNICOACH_CLIENT_KEY` in the repo `.env` and passed verbatim to `xcodebuild`
   by `bin/build-ios` (blank by default — an unset variable bakes blank). When
   non-blank the app sends it on every request as the `X-Unicoach-Client-Key`
-  header, which the server's client-key gate checks; a blank key sends no header,
-  which the disabled local gate accepts. The key must never be committed — it is
-  supplied from the environment / Secrets Manager only for builds destined for a
-  gated deployment. The baked-in key is extractable from the distributed binary;
-  this is a deliberate raise-the-bar control, not strong security.
+  header, which the server's client-key gate checks; a blank key sends no
+  header, which the disabled local gate accepts. The key must never be committed
+  — it is supplied from the environment / Secrets Manager only for builds
+  destined for a gated deployment. The baked-in key is extractable from the
+  distributed binary; this is a deliberate raise-the-bar control, not strong
+  security.
 - `bin/build-ios <env>` builds (and, for device targets, signs) the app, baking
   the derived `UNICOACH_BACKEND_URL` into the bundle.
 - `bin/install-ios <env>` installs the most recent device build to the iPhone

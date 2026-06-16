@@ -5,9 +5,9 @@
 The **UnicoachiOS** target is the student-facing native iOS client for the
 Unicoach REST server. Its domain covers **registration**, **login/logout**,
 **cookie-based session restoration**, **student-profile onboarding**, and a
-**multi-turn coaching conversation** (SSE-streamed turns). A root state
-machine (`UserAuthState`) routes the user between an auth flow (login/register),
-a one-time onboarding screen that creates the student profile, and the
+**multi-turn coaching conversation** (SSE-streamed turns). A root state machine
+(`UserAuthState`) routes the user between an auth flow (login/register), a
+one-time onboarding screen that creates the student profile, and the
 authenticated home screen, which pushes `ConversationView` to hold a multi-turn
 coaching conversation. Visual tokens and shared UI components are specified
 separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
@@ -129,10 +129,10 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
 - Each turn's stream MUST yield an opener (`conversation` on the first turn,
   `user_message` on follow-ups) → `delta`\* → terminal (`message` | `error`). A
   turn is COMPLETE only when the terminal `message` frame arrives.
-- **Establishment-gated dispatch.** The established `conversation` is `nil` until
-  the first turn COMPLETES, and dispatch keys on it: `nil` → start endpoint
-  (`streamConversation`); non-`nil` → follow-up endpoint (`postMessage` against
-  the established id). The first turn's conversation MUST be held in
+- **Establishment-gated dispatch.** The established `conversation` is `nil`
+  until the first turn COMPLETES, and dispatch keys on it: `nil` → start
+  endpoint (`streamConversation`); non-`nil` → follow-up endpoint (`postMessage`
+  against the established id). The first turn's conversation MUST be held in
   `pendingConversation` and committed to `conversation` ONLY on the terminal
   `message` frame — NEVER on the opener: a first turn that fails server-side is
   soft-deleted, so an unestablished retry MUST re-create via the start endpoint
@@ -165,8 +165,8 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
   (`/api/v1/conversations*`) emit lowercase codes (`student_profile_required`).
   Code matching MUST be exact and per-route: `checkSession` matches
   `"unauthorized"` (from `/auth/me`); `resolveProfileState` matches
-  `"UNAUTHORIZED"` (from `/students/me`); `ConversationViewModel.handle()` matches
-  the lowercase server code (`"student_profile_required"`) and UPPERCASE
+  `"UNAUTHORIZED"` (from `/students/me`); `ConversationViewModel.handle()`
+  matches the lowercase server code (`"student_profile_required"`) and UPPERCASE
   client-synthesized codes case-sensitively. Tests MUST pin both casings
   (`AppViewModelTests`). Normalizing either side breaks session routing and
   re-onboarding routing silently.
@@ -280,8 +280,9 @@ func defaultClientKey() -> String?
   throws or crashes.
 - `defaultClientKey` performs exactly one side effect: a
   `Bundle.main.object(forInfoDictionaryKey: "UnicoachClientKey")` read, resolved
-  through `resolveClientKey`. It is the production default for `APIClient.init`'s
-  `clientKey`; a blank/absent value yields `nil`, so no header is sent.
+  through `resolveClientKey`. It is the production default for
+  `APIClient.init`'s `clientKey`; a blank/absent value yields `nil`, so no
+  header is sent.
 - **Idempotency**: Both are referentially transparent for a fixed bundle value.
 
 ### `APIClient`
@@ -297,9 +298,8 @@ func get(_ path: String) async throws -> (Data, HTTPURLResponse)
 - **Side effects**: Exactly one HTTP request per call, carrying the
   `X-Unicoach-Client-Key` header when a client key is configured (non-nil).
   Body-bearing requests set `Content-Type: application/json` (GETs and body-less
-  POSTs do not). The
-  default session persists `Set-Cookie` headers into `HTTPCookieStorage.shared`;
-  tests inject an ephemeral session.
+  POSTs do not). The default session persists `Set-Cookie` headers into
+  `HTTPCookieStorage.shared`; tests inject an ephemeral session.
 - **Failure modes** (client-synthesized codes — these NEVER originate from the
   server, on either the request or the stream path): `NSURLErrorTimedOut` →
   `ErrorResponse(code: "TIMEOUT")`; other transport errors → `"NETWORK_ERROR"`;
@@ -407,25 +407,28 @@ func postMessage(conversationId: UUID, request: PostMessageRequest) -> AsyncThro
   (opens the conversation); `postMessage` →
   `/api/v1/conversations/{id}/messages/stream` (a follow-up turn on an
   established conversation).
-- **Shared pump**: A single `(path, body, opener)` SSE pump backs both endpoints,
-  differing ONLY in path, request body, and the legal opener. It owns ONLY the
-  SSE-specific concerns: empty-line-preserving line splitting (`sseLines`), frame
-  assembly (`SSEFrameAssembler`), and frame→event decoding by the `type`
-  discriminator — no `URLRequest`, `URLSession`, or transport configuration of
-  its own.
+- **Shared pump**: A single `(path, body, opener)` SSE pump backs both
+  endpoints, differing ONLY in path, request body, and the legal opener. It owns
+  ONLY the SSE-specific concerns: empty-line-preserving line splitting
+  (`sseLines`), frame assembly (`SSEFrameAssembler`), and frame→event decoding
+  by the `type` discriminator — no `URLRequest`, `URLSession`, or transport
+  configuration of its own.
 - **Opener strictness**: Frame decoding is gated by the endpoint's legal opener
   (§II SSE framing): `conversation` decodes only on `streamConversation`,
-  `user_message` only on `postMessage`; the off-contract opener → `"SERVER_ERROR"`.
+  `user_message` only on `postMessage`; the off-contract opener →
+  `"SERVER_ERROR"`.
 - **Concurrency**: Byte iteration runs in its own non-main-actor `Task`; the
   `@MainActor` consumer only awaits events. Consumer cancellation propagates via
   `onTermination` → `task.cancel()`; a `CancellationError` finishes the stream
   WITHOUT error — leaving the screen mid-stream is not a failure.
 - **Termination**: The terminal `message` frame finishes the stream and stops
-  reading; a stream that ends with no terminal frame finishes cleanly (no error).
+  reading; a stream that ends with no terminal frame finishes cleanly (no
+  error).
 - **Failure modes**: a `type:"error"` frame → the carried `ErrorResponse` is
-  thrown; an unknown/off-contract `type` or undecodable payload → `"SERVER_ERROR"`;
-  a mid-iteration `AsyncBytes` failure occurs outside `APIClient.stream()` and is
-  mapped through the shared `transportError` → `"TIMEOUT"` / `"NETWORK_ERROR"`.
+  thrown; an unknown/off-contract `type` or undecodable payload →
+  `"SERVER_ERROR"`; a mid-iteration `AsyncBytes` failure occurs outside
+  `APIClient.stream()` and is mapped through the shared `transportError` →
+  `"TIMEOUT"` / `"NETWORK_ERROR"`.
 - **Idempotency**: No — `streamConversation` creates a conversation;
   `postMessage` appends a turn server-side.
 
@@ -472,10 +475,9 @@ func onStudentProfileRequired()
 
 - **Trigger**: `ConversationViewModel.handle()` via `HomeView`'s
   `onProfileRequired` callback, on a `409 student_profile_required` from the
-  stream endpoint (the optimistic turn is dropped). No
-  network call — the 409 itself proves the profile is absent (§II Profile
-  gating). Re-enters `.onboarding(user)` from `.authenticated`; a no-op from any
-  other state.
+  stream endpoint (the optimistic turn is dropped). No network call — the 409
+  itself proves the profile is absent (§II Profile gating). Re-enters
+  `.onboarding(user)` from `.authenticated`; a no-op from any other state.
 - **Idempotency**: Yes.
 
 ```
@@ -580,32 +582,33 @@ turn completes (§II Turn lifecycle). `ChatTurn` carries the student message,
   `isStreaming` and empty/length guards remain the authoritative defense.
 - **`send()`**: Clears `validationError`, then locally validates the trimmed
   `messageText` (no network call) — empty or exceeds 100_000 characters →
-  `validationError` with `code: "VALIDATION"` and a `"message"` field error, then
-  returns. Otherwise appends an optimistic `ChatTurn` (synthetic `Message`, UUID
-  id), clears the composer, and streams the turn.
+  `validationError` with `code: "VALIDATION"` and a `"message"` field error,
+  then returns. Otherwise appends an optimistic `ChatTurn` (synthetic `Message`,
+  UUID id), clears the composer, and streams the turn.
 - **`retry(id:)`**: Clears the target turn's `failure`, partial
   `coachStreamingText`, and `coachMessage`, then re-streams its existing student
   message under the establishment rule (§II Turn lifecycle).
 - **Event handling** (per turn): `.conversation` stashes `pendingConversation`
   and REPLACES the optimistic user message with the server copy; `.userMessage`
   replaces the user message on follow-up turns; `.delta` appends to the turn's
-  `coachStreamingText`; `.completed` sets the turn's canonical `coachMessage` and
-  — on the first turn only — commits `pendingConversation` to `conversation`.
+  `coachStreamingText`; `.completed` sets the turn's canonical `coachMessage`
+  and — on the first turn only — commits `pendingConversation` to
+  `conversation`.
 - **Failure model**: A turn-scoped failure is a `TurnFailure` attached to
   `ChatTurn.failure` — `.server(ErrorResponse)` for a coach `error` frame or
   `.infrastructure(InfrastructureError)` for a transport-class failure. This VM
   does NOT publish the `errorResponse` / `infrastructureError` pair the
-  auth/onboarding VMs use; `validationError` is its only VM-level published error
-  (a pre-send banner).
+  auth/onboarding VMs use; `validationError` is its only VM-level published
+  error (a pre-send banner).
 - **Failure split** (`handle`, case-sensitive): `"student_profile_required"` →
   invokes `onProfileRequired()` and REMOVES the optimistic turn (no failure
   published); `"TIMEOUT"` → `.infrastructure(.timeout)`; `"NETWORK_ERROR"` →
-  `.infrastructure(.noConnectivity)`; `"SERVER_ERROR"` and any non-`ErrorResponse`
-  throw → `.infrastructure(.serverError)`; any other `ErrorResponse` →
-  `.server(error)`.
+  `.infrastructure(.noConnectivity)`; `"SERVER_ERROR"` and any
+  non-`ErrorResponse` throw → `.infrastructure(.serverError)`; any other
+  `ErrorResponse` → `.server(error)`.
 - **Concurrency**: `isStreaming` is guarded by `defer`.
-- **Idempotency**: No — each `send()` appends a new turn; `retry()` re-dispatches
-  an existing failed turn.
+- **Idempotency**: No — each `send()` appends a new turn; `retry()`
+  re-dispatches an existing failed turn.
 
 ---
 
@@ -672,15 +675,15 @@ See [`ConversationView.swift`](./ConversationView.swift). Pushed from
 `HomeView`'s Start Coaching link.
 
 - **Thread**: Renders `ForEach(viewModel.turns)`; each turn shows the student
-  bubble, the coach bubble (once streaming text or a completed message exists), a
-  streaming indicator on the in-flight turn, and — on failure — an inline failure
-  view with a Retry button. Auto-scrolls to the newest turn.
+  bubble, the coach bubble (once streaming text or a completed message exists),
+  a streaming indicator on the in-flight turn, and — on failure — an inline
+  failure view with a Retry button. Auto-scrolls to the newest turn.
 - **Layout**: The root `VStack` and the thread `ScrollView` MUST fill all
   vertical space the navigation container offers (both carry
   `maxHeight: .infinity`); the thread scrolls within that space while the
   composer keeps its intrinsic height and pins to the bottom edge.
-- **Composer**: A single vertically-growing `TextField` with the send button —
-  a `CircularIconButton` (see [DesignSystem/SPEC.md](./DesignSystem/SPEC.md)) —
+- **Composer**: A single vertically-growing `TextField` with the send button — a
+  `CircularIconButton` (see [DesignSystem/SPEC.md](./DesignSystem/SPEC.md)) —
   overlaid bottom-trailing. The field's trailing inset MUST track the button's
   rendered width (plus its edge inset) so input never underlaps the button at
   any Dynamic Type size; a fixed/hardcoded inset is forbidden. The input field
@@ -725,8 +728,8 @@ and UI layers, paired per endpoint:
 - Session restore: `MeResponse` (wraps `PublicUser`).
 - Student profile: `CreateStudentRequest` / `StudentResponse` (wraps
   `PublicStudent`).
-- Conversation: domain models `Conversation`, `Message`, `MessageRole`
-  (`user` | `coach`); the request DTOs `CreateConversationRequest` (start) and
+- Conversation: domain models `Conversation`, `Message`, `MessageRole` (`user` |
+  `coach`); the request DTOs `CreateConversationRequest` (start) and
   `PostMessageRequest` (follow-up); the domain event `ConversationStreamEvent`
   (`conversation` | `userMessage` | `delta` | `completed`); and the five wire
   frames (`ConversationCreatedFrame`, `UserMessageFrame`, `MessageDeltaFrame`,

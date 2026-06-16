@@ -58,8 +58,8 @@ consumers live outside this directory and are out of scope for this spec.
   NEVER rely on the parent to provide width.
 
 - **Loading implies disabled.** While a loading-capable button's `isLoading` is
-  `true` (`LoadingButton`, `CircularIconButton`), the button MUST be disabled and
-  its title/glyph MUST be replaced by a `ProgressView`; it NEVER presents a
+  `true` (`LoadingButton`, `CircularIconButton`), the button MUST be disabled
+  and its title/glyph MUST be replaced by a `ProgressView`; it NEVER presents a
   tappable button in the loading state.
 
 - **Error state drives field presentation.** When `LabeledField.error` is
@@ -153,19 +153,19 @@ invoking caller-supplied closures — no network, persistence, or external I/O.
   button: the label is inset by a symmetric `DSSpacing` pad and clipped to a
   `Circle()`, so the circle is sized from its glyph and NEVER from a fixed
   diameter. `brandAccent` fill, `brandOnAccent` label, `dsButton` font. Renders
-  pressed and disabled states via reduced opacity, with the disabled state taking
-  visual precedence over pressed.
+  pressed and disabled states via reduced opacity, with the disabled state
+  taking visual precedence over pressed.
 - **`CircularIconButton: View`** —
   `init(systemImage:, isLoading:, accessibilityIdentifier: = nil,
   accessibilityLabel: = nil, progressAccessibilityIdentifier: = nil, action:)`.
   Pairs a `Button` with `CircularIconButtonStyle`. The view owns the loading
   behavior — while `isLoading` it replaces the glyph with a circular
-  `ProgressView` and disables the button (the style owns only the pressed/disabled
-  opacity). The in-circle spinner MUST be tinted `brandOnAccent` so it reads
-  against the `brandAccent` fill — a `ProgressView` ignores the style's
-  `foregroundStyle`, so the tint is the only thing that colors it.
-  `progressAccessibilityIdentifier` sets the identifier on that spinner; the three
-  accessibility parameters follow the opt-in invariant.
+  `ProgressView` and disables the button (the style owns only the
+  pressed/disabled opacity). The in-circle spinner MUST be tinted
+  `brandOnAccent` so it reads against the `brandAccent` fill — a `ProgressView`
+  ignores the style's `foregroundStyle`, so the tint is the only thing that
+  colors it. `progressAccessibilityIdentifier` sets the identifier on that
+  spinner; the three accessibility parameters follow the opt-in invariant.
 - **`LoadingButtonRole`** — `.primary` | `.destructive`; selects the button
   style for `LoadingButton`.
 - **`LoadingButton: View`** —

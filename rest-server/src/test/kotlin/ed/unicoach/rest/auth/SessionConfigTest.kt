@@ -59,7 +59,8 @@ class SessionConfigTest {
   @Test
   fun `derives cookieDomain from APP_DOMAIN substitution in rest-server conf`() {
     val config =
-      ConfigFactory.parseString("APP_DOMAIN = cookie.example.test")
+      ConfigFactory
+        .parseString("APP_DOMAIN = cookie.example.test")
         .withFallback(ConfigFactory.parseResources("rest-server.conf"))
         .resolve()
 

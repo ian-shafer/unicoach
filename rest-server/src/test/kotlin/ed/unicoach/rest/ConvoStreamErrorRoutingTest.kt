@@ -20,8 +20,8 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
 import io.ktor.client.request.post
-import io.ktor.client.statement.bodyAsText
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -116,7 +116,11 @@ class ConvoStreamErrorRoutingTest {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         setBody(mapper.writeValueAsString(req))
       }
-    val cookie = reg.headers[HttpHeaders.SetCookie]!!.split(";").first().trim()
+    val cookie =
+      reg.headers[HttpHeaders.SetCookie]!!
+        .split(";")
+        .first()
+        .trim()
     client.post(buildUrl("/api/v1/students")) {
       header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
       header(HttpHeaders.Cookie, cookie)

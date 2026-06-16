@@ -143,12 +143,13 @@ class ConvoRouteHandler(
     val request = call.receive<CreateConversationRequest>()
 
     when (val outcome = coachingService.startConvo(student.id, request.message, request.name).getOrThrow()) {
-      is StartConvoResult.ValidationFailure ->
+      is StartConvoResult.ValidationFailure -> {
         call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
+      }
 
       is StartConvoResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
-          is ReplyEvent.Completed ->
+          is ReplyEvent.Completed -> {
             call.respond(
               HttpStatusCode.Created,
               CreateConversationResponse(
@@ -157,8 +158,11 @@ class ConvoRouteHandler(
                 coachMessage = coachMessageOf(terminal.response),
               ),
             )
+          }
 
-          is ReplyEvent.Failed -> call.respond(HttpStatusCode.InternalServerError, failedError(terminal))
+          is ReplyEvent.Failed -> {
+            call.respond(HttpStatusCode.InternalServerError, failedError(terminal))
+          }
         }
       }
     }
@@ -226,11 +230,17 @@ class ConvoRouteHandler(
     val request = call.receive<PostMessageRequest>()
 
     when (val outcome = coachingService.postTurn(student.id, convoId, request.message).getOrThrow()) {
-      is PostTurnResult.ValidationFailure -> call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
-      PostTurnResult.NotFound -> respondNotFound()
+      is PostTurnResult.ValidationFailure -> {
+        call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
+      }
+
+      PostTurnResult.NotFound -> {
+        respondNotFound()
+      }
+
       is PostTurnResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
-          is ReplyEvent.Completed ->
+          is ReplyEvent.Completed -> {
             call.respond(
               HttpStatusCode.Created,
               PostMessageResponse(
@@ -238,8 +248,11 @@ class ConvoRouteHandler(
                 coachMessage = coachMessageOf(terminal.response),
               ),
             )
+          }
 
-          is ReplyEvent.Failed -> call.respond(HttpStatusCode.InternalServerError, failedError(terminal))
+          is ReplyEvent.Failed -> {
+            call.respond(HttpStatusCode.InternalServerError, failedError(terminal))
+          }
         }
       }
     }
@@ -255,8 +268,11 @@ class ConvoRouteHandler(
     val request = call.receive<CreateConversationRequest>()
 
     when (val outcome = coachingService.startConvo(student.id, request.message, request.name).getOrThrow()) {
-      is StartConvoResult.ValidationFailure -> call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
-      is StartConvoResult.Started ->
+      is StartConvoResult.ValidationFailure -> {
+        call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
+      }
+
+      is StartConvoResult.Started -> {
         streamReply(outcome.reply) { writer ->
           writeSseEvent(
             writer,
@@ -267,6 +283,7 @@ class ConvoRouteHandler(
             ),
           )
         }
+      }
     }
   }
 
@@ -277,12 +294,19 @@ class ConvoRouteHandler(
     val request = call.receive<PostMessageRequest>()
 
     when (val outcome = coachingService.postTurn(student.id, convoId, request.message).getOrThrow()) {
-      is PostTurnResult.ValidationFailure -> call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
-      PostTurnResult.NotFound -> respondNotFound()
-      is PostTurnResult.Started ->
+      is PostTurnResult.ValidationFailure -> {
+        call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
+      }
+
+      PostTurnResult.NotFound -> {
+        respondNotFound()
+      }
+
+      is PostTurnResult.Started -> {
         streamReply(outcome.reply) { writer ->
           writeSseEvent(writer, "user_message", UserMessageEvent(userMessage = userMessageOf(outcome.userTurn)))
         }
+      }
     }
   }
 
@@ -296,11 +320,17 @@ class ConvoRouteHandler(
       writeOpening(this)
       reply.collect { event ->
         when (event) {
-          is ReplyEvent.Delta -> writeSseEvent(this, "delta", MessageDeltaEvent(text = event.text))
-          is ReplyEvent.Completed ->
+          is ReplyEvent.Delta -> {
+            writeSseEvent(this, "delta", MessageDeltaEvent(text = event.text))
+          }
+
+          is ReplyEvent.Completed -> {
             writeSseEvent(this, "message", MessageCompletedEvent(message = coachMessageOf(event.response)))
-          is ReplyEvent.Failed ->
+          }
+
+          is ReplyEvent.Failed -> {
             writeSseEvent(this, "error", StreamErrorEvent(error = failedError(event)))
+          }
         }
       }
     }

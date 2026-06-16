@@ -296,12 +296,11 @@ guard message wins over a missing-env error.
   `xcodebuild` verbatim as a build setting — a raw secret passed unchanged,
   unlike the derived `UNICOACH_BACKEND_URL`; an unset value bakes blank, so the
   app sends no client-key header. A simulator build (destination contains
-  `Simulator`) skips
-  signing; a device build additionally sources `ios-app/env/signing.env` for
-  `UNICOACH_DEVELOPMENT_TEAM` (required) and forwards
-  `CODE_SIGN_STYLE=Automatic
-  -allowProvisioningUpdates`. Fatals before
-  invoking `xcodebuild` on: dev shell, missing env file, missing
+  `Simulator`) skips signing; a device build additionally sources
+  `ios-app/env/signing.env` for `UNICOACH_DEVELOPMENT_TEAM` (required) and
+  forwards `CODE_SIGN_STYLE=Automatic
+  -allowProvisioningUpdates`. Fatals
+  before invoking `xcodebuild` on: dev shell, missing env file, missing
   `signing.env`/team, or a bare-IP `APP_DOMAIN` (invalid cookie `Domain`, RFC
   6265).
 - **`install-ios [--launch] [env]`**: Installs the most recent device build to a

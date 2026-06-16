@@ -143,11 +143,15 @@ class CoachingService(
     val validatedName: ConvoName? =
       if (update.name != null) {
         when (val result = ConvoName.create(update.name)) {
-          is ValidationResult.Valid -> result.value
-          is ValidationResult.Invalid ->
+          is ValidationResult.Valid -> {
+            result.value
+          }
+
+          is ValidationResult.Invalid -> {
             return Result.success(
               UpdateConvoResult.ValidationFailure(listOf(nameFieldError(result.error))),
             )
+          }
         }
       } else {
         null
@@ -165,8 +169,14 @@ class CoachingService(
             ConvosDao.rename(session, convoId, validatedName).getOrThrow()
           }
           when (update.archived) {
-            true -> ConvosDao.archive(session, convoId).getOrThrow()
-            false -> ConvosDao.unarchive(session, convoId).getOrThrow()
+            true -> {
+              ConvosDao.archive(session, convoId).getOrThrow()
+            }
+
+            false -> {
+              ConvosDao.unarchive(session, convoId).getOrThrow()
+            }
+
             null -> {}
           }
           val listing = ConvosDao.findByIdWithActivity(session, convoId).getOrThrow()
@@ -192,9 +202,13 @@ class CoachingService(
     val resolvedName: ConvoName =
       if (name != null) {
         when (val result = ConvoName.create(name)) {
-          is ValidationResult.Valid -> result.value
-          is ValidationResult.Invalid ->
+          is ValidationResult.Valid -> {
+            result.value
+          }
+
+          is ValidationResult.Invalid -> {
             return Result.success(StartConvoResult.ValidationFailure(listOf(nameFieldError(result.error))))
+          }
         }
       } else {
         deriveName(message)
@@ -331,8 +345,11 @@ class CoachingService(
           if (delta is ContentDelta.Text) onDelta(delta.text)
         }
 
-        is ChatEvent.Completed -> terminal = CompletedTerminal(event.response, event.rawPayload)
-        is ChatEvent.Rejected ->
+        is ChatEvent.Completed -> {
+          terminal = CompletedTerminal(event.response, event.rawPayload)
+        }
+
+        is ChatEvent.Rejected -> {
           terminal =
             FailureTerminal(
               retriable = false,
@@ -340,7 +357,9 @@ class CoachingService(
               providerRequestId = event.providerRequestId,
               rawPayload = event.rawPayload,
             )
-        is ChatEvent.TransientFailure ->
+        }
+
+        is ChatEvent.TransientFailure -> {
           terminal =
             FailureTerminal(
               retriable = true,
@@ -348,6 +367,8 @@ class CoachingService(
               providerRequestId = event.providerRequestId,
               rawPayload = event.rawPayload,
             )
+        }
+
         else -> {}
       }
     }
@@ -557,6 +578,7 @@ class CoachingService(
     val truncated = collapsed.take(NAME_DERIVATION_MAX).trim()
     return when (val result = ConvoName.create(truncated)) {
       is ValidationResult.Valid -> result.value
+
       // A non-blank message always yields a valid name; defensive fallback.
       is ValidationResult.Invalid -> (ConvoName.create("Conversation") as ValidationResult.Valid).value
     }

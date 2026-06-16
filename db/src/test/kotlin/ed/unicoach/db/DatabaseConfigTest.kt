@@ -8,7 +8,8 @@ import kotlin.test.assertTrue
 
 class DatabaseConfigTest {
   private fun resolvedJdbcUrl(substitutions: Map<String, String>): String =
-    ConfigFactory.parseMap(substitutions)
+    ConfigFactory
+      .parseMap(substitutions)
       .withFallback(ConfigFactory.parseResources("db.conf"))
       .resolve()
       .getString("database.jdbcUrl")

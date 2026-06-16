@@ -8,9 +8,8 @@ under `/api/v1`. It owns construction of the application's services
 (`AuthService`, `StudentService`, `CoachingService`) and injects them into the
 route handlers, including fail-fast boot-time construction of the chat provider
 the coaching service depends on. It translates between domain results (from
-`service` and `db`) and HTTP responses,
-managing session cookie lifecycle and asynchronous session expiry enqueueing. It
-does not contain domain logic.
+`service` and `db`) and HTTP responses, managing session cookie lifecycle and
+asynchronous session expiry enqueueing. It does not contain domain logic.
 
 ---
 
@@ -171,8 +170,9 @@ does not contain domain logic.
   via `configureClientKeyGate(clientKeyGateConfig)` (after serialization, before
   routing), `StatusPages`, and the application-scope request-body-size limit via
   `configureRequestSizeLimit(requestSizeConfig)`; builds `AuthService`,
-  `StudentService`, and `CoachingService(database, chatProvider, coachingConfig)`,
-  and registers all routes via `configureRouting`.
+  `StudentService`, and
+  `CoachingService(database, chatProvider, coachingConfig)`, and registers all
+  routes via `configureRouting`.
 - **Inputs**: The pre-constructed `chatProvider` and `coachingConfig` are passed
   in (built fail-fast by `startServer`), so `appModule` itself performs no chat
   config parsing.
@@ -275,19 +275,19 @@ does not contain domain logic.
 
 Required keys in `rest-server.conf`:
 
-| Key                                 | Type                         | Description                                                                   |
-| ----------------------------------- | ---------------------------- | ----------------------------------------------------------------------------- |
-| `server.host`                       | String                       | Netty bind host                                                               |
-| `server.port`                       | Int                          | Netty bind port                                                               |
-| `server.requestSize.maxSize`        | Size string                  | Default max request body size (e.g. `"8 KiB"`); parsed via `Config.getBytes`  |
-| `server.requestSize.routeOverrides` | Object\<path → size string\> | Per-exact-path body-size overrides (e.g. `"/api/v1/auth/register" = "1 KiB"`) |
-| `session.expiration`                | Duration                     | Session TTL                                                                   |
-| `session.cookieName`                | String                       | Cookie name                                                                   |
-| `session.cookieDomain`              | String                       | Cookie domain attribute                                                       |
-| `session.cookieSecure`              | Boolean                      | `Secure` cookie flag                                                          |
-| `sessionExpiry.ignorePathPrefixes`  | List\<String\>               | Paths excluded from expiry enqueue                                            |
+| Key                                 | Type                         | Description                                                                      |
+| ----------------------------------- | ---------------------------- | -------------------------------------------------------------------------------- |
+| `server.host`                       | String                       | Netty bind host                                                                  |
+| `server.port`                       | Int                          | Netty bind port                                                                  |
+| `server.requestSize.maxSize`        | Size string                  | Default max request body size (e.g. `"8 KiB"`); parsed via `Config.getBytes`     |
+| `server.requestSize.routeOverrides` | Object\<path → size string\> | Per-exact-path body-size overrides (e.g. `"/api/v1/auth/register" = "1 KiB"`)    |
+| `session.expiration`                | Duration                     | Session TTL                                                                      |
+| `session.cookieName`                | String                       | Cookie name                                                                      |
+| `session.cookieDomain`              | String                       | Cookie domain attribute                                                          |
+| `session.cookieSecure`              | Boolean                      | `Secure` cookie flag                                                             |
+| `sessionExpiry.ignorePathPrefixes`  | List\<String\>               | Paths excluded from expiry enqueue                                               |
 | `clientKeyGate.keys`                | String (comma-separated)     | Valid client keys; empty disables the gate (`${?UNICOACH_CLIENT_KEYS}` override) |
-| `clientKeyGate.allowlistPaths`      | List\<String\>               | Paths exempt from the gate (e.g. `["/healthz"]`)                              |
+| `clientKeyGate.allowlistPaths`      | List\<String\>               | Paths exempt from the gate (e.g. `["/healthz"]`)                                 |
 
 ### Config Load Order
 
@@ -341,9 +341,10 @@ NOT depend on `net`. (`CoachingService` and `CoachingConfig` live in the
 - [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../rfc/45-coaching-service.md)
       — Added `chat.conf` to the config load list; wired fail-fast boot
       construction of the chat provider and `CoachingConfig`; threaded
-      `chatProvider`/`coachingConfig` into `appModule` to build `CoachingService`;
-      registered the `/api/v1/conversations/*` group via `ConvoRouteHandler` in
-      `configureRouting`. First production callsite of the `:chat` module.
+      `chatProvider`/`coachingConfig` into `appModule` to build
+      `CoachingService`; registered the `/api/v1/conversations/*` group via
+      `ConvoRouteHandler` in `configureRouting`. First production callsite of
+      the `:chat` module.
 - [x] [RFC-53: `/healthz` Liveness Endpoint](../../../../../../../rfc/53-healthz-liveness-endpoint.md)
       — Replaced the placeholder `GET /hello` route with the unauthenticated,
       unversioned `GET /healthz` liveness endpoint that depends on no backing

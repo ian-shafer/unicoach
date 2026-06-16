@@ -152,11 +152,21 @@ class KtorAnthropicStreamTransportTest {
   private suspend fun sentBody(request: HttpRequestData): JsonObject {
     val text =
       when (val content = request.body) {
-        is io.ktor.http.content.TextContent -> content.text
-        is io.ktor.http.content.OutgoingContent.ByteArrayContent -> String(content.bytes())
-        is io.ktor.http.content.OutgoingContent.ReadChannelContent ->
+        is io.ktor.http.content.TextContent -> {
+          content.text
+        }
+
+        is io.ktor.http.content.OutgoingContent.ByteArrayContent -> {
+          String(content.bytes())
+        }
+
+        is io.ktor.http.content.OutgoingContent.ReadChannelContent -> {
           String(content.readFrom().toByteArray())
-        else -> error("unexpected body type [${content::class}]")
+        }
+
+        else -> {
+          error("unexpected body type [${content::class}]")
+        }
       }
     return kotlinx.serialization.json.Json
       .parseToJsonElement(text) as JsonObject

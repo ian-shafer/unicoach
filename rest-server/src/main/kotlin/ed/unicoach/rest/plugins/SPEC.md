@@ -135,8 +135,8 @@ request/response in the `rest-server`. The plugins cover:
   route handler runs.
 - The gate MUST apply to ALL routes, including the public `auth/register` and
   `auth/login` routes. The ONLY exemption is an exact-match path allowlist (the
-  `/healthz` health-check, so load-balancer probes pass). Matching MUST be exact,
-  not prefix: `/healthzextra` MUST NOT be exempt.
+  `/healthz` health-check, so load-balancer probes pass). Matching MUST be
+  exact, not prefix: `/healthzextra` MUST NOT be exempt.
 - The gate MUST be independent of the session cookie: it MUST NOT read or depend
   on the session, and contributes no cookie or session side effect. The client
   key answers "is this one of my clients?"; the session answers "who is the
@@ -264,10 +264,11 @@ request/response in the `rest-server`. The plugins cover:
 
 ### `configureClientKeyGate()` ([ClientKeyGate.kt](./ClientKeyGate.kt))
 
-- **Signature**: `fun Application.configureClientKeyGate(config: ClientKeyGateConfig)`
-- **Side Effects**: Installs one interceptor on `ApplicationCallPipeline.Plugins`.
-  No database writes, no network calls. On rejection, writes a `403` response and
-  `finish()`es the pipeline.
+- **Signature**:
+  `fun Application.configureClientKeyGate(config: ClientKeyGateConfig)`
+- **Side Effects**: Installs one interceptor on
+  `ApplicationCallPipeline.Plugins`. No database writes, no network calls. On
+  rejection, writes a `403` response and `finish()`es the pipeline.
 - **Per-call flow**: empty `validKeys` → proceed (disabled); exact-match path in
   `allowlistPaths` → proceed; otherwise the `X-Unicoach-Client-Key` header MUST
   match a configured key (constant-time, over the whole set) or the call is

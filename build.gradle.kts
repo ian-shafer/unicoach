@@ -33,7 +33,10 @@ subprojects {
   tasks.withType<Test>().configureEach {
     systemProperty(
       "unicoach.config.dir",
-      layout.buildDirectory.dir("test-config-overlay").get().asFile.path,
+      layout.buildDirectory
+        .dir("test-config-overlay")
+        .get()
+        .asFile.path,
     )
   }
 }

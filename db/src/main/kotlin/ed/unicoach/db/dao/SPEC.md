@@ -153,21 +153,20 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
   soft-delete scopes and vice versa.
 - `archive` and `unarchive` MUST be idempotent toggles. `archive` sets
   `archived_at = COALESCE(archived_at, NOW())` (re-archiving preserves the
-  original archive instant); `unarchive` sets `archived_at = NULL` (succeeds even
-  on a never-archived row). Neither carries a `version` guard.
+  original archive instant); `unarchive` sets `archived_at = NULL` (succeeds
+  even on a never-archived row). Neither carries a `version` guard.
 - Both MUST reject soft-deleted rows — the `WHERE id = ? AND deleted_at IS NULL`
   clause returns `NotFoundException` when the row is absent or soft-deleted.
-- Both MUST first issue
-  `SET LOCAL unicoach.bypass_logical_timestamp = 'true'` so the
-  `update_timestamp` trigger does NOT advance `updated_at` — `updated_at`
+- Both MUST first issue `SET LOCAL unicoach.bypass_logical_timestamp = 'true'`
+  so the `update_timestamp` trigger does NOT advance `updated_at` — `updated_at`
   advances on `rename` only (precedent: `UsersDao.updatePhysicalRecord`).
 - `SET LOCAL` persists for the remainder of the caller transaction. A caller
   combining `rename` and an archive toggle in one transaction MUST `rename`
   first, or the rename's `updated_at` bump is suppressed.
 - `listByStudentWithActivity` and `findByIdWithActivity` MUST derive
-  `lastActivityAt` from `MAX(convo_requests.created_at)` (NULL when the convo has
-  no turns) via a single `LEFT JOIN` grouped by convo. The MAX includes failed
-  and orphan-request turns — recency reflects any request row, not only
+  `lastActivityAt` from `MAX(convo_requests.created_at)` (NULL when the convo
+  has no turns) via a single `LEFT JOIN` grouped by convo. The MAX includes
+  failed and orphan-request turns — recency reflects any request row, not only
   successfully answered ones. `listByStudentWithActivity` MUST order by activity
   descending with `NULLS LAST`, then `created_at` descending, then `id` (a
   deterministic tiebreak).
@@ -260,10 +259,10 @@ route through `mapDatabaseError`. `mapConvoError` introduces **no new
 
 - `UsersDao.updatePhysicalRecord` and `ConvosDao.archive`/`unarchive` MUST
   prepend `SET LOCAL unicoach.bypass_logical_timestamp = 'true'` via
-  `session.prepareStatement` before executing their `UPDATE`. The flag suppresses
-  the `update_timestamp` trigger so `updated_at`/`row_updated_at` does not
-  advance. It is scoped to the current transaction (`SET LOCAL`) and MUST NOT
-  bleed into subsequent transactions.
+  `session.prepareStatement` before executing their `UPDATE`. The flag
+  suppresses the `update_timestamp` trigger so `updated_at`/`row_updated_at`
+  does not advance. It is scoped to the current transaction (`SET LOCAL`) and
+  MUST NOT bleed into subsequent transactions.
 
 ---
 
@@ -630,8 +629,8 @@ methods**. Stateless `object`; failures route through `mapDatabaseError`.
 
 #### `findByNameAndVersion(session, name, version): Result<SystemPrompt>`
 
-- **Side Effects**: Read only. Resolves the catalog row for the `(name, version)`
-  UNIQUE key.
+- **Side Effects**: Read only. Resolves the catalog row for the
+  `(name, version)` UNIQUE key.
 - **Error Handling**: `Result.failure(NotFoundException())` when no row matches;
   `mapDatabaseError` on failure.
 - **Idempotency**: Yes.
@@ -732,5 +731,5 @@ SQLSTATE classification rules are documented in §II Postgres Error Codes.
       `bypass_logical_timestamp` GUC so `updated_at` does not advance) and the
       activity-derived reads `listByStudentWithActivity` (with `ArchiveScope`
       filtering) / `findByIdWithActivity` (single `LEFT JOIN` deriving
-      `lastActivityAt = MAX(convo_requests.created_at)`); `mapConvo` now projects
-      `archived_at`.
+      `lastActivityAt = MAX(convo_requests.created_at)`); `mapConvo` now
+      projects `archived_at`.

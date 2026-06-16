@@ -85,9 +85,10 @@ layer carries no transport concern of its own.
 ### Visibility, failure, and durability
 
 - A turn is **visible** — projected by `listTurns` and replayed to the provider
-  — iff its response row has non-null content (`turn.response?.content != null`).
-  Failed and abandoned turns MUST remain in the append-only log as audit but
-  MUST NEVER reach the API projection or the replayed history.
+  — iff its response row has non-null content
+  (`turn.response?.content != null`). Failed and abandoned turns MUST remain in
+  the append-only log as audit but MUST NEVER reach the API projection or the
+  replayed history.
 - The provider call MUST replay only the transaction-1 snapshot of **visible**
   prior turns, each contributing a `USER` message (rendered request content)
   then an `ASSISTANT` message (rendered response content), in `created_at, id`
@@ -183,13 +184,13 @@ layer carries no transport concern of its own.
   reasons are logged (bracketed), not relayed.
 - **Provider-terminal mapping** (one response row per request, always):
 
-  | Provider terminal      | Response row                                                                  | Emitted                            |
-  | ---------------------- | ----------------------------------------------------------------------------- | ---------------------------------- |
-  | `Completed`            | full row from `ChatResponse` + raw row from payload                           | `Completed` (or `Failed(true)` if the tx-2 write fails) |
-  | `Rejected`             | error row (`stop_reason = "error"`, null content/model/tokens) + raw row if a body exists | `Failed(retriable = false)`        |
-  | `TransientFailure`     | same error-row shape, raw row if a body exists                                | `Failed(retriable = true)`         |
-  | exception in the flow  | same error-row shape, no raw row                                              | `Failed(retriable = true)`         |
-  | client cancellation    | same error-row shape (under `NonCancellable`), iff no row yet written          | nothing (collector is gone)        |
+  | Provider terminal     | Response row                                                                              | Emitted                                                 |
+  | --------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+  | `Completed`           | full row from `ChatResponse` + raw row from payload                                       | `Completed` (or `Failed(true)` if the tx-2 write fails) |
+  | `Rejected`            | error row (`stop_reason = "error"`, null content/model/tokens) + raw row if a body exists | `Failed(retriable = false)`                             |
+  | `TransientFailure`    | same error-row shape, raw row if a body exists                                            | `Failed(retriable = true)`                              |
+  | exception in the flow | same error-row shape, no raw row                                                          | `Failed(retriable = true)`                              |
+  | client cancellation   | same error-row shape (under `NonCancellable`), iff no row yet written                     | nothing (collector is gone)                             |
 
 - **Idempotency / Safety**: the flow is **not** retryable transparently —
   re-collection is a fresh at-least-once provider transmission with no
@@ -219,15 +220,15 @@ layer carries no transport concern of its own.
 
 - No outcome variant MUST contain HTTP status codes or Ktor types.
 
-| Type                | Variants                                          | See |
-| ------------------- | ------------------------------------------------- | --- |
-| `StartConvoResult`  | `Started` · `ValidationFailure`                   | [StartConvoResult.kt](./StartConvoResult.kt) |
-| `PostTurnResult`    | `Started` · `ValidationFailure` · `NotFound`      | [PostTurnResult.kt](./PostTurnResult.kt) |
-| `GetConvoResult`    | `Found` · `NotFound`                              | [GetConvoResult.kt](./GetConvoResult.kt) |
-| `UpdateConvoResult` | `Success` · `ValidationFailure` · `NotFound`      | [UpdateConvoResult.kt](./UpdateConvoResult.kt) |
-| `DeleteConvoResult` | `Success` · `NotFound`                            | [DeleteConvoResult.kt](./DeleteConvoResult.kt) |
-| `ListTurnsResult`   | `Found` · `NotFound`                              | [ListTurnsResult.kt](./ListTurnsResult.kt) |
-| `ReplyEvent`        | `Delta` · `Terminal`(`Completed` · `Failed`)      | [ReplyEvent.kt](./ReplyEvent.kt) |
+| Type                | Variants                                     | See                                            |
+| ------------------- | -------------------------------------------- | ---------------------------------------------- |
+| `StartConvoResult`  | `Started` · `ValidationFailure`              | [StartConvoResult.kt](./StartConvoResult.kt)   |
+| `PostTurnResult`    | `Started` · `ValidationFailure` · `NotFound` | [PostTurnResult.kt](./PostTurnResult.kt)       |
+| `GetConvoResult`    | `Found` · `NotFound`                         | [GetConvoResult.kt](./GetConvoResult.kt)       |
+| `UpdateConvoResult` | `Success` · `ValidationFailure` · `NotFound` | [UpdateConvoResult.kt](./UpdateConvoResult.kt) |
+| `DeleteConvoResult` | `Success` · `NotFound`                       | [DeleteConvoResult.kt](./DeleteConvoResult.kt) |
+| `ListTurnsResult`   | `Found` · `NotFound`                         | [ListTurnsResult.kt](./ListTurnsResult.kt)     |
+| `ReplyEvent`        | `Delta` · `Terminal`(`Completed` · `Failed`) | [ReplyEvent.kt](./ReplyEvent.kt)               |
 
 ---
 
@@ -243,9 +244,9 @@ layer carries no transport concern of its own.
   `coaching.systemPromptName`, `coaching.systemPromptVersion`. Production wiring
   fails fast at boot on absent keys.
 - **Database**: requires a live PostgreSQL pool via `Database`. The
-  two-transaction turn model relies on each `Database.withConnection` block being
-  a single transaction; first-turn-failure soft-delete shares the error-row
-  transaction.
+  two-transaction turn model relies on each `Database.withConnection` block
+  being a single transaction; first-turn-failure soft-delete shares the
+  error-row transaction.
 - **Coroutine context**: `suspend` methods must be called from a coroutine
   scope. The module performs no dispatcher switching of its own, except the
   `NonCancellable` block used to persist an abandoned turn during cancellation.

@@ -44,17 +44,26 @@ class AnthropicChatProvider(
       try {
         transport.stream(requestBody(request)).collect { transportEvent ->
           when (transportEvent) {
-            is AnthropicTransportEvent.Opened -> requestId = transportEvent.requestId
+            is AnthropicTransportEvent.Opened -> {
+              requestId = transportEvent.requestId
+            }
+
             is AnthropicTransportEvent.Frame -> {
               when (val outcome = handleFrame(transportEvent, accumulator, requestId)) {
-                is FrameOutcome.Emit -> emit(outcome.event)
+                is FrameOutcome.Emit -> {
+                  emit(outcome.event)
+                }
+
                 is FrameOutcome.Terminal -> {
                   emit(outcome.event)
                   // Stop collecting upstream: this cancels the in-flight transport
                   // call so frames after the terminal are never collected.
                   throw StopCollection
                 }
-                FrameOutcome.Drop -> Unit
+
+                FrameOutcome.Drop -> {
+                  Unit
+                }
               }
             }
           }
@@ -155,6 +164,7 @@ class AnthropicChatProvider(
           ),
         )
       }
+
       "content_block_start" -> {
         val index = data.intField(frame.event, "index")
         val contentBlock =
@@ -169,6 +179,7 @@ class AnthropicChatProvider(
           ),
         )
       }
+
       "content_block_delta" -> {
         val index = data.intField(frame.event, "index")
         val deltaObj =
@@ -177,23 +188,33 @@ class AnthropicChatProvider(
         accumulator.applyDelta(index, deltaObj)
         FrameOutcome.Emit(ChatEvent.ContentBlockDelta(index, contentDelta(deltaObj)))
       }
+
       "content_block_stop" -> {
         val index = data.intField(frame.event, "index")
         accumulator.closeBlock(index)
         FrameOutcome.Emit(ChatEvent.ContentBlockStop(index))
       }
+
       "message_delta" -> {
         val deltaObj = data.objOrNull("delta") ?: JsonObject(emptyMap())
         val usageObj = data.objOrNull("usage")
         accumulator.applyMessageDelta(deltaObj, usageObj)
         FrameOutcome.Emit(ChatEvent.MessageDelta(deltaObj.string("stop_reason"), usage(usageObj)))
       }
+
       "message_stop" -> {
         accumulator.terminated = true
         FrameOutcome.Terminal(accumulator.completed())
       }
-      "ping" -> FrameOutcome.Drop
-      "error" -> FrameOutcome.Terminal(streamErrorFailure(data, accumulator.messageId() ?: openedRequestId))
+
+      "ping" -> {
+        FrameOutcome.Drop
+      }
+
+      "error" -> {
+        FrameOutcome.Terminal(streamErrorFailure(data, accumulator.messageId() ?: openedRequestId))
+      }
+
       else -> {
         logger.warn("[{}] unmodeled SSE event [{}] surfaced as Raw", PROVIDER_ID, frame.event)
         FrameOutcome.Emit(ChatEvent.Raw(frame.event, data))
@@ -222,10 +243,22 @@ class AnthropicChatProvider(
 
   private fun contentDelta(delta: JsonObject): ContentDelta =
     when (delta.string("type")) {
-      "text_delta" -> ContentDelta.Text(delta.string("text") ?: "")
-      "thinking_delta" -> ContentDelta.Thinking(delta.string("thinking") ?: "")
-      "input_json_delta" -> ContentDelta.ToolInput(delta.string("partial_json") ?: "")
-      "signature_delta" -> ContentDelta.Opaque(delta)
+      "text_delta" -> {
+        ContentDelta.Text(delta.string("text") ?: "")
+      }
+
+      "thinking_delta" -> {
+        ContentDelta.Thinking(delta.string("thinking") ?: "")
+      }
+
+      "input_json_delta" -> {
+        ContentDelta.ToolInput(delta.string("partial_json") ?: "")
+      }
+
+      "signature_delta" -> {
+        ContentDelta.Opaque(delta)
+      }
+
       else -> {
         logger.warn("[{}] unrecognized content delta type [{}] surfaced as Opaque", PROVIDER_ID, delta.string("type"))
         ContentDelta.Opaque(delta)
@@ -253,10 +286,14 @@ class AnthropicChatProvider(
     val permanent =
       when {
         errorType != null && isPermanentType(errorType) -> true
+
         errorType != null && isTransientType(errorType) -> false
+
         // No recognized type: fall back to the HTTP status bucket.
         e.status == 408 || e.status == 429 || e.status >= 500 -> false
+
         e.status in 400..499 -> true
+
         else -> false
       }
     return terminal(permanent, reason, e.requestId, rawPayload)
@@ -383,14 +420,27 @@ class AnthropicChatProvider(
       frameCount++
       val block = blockAt(index, "content_block_delta")
       when (delta.string("type")) {
-        "text_delta" -> appendString(block, "text", delta.string("text"))
-        "thinking_delta" -> appendString(block, "thinking", delta.string("thinking"))
-        "signature_delta" -> appendString(block, "signature", delta.string("signature"))
-        "input_json_delta" ->
+        "text_delta" -> {
+          appendString(block, "text", delta.string("text"))
+        }
+
+        "thinking_delta" -> {
+          appendString(block, "thinking", delta.string("thinking"))
+        }
+
+        "signature_delta" -> {
+          appendString(block, "signature", delta.string("signature"))
+        }
+
+        "input_json_delta" -> {
           toolInputBuffers.getOrPut(index) { StringBuilder() }.append(delta.string("partial_json") ?: "")
+        }
+
         // Other unrecognized delta types are surfaced as Opaque on the stream
         // but not folded — no folding rule can exist for an unknown shape.
-        else -> Unit
+        else -> {
+          Unit
+        }
       }
     }
 

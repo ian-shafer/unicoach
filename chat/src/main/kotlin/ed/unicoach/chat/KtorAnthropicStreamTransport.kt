@@ -74,9 +74,18 @@ class KtorAnthropicStreamTransport(
     while (true) {
       val line = channel.readLine(LineEnding.Lenient) ?: break
       when {
-        line.isEmpty() -> dispatch()
-        line.startsWith(COMMENT_PREFIX) -> Unit
-        line.startsWith(EVENT_FIELD) -> event = line.removePrefix(EVENT_FIELD).removePrefix(" ")
+        line.isEmpty() -> {
+          dispatch()
+        }
+
+        line.startsWith(COMMENT_PREFIX) -> {
+          Unit
+        }
+
+        line.startsWith(EVENT_FIELD) -> {
+          event = line.removePrefix(EVENT_FIELD).removePrefix(" ")
+        }
+
         line.startsWith(DATA_FIELD) -> {
           if (hasData) data.append('\n')
           data.append(line.removePrefix(DATA_FIELD).removePrefix(" "))

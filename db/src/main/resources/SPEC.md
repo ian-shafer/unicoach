@@ -62,14 +62,14 @@ connection pool.
 **Consumer**:
 [`DatabaseConfig.from(config: Config)`](../kotlin/ed/unicoach/db/DatabaseConfig.kt)
 
-| Key                          | HOCON Form                                                        | Required                                       | Default    | Override Env Var                                |
-| ---------------------------- | ----------------------------------------------------------------- | ---------------------------------------------- | ---------- | ----------------------------------------------- |
-| `database.host`              | `"localhost"` + `${?DATABASE_HOST}`                               | Always resolves (defaulted)                    | `localhost` | `DATABASE_HOST`                                |
-| `database.jdbcUrl`           | `"jdbc:postgresql://"${database.host}":"${POSTGRES_PORT}"/"${POSTGRES_DB}` | MUST be non-blank; `POSTGRES_PORT`/`POSTGRES_DB` REQUIRED | None | `POSTGRES_PORT` (port), `POSTGRES_DB` (db name) |
-| `database.user`              | `${?DATABASE_USER}`                                               | MUST be non-blank                              | None       | `DATABASE_USER`                                 |
-| `database.password`          | `${?DATABASE_PASSWORD}`                                           | Optional                                       | Absent     | `DATABASE_PASSWORD`                             |
-| `database.maximumPoolSize`   | `10` + `${?DATABASE_MAXIMUM_POOL_SIZE}`                           | Yes                                            | `10`       | `DATABASE_MAXIMUM_POOL_SIZE`                    |
-| `database.connectionTimeout` | `30000`                                                           | Yes                                            | `30000` ms | _(none)_                                        |
+| Key                          | HOCON Form                                                                 | Required                                                  | Default     | Override Env Var                                |
+| ---------------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------- | ----------- | ----------------------------------------------- |
+| `database.host`              | `"localhost"` + `${?DATABASE_HOST}`                                        | Always resolves (defaulted)                               | `localhost` | `DATABASE_HOST`                                 |
+| `database.jdbcUrl`           | `"jdbc:postgresql://"${database.host}":"${POSTGRES_PORT}"/"${POSTGRES_DB}` | MUST be non-blank; `POSTGRES_PORT`/`POSTGRES_DB` REQUIRED | None        | `POSTGRES_PORT` (port), `POSTGRES_DB` (db name) |
+| `database.user`              | `${?DATABASE_USER}`                                                        | MUST be non-blank                                         | None        | `DATABASE_USER`                                 |
+| `database.password`          | `${?DATABASE_PASSWORD}`                                                    | Optional                                                  | Absent      | `DATABASE_PASSWORD`                             |
+| `database.maximumPoolSize`   | `10` + `${?DATABASE_MAXIMUM_POOL_SIZE}`                                    | Yes                                                       | `10`        | `DATABASE_MAXIMUM_POOL_SIZE`                    |
+| `database.connectionTimeout` | `30000`                                                                    | Yes                                                       | `30000` ms  | _(none)_                                        |
 
 **Side Effects**: None. This file is static configuration; it does not perform
 I/O or cause side effects directly.
@@ -110,14 +110,14 @@ application classpath when `rest-server` assembles the fat JAR.
 
 **Required Environment Variables at Runtime**:
 
-| Variable                     | Role                                                               | Fail Behavior                                                                                                             |
-| ---------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_HOST`              | Supplies the host in the JDBC URL (e.g. RDS endpoint); optional override | Absent → `database.host` defaults to `localhost`; pool connects to local Postgres                                          |
-| `POSTGRES_PORT`              | Supplies the port in the JDBC URL (required substitution)          | Unset → HOCON throws `Could not resolve substitution to a value: ${POSTGRES_PORT}` at config load (no fallback to `5432`) |
-| `POSTGRES_DB`                | Supplies the database name in the JDBC URL (required substitution) | Unset → HOCON throws `Could not resolve substitution to a value: ${POSTGRES_DB}` at config load                           |
-| `DATABASE_USER`              | PostgreSQL username                                                | `DatabaseConfig.from()` returns `Failure`                                                                                 |
-| `DATABASE_PASSWORD`          | PostgreSQL password                                                | Absent → `password = null`; pool connects without password                                                                |
-| `DATABASE_MAXIMUM_POOL_SIZE` | HikariCP pool size override                                        | Absent → defaults to `10`                                                                                                 |
+| Variable                     | Role                                                                     | Fail Behavior                                                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_HOST`              | Supplies the host in the JDBC URL (e.g. RDS endpoint); optional override | Absent → `database.host` defaults to `localhost`; pool connects to local Postgres                                         |
+| `POSTGRES_PORT`              | Supplies the port in the JDBC URL (required substitution)                | Unset → HOCON throws `Could not resolve substitution to a value: ${POSTGRES_PORT}` at config load (no fallback to `5432`) |
+| `POSTGRES_DB`                | Supplies the database name in the JDBC URL (required substitution)       | Unset → HOCON throws `Could not resolve substitution to a value: ${POSTGRES_DB}` at config load                           |
+| `DATABASE_USER`              | PostgreSQL username                                                      | `DatabaseConfig.from()` returns `Failure`                                                                                 |
+| `DATABASE_PASSWORD`          | PostgreSQL password                                                      | Absent → `password = null`; pool connects without password                                                                |
+| `DATABASE_MAXIMUM_POOL_SIZE` | HikariCP pool size override                                              | Absent → defaults to `10`                                                                                                 |
 
 **Collision Risk**: The HOCON classpath merge in `rest-server` covers all module
 `src/main/resources` directories. A second module introducing a

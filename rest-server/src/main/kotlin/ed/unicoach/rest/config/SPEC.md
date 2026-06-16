@@ -5,23 +5,24 @@
 This directory owns the typed, validated in-memory views of the REST server's
 configuration — currently the **request-size limit** and the **client-key
 gate**. For the request-size limit it reads the `server.requestSize` HOCON block
-once at startup and produces an immutable value object — a global default
-size plus two optional override maps, one keyed by **exact request path** and one
+once at startup and produces an immutable value object — a global default size
+plus two optional override maps, one keyed by **exact request path** and one
 keyed by **path prefix** — that the request-limit enforcement plugin consumes.
 Exposing both an exact-match and a prefix-match map is the directory's reason to
 exist beyond the default: exact overrides cannot cover dynamic paths (e.g.
 `/api/v1/conversations/{id}/messages`), so prefix overrides carry those. The
 directory holds both maps verbatim; the precedence between them (exact, then
 longest matching prefix, then default) is decided by the consuming plugin, not
-here. Size strings in human units (`"8 KiB"`) are
-resolved to absolute byte counts here so that no consumer ever parses a size
-string. The directory does **not** enforce the limit, locate or merge config
-sources, or know anything about the HTTP pipeline that applies the result.
+here. Size strings in human units (`"8 KiB"`) are resolved to absolute byte
+counts here so that no consumer ever parses a size string. The directory does
+**not** enforce the limit, locate or merge config sources, or know anything
+about the HTTP pipeline that applies the result.
 
 The client-key-gate config (`ClientKeyGateConfig`) is the second value object:
 it reads the `clientKeyGate` block into a set of valid keys and a set of exempt
 allowlist paths. Both types share the same total `from(config): Result<T>`
-contract — every malformed input is a `Result.failure`, never a thrown exception.
+contract — every malformed input is a `Result.failure`, never a thrown
+exception.
 
 ## II. Invariants
 
@@ -55,7 +56,8 @@ contract — every malformed input is a `Result.failure`, never a thrown excepti
   the `clientKeyGate` section being absent, or `allowlistPaths` being a scalar
   where a list is required — MUST be returned as `Result.failure`.
 - An empty `validKeys` set MUST parse as `Result.success`, NOT a failure: an
-  empty set is the valid representation of a disabled gate, not a misconfiguration.
+  empty set is the valid representation of a disabled gate, not a
+  misconfiguration.
 - `keys` MUST be read as a single comma-separated string (not a HOCON list),
   split on `,`, trimmed, with blank segments dropped, into `validKeys`. A scalar
   is the override-compatible shape — an env var / secret injects one value.
@@ -102,12 +104,14 @@ contract — every malformed input is a `Result.failure`, never a thrown excepti
 
 ### `ClientKeyGateConfig` (data class)
 
-- Immutable value object: `validKeys: Set<String>`, `allowlistPaths: Set<String>`.
-  Carries no behavior beyond holding the validated values.
+- Immutable value object: `validKeys: Set<String>`,
+  `allowlistPaths: Set<String>`. Carries no behavior beyond holding the
+  validated values.
 
 ### `ClientKeyGateConfig.from(config: Config): Result<ClientKeyGateConfig>`
 
-- **Caller**: invoked at server startup with the already-loaded application `Config`.
+- **Caller**: invoked at server startup with the already-loaded application
+  `Config`.
 - **Side effects**: **None** — pure read of the supplied `Config`.
 - **Reads**: `clientKeyGate.keys` (comma-separated string → trimmed,
   blank-dropped `validKeys` set) and `clientKeyGate.allowlistPaths` (string list

@@ -70,7 +70,10 @@ class ConvoRoutingTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    return response.headers[HttpHeaders.SetCookie]!!.split(";").first().trim()
+    return response.headers[HttpHeaders.SetCookie]!!
+      .split(";")
+      .first()
+      .trim()
   }
 
   private suspend fun registerWithStudent(): String {
@@ -179,7 +182,10 @@ class ConvoRoutingTest {
   @Test
   fun `401 unauthorized on every operation without a cookie`() =
     runBlocking {
-      val randomId = java.util.UUID.randomUUID().toString()
+      val randomId =
+        java.util.UUID
+          .randomUUID()
+          .toString()
       val noCookie =
         listOf(
           suspend { client.get(buildUrl("/api/v1/conversations")).status },
@@ -226,7 +232,10 @@ class ConvoRoutingTest {
       assertEquals(HttpStatusCode.OK, listStatus)
       assertEquals(0, mapper.readTree(listBody)["conversations"].size())
 
-      val randomId = java.util.UUID.randomUUID().toString()
+      val randomId =
+        java.util.UUID
+          .randomUUID()
+          .toString()
       assertEquals(HttpStatusCode.NotFound, get("/api/v1/conversations/$randomId", cookie).first)
     }
 

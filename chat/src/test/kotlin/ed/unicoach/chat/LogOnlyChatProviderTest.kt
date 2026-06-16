@@ -198,13 +198,20 @@ class LogOnlyChatProviderTest {
   private fun normalized(events: List<ChatEvent>): List<ChatEvent> =
     events.map { event ->
       when (event) {
-        is ChatEvent.MessageStart -> event.copy(providerRequestId = "<id>")
-        is ChatEvent.Completed ->
+        is ChatEvent.MessageStart -> {
+          event.copy(providerRequestId = "<id>")
+        }
+
+        is ChatEvent.Completed -> {
           ChatEvent.Completed(
             response = event.response.copy(providerRequestId = "<id>"),
             rawPayload = JsonObject(event.rawPayload.jsonObject + ("id" to JsonPrimitive("<id>"))),
           )
-        else -> event
+        }
+
+        else -> {
+          event
+        }
       }
     }
 }
