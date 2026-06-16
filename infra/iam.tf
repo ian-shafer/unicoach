@@ -27,9 +27,15 @@ resource "aws_iam_role_policy_attachment" "ssm_core" {
 # the SSM KMS key, plus read of the deploy-artifacts bucket.
 data "aws_iam_policy_document" "instance" {
   statement {
-    sid       = "ReadProdParameters"
-    actions   = ["ssm:GetParametersByPath", "ssm:GetParameters", "ssm:GetParameter"]
-    resources = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/unicoach/prod/*"]
+    sid     = "ReadProdParameters"
+    actions = ["ssm:GetParametersByPath", "ssm:GetParameters", "ssm:GetParameter"]
+    # GetParametersByPath authorizes against the path node itself (…/unicoach/prod),
+    # while GetParameter(s) authorize against each child (…/unicoach/prod/*). Both
+    # ARNs are required: the wildcard alone denies the recursive path fetch.
+    resources = [
+      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/unicoach/prod",
+      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/unicoach/prod/*",
+    ]
   }
 
   statement {
