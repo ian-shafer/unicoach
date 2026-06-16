@@ -19,9 +19,17 @@ struct ConversationView: View {
         ))
     }
 
+    init(conversation: Conversation, conversationClient: ConversationClientProtocol, onProfileRequired: @escaping () -> Void) {
+        _viewModel = StateObject(wrappedValue: ConversationViewModel(
+            conversation: conversation,
+            conversationClient: conversationClient,
+            onProfileRequired: onProfileRequired
+        ))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            thread
+            threadArea
             validationArea
             composer
         }
@@ -29,10 +37,57 @@ struct ConversationView: View {
         .background(Color.dsBackground)
         .navigationTitle("Coaching")
         .navigationBarTitleDisplayMode(.inline)
+        .task { await viewModel.loadHistory() }
     }
 
     private var isComposerDisabled: Bool {
-        viewModel.isStreaming
+        viewModel.isStreaming || !viewModel.isReady
+    }
+
+    // MARK: - History load
+
+    /// Renders the initial history-fetch state for a re-entered conversation: a
+    /// progress indicator while loading, an inline error with Retry on failure,
+    /// and the live thread when ready (also the only state a fresh VM ever shows).
+    @ViewBuilder
+    private var threadArea: some View {
+        switch viewModel.historyLoad {
+        case .loading:
+            historyLoadingView
+        case .failed(let error):
+            historyFailedView(error)
+        case .ready:
+            thread
+        }
+    }
+
+    private var historyLoadingView: some View {
+        VStack(spacing: DSSpacing.sm) {
+            ProgressView()
+                .progressViewStyle(.circular)
+            Text("Loading conversation…")
+                .font(.dsCaption)
+                .foregroundStyle(Color.dsTextSecondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("historyLoadingIndicator")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Loading conversation")
+    }
+
+    private func historyFailedView(_ error: ErrorResponse) -> some View {
+        VStack(spacing: DSSpacing.md) {
+            FormErrorBanner(error.message)
+            Button("Retry") {
+                Task { await viewModel.loadHistory() }
+            }
+            .font(.dsButton)
+            .foregroundStyle(Color.brandAccent)
+            .accessibilityIdentifier("historyRetryButton")
+            .accessibilityLabel("Retry")
+        }
+        .padding(DSSpacing.md)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     // MARK: - Thread
@@ -244,6 +299,26 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
             ))
             continuation.finish()
         }
+    }
+
+    func listConversations() async throws -> [Conversation] {
+        [
+            Conversation(
+                id: UUID(),
+                name: "Essay brainstorming",
+                createdAt: Date(),
+                updatedAt: Date(),
+                lastActivityAt: Date(),
+                archivedAt: nil
+            ),
+        ]
+    }
+
+    func fetchMessages(conversationId: UUID) async throws -> [Message] {
+        [
+            Message(id: "u1", role: .user, content: "Where do I start?", createdAt: Date()),
+            Message(id: "c1", role: .coach, content: "Let's begin with your goals.", createdAt: Date()),
+        ]
     }
 }
 

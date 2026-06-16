@@ -52,6 +52,9 @@
 		AAAA00020000000000000B06 /* ConversationClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F06 /* ConversationClientTests.swift */; };
 		AAAA00020000000000000B07 /* ConversationViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F07 /* ConversationViewModelTests.swift */; };
 		AAAA00020000000000000B08 /* MockConversationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F08 /* MockConversationClient.swift */; };
+		AAAA00020000000000000B09 /* ConversationListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F09 /* ConversationListViewModel.swift */; };
+		AAAA00020000000000000B0A /* ConversationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F0A /* ConversationListView.swift */; };
+		AAAA00020000000000000B0B /* ConversationListViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00020000000000000F0B /* ConversationListViewModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -108,6 +111,9 @@
 		AAAA00020000000000000F02 /* ConversationClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationClient.swift; sourceTree = "<group>"; };
 		AAAA00020000000000000F03 /* ConversationViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationViewModel.swift; sourceTree = "<group>"; };
 		AAAA00020000000000000F04 /* ConversationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F09 /* ConversationListViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationListViewModel.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F0A /* ConversationListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
+		AAAA00020000000000000F0B /* ConversationListViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationListViewModelTests.swift; sourceTree = "<group>"; };
 		AAAA00020000000000000F05 /* SSEParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SSEParserTests.swift; sourceTree = "<group>"; };
 		AAAA00020000000000000F06 /* ConversationClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationClientTests.swift; sourceTree = "<group>"; };
 		AAAA00020000000000000F07 /* ConversationViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationViewModelTests.swift; sourceTree = "<group>"; };
@@ -173,6 +179,8 @@
 				AAAA00020000000000000F02 /* ConversationClient.swift */,
 				AAAA00020000000000000F03 /* ConversationViewModel.swift */,
 				AAAA00020000000000000F04 /* ConversationView.swift */,
+				AAAA00020000000000000F09 /* ConversationListViewModel.swift */,
+				AAAA00020000000000000F0A /* ConversationListView.swift */,
 				AAAA00010000000000000A01 /* DesignSystem */,
 			);
 			name = UnicoachiOS;
@@ -224,6 +232,7 @@
 				AAAA00020000000000000F06 /* ConversationClientTests.swift */,
 				AAAA00020000000000000F07 /* ConversationViewModelTests.swift */,
 				AAAA00020000000000000F08 /* MockConversationClient.swift */,
+				AAAA00020000000000000F0B /* ConversationListViewModelTests.swift */,
 			);
 			name = UnicoachiOSTests;
 			path = UnicoachiOSTests;
@@ -355,6 +364,8 @@
 				AAAA00020000000000000B02 /* ConversationClient.swift in Sources */,
 				AAAA00020000000000000B03 /* ConversationViewModel.swift in Sources */,
 				AAAA00020000000000000B04 /* ConversationView.swift in Sources */,
+				AAAA00020000000000000B09 /* ConversationListViewModel.swift in Sources */,
+				AAAA00020000000000000B0A /* ConversationListView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -378,6 +389,7 @@
 				AAAA00020000000000000B06 /* ConversationClientTests.swift in Sources */,
 				AAAA00020000000000000B07 /* ConversationViewModelTests.swift in Sources */,
 				AAAA00020000000000000B08 /* MockConversationClient.swift in Sources */,
+				AAAA00020000000000000B0B /* ConversationListViewModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

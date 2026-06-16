@@ -19,6 +19,15 @@ enum TurnFailure: Equatable {
     case infrastructure(InfrastructureError) // a transport-class failure (timeout / connectivity / server)
 }
 
+/// Governs only the initial history fetch when an established conversation is
+/// re-entered. Distinct from the per-turn `isStreaming` / `ChatTurn.failure`
+/// state, which covers sending a turn.
+enum HistoryLoad: Equatable {
+    case loading        // seeded VM, history fetch in flight
+    case ready          // fresh VM (no fetch), or seeded VM whose fetch succeeded
+    case failed(ErrorResponse)
+}
+
 @MainActor
 final class ConversationViewModel: ObservableObject {
     /// Contract bounds for the message field on both endpoints.
@@ -32,6 +41,9 @@ final class ConversationViewModel: ObservableObject {
     @Published var isStreaming: Bool = false
     /// Pre-send validation banner. Turn-scoped failures live on `ChatTurn.failure`.
     @Published var validationError: ErrorResponse?
+    /// The initial history-fetch state for a re-entered conversation. `.ready` on
+    /// a fresh VM (no fetch happens); `.loading` until a seeded VM's fetch lands.
+    @Published private(set) var historyLoad: HistoryLoad = .ready
 
     /// The first turn's conversation, stashed until `.completed` establishes it.
     /// A first turn that fails server-side soft-deletes the conversation, so it is
@@ -41,9 +53,31 @@ final class ConversationViewModel: ObservableObject {
     private let conversationClient: ConversationClientProtocol
     private let onProfileRequired: () -> Void
 
+    /// Fresh conversation (Start Coaching / compose): no established conversation
+    /// and no history to fetch, so `historyLoad` starts `.ready` and `stream()`
+    /// routes the first turn to `streamConversation`.
     init(conversationClient: ConversationClientProtocol, onProfileRequired: @escaping () -> Void) {
         self.conversationClient = conversationClient
         self.onProfileRequired = onProfileRequired
+    }
+
+    /// Re-enter an established conversation: seeds `conversation` (so every turn
+    /// routes to `postMessage`) and sets `historyLoad = .loading` until
+    /// `loadHistory()` (driven by the view's `.task`) rebuilds the thread.
+    init(conversation: Conversation,
+         conversationClient: ConversationClientProtocol,
+         onProfileRequired: @escaping () -> Void) {
+        self.conversation = conversation
+        self.conversationClient = conversationClient
+        self.onProfileRequired = onProfileRequired
+        self.historyLoad = .loading
+    }
+
+    /// The composer-disabled gate's readiness half: `false` only while a seeded
+    /// VM's initial history fetch is in flight. The view combines it with
+    /// `isStreaming` (`isStreaming || !isReady`); `canSend` is unchanged.
+    var isReady: Bool {
+        historyLoad == .ready
     }
 
     /// Presentational gate for the send button. Multi-turn: the only blocks are
@@ -183,5 +217,61 @@ final class ConversationViewModel: ObservableObject {
             return
         }
         turns[idx].failure = failure
+    }
+
+    /// Loads a re-entered conversation's history once, rebuilding `turns` from the
+    /// server's flat `[Message]`. Called from the view's `.task` and the retry
+    /// action. A no-op on the fresh path (no `conversation`) and idempotent on
+    /// re-appearance (a loaded thread is non-empty); after a failure the guard
+    /// still holds because `turns` stayed empty, so retry re-runs the fetch.
+    func loadHistory() async {
+        guard let conversation, turns.isEmpty else {
+            return
+        }
+
+        historyLoad = .loading
+        do {
+            let messages = try await conversationClient.fetchMessages(conversationId: conversation.id)
+            turns = Self.turns(from: messages)
+            historyLoad = .ready
+        } catch let error as ErrorResponse {
+            historyLoad = .failed(error)
+        } catch {
+            historyLoad = .failed(ErrorResponse(
+                code: "SERVER_ERROR",
+                message: String(localized: "An unexpected error occurred."),
+                fieldErrors: nil
+            ))
+        }
+    }
+
+    /// Rebuilds the `[ChatTurn]` thread from a flat, replay-ordered `[Message]`.
+    /// The server emits strictly paired `user`-then-`coach` messages (a turn is
+    /// visible only with a non-null coach response). A `.user` opens a new turn;
+    /// the next `.coach` attaches as its `coachMessage`. The non-paired shapes
+    /// (trailing `.user`, leading orphan `.coach`) are crash-guards against a
+    /// contract violation, never expected output: a trailing `.user` yields a
+    /// turn with `coachMessage == nil`; an orphan `.coach` with no open turn is
+    /// dropped.
+    private static func turns(from messages: [Message]) -> [ChatTurn] {
+        var rebuilt: [ChatTurn] = []
+        for message in messages {
+            switch message.role {
+            case .user:
+                rebuilt.append(ChatTurn(
+                    id: UUID(),
+                    userMessage: message,
+                    coachStreamingText: "",
+                    coachMessage: nil,
+                    failure: nil
+                ))
+            case .coach:
+                guard !rebuilt.isEmpty, rebuilt[rebuilt.count - 1].coachMessage == nil else {
+                    continue
+                }
+                rebuilt[rebuilt.count - 1].coachMessage = message
+            }
+        }
+        return rebuilt
     }
 }

@@ -406,4 +406,182 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertNil(vm.turns.first?.coachMessage)
         XCTAssertNil(vm.conversation)
     }
+
+    // MARK: - Seed initializer + history load
+
+    private func makeSeededViewModel(_ client: ConversationClientProtocol, conversation: Conversation) -> ConversationViewModel {
+        ConversationViewModel(
+            conversation: conversation,
+            conversationClient: client,
+            onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 }
+        )
+    }
+
+    func testSeedInitializerRoutesFirstSendToPostMessage() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.fetchMessagesResult = []
+        mock.scripts = [followUpScript()]
+        let vm = makeSeededViewModel(mock, conversation: convo)
+
+        XCTAssertEqual(vm.conversation?.id, convo.id)
+
+        await vm.loadHistory()
+        vm.messageText = "More"
+        await vm.send()
+
+        XCTAssertEqual(mock.streamConversationRequests.count, 0)   // never re-creates
+        XCTAssertEqual(mock.postMessageRequests.count, 1)
+        XCTAssertEqual(mock.postMessageRequests[0].conversationId, convo.id)
+    }
+
+    func testLoadHistoryBuildsOneTurnPerPairInOrder() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.fetchMessagesResult = [
+            makeMessage(id: "u_1", role: .user, content: "Hi"),
+            makeMessage(id: "c_1", role: .coach, content: "Hello"),
+            makeMessage(id: "u_2", role: .user, content: "More"),
+            makeMessage(id: "c_2", role: .coach, content: "Sure"),
+        ]
+        let vm = makeSeededViewModel(mock, conversation: convo)
+
+        await vm.loadHistory()
+
+        XCTAssertEqual(vm.turns.count, 2)
+        XCTAssertEqual(vm.turns[0].userMessage.content, "Hi")
+        XCTAssertEqual(vm.turns[0].coachMessage?.content, "Hello")
+        XCTAssertEqual(vm.turns[1].userMessage.content, "More")
+        XCTAssertEqual(vm.turns[1].coachMessage?.content, "Sure")
+        XCTAssertEqual(vm.historyLoad, .ready)
+        XCTAssertEqual(mock.fetchMessagesCallCount, 1)
+        XCTAssertEqual(mock.fetchMessagesRequests[0], convo.id)
+    }
+
+    func testLoadHistoryTrailingUserYieldsTurnWithNilCoach() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.fetchMessagesResult = [
+            makeMessage(id: "u_1", role: .user, content: "Hi"),
+            makeMessage(id: "c_1", role: .coach, content: "Hello"),
+            makeMessage(id: "u_2", role: .user, content: "Dangling"),
+        ]
+        let vm = makeSeededViewModel(mock, conversation: convo)
+
+        await vm.loadHistory()
+
+        XCTAssertEqual(vm.turns.count, 2)
+        XCTAssertEqual(vm.turns[1].userMessage.content, "Dangling")
+        XCTAssertNil(vm.turns[1].coachMessage)
+    }
+
+    func testLoadHistoryLeadingOrphanCoachIsDropped() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        // Contract violation: a coach message with no open turn. Crash-guard drops it.
+        mock.fetchMessagesResult = [
+            makeMessage(id: "c_0", role: .coach, content: "Orphan"),
+            makeMessage(id: "u_1", role: .user, content: "Hi"),
+            makeMessage(id: "c_1", role: .coach, content: "Hello"),
+        ]
+        let vm = makeSeededViewModel(mock, conversation: convo)
+
+        await vm.loadHistory()
+
+        XCTAssertEqual(vm.turns.count, 1)
+        XCTAssertEqual(vm.turns[0].userMessage.content, "Hi")
+        XCTAssertEqual(vm.turns[0].coachMessage?.content, "Hello")
+    }
+
+    func testLoadHistoryFailureThenRetrySucceeds() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.fetchMessagesError = ErrorResponse(code: "not_found", message: "No such conversation", fieldErrors: nil)
+        let vm = makeSeededViewModel(mock, conversation: convo)
+
+        await vm.loadHistory()
+
+        XCTAssertEqual(vm.historyLoad, .failed(ErrorResponse(code: "not_found", message: "No such conversation", fieldErrors: nil)))
+        XCTAssertTrue(vm.turns.isEmpty)
+        XCTAssertEqual(mock.fetchMessagesCallCount, 1)
+
+        // Retry: the guard still holds (turns empty), so the fetch re-runs.
+        mock.fetchMessagesError = nil
+        mock.fetchMessagesResult = [
+            makeMessage(id: "u_1", role: .user, content: "Hi"),
+            makeMessage(id: "c_1", role: .coach, content: "Hello"),
+        ]
+        await vm.loadHistory()
+
+        XCTAssertEqual(vm.historyLoad, .ready)
+        XCTAssertEqual(vm.turns.count, 1)
+        XCTAssertEqual(vm.turns[0].coachMessage?.content, "Hello")
+        XCTAssertEqual(mock.fetchMessagesCallCount, 2)
+    }
+
+    func testSendAfterHistoryLoadAppendsAfterLoadedTurns() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.fetchMessagesResult = [
+            makeMessage(id: "u_1", role: .user, content: "Hi"),
+            makeMessage(id: "c_1", role: .coach, content: "Hello"),
+        ]
+        mock.scripts = [followUpScript()]
+        let vm = makeSeededViewModel(mock, conversation: convo)
+
+        await vm.loadHistory()
+        XCTAssertEqual(vm.turns.count, 1)
+
+        vm.messageText = "More"
+        await vm.send()
+
+        XCTAssertEqual(vm.turns.count, 2)
+        XCTAssertEqual(vm.turns[1].coachMessage?.content, "Sure")
+        XCTAssertEqual(mock.postMessageRequests.count, 1)
+        XCTAssertEqual(mock.postMessageRequests[0].conversationId, convo.id)
+    }
+
+    func testFreshInitializerLoadHistoryIsNoOpAndStartsFresh() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.scripts = [startScript(conversation: convo)]
+        let vm = makeViewModel(mock)
+
+        XCTAssertNil(vm.conversation)
+        XCTAssertEqual(vm.historyLoad, .ready)
+
+        await vm.loadHistory()
+        XCTAssertEqual(mock.fetchMessagesCallCount, 0)   // no fetch on the fresh path
+        XCTAssertTrue(vm.turns.isEmpty)
+
+        vm.messageText = "Hi"
+        await vm.send()
+        XCTAssertEqual(mock.streamConversationRequests.count, 1)   // first send creates
+        XCTAssertEqual(mock.postMessageRequests.count, 0)
+    }
+
+    // MARK: - isReady (composer gate)
+
+    func testIsReadyFalseWhileSeededHistoryLoading() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        let vm = makeSeededViewModel(mock, conversation: convo)
+
+        XCTAssertFalse(vm.isReady)   // seeded VM starts .loading
+    }
+
+    func testIsReadyTrueOnFreshVMAndAfterSuccessfulLoad() async {
+        let mock = MockConversationClient()
+        let freshVM = makeViewModel(mock)
+        XCTAssertTrue(freshVM.isReady)
+
+        let convo = makeConversation()
+        mock.fetchMessagesResult = [
+            makeMessage(id: "u_1", role: .user, content: "Hi"),
+            makeMessage(id: "c_1", role: .coach, content: "Hello"),
+        ]
+        let seededVM = makeSeededViewModel(mock, conversation: convo)
+        await seededVM.loadHistory()
+        XCTAssertTrue(seededVM.isReady)
+    }
 }

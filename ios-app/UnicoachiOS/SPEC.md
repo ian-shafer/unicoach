@@ -4,13 +4,15 @@
 
 The **UnicoachiOS** target is the student-facing native iOS client for the
 Unicoach REST server. Its domain covers **registration**, **login/logout**,
-**cookie-based session restoration**, **student-profile onboarding**, and a
-**multi-turn coaching conversation** (SSE-streamed turns). A root state machine
-(`UserAuthState`) routes the user between an auth flow (login/register), a
-one-time onboarding screen that creates the student profile, and the
-authenticated home screen, which pushes `ConversationView` to hold a multi-turn
-coaching conversation. Visual tokens and shared UI components are specified
-separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
+**cookie-based session restoration**, **student-profile onboarding**, a
+**multi-turn coaching conversation** (SSE-streamed turns), and **browsing and
+resuming prior conversations** (a most-recently-used list, each entry re-entered
+with its server-fetched history). A root state machine (`UserAuthState`) routes
+the user between an auth flow (login/register), a one-time onboarding screen
+that creates the student profile, and the authenticated home screen, which
+pushes `ConversationView` to hold a multi-turn coaching conversation. Visual
+tokens and shared UI components are specified separately in
+[DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
 
 ---
 
@@ -141,6 +143,27 @@ separately in [DesignSystem/SPEC.md](./DesignSystem/SPEC.md).
   retryable in place: `retry()` clears that turn's failure, partial coach text,
   and prior coach message, then re-streams the same student message under the
   establishment rule above. A COMPLETED turn MUST NOT be re-submittable.
+
+### Conversation history
+
+- The conversation list MUST render in the server's response order — the client
+  NEVER re-sorts. Most-recently-used freshness comes from re-fetching the list
+  on every appearance of the list screen, NOT from a client-side sort.
+- A seeded conversation's history MUST be fetched exactly once. `loadHistory()`
+  is guarded by `turns.isEmpty`, making it a no-op on the fresh path and on
+  re-appearance of an already-loaded thread; it MUST NOT reload (and wipe) a
+  non-empty thread. After a load failure `turns` stays empty, so the same guard
+  permits a retry to re-run the fetch.
+- A fresh conversation MUST start `historyLoad = .ready` and fetch nothing; only
+  a seeded conversation starts `.loading`. The composer-disabled gate is
+  `isStreaming || !isReady`, so the composer is NEVER gated on the fresh path
+  (`isReady == (historyLoad == .ready)`).
+- The flat `[Message]` history MUST be rebuilt into `[ChatTurn]` by pairing
+  `user`-then-`coach` in received order, assigning each turn a FRESH `UUID` id —
+  NEVER `Message.id` (the same key rule the streaming path obeys). The two
+  non-paired shapes are crash-guards against a contract violation, never
+  expected output: a trailing `.user` yields a turn with `coachMessage == nil`;
+  an orphan `.coach` with no open turn is dropped.
 
 ### Date decoding (wire contract)
 
@@ -432,6 +455,27 @@ func postMessage(conversationId: UUID, request: PostMessageRequest) -> AsyncThro
 - **Idempotency**: No — `streamConversation` creates a conversation;
   `postMessage` appends a turn server-side.
 
+```
+func listConversations() async throws -> [Conversation]
+func fetchMessages(conversationId: UUID) async throws -> [Message]
+```
+
+- The two non-streaming reads, each exactly one `GET` via `APIClient`, returning
+  the wire array unwrapped from its envelope (`ConversationListResponse` /
+  `MessageListResponse`): `listConversations` → `GET /api/v1/conversations`;
+  `fetchMessages` → `GET /api/v1/conversations/{id}/messages`.
+- **Order preservation**: Both return their array in the server's received order
+  and MUST NOT re-sort (§II Conversation history). `listConversations` sends NO
+  `status` query parameter — the server defaults to the unarchived scope; the
+  empty list arrives as a `200`, never a `404`.
+- **Failure modes**: Unlike `StudentClient.fetchProfile`, these reads do NOT
+  short-circuit on a status code. Every non-`200` (including
+  `404
+  {"code":"not_found"}` for a soft-deleted or foreign conversation on
+  `fetchMessages`) routes through `decode`'s `decodeError` and throws the
+  decoded `ErrorResponse` (or `"SERVER_ERROR"` on an unparseable body).
+- **Idempotency**: Yes (safe GETs).
+
 ---
 
 ### `AppViewModel`
@@ -571,8 +615,17 @@ turn completes (§II Turn lifecycle). `ChatTurn` carries the student message,
 @MainActor func retry(_ id: ChatTurn.ID) async
 ```
 
-- **Init**: Requires a `ConversationClientProtocol` and an
-  `onProfileRequired: () -> Void` callback.
+- **Init**: Two initializers, both requiring a `ConversationClientProtocol` and
+  an `onProfileRequired: () -> Void` callback. The **fresh** init (Start
+  Coaching / compose) leaves `conversation = nil` and `historyLoad = .ready` —
+  no history to fetch, and the first turn routes to `streamConversation`. The
+  **seed** init (`init(conversation:…)`, used by `ConversationListView` rows)
+  sets `conversation` so every turn routes to `postMessage`, and sets
+  `historyLoad = .loading` until `loadHistory()` rebuilds the thread.
+- **Readiness (`isReady`)**: A computed, non-publishing gate =
+  `historyLoad == .ready`. The view combines it with the stream flag for the
+  composer-disabled gate (`isStreaming || !isReady`, §II Conversation history);
+  `canSend` is unchanged.
 - **In-flight gate**: Both `send()` and `retry()` return immediately if
   `isStreaming` — only one turn streams at a time.
 - **Send gating (`canSend`)**: A computed, non-publishing presentational gate
@@ -609,6 +662,49 @@ turn completes (§II Turn lifecycle). `ChatTurn` carries the student message,
 - **Concurrency**: `isStreaming` is guarded by `defer`.
 - **Idempotency**: No — each `send()` appends a new turn; `retry()`
   re-dispatches an existing failed turn.
+
+```
+@MainActor func loadHistory() async
+```
+
+- **Trigger**: The seed-path view's `.task` and the history-failed Retry button.
+- **Guard / idempotency**: A no-op unless `conversation != nil && turns.isEmpty`
+  — does nothing on the fresh path and on an already-loaded thread, so repeated
+  appearances never re-fetch or wipe the thread (§II Conversation history).
+  After a failure `turns` stayed empty, so a retry re-runs the fetch.
+- **Side effect**: One `GET` via `ConversationClient.fetchMessages`; rebuilds
+  `turns` from the flat `[Message]` by pairing `user`-then-`coach` in order with
+  FRESH `UUID` keys (never `Message.id`). A trailing `.user` yields a turn with
+  `coachMessage == nil`; an orphan `.coach` is dropped.
+- **State**: Sets `historyLoad = .loading` on entry, `.ready` on success;
+  `.failed(ErrorResponse)` on a thrown `ErrorResponse`, else a synthesized
+  `SERVER_ERROR`. It NEVER publishes a turn-scoped `failure` — history-load
+  failure is distinct from a per-turn send failure.
+
+---
+
+### `ConversationListViewModel`
+
+See [`ConversationListViewModel.swift`](./ConversationListViewModel.swift).
+Publishes `state: ConversationListState`
+(`loading | loaded([Conversation]) | empty | failed(ErrorResponse)`), initial
+`.loading`. An empty list is the distinct `.empty` outcome, NOT a degenerate
+`.loaded([])`, so the view renders a dedicated no-conversations affordance.
+
+```
+@MainActor func load() async
+```
+
+- **Trigger**: `ConversationListView`'s `.task`, re-run on every appearance so
+  MRU order reflects a conversation just continued and popped back from.
+- **Side effect**: One `GET` via `ConversationClient.listConversations`,
+  preserving the server's order verbatim (§II Conversation history). `[]` →
+  `.empty`; non-empty → `.loaded(conversations)`.
+- **Failure modes**: A thrown `ErrorResponse` (transport or decoded server
+  error) → `.failed(error)`; any other error → a synthesized `SERVER_ERROR`
+  `.failed`.
+- **Idempotency**: Yes (safe GET); each call resets to `.loading` then
+  resettles.
 
 ---
 
@@ -664,16 +760,26 @@ See [`OnboardingView.swift`](./OnboardingView.swift).
 See [`HomeView.swift`](./HomeView.swift). Owns a `NavigationStack`. Takes the
 authenticated user, a `ConversationClientProtocol`, an `onProfileRequired`
 callback, and an `onLogout` callback. Displays the user's name and email, a
-Start Coaching `NavigationLink` (identifier `startCoachingButton`) that pushes
-`ConversationView`, and a destructive Log Out `LoadingButton` that awaits the
-injected `onLogout` callback. Re-entering `.onboarding` tears down the
-`NavigationStack` — and any pushed conversation screen — with it.
+Start Coaching `NavigationLink` (identifier `startCoachingButton`) that pushes a
+fresh `ConversationView`, a Your Conversations `NavigationLink` (identifier
+`yourConversationsButton`) that pushes `ConversationListView`, and a destructive
+Log Out `LoadingButton` that awaits the injected `onLogout` callback.
+Re-entering `.onboarding` tears down the `NavigationStack` — and any pushed
+conversation screen — with it.
 
 #### `ConversationView`
 
-See [`ConversationView.swift`](./ConversationView.swift). Pushed from
-`HomeView`'s Start Coaching link.
+See [`ConversationView.swift`](./ConversationView.swift). Pushed in two ways: a
+**fresh** screen (`HomeView`'s Start Coaching link, `ConversationListView`'s
+compose / start-a-conversation actions) and a **seeded** screen (a
+`ConversationListView` row, via `init(conversation:…)`). It owns a single
+`.task { await viewModel.loadHistory() }`, which is a no-op on the fresh path.
 
+- **History load**: The thread area renders `viewModel.historyLoad`: `.loading`
+  → a progress indicator (identifier `historyLoadingIndicator`); `.failed` → an
+  inline `FormErrorBanner` with a Retry button (identifier `historyRetryButton`)
+  re-invoking `loadHistory()`; `.ready` → the live thread (the only state a
+  fresh VM ever shows).
 - **Thread**: Renders `ForEach(viewModel.turns)`; each turn shows the student
   bubble, the coach bubble (once streaming text or a completed message exists),
   a streaming indicator on the in-flight turn, and — on failure — an inline
@@ -687,10 +793,11 @@ See [`ConversationView.swift`](./ConversationView.swift). Pushed from
   overlaid bottom-trailing. The field's trailing inset MUST track the button's
   rendered width (plus its edge inset) so input never underlaps the button at
   any Dynamic Type size; a fixed/hardcoded inset is forbidden. The input field
-  is disabled ONLY while a turn is streaming (`isStreaming`); the send button's
-  enabled state is bound to `ConversationViewModel.canSend`. A completed turn
-  re-enables both for the next turn, and a failed turn is retried in place from
-  its own Retry button.
+  is disabled while a turn is streaming OR a seeded VM's history is still
+  loading (`isStreaming || !isReady`, §II Conversation history); the send
+  button's enabled state is bound to `ConversationViewModel.canSend`. A
+  completed turn re-enables both for the next turn, and a failed turn is retried
+  in place from its own Retry button.
 - **Bubble rendering**: The coach bubble prefers the canonical
   `coachMessage.content` over the live streaming buffer.
 - **Error display**: A pre-send `validationError` renders in a `FormErrorBanner`
@@ -698,7 +805,32 @@ See [`ConversationView.swift`](./ConversationView.swift). Pushed from
   `FormErrorBanner` for `.server`, an icon+title+description for
   `.infrastructure`) — no `fullScreenCover`, unlike login/registration.
 - **Accessibility identifiers**: `messageField`, `sendButton`, `userBubble`,
-  `coachBubble`, `streamingIndicator`, `retryButton`.
+  `coachBubble`, `streamingIndicator`, `retryButton`, `historyLoadingIndicator`,
+  `historyRetryButton`.
+
+#### `ConversationListView`
+
+See [`ConversationListView.swift`](./ConversationListView.swift). Pushed from
+`HomeView`'s Your Conversations link; owns a `ConversationListViewModel` and
+re-fetches on every appearance (`.task`).
+
+- **States**: Renders `viewModel.state` — `.loading` → a centered progress
+  indicator (identifier `conversationListLoading`); `.loaded` → a plain `List`
+  of rows (identifier `conversationRow`), each `name` plus a relative timestamp,
+  tapping into a **seeded** `ConversationView(conversation:…)`; `.empty` → a
+  no-conversations affordance (identifier `conversationListEmpty`) with a
+  start-a-conversation link (identifier `startConversationButton`); `.failed` →
+  an inline `FormErrorBanner` (identifier `conversationListFailed`) with a Retry
+  button (identifier `conversationListRetryButton`).
+- **Compose**: A toolbar primary-action button (identifier `composeButton`) and
+  the empty-state start link both push a **fresh** `ConversationView`.
+- **Row timestamp**: Each row renders a relative timestamp from
+  `lastActivityAt`, falling back to `updatedAt` to unwrap the `Date?` (a listed
+  conversation always has a visible turn, so `lastActivityAt` is set in
+  practice).
+- **Accessibility identifiers**: `composeButton`, `conversationListLoading`,
+  `conversationRow`, `conversationListEmpty`, `startConversationButton`,
+  `conversationListFailed`, `conversationListRetryButton`.
 
 #### `ErrorView`
 
@@ -734,8 +866,12 @@ and UI layers, paired per endpoint:
   (`conversation` | `userMessage` | `delta` | `completed`); and the five wire
   frames (`ConversationCreatedFrame`, `UserMessageFrame`, `MessageDeltaFrame`,
   `MessageCompletedFrame`, `StreamErrorFrame`) decoded by their `type`
-  discriminator. `Message.id` is an opaque `String` and is NEVER parsed;
-  `Conversation.id` decodes as `UUID`; `CreateConversationRequest.name` is
+  discriminator; and the two read envelopes `ConversationListResponse`
+  (`{conversations: [Conversation]}`) and `MessageListResponse`
+  (`{messages: [Message]}`), reusing `Conversation` / `Message` unchanged.
+  `Message.id` is an opaque `String` and is NEVER parsed; `Conversation.id`
+  decodes as `UUID`; `Conversation.lastActivityAt` / `archivedAt` are `Date?`
+  decoded via the date wire contract (§II); `CreateConversationRequest.name` is
   always `nil` this iteration — the server derives the name.
 - Errors: `ErrorResponse` (conforms to `Error` and `Identifiable` via
   `id = code`; exposes `fieldError(for:)` for per-field lookup) and `FieldError`
@@ -805,3 +941,4 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 - [x] [RFC-49: iOS Chat UX Improvements](../../rfc/49-ios-chat-ux-improvements.md)
 - [x] [RFC-51: iOS Deploy to Physical Device](../../rfc/51-ios-deploy-to-device.md)
 - [x] [RFC-54: Client-Key Gate](../../rfc/54-client-key-gate.md)
+- [x] [RFC-56: iOS Conversation History](../../rfc/56-ios-conversation-history.md)

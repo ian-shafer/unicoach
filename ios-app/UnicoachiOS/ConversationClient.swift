@@ -6,6 +6,8 @@ protocol ConversationClientProtocol: Sendable {
         -> AsyncThrowingStream<ConversationStreamEvent, Error>
     func postMessage(conversationId: UUID, request: PostMessageRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error>
+    func listConversations() async throws -> [Conversation]
+    func fetchMessages(conversationId: UUID) async throws -> [Message]
 }
 
 /// A thin endpoint binding over the injected `APIClient`, owning only what is
@@ -39,6 +41,33 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
             body: request,
             opener: .userMessage
         )
+    }
+
+    /// Lists the student's unarchived conversations in the server's
+    /// most-recently-used order. No `status` query parameter is sent — the server
+    /// defaults to the unarchived scope. Any non-`200` status routes through
+    /// `decode`'s `decodeError` and throws the decoded `ErrorResponse` (no `404`
+    /// short-circuit; the empty list arrives as a `200`).
+    func listConversations() async throws -> [Conversation] {
+        let (data, response) = try await apiClient.get("/api/v1/conversations")
+        let listResponse: ConversationListResponse = try apiClient.decode(
+            data: data, response: response, expectedStatus: 200
+        )
+        return listResponse.conversations
+    }
+
+    /// Fetches a conversation's visible turns as a flat, replay-ordered
+    /// `[Message]` (strictly paired user-then-coach). A soft-deleted or foreign
+    /// conversation returns `404 {"code":"not_found"}`, which `decode` routes
+    /// through `decodeError` and throws as the `not_found` `ErrorResponse`.
+    func fetchMessages(conversationId: UUID) async throws -> [Message] {
+        let (data, response) = try await apiClient.get(
+            "/api/v1/conversations/\(conversationId.uuidString)/messages"
+        )
+        let messageResponse: MessageListResponse = try apiClient.decode(
+            data: data, response: response, expectedStatus: 200
+        )
+        return messageResponse.messages
     }
 
     /// Shared SSE pump for both endpoints: opens the stream, splits lines, assembles

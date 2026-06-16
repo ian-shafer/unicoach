@@ -35,6 +35,18 @@ struct HomeView: View {
                 .accessibilityIdentifier("startCoachingButton")
                 .accessibilityLabel("Start Coaching")
 
+                NavigationLink {
+                    ConversationListView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
+                } label: {
+                    Text("Your Conversations")
+                        .font(.dsButton)
+                        .foregroundStyle(Color.brandAccent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, DSSpacing.md)
+                }
+                .accessibilityIdentifier("yourConversationsButton")
+                .accessibilityLabel("Your Conversations")
+
                 LoadingButton(
                     "Log Out",
                     isLoading: isLoggingOut,
@@ -66,6 +78,10 @@ private final class HomePreviewConversationClient: ConversationClientProtocol, @
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
         AsyncThrowingStream { $0.finish() }
     }
+
+    func listConversations() async throws -> [Conversation] { [] }
+
+    func fetchMessages(conversationId: UUID) async throws -> [Message] { [] }
 }
 
 #Preview {

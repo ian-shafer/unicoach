@@ -86,6 +86,14 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     let archivedAt: Date?
 }
 
+struct ConversationListResponse: Codable, Sendable {
+    let conversations: [Conversation]
+}
+
+struct MessageListResponse: Codable, Sendable {
+    let messages: [Message]
+}
+
 struct CreateConversationRequest: Codable, Sendable {
     let message: String
     let name: String?     // always nil this iteration; server derives the name

@@ -441,6 +441,112 @@ final class ConversationClientTests: XCTestCase {
         }
         XCTAssertEqual(errorResponse.code, "SERVER_ERROR")
     }
+
+    // MARK: - listConversations
+
+    private let conversationListJSON = """
+    {"conversations":[\
+    {"id":"550E8400-E29B-41D4-A716-446655440000","name":"Newest","createdAt":"2026-06-10T12:00:00.000Z","updatedAt":"2026-06-10T12:00:00.000Z","lastActivityAt":"2026-06-12T09:00:00.000Z","archivedAt":null},\
+    {"id":"6BA7B810-9DAD-11D1-80B4-00C04FD430C8","name":"Middle","createdAt":"2026-06-09T12:00:00.000Z","updatedAt":"2026-06-09T12:00:00.000Z","lastActivityAt":"2026-06-11T09:00:00.000Z","archivedAt":null},\
+    {"id":"6BA7B811-9DAD-11D1-80B4-00C04FD430C8","name":"Oldest","createdAt":"2026-06-08T12:00:00.000Z","updatedAt":"2026-06-08T12:00:00.000Z","lastActivityAt":null,"archivedAt":null}\
+    ]}
+    """
+
+    func testListConversationsDecodesAndPreservesOrder() async throws {
+        respond(statusCode: 200, data: Data(conversationListJSON.utf8), contentType: "application/json")
+        let conversations = try await client.listConversations()
+        XCTAssertEqual(conversations.map(\.name), ["Newest", "Middle", "Oldest"])
+        XCTAssertEqual(conversations.map(\.id), [
+            UUID(uuidString: "550E8400-E29B-41D4-A716-446655440000")!,
+            UUID(uuidString: "6BA7B810-9DAD-11D1-80B4-00C04FD430C8")!,
+            UUID(uuidString: "6BA7B811-9DAD-11D1-80B4-00C04FD430C8")!,
+        ])
+    }
+
+    func testListConversationsDecodesEmptyList() async throws {
+        respond(statusCode: 200, data: Data(#"{"conversations":[]}"#.utf8), contentType: "application/json")
+        let conversations = try await client.listConversations()
+        XCTAssertTrue(conversations.isEmpty)
+    }
+
+    func testListConversationsRequestShape() async throws {
+        let expectation = expectation(description: "request inspected")
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/conversations")
+            XCTAssertNil(request.url?.query)   // no `status` query parameter
+            XCTAssertEqual(request.httpMethod, "GET")
+            expectation.fulfill()
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (response, Data(#"{"conversations":[]}"#.utf8))
+        }
+        _ = try await client.listConversations()
+        await fulfillment(of: [expectation], timeout: 2)
+    }
+
+    func testListConversationsErrorBodyThrowsDecodedError() async {
+        respond(
+            statusCode: 401,
+            data: Data(#"{"code":"unauthorized","message":"nope"}"#.utf8),
+            contentType: "application/json"
+        )
+        do {
+            _ = try await client.listConversations()
+            XCTFail("expected thrown ErrorResponse")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "unauthorized")
+        } catch {
+            XCTFail("expected ErrorResponse, got [\(error)]")
+        }
+    }
+
+    // MARK: - fetchMessages
+
+    private let messageListJSON = """
+    {"messages":[\
+    {"id":"u_1","role":"user","content":"Hi","createdAt":"2026-06-10T12:00:00.000Z"},\
+    {"id":"c_1","role":"coach","content":"Hello","createdAt":"2026-06-10T12:00:01.000Z"},\
+    {"id":"u_2","role":"user","content":"More","createdAt":"2026-06-10T12:01:00.000Z"},\
+    {"id":"c_2","role":"coach","content":"Sure","createdAt":"2026-06-10T12:01:01.000Z"}\
+    ]}
+    """
+
+    func testFetchMessagesDecodesAndPreservesOrder() async throws {
+        respond(statusCode: 200, data: Data(messageListJSON.utf8), contentType: "application/json")
+        let conversationId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let messages = try await client.fetchMessages(conversationId: conversationId)
+        XCTAssertEqual(messages.map(\.id), ["u_1", "c_1", "u_2", "c_2"])
+        XCTAssertEqual(messages.map(\.role), [.user, .coach, .user, .coach])
+    }
+
+    func testFetchMessagesRequestShape() async throws {
+        let conversationId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let expectation = expectation(description: "request inspected")
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/conversations/\(conversationId.uuidString)/messages")
+            XCTAssertEqual(request.httpMethod, "GET")
+            expectation.fulfill()
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (response, Data(#"{"messages":[]}"#.utf8))
+        }
+        _ = try await client.fetchMessages(conversationId: conversationId)
+        await fulfillment(of: [expectation], timeout: 2)
+    }
+
+    func testFetchMessagesNotFoundThrowsDecodedError() async {
+        respond(
+            statusCode: 404,
+            data: Data(#"{"code":"not_found","message":"No such conversation"}"#.utf8),
+            contentType: "application/json"
+        )
+        do {
+            _ = try await client.fetchMessages(conversationId: UUID())
+            XCTFail("expected thrown ErrorResponse")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "not_found")
+        } catch {
+            XCTFail("expected ErrorResponse, got [\(error)]")
+        }
+    }
 }
 
 // MARK: - Test helpers

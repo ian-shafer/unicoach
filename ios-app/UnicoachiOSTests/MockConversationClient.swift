@@ -28,6 +28,20 @@ final class MockConversationClient: ConversationClientProtocol, @unchecked Senda
     private(set) var streamConversationRequests: [CreateConversationRequest] = []
     private(set) var postMessageRequests: [(conversationId: UUID, request: PostMessageRequest)] = []
 
+    /// Scripted outcome for `listConversations`: a thrown error takes precedence,
+    /// otherwise the stored list is returned. `listConversationsCallCount` records
+    /// every invocation (incremented even when the call throws).
+    var listConversationsResult: [Conversation] = []
+    var listConversationsError: Error?
+    private(set) var listConversationsCallCount = 0
+
+    /// Scripted outcome for `fetchMessages`, mirroring the list scripting. The
+    /// requested conversation ids are recorded in `fetchMessagesRequests`.
+    var fetchMessagesResult: [Message] = []
+    var fetchMessagesError: Error?
+    private(set) var fetchMessagesRequests: [UUID] = []
+    var fetchMessagesCallCount: Int { fetchMessagesRequests.count }
+
     func streamConversation(request: CreateConversationRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
         streamConversationRequests.append(request)
@@ -38,6 +52,22 @@ final class MockConversationClient: ConversationClientProtocol, @unchecked Senda
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
         postMessageRequests.append((conversationId, request))
         return emit(nextScript())
+    }
+
+    func listConversations() async throws -> [Conversation] {
+        listConversationsCallCount += 1
+        if let error = listConversationsError {
+            throw error
+        }
+        return listConversationsResult
+    }
+
+    func fetchMessages(conversationId: UUID) async throws -> [Message] {
+        fetchMessagesRequests.append(conversationId)
+        if let error = fetchMessagesError {
+            throw error
+        }
+        return fetchMessagesResult
     }
 
     private func nextScript() -> Script {
