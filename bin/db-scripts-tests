@@ -125,6 +125,26 @@ test_container_unreachable_exits_2() {
 }
 assert_success "container unreachable exits 2" test_container_unreachable_exits_2
 
+# The private cluster is still stopped here (test_container_unreachable_exits_2
+# ran postgres-down). db-create must perform schema work only and never start a
+# cluster: with the cluster down it must fail rather than booting one.
+test_db_create_does_not_start_stopped_cluster() {
+  if [ -f "$POSTGRES_DATA_DIR/postmaster.pid" ]; then
+    fail_test "precondition violated: cluster was running before db-create"
+    return 1
+  fi
+  if bin/db-create >/dev/null 2>&1; then
+    fail_test "db-create succeeded against a stopped cluster"
+    return 1
+  fi
+  if [ -f "$POSTGRES_DATA_DIR/postmaster.pid" ]; then
+    fail_test "db-create started the cluster (postmaster.pid appeared)"
+    return 1
+  fi
+  return 0
+}
+assert_success "db-create does not start a stopped cluster" test_db_create_does_not_start_stopped_cluster
+
 echo "==== Testing Database Lifecycle ===="
 test_db_lifecycle_wipes_data() {
   # Restart postgres after the unreachable test above

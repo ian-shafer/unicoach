@@ -11,14 +11,13 @@ help() {
 db-create [options]
 
 Creates and provisions the application database (POSTGRES_DB). Idempotent.
-Assumes the cluster and the application role already exist (run db-bootstrap
-once first); crashes hard otherwise. Performs:
+Assumes a running cluster reachable at PGHOST:PGPORT and that the application
+role already exists; crashes hard otherwise. Performs:
 
-  1. Ensures the cluster is running (postgres-up).
-  2. Creates the database (POSTGRES_DB) if it does not exist.
-  3. Grants the application role CONNECT on the database and full access to the
+  1. Creates the database (POSTGRES_DB) if it does not exist.
+  2. Grants the application role CONNECT on the database and full access to the
      public schema, including default privileges for future objects.
-  4. Creates the schema_migrations table if it does not exist.
+  3. Creates the schema_migrations table if it does not exist.
 
 It does not apply migrations — run db-migrate for that (or db-reset for a clean,
 migrated database).
@@ -40,10 +39,7 @@ if [ "$#" -gt 0 ]; then
   help "db-create does not accept positional arguments: $*"
 fi
 
-# ── 1. Ensure postgres is running (fatals if the cluster was never bootstrapped)
-"$PROJECT_ROOT/bin/postgres-up" >/dev/null
-
-# ── 2. Create application database if it does not exist ────────────────────────
+# ── 1. Create application database if it does not exist ────────────────────────
 if ! echo "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" \
     | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -tA \
     | grep -q 1; then
@@ -54,12 +50,12 @@ else
   log-info "Database [$POSTGRES_DB] already exists."
 fi
 
-# ── 3. Grant database-level connect privilege (admin DB context) ──────────────
+# ── 2. Grant database-level connect privilege (admin DB context) ──────────────
 printf "GRANT CONNECT ON DATABASE \"%s\" TO \"%s\";" \
   "$POSTGRES_DB" "$DATABASE_USER" \
   | "$PROJECT_ROOT/bin/db-write" -d "${POSTGRES_ADMIN_DB:-postgres}"
 
-# ── 4. Grant schema access and default object privileges (target DB) ──────────
+# ── 3. Grant schema access and default object privileges (target DB) ──────────
 # ALTER DEFAULT PRIVILEGES covers all future tables/sequences created by the
 # admin role (POSTGRES_USER) in the public schema.
 cat << SQL | "$PROJECT_ROOT/bin/db-write"
@@ -68,7 +64,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES     TO "$DATABASE_
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES  TO "$DATABASE_USER";
 SQL
 
-# ── 5. Create schema_migrations and grant access ──────────────────────────────
+# ── 4. Create schema_migrations and grant access ──────────────────────────────
 log-info "Ensuring schema_migrations table exists..."
 cat << SQL | "$PROJECT_ROOT/bin/db-write"
 CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -114,6 +114,16 @@ per-database only. Test harnesses that use the shared cluster MUST NOT stop or
 wipe it. A harness that needs cluster-lifecycle control MUST stand up its own
 private cluster (private `POSTGRES_DATA_DIR` + port).
 
+### Cluster Lifecycle Ownership
+
+The schema/DDL scripts — `db-create`, `db-create-role`, and `db-migrate` — MUST
+connect to an already-running cluster reachable at `PGHOST:PGPORT` and MUST NOT
+start or initialise one (no `initdb`, no `postgres-up`, no `pg_ctl`). Cluster
+startup is owned by the environment: locally `bin/test` runs `postgres-up`
+before `db-reset`, `bin/db-scripts-tests` stands up its own private cluster, and
+in production managed RDS supplies the running cluster. The local and deploy
+paths do not fork on cluster provisioning.
+
 ### Port Liveness
 
 A script that must determine whether a TCP port is already served MUST probe it
@@ -227,7 +237,7 @@ server.
 | `postgres-up`              | `pg_ctl start`                        | Exit `0` if started or already running. Fatals if `POSTGRES_DATA_DIR` is unset; fails the health wait if the cluster was never bootstrapped. |
 | `postgres-down`            | `pg_ctl stop`, polls `postmaster.pid` | Exit `0` if stopped or already stopped.                                                                                                      |
 | `postgres-bounce`          | `postgres-down` then `postgres-up`    | Exit `0` on success.                                                                                                                         |
-| `postgres-check`           | `pg_isready`                          | Exit `0` if accepting connections on `localhost:$POSTGRES_PORT`, `1` otherwise. No side effects.                                             |
+| `postgres-check`           | `pg_isready`                          | Exit `0` if accepting connections at `PGHOST` (default `localhost`) on `$POSTGRES_PORT`, `1` otherwise. No side effects.                     |
 | `postgres-wait-for-health` | `wait-for` + `postgres-check`         | Polls until `postgres-check` succeeds or timeout.                                                                                            |
 
 ---
@@ -330,8 +340,10 @@ guard message wins over a missing-env error.
   the admin database (`POSTGRES_ADMIN_DB`, default `postgres`). Runs no
   `initdb`, so unlike `db-bootstrap` it is safe against a managed cluster (e.g.
   RDS). Accepts no positional arguments.
-- **`db-create`**: Idempotent. Assumes the cluster and role exist (crashes hard
-  otherwise). Creates `POSTGRES_DB`, grants `CONNECT` + schema access, sets
+- **`db-create`**: Idempotent. Performs schema work only against an
+  already-running cluster reachable at `PGHOST:PGPORT` — never starts or
+  initialises one. Assumes the application role exists (crashes hard otherwise).
+  Creates `POSTGRES_DB` if absent, grants `CONNECT` + schema access, sets
   `ALTER DEFAULT PRIVILEGES`, and creates `schema_migrations`. Applies no
   migrations.
 - **`db-reset`**: `db-drop` → `db-create` → `db-migrate`. Yields a clean,
@@ -371,8 +383,10 @@ resource logic. All source `bin/common`, so a valid `$ENV_FILE` with
   then `infra-bootstrap apply`. The subcommand and extra args pass through.
 - **`deploy`**: single operator entry point for shipping a release. Sequence:
   `bin/build` both `installDist` distributions → assemble a repo-relative
-  tarball (`rest-server`/`queue-worker` dists, `db/schema`, and the `db-*`
-  scripts the on-instance migrations shell out to) → `aws s3 cp` to the
+  tarball (`rest-server`/`queue-worker` dists, `db/schema`, and every `bin/`
+  script the on-instance migration path transitively needs — the `db-*` family
+  plus `postgres-check`, which gates every `db-run`; `postgres-up` and
+  `postgres-wait-for-health` are deliberately excluded) → `aws s3 cp` to the
   `artifacts_bucket` → `aws ssm send-command` running `deploy-on-instance` on
   `instance_id`. Bucket and instance id are read from `tofu output -raw`, so a
   completed `infra-apply` and an active AWS session are prerequisites. Region
@@ -579,13 +593,17 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - **Required env**: `POSTGRES_PORT` MUST be set (no in-code default);
   `bin/common` exports it as `PGPORT` for all libpq clients. `DB_SCHEMA_DIR` is
   optional; `bin/common` exports it, defaulting to `$PROJECT_ROOT/db/schema`.
-  `PORT` sets the per-env service port (`.env`=8080, `.env.test`=8081,
-  `.env.fuzz`=8082); each env file derives the daemon bind variable
-  `SERVER_PORT=$PORT`. `test-fuzz` reads `$PORT` for its port guard, boot,
-  registration, and fuzz target. `db-create-role` (and `db-bootstrap` via it)
-  additionally require `DATABASE_USER`, `DATABASE_PASSWORD`, and
-  `POSTGRES_USER`, and honor `POSTGRES_ADMIN_DB` (default `postgres`). `deploy`
-  additionally honors `AWS_REGION`/`AWS_DEFAULT_REGION` (default `us-east-1`).
+  `PGHOST` is optional and is NOT exported by `bin/common`; it flows from
+  `$ENV_FILE` via `set -a` and defaults to `localhost`. On the deploy instance
+  it carries the RDS address, selecting the cluster host for `postgres-check`
+  and, via libpq, `db-run`/`psql`. `PORT` sets the per-env service port
+  (`.env`=8080, `.env.test`=8081, `.env.fuzz`=8082); each env file derives the
+  daemon bind variable `SERVER_PORT=$PORT`. `test-fuzz` reads `$PORT` for its
+  port guard, boot, registration, and fuzz target. `db-create-role` (and
+  `db-bootstrap` via it) additionally require `DATABASE_USER`,
+  `DATABASE_PASSWORD`, and `POSTGRES_USER`, and honor `POSTGRES_ADMIN_DB`
+  (default `postgres`). `deploy` additionally honors
+  `AWS_REGION`/`AWS_DEFAULT_REGION` (default `us-east-1`).
 - **Shared cluster, per-database isolation**: every git worktree shares one
   PostgreSQL cluster at the checkout-independent absolute path
   `$HOME/var/unicoach/postgres` (`POSTGRES_DATA_DIR`). Isolation is at the
@@ -619,3 +637,7 @@ micro-skills. Idempotent; overwrites the generated files in place.
       accepts a `413` as a valid `negative_data_rejection` via
       `schemathesis.toml`.
 - [x] [RFC-54: Client-Key Gate](../rfc/54-client-key-gate.md)
+- [x] [RFC-55: Cluster-Lifecycle-Agnostic DB Scripts](../rfc/55-cluster-lifecycle-agnostic-db-scripts.md)
+      — made `db-create` schema-only, dropping the `postgres-up` coupling so the
+      DDL/migration scripts never start a cluster; `postgres-check` honors
+      `PGHOST`; added `postgres-check` to the deploy bundle.

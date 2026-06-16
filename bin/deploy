@@ -55,7 +55,8 @@ done
 # ── 2. Assemble the bundle (repo-relative paths) ──────────────────────────────
 # The on-instance migration scripts source bin/common -> bin/functions and shell
 # out to the bin/db-* family; bin/db-status and bin/db-create both invoke
-# bin/db-query for their existence checks, so it must be included.
+# bin/db-query for their existence checks, so it must be included. Every db-run
+# gates on bin/postgres-check, so it is bundled too.
 BUNDLE_ID="$(date -u +%Y%m%d%H%M%S)"
 BUNDLE_PATH="$(mktemp -t unicoach-deploy.XXXXXX).tar.gz"
 trap 'rm -f "$BUNDLE_PATH"' EXIT
@@ -73,6 +74,7 @@ BUNDLE_PATHS=(
   "bin/db-write"
   "bin/db-query"
   "bin/db-run"
+  "bin/postgres-check"
 )
 
 for path in "${BUNDLE_PATHS[@]}"; do

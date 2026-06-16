@@ -237,4 +237,38 @@ test_require_dangerous_confirmation_flag() {
 }
 assert_success "require_dangerous_confirmation flag bypass" test_require_dangerous_confirmation_flag
 
+echo ""
+echo "==== Testing deploy bundle completeness ===="
+# The on-instance migration path (db-create-role -> db-create -> db-migrate)
+# transitively sources/execs exactly this script set; every entry must ship in
+# the deploy bundle or the migration fails on the instance. Guards against a
+# future regression re-dropping postgres-check (or any migration-path script).
+test_deploy_bundle_includes_migration_path() {
+  local deploy="$PROJECT_ROOT/bin/deploy"
+  # Extract the BUNDLE_PATHS array body: the lines between "BUNDLE_PATHS=(" and ")".
+  local bundle
+  bundle="$(awk '/^BUNDLE_PATHS=\(/{f=1; next} f&&/^\)/{f=0} f' "$deploy")"
+  local required=(
+    "bin/common"
+    "bin/functions"
+    "bin/db-create-role"
+    "bin/db-create"
+    "bin/db-migrate"
+    "bin/db-status"
+    "bin/db-run"
+    "bin/db-write"
+    "bin/db-query"
+    "bin/postgres-check"
+  )
+  local script
+  for script in "${required[@]}"; do
+    if ! echo "$bundle" | grep -q "\"$script\""; then
+      fail_test "deploy bundle is missing migration-path script [$script]"
+      return 1
+    fi
+  done
+  return 0
+}
+assert_success "deploy bundle includes the full migration-path script set" test_deploy_bundle_includes_migration_path
+
 end_tests
