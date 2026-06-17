@@ -52,18 +52,20 @@ for dist in "$REST_DIST" "$WORKER_DIST"; do
   [ -d "$PROJECT_ROOT/$dist" ] || fatal "Missing distribution [$dist]; did bin/build succeed?"
 done
 
-# ── 2. Assemble the bundle (repo-relative paths) ──────────────────────────────
+# ── 2. Assemble the bundle ────────────────────────────────────────────────────
+# The two installDist trees are tarred from their build/install parent so they
+# enter the bundle as bare rest-server/ and queue-worker/ — the paths the systemd
+# units expect at current/<svc>/bin/<svc>, decoupled from the Gradle build layout.
 # The on-instance migration scripts source bin/common -> bin/functions and shell
 # out to the bin/db-* family; bin/db-status and bin/db-create both invoke
 # bin/db-query for their existence checks, so it must be included. Every db-run
-# gates on bin/postgres-check, so it is bundled too.
+# gates on bin/postgres-check, so it is bundled too. These repo files keep their
+# repo-relative paths under $PROJECT_ROOT.
 BUNDLE_ID="$(date -u +%Y%m%d%H%M%S)"
 BUNDLE_PATH="$(mktemp -t unicoach-deploy.XXXXXX).tar.gz"
 trap 'rm -f "$BUNDLE_PATH"' EXIT
 
-BUNDLE_PATHS=(
-  "$REST_DIST"
-  "$WORKER_DIST"
+REPO_PATHS=(
   "db/schema"
   "bin/common"
   "bin/functions"
@@ -77,12 +79,15 @@ BUNDLE_PATHS=(
   "bin/postgres-check"
 )
 
-for path in "${BUNDLE_PATHS[@]}"; do
+for path in "${REPO_PATHS[@]}"; do
   [ -e "$PROJECT_ROOT/$path" ] || fatal "Bundle path missing [$path]."
 done
 
 log-info "Assembling deploy bundle [$BUNDLE_ID]..."
-tar -czf "$BUNDLE_PATH" -C "$PROJECT_ROOT" "${BUNDLE_PATHS[@]}"
+tar -czf "$BUNDLE_PATH" \
+  -C "$(dirname "$PROJECT_ROOT/$REST_DIST")" "$(basename "$REST_DIST")" \
+  -C "$(dirname "$PROJECT_ROOT/$WORKER_DIST")" "$(basename "$WORKER_DIST")" \
+  -C "$PROJECT_ROOT" "${REPO_PATHS[@]}"
 
 # ── 3. Upload to the artifacts bucket ─────────────────────────────────────────
 ARTIFACTS_BUCKET="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw artifacts_bucket)"
