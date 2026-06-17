@@ -5,6 +5,7 @@ import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.StudentVersion
 import ed.unicoach.db.models.UserId
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -270,6 +271,37 @@ object StudentsDao {
           Result.failure(NotFoundException())
         }
       }
+    }
+
+  private fun mapStudentVersion(rs: ResultSet): StudentVersion =
+    StudentVersion(
+      id = StudentId(UUID.fromString(rs.getString("id"))),
+      userId = UserId(UUID.fromString(rs.getString("user_id"))),
+      expectedHighSchoolGraduationDate = mapGraduationDate(rs),
+      version = rs.getInt("version"),
+      createdAt = rs.getTimestamp("created_at").toInstant(),
+      updatedAt = rs.getTimestamp("updated_at").toInstant(),
+      deletedAt = rs.getTimestamp("deleted_at")?.toInstant(),
+    )
+
+  /** Admin read surface: a student's full version history, ascending by version. */
+  fun listVersions(
+    session: SqlSession,
+    id: StudentId,
+  ): Result<List<StudentVersion>> =
+    try {
+      session.prepareStatement("SELECT * FROM students_versions WHERE id = ? ORDER BY version").use { stmt ->
+        stmt.setObject(1, id.value)
+        stmt.executeQuery().use { rs ->
+          val versions = mutableListOf<StudentVersion>()
+          while (rs.next()) {
+            versions.add(mapStudentVersion(rs))
+          }
+          Result.success(versions)
+        }
+      }
+    } catch (e: Exception) {
+      Result.failure(mapDatabaseError(e))
     }
 
   /**

@@ -362,4 +362,18 @@ class StudentsDaoTest {
     val missing = StudentsDao.findByIdForUpdate(session, StudentId(UUID.randomUUID()))
     assertTrue(missing.exceptionOrNull() is NotFoundException)
   }
+
+  @Test
+  fun `listVersions returns the students historical rows ascending`() {
+    val u = createUser()
+    val v1 = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val v2 = StudentsDao.update(session, v1.copy(expectedHighSchoolGraduationDate = partialDate("2029-06"))).getOrThrow()
+    StudentsDao.update(session, v2.copy(expectedHighSchoolGraduationDate = partialDate("2030-06-15"))).getOrThrow()
+
+    val versions = StudentsDao.listVersions(session, v1.id).getOrThrow()
+    assertEquals(listOf(1, 2, 3), versions.map { it.version })
+    assertEquals("2028", versions[0].expectedHighSchoolGraduationDate.toIso())
+    assertEquals("2029-06", versions[1].expectedHighSchoolGraduationDate.toIso())
+    assertEquals("2030-06-15", versions[2].expectedHighSchoolGraduationDate.toIso())
+  }
 }

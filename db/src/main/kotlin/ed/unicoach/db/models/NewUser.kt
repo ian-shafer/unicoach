@@ -7,4 +7,5 @@ data class NewUser(
   val name: PersonName,
   val displayName: DisplayName?,
   val authMethod: AuthMethod,
+  val isAdmin: Boolean = false,
 )

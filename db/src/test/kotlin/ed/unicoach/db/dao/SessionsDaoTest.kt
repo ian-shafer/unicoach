@@ -1,7 +1,9 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.NewSession
+import ed.unicoach.db.models.SessionId
 import ed.unicoach.db.models.TokenHash
+import ed.unicoach.db.models.UserId
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -10,6 +12,8 @@ import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.time.Duration
+import java.util.UUID
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class SessionsDaoTest {
@@ -50,6 +54,84 @@ class SessionsDaoTest {
     object : SqlSession {
       override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
     }
+
+  private fun createUser(): UserId {
+    val rawId = UUID.randomUUID()
+    connection.createStatement().use { stmt ->
+      stmt.execute(
+        "INSERT INTO users (id, email, name, password_hash) VALUES ('$rawId', 'sess-$rawId@test.com', 'Sess User', 'ahash')",
+      )
+    }
+    return UserId(rawId)
+  }
+
+  private fun createSession(
+    userId: UserId?,
+    hash: ByteArray,
+  ) = SessionsDao
+    .create(
+      session,
+      NewSession(
+        userId = userId,
+        tokenHash = TokenHash(hash),
+        userAgent = "agent",
+        initialIp = null,
+        metadata = null,
+        expiration = Duration.ofDays(7),
+      ),
+    ).getOrThrow()
+
+  @Test
+  fun `findById returns the session by id and NotFound for unknown id`() {
+    val user = createUser()
+    val created = createSession(user, byteArrayOf(20, 21, 22))
+
+    val found = SessionsDao.findById(session, created.id)
+    assertTrue(found.isSuccess)
+    assertEquals(created.id, found.getOrThrow().id)
+
+    val missing = SessionsDao.findById(session, SessionId(UUID.randomUUID()))
+    assertTrue(missing.isFailure && missing.exceptionOrNull() is NotFoundException)
+  }
+
+  @Test
+  fun `listByUser filters to the owner and listAll pages newest-first`() {
+    val owner = createUser()
+    val other = createUser()
+
+    val s1 = createSession(owner, byteArrayOf(30, 1))
+    Thread.sleep(5)
+    val s2 = createSession(owner, byteArrayOf(30, 2))
+    Thread.sleep(5)
+    createSession(other, byteArrayOf(30, 3))
+
+    val byOwner = SessionsDao.listByUser(session, owner, limit = 50, offset = 0).getOrThrow()
+    assertEquals(setOf(s1.id, s2.id), byOwner.map { it.id }.toSet())
+    // created_at DESC: s2 (newer) before s1.
+    assertEquals(s2.id, byOwner.first().id)
+
+    val all = SessionsDao.listAll(session, limit = 50, offset = 0).getOrThrow()
+    assertTrue(all.size >= 3)
+    // Paging advances the cursor.
+    val page0 = SessionsDao.listAll(session, limit = 1, offset = 0).getOrThrow()
+    val page1 = SessionsDao.listAll(session, limit = 1, offset = 1).getOrThrow()
+    assertTrue(page0.first().id != page1.first().id)
+  }
+
+  @Test
+  fun `deleteById physically removes the row`() {
+    val user = createUser()
+    val created = createSession(user, byteArrayOf(40, 41))
+
+    val deleteResult = SessionsDao.deleteById(session, created.id)
+    assertTrue(deleteResult.isSuccess)
+
+    val refetch = SessionsDao.findById(session, created.id)
+    assertTrue(refetch.isFailure && refetch.exceptionOrNull() is NotFoundException)
+
+    val deleteMissing = SessionsDao.deleteById(session, SessionId(UUID.randomUUID()))
+    assertTrue(deleteMissing.isFailure && deleteMissing.exceptionOrNull() is NotFoundException)
+  }
 
   @Test
   fun `verifies mapping, insertion, and retrieval of anonymous sessions`() {

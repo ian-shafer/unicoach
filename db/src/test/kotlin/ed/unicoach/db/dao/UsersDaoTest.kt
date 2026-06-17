@@ -422,4 +422,88 @@ class UsersDaoTest {
       "Expected the carried userId to equal the inserted id, got ${error.userId}",
     )
   }
+
+  private fun newPasswordUser(
+    emailLocal: String,
+    nameText: String = "Admin Test",
+    isAdmin: Boolean = false,
+  ): NewUser {
+    val email = (EmailAddress.create("$emailLocal@example.com") as ValidationResult.Valid).value
+    val name = (PersonName.create(nameText) as ValidationResult.Valid).value
+    val pass = (PasswordHash.create("ahash") as ValidationResult.Valid).value
+    return NewUser(
+      email = email,
+      name = name,
+      displayName = null,
+      authMethod = AuthMethod.Password(pass),
+      isAdmin = isAdmin,
+    )
+  }
+
+  @Test
+  fun `create persists is_admin true and default false round-trips`() {
+    val adminCreate = UsersDao.create(session, newPasswordUser("admin-roundtrip", isAdmin = true))
+    assertTrue(adminCreate.isSuccess)
+    assertTrue(adminCreate.getOrNull()!!.isAdmin, "Expected isAdmin = true to round-trip")
+
+    val plainCreate = UsersDao.create(session, newPasswordUser("plain-roundtrip", isAdmin = false))
+    assertTrue(plainCreate.isSuccess)
+    assertTrue(!plainCreate.getOrNull()!!.isAdmin, "Expected default isAdmin = false to round-trip")
+  }
+
+  @Test
+  fun `updating is_admin bumps version and is captured in history`() {
+    val created = UsersDao.create(session, newPasswordUser("grant-history", isAdmin = false)).getOrThrow()
+    assertTrue(!created.isAdmin)
+
+    val granted = UsersDao.update(session, created.copy(isAdmin = true)).getOrThrow()
+    assertTrue(granted.isAdmin, "Expected isAdmin = true after update")
+    assertTrue(granted.version == created.version + 1, "Expected version bump on is_admin grant")
+
+    val versions = UsersDao.listVersions(session, created.id).getOrThrow()
+    assertTrue(versions.size >= 2, "Expected at least two history rows, got ${versions.size}")
+    val v1 = versions.first { it.version == created.version }
+    val v2 = versions.first { it.version == granted.version }
+    assertTrue(!v1.isAdmin, "Historical v1 should reflect isAdmin = false")
+    assertTrue(v2.isAdmin, "Historical v2 should reflect isAdmin = true")
+  }
+
+  @Test
+  fun `listAll honours scope ordering and paging`() {
+    val first = UsersDao.create(session, newPasswordUser("list-1")).getOrThrow()
+    Thread.sleep(5)
+    val second = UsersDao.create(session, newPasswordUser("list-2")).getOrThrow()
+    Thread.sleep(5)
+    val third = UsersDao.create(session, newPasswordUser("list-3")).getOrThrow()
+
+    // Soft-delete the second user.
+    UsersDao.delete(session, second.id, second.version).getOrThrow()
+
+    val all = UsersDao.listAll(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 50, offset = 0).getOrThrow()
+    assertTrue(all.map { it.id }.containsAll(listOf(first.id, second.id, third.id)), "ALL must include the soft-deleted row")
+
+    val active = UsersDao.listAll(session, scope = ed.unicoach.db.models.SoftDeleteScope.ACTIVE, limit = 50, offset = 0).getOrThrow()
+    assertTrue(active.none { it.id == second.id }, "ACTIVE must exclude the soft-deleted row")
+
+    // created_at DESC: newest (third) first.
+    assertTrue(all.first().id == third.id, "Expected newest-first ordering, got ${all.first().id}")
+
+    // Paging: first page of size 1 returns the newest, offset 1 the next.
+    val page0 = UsersDao.listAll(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 1, offset = 0).getOrThrow()
+    val page1 = UsersDao.listAll(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 1, offset = 1).getOrThrow()
+    assertTrue(page0.size == 1 && page1.size == 1)
+    assertTrue(page0.first().id != page1.first().id, "Paging must advance the cursor")
+  }
+
+  @Test
+  fun `listVersions returns ascending version order`() {
+    val v1 = UsersDao.create(session, newPasswordUser("versions-order")).getOrThrow()
+    val v2 = UsersDao.update(session, v1.copy(name = (PersonName.create("Edit Two") as ValidationResult.Valid).value)).getOrThrow()
+    UsersDao.update(session, v2.copy(name = (PersonName.create("Edit Three") as ValidationResult.Valid).value)).getOrThrow()
+
+    val versions = UsersDao.listVersions(session, v1.id).getOrThrow()
+    val orderedVersions = versions.map { it.version }
+    assertTrue(orderedVersions == orderedVersions.sorted(), "Expected ascending version order, got $orderedVersions")
+    assertTrue(orderedVersions == listOf(1, 2, 3), "Expected versions 1,2,3, got $orderedVersions")
+  }
 }

@@ -42,6 +42,7 @@ MODULES=(
   build-net
   build-rest-server
   build-queue-worker
+  build-admin-server
 )
 
 for module in "${MODULES[@]}"; do

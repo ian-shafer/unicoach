@@ -102,7 +102,11 @@ Entity tables enable additional capabilities via **mix-ins**:
   `enforce_versioning()`. Provides optimistic concurrency control.
 - **Version history**: Adds a sibling `{table}_versions` table with a
   `(id, version)` composite primary key and a `log_{table}_version()` AFTER
-  trigger. Requires OCC versioning.
+  trigger. Requires OCC versioning. The versions table MUST mirror the entity's
+  full domain column set, and `log_{table}_version()` MUST copy every such column
+  into the history row; adding a domain column to an entity therefore obligates
+  the same column on its versions table and in its log function, or history
+  silently drops it.
 - **Logical deletes**: Adds `deleted_at TIMESTAMPTZ NULL`. Physical deletions
   are blocked by `prevent_physical_delete()`. Unique indexes MUST use partial
   predicates (`WHERE deleted_at IS NULL`).
@@ -153,6 +157,12 @@ subsection.
   (`users_email_unique_active_idx WHERE deleted_at IS NULL`).
 - **Email bounds/format**: `email` MUST be ≤254 chars and contain `'@'`
   (`LIKE '%@%'`).
+- **Admin privilege**: `is_admin` is the single source of truth for
+  administrative authority. It is a **normal mutable domain column** —
+  deliberately NOT covered by `prevent_immutable_updates()` — so granting or
+  revoking admin is an ordinary in-place versioned UPDATE (a new `version`, not a
+  new row), captured in `users_versions` like any other field change. Privilege
+  state MUST NOT be modeled as a separate grants/roles table.
 - **Version history**: a `users` row MUST NOT be physically deleted while
   `users_versions` rows cite it (`ON DELETE RESTRICT` on the version FK). The
   version rows themselves carry no DB-level delete guard; their preservation is
@@ -498,7 +508,8 @@ and dual-logging would create two sources of truth for one logical message.
 
 - **Trigger type**: `AFTER INSERT OR UPDATE` on `users`
 - **Side effects**: Inserts one row into `users_versions` per triggering
-  statement.
+  statement. The inserted row reflects every domain column of `users`; adding a
+  `users` domain column obligates updating this function to copy it.
 - **Error handling**: Failure raises a PostgreSQL exception; the parent
   transaction is rolled back.
 - **Idempotency**: No — duplicate `(id, version)` violates the primary key.
@@ -564,3 +575,4 @@ and dual-logging would create two sources of truth for one logical message.
 - [x] [RFC-34: Transactional Email Service](../../rfc/34-transactional-email-service.md)
 - [x] [RFC-43: Provider-Agnostic LLM Chat Provider](../../rfc/43-chat-provider.md)
 - [x] [RFC-45: Coaching Service and Conversation REST Surface](../../rfc/45-coaching-service.md)
+- [x] [RFC-60: Admin Website](../../rfc/60-admin-website.md)

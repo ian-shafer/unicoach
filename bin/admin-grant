@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+admin-grant <email> [options]
+
+Bootstraps the first admin by setting users.is_admin = true for the active
+user with the given email. This is the single documented exception to the
+DAO-only write path (the in-tool grant cannot be used until an admin exists).
+
+In one transaction it bumps the row's version (firing the enforce_versioning,
+update_timestamp, and log_user_version triggers, so the change lands in
+users_versions like any other versioned update). Errors cleanly on an unknown
+or soft-deleted email; re-running is observable as a further version bump.
+
+Arguments:
+  email: Email of the active user to grant admin.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -ne 1 ]; then
+  help "admin-grant requires exactly one <email> argument."
+fi
+
+EMAIL="$1"
+
+if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null 2>&1; then
+  fatal "PostgreSQL is offline."
+fi
+
+# Normalize to the stored (lowercased, trimmed) form so the lookup matches the
+# users_email_lowercase_check / trim invariants enforced on write.
+NORMALIZED="$(printf '%s' "$EMAIL" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+
+# One transaction: bump version + set is_admin for the single active row. The
+# UPDATE ... RETURNING reports whether exactly one active row matched; an empty
+# result means no such active user, which we surface as a clean failure.
+result="$(
+  psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA <<SQL
+BEGIN;
+UPDATE users
+SET version = version + 1, is_admin = true
+WHERE email = '${NORMALIZED}' AND deleted_at IS NULL
+RETURNING id;
+COMMIT;
+SQL
+)" || fatal "Failed to execute admin grant for [$EMAIL]."
+
+# Strip psql status lines (BEGIN/UPDATE n/COMMIT); a granted id remains iff a row matched.
+granted_id="$(printf '%s\n' "$result" | grep -E '^[0-9a-fA-F-]{36}$' || true)"
+
+if [ -z "$granted_id" ]; then
+  fatal "No active user found with email [$EMAIL]."
+fi
+
+log-info "Granted admin to [$EMAIL] (user id [$granted_id])."

@@ -9,6 +9,7 @@ data class User(
   val name: PersonName,
   val displayName: DisplayName?,
   val authMethod: AuthMethod,
+  val isAdmin: Boolean,
   override val version: Int,
   override val createdAt: Instant,
   override val updatedAt: Instant,

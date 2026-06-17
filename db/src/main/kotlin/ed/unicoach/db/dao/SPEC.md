@@ -40,7 +40,7 @@ Entity table characteristics vary by flavor:
 | ---------- | ------------ | ------------------- | ---------------- | -------------- |
 | `users`    | ✓ (logical)  | ✓                   | ✓                | ✓              |
 | `sessions` | ✗ (physical) | ✗                   | ✓                | ✓              |
-| `students` | ✓ (logical)  | ✓ (not read by DAO) | ✓                | ✓              |
+| `students` | ✓ (logical)  | ✓ (read by `listVersions`) | ✓         | ✓              |
 | `convos`   | ✓ (logical)  | ✗                   | ✗                | ✓              |
 
 The "Row Timestamps" column records that `row_created_at`/`row_updated_at`
@@ -58,6 +58,12 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
   MUST throw `CorruptPersistedAuthMethodException` — a `PermanentError`
   `DaoException` carrying the offending row's `UserId` — never a user-facing
   validation failure.
+- **`users.is_admin`**: A plain `Boolean` mapped by `mapUser`/`mapUserVersion`
+  (`rs.getBoolean("is_admin")`). It MUST be bound in every `users` write that
+  reconstructs the full row — `create`, `doUpdate` (shared by `update` /
+  `updatePhysicalRecord`), and `revertToVersion` — so the admin flag survives
+  edits and version reverts. `NewUser.isAdmin` defaults to `false`; dropping the
+  bind from any one statement silently resets a user's admin state.
 - Complex columns (e.g., `email`, `name`, `display_name`) are mapped into
   strongly-typed value classes (e.g., `EmailAddress`, `PersonName`) using their
   respective `.create()` factories, unwrapping `ValidationResult.Valid`.
@@ -145,6 +151,42 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
   on the orthogonal `archived_at` axis via an `ArchiveScope` predicate
   (`UNARCHIVED` → `archived_at IS NULL`, `ARCHIVED` → `IS NOT NULL`, `ALL` → no
   filter), defaulting to `UNARCHIVED`.
+
+### Physical Delete (`SessionsDao`)
+
+- `sessions` is the only entity table with no `deleted_at` column and no
+  `prevent_physical_delete` trigger, so it has no soft-delete axis.
+- `SessionsDao.deleteById` MUST issue a genuine physical
+  `DELETE FROM sessions WHERE id = ?` and return `NotFoundException` when zero
+  rows are removed. This is the sole row-level physical delete in the DAO layer —
+  every other entity `delete` is a soft-delete `UPDATE ... SET deleted_at`. A
+  refactor MUST NOT convert it to a soft delete: the table has no column to set.
+- Because `sessions` has no soft-delete axis, `SessionsDao` read methods MUST NOT
+  accept a `SoftDeleteScope`.
+
+### Admin Read Surface
+
+The admin website pages entire tables and inspects version history. These reads
+exist only for that surface; the application path never needed them.
+
+- **Paging.** `UsersDao.listAll`, `SessionsDao.listAll`, and
+  `SessionsDao.listByUser` MUST order newest-first (`ORDER BY created_at DESC`,
+  with `id` as a deterministic tiebreak) and page via `LIMIT ?`/`OFFSET ?` bound
+  parameters. The caller supplies `limit`/`offset`; the DAO MUST NOT embed a page
+  size.
+- **Soft-delete scope asymmetry.** `UsersDao.listAll` MUST accept a
+  `scope: SoftDeleteScope` defaulting to `ALL` (admin lists keep soft-deleted
+  rows visible), applied as a fixed SQL predicate carrying no caller data. The
+  `SessionsDao` list methods MUST NOT accept a scope — `sessions` has no
+  soft-delete axis (see Physical Delete). This divergence is deliberate; the
+  signatures MUST NOT be harmonized.
+- **Version history ordering.** `UsersDao.listVersions` and
+  `StudentsDao.listVersions` MUST return the full `*_versions` history for one id
+  ordered **ascending by `version`** (replay order), and MUST return an empty
+  list (never `NotFoundException`) for an id with no history.
+- `StudentsDao.listVersions` reads `students_versions` into `StudentVersion` via
+  `mapStudentVersion`, which shares `mapGraduationDate` and therefore the same
+  `CorruptPersistedValueException` read-corruption path as `mapStudent`.
 
 ### Archive (`ConvosDao`)
 
@@ -363,6 +405,21 @@ All methods are `object`-level (static equivalent). All SQL is issued via
   historical version does not exist. Otherwise same as `update`.
 - **Idempotency**: No.
 
+#### `listAll(session, scope = SoftDeleteScope.ALL, limit, offset): Result<List<User>>`
+
+- **Side Effects**: Read only. Pages the full `users` table newest-first;
+  `scope` is a fixed SQL predicate (no caller data).
+- **Error Handling**: Returns `Result.success(emptyList())` when no rows match
+  the page; `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
+
+#### `listVersions(session, id): Result<List<UserVersion>>`
+
+- **Side Effects**: Read only — queries the `users_versions` audit table.
+- **Error Handling**: Returns `Result.success(emptyList())` for an id with no
+  history; `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
+
 ---
 
 ### `SessionsDao` — [`SessionsDao.kt`](./SessionsDao.kt)
@@ -413,6 +470,37 @@ All methods delegate through `executeSafely`. All session mutations target the
 - **Side Effects**: Write — physically deletes all expired or revoked rows.
 - **Error Handling**: No contractual errors; failures classified per §II.
 - **Idempotency**: Yes.
+
+#### `findById(session, id): Result<Session>`
+
+- **Side Effects**: Read only. Does NOT filter revoked or expired sessions
+  (admin detail must see them), unlike `findByTokenHash`.
+- **Error Handling**: `Result.failure(NotFoundException())` if absent.
+- **Idempotency**: Yes.
+
+#### `listByUser(session, userId, limit, offset): Result<List<Session>>`
+
+- **Side Effects**: Read only. Pages one user's sessions newest-first
+  (`created_at DESC, id`). No `SoftDeleteScope` — `sessions` has no soft-delete.
+- **Error Handling**: Returns `Result.success(emptyList())` when none match;
+  failures classified per §II.
+- **Idempotency**: Yes.
+
+#### `listAll(session, limit, offset): Result<List<Session>>`
+
+- **Side Effects**: Read only. Pages the full `sessions` table newest-first. No
+  scope filter.
+- **Error Handling**: Returns `Result.success(emptyList())` when none match;
+  failures classified per §II.
+- **Idempotency**: Yes.
+
+#### `deleteById(session, id): Result<Unit>`
+
+- **Side Effects**: Write — physical `DELETE FROM sessions` (no soft-delete axis;
+  see §II Physical Delete).
+- **Error Handling**: `Result.failure(NotFoundException())` when zero rows are
+  removed; failures classified per §II.
+- **Idempotency**: No — a second call returns `NotFound`.
 
 ---
 
@@ -482,6 +570,15 @@ through `mapDatabaseError`. Each grad-date column trio is reconstructed into a
 - **Error Handling**: On zero rows matched, the secondary `SELECT version`
   distinguishes `ConcurrentModificationException` from `NotFoundException`.
 - **Idempotency**: No.
+
+#### `listVersions(session, id): Result<List<StudentVersion>>`
+
+- **Side Effects**: Read only — queries the `students_versions` audit table,
+  mapping each row to `StudentVersion` (same grad-date corruption path as
+  `mapStudent`).
+- **Error Handling**: Returns `Result.success(emptyList())` for an id with no
+  history; `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
 
 ---
 
@@ -731,5 +828,16 @@ SQLSTATE classification rules are documented in §II Postgres Error Codes.
       `bypass_logical_timestamp` GUC so `updated_at` does not advance) and the
       activity-derived reads `listByStudentWithActivity` (with `ArchiveScope`
       filtering) / `findByIdWithActivity` (single `LEFT JOIN` deriving
-      `lastActivityAt = MAX(convo_requests.created_at)`); `mapConvo` now
-      projects `archived_at`.
+      `lastActivityAt = MAX(convo_requests.created_at)`); `mapConvo` now projects
+      `archived_at`.
+- [x] [RFC-60: Admin Website](../../../../../../../../rfc/60-admin-website.md) —
+      Threaded `is_admin` through the `users` read/write path
+      (`mapUser`/`mapUserVersion` read it; `create`, `doUpdate`, and
+      `revertToVersion` bind it). Added the admin read surface: `UsersDao.listAll`
+      (with `SoftDeleteScope`) and `UsersDao.listVersions`;
+      `StudentsDao.listVersions` (reading `students_versions` → `StudentVersion`);
+      and `SessionsDao.findById`, `listByUser`, `listAll` (no `SoftDeleteScope` —
+      `sessions` has no soft-delete) and `deleteById` (physical `DELETE`,
+      permitted by the absence of `prevent_physical_delete` on `sessions`). List
+      reads order `created_at DESC` with `limit`/`offset`; `listVersions` orders
+      ascending by `version`.

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+admin-server-up [options]
+
+Boots the admin-server daemon from a pre-built installDist binary and waits
+for it to respond to HTTP requests.
+
+The binary MUST be pre-built via `bin/build-admin-server` before invoking
+this script. If the binary is absent, this script exits non-zero immediately
+without invoking Gradle.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "admin-server-up does not accept positional arguments: $*"
+fi
+
+BINARY="$PROJECT_ROOT/admin-server/build/install/admin-server/bin/admin-server"
+
+if [ ! -x "$BINARY" ]; then
+  fatal "admin-server binary not found at [$BINARY]. Run 'bin/build-admin-server' first."
+fi
+
+"$PROJECT_ROOT/bin/daemon-up" admin-server -- "$BINARY"
+
+"$PROJECT_ROOT/bin/admin-server-wait-for-health"

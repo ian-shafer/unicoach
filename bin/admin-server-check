@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+admin-server-check [options]
+
+Exits 0 if the admin-server is healthy (GET /healthz returns HTTP 200).
+Exits non-zero if the server is not reachable or returns an error.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if curl -sf "http://localhost:${ADMIN_SERVER_PORT:-8081}/healthz" > /dev/null; then
+  log-info "admin-server is running"
+else
+  log-info "admin-server is NOT running"
+  exit 1
+fi

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+admin-server-wait-for-health [options]
+
+Polls admin-server-check at 1-second intervals until the /healthz endpoint
+returns HTTP 200 or the timeout elapses. Exits 0 on success, non-zero
+on timeout.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+TIMEOUT=4s
+log-info "Waiting for admin-server health check on port ${ADMIN_SERVER_PORT:-8081}..."
+if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/admin-server-check"; then
+  fatal "admin-server did not become healthy within $TIMEOUT. Check var/log/admin-server.log."
+fi
+log-info "admin-server is healthy"

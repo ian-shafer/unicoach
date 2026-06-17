@@ -39,6 +39,96 @@ object SessionsDao {
       Result.failure(mapDatabaseError(e))
     }
 
+  fun findById(
+    session: SqlSession,
+    id: SessionId,
+  ): Result<Session> =
+    executeSafely {
+      session.prepareStatement("SELECT * FROM sessions WHERE id = ?").use { stmt ->
+        stmt.setObject(1, id.value)
+        stmt.executeQuery().use { rs ->
+          if (!rs.next()) {
+            return@executeSafely Result.failure(NotFoundException("Session not found"))
+          }
+          Result.success(mapSession(rs))
+        }
+      }
+    }
+
+  fun listByUser(
+    session: SqlSession,
+    userId: UserId,
+    limit: Int,
+    offset: Int,
+  ): Result<List<Session>> =
+    executeSafely {
+      val sql =
+        """
+        SELECT * FROM sessions
+        WHERE user_id = ?
+        ORDER BY created_at DESC, id
+        LIMIT ? OFFSET ?
+        """.trimIndent()
+      session.prepareStatement(sql).use { stmt ->
+        stmt.setObject(1, userId.value)
+        stmt.setInt(2, limit)
+        stmt.setInt(3, offset)
+        stmt.executeQuery().use { rs ->
+          val sessions = mutableListOf<Session>()
+          while (rs.next()) {
+            sessions.add(mapSession(rs))
+          }
+          Result.success(sessions)
+        }
+      }
+    }
+
+  fun listAll(
+    session: SqlSession,
+    limit: Int,
+    offset: Int,
+  ): Result<List<Session>> =
+    executeSafely {
+      val sql =
+        """
+        SELECT * FROM sessions
+        ORDER BY created_at DESC, id
+        LIMIT ? OFFSET ?
+        """.trimIndent()
+      session.prepareStatement(sql).use { stmt ->
+        stmt.setInt(1, limit)
+        stmt.setInt(2, offset)
+        stmt.executeQuery().use { rs ->
+          val sessions = mutableListOf<Session>()
+          while (rs.next()) {
+            sessions.add(mapSession(rs))
+          }
+          Result.success(sessions)
+        }
+      }
+    }
+
+  /**
+   * Physical delete: `sessions` carries no `prevent_physical_delete` trigger, so
+   * the row is removed outright (unlike soft-delete entities). A missing id is a
+   * [NotFoundException].
+   */
+  fun deleteById(
+    session: SqlSession,
+    id: SessionId,
+  ): Result<Unit> =
+    executeSafely {
+      session.prepareStatement("DELETE FROM sessions WHERE id = ?").use { stmt ->
+        stmt.setObject(1, id.value)
+        val affected = stmt.executeUpdate()
+        if (affected == 0) {
+          Result.failure(NotFoundException("Session not found"))
+        } else {
+          Result.success(Unit)
+        }
+      }
+    }
+
   fun findByTokenHash(
     session: SqlSession,
     tokenHash: TokenHash,

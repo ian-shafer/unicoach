@@ -129,6 +129,18 @@ before `db-reset`, `bin/db-scripts-tests` stands up its own private cluster, and
 in production managed RDS supplies the running cluster. The local and deploy
 paths do not fork on cluster provisioning.
 
+### Admin-Grant Bootstrap Exception
+
+`bin/admin-grant` is the **sole sanctioned exception** to the bin-layer rule
+that schema mutations route through the typed DAOs. It MUST set `is_admin` via a
+single `psql` transaction that reads-and-bumps the row's `version` in one
+`UPDATE`, so the in-app versioning, timestamp, and history-capture triggers
+still fire and the change lands in `users_versions` like any other versioned
+write. It exists only to mint the **first** admin — the in-tool grant path
+cannot be used until an admin exists. All subsequent grants/revocations MUST go
+through the in-tool DAO path, not this script. No other `bin/` script may issue
+raw entity-mutating SQL.
+
 ### Port Liveness
 
 A script that must determine whether a TCP port is already served MUST probe it
@@ -254,15 +266,20 @@ convention `<service>-{up,down,bounce,check}`. A daemon MAY additionally provide
 `<service>-wait-for-health`, which blocks until the daemon is healthy. "Healthy"
 is defined by the logic in each script.
 
-Current daemons: `rest-server`, `queue-worker`.
+Current daemons: `rest-server`, `queue-worker`, `admin-server`.
 
 | Script                  | Behavior                                                                                                                                 |
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists. |
 | `<svc>-down`            | Delegates to `daemon-down`.                                                                                                              |
 | `<svc>-bounce`          | Delegates to `daemon-bounce`.                                                                                                            |
-| `<svc>-check`           | Runs the service's health check — an HTTP probe (`rest-server`) or PID liveness via `daemon-check` (`queue-worker`).                     |
+| `<svc>-check`           | Runs the service's health check — an HTTP `GET /healthz` probe (`rest-server`, `admin-server`) or PID liveness via `daemon-check` (`queue-worker`). |
 | `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                         |
+
+`admin-server-check` and `admin-server-wait-for-health` probe `GET /healthz` on
+`ADMIN_SERVER_PORT` (default `8081`) — a dedicated port variable, distinct from
+the rest-server's `PORT`, because the admin server runs as a separate process
+alongside the rest-server.
 
 ---
 
@@ -270,7 +287,8 @@ Current daemons: `rest-server`, `queue-worker`.
 
 `bin/build` builds all Kotlin source. It delegates to per-module
 `bin/build-<module>` scripts in dependency order:
-`common → db → service → queue → net → rest-server → queue-worker`. Fast-fails
+`common → db → service → queue → net → rest-server → queue-worker → admin-server`.
+Fast-fails
 on the first module failure.
 
 Each `bin/build-<module>` script runs exactly one `./gradlew` task via `exec`:
@@ -398,6 +416,20 @@ guard message wins over a missing-env error.
   FORCE`). Idempotent. Leaves the cluster and
   data directory intact. Gated by `require_dangerous_confirmation` unless
   `--yes-i-really-want-to-do-this`.
+
+---
+
+### Admin Bootstrap
+
+- **`admin-grant <email>`**: Bootstraps the first admin. In one `psql`
+  transaction, sets `is_admin = true` and bumps `version` for the single
+  **active** (`deleted_at IS NULL`) user matching `<email>`, normalizing the
+  argument to the stored lowercased/trimmed form before lookup. Side-effecting
+  (one versioned `users` row write, captured in `users_versions` via the DB
+  triggers); **observably repeatable** — re-running bumps `version` again, it is
+  not idempotent. Fatals if PostgreSQL is offline, on a `psql` failure, or when
+  no active user matches the email. Connects as `POSTGRES_USER` to
+  `POSTGRES_DB`. See the Admin-Grant Bootstrap Exception invariant (§II).
 
 ---
 
@@ -642,10 +674,12 @@ micro-skills. Idempotent; overwrites the generated files in place.
   and, via libpq, `db-run`/`psql`. `PORT` sets the per-env service port
   (`.env`=8080, `.env.test`=8081, `.env.fuzz`=8082); each env file derives the
   daemon bind variable `SERVER_PORT=$PORT`. `test-fuzz` reads `$PORT` for its
-  port guard, boot, registration, and fuzz target. `db-create-role` (and
-  `db-bootstrap` via it) additionally require `DATABASE_USER`,
-  `DATABASE_PASSWORD`, and `POSTGRES_USER`, and honor `POSTGRES_ADMIN_DB`
-  (default `postgres`). `deploy` additionally honors
+  port guard, boot, registration, and fuzz target. `ADMIN_SERVER_PORT` (default
+  `8081`) is the admin daemon's bind port, read by
+  `admin-server-check`/`admin-server-wait-for-health`, and is independent of
+  `PORT`. `db-create-role` (and `db-bootstrap` via it) additionally require
+  `DATABASE_USER`, `DATABASE_PASSWORD`, and `POSTGRES_USER`, and honor
+  `POSTGRES_ADMIN_DB` (default `postgres`). `deploy` additionally honors
   `AWS_REGION`/`AWS_DEFAULT_REGION` (default `us-east-1`).
 - **Shared cluster, per-database isolation**: every git worktree shares one
   PostgreSQL cluster at the checkout-independent absolute path
@@ -670,6 +704,7 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - [x] [RFC-33: System Prompts](../rfc/33-system-prompts.md)
 - [x] [RFC-35: bin/test owns its CLI](../rfc/35-bin-test-owns-cli.md)
 - [x] [RFC-43: Chat Provider](../rfc/43-chat-provider.md)
+- [x] [RFC-45: Coaching Service and Conversation REST Surface](../rfc/45-coaching-service.md)
 - [x] [RFC-47: Authenticated Contract-Referee Fuzzing](../rfc/47-authenticated-contract-fuzz.md)
 - [x] [RFC-50: Deploy the Backend REST API to AWS](../rfc/50-deploy-rest-api-aws.md)
 - [x] [RFC-51: iOS Deploy to Physical Device](../rfc/51-ios-deploy-to-device.md)
@@ -679,6 +714,7 @@ micro-skills. Idempotent; overwrites the generated files in place.
       referee runs `--checks all` and exits `0` against the conformant server;
       accepts a `413` as a valid `negative_data_rejection` via
       `schemathesis.toml`.
+- [x] [RFC-53: `/healthz` Liveness Endpoint](../rfc/53-healthz-liveness-endpoint.md)
 - [x] [RFC-54: Client-Key Gate](../rfc/54-client-key-gate.md)
 - [x] [RFC-55: Cluster-Lifecycle-Agnostic DB Scripts](../rfc/55-cluster-lifecycle-agnostic-db-scripts.md)
       — made `db-create` schema-only, dropping the `postgres-up` coupling so the
@@ -691,3 +727,9 @@ micro-skills. Idempotent; overwrites the generated files in place.
       source of `UNICOACH_CLIENT_KEY`, added the checked-in
       `prod`/`prod-simulator` targets, adopted "target" help terminology, and
       documented (but did not implement) the `<target>.local.env` secret seam.
+- [x] [RFC-60: Admin Website (Framework + Users Spine)](../rfc/60-admin-website.md)
+      — added `build-admin-server` and the
+      `admin-server-{up,down,check,wait-for-health}` daemon scripts, plus
+      `admin-grant` (the sole sanctioned raw-SQL entity mutation, minting the
+      first admin); wired `admin-server` into `bin/test` and `build-admin-server`
+      into `bin/build`.

@@ -7,6 +7,7 @@ import ed.unicoach.db.models.DisplayName
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
+import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.SsoProviderId
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
@@ -67,6 +68,7 @@ object UsersDao {
       name = name,
       displayName = displayName,
       authMethod = authMethod,
+      isAdmin = rs.getBoolean("is_admin"),
     )
   }
 
@@ -121,6 +123,7 @@ object UsersDao {
       name = name,
       displayName = displayName,
       authMethod = authMethod,
+      isAdmin = rs.getBoolean("is_admin"),
     )
   }
 
@@ -224,8 +227,8 @@ object UsersDao {
     try {
       val sql =
         """
-        INSERT INTO users (email, name, display_name, password_hash, sso_provider_id)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO users (email, name, display_name, password_hash, sso_provider_id, is_admin)
+        VALUES (?, ?, ?, ?, ?, ?)
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
@@ -249,6 +252,7 @@ object UsersDao {
             stmt.setString(5, method.providerId.value)
           }
         }
+        stmt.setBoolean(6, user.isAdmin)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
@@ -271,8 +275,8 @@ object UsersDao {
     try {
       val sql =
         """
-        UPDATE users 
-        SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?
+        UPDATE users
+        SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?, is_admin = ?
         WHERE id = ? AND version = ?
         RETURNING *
         """.trimIndent()
@@ -299,8 +303,9 @@ object UsersDao {
             stmt.setString(6, method.providerId.value)
           }
         }
-        stmt.setObject(7, user.id.value)
-        stmt.setInt(8, user.version)
+        stmt.setBoolean(7, user.isAdmin)
+        stmt.setObject(8, user.id.value)
+        stmt.setInt(9, user.version)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
@@ -442,8 +447,8 @@ object UsersDao {
     return try {
       val sql =
         """
-        UPDATE users 
-        SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?
+        UPDATE users
+        SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?, is_admin = ?
         WHERE id = ? AND version = ?
         RETURNING *
         """.trimIndent()
@@ -469,8 +474,9 @@ object UsersDao {
             stmt.setString(6, method.providerId.value)
           }
         }
-        stmt.setObject(7, id.value)
-        stmt.setInt(8, currentVersion)
+        stmt.setBoolean(7, target.isAdmin)
+        stmt.setObject(8, id.value)
+        stmt.setInt(9, currentVersion)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {
@@ -495,6 +501,66 @@ object UsersDao {
       Result.failure(mapDatabaseError(e))
     }
   }
+
+  /**
+   * Admin read surface: page the full user table newest-first. The [scope]
+   * filter is a fixed SQL fragment (no caller data); admin lists default to
+   * [SoftDeleteScope.ALL] so soft-deleted rows stay visible.
+   */
+  fun listAll(
+    session: SqlSession,
+    scope: SoftDeleteScope = SoftDeleteScope.ALL,
+    limit: Int,
+    offset: Int,
+  ): Result<List<User>> =
+    try {
+      val predicate =
+        when (scope) {
+          SoftDeleteScope.ACTIVE -> "deleted_at IS NULL"
+          SoftDeleteScope.DELETED -> "deleted_at IS NOT NULL"
+          SoftDeleteScope.ALL -> "TRUE"
+        }
+      val sql =
+        """
+        SELECT * FROM users
+        WHERE $predicate
+        ORDER BY created_at DESC, id
+        LIMIT ? OFFSET ?
+        """.trimIndent()
+      session.prepareStatement(sql).use { stmt ->
+        stmt.setInt(1, limit)
+        stmt.setInt(2, offset)
+        stmt.executeQuery().use { rs ->
+          val users = mutableListOf<User>()
+          while (rs.next()) {
+            users.add(mapUser(rs))
+          }
+          Result.success(users)
+        }
+      }
+    } catch (e: Exception) {
+      Result.failure(mapDatabaseError(e))
+    }
+
+  /** Admin read surface: a user's full version history, ascending by version. */
+  fun listVersions(
+    session: SqlSession,
+    id: UserId,
+  ): Result<List<UserVersion>> =
+    try {
+      session.prepareStatement("SELECT * FROM users_versions WHERE id = ? ORDER BY version").use { stmt ->
+        stmt.setObject(1, id.value)
+        stmt.executeQuery().use { rs ->
+          val versions = mutableListOf<UserVersion>()
+          while (rs.next()) {
+            versions.add(mapUserVersion(rs))
+          }
+          Result.success(versions)
+        }
+      }
+    } catch (e: Exception) {
+      Result.failure(mapDatabaseError(e))
+    }
 
   /**
    * Shared SQLSTATE discrimination for create/update operations that may
