@@ -167,3 +167,4 @@ and as `ENV_FILE` sourced by `bin/common` during migrations. The contract is the
 ## V. History
 
 - [x] [RFC-050: Deploy the Backend REST API to AWS](../rfc/50-deploy-rest-api-aws.md)
+- [x] [RFC-059: Named iOS build targets](../rfc/59-ios-build-targets.md)

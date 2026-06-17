@@ -41,7 +41,12 @@ rest-server-up/down) binds to the dedicated fuzz DB and port 8082 (see §III
 `bin/functions` (for `log-info`/`fatal`) and resolve `PROJECT_ROOT` themselves.
 `bin/common` loads `.env` and assumes the Nix dev shell, but these scripts run
 under the **system** Xcode toolchain — never `nix develop` — so sourcing it
-would defeat their purpose.
+would defeat their purpose. Bypassing `bin/common` does not mean they read no
+environment: `build-ios` and `install-ios` perform their own loading of the
+target file `ios-app/env/<target>.env`, the repo `.env`, and (for device work)
+`ios-app/env/signing.env` (see §III). Unlike `bin/common`, which fatals on a
+missing `$ENV_FILE`, `build-ios` tolerates a missing repo `.env` (it is sourced
+only when present).
 
 ### Help Interface
 
@@ -296,34 +301,61 @@ guard message wins over a missing-env error.
   `log-info` unless `-q`/`--quiet`. `-v`/`--verbose` additionally lists package
   names parsed from the exported `nativeBuildInputs` (suppressed by `-q`). No
   side effects.
-- **`build-ios [env]`**: Builds — and for device targets signs — the
-  `UnicoachiOS` app via `exec xcodebuild`. `env` defaults to `local`; sources
-  `ios-app/env/<env>.env` for `UNICOACH_DESTINATION` (`UNICOACH_CONFIGURATION`
-  optional, default `Debug`). Derives
-  `UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}` from the repo
-  `.env` (the single host source the server also reads); `APP_DOMAIN` defaults
-  to `localhost`. Forwards `UNICOACH_CLIENT_KEY` from the repo `.env` to
-  `xcodebuild` verbatim as a build setting — a raw secret passed unchanged,
-  unlike the derived `UNICOACH_BACKEND_URL`; an unset value bakes blank, so the
-  app sends no client-key header. A simulator build (destination contains
-  `Simulator`) skips signing; a device build additionally sources
-  `ios-app/env/signing.env` for `UNICOACH_DEVELOPMENT_TEAM` (required) and
-  forwards `CODE_SIGN_STYLE=Automatic
-  -allowProvisioningUpdates`. Fatals
-  before invoking `xcodebuild` on: dev shell, missing env file, missing
-  `signing.env`/team, or a bare-IP `APP_DOMAIN` (invalid cookie `Domain`, RFC
-  6265).
-- **`install-ios [--launch] [env]`**: Installs the most recent device build to a
-  physical iPhone via `xcrun devicectl device install app` (replaces any prior
-  install in place — idempotent). Device-only; a simulator env is rejected.
-  Resolves the `.app` under
+- **`build-ios [target]`**: Builds — and for device targets signs — the
+  `UnicoachiOS` app via `exec xcodebuild`. `target` defaults to `local`; sources
+  the target file `ios-app/env/<target>.env` for `UNICOACH_DESTINATION`
+  (`UNICOACH_CONFIGURATION` optional, default `Debug`). (Help text and usage say
+  "target"; the internal `ENV_*` variable names are retained.) The repo `.env`
+  is sourced **unconditionally** on every path — it is the single source of
+  `UNICOACH_CLIENT_KEY`, forwarded to `xcodebuild` verbatim as a build setting
+  (a raw secret passed unchanged; an unset value bakes blank, so the app sends
+  no client-key header) regardless of how the backend URL is resolved. The
+  backend URL is **honor-if-set, else derive**:
+  - **HONOR**: if the target file (or environment) set a non-empty
+    `UNICOACH_BACKEND_URL`, it is forwarded to `xcodebuild` verbatim — no
+    derivation and no bare-IP check. This carries externally-terminated HTTPS
+    deployment URLs (e.g. `https://api.unicoachapp.com`) that the derived
+    `http://host:port` form cannot express.
+  - **DERIVE** (fallback when unset): bakes
+    `UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}` from the repo
+    `.env` (the single host source the server also reads); `APP_DOMAIN` defaults
+    to `localhost`. A bare-IP `APP_DOMAIN` is rejected here (invalid cookie
+    `Domain`, RFC 6265) — this check runs **only** on the derive path, so a
+    stale bare-IP `.env` cannot break a build that honors an explicit URL.
+
+  A simulator build (destination contains `Simulator`) skips signing; a device
+  build additionally sources `ios-app/env/signing.env` for
+  `UNICOACH_DEVELOPMENT_TEAM` (required) and forwards
+  `CODE_SIGN_STYLE=Automatic
+  -allowProvisioningUpdates`. Fatals before
+  invoking `xcodebuild` on: dev shell, missing target file, missing
+  `signing.env`/team, or (derive path only) a bare-IP `APP_DOMAIN`.
+
+  **Checked-in deploy targets.** `prod` (device) and `prod-simulator`
+  (simulator) both set `UNICOACH_BACKEND_URL=https://api.unicoachapp.com`
+  explicitly, exercising the honor path. They carry no client key and are not
+  secret, so they are shareable and committed. `.gitignore` ignores
+  `ios-app/env/*.env` with explicit allowlist exceptions for `*.env.example`,
+  `simulator.env`, `prod.env`, and `prod-simulator.env`; any other
+  `<target>.env` (e.g. a contributor's `local.env`) stays untracked.
+
+  **Reserved secret seam.** `ios-app/env/<target>.local.env` is a documented
+  per-target secret-overlay seam — gitignored and intended to override after the
+  target file/`.env`/`signing.env` — but it is **not implemented**: no code
+  sources it today.
+- **`install-ios [--launch] [target]`**: Installs the most recent device build
+  to a physical iPhone via `xcrun devicectl device install app` (replaces any
+  prior install in place — idempotent). `target` defaults to `local`;
+  device-only, so a simulator target is rejected (use `prod` over
+  `prod-simulator`). Resolves the `.app` under
   `ios-app/build/DerivedData/Build/Products/<config>-iphoneos/`, failing fast if
-  absent (directs to `build-ios`). Device id comes from `UNICOACH_DEVICE`
-  (`signing.env`) or single-device auto-detect via
-  `xcrun devicectl list
-  devices` — fatals on zero or multiple devices.
-  `--launch` additionally runs `xcrun devicectl device process launch` for
-  bundle id `com.unicoach.UnicoachiOS`.
+  absent (directs to `build-ios`). Always requires `ios-app/env/signing.env`
+  (the home of `UNICOACH_DEVICE`) and fatals if it is absent, even when
+  auto-detecting. Device id comes from `UNICOACH_DEVICE` when set, otherwise
+  single-device auto-detect via `xcrun devicectl list devices` — fatals on zero
+  or multiple devices. `--launch` additionally runs
+  `xcrun devicectl device process launch` for bundle id
+  `com.unicoach.UnicoachiOS`.
 
 ---
 
@@ -461,10 +493,10 @@ DB and port). Five lifecycle-ownership models exist:
   source neither `bin/common` nor any cluster script. They shim
   `xcodebuild`/`xcrun` onto `PATH` (recording argv to a temp file) and redirect
   the scripts at fixtures via `UNICOACH_ENV_DIR`/`UNICOACH_DOTENV`/
-  `UNICOACH_PRODUCTS_DIR`, so no real build or hardware runs. They
-  `unset
-  IN_NIX_SHELL` at startup and simulate the dev shell per-invocation
-  with `IN_NIX_SHELL=impure`.
+  `UNICOACH_PRODUCTS_DIR`, with the `xcrun` shim emitting the per-test
+  `DEVICECTL_LIST_OUTPUT` fixture to drive `install-ios` device auto-detect, so
+  no real build or hardware runs. They `unset IN_NIX_SHELL` at startup and
+  simulate the dev shell per-invocation with `IN_NIX_SHELL=impure`.
 
 #### `bin/tests-common` — Assertion API
 
@@ -582,12 +614,16 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - **System Xcode (iOS scripts)**: `build-ios`, `install-ios`, and `is-nix`
   require the **system** Xcode toolchain (`xcodebuild`, `xcrun devicectl`), NOT
   the flake, and MUST run outside `nix develop`. `build-ios` reads
-  `APP_DOMAIN`/`SERVER_PORT`/`UNICOACH_CLIENT_KEY` from the repo `.env` and
-  `UNICOACH_DESTINATION`/`UNICOACH_CONFIGURATION` from `ios-app/env/<env>.env`;
-  device builds also read `UNICOACH_DEVELOPMENT_TEAM`/`UNICOACH_DEVICE` from
-  `ios-app/env/signing.env`. `is-nix` keys off `IN_NIX_SHELL` (and
+  `UNICOACH_CLIENT_KEY` (and, on the derive path, `APP_DOMAIN`/`SERVER_PORT`)
+  from the repo `.env` and `UNICOACH_DESTINATION`/`UNICOACH_CONFIGURATION`
+  (optionally an explicit `UNICOACH_BACKEND_URL`) from the target file
+  `ios-app/env/<target>.env`; device builds also read
+  `UNICOACH_DEVELOPMENT_TEAM`/`UNICOACH_DEVICE` from `ios-app/env/signing.env`.
+  Help text and usage use "target" terminology while the internal `ENV_*`
+  variable names are retained. `is-nix` keys off `IN_NIX_SHELL` (and
   `nativeBuildInputs` under `-v`). Test overrides `UNICOACH_ENV_DIR`,
-  `UNICOACH_DOTENV`, `UNICOACH_PRODUCTS_DIR` redirect these inputs to fixtures.
+  `UNICOACH_DOTENV`, `UNICOACH_PRODUCTS_DIR`, and `DEVICECTL_LIST_OUTPUT`
+  redirect these inputs to fixtures.
 - **Runtime directories**: `var/run/` (PID files `<service>.pid` and lock dirs
   `<service>.daemon.lock`) and `var/log/` (service logs) are created on demand
   by `daemon-up` and `postgres-up`. `bin/test-fuzz` creates `var/fuzz/` on
@@ -648,3 +684,10 @@ micro-skills. Idempotent; overwrites the generated files in place.
       — made `db-create` schema-only, dropping the `postgres-up` coupling so the
       DDL/migration scripts never start a cluster; `postgres-check` honors
       `PGHOST`; added `postgres-check` to the deploy bundle.
+- [x] [RFC-59: iOS Build Targets](../rfc/59-ios-build-targets.md) — made
+      `build-ios`'s backend URL honor-if-set-else-derive (an explicit
+      `UNICOACH_BACKEND_URL` is forwarded verbatim, skipping derivation and the
+      bare-IP check), sourced the repo `.env` unconditionally as the single
+      source of `UNICOACH_CLIENT_KEY`, added the checked-in
+      `prod`/`prod-simulator` targets, adopted "target" help terminology, and
+      documented (but did not implement) the `<target>.local.env` secret seam.

@@ -13,12 +13,15 @@ ios-app/UnicoachiOS.xcodeproj/project.xcworkspace/xcuserdata/ian.xcuserdatad/Use
 # Deno lockfile regenerated on every deno run/eval (OpenAPI spec validation)
 /deno.lock
 
-# Per-developer iOS env files (signing.env, local.env, future personal envs)
-# carry personal hosts/credentials and are ignored by default. The shared
-# simulator env and the *.env.example templates stay tracked.
+# Per-developer iOS env files (signing.env, local.env, future personal envs,
+# and per-target <target>.local.env secret overlays) carry personal
+# hosts/credentials and are ignored by default. The shared simulator env, the
+# checked-in deploy targets, and the *.env.example templates stay tracked.
 ios-app/env/*.env
 !ios-app/env/*.env.example
 !ios-app/env/simulator.env
+!ios-app/env/prod.env
+!ios-app/env/prod-simulator.env
 
 # OpenTofu/Terraform local state, provider caches, plans, and operator tfvars.
 # Remote state lives in S3 (infra/backend.tf); the bootstrap config and any

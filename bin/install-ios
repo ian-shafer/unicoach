@@ -16,13 +16,14 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-install-ios [--launch] [env]
+install-ios [--launch] [target]
 
 Installs the most recent device build of UnicoachiOS to a physical iPhone via
-xcrun devicectl. Run bin/build-ios <env> first. Runs under system Xcode, not the
-Nix dev shell. Physical device only — a simulator env is rejected.
+xcrun devicectl. Run bin/build-ios <target> first. Runs under system Xcode, not
+the Nix dev shell. Physical device only — a simulator target is rejected (so the
+`prod-simulator` target is rejected; use `prod` for a device install).
 
-  env        Environment name (default: local). Sources ios-app/env/<env>.env to
+  target     Target name (default: local). Sources ios-app/env/<target>.env to
              locate the built .app under ios-app/build/DerivedData.
   --launch   After install, also launch the app on the device (fire-and-forget).
 
@@ -55,7 +56,7 @@ fi
 
 ENV_NAME="${1:-local}"
 if [ "$#" -gt 1 ]; then
-  help "install-ios accepts at most one positional argument (env): $*"
+  help "install-ios accepts at most one positional argument (target): $*"
 fi
 
 # ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
@@ -76,7 +77,7 @@ UNICOACH_CONFIGURATION="${UNICOACH_CONFIGURATION:-Debug}"
 
 # Device-only: the same Simulator-substring discriminator used by build-ios.
 if [[ "$UNICOACH_DESTINATION" == *Simulator* ]]; then
-  fatal "Env [$ENV_NAME] targets the simulator (UNICOACH_DESTINATION contains 'Simulator'); install-ios installs to a physical device only. Use a device env (e.g. local)."
+  fatal "Target [$ENV_NAME] targets the simulator (UNICOACH_DESTINATION contains 'Simulator'); install-ios installs to a physical device only. Use a device target (e.g. local or prod)."
 fi
 
 # PRODUCTS_DIR defaults to the DerivedData products tree; UNICOACH_PRODUCTS_DIR

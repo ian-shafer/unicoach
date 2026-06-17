@@ -22,7 +22,7 @@ locals {
     SERVER_HOST           = "0.0.0.0"
     SERVER_PORT           = "8080"
     SESSION_COOKIE_SECURE = "true"
-    SESSION_COOKIE_DOMAIN = var.api_domain
+    APP_DOMAIN            = var.api_domain
     JWT_ISSUER            = "https://${var.api_domain}/"
     CHAT_PROVIDER         = "anthropic"
   }

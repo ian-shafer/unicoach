@@ -10,10 +10,63 @@ directly. Both call `bin/is-nix` and refuse to run if launched inside the dev
 shell, because there `xcrun` is shadowed by a stub and `DEVELOPER_DIR`/`SDKROOT`
 point into the Nix store — silently targeting the wrong toolchain.
 
-## How it fits together
+## Named build targets
 
-The deploy host is defined **once**, as `APP_DOMAIN` in the repo `.env`. Both
-sides derive from that single value, so they cannot disagree:
+A **build target** is a file `ios-app/env/<target>.env` sourced by
+`bin/build-ios <target>` and `bin/install-ios <target>` (both default to
+`local`). Its settings split into three buckets by sensitivity and ownership:
+
+1. **Public, environment-specific** — checked in, in the target file:
+   `UNICOACH_DESTINATION` (required), `UNICOACH_CONFIGURATION` (optional,
+   default `Debug`), and the optional `UNICOACH_BACKEND_URL`. The backend URL is
+   not a secret, so a deploy target file is shareable and checked in.
+2. **Per-developer / machine-specific** — local, gitignored, in `signing.env`:
+   `UNICOACH_DEVELOPMENT_TEAM` (required for device builds) and
+   `UNICOACH_DEVICE` (optional). One `signing.env` is shared across all targets,
+   so a device build of any target inherits signing without restating it.
+3. **Actually secret** — local, gitignored: `UNICOACH_CLIENT_KEY`, relevant only
+   when the server's client-key gate is enabled. Its per-target home is the
+   `<target>.local.env` seam (below); today it is sourced from the repo `.env`.
+
+A target is a **simulator** target iff its `UNICOACH_DESTINATION` contains the
+substring `Simulator`; otherwise it is a **device** target. The discriminator
+governs both signing (device only) and the `install-ios` device-only guard.
+
+The checked-in deploy targets are `prod` (device) and `prod-simulator`
+(simulator) — see [Deploy targets](#deploy-targets-prod--prod-simulator).
+
+### The `<target>.local.env` secret seam (reserved, not implemented)
+
+A per-target local file `ios-app/env/<target>.local.env` (gitignored) is
+reserved as the future home of a per-target `UNICOACH_CLIENT_KEY`. When
+implemented, `bin/build-ios` will source it **last** — after the target file,
+the repo `.env`, and `signing.env` — so it overrides everything for that one
+target. The insertion point is marked by a comment in `bin/build-ios`; no code,
+staging target, or per-target client-key overlay ships yet. The existing
+`ios-app/env/*.env` gitignore rule already covers `<target>.local.env`.
+
+## How the backend URL is resolved: honor-if-set, else derive
+
+`bin/build-ios` resolves `UNICOACH_BACKEND_URL` by one of two paths, decided
+after the target file and the repo `.env` are sourced:
+
+- **Honor:** if `UNICOACH_BACKEND_URL` is set and non-empty (in the target file
+  or the environment), it is forwarded to `xcodebuild` **verbatim** — no
+  derivation, no validation. A checked-in target's URL is reviewed at commit
+  time, so it is not re-parsed (a bare-IP host inside an explicit URL is not
+  separately rejected). This is how the `prod` targets carry the
+  externally-terminated HTTPS deployment URL `https://api.unicoachapp.com`
+  (HTTPS, TLS terminated at the ALB, no explicit port) — a shape the derived
+  `http://host:port` form cannot express.
+- **Derive:** if `UNICOACH_BACKEND_URL` is empty, the build composes
+  `UNICOACH_BACKEND_URL = http://$APP_DOMAIN:${SERVER_PORT:-8080}` from the repo
+  `.env` (the same single source the server reads). `APP_DOMAIN` defaults to
+  `localhost`; a bare-IP literal is rejected (an invalid cookie `Domain`). This
+  is the local-dev path.
+
+For the **derive** path, the deploy host is defined **once**, as `APP_DOMAIN` in
+the repo `.env`. Both sides derive from that single value, so they cannot
+disagree:
 
 - **The server** derives `session.cookieDomain` from `APP_DOMAIN`
   (`rest-server.conf`). The session cookie is issued with
@@ -26,7 +79,11 @@ sides derive from that single value, so they cannot disagree:
 
 Because there is one source, there is no second value to reconcile. The only
 residual step is temporal: **bounce the server after changing `APP_DOMAIN`** so
-it reloads `cookieDomain`.
+it reloads `cookieDomain`. A stale bare-IP `APP_DOMAIN` in `.env` does **not**
+break an explicit-URL (honor) build: the honor path skips derivation and its
+bare-IP check entirely.
+
+However the URL is resolved, the build and install mechanics are the same:
 
 - The app reads its backend URL from an `Info.plist` key (`UnicoachBackendURL`)
   baked at build time from the `UNICOACH_BACKEND_URL` build setting. A device
@@ -45,9 +102,9 @@ it reloads `cookieDomain`.
   destined for a gated deployment. The baked-in key is extractable from the
   distributed binary; this is a deliberate raise-the-bar control, not strong
   security.
-- `bin/build-ios <env>` builds (and, for device targets, signs) the app, baking
-  the derived `UNICOACH_BACKEND_URL` into the bundle.
-- `bin/install-ios <env>` installs the most recent device build to the iPhone
+- `bin/build-ios <target>` builds (and, for device targets, signs) the app,
+  baking the resolved `UNICOACH_BACKEND_URL` into the bundle.
+- `bin/install-ios <target>` installs the most recent device build to the iPhone
   via `xcrun devicectl`.
 
 ## Prerequisites
@@ -105,21 +162,24 @@ cp ios-app/env/local.env.example   ios-app/env/local.env
 
 - `signing.env` — `UNICOACH_DEVELOPMENT_TEAM` (your Apple team id; required for
   any device build) and optional `UNICOACH_DEVICE` (a device UDID). It is shared
-  across every environment so device builds inherit signing creds without
-  restating them.
+  across every target so device builds inherit signing creds without restating
+  them.
 - `local.env` — only `UNICOACH_DESTINATION="generic/platform=iOS"` (and an
   optional `UNICOACH_CONFIGURATION`). It no longer carries a backend host; the
-  host comes from `APP_DOMAIN` in `.env`. `local` is the default env, so both
-  scripts use it when you pass no argument.
+  host comes from `APP_DOMAIN` in `.env`. `local` is the default target, so both
+  scripts use it when you pass no argument. A target may set
+  `UNICOACH_BACKEND_URL` to skip derivation (see
+  [the backend-URL resolution rule](#how-the-backend-url-is-resolved-honor-if-set-else-derive)).
 
-Environment files under `ios-app/env/` are gitignored except the shared
-`simulator.env` and the `*.env.example` templates, so your personal files are
-never committed.
+Target files under `ios-app/env/` are gitignored except the shared
+`simulator.env`, the checked-in `prod.env` / `prod-simulator.env` deploy
+targets, and the `*.env.example` templates, so your personal files are never
+committed.
 
 ## Build and install
 
 ```sh
-bin/build-ios            # builds + signs the `local` env
+bin/build-ios            # builds + signs the `local` target
 bin/install-ios --launch # installs to the device and launches it
 ```
 
@@ -131,6 +191,55 @@ more than one is connected — set `UNICOACH_DEVICE` to disambiguate). The
 On the first device build, `-allowProvisioningUpdates` lets `xcodebuild`
 register the device and create or refresh the managed provisioning profile
 against the team's portal.
+
+## Deploy targets: `prod` / `prod-simulator`
+
+Two checked-in deploy targets build against the live AWS deployment at
+`https://api.unicoachapp.com`. Both set `UNICOACH_BACKEND_URL` explicitly, so
+`bin/build-ios` honors that URL verbatim (no derivation), and both omit
+`UNICOACH_CONFIGURATION` (inheriting `Debug`):
+
+- **`prod`** — device target (`UNICOACH_DESTINATION="generic/platform=iOS"`).
+  Like any device build it requires `signing.env` / `UNICOACH_DEVELOPMENT_TEAM`.
+
+  ```sh
+  bin/build-ios prod              # builds + signs against the deployment
+  bin/install-ios --launch prod   # installs to the device and launches it
+  ```
+
+- **`prod-simulator`** — simulator target
+  (`UNICOACH_DESTINATION="generic/platform=iOS Simulator"`). A simulator build
+  does not sign, so any contributor can build an app targeting the live
+  deployment without an Apple account.
+
+  ```sh
+  bin/build-ios prod-simulator    # builds against the deployment, no signing
+  ```
+
+  `bin/install-ios prod-simulator` is rejected by the device-only guard
+  (`UNICOACH_DESTINATION` contains `Simulator`); installs are device-only.
+
+The deployed app reaches `https://api.unicoachapp.com` over HTTPS under the
+existing `NSAllowsArbitraryLoads: true` ATS exception (which permits, not
+requires, plain HTTP) — no transport-security change.
+
+### The deployment seeds `APP_DOMAIN` so the session persists
+
+For a `prod`/`prod-simulator` build to keep a session across a relaunch, the
+server's `Set-Cookie` `Domain` must match the host the app calls. The server
+derives `session.cookieDomain` from `APP_DOMAIN` (`rest-server.conf`), so the
+deployment seeds it: `infra/ssm.tf` sets `APP_DOMAIN = var.api_domain` as a
+non-secret SSM `String` parameter, which `render-env` flattens into
+`/etc/unicoach/env` (the server unit's `EnvironmentFile`), resolving
+`cookieDomain` to `api.unicoachapp.com`. The session cookie is already marked
+`Secure` (`SESSION_COOKIE_SECURE = "true"`), correct for HTTPS.
+
+`var.api_domain` (default `api.unicoachapp.com`) is the single deployment-side
+declaration of the host; the `prod` app targets independently declare the same
+host in their `UNICOACH_BACKEND_URL`. The two are coupled by **value**, not by a
+shared file (one is HCL, one is bash). There is no automated cross-file drift
+guard: a mismatch surfaces immediately as a session that does not persist on the
+prod target, so keep the two host values in sync by hand if either changes.
 
 ## Troubleshooting
 

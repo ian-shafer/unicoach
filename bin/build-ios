@@ -14,22 +14,30 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-build-ios [env]
+build-ios [target]
 
-Builds the UnicoachiOS app for an environment defined under ios-app/env/, and
+Builds the UnicoachiOS app for a named target defined under ios-app/env/, and
 (for device targets) signs it via Xcode automatic signing. Runs under system
 Xcode, not the Nix dev shell.
 
-  env   Environment name (default: local). Sources ios-app/env/<env>.env, which
-        must define UNICOACH_DESTINATION (UNICOACH_CONFIGURATION optional,
-        defaults to Debug).
+  target  Target name (default: local). Sources ios-app/env/<target>.env, which
+          must define UNICOACH_DESTINATION (UNICOACH_CONFIGURATION optional,
+          defaults to Debug). The checked-in deploy targets are `prod` (device)
+          and `prod-simulator`, both pointing at the live deployment.
 
-The backend URL is DERIVED, not configured per-env: the repo .env supplies
-APP_DOMAIN/SERVER_PORT (the same single source the server reads), and the build
-bakes UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}. APP_DOMAIN
-defaults to localhost; a bare IP literal is rejected (invalid cookie Domain).
+The backend URL is honor-if-set, else derived:
+  - HONOR: if the target file (or the environment) sets a non-empty
+    UNICOACH_BACKEND_URL, it is forwarded to xcodebuild verbatim — no
+    derivation, no validation. The `prod` targets use this to carry the
+    externally-terminated HTTPS deployment URL (https://api.unicoachapp.com)
+    the derived http://host:port form cannot express.
+  - DERIVE: otherwise the repo .env supplies APP_DOMAIN/SERVER_PORT (the same
+    single source the server reads), and the build bakes
+    UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}. APP_DOMAIN
+    defaults to localhost; a bare IP literal is rejected (invalid cookie
+    Domain). This is the local-dev path that keeps app and server in sync.
 
-An env is a simulator build iff its UNICOACH_DESTINATION contains "Simulator";
+A target is a simulator build iff its UNICOACH_DESTINATION contains "Simulator";
 otherwise it is a device build, which additionally sources ios-app/env/signing.env
 for UNICOACH_DEVELOPMENT_TEAM (required) and UNICOACH_DEVICE (optional).
 
@@ -57,7 +65,7 @@ fi
 
 ENV_NAME="${1:-local}"
 if [ "$#" -gt 1 ]; then
-  help "build-ios accepts at most one positional argument (env): $*"
+  help "build-ios accepts at most one positional argument (target): $*"
 fi
 
 # ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
@@ -76,11 +84,10 @@ set +a
 : "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in $ENV_FILE}"
 UNICOACH_CONFIGURATION="${UNICOACH_CONFIGURATION:-Debug}"
 
-# The backend URL is DERIVED, not configured per-env: source the repo .env (the
-# single source of APP_DOMAIN/SERVER_PORT the server also reads) and compose
-# http://$APP_DOMAIN:${SERVER_PORT:-8080}. UNICOACH_DOTENV overrides the .env
-# path (used by bin/ios-scripts-tests to point at a temp fixture). APP_DOMAIN
-# defaults to localhost when unset, so simulator use needs zero configuration.
+# The repo .env is sourced UNCONDITIONALLY on both the honor and derive paths:
+# it is the single source of UNICOACH_CLIENT_KEY (forwarded to xcodebuild below)
+# regardless of how the backend URL is resolved. UNICOACH_DOTENV overrides the
+# .env path (used by bin/ios-scripts-tests to point at a temp fixture).
 DOTENV="${UNICOACH_DOTENV:-$PROJECT_ROOT/.env}"
 if [ -f "$DOTENV" ]; then
   set -a
@@ -88,18 +95,30 @@ if [ -f "$DOTENV" ]; then
   source "$DOTENV"
   set +a
 fi
-APP_DOMAIN="${APP_DOMAIN:-localhost}"
-SERVER_PORT="${SERVER_PORT:-8080}"
 
-# A bare IP (IPv4 or IPv6 literal) is an invalid cookie Domain per RFC 6265 and
-# could never persist a session, so reject it before invoking xcodebuild.
-# localhost and DNS hostnames are accepted.
-if [[ "$APP_DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-  || [[ "$APP_DOMAIN" == *:* ]]; then
-  fatal "APP_DOMAIN [$APP_DOMAIN] is a bare IP literal, which is an invalid cookie Domain (RFC 6265) and cannot persist a session. Set APP_DOMAIN in $DOTENV to a DNS hostname (e.g. a Tailscale MagicDNS name)."
+# Backend URL: honor-if-set, else derive. If the target file (or environment)
+# set a non-empty UNICOACH_BACKEND_URL, it is forwarded verbatim — no
+# derivation, no validation (a checked-in target's URL is reviewed at commit
+# time). Only when it is empty do we derive http://$APP_DOMAIN:$SERVER_PORT from
+# the .env single source, applying the bare-IP rejection. The honor path
+# short-circuits derivation AND its bare-IP check, so a stale bare-IP APP_DOMAIN
+# in .env cannot break a build that never derives.
+if [ -z "${UNICOACH_BACKEND_URL:-}" ]; then
+  # DERIVE. APP_DOMAIN defaults to localhost when unset, so simulator use needs
+  # zero configuration.
+  APP_DOMAIN="${APP_DOMAIN:-localhost}"
+  SERVER_PORT="${SERVER_PORT:-8080}"
+
+  # A bare IP (IPv4 or IPv6 literal) is an invalid cookie Domain per RFC 6265 and
+  # could never persist a session, so reject it before invoking xcodebuild.
+  # localhost and DNS hostnames are accepted.
+  if [[ "$APP_DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || [[ "$APP_DOMAIN" == *:* ]]; then
+    fatal "APP_DOMAIN [$APP_DOMAIN] is a bare IP literal, which is an invalid cookie Domain (RFC 6265) and cannot persist a session. Set APP_DOMAIN in $DOTENV to a DNS hostname (e.g. a Tailscale MagicDNS name)."
+  fi
+
+  UNICOACH_BACKEND_URL="http://$APP_DOMAIN:$SERVER_PORT"
 fi
-
-UNICOACH_BACKEND_URL="http://$APP_DOMAIN:$SERVER_PORT"
 
 # Signing args accumulate only for device builds. A simulator build (destination
 # containing "Simulator") does not sign and needs no Apple team.
@@ -122,6 +141,13 @@ if [[ "$UNICOACH_DESTINATION" != *Simulator* ]]; then
     -allowProvisioningUpdates
   )
 fi
+
+# Insertion point for the unimplemented <target>.local.env secret seam. A
+# gitignored ios-app/env/<target>.local.env would be sourced HERE — LAST, after
+# the target file, .env, and signing.env — so it overrides everything for that
+# one target. It is the intended home for a per-target UNICOACH_CLIENT_KEY once a
+# gated deployment exists. Not implemented in this RFC: no code, no staging
+# target, no overlay. The ios-app/env/*.env gitignore rule already covers it.
 
 log-info "Building UnicoachiOS [env=$ENV_NAME] [configuration=$UNICOACH_CONFIGURATION] [destination=$UNICOACH_DESTINATION] [backend=$UNICOACH_BACKEND_URL]..."
 
