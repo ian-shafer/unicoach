@@ -22,8 +22,9 @@ class HealthzRoutingTest {
     @JvmStatic
     @BeforeAll
     fun setupAll() {
-      // Boot up the server matching application bootstrapping precisely using common config
-      testServer = startServer(wait = false)
+      // Boot up the server matching application bootstrapping precisely using common config.
+      // port = 0 binds an ephemeral port so concurrent test runs never collide on a fixed port.
+      testServer = startServer(wait = false, port = 0)
       boundPort =
         runBlocking {
           testServer.engine

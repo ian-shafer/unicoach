@@ -37,7 +37,7 @@ class ConvoRoutingTest {
     @JvmStatic
     @BeforeAll
     fun setupAll() {
-      testServer = startServer(wait = false)
+      testServer = startServer(wait = false, port = 0)
       boundPort =
         runBlocking {
           testServer.engine

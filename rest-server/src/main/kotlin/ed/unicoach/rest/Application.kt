@@ -29,7 +29,18 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 
-fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
+/**
+ * Boots the rest-server.
+ *
+ * [port] overrides the configured `server.port`. Production callers leave it
+ * null to honour config; tests pass `0` to bind an ephemeral port and then read
+ * the resolved port via `server.engine.resolvedConnectors()`, so concurrent test
+ * runs across worktrees never collide on a fixed port.
+ */
+fun startServer(
+  wait: Boolean = true,
+  port: Int? = null,
+): EmbeddedServer<*, *> {
   val config =
     AppConfig
       .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf")
@@ -80,7 +91,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       .toSet()
 
   val hostStr = config.getString("server.host")
-  val portInt = config.getInt("server.port")
+  val portInt = port ?: config.getInt("server.port")
 
   val server =
     embeddedServer(Netty, port = portInt, host = hostStr) {
