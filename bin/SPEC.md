@@ -415,11 +415,13 @@ Scripts to inspect and mutate the application work queue. All delegate to
 
 - **`bin/format`**: Runs `ktlint` (Kotlin) and `deno fmt` (Markdown)
   concurrently.
-- **`bin/pre-commit`**: Runs tests and checks code format. When this commit
-  stages `api-specs/openapi.yaml`, it additionally runs `bin/test-fuzz` against
-  the REST contract — sequentially, after the concurrent checks pass — and fails
-  the commit on contract drift. `bin/dev-bootstrap` installs the git
-  `pre-commit` hook that invokes this script.
+- **`bin/pre-commit`**: Runs the Kotlin gate (`bin/test check` — ktlint plus
+  every module's tests) and the Markdown format check (`deno fmt --check`)
+  concurrently. When this commit stages `api-specs/openapi.yaml`, it
+  additionally runs `bin/test-fuzz` against the REST contract — sequentially,
+  after the concurrent checks pass — and fails the commit on contract drift.
+  `bin/dev-bootstrap` installs the git `pre-commit` hook that invokes this
+  script.
 
 ---
 
@@ -485,28 +487,33 @@ DB and port). Five lifecycle-ownership models exist:
   passthrough). Positional arguments are friendly module names
   (`common db net queue queue-worker rest-server service email chat` — a
   hardcoded set kept in sync with `settings.gradle.kts` by hand), each mapped to
-  an explicit `:<module>:test` task; repeats are de-duplicated. Unknown modules
-  and unknown options are rejected, never forwarded. **Core invariant:**
-  `bin/test` always emits at least one `:<module>:test` task — naming no module
-  runs every module — so the flags-only/zero-task argv that made `gradlew` print
-  a false "BUILD SUCCESSFUL" over zero tests is structurally impossible. Mapped
-  options (`--tests GLOB` — requires exactly one module — `--force`,
-  `--verbose`, `--continue`; see `--help` for spellings) follow the task list in
-  fixed order. Argument validation completes **before** any side effect, so an
-  invalid invocation (unknown module/option, `--tests` without exactly one
-  module) fails without resetting the test database. Exit codes: usage errors
-  exit `2` (the `help()` error branch, §II sanctioned deviation); a test run
-  that executed but did not all pass propagates `gradlew`'s `1` unchanged
-  through `exec`; success and `--help` exit `0`; downstream lifecycle failures
-  propagate their own codes via `set -e`. After validation, under `set -e`, runs
-  in order: `postgres-up` → `db-reset` → `db-tests` → `exec gradlew` with the
-  constructed task list. The `db-tests` step runs sequentially (never
-  backgrounded), after migration and before the terminal `exec`; a non-zero
-  shell-harness exit aborts the run before Gradle ever starts. Postgres is left
-  up so the Gradle suite observes the same migrated database. To filter to a
-  single test, use the module + filter form `bin/test <module> --tests "<glob>"`
-  (e.g. `bin/test queue --tests "*JobsDaoTest"`); the old bare-FQN positional
-  shape (`bin/test ed.unicoach.queue.JobsDaoTest`) is dropped.
+  an explicit `:<module>:<task>` task; repeats are de-duplicated. The per-module
+  `<task>` is `test` by default, or `check` when the optional leading `check`
+  keyword is given (`bin/test check [module ...]`) — Gradle's `check` runs
+  ktlint plus tests for a full Kotlin verification over the same Postgres
+  lifecycle, and is the form the `bin/pre-commit` Kotlin gate invokes. `check`
+  is a keyword, not a module and not an option. Unknown modules and unknown
+  options are rejected, never forwarded. **Core invariant:** `bin/test` always
+  emits at least one `:<module>:<task>` task — naming no module runs every
+  module — so the flags-only/zero-task argv that made `gradlew` print a false
+  "BUILD SUCCESSFUL" over zero tests is structurally impossible. Mapped options
+  (`--tests GLOB` — requires exactly one module — `--force`, `--verbose`,
+  `--continue`; see `--help` for spellings) follow the task list in fixed order.
+  Argument validation completes **before** any side effect, so an invalid
+  invocation (unknown module/option, `--tests` without exactly one module) fails
+  without resetting the test database. Exit codes: usage errors exit `2` (the
+  `help()` error branch, §II sanctioned deviation); a test run that executed but
+  did not all pass propagates `gradlew`'s `1` unchanged through `exec`; success
+  and `--help` exit `0`; downstream lifecycle failures propagate their own codes
+  via `set -e`. After validation, under `set -e`, runs in order: `postgres-up` →
+  `db-reset` → `db-tests` → `exec gradlew` with the constructed task list. The
+  `db-tests` step runs sequentially (never backgrounded), after migration and
+  before the terminal `exec`; a non-zero shell-harness exit aborts the run
+  before Gradle ever starts. Postgres is left up so the Gradle suite observes
+  the same migrated database. To filter to a single test, use the module +
+  filter form `bin/test <module> --tests "<glob>"` (e.g.
+  `bin/test queue --tests "*JobsDaoTest"`); the old bare-FQN positional shape
+  (`bin/test ed.unicoach.queue.JobsDaoTest`) is dropped.
 - **`bin/test-fuzz`**: Authenticated contract-referee fuzzer. Boots a
   freshly-built rest-server on its own fuzz DB/port (`.env.fuzz`) and runs
   Schemathesis against the committed `api-specs/openapi.yaml`. Ordered lifecycle

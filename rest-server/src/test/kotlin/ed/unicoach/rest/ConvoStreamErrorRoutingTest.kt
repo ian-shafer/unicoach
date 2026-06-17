@@ -14,7 +14,6 @@ import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.CreateStudentRequest
-import ed.unicoach.rest.models.PostMessageRequest
 import ed.unicoach.rest.models.RegisterRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO

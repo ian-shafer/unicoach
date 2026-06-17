@@ -13,11 +13,15 @@ help() {
     exit_code=2
   fi
   cat << 'EOF'
-test [options] [module ...]
+test [options] [check] [module ...]
 
 Runs Gradle tests on the nix-provided host JVM. Resets this worktree's test
 database first (postgres-up -> db-reset -> db-tests), then runs the selected
 modules' test tasks. With no modules, runs every module.
+
+The optional leading `check` keyword runs each selected module's Gradle `check`
+task (ktlint + tests) instead of bare `test`, for a full Kotlin verification.
+The pre-commit Kotlin gate invokes this form.
 
 Modules:
   common db net queue queue-worker rest-server service email chat
@@ -42,6 +46,7 @@ is-module() {
 }
 
 SELECTED=()
+TASK="test"
 TESTS_GLOB=""
 HAS_TESTS=false
 FORCE=false
@@ -60,6 +65,7 @@ while [ "$#" -gt 0 ]; do
   -f|--force) FORCE=true; shift ;;
   -v|--verbose) VERBOSE=true; shift ;;
   -c|--continue) CONTINUE=true; shift ;;
+  check) TASK="check"; shift ;;
   -*) help "unknown option [$1]" ;;
   *)
     if is-module "$1"; then
@@ -80,14 +86,15 @@ if [ "$HAS_TESTS" = true ] && [ "${#SELECTED[@]}" -ne 1 ]; then
   help "--tests requires exactly one module"
 fi
 
-# Core invariant: emit at least one :module:test task. No modules named => all.
+# Core invariant: emit at least one :module:<task> task (test, or check when the
+# `check` keyword is given). No modules named => all.
 if [ "${#SELECTED[@]}" -eq 0 ]; then
   SELECTED=("${MODULES[@]}")
 fi
 
 GRADLE_ARGS=()
 for module in "${SELECTED[@]}"; do
-  GRADLE_ARGS+=(":$module:test")
+  GRADLE_ARGS+=(":$module:$TASK")
 done
 [ "$FORCE" = true ] && GRADLE_ARGS+=("--rerun-tasks")
 [ "$VERBOSE" = true ] && GRADLE_ARGS+=("--info")
