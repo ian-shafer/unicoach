@@ -10,6 +10,11 @@ struct ConversationListView: View {
     private let conversationClient: ConversationClientProtocol
     private let onProfileRequired: () -> Void
 
+    /// Set by a Delete tap (swipe or context menu) to stage a conversation for the
+    /// confirmation dialog. The actual `viewModel.delete(_:)` fires only when the
+    /// dialog's confirm button resolves.
+    @State private var pendingDeletion: Conversation?
+
     init(conversationClient: ConversationClientProtocol, onProfileRequired: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: ConversationListViewModel(conversationClient: conversationClient))
         self.conversationClient = conversationClient
@@ -34,6 +39,40 @@ struct ConversationListView: View {
                 }
             }
             .task { await viewModel.load() }
+            .confirmationDialog(
+                "Delete this conversation?",
+                isPresented: deletionDialogBinding,
+                titleVisibility: .visible,
+                presenting: pendingDeletion
+            ) { conversation in
+                Button("Delete", role: .destructive) {
+                    Task { await viewModel.delete(conversation) }
+                }
+                .accessibilityIdentifier("deleteConfirmButton")
+                Button("Cancel", role: .cancel) {}
+                    .accessibilityIdentifier("deleteCancelButton")
+            } message: { _ in
+                Text("This can't be undone.")
+            }
+            .alert(item: $viewModel.actionError) { error in
+                Alert(
+                    title: Text("Something went wrong"),
+                    message: Text(error.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+    }
+
+    /// Bridges the optional `pendingDeletion` to the dialog's `isPresented` flag:
+    /// presenting when a conversation is staged, and clearing the staged value
+    /// when the dialog dismisses.
+    private var deletionDialogBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeletion != nil },
+            set: { presented in
+                if !presented { pendingDeletion = nil }
+            }
+        )
     }
 
     @ViewBuilder
@@ -70,6 +109,36 @@ struct ConversationListView: View {
                 )
             } label: {
                 conversationRow(conversation)
+            }
+            .swipeActions(edge: .trailing) {
+                Button(role: .destructive) {
+                    pendingDeletion = conversation
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .accessibilityIdentifier("deleteButton")
+
+                Button {
+                    Task { await viewModel.archive(conversation) }
+                } label: {
+                    Label("Archive", systemImage: "archivebox")
+                }
+                .accessibilityIdentifier("archiveButton")
+            }
+            .contextMenu {
+                Button {
+                    Task { await viewModel.archive(conversation) }
+                } label: {
+                    Label("Archive", systemImage: "archivebox")
+                }
+                .accessibilityIdentifier("archiveButton")
+
+                Button(role: .destructive) {
+                    pendingDeletion = conversation
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .accessibilityIdentifier("deleteButton")
             }
         }
         .listStyle(.plain)
@@ -171,6 +240,10 @@ private final class ConversationListPreviewClient: ConversationClientProtocol, @
     }
 
     func fetchMessages(conversationId: UUID) async throws -> [Message] { [] }
+
+    func deleteConversation(conversationId: UUID) async throws {}
+
+    func setArchived(conversationId: UUID, archived: Bool) async throws {}
 }
 
 #Preview {

@@ -320,6 +320,10 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
             Message(id: "c1", role: .coach, content: "Let's begin with your goals.", createdAt: Date()),
         ]
     }
+
+    func deleteConversation(conversationId: UUID) async throws {}
+
+    func setArchived(conversationId: UUID, archived: Bool) async throws {}
 }
 
 #Preview {

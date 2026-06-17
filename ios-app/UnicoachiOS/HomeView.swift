@@ -82,6 +82,10 @@ private final class HomePreviewConversationClient: ConversationClientProtocol, @
     func listConversations() async throws -> [Conversation] { [] }
 
     func fetchMessages(conversationId: UUID) async throws -> [Message] { [] }
+
+    func deleteConversation(conversationId: UUID) async throws {}
+
+    func setArchived(conversationId: UUID, archived: Bool) async throws {}
 }
 
 #Preview {

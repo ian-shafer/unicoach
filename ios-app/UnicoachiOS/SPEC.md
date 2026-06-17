@@ -165,6 +165,21 @@ tokens and shared UI components are specified separately in
   expected output: a trailing `.user` yields a turn with `coachMessage == nil`;
   an orphan `.coach` with no open turn is dropped.
 
+### Conversation-list actions
+
+- A row archive or delete MUST be optimistic: the row is removed from the loaded
+  list immediately and the action's failure MUST roll it back. The loaded list
+  is NEVER torn down on an action failure — failure surfaces on the separate
+  `actionError` channel and MUST NOT transition `state` to `.failed`, which is
+  reserved for initial-load failure (it replaces the whole screen).
+- Rollback MUST reinsert the conversation into the list AS IT CURRENTLY STANDS
+  at `min(originalIndex, currentCount)` — never by overwriting with a
+  pre-removal snapshot — so a list-shape change between removal and failure
+  composes correctly. Removing the last row transitions to `.empty`; its
+  rollback restores `.loaded([conversation])`.
+- An action targeting a conversation absent from the loaded list MUST no-op with
+  no client call.
+
 ### Date decoding (wire contract)
 
 - The REST server serializes `Instant` timestamps as ISO-8601 strings with
@@ -316,13 +331,16 @@ See [`APIClient.swift`](./APIClient.swift).
 func post<B: Encodable>(_ path: String, body: B) async throws -> (Data, HTTPURLResponse)
 func post(_ path: String) async throws -> (Data, HTTPURLResponse)
 func get(_ path: String) async throws -> (Data, HTTPURLResponse)
+func delete(_ path: String) async throws -> (Data, HTTPURLResponse)
+func patch<B: Encodable>(_ path: String, body: B) async throws -> (Data, HTTPURLResponse)
 ```
 
 - **Side effects**: Exactly one HTTP request per call, carrying the
   `X-Unicoach-Client-Key` header when a client key is configured (non-nil).
   Body-bearing requests set `Content-Type: application/json` (GETs and body-less
-  POSTs do not). The default session persists `Set-Cookie` headers into
-  `HTTPCookieStorage.shared`; tests inject an ephemeral session.
+  POSTs and `delete` do not; `patch` is body-bearing). The default session
+  persists `Set-Cookie` headers into `HTTPCookieStorage.shared`; tests inject an
+  ephemeral session.
 - **Failure modes** (client-synthesized codes — these NEVER originate from the
   server, on either the request or the stream path): `NSURLErrorTimedOut` →
   `ErrorResponse(code: "TIMEOUT")`; other transport errors → `"NETWORK_ERROR"`;
@@ -475,6 +493,29 @@ func fetchMessages(conversationId: UUID) async throws -> [Message]
   `fetchMessages`) routes through `decode`'s `decodeError` and throws the
   decoded `ErrorResponse` (or `"SERVER_ERROR"` on an unparseable body).
 - **Idempotency**: Yes (safe GETs).
+
+```
+func deleteConversation(conversationId: UUID) async throws
+func setArchived(conversationId: UUID, archived: Bool) async throws
+```
+
+- The two single-entity-by-id writes, each exactly one request via `APIClient`,
+  returning `Void`: `deleteConversation` → `DELETE /api/v1/conversations/{id}`,
+  expects `204` (via `expect`); `setArchived` →
+  `PATCH /api/v1/conversations/{id}` with an `UpdateConversationRequest`
+  carrying ONLY `archived` (the `nil` `name` is dropped from the wire), expects
+  `200` (via `expect`). `setArchived`'s `200` `ConversationResponse` body is
+  intentionally discarded — the caller drops the row regardless, so no
+  `ConversationResponse` DTO exists on iOS. `setArchived` is named generically
+  (not `archive`) because the PATCH is symmetric; the client carries no
+  archive-only assumption.
+- **Failure modes**: Like `fetchMessages` (and unlike `fetchProfile`), neither
+  short-circuits on a status code. Every non-success — including
+  `404 {"code":"not_found"}` for an already-deleted or foreign conversation —
+  routes through `expect`'s `decodeError` and throws the decoded `ErrorResponse`
+  (or `"SERVER_ERROR"` on an unparseable body).
+- **Idempotency**: `deleteConversation` is idempotent server-side (a re-delete
+  yields `404`); `setArchived` is idempotent for a fixed `archived` value.
 
 ---
 
@@ -689,7 +730,10 @@ See [`ConversationListViewModel.swift`](./ConversationListViewModel.swift).
 Publishes `state: ConversationListState`
 (`loading | loaded([Conversation]) | empty | failed(ErrorResponse)`), initial
 `.loading`. An empty list is the distinct `.empty` outcome, NOT a degenerate
-`.loaded([])`, so the view renders a dedicated no-conversations affordance.
+`.loaded([])`, so the view renders a dedicated no-conversations affordance. Also
+publishes `actionError: ErrorResponse?` — a per-action failure channel kept
+separate from `state` (§II Conversation-list actions), driving an item-style
+alert (`ErrorResponse` is `Identifiable` by `code`).
 
 ```
 @MainActor func load() async
@@ -705,6 +749,26 @@ Publishes `state: ConversationListState`
   `.failed`.
 - **Idempotency**: Yes (safe GET); each call resets to `.loading` then
   resettles.
+
+```
+@MainActor func archive(_ conversation: Conversation) async
+@MainActor func delete(_ conversation: Conversation) async
+```
+
+- **Trigger**: Row swipe actions / context menu (`archive`); the view's
+  confirmation dialog (`delete`) — the dialog gating is the view's concern, not
+  the VM's.
+- **Optimistic mutation with rollback** (§II Conversation-list actions): both
+  share one shape. Guard `state == .loaded` and the conversation is present
+  (matched by `id`), capturing `originalIndex`; if absent, no-op (no client
+  call). Remove the row immediately (→ `.empty` if it was the last). Call the
+  client (`setArchived(…, archived: true)` / `deleteConversation`). On success,
+  nothing further. On failure, reinsert into the CURRENT list at
+  `min(originalIndex, currentCount)` (restoring `.loaded` from `.empty`), then
+  set `actionError` to the thrown `ErrorResponse` (or a synthesized
+  `"SERVER_ERROR"`). `.failed` is NEVER entered.
+- **Side effect**: One `PATCH` / `DELETE` via `ConversationClient`.
+- **Idempotency**: No — each call performs a server-side mutation.
 
 ---
 
@@ -824,13 +888,21 @@ re-fetches on every appearance (`.task`).
   button (identifier `conversationListRetryButton`).
 - **Compose**: A toolbar primary-action button (identifier `composeButton`) and
   the empty-state start link both push a **fresh** `ConversationView`.
+- **Row actions**: Each `.loaded` row carries trailing `.swipeActions` and a
+  `.contextMenu`, each with an **Archive** button (→ `viewModel.archive` in a
+  `Task`) and a destructive **Delete** button. Delete does NOT delete directly:
+  it stages the row into `@State pendingDeletion`, which presents a
+  `.confirmationDialog`; only the dialog's destructive confirm invokes
+  `viewModel.delete`. An `.alert(item:)` bound to `viewModel.actionError`
+  surfaces action failures. The row tap-through `NavigationLink` is unchanged.
 - **Row timestamp**: Each row renders a relative timestamp from
   `lastActivityAt`, falling back to `updatedAt` to unwrap the `Date?` (a listed
   conversation always has a visible turn, so `lastActivityAt` is set in
   practice).
 - **Accessibility identifiers**: `composeButton`, `conversationListLoading`,
   `conversationRow`, `conversationListEmpty`, `startConversationButton`,
-  `conversationListFailed`, `conversationListRetryButton`.
+  `conversationListFailed`, `conversationListRetryButton`, `archiveButton`,
+  `deleteButton`, `deleteConfirmButton`, `deleteCancelButton`.
 
 #### `ErrorView`
 
@@ -861,10 +933,13 @@ and UI layers, paired per endpoint:
 - Student profile: `CreateStudentRequest` / `StudentResponse` (wraps
   `PublicStudent`).
 - Conversation: domain models `Conversation`, `Message`, `MessageRole` (`user` |
-  `coach`); the request DTOs `CreateConversationRequest` (start) and
-  `PostMessageRequest` (follow-up); the domain event `ConversationStreamEvent`
-  (`conversation` | `userMessage` | `delta` | `completed`); and the five wire
-  frames (`ConversationCreatedFrame`, `UserMessageFrame`, `MessageDeltaFrame`,
+  `coach`); the request DTOs `CreateConversationRequest` (start),
+  `PostMessageRequest` (follow-up), and `UpdateConversationRequest`
+  (`name: String?` / `archived: Bool?`, both optional — a `nil` field is omitted
+  via `encodeIfPresent`, enabling a one-field PATCH that leaves the server-side
+  `name` untouched); the domain event `ConversationStreamEvent` (`conversation`
+  | `userMessage` | `delta` | `completed`); and the five wire frames
+  (`ConversationCreatedFrame`, `UserMessageFrame`, `MessageDeltaFrame`,
   `MessageCompletedFrame`, `StreamErrorFrame`) decoded by their `type`
   discriminator; and the two read envelopes `ConversationListResponse`
   (`{conversations: [Conversation]}`) and `MessageListResponse`
@@ -942,3 +1017,4 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 - [x] [RFC-51: iOS Deploy to Physical Device](../../rfc/51-ios-deploy-to-device.md)
 - [x] [RFC-54: Client-Key Gate](../../rfc/54-client-key-gate.md)
 - [x] [RFC-56: iOS Conversation History](../../rfc/56-ios-conversation-history.md)
+- [x] [RFC-58: iOS conversation-list archive and delete actions](../../rfc/58-ios-conversation-list-actions.md)

@@ -103,6 +103,16 @@ struct PostMessageRequest: Codable, Sendable {
     let message: String
 }
 
+/// One-field-at-a-time conversation update mirroring the server DTO
+/// (`UpdateConversationRequest(name: String? = null, archived: Boolean? = null)`).
+/// Both fields are optional; Swift's synthesized `Encodable` omits a `nil`
+/// optional via `encodeIfPresent`, so a PATCH carrying only `archived` leaves
+/// the server-side `name` untouched.
+struct UpdateConversationRequest: Codable, Sendable {
+    let name: String?
+    let archived: Bool?
+}
+
 // MARK: - Stream domain event
 
 enum ConversationStreamEvent: Sendable {

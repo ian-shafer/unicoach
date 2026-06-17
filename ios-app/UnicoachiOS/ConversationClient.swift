@@ -8,6 +8,8 @@ protocol ConversationClientProtocol: Sendable {
         -> AsyncThrowingStream<ConversationStreamEvent, Error>
     func listConversations() async throws -> [Conversation]
     func fetchMessages(conversationId: UUID) async throws -> [Message]
+    func deleteConversation(conversationId: UUID) async throws
+    func setArchived(conversationId: UUID, archived: Bool) async throws
 }
 
 /// A thin endpoint binding over the injected `APIClient`, owning only what is
@@ -68,6 +70,30 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
             data: data, response: response, expectedStatus: 200
         )
         return messageResponse.messages
+    }
+
+    /// Deletes a conversation via `DELETE /api/v1/conversations/{id}`, expecting
+    /// `204`. Mirrors `fetchMessages`'s single-entity-by-id handling: any non-`204`
+    /// status routes through `expect`'s `decodeError` and throws the decoded
+    /// `ErrorResponse` (e.g. `not_found` on an already-deleted or foreign id).
+    func deleteConversation(conversationId: UUID) async throws {
+        let (data, response) = try await apiClient.delete(
+            "/api/v1/conversations/\(conversationId.uuidString)"
+        )
+        try apiClient.expect(data: data, response: response, expectedStatus: 204)
+    }
+
+    /// Sets a conversation's archived flag via `PATCH /api/v1/conversations/{id}`
+    /// with an `archived`-only body, expecting `200`. The `200`
+    /// `ConversationResponse` body is intentionally discarded — the caller drops
+    /// the row regardless. Any non-`200` routes through `expect`'s `decodeError`
+    /// and throws the decoded `ErrorResponse`.
+    func setArchived(conversationId: UUID, archived: Bool) async throws {
+        let (data, response) = try await apiClient.patch(
+            "/api/v1/conversations/\(conversationId.uuidString)",
+            body: UpdateConversationRequest(name: nil, archived: archived)
+        )
+        try apiClient.expect(data: data, response: response, expectedStatus: 200)
     }
 
     /// Shared SSE pump for both endpoints: opens the stream, splits lines, assembles

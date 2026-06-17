@@ -85,6 +85,14 @@ final class APIClient: @unchecked Sendable {
         try await perform(method: "GET", path: path, body: Never?.none)
     }
 
+    func delete(_ path: String) async throws -> (data: Data, response: HTTPURLResponse) {
+        try await perform(method: "DELETE", path: path, body: Never?.none)
+    }
+
+    func patch<B: Encodable>(_ path: String, body: B) async throws -> (data: Data, response: HTTPURLResponse) {
+        try await perform(method: "PATCH", path: path, body: body)
+    }
+
     func decode<T: Decodable>(data: Data, response: HTTPURLResponse, expectedStatus: Int) throws -> T {
         if response.statusCode == expectedStatus {
             do {

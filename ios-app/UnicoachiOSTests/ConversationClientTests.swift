@@ -547,6 +547,77 @@ final class ConversationClientTests: XCTestCase {
             XCTFail("expected ErrorResponse, got [\(error)]")
         }
     }
+
+    // MARK: - deleteConversation
+
+    func testDeleteConversationSendsDeleteAndSucceedsOn204() async throws {
+        let conversationId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(request.url?.path, "/api/v1/conversations/\(conversationId.uuidString)")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+        try await client.deleteConversation(conversationId: conversationId)
+    }
+
+    func testDeleteConversationThrowsDecodedErrorOnNon204() async {
+        respond(
+            statusCode: 404,
+            data: Data(#"{"code":"not_found","message":"No such conversation"}"#.utf8),
+            contentType: "application/json"
+        )
+        do {
+            try await client.deleteConversation(conversationId: UUID())
+            XCTFail("expected thrown ErrorResponse")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "not_found")
+        } catch {
+            XCTFail("expected ErrorResponse, got [\(error)]")
+        }
+    }
+
+    // MARK: - setArchived
+
+    func testSetArchivedSendsPatchWithArchivedOnlyBody() async throws {
+        let conversationId = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let conversationBody = """
+        {"conversation":{"id":"\(conversationId.uuidString)","name":"My chat","createdAt":"2026-06-10T12:00:00.000Z","updatedAt":"2026-06-10T12:00:00.000Z","lastActivityAt":null,"archivedAt":"2026-06-10T12:30:00.000Z"}}
+        """
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "PATCH")
+            XCTAssertEqual(request.url?.path, "/api/v1/conversations/\(conversationId.uuidString)")
+            // URLSession moves the body to httpBodyStream before MockURLProtocol sees it.
+            let body = request.bodyData()
+            let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(json?["archived"] as? Bool, true)
+            XCTAssertFalse(json?.keys.contains("name") ?? false, "name must be absent from an archived-only PATCH")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(conversationBody.utf8))
+        }
+        try await client.setArchived(conversationId: conversationId, archived: true)
+    }
+
+    func testSetArchivedThrowsDecodedErrorOnNon200() async {
+        respond(
+            statusCode: 404,
+            data: Data(#"{"code":"not_found","message":"No such conversation"}"#.utf8),
+            contentType: "application/json"
+        )
+        do {
+            try await client.setArchived(conversationId: UUID(), archived: true)
+            XCTFail("expected thrown ErrorResponse")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "not_found")
+        } catch {
+            XCTFail("expected ErrorResponse, got [\(error)]")
+        }
+    }
 }
 
 // MARK: - Test helpers

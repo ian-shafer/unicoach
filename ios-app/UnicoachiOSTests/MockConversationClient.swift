@@ -42,6 +42,16 @@ final class MockConversationClient: ConversationClientProtocol, @unchecked Senda
     private(set) var fetchMessagesRequests: [UUID] = []
     var fetchMessagesCallCount: Int { fetchMessagesRequests.count }
 
+    /// Scripted outcome for `setArchived`: every call is recorded in
+    /// `setArchivedRequests` (id + flag), then the scripted error is thrown if set.
+    var setArchivedError: Error?
+    private(set) var setArchivedRequests: [(conversationId: UUID, archived: Bool)] = []
+
+    /// Scripted outcome for `deleteConversation`: every call records its id in
+    /// `deleteConversationRequests`, then the scripted error is thrown if set.
+    var deleteConversationError: Error?
+    private(set) var deleteConversationRequests: [UUID] = []
+
     func streamConversation(request: CreateConversationRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
         streamConversationRequests.append(request)
@@ -68,6 +78,20 @@ final class MockConversationClient: ConversationClientProtocol, @unchecked Senda
             throw error
         }
         return fetchMessagesResult
+    }
+
+    func deleteConversation(conversationId: UUID) async throws {
+        deleteConversationRequests.append(conversationId)
+        if let error = deleteConversationError {
+            throw error
+        }
+    }
+
+    func setArchived(conversationId: UUID, archived: Bool) async throws {
+        setArchivedRequests.append((conversationId, archived))
+        if let error = setArchivedError {
+            throw error
+        }
     }
 
     private func nextScript() -> Script {
