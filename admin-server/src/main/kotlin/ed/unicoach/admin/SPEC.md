@@ -44,11 +44,11 @@ sibling subpackages and are referenced here only by responsibility.
   registered in the top-level `routing { }` block. The authorization gate MUST
   exempt `/healthz` so an operator's probe carrying no admin session is never
   redirected or rejected.
-- The `/healthz` handler MUST be dependency-free: it MUST NOT touch the database,
-  the auth service, or any backing service, and MUST return its response
-  unconditionally. A transient dependency failure MUST NEVER turn the liveness
-  probe non-200, so a probe consumer can never kill an otherwise-serving process
-  over a dependency blip.
+- The `/healthz` handler MUST be dependency-free: it MUST NOT touch the
+  database, the auth service, or any backing service, and MUST return its
+  response unconditionally. A transient dependency failure MUST NEVER turn the
+  liveness probe non-200, so a probe consumer can never kill an
+  otherwise-serving process over a dependency blip.
 
 ### Server Lifecycle
 
@@ -62,8 +62,8 @@ sibling subpackages and are referenced here only by responsibility.
 
 - The database, password hasher, and auth service MUST be constructed once in
   `startServer` and injected into the application module; the module MUST NOT
-  construct its own `Database` or auth service. The same hasher
-  instance injected for login MUST be the one threaded to the resource engine's
+  construct its own `Database` or auth service. The same hasher instance
+  injected for login MUST be the one threaded to the resource engine's
   user-create path, so the admin process holds a single hashing configuration.
 
 ### Authorization Coverage
@@ -146,26 +146,26 @@ sibling subpackages and are referenced here only by responsibility.
 
 Required keys in `admin-server.conf`, parsed by `AdminConfig.from`:
 
-| Key                              | Type    | Description                                              |
-| -------------------------------- | ------- | ------------------------------------------------------- |
-| `admin.server.host`              | String  | Netty bind host; defaults to loopback (`127.0.0.1`)     |
-| `admin.server.port`              | Int     | Netty bind port                                         |
-| `admin.session.cookieName`       | String  | Admin session cookie name                               |
-| `admin.session.cookieDomain`     | String  | Cookie domain attribute (empty ⇒ host-only cookie)      |
-| `admin.session.cookieSecure`     | Boolean | `Secure` cookie flag                                    |
-| `admin.session.expirationSeconds`| Long    | Admin session TTL, in seconds                           |
+| Key                               | Type    | Description                                         |
+| --------------------------------- | ------- | --------------------------------------------------- |
+| `admin.server.host`               | String  | Netty bind host; defaults to loopback (`127.0.0.1`) |
+| `admin.server.port`               | Int     | Netty bind port                                     |
+| `admin.session.cookieName`        | String  | Admin session cookie name                           |
+| `admin.session.cookieDomain`      | String  | Cookie domain attribute (empty ⇒ host-only cookie)  |
+| `admin.session.cookieSecure`      | Boolean | `Secure` cookie flag                                |
+| `admin.session.expirationSeconds` | Long    | Admin session TTL, in seconds                       |
 
 ### Environment Variable Overrides
 
 `admin-server.conf` binds these HOCON substitutions; each overrides the
 corresponding key when set in the process environment:
 
-| Variable             | Overrides                |
-| -------------------- | ------------------------ |
-| `ADMIN_SERVER_HOST`  | `admin.server.host`      |
-| `ADMIN_SERVER_PORT`  | `admin.server.port`      |
-| `ADMIN_COOKIE_DOMAIN`| `admin.session.cookieDomain` |
-| `ADMIN_COOKIE_SECURE`| `admin.session.cookieSecure` |
+| Variable              | Overrides                    |
+| --------------------- | ---------------------------- |
+| `ADMIN_SERVER_HOST`   | `admin.server.host`          |
+| `ADMIN_SERVER_PORT`   | `admin.server.port`          |
+| `ADMIN_COOKIE_DOMAIN` | `admin.session.cookieDomain` |
+| `ADMIN_COOKIE_SECURE` | `admin.session.cookieSecure` |
 
 ### Config Load List
 

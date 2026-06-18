@@ -150,12 +150,12 @@ state.
 - Input records carry NO server-assigned identity or timestamp and are each the
   SOLE creation input for their aggregate: `NewUser` (fields pre-validated;
   `displayName` is the only nullable field, and `isAdmin` is the only field with
-  a default — it defaults `false` so ordinary, non-privileged user creation needs
-  no change at existing construction sites, and an admin is minted only by an
-  explicit `isAdmin = true`), `NewStudent` (validated `PartialDate`), `NewConvo`,
-  `NewConvoRequest`, `NewConvoResponse`. `NewSession` additionally carries a
-  RELATIVE `expiration: Duration` (a TTL the DAO converts to an absolute
-  `expires_at`), not an absolute timestamp; a null `userId` marks an
+  a default — it defaults `false` so ordinary, non-privileged user creation
+  needs no change at existing construction sites, and an admin is minted only by
+  an explicit `isAdmin = true`), `NewStudent` (validated `PartialDate`),
+  `NewConvo`, `NewConvoRequest`, `NewConvoResponse`. `NewSession` additionally
+  carries a RELATIVE `expiration: Duration` (a TTL the DAO converts to an
+  absolute `expires_at`), not an absolute timestamp; a null `userId` marks an
   anonymous/pre-auth session.
 - No model in this package carries `rowCreatedAt`/`rowUpdatedAt`. The
   `row_created_at`/`row_updated_at` Postgres columns and their triggers REMAIN
@@ -436,7 +436,7 @@ actually has. There MUST be no welded multi-capability supertype.
       Added the mutable `isAdmin: Boolean` field to the `User` entity and its
       `UserVersion` snapshot (captured in history like any other versioned field
       via the existing live-entity / version-row mirroring), and
-      `isAdmin: Boolean = false` to the `NewUser` input record (default chosen to
-      leave existing non-privileged construction sites unchanged). Touched no
+      `isAdmin: Boolean = false` to the `NewUser` input record (default chosen
+      to leave existing non-privileged construction sites unchanged). Touched no
       other model: `StudentVersion` predates this RFC (introduced by RFC-31,
       revised by RFC-36) and was unchanged.

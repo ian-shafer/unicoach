@@ -35,8 +35,8 @@ descriptor's typed handlers, which are backed by the existing DAOs.
   is added by registering a descriptor, never by editing the router.
 - Route registration for create, update, undelete, and delete MUST be
   **conditional on the corresponding handler being non-null**. When
-  `create`/`update`/`delete`/`undelete` is null the route MUST NOT be registered.
-  The mutation handlers (`POST /{slug}`, `POST /{slug}/{id}`,
+  `create`/`update`/`delete`/`undelete` is null the route MUST NOT be
+  registered. The mutation handlers (`POST /{slug}`, `POST /{slug}/{id}`,
   `POST /{slug}/{id}/delete`, `GET /{slug}/{id}/edit`) additionally re-check the
   handler at request time and MUST return a not-found page if it is absent.
 - Only resources with `topLevel == true` MUST receive the dashboard nav entry
@@ -56,15 +56,16 @@ descriptor's typed handlers, which are backed by the existing DAOs.
   canonical detail link, never a nested path.
 - `EMBEDDED_ENTITY` is the **sole** kind exempt from owning any standalone URL:
   it MUST NOT have a list route or a detail route. Its mutating actions are
-  nested under its owner via `registerExtraRoutes`. Its `get`/`list` members MUST
-  still be implemented (the owner's `Embedded` edge calls `get` to render the
-  inline panel) but MUST NEVER be bound to a route.
+  nested under its owner via `registerExtraRoutes`. Its `get`/`list` members
+  MUST still be implemented (the owner's `Embedded` edge calls `get` to render
+  the inline panel) but MUST NEVER be bound to a route.
 
 ### Soft-delete visibility
 
 - Admin reads MUST surface soft-deleted rows. List reads MUST pass
-  `SoftDeleteScope.ALL`; detail and edit reads MUST pass `includeDeleted = true`.
-  A soft-deleted row therefore remains visible and is marked via `isDeleted`.
+  `SoftDeleteScope.ALL`; detail and edit reads MUST pass
+  `includeDeleted = true`. A soft-deleted row therefore remains visible and is
+  marked via `isDeleted`.
 - An `undelete` route MUST be offered only when the descriptor supplies a
   non-null `undelete` handler; resources without a restore path MUST NOT expose
   one.
@@ -86,8 +87,8 @@ descriptor's typed handlers, which are backed by the existing DAOs.
   descriptor's typed handlers, which the descriptor backs with the appropriate
   DAOs. The engine consumes only `Result`, domain rows, the rendered `cells`
   map, and resolved `EdgePanel`s.
-- Edge resolution MUST be performed inside the descriptor (`resolveEdges`), which
-  owns the foreign keys and DAOs, and MUST return flat, type-erased
+- Edge resolution MUST be performed inside the descriptor (`resolveEdges`),
+  which owns the foreign keys and DAOs, and MUST return flat, type-erased
   [`EdgePanel`](./EdgePanel.kt)s. The router MUST NOT carry the descriptor's
   `ROW`/`ID` generics into edge rendering — the type erasure at the `EdgePanel`
   boundary is deliberate, keeping the generic router free of per-resource type
@@ -95,8 +96,8 @@ descriptor's typed handlers, which are backed by the existing DAOs.
 
 ### Identifier handling
 
-- A path id segment MUST be parsed via the descriptor's `parseId`; a malformed id
-  (null parse) MUST resolve to a not-found page, never a server error. The
+- A path id segment MUST be parsed via the descriptor's `parseId`; a malformed
+  id (null parse) MUST resolve to a not-found page, never a server error. The
   canonical path segment of an id MUST be produced via `idToPath`, the declared
   inverse of `parseId` — redirect targets after create/update/undelete MUST be
   built with `idToPath`, never by stringifying the id directly.
@@ -104,15 +105,15 @@ descriptor's typed handlers, which are backed by the existing DAOs.
 ### Sensitive fields
 
 - A field marked `sensitive` MUST be redacted in views, MUST be absent from all
-  forms (create and edit), and MUST NEVER be logged. This holds regardless of the
-  field's `editable` flag.
+  forms (create and edit), and MUST NEVER be logged. This holds regardless of
+  the field's `editable` flag.
 
 ### Create-only extra inputs
 
 - `createExtraInputs` MUST appear only on the create form and MUST be passed
   through the submitted form map to the `create` handler. They MUST NOT be
-  rendered in detail or edit views — they are non-stored inputs (e.g. a plaintext
-  password the handler hashes), never persisted columns.
+  rendered in detail or edit views — they are non-stored inputs (e.g. a
+  plaintext password the handler hashes), never persisted columns.
 
 ### Update concurrency
 
@@ -124,10 +125,10 @@ descriptor's typed handlers, which are backed by the existing DAOs.
 ### Operation/kind matrix is descriptor-owned
 
 - The mapping from `AdminKind` to the offered operation set (which of
-  create/update/delete/undelete are non-null, and whether delete is soft or hard)
-  MUST be expressed by each descriptor's handler nullability — the engine MUST
-  NOT enforce kind-specific operation rules itself. The engine's only kind-aware
-  behavior is the `EMBEDDED_ENTITY` route exemption above.
+  create/update/delete/undelete are non-null, and whether delete is soft or
+  hard) MUST be expressed by each descriptor's handler nullability — the engine
+  MUST NOT enforce kind-specific operation rules itself. The engine's only
+  kind-aware behavior is the `EMBEDDED_ENTITY` route exemption above.
 
 ---
 
@@ -140,64 +141,64 @@ The per-table descriptor. `ROW` is the domain model, `ID` its typed id.
 - **Declaration members** (`slug`, `title`, `kind`, `topLevel`, `fields`,
   `edges`, `createExtraInputs`): pure data read by the router and renderers; no
   I/O.
-- **`rowId`, `cells`, `isDeleted`, `parseId`, `idToPath`**: pure projections over
-  a row or id; no I/O. `cells` produces the `field name -> rendered string` map
-  used for both list/detail tables and pre-filling the edit form. `idToPath` is
-  the exact inverse of `parseId`.
+- **`rowId`, `cells`, `isDeleted`, `parseId`, `idToPath`**: pure projections
+  over a row or id; no I/O. `cells` produces the `field name -> rendered string`
+  map used for both list/detail tables and pre-filling the edit form. `idToPath`
+  is the exact inverse of `parseId`.
 - **`list(db, limit, offset, scope)`**: reads a page of rows via a DAO.
-  - *Side effects*: DB read only.
-  - *Errors*: returns `Result.failure` carrying the DAO's typed exception (e.g.
+  - _Side effects_: DB read only.
+  - _Errors_: returns `Result.failure` carrying the DAO's typed exception (e.g.
     `NotFoundException`, `DatabaseException`); the engine renders it via the
     shared error responders.
-  - *Idempotent*: yes (read-only).
+  - _Idempotent_: yes (read-only).
 - **`get(db, id, includeDeleted)`**: reads one row via a DAO.
-  - *Side effects*: DB read only.
-  - *Errors*: `Result.failure` with the DAO's exception (notably
+  - _Side effects_: DB read only.
+  - _Errors_: `Result.failure` with the DAO's exception (notably
     `NotFoundException` for an unknown/out-of-scope id).
-  - *Idempotent*: yes.
-- **`create(db, form)?`**: null when the kind offers no create. Hashes/transforms
-  non-stored inputs as needed and delegates to a DAO create.
-  - *Side effects*: one DB write (insert, firing the table's triggers).
-  - *Errors*: `Result.failure` with a constraint exception
+  - _Idempotent_: yes.
+- **`create(db, form)?`**: null when the kind offers no create.
+  Hashes/transforms non-stored inputs as needed and delegates to a DAO create.
+  - _Side effects_: one DB write (insert, firing the table's triggers).
+  - _Errors_: `Result.failure` with a constraint exception
     (`DuplicateEmailException`, `ConstraintViolationException`) or
-    `IllegalArgumentException` for bad input → form re-rendered with the message;
-    other failures → DAO-error page.
-  - *Idempotent*: no.
+    `IllegalArgumentException` for bad input → form re-rendered with the
+    message; other failures → DAO-error page.
+  - _Idempotent_: no.
 - **`update(db, id, form)?`**: null when the kind offers no update. Performs the
   versioned write under OCC.
-  - *Side effects*: one DB write (versioned update; bumps version, captures
+  - _Side effects_: one DB write (versioned update; bumps version, captures
     history per the table's triggers).
-  - *Errors*: `ConcurrentModificationException` → conflict page; constraint /
+  - _Errors_: `ConcurrentModificationException` → conflict page; constraint /
     `IllegalArgumentException` → form re-render; else DAO-error page.
-  - *Idempotent*: no (OCC — a stale `version` conflicts).
+  - _Idempotent_: no (OCC — a stale `version` conflicts).
 - **`delete(db, id)?`**: null when the kind offers no delete. Soft or hard per
   the descriptor's backing DAO.
-  - *Side effects*: one DB write (sets `deleted_at` + bumps version for soft;
+  - _Side effects_: one DB write (sets `deleted_at` + bumps version for soft;
     physical `DELETE` for hard).
-  - *Errors*: `Result.failure` → DAO-error page.
-  - *Idempotent*: no.
+  - _Errors_: `Result.failure` → DAO-error page.
+  - _Idempotent_: no.
 - **`undelete(db, id)?`**: null unless restore is offered (soft-delete entities
   only). Restores a soft-deleted row.
-  - *Side effects*: one DB write.
-  - *Idempotent*: no.
+  - _Side effects_: one DB write.
+  - _Idempotent_: no.
 - **`resolveEdges(db, row)`**: resolves declared `edges` into flat `EdgePanel`s
   using the descriptor's DAOs/foreign keys. Default returns an empty list.
-  - *Side effects*: DB reads (one or more per edge).
-  - *Errors*: `Result.failure` → DAO-error page on the detail route.
-  - *Idempotent*: yes (read-only).
+  - _Side effects_: DB reads (one or more per edge).
+  - _Errors_: `Result.failure` → DAO-error page on the detail route.
+  - _Idempotent_: yes (read-only).
 - **`registerExtraRoutes(scope, db)`**: default no-op. Registers owner-nested
   action endpoints (e.g. an embedded entity's nested create/update/delete) into
   the given gated route scope.
-  - *Side effects*: route-table registration only; no I/O at call time.
-  - *Idempotent*: no — calling twice installs duplicate routes.
+  - _Side effects_: route-table registration only; no I/O at call time.
+  - _Idempotent_: no — calling twice installs duplicate routes.
 
 ### `AdminKind` — [`AdminResource.kt`](./AdminResource.kt)
 
 The taxonomy (`ENTITY`, `EMBEDDED_ENTITY`, `IMMUTABLE_ENTITY`, `LOG`,
 `NON_ENTITY`, `SUPPORT`) classifying a resource. Its single engine-observable
 effect is the `EMBEDDED_ENTITY` route exemption (see Invariants); the concrete
-operation set per kind is realized through handler nullability on the descriptor,
-not branched on here.
+operation set per kind is realized through handler nullability on the
+descriptor, not branched on here.
 
 ### `AdminField` / `FieldType` — [`AdminField.kt`](./AdminField.kt)
 
@@ -217,16 +218,16 @@ edge renderer and is resolved by the owning descriptor's `resolveEdges` into an
 - **`HasMany`** — an inline table of child rows, each linking to its own
   `targetSlug` detail URL.
 - **`History`** — a read-only version-history panel for the current row.
-- **`Embedded`** — an owned (`EMBEDDED_ENTITY`) resource rendered inline; carries
-  the embedded `AdminResource`. The embedded resource has no standalone URL; its
-  actions nest under the owner. Pure declarative data; no behavior.
+- **`Embedded`** — an owned (`EMBEDDED_ENTITY`) resource rendered inline;
+  carries the embedded `AdminResource`. The embedded resource has no standalone
+  URL; its actions nest under the owner. Pure declarative data; no behavior.
 
 ### `EdgePanel` — [`EdgePanel.kt`](./EdgePanel.kt)
 
 The type-erased, render-ready output of edge resolution. Resolving inside the
 descriptor (typed, DAO-aware) and rendering from this flat panel keeps the
-"engine renders from the descriptor" boundary without leaking generics across the
-router. Variants:
+"engine renders from the descriptor" boundary without leaking generics across
+the router. Variants:
 
 - **`ParentLink`** — a canonical detail `href` plus a one-line summary.
 - **`ParentAbsent`** — a null parent rendered as an absence note (e.g. an
@@ -249,8 +250,8 @@ resource list.
 - **`topLevel`**: the subset with `topLevel == true` (nav + list-route members).
 - **`bySlug(slug)`**: returns the descriptor for a canonical slug, or `null` if
   unknown.
-- *Side effects*: none — pure in-memory lookup.
-- *Idempotent*: yes.
+- _Side effects_: none — pure in-memory lookup.
+- _Idempotent_: yes.
 - Slug uniqueness: descriptors are associated by `slug`; a duplicate slug in the
   construction list collapses to the last entry (last-wins), so slugs MUST be
   unique across registered resources.
@@ -262,17 +263,17 @@ resource, and each resource's owner-nested extra routes.
 
 - **Routes registered** (per top-level resource, conditionally):
 
-  | Route                      | Condition          | Effect                                              |
-  | -------------------------- | ------------------ | --------------------------------------------------- |
-  | `GET /`                    | always             | Dashboard: nav of top-level sections                |
-  | `GET /{slug}`              | `topLevel`         | List page (table of `cells`; rows link to detail)   |
-  | `GET /{slug}/new`          | `create != null`   | Create form (`fields` + `createExtraInputs`)        |
-  | `POST /{slug}`             | `create != null`   | Create → redirect to new row's canonical detail      |
-  | `GET /{slug}/{id}`         | always             | Detail page (field table + resolved edge panels)     |
-  | `GET /{slug}/{id}/edit`    | always*            | Edit form; missing id/`update` → not-found page      |
-  | `POST /{slug}/{id}`        | always*            | Update → redirect to detail; OCC conflict → conflict page |
-  | `POST /{slug}/{id}/delete` | always*            | Delete → redirect to list; missing id/`delete` → not-found |
-  | `POST /{slug}/{id}/undelete`| `undelete != null`| Undelete → redirect to detail                       |
+  | Route                        | Condition          | Effect                                                     |
+  | ---------------------------- | ------------------ | ---------------------------------------------------------- |
+  | `GET /`                      | always             | Dashboard: nav of top-level sections                       |
+  | `GET /{slug}`                | `topLevel`         | List page (table of `cells`; rows link to detail)          |
+  | `GET /{slug}/new`            | `create != null`   | Create form (`fields` + `createExtraInputs`)               |
+  | `POST /{slug}`               | `create != null`   | Create → redirect to new row's canonical detail            |
+  | `GET /{slug}/{id}`           | always             | Detail page (field table + resolved edge panels)           |
+  | `GET /{slug}/{id}/edit`      | always*            | Edit form; missing id/`update` → not-found page            |
+  | `POST /{slug}/{id}`          | always*            | Update → redirect to detail; OCC conflict → conflict page  |
+  | `POST /{slug}/{id}/delete`   | always*            | Delete → redirect to list; missing id/`delete` → not-found |
+  | `POST /{slug}/{id}/undelete` | `undelete != null` | Undelete → redirect to detail                              |
 
   *Registered unconditionally but re-checks handler nullability at request time
   and returns a not-found page when absent. Create routes are gated at
@@ -282,9 +283,9 @@ resource, and each resource's owner-nested extra routes.
   handlers perform DB reads/writes through descriptor handlers and emit HTML or
   redirects. No SQL is built here.
 - **Error handling**: handler `Result.failure` is dispatched to the shared
-  responders — not-found, conflict, constraint/validation (form re-render), and a
-  generic DAO-error page — never an unhandled throw to the client. A malformed id
-  yields a not-found page.
+  responders — not-found, conflict, constraint/validation (form re-render), and
+  a generic DAO-error page — never an unhandled throw to the client. A malformed
+  id yields a not-found page.
 - **Idempotency**: registration is not idempotent (duplicate routes on a second
   call). The registered `GET` handlers are read-only/idempotent; `POST` mutation
   handlers are not (subject to OCC for updates).

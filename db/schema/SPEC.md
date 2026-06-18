@@ -103,10 +103,10 @@ Entity tables enable additional capabilities via **mix-ins**:
 - **Version history**: Adds a sibling `{table}_versions` table with a
   `(id, version)` composite primary key and a `log_{table}_version()` AFTER
   trigger. Requires OCC versioning. The versions table MUST mirror the entity's
-  full domain column set, and `log_{table}_version()` MUST copy every such column
-  into the history row; adding a domain column to an entity therefore obligates
-  the same column on its versions table and in its log function, or history
-  silently drops it.
+  full domain column set, and `log_{table}_version()` MUST copy every such
+  column into the history row; adding a domain column to an entity therefore
+  obligates the same column on its versions table and in its log function, or
+  history silently drops it.
 - **Logical deletes**: Adds `deleted_at TIMESTAMPTZ NULL`. Physical deletions
   are blocked by `prevent_physical_delete()`. Unique indexes MUST use partial
   predicates (`WHERE deleted_at IS NULL`).
@@ -160,9 +160,9 @@ subsection.
 - **Admin privilege**: `is_admin` is the single source of truth for
   administrative authority. It is a **normal mutable domain column** —
   deliberately NOT covered by `prevent_immutable_updates()` — so granting or
-  revoking admin is an ordinary in-place versioned UPDATE (a new `version`, not a
-  new row), captured in `users_versions` like any other field change. Privilege
-  state MUST NOT be modeled as a separate grants/roles table.
+  revoking admin is an ordinary in-place versioned UPDATE (a new `version`, not
+  a new row), captured in `users_versions` like any other field change.
+  Privilege state MUST NOT be modeled as a separate grants/roles table.
 - **Version history**: a `users` row MUST NOT be physically deleted while
   `users_versions` rows cite it (`ON DELETE RESTRICT` on the version FK). The
   version rows themselves carry no DB-level delete guard; their preservation is

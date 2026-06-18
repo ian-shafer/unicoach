@@ -75,14 +75,15 @@ updates and are captured in `users_versions` like every other field change.
 **Login.** `admin-server` serves an unauthenticated `GET /login` HTML form and a
 `POST /login` handler that calls
 `AuthService.login(email, password, oldCookieToken = null, sessionExpirationSeconds = session.expirationSeconds, userAgent, initialIp)`,
-sourcing `sessionExpirationSeconds` from `AdminConfig` and `userAgent`/`initialIp`
-from the request. On `LoginResult.Success(user, token)` it sets an admin session
-cookie (name/attributes from `AdminConfig`) carrying the raw `token` and redirects
-to `/`. Every non-`Success` variant (`UserNotFound`, `PasswordMismatch`,
-`PasswordNotSet`, `InvalidEmail`) re-renders the login form with a single generic
-"invalid email or password" message (no variant disclosure). `POST /logout` calls
-`AuthService.logout(...)` and clears the cookie. Login authenticates _any_ valid
-user; authorization is enforced separately by the gate.
+sourcing `sessionExpirationSeconds` from `AdminConfig` and
+`userAgent`/`initialIp` from the request. On `LoginResult.Success(user, token)`
+it sets an admin session cookie (name/attributes from `AdminConfig`) carrying
+the raw `token` and redirects to `/`. Every non-`Success` variant
+(`UserNotFound`, `PasswordMismatch`, `PasswordNotSet`, `InvalidEmail`)
+re-renders the login form with a single generic "invalid email or password"
+message (no variant disclosure). `POST /logout` calls `AuthService.logout(...)`
+and clears the cookie. Login authenticates _any_ valid user; authorization is
+enforced separately by the gate.
 
 **Gate.** A Ktor plugin runs on every request except `/login`, `/logout`, and
 `/healthz`. It reads the admin cookie, hashes it via `TokenHash.fromRawToken`,
@@ -282,9 +283,9 @@ surface adds list/version methods the app never needed.
   `fun findById(session: SqlSession, id: SessionId): Result<Session>`,
   `fun listByUser(session: SqlSession, userId: UserId, limit: Int, offset: Int): Result<List<Session>>`,
   `fun listAll(session: SqlSession, limit: Int, offset: Int): Result<List<Session>>`,
-  `fun deleteById(session: SqlSession, id: SessionId): Result<Unit>`.
-  `sessions` has no `deleted_at` column, so these take no `SoftDeleteScope`; the
-  sessions resource ignores the `scope` argument the engine passes to
+  `fun deleteById(session: SqlSession, id: SessionId): Result<Unit>`. `sessions`
+  has no `deleted_at` column, so these take no `SoftDeleteScope`; the sessions
+  resource ignores the `scope` argument the engine passes to
   `AdminResource.list`.
 
 `SoftDeleteScope.ALL` already exists. List methods order by `created_at DESC`
@@ -393,9 +394,9 @@ startup, mirroring `DatabaseConfig.from`.
   message and sets no cookie.
 - **Users list/detail.** Seeded users render in `/user`; `/user/{id}` shows
   fields with `password_hash` redacted and absent from the edit form.
-- **List pagination.** Seeding more than one page of users renders a "next"
-  link on `/user`; following it (`?offset=`) shows the second page, and a
-  "previous" link appears; the surplus `limit + 1` row is not rendered.
+- **List pagination.** Seeding more than one page of users renders a "next" link
+  on `/user`; following it (`?offset=`) shows the second page, and a "previous"
+  link appears; the surplus `limit + 1` row is not rendered.
 - **Users create.** `POST /user` with email/name/password creates a loginable
   user (password verifies via `Argon2Hasher`); duplicate email re-renders the
   form with an error.

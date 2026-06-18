@@ -4,11 +4,11 @@
 
 The server-side HTML rendering layer of the admin website. It turns a resolved
 **resource descriptor** (`AdminResource`, `AdminField`, `EdgePanel` from the
-engine) plus already-fetched row data into `kotlinx.html` markup: the shared page
-chrome (nav sidebar + content), list tables, detail pages (field table + one
-panel per edge), field-typed create/edit forms, and standalone HTML error pages.
-It is the view layer only — it holds no domain logic, reads no database, and
-mutates no state.
+engine) plus already-fetched row data into `kotlinx.html` markup: the shared
+page chrome (nav sidebar + content), list tables, detail pages (field table +
+one panel per edge), field-typed create/edit forms, and standalone HTML error
+pages. It is the view layer only — it holds no domain logic, reads no database,
+and mutates no state.
 
 ---
 
@@ -40,22 +40,22 @@ mutates no state.
 - The form input emitted for a field MUST be determined solely by its
   `FieldType`: `JSON` and `MULTILINE` render a `<textarea>`; `BOOL` a checkbox
   whose checked state reflects the current value `"true"` and whose submitted
-  value is `"true"`; `ENUM` a `<select>` populated from the field's
-  `enumValues` with the current value pre-selected; `INT` a numeric input; every
-  other type a typed text input. A `JSON` field's textarea MUST carry the raw
-  JSON string verbatim; well-formedness is validated before submit by the calling
-  handler, not by this layer.
-- The form renderer MUST emit inputs only for fields that are both `editable` and
-  non-`sensitive`; read-only fields (id, timestamps, version) are never rendered
-  as editable inputs.
+  value is `"true"`; `ENUM` a `<select>` populated from the field's `enumValues`
+  with the current value pre-selected; `INT` a numeric input; every other type a
+  typed text input. A `JSON` field's textarea MUST carry the raw JSON string
+  verbatim; well-formedness is validated before submit by the calling handler,
+  not by this layer.
+- The form renderer MUST emit inputs only for fields that are both `editable`
+  and non-`sensitive`; read-only fields (id, timestamps, version) are never
+  rendered as editable inputs.
 
 ### Form construction
 
 - An edit form MUST carry the row's current `version` in a hidden input named
   `version` so the engine can perform an optimistic-concurrency (OCC) update. A
   create form (no version supplied) MUST NOT emit the hidden version input.
-- All forms MUST submit via HTTP `POST` to the action URL supplied by the caller;
-  the render layer never decides the target endpoint.
+- All forms MUST submit via HTTP `POST` to the action URL supplied by the
+  caller; the render layer never decides the target endpoint.
 - Create-only auxiliary inputs (values not backed by a stored field, e.g. a
   plaintext password) MUST be injected only through the caller-supplied `extra`
   hook, never inferred by the renderer.
@@ -77,25 +77,26 @@ mutates no state.
 - The detail view MUST offer the delete action only when the descriptor exposes
   a `delete` handler and the row is not already deleted, and MUST offer the
   undelete action only when the descriptor exposes an `undelete` handler and the
-  row is deleted. These two actions are mutually exclusive for a given row state.
+  row is deleted. These two actions are mutually exclusive for a given row
+  state.
 
 ### Pager
 
-- The list view MUST render a "previous" link only when `offset > 0` and a "next"
-  link only when the engine reports a surplus row (`hasNext`). The render layer
-  computes the previous offset by clamping `offset - pageSize` at zero and the
-  next offset as `offset + pageSize`; it MUST NOT compute totals or page counts
-  (no `COUNT(*)` is available to it).
+- The list view MUST render a "previous" link only when `offset > 0` and a
+  "next" link only when the engine reports a surplus row (`hasNext`). The render
+  layer computes the previous offset by clamping `offset - pageSize` at zero and
+  the next offset as `offset + pageSize`; it MUST NOT compute totals or page
+  counts (no `COUNT(*)` is available to it).
 
 ### Edge panels
 
 - The detail view MUST render exactly one panel per resolved `EdgePanel`, in the
   order supplied. Each panel variant has a fixed presentation: a parent link
-  renders its summary as a hyperlink; an absent parent renders a fixed
-  "(none)" note; a table panel renders its columns and rows (an empty table
-  collapses to a "(none)" note); an embedded panel renders an inline create form
-  when the owned entity is absent, otherwise its field table plus an inline
-  edit form, a delete action, and any nested panels.
+  renders its summary as a hyperlink; an absent parent renders a fixed "(none)"
+  note; a table panel renders its columns and rows (an empty table collapses to
+  a "(none)" note); an embedded panel renders an inline create form when the
+  owned entity is absent, otherwise its field table plus an inline edit form, a
+  delete action, and any nested panels.
 - Embedded and nested panels MUST address the owned entity's mutations through
   the owner-nested action paths carried on the `Embedded` panel
   (`ownerSlug`/`ownerId`), never through a standalone entity URL.
@@ -128,8 +129,8 @@ emits the markup twice."
 
 ### `HTML.adminPage(pageTitle, nav, topLevelResources, content)` — [`Layout.kt`](./Layout.kt)
 
-- **Behavior**: Emits the page `<head>` (title + inline stylesheet) and `<body>`.
-  When `nav` is true, emits the sidebar (dashboard link, one link per
+- **Behavior**: Emits the page `<head>` (title + inline stylesheet) and
+  `<body>`. When `nav` is true, emits the sidebar (dashboard link, one link per
   `topLevelResources` entry to `/{slug}`, and a `POST /logout` button), then the
   `<main>` content. When `nav` is false, emits only `<main>` content — the
   standalone form used by login and error pages.
@@ -168,8 +169,8 @@ emits the markup twice."
 - **Behavior**: Emits a `POST` form to `action`. When `version` is non-null,
   emits a hidden `version` input first. Emits one typed input per field that is
   both `editable` and non-`sensitive`, pre-filled from `values[field.name]`.
-  Invokes the optional `extra` builder for create-only auxiliary inputs, then the
-  submit button.
+  Invokes the optional `extra` builder for create-only auxiliary inputs, then
+  the submit button.
 - **Error handling**: This is the re-render target on a duplicate/constraint
   failure — callers pass the rejected `values` back through to preserve the
   operator's input; the renderer itself raises nothing.
@@ -177,8 +178,8 @@ emits the markup twice."
 
 ### `ApplicationCall.respondErrorPage(status, heading, detail)` — [`ErrorPages.kt`](./ErrorPages.kt)
 
-- **Behavior**: Writes a standalone (no-nav) HTML page with the given heading and
-  detail at the given HTTP status.
+- **Behavior**: Writes a standalone (no-nav) HTML page with the given heading
+  and detail at the given HTTP status.
 - **Side effects**: Writes exactly one HTTP response. No DB access.
 
 ### `ApplicationCall.respondNotFound(detail)` / `respondConflict()` / `respondServiceUnavailable()` — [`ErrorPages.kt`](./ErrorPages.kt)
@@ -195,25 +196,26 @@ emits the markup twice."
   `ConcurrentModificationException` → 409 reload page, `TransientError` → 503,
   and any other throwable → 503. Centralization keeps every write path's
   error-page contract identical.
-- **Error handling**: This function *consumes* a `Throwable` and renders a page;
+- **Error handling**: This function _consumes_ a `Throwable` and renders a page;
   it never re-throws. It does NOT handle duplicate/constraint violations — those
   are re-rendered into the originating form by the calling handler, not routed
   here.
 - **Side effects**: One HTTP response.
 - **Note**: This is the layer's only inbound reference to DAO exception types
-  (`NotFoundException`, `ConcurrentModificationException`) and to `TransientError`
-  — used solely to classify an already-raised failure into a status code, not to
-  perform persistence.
+  (`NotFoundException`, `ConcurrentModificationException`) and to
+  `TransientError` — used solely to classify an already-raised failure into a
+  status code, not to perform persistence.
 
 ---
 
 ## IV. Infrastructure & Environment
 
-- **`io.ktor:ktor-server-html-builder`** — supplies `ApplicationCall.respondHtml`,
-  used by the error-page helpers to write `kotlinx.html` documents as HTTP
-  responses. This is the render layer's only Ktor coupling, and it is confined to
-  `ErrorPages.kt`; the list/detail/form/layout builders are framework-agnostic
-  `kotlinx.html` extensions.
+- **`io.ktor:ktor-server-html-builder`** — supplies
+  `ApplicationCall.respondHtml`, used by the error-page helpers to write
+  `kotlinx.html` documents as HTTP responses. This is the render layer's only
+  Ktor coupling, and it is confined to `ErrorPages.kt`; the
+  list/detail/form/layout builders are framework-agnostic `kotlinx.html`
+  extensions.
 - **`kotlinx.html`** — the HTML DSL all view builders target.
 - No environment variables or config keys are read by this directory. Bind host,
   cookie, and session settings live in `admin-server.conf` / `AdminConfig`,

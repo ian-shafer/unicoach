@@ -10,8 +10,8 @@ descriptors that configure the admin engine for the v1 tables: `users`
 table's kind, its allowed operation set, its sensitive columns, its relationship
 edges, and the exact write path each operation takes through the typed DAOs. The
 generic routing, rendering, and paging machinery lives in
-[`../engine`](../engine); this directory only declares *what* the engine does
-for these three tables, never *how* the engine does it.
+[`../engine`](../engine); this directory only declares _what_ the engine does
+for these three tables, never _how_ the engine does it.
 
 ## II. Invariants
 
@@ -39,9 +39,9 @@ for these three tables, never *how* the engine does it.
 - `StudentsResource.topLevel` MUST be `false`; the resource MUST NOT acquire a
   standalone `/student` list or `/student/{id}` detail route. Its observable
   contract is that `GET /student` and `GET /student/{id}` both resolve to 404.
-- `StudentsResource.list` MUST return an empty list (it is never bound to a
-  list route); `StudentsResource.get` exists solely so the owner's embedded
-  panel can read the row.
+- `StudentsResource.list` MUST return an empty list (it is never bound to a list
+  route); `StudentsResource.get` exists solely so the owner's embedded panel can
+  read the row.
 - All `students` mutations MUST be reached through owner-nested action endpoints
   registered by `UsersResource` under `/user/{id}/student[...]`, never under a
   `/student` path. These are action endpoints (POST-only, redirect back to the
@@ -60,7 +60,8 @@ for these three tables, never *how* the engine does it.
 
 - Every write (`create`, `update`, `delete`, `undelete`, and the owner-nested
   `students` actions) MUST delegate to a typed DAO method inside a
-  `Database.withConnection` transaction. This directory MUST NEVER construct SQL.
+  `Database.withConnection` transaction. This directory MUST NEVER construct
+  SQL.
 - The `users` update path MUST enforce optimistic concurrency by carrying the
   **form-supplied** `version` into the row handed to the DAO update, so a stale
   version fails the DAO's versioned write rather than silently overwriting.
@@ -71,9 +72,9 @@ for these three tables, never *how* the engine does it.
 
 - Create MUST hash the submitted plaintext password via the injected
   `Argon2Hasher` and build `AuthMethod.Password(...)` directly, then call the
-  users-create DAO method. It
-  MUST NOT route through `AuthService.register`, because registration also mints
-  a session — an unwanted side effect for an admin-created row.
+  users-create DAO method. It MUST NOT route through `AuthService.register`,
+  because registration also mints a session — an unwanted side effect for an
+  admin-created row.
 - Create MUST reject blank/invalid email, name, display name, or a blank
   password before touching the DAO, surfacing each as a field-level failure.
 - A duplicate email MUST surface the DAO's `DuplicateEmailException` as a
@@ -103,7 +104,7 @@ for these three tables, never *how* the engine does it.
 - A transient DAO failure while resolving any edge panel (the embedded student,
   either version history, or the sessions list) MUST propagate as a failed
   `Result` so the engine renders the correct error page, never an empty panel
-  that masks the fault. A *missing* embedded student profile is a success — a
+  that masks the fault. A _missing_ embedded student profile is a success — a
   "no profile yet" create panel — distinguished from a transient fault by the
   DAO's `NotFoundException`.
 
@@ -130,23 +131,23 @@ for these three tables, never *how* the engine does it.
   delete. Idempotent: no.
 - **undelete** — reads the current version, then restores via the users-undelete
   DAO. Side effects: one versioned restore. Idempotent: no.
-- **resolveEdges** — builds the embedded student panel, a sessions table (via the
-  per-user sessions list DAO), and a `users_versions` history table (via the
-  user-versions DAO). Side effects: DB reads only. Errors: any DAO fault → failed
-  `Result`. Idempotent: yes.
+- **resolveEdges** — builds the embedded student panel, a sessions table (via
+  the per-user sessions list DAO), and a `users_versions` history table (via the
+  user-versions DAO). Side effects: DB reads only. Errors: any DAO fault →
+  failed `Result`. Idempotent: yes.
 - **registerExtraRoutes** — registers the three owner-nested `students` action
   endpoints (below) under the engine's gated route scope.
 
 ### Owner-nested `students` actions (registered by `UsersResource`)
 
-- **`POST /user/{id}/student`** — parses the owner id and the ISO
-  `PartialDate` graduation field, then creates the student via the
-  students-create DAO. Side effects: one row inserted. Errors: bad owner id →
-  redirect to `/user`; malformed date → redirect to the owner detail; DAO fault →
-  rendered DAO-error page. On success: redirect to the owner detail.
-- **`POST /user/{id}/student/update`** — re-reads the owner's student
-  (including deleted), overlays the new graduation date, calls the
-  students-update DAO. Side effects: one versioned update. Errors: as above.
+- **`POST /user/{id}/student`** — parses the owner id and the ISO `PartialDate`
+  graduation field, then creates the student via the students-create DAO. Side
+  effects: one row inserted. Errors: bad owner id → redirect to `/user`;
+  malformed date → redirect to the owner detail; DAO fault → rendered DAO-error
+  page. On success: redirect to the owner detail.
+- **`POST /user/{id}/student/update`** — re-reads the owner's student (including
+  deleted), overlays the new graduation date, calls the students-update DAO.
+  Side effects: one versioned update. Errors: as above.
 - **`POST /user/{id}/student/delete`** — re-reads the owner's student, calls the
   students-delete DAO with its current version (soft delete). Side effects: one
   versioned soft delete. Errors: as above.

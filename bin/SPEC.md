@@ -268,13 +268,13 @@ is defined by the logic in each script.
 
 Current daemons: `rest-server`, `queue-worker`, `admin-server`.
 
-| Script                  | Behavior                                                                                                                                 |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists. |
-| `<svc>-down`            | Delegates to `daemon-down`.                                                                                                              |
-| `<svc>-bounce`          | Delegates to `daemon-bounce`.                                                                                                            |
+| Script                  | Behavior                                                                                                                                            |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists.            |
+| `<svc>-down`            | Delegates to `daemon-down`.                                                                                                                         |
+| `<svc>-bounce`          | Delegates to `daemon-bounce`.                                                                                                                       |
 | `<svc>-check`           | Runs the service's health check — an HTTP `GET /healthz` probe (`rest-server`, `admin-server`) or PID liveness via `daemon-check` (`queue-worker`). |
-| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                         |
+| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                                    |
 
 `admin-server-check` and `admin-server-wait-for-health` probe `GET /healthz` on
 `ADMIN_SERVER_PORT` (default `8081`) — a dedicated port variable, distinct from
@@ -288,8 +288,7 @@ alongside the rest-server.
 `bin/build` builds all Kotlin source. It delegates to per-module
 `bin/build-<module>` scripts in dependency order:
 `common → db → service → queue → net → rest-server → queue-worker → admin-server`.
-Fast-fails
-on the first module failure.
+Fast-fails on the first module failure.
 
 Each `bin/build-<module>` script runs exactly one `./gradlew` task via `exec`:
 `:module:assemble` for libraries, `:module:installDist` for daemons.
@@ -731,5 +730,5 @@ micro-skills. Idempotent; overwrites the generated files in place.
       — added `build-admin-server` and the
       `admin-server-{up,down,check,wait-for-health}` daemon scripts, plus
       `admin-grant` (the sole sanctioned raw-SQL entity mutation, minting the
-      first admin); wired `admin-server` into `bin/test` and `build-admin-server`
-      into `bin/build`.
+      first admin); wired `admin-server` into `bin/test` and
+      `build-admin-server` into `bin/build`.

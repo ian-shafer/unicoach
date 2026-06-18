@@ -36,12 +36,12 @@ invariants beyond normal SQL correctness.
 
 Entity table characteristics vary by flavor:
 
-| Entity     | Soft Delete  | `*_versions` Table  | `version` Column | Row Timestamps |
-| ---------- | ------------ | ------------------- | ---------------- | -------------- |
-| `users`    | ✓ (logical)  | ✓                   | ✓                | ✓              |
-| `sessions` | ✗ (physical) | ✗                   | ✓                | ✓              |
-| `students` | ✓ (logical)  | ✓ (read by `listVersions`) | ✓         | ✓              |
-| `convos`   | ✓ (logical)  | ✗                   | ✗                | ✓              |
+| Entity     | Soft Delete  | `*_versions` Table         | `version` Column | Row Timestamps |
+| ---------- | ------------ | -------------------------- | ---------------- | -------------- |
+| `users`    | ✓ (logical)  | ✓                          | ✓                | ✓              |
+| `sessions` | ✗ (physical) | ✗                          | ✓                | ✓              |
+| `students` | ✓ (logical)  | ✓ (read by `listVersions`) | ✓                | ✓              |
+| `convos`   | ✓ (logical)  | ✗                          | ✗                | ✓              |
 
 The "Row Timestamps" column records that `row_created_at`/`row_updated_at`
 columns exist and are maintained by database triggers. These columns are **not**
@@ -158,11 +158,11 @@ mapped as a plain `Int` (`rs.getInt("version")`), not a value-class wrapper.
   `prevent_physical_delete` trigger, so it has no soft-delete axis.
 - `SessionsDao.deleteById` MUST issue a genuine physical
   `DELETE FROM sessions WHERE id = ?` and return `NotFoundException` when zero
-  rows are removed. This is the sole row-level physical delete in the DAO layer —
-  every other entity `delete` is a soft-delete `UPDATE ... SET deleted_at`. A
+  rows are removed. This is the sole row-level physical delete in the DAO layer
+  — every other entity `delete` is a soft-delete `UPDATE ... SET deleted_at`. A
   refactor MUST NOT convert it to a soft delete: the table has no column to set.
-- Because `sessions` has no soft-delete axis, `SessionsDao` read methods MUST NOT
-  accept a `SoftDeleteScope`.
+- Because `sessions` has no soft-delete axis, `SessionsDao` read methods MUST
+  NOT accept a `SoftDeleteScope`.
 
 ### Admin Read Surface
 
@@ -172,8 +172,8 @@ exist only for that surface; the application path never needed them.
 - **Paging.** `UsersDao.listAll`, `SessionsDao.listAll`, and
   `SessionsDao.listByUser` MUST order newest-first (`ORDER BY created_at DESC`,
   with `id` as a deterministic tiebreak) and page via `LIMIT ?`/`OFFSET ?` bound
-  parameters. The caller supplies `limit`/`offset`; the DAO MUST NOT embed a page
-  size.
+  parameters. The caller supplies `limit`/`offset`; the DAO MUST NOT embed a
+  page size.
 - **Soft-delete scope asymmetry.** `UsersDao.listAll` MUST accept a
   `scope: SoftDeleteScope` defaulting to `ALL` (admin lists keep soft-deleted
   rows visible), applied as a fixed SQL predicate carrying no caller data. The
@@ -181,8 +181,8 @@ exist only for that surface; the application path never needed them.
   soft-delete axis (see Physical Delete). This divergence is deliberate; the
   signatures MUST NOT be harmonized.
 - **Version history ordering.** `UsersDao.listVersions` and
-  `StudentsDao.listVersions` MUST return the full `*_versions` history for one id
-  ordered **ascending by `version`** (replay order), and MUST return an empty
+  `StudentsDao.listVersions` MUST return the full `*_versions` history for one
+  id ordered **ascending by `version`** (replay order), and MUST return an empty
   list (never `NotFoundException`) for an id with no history.
 - `StudentsDao.listVersions` reads `students_versions` into `StudentVersion` via
   `mapStudentVersion`, which shares `mapGraduationDate` and therefore the same
@@ -496,8 +496,8 @@ All methods delegate through `executeSafely`. All session mutations target the
 
 #### `deleteById(session, id): Result<Unit>`
 
-- **Side Effects**: Write — physical `DELETE FROM sessions` (no soft-delete axis;
-  see §II Physical Delete).
+- **Side Effects**: Write — physical `DELETE FROM sessions` (no soft-delete
+  axis; see §II Physical Delete).
 - **Error Handling**: `Result.failure(NotFoundException())` when zero rows are
   removed; failures classified per §II.
 - **Idempotency**: No — a second call returns `NotFound`.
@@ -828,16 +828,16 @@ SQLSTATE classification rules are documented in §II Postgres Error Codes.
       `bypass_logical_timestamp` GUC so `updated_at` does not advance) and the
       activity-derived reads `listByStudentWithActivity` (with `ArchiveScope`
       filtering) / `findByIdWithActivity` (single `LEFT JOIN` deriving
-      `lastActivityAt = MAX(convo_requests.created_at)`); `mapConvo` now projects
-      `archived_at`.
+      `lastActivityAt = MAX(convo_requests.created_at)`); `mapConvo` now
+      projects `archived_at`.
 - [x] [RFC-60: Admin Website](../../../../../../../../rfc/60-admin-website.md) —
       Threaded `is_admin` through the `users` read/write path
       (`mapUser`/`mapUserVersion` read it; `create`, `doUpdate`, and
-      `revertToVersion` bind it). Added the admin read surface: `UsersDao.listAll`
-      (with `SoftDeleteScope`) and `UsersDao.listVersions`;
-      `StudentsDao.listVersions` (reading `students_versions` → `StudentVersion`);
-      and `SessionsDao.findById`, `listByUser`, `listAll` (no `SoftDeleteScope` —
-      `sessions` has no soft-delete) and `deleteById` (physical `DELETE`,
-      permitted by the absence of `prevent_physical_delete` on `sessions`). List
-      reads order `created_at DESC` with `limit`/`offset`; `listVersions` orders
-      ascending by `version`.
+      `revertToVersion` bind it). Added the admin read surface:
+      `UsersDao.listAll` (with `SoftDeleteScope`) and `UsersDao.listVersions`;
+      `StudentsDao.listVersions` (reading `students_versions` →
+      `StudentVersion`); and `SessionsDao.findById`, `listByUser`, `listAll` (no
+      `SoftDeleteScope` — `sessions` has no soft-delete) and `deleteById`
+      (physical `DELETE`, permitted by the absence of `prevent_physical_delete`
+      on `sessions`). List reads order `created_at DESC` with `limit`/`offset`;
+      `listVersions` orders ascending by `version`.
