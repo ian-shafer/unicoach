@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# release-ios runs under SYSTEM Xcode (xcodebuild), NOT the Nix dev shell. Like
+# build-ios/install-ios it deliberately does NOT source bin/common (which
+# requires .env / Postgres / the Nix shell) — only bin/functions for
+# log-info/fatal.
+#
+# It archives UnicoachiOS for App Store distribution (Release, signed), exports
+# a signed App Store .ipa, and — by default — uploads it to App Store Connect
+# for TestFlight, authenticating with an App Store Connect API key passed
+# straight to xcodebuild (no Apple-ID password, no keychain prompt). Pass
+# --no-upload to stop after producing the .ipa.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/bin/functions"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+release-ios [--no-upload] [target]
+
+Archives UnicoachiOS for App Store distribution and uploads it to App Store
+Connect for TestFlight. Runs under system Xcode, not the Nix dev shell.
+
+  target       Target name (default: prod). Sources ios-app/env/<target>.env for
+               UNICOACH_DESTINATION and the honor-if-set UNICOACH_BACKEND_URL,
+               exactly as bin/build-ios does. A release is always built Release
+               and signed for distribution, so the target's UNICOACH_CONFIGURATION
+               is ignored and a simulator target is rejected. The checked-in
+               `prod` target points at https://api.unicoachapp.com.
+  --no-upload  Archive and export a signed App Store .ipa under ios-app/build/,
+               then stop — do not upload. No App Store Connect API key required.
+
+Three things are resolved before archiving (all fail fast):
+  - Backend URL: honor-if-set, else derived — identical to bin/build-ios. The
+    `prod` target carries https://api.unicoachapp.com explicitly (honored).
+  - Signing: ios-app/env/signing.env supplies UNICOACH_DEVELOPMENT_TEAM, and
+    Xcode automatic signing creates/refreshes an App Store distribution profile
+    (-allowProvisioningUpdates).
+  - Build number: a UNIQUE CFBundleVersion App Store Connect has not seen, taken
+    from UNICOACH_BUILD_NUMBER if set, else derived from the HEAD commit count
+    (git rev-list --count HEAD). It is injected as CURRENT_PROJECT_VERSION, which
+    Info.plist resolves into CFBundleVersion. UNICOACH_MARKETING_VERSION, when
+    set, overrides the marketing version (CFBundleShortVersionString); otherwise
+    the project default applies.
+
+Upload authentication (default path only) comes from ios-app/env/appstore.env
+(gitignored — the secret bucket): UNICOACH_ASC_KEY_ID, UNICOACH_ASC_ISSUER_ID,
+and UNICOACH_ASC_KEY_PATH (path to the AuthKey_<id>.p8 downloaded from App Store
+Connect → Users and Access → Integrations → App Store Connect API). Copy
+ios-app/env/appstore.env.example to fill it in.
+
+Options:
+  -h, --help   Help
+EOF
+  exit "$exit_code"
+}
+
+UPLOAD=1
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  --no-upload) UPLOAD=0; shift ;;
+  -*) help "Unknown option: $1" ;;
+  esac
+done
+
+# Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
+# xcrun is shadowed by a stub and DEVELOPER_DIR/SDKROOT point into the Nix store,
+# so the archive would silently target the wrong toolchain. Detection lives in
+# bin/is-nix; the refusal is here. Placed before any env/signing/tool logic so
+# this message wins even when an env file is also missing.
+if "$PROJECT_ROOT/bin/is-nix" --quiet; then
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/release-ios prod), not via 'nix develop -c'."
+fi
+
+ENV_NAME="${1:-prod}"
+if [ "$#" -gt 1 ]; then
+  help "release-ios accepts at most one positional argument (target): $*"
+fi
+
+# ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
+# (used by bin/ios-scripts-tests to point at a temp fixture dir).
+ENV_DIR="${UNICOACH_ENV_DIR:-$PROJECT_ROOT/ios-app/env}"
+ENV_FILE="$ENV_DIR/$ENV_NAME.env"
+if [ ! -f "$ENV_FILE" ]; then
+  fatal "Environment file not found [$ENV_FILE]. The default release target is 'prod' (ios-app/env/prod.env), which targets the live deployment; pass an existing device target."
+fi
+
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+: "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in $ENV_FILE}"
+
+# A release is always built Release and signed for distribution, so a simulator
+# target makes no sense — reject it with the same Simulator-substring
+# discriminator bin/install-ios uses. The target's UNICOACH_CONFIGURATION (the
+# on-device debug knob) is deliberately ignored; CONFIGURATION is forced Release.
+if [[ "$UNICOACH_DESTINATION" == *Simulator* ]]; then
+  fatal "Target [$ENV_NAME] targets the simulator (UNICOACH_DESTINATION contains 'Simulator'); an App Store release must be a signed device build. Use a device target (e.g. prod)."
+fi
+CONFIGURATION="Release"
+
+# The repo .env is the single source of UNICOACH_CLIENT_KEY (forwarded to
+# xcodebuild below) and of APP_DOMAIN/SERVER_PORT for the derive path.
+# UNICOACH_DOTENV overrides the .env path (used by bin/ios-scripts-tests).
+DOTENV="${UNICOACH_DOTENV:-$PROJECT_ROOT/.env}"
+if [ -f "$DOTENV" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$DOTENV"
+  set +a
+fi
+
+# Backend URL: honor-if-set, else derive — identical to bin/build-ios. The
+# `prod` target sets UNICOACH_BACKEND_URL explicitly, so it is honored verbatim
+# and the derivation (and its bare-IP check) is short-circuited.
+if [ -z "${UNICOACH_BACKEND_URL:-}" ]; then
+  APP_DOMAIN="${APP_DOMAIN:-localhost}"
+  SERVER_PORT="${SERVER_PORT:-8080}"
+  if [[ "$APP_DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || [[ "$APP_DOMAIN" == *:* ]]; then
+    fatal "APP_DOMAIN [$APP_DOMAIN] is a bare IP literal, which is an invalid cookie Domain (RFC 6265) and cannot persist a session. Set APP_DOMAIN in $DOTENV to a DNS hostname, or use the 'prod' target's explicit HTTPS URL."
+  fi
+  UNICOACH_BACKEND_URL="http://$APP_DOMAIN:$SERVER_PORT"
+fi
+
+# Signing is mandatory: an App Store archive is always signed for distribution.
+SIGNING_ENV="$ENV_DIR/signing.env"
+if [ ! -f "$SIGNING_ENV" ]; then
+  fatal "A release archive must be signed, but [$SIGNING_ENV] is missing. Copy ios-app/env/signing.env.example to ios-app/env/signing.env and fill in UNICOACH_DEVELOPMENT_TEAM."
+fi
+set -a
+# shellcheck source=/dev/null
+source "$SIGNING_ENV"
+set +a
+if [ -z "${UNICOACH_DEVELOPMENT_TEAM:-}" ]; then
+  fatal "UNICOACH_DEVELOPMENT_TEAM is not set in [$SIGNING_ENV]; a release archive cannot be signed without an Apple Developer team id."
+fi
+
+# Build number: a CFBundleVersion App Store Connect has not seen. Honor
+# UNICOACH_BUILD_NUMBER if set, else derive from the HEAD commit count — unique
+# and monotonic on a linear history, with no project-file mutation. Injected as
+# CURRENT_PROJECT_VERSION, which Info.plist resolves into CFBundleVersion.
+BUILD_NUMBER="${UNICOACH_BUILD_NUMBER:-}"
+if [ -z "$BUILD_NUMBER" ]; then
+  BUILD_NUMBER="$(git -C "$PROJECT_ROOT" rev-list --count HEAD 2>/dev/null || true)"
+fi
+if [ -z "$BUILD_NUMBER" ]; then
+  fatal "Could not determine a build number: UNICOACH_BUILD_NUMBER is unset and 'git rev-list --count HEAD' produced nothing. Set UNICOACH_BUILD_NUMBER to a value App Store Connect has not seen."
+fi
+VERSION_SETTINGS=("CURRENT_PROJECT_VERSION=$BUILD_NUMBER")
+if [ -n "${UNICOACH_MARKETING_VERSION:-}" ]; then
+  VERSION_SETTINGS+=("MARKETING_VERSION=$UNICOACH_MARKETING_VERSION")
+fi
+
+# Upload authentication is resolved BEFORE the (expensive) archive so a missing
+# credential fails fast. App Store Connect API key, passed straight to
+# xcodebuild as -authenticationKey* flags on the export/upload step.
+EXPORT_AUTH_ARGS=()
+if [ "$UPLOAD" -eq 1 ]; then
+  APPSTORE_ENV="$ENV_DIR/appstore.env"
+  if [ ! -f "$APPSTORE_ENV" ]; then
+    fatal "Upload requires App Store Connect API credentials, but [$APPSTORE_ENV] is missing. Copy ios-app/env/appstore.env.example to ios-app/env/appstore.env and fill it in, or pass --no-upload to only produce the .ipa."
+  fi
+  set -a
+  # shellcheck source=/dev/null
+  source "$APPSTORE_ENV"
+  set +a
+  : "${UNICOACH_ASC_KEY_ID:?UNICOACH_ASC_KEY_ID must be set in $APPSTORE_ENV}"
+  : "${UNICOACH_ASC_ISSUER_ID:?UNICOACH_ASC_ISSUER_ID must be set in $APPSTORE_ENV}"
+  : "${UNICOACH_ASC_KEY_PATH:?UNICOACH_ASC_KEY_PATH must be set in $APPSTORE_ENV}"
+  if [ ! -f "$UNICOACH_ASC_KEY_PATH" ]; then
+    fatal "App Store Connect API key not found at UNICOACH_ASC_KEY_PATH [$UNICOACH_ASC_KEY_PATH] (set in $APPSTORE_ENV). Point it at the AuthKey_<id>.p8 you downloaded from App Store Connect."
+  fi
+  EXPORT_AUTH_ARGS=(
+    -authenticationKeyPath "$UNICOACH_ASC_KEY_PATH"
+    -authenticationKeyID "$UNICOACH_ASC_KEY_ID"
+    -authenticationKeyIssuerID "$UNICOACH_ASC_ISSUER_ID"
+  )
+fi
+
+# Build artifacts live under ios-app/build (gitignored). UNICOACH_BUILD_DIR
+# overrides the base (used by bin/ios-scripts-tests to redirect into a temp dir).
+BUILD_DIR="${UNICOACH_BUILD_DIR:-$PROJECT_ROOT/ios-app/build}"
+ARCHIVE_PATH="$BUILD_DIR/UnicoachiOS.xcarchive"
+EXPORT_DIR="$BUILD_DIR/export"
+EXPORT_OPTIONS="$EXPORT_DIR/ExportOptions.plist"
+mkdir -p "$EXPORT_DIR"
+
+# An App Store archive is always built for a generic device, never the target's
+# possibly device-specific UNICOACH_DESTINATION (that field served only as the
+# simulator/device discriminator above).
+log-info "Archiving UnicoachiOS [env=$ENV_NAME] [configuration=$CONFIGURATION] [build=$BUILD_NUMBER] [backend=$UNICOACH_BACKEND_URL]..."
+xcodebuild \
+  -project "$PROJECT_ROOT/ios-app/UnicoachiOS.xcodeproj" \
+  -scheme UnicoachiOS \
+  -configuration "$CONFIGURATION" \
+  -destination "generic/platform=iOS" \
+  -archivePath "$ARCHIVE_PATH" \
+  -derivedDataPath "$BUILD_DIR/DerivedData" \
+  "UNICOACH_BACKEND_URL=$UNICOACH_BACKEND_URL" \
+  "UNICOACH_CLIENT_KEY=${UNICOACH_CLIENT_KEY:-}" \
+  "${VERSION_SETTINGS[@]}" \
+  "DEVELOPMENT_TEAM=$UNICOACH_DEVELOPMENT_TEAM" \
+  "CODE_SIGN_STYLE=Automatic" \
+  -allowProvisioningUpdates \
+  archive
+
+# Export options. `destination` selects upload vs local export; the build number
+# is authoritative, so manageAppVersionAndBuildNumber is false (Xcode must not
+# silently bump it).
+if [ "$UPLOAD" -eq 1 ]; then
+  EXPORT_DESTINATION="upload"
+else
+  EXPORT_DESTINATION="export"
+fi
+cat > "$EXPORT_OPTIONS" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>teamID</key>
+	<string>$UNICOACH_DEVELOPMENT_TEAM</string>
+	<key>destination</key>
+	<string>$EXPORT_DESTINATION</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+	<key>uploadSymbols</key>
+	<true/>
+</dict>
+</plist>
+EOF
+
+if [ "$UPLOAD" -eq 1 ]; then
+  log-info "Uploading archive to App Store Connect for TestFlight [build=$BUILD_NUMBER]..."
+else
+  log-info "Exporting signed App Store .ipa to [$EXPORT_DIR] (--no-upload)..."
+fi
+exec xcodebuild \
+  -exportArchive \
+  -archivePath "$ARCHIVE_PATH" \
+  -exportPath "$EXPORT_DIR" \
+  -exportOptionsPlist "$EXPORT_OPTIONS" \
+  ${EXPORT_AUTH_ARGS[@]+"${EXPORT_AUTH_ARGS[@]}"} \
+  -allowProvisioningUpdates

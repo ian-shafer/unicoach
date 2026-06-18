@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# ios-scripts-tests exercises bin/is-nix, bin/build-ios, and bin/install-ios
-# WITHOUT any real Xcode build or hardware. xcodebuild and xcrun are shimmed onto
+# ios-scripts-tests exercises bin/is-nix, bin/build-ios, bin/install-ios, and
+# bin/release-ios WITHOUT any real Xcode build or hardware. xcodebuild and xcrun
+# are shimmed onto
 # PATH via a temp dir; the shims record their argv to a file the assertions
 # inspect. The ios-app/env/<env>.env files are pointed at a temp fixture dir via
 # UNICOACH_ENV_DIR, and the repo .env (the APP_DOMAIN/SERVER_PORT source) is
@@ -88,6 +89,14 @@ UNICOACH_DESTINATION="generic/platform=iOS Simulator"
 UNICOACH_BACKEND_URL="https://api.unicoachapp.com/"
 EOF
 
+# A device target that ALSO sets UNICOACH_CONFIGURATION=Debug, to prove
+# release-ios ignores it and forces Release.
+cat > "$ENV_DIR/debug-config-device.env" <<'EOF'
+UNICOACH_DESTINATION="generic/platform=iOS"
+UNICOACH_CONFIGURATION="Debug"
+UNICOACH_BACKEND_URL="https://api.unicoachapp.com"
+EOF
+
 # Write the repo-.env fixture that bin/build-ios sources (via UNICOACH_DOTENV).
 # Args: APP_DOMAIN value (empty => omit the line), optional SERVER_PORT value.
 write_dotenv() {
@@ -117,6 +126,25 @@ EOF
 stage_built_app() {
   mkdir -p "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app"
 }
+
+# App Store Connect API credentials fixture for release-ios upload tests, plus
+# the .p8 key file release-ios checks for existence.
+ASC_KEY_ID="KEYID123"
+ASC_ISSUER_ID="11111111-2222-3333-4444-555555555555"
+ASC_KEY_PATH="$ENV_DIR/AuthKey_$ASC_KEY_ID.p8"
+write_appstore_env() {
+  cat > "$ENV_DIR/appstore.env" <<EOF
+UNICOACH_ASC_KEY_ID=$ASC_KEY_ID
+UNICOACH_ASC_ISSUER_ID=$ASC_ISSUER_ID
+UNICOACH_ASC_KEY_PATH=$ASC_KEY_PATH
+EOF
+  : > "$ASC_KEY_PATH"
+}
+
+# Where release-ios writes its archive/export artifacts in tests (redirected out
+# of the real repo via UNICOACH_BUILD_DIR).
+RELEASE_BUILD_DIR="$WORK/iosbuild"
+EXPORT_OPTIONS_PLIST="$RELEASE_BUILD_DIR/export/ExportOptions.plist"
 
 # Two-device devicectl output fixture for the ambiguous-device case.
 TWO_DEVICES="$WORK/two-devices.txt"
@@ -152,6 +180,20 @@ run_install() {
     ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} \
     "$PROJECT_ROOT/bin/install-ios" "$@"
 }
+# Run release-ios with the shims first on PATH, artifacts redirected into a temp
+# build dir, and the build number pinned (so the assertion does not depend on
+# the repo's real commit count). RELEASE_BUILD_NUMBER may be set to the empty
+# string by a caller to exercise the git-derived path instead.
+run_release() {
+  reset_log
+  env PATH="$SHIM_DIR:$PATH" \
+    UNICOACH_ENV_DIR="$ENV_DIR" \
+    UNICOACH_DOTENV="$DOTENV" \
+    UNICOACH_BUILD_DIR="$RELEASE_BUILD_DIR" \
+    UNICOACH_BUILD_NUMBER="${RELEASE_BUILD_NUMBER-7}" \
+    ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} \
+    "$PROJECT_ROOT/bin/release-ios" "$@"
+}
 
 # Run bin/is-nix directly, honouring IN_NIX as the simulated marker.
 run_is_nix() {
@@ -166,6 +208,10 @@ log_has() { grep -Fxq -e "$1" "$ARGV_LOG"; }
 log_lacks() { ! grep -Fxq -e "$1" "$ARGV_LOG"; }
 # Assert the argv log records NO invocation of the named tool (its prefix line).
 log_no_tool() { ! grep -Fxq -e "$1" "$ARGV_LOG"; }
+
+# Assert a literal substring is present in the generated ExportOptions.plist
+# (release-ios writes it to a known path under the temp build dir).
+export_option_has() { grep -Fq -e "$1" "$EXPORT_OPTIONS_PLIST"; }
 
 # ============================== is-nix tests =================================
 
@@ -458,7 +504,7 @@ test_install_with_device_set() {
   log_has "$udid" || return 1
   log_has "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app" || return 1
   # No --launch passed, so no process-launch invocation recorded.
-  if grep -Fxq "launch" "$ARGV_LOG" && grep -Fxq "com.unicoach.UnicoachiOS" "$ARGV_LOG"; then
+  if grep -Fxq "launch" "$ARGV_LOG" && grep -Fxq "com.unicoachapp.UnicoachiOS" "$ARGV_LOG"; then
     return 1
   fi
   return 0
@@ -472,7 +518,7 @@ test_install_with_launch() {
   log_has "install" || return 1
   log_has "process" || return 1
   log_has "launch" || return 1
-  log_has "com.unicoach.UnicoachiOS" || return 1
+  log_has "com.unicoachapp.UnicoachiOS" || return 1
   return 0
 }
 
@@ -482,6 +528,128 @@ test_install_ambiguous_device() {
   local out
   if out="$(DEVICECTL_LIST_OUTPUT="$TWO_DEVICES" run_install device 2>&1)"; then return 1; fi
   echo "$out" | grep -qi "multiple"
+}
+
+# ============================ release-ios tests ============================
+
+test_release_guard_device() {
+  write_signing_env
+  write_appstore_env
+  local out rc
+  out="$(IN_NIX=impure run_release explicit-device 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "release-ios" || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  # Guard fires before any tool: no xcodebuild line recorded.
+  log_no_tool "xcodebuild"
+}
+
+test_release_missing_env_file() {
+  local out
+  if out="$(run_release nonexistent-env 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "nonexistent-env.env" || return 1
+  log_no_tool "xcodebuild"
+}
+
+test_release_simulator_rejected() {
+  write_signing_env
+  write_appstore_env
+  local out
+  # explicit-simulator has UNICOACH_DESTINATION containing "Simulator".
+  if out="$(run_release explicit-simulator 2>&1)"; then return 1; fi
+  echo "$out" | grep -qi "simulator" || return 1
+  log_no_tool "xcodebuild"
+}
+
+test_release_absent_signing() {
+  rm -f "$ENV_DIR/signing.env"
+  write_appstore_env
+  local out
+  if out="$(run_release explicit-device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "signing.env" || return 1
+  log_no_tool "xcodebuild"
+}
+
+# --no-upload: archives Release for a generic device, signs, injects the build
+# number and honored backend URL, exports a local .ipa, and needs NO appstore.env
+# and NO upload auth flags.
+test_release_no_upload_archives_and_exports() {
+  write_signing_env
+  rm -f "$ENV_DIR/appstore.env"   # not required on the --no-upload path
+  run_release --no-upload explicit-device >/dev/null 2>&1 || return 1
+  log_has "archive" || return 1
+  log_has "-exportArchive" || return 1
+  log_has "-configuration" || return 1
+  log_has "Release" || return 1
+  log_has "generic/platform=iOS" || return 1
+  log_has "DEVELOPMENT_TEAM=$FIXTURE_TEAM" || return 1
+  log_has "CODE_SIGN_STYLE=Automatic" || return 1
+  log_has "-allowProvisioningUpdates" || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.unicoachapp.com" || return 1
+  log_has "CURRENT_PROJECT_VERSION=7" || return 1
+  # No upload auth, and the export options select local export.
+  log_lacks "-authenticationKeyID" || return 1
+  export_option_has "<string>export</string>" || return 1
+  export_option_has "<string>app-store-connect</string>" || return 1
+  return 0
+}
+
+# Default (upload) path requires appstore.env; its absence fails fast before any
+# archive.
+test_release_upload_requires_appstore() {
+  write_signing_env
+  rm -f "$ENV_DIR/appstore.env"
+  local out
+  if out="$(run_release explicit-device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "appstore.env" || return 1
+  log_no_tool "xcodebuild"
+}
+
+# Default (upload) path forwards the App Store Connect API key as xcodebuild
+# -authenticationKey* flags and selects the upload destination.
+test_release_upload_forwards_api_key() {
+  write_signing_env
+  write_appstore_env
+  run_release explicit-device >/dev/null 2>&1 || return 1
+  log_has "-authenticationKeyID" || return 1
+  log_has "$ASC_KEY_ID" || return 1
+  log_has "-authenticationKeyIssuerID" || return 1
+  log_has "$ASC_ISSUER_ID" || return 1
+  log_has "-authenticationKeyPath" || return 1
+  log_has "$ASC_KEY_PATH" || return 1
+  export_option_has "<string>upload</string>" || return 1
+  return 0
+}
+
+# A missing .p8 at UNICOACH_ASC_KEY_PATH fails fast, before any archive.
+test_release_upload_missing_key_file() {
+  write_signing_env
+  write_appstore_env
+  rm -f "$ASC_KEY_PATH"
+  local out
+  if out="$(run_release explicit-device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "$ASC_KEY_PATH" || return 1
+  log_no_tool "xcodebuild"
+}
+
+# The target's UNICOACH_CONFIGURATION=Debug is ignored: a release is always
+# archived Release.
+test_release_forces_release_config() {
+  write_signing_env
+  write_appstore_env
+  run_release debug-config-device >/dev/null 2>&1 || return 1
+  log_has "Release" || return 1
+  log_lacks "Debug" || return 1
+  return 0
+}
+
+# With no pinned build number, release-ios derives one from the repo's HEAD
+# commit count and forwards it as CURRENT_PROJECT_VERSION=<digits>.
+test_release_derives_build_number_from_git() {
+  write_signing_env
+  write_appstore_env
+  RELEASE_BUILD_NUMBER="" run_release explicit-device >/dev/null 2>&1 || return 1
+  grep -Eq "^CURRENT_PROJECT_VERSION=[0-9]+$" "$ARGV_LOG"
 }
 
 # Note: run_install/run_build wrappers reset the argv log; export the
@@ -523,5 +691,17 @@ assert_success "install-ios: device env with absent signing.env fails, names sig
 assert_success "install-ios: UNICOACH_DEVICE drives devicectl install with app path" test_install_with_device_set
 assert_success "install-ios: --launch records process launch of the bundle id" test_install_with_launch
 assert_success "install-ios: ambiguous (two) devices with no UNICOACH_DEVICE fails" test_install_ambiguous_device
+
+# release-ios
+assert_success "release-ios: dev-shell guard fires, no xcodebuild line" test_release_guard_device
+assert_success "release-ios: missing env file fails, names the missing file" test_release_missing_env_file
+assert_success "release-ios: simulator target rejected (device-only)" test_release_simulator_rejected
+assert_success "release-ios: absent signing.env fails, names signing.env" test_release_absent_signing
+assert_success "release-ios: --no-upload archives Release + exports, no API key needed" test_release_no_upload_archives_and_exports
+assert_success "release-ios: upload path requires appstore.env, fails fast" test_release_upload_requires_appstore
+assert_success "release-ios: upload forwards ASC API key flags + upload destination" test_release_upload_forwards_api_key
+assert_success "release-ios: missing .p8 at UNICOACH_ASC_KEY_PATH fails fast" test_release_upload_missing_key_file
+assert_success "release-ios: forces Release even when target sets Debug" test_release_forces_release_config
+assert_success "release-ios: derives build number from HEAD commit count" test_release_derives_build_number_from_git
 
 end_tests

@@ -403,8 +403,8 @@ the `APIClient` contract.
 - **Idempotency**: `register` and `login` are not idempotent at the client;
   retries are the caller's responsibility. `me` is safe; `logout` is idempotent
   server-side.
-- **Logging**: Emits `os.Logger` (subsystem `com.unicoach.UnicoachiOS`, category
-  `AuthClient`) debug messages on request start.
+- **Logging**: Emits `os.Logger` (subsystem `com.unicoachapp.UnicoachiOS`,
+  category `AuthClient`) debug messages on request start.
 
 ---
 
@@ -960,7 +960,7 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 
 ## IV. Infrastructure & Environment
 
-- **Bundle ID**: `com.unicoach.UnicoachiOS` (defined in
+- **Bundle ID**: `com.unicoachapp.UnicoachiOS` (defined in
   [`Info.plist`](./Info.plist)).
 - **App display name**: `Unicoach`.
 - **Backend base URL**: Resolved at launch by `defaultBackendURL()` from the

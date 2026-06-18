@@ -8,7 +8,7 @@ protocol StudentClientProtocol: Sendable {
 
 class StudentClient: StudentClientProtocol, @unchecked Sendable {
     private let apiClient: APIClient
-    private let logger = Logger(subsystem: "com.unicoach.UnicoachiOS", category: "StudentClient")
+    private let logger = Logger(subsystem: "com.unicoachapp.UnicoachiOS", category: "StudentClient")
 
     init(apiClient: APIClient = APIClient()) {
         self.apiClient = apiClient

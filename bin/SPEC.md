@@ -6,11 +6,11 @@
 fall into seven categories: build, daemon control, linting, CLIs, testing, iOS
 deploy (system Xcode), and infrastructure & deploy. Every shell script sources
 `bin/common` to establish `$PROJECT_ROOT` and a shared environment — **except**
-the system-Xcode iOS scripts (`build-ios`, `install-ios`, `ios-scripts-tests`)
-and the dev-shell predicate (`is-nix`), which source only `bin/functions`
-because `bin/common` requires the Nix dev shell they must run outside of (see
-§II). The single non-shell script, `bin/compile-skills.py`, is exempt from the
-shell-script invariants in §II.
+the system-Xcode iOS scripts (`build-ios`, `install-ios`, `release-ios`,
+`ios-scripts-tests`) and the dev-shell predicate (`is-nix`), which source only
+`bin/functions` because `bin/common` requires the Nix dev shell they must run
+outside of (see §II). The single non-shell script, `bin/compile-skills.py`, is
+exempt from the shell-script invariants in §II.
 
 ---
 
@@ -36,17 +36,17 @@ rest-server-up/down) binds to the dedicated fuzz DB and port 8082 (see §III
 - Exports `DB_SCHEMA_DIR` (defaults to `$PROJECT_ROOT/db/schema`), consumed by
   `db-migrate` and `db-status`.
 
-**System-Xcode exception.** `is-nix`, `build-ios`, `install-ios`, and
-`ios-scripts-tests` MUST NOT source `bin/common`; they source only
+**System-Xcode exception.** `is-nix`, `build-ios`, `install-ios`, `release-ios`,
+and `ios-scripts-tests` MUST NOT source `bin/common`; they source only
 `bin/functions` (for `log-info`/`fatal`) and resolve `PROJECT_ROOT` themselves.
 `bin/common` loads `.env` and assumes the Nix dev shell, but these scripts run
 under the **system** Xcode toolchain — never `nix develop` — so sourcing it
 would defeat their purpose. Bypassing `bin/common` does not mean they read no
-environment: `build-ios` and `install-ios` perform their own loading of the
-target file `ios-app/env/<target>.env`, the repo `.env`, and (for device work)
-`ios-app/env/signing.env` (see §III). Unlike `bin/common`, which fatals on a
-missing `$ENV_FILE`, `build-ios` tolerates a missing repo `.env` (it is sourced
-only when present).
+environment: `build-ios`, `install-ios`, and `release-ios` perform their own
+loading of the target file `ios-app/env/<target>.env`, the repo `.env`, and (for
+device work) `ios-app/env/signing.env` (see §III). Unlike `bin/common`, which
+fatals on a missing `$ENV_FILE`, `build-ios` tolerates a missing repo `.env` (it
+is sourced only when present).
 
 ### Help Interface
 
@@ -303,15 +303,15 @@ module:
 
 ---
 
-### iOS Build & Install (system Xcode)
+### iOS Build, Install & Release (system Xcode)
 
-`build-ios`, `install-ios`, and the `is-nix` predicate run under the **system**
-Xcode toolchain, never the Nix dev shell. Inside `nix develop`, `xcrun` is
-shadowed by a stub and `DEVELOPER_DIR`/`SDKROOT` point into the Nix store, so a
-build there silently targets the wrong toolchain. `build-ios` and `install-ios`
-therefore call `is-nix --quiet` immediately after option parsing and `fatal`
-before invoking any tool if it returns `0` — placed before env resolution so the
-guard message wins over a missing-env error.
+`build-ios`, `install-ios`, `release-ios`, and the `is-nix` predicate run under
+the **system** Xcode toolchain, never the Nix dev shell. Inside `nix develop`,
+`xcrun` is shadowed by a stub and `DEVELOPER_DIR`/`SDKROOT` point into the Nix
+store, so a build there silently targets the wrong toolchain. `build-ios`,
+`install-ios`, and `release-ios` therefore call `is-nix --quiet` immediately
+after option parsing and `fatal` before invoking any tool if it returns `0` —
+placed before env resolution so the guard message wins over a missing-env error.
 
 - **`is-nix`**: Predicate. Exit `0` if inside the dev shell (`IN_NIX_SHELL`
   non-empty), `1` otherwise. Prints `nix enabled` / `nix NOT enabled` via
@@ -372,7 +372,38 @@ guard message wins over a missing-env error.
   single-device auto-detect via `xcrun devicectl list devices` — fatals on zero
   or multiple devices. `--launch` additionally runs
   `xcrun devicectl device process launch` for bundle id
-  `com.unicoach.UnicoachiOS`.
+  `com.unicoachapp.UnicoachiOS`.
+- **`release-ios [--no-upload] [target]`**: Archives the `UnicoachiOS` app for
+  App Store distribution and, by default, uploads it to App Store Connect for
+  TestFlight via `exec xcodebuild -exportArchive`. Architect-invoked,
+  side-effecting, and NOT idempotent — each upload consumes a unique build
+  number. `target` defaults to `prod` (not `local`). Like `build-ios` it runs
+  under system Xcode (shares the `is-nix --quiet` guard), sources only
+  `bin/functions`, resolves the backend URL **honor-if-set, else derive**
+  (identical rules), and reads `UNICOACH_CLIENT_KEY` from the repo `.env`. It
+  differs deliberately:
+  - **Release-only, signed.** The configuration is forced to `Release` (the
+    target's `UNICOACH_CONFIGURATION` is ignored) and a simulator target is
+    rejected. `ios-app/env/signing.env` and `UNICOACH_DEVELOPMENT_TEAM` are
+    mandatory; the archive is signed for distribution with
+    `CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates`.
+  - **Unique build number.** `CURRENT_PROJECT_VERSION` is
+    `UNICOACH_BUILD_NUMBER` if set, else `git rev-list --count HEAD`; an
+    optional `UNICOACH_MARKETING_VERSION` overrides `MARKETING_VERSION`. Both
+    are forwarded as build settings and resolved into `Info.plist`
+    (`CFBundleVersion` / `CFBundleShortVersionString`).
+  - **Upload vs export.** The default path uploads to App Store Connect using an
+    App Store Connect API key forwarded as `-authenticationKey*` flags, read
+    from `ios-app/env/appstore.env` (gitignored secret bucket:
+    `UNICOACH_ASC_KEY_ID`, `UNICOACH_ASC_ISSUER_ID`, `UNICOACH_ASC_KEY_PATH`).
+    `--no-upload` stops after exporting a signed `.ipa` under
+    `ios-app/build/export/` and requires no credentials.
+
+  Resolves upload credentials **before** the expensive archive (fail-fast).
+  Fatals before invoking `xcodebuild` on: dev shell, missing target file,
+  simulator target, missing `signing.env`/team, (derive path only) a bare-IP
+  `APP_DOMAIN`, (upload path) missing `appstore.env` or a missing key file at
+  `UNICOACH_ASC_KEY_PATH`, or an indeterminable build number.
 
 ---
 
@@ -524,10 +555,10 @@ DB and port). Five lifecycle-ownership models exist:
   source neither `bin/common` nor any cluster script. They shim
   `xcodebuild`/`xcrun` onto `PATH` (recording argv to a temp file) and redirect
   the scripts at fixtures via `UNICOACH_ENV_DIR`/`UNICOACH_DOTENV`/
-  `UNICOACH_PRODUCTS_DIR`, with the `xcrun` shim emitting the per-test
-  `DEVICECTL_LIST_OUTPUT` fixture to drive `install-ios` device auto-detect, so
-  no real build or hardware runs. They `unset IN_NIX_SHELL` at startup and
-  simulate the dev shell per-invocation with `IN_NIX_SHELL=impure`.
+  `UNICOACH_PRODUCTS_DIR`/`UNICOACH_BUILD_DIR`, with the `xcrun` shim emitting
+  the per-test `DEVICECTL_LIST_OUTPUT` fixture to drive `install-ios` device
+  auto-detect, so no real build or hardware runs. They `unset IN_NIX_SHELL` at
+  startup and simulate the dev shell per-invocation with `IN_NIX_SHELL=impure`.
 
 #### `bin/tests-common` — Assertion API
 
@@ -618,9 +649,9 @@ DB and port). Five lifecycle-ownership models exist:
 - **`bin/db-system-prompts-tests`**: Schema harness for the immutable
   `system_prompts` catalog and the `convo_requests.system_prompt_id` FK rewire.
   Owns no Postgres lifecycle.
-- **`bin/ios-scripts-tests`**: Tests `is-nix`, `build-ios`, and `install-ios`
-  with shimmed `xcodebuild`/`xcrun` and fixture env files. Runs no real build
-  and needs no hardware, Postgres, or Nix dev shell.
+- **`bin/ios-scripts-tests`**: Tests `is-nix`, `build-ios`, `install-ios`, and
+  `release-ios` with shimmed `xcodebuild`/`xcrun` and fixture env files. Runs no
+  real build and needs no hardware, Postgres, or Nix dev shell.
 
 ---
 
@@ -642,18 +673,23 @@ micro-skills. Idempotent; overwrites the generated files in place.
 - **Shell**: All scripts target `bash` via `#!/usr/bin/env bash`.
 - **Toolchain**: Provided by `flake.nix` (`temurin-bin-21`, `postgresql_18`,
   `python3`, `deno`, `ktlint`, `git`).
-- **System Xcode (iOS scripts)**: `build-ios`, `install-ios`, and `is-nix`
-  require the **system** Xcode toolchain (`xcodebuild`, `xcrun devicectl`), NOT
-  the flake, and MUST run outside `nix develop`. `build-ios` reads
-  `UNICOACH_CLIENT_KEY` (and, on the derive path, `APP_DOMAIN`/`SERVER_PORT`)
-  from the repo `.env` and `UNICOACH_DESTINATION`/`UNICOACH_CONFIGURATION`
-  (optionally an explicit `UNICOACH_BACKEND_URL`) from the target file
-  `ios-app/env/<target>.env`; device builds also read
-  `UNICOACH_DEVELOPMENT_TEAM`/`UNICOACH_DEVICE` from `ios-app/env/signing.env`.
-  Help text and usage use "target" terminology while the internal `ENV_*`
-  variable names are retained. `is-nix` keys off `IN_NIX_SHELL` (and
-  `nativeBuildInputs` under `-v`). Test overrides `UNICOACH_ENV_DIR`,
-  `UNICOACH_DOTENV`, `UNICOACH_PRODUCTS_DIR`, and `DEVICECTL_LIST_OUTPUT`
+- **System Xcode (iOS scripts)**: `build-ios`, `install-ios`, `release-ios`, and
+  `is-nix` require the **system** Xcode toolchain (`xcodebuild`,
+  `xcrun devicectl`), NOT the flake, and MUST run outside `nix develop`.
+  `build-ios` reads `UNICOACH_CLIENT_KEY` (and, on the derive path,
+  `APP_DOMAIN`/`SERVER_PORT`) from the repo `.env` and
+  `UNICOACH_DESTINATION`/`UNICOACH_CONFIGURATION` (optionally an explicit
+  `UNICOACH_BACKEND_URL`) from the target file `ios-app/env/<target>.env`;
+  device builds also read `UNICOACH_DEVELOPMENT_TEAM`/`UNICOACH_DEVICE` from
+  `ios-app/env/signing.env`. `release-ios` additionally reads the App Store
+  Connect API key
+  (`UNICOACH_ASC_KEY_ID`/`UNICOACH_ASC_ISSUER_ID`/`UNICOACH_ASC_KEY_PATH`) from
+  the gitignored `ios-app/env/appstore.env` on the upload path, and honors
+  `UNICOACH_BUILD_NUMBER`/`UNICOACH_MARKETING_VERSION` for versioning. Help text
+  and usage use "target" terminology while the internal `ENV_*` variable names
+  are retained. `is-nix` keys off `IN_NIX_SHELL` (and `nativeBuildInputs` under
+  `-v`). Test overrides `UNICOACH_ENV_DIR`, `UNICOACH_DOTENV`,
+  `UNICOACH_PRODUCTS_DIR`, `UNICOACH_BUILD_DIR`, and `DEVICECTL_LIST_OUTPUT`
   redirect these inputs to fixtures.
 - **Runtime directories**: `var/run/` (PID files `<service>.pid` and lock dirs
   `<service>.daemon.lock`) and `var/log/` (service logs) are created on demand

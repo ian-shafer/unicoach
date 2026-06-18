@@ -241,6 +241,79 @@ shared file (one is HCL, one is bash). There is no automated cross-file drift
 guard: a mismatch surfaces immediately as a session that does not persist on the
 prod target, so keep the two host values in sync by hand if either changes.
 
+## Distributing via TestFlight: `bin/release-ios`
+
+`bin/install-ios` puts a build on a cabled iPhone over USB. To distribute
+over-the-air to testers, use **TestFlight**, which means uploading a signed
+App-Store-distribution build to App Store Connect. `bin/release-ios` does that —
+it is the archive/upload sibling of `bin/build-ios`, and runs under **system
+Xcode**, not the Nix dev shell (same dev-shell guard).
+
+```sh
+bin/release-ios                  # archive + upload `prod` to App Store Connect
+bin/release-ios --no-upload      # archive + export a signed .ipa, then stop
+bin/release-ios <target>         # release a different device target
+```
+
+It reuses the named-target model: it sources `ios-app/env/<target>.env` for the
+destination and the honor-if-set `UNICOACH_BACKEND_URL` exactly as
+`bin/build-ios` does, but it **defaults to the `prod` target** (a release goes
+against the live backend) and differs in three deliberate ways:
+
+- **Always Release, always signed.** The target's `UNICOACH_CONFIGURATION` is
+  ignored (a release is built `Release`), and a **simulator target is rejected**
+  — distribution requires a signed device build. Signing is mandatory:
+  `signing.env` / `UNICOACH_DEVELOPMENT_TEAM` must be present, and Xcode
+  automatic signing creates/refreshes an **App Store distribution** profile
+  under `-allowProvisioningUpdates`.
+- **A unique build number.** App Store Connect rejects a re-upload that reuses a
+  `CFBundleVersion`, so the build number is taken from `UNICOACH_BUILD_NUMBER`
+  if set, else **derived from the HEAD commit count**
+  (`git rev-list --count
+  HEAD`) — unique and monotonic on a linear history,
+  with no project-file edit. It is injected as `CURRENT_PROJECT_VERSION`, which
+  `Info.plist` resolves into `CFBundleVersion` (the same variable-substitution
+  seam as `UnicoachBackendURL`). `UNICOACH_MARKETING_VERSION`, when set,
+  overrides `CFBundleShortVersionString`; otherwise the project default (`1.0`)
+  applies.
+- **API-key upload.** The default path uploads straight from `xcodebuild` using
+  an **App Store Connect API key** — no Apple-ID password, no keychain prompt,
+  CI-friendly. Credentials live in the gitignored `ios-app/env/appstore.env`
+  (the secret bucket, alongside `UNICOACH_CLIENT_KEY`). `--no-upload` skips this
+  entirely and just leaves a signed `.ipa` under `ios-app/build/export/`.
+
+### First-time TestFlight setup
+
+1. **Create the app record.** In
+   [App Store Connect](https://appstoreconnect.apple.com) → My Apps → **+** →
+   New App, for bundle id `com.unicoachapp.UnicoachiOS` (it must exist as an
+   Identifier in the Developer portal; the first signed archive creates it via
+   `-allowProvisioningUpdates` if absent).
+2. **Mint an App Store Connect API key.** Users and Access → Integrations → App
+   Store Connect API → generate a key with the **App Manager** role. Note the
+   **Issuer ID** (a UUID, shared by all keys) and the **Key ID**, and download
+   `AuthKey_<KeyID>.p8` — it is downloadable **only once**. Store it outside the
+   repo (e.g. `~/.appstoreconnect/private_keys/`).
+3. **Fill in `appstore.env`.** Copy the template and set the three values:
+
+   ```sh
+   cp ios-app/env/appstore.env.example ios-app/env/appstore.env
+   # UNICOACH_ASC_KEY_ID, UNICOACH_ASC_ISSUER_ID, UNICOACH_ASC_KEY_PATH
+   ```
+
+4. **Upload, then add testers.** Run `bin/release-ios`. After a few minutes of
+   App Store Connect processing, the build appears under the app's
+   **TestFlight** tab. Add it to **Internal Testing** (up to 100 team members,
+   no review, available immediately) or **External Testing** (up to 10,000 via
+   email/link, first build needs a short Beta App Review). The per-build
+   export-compliance prompt is pre-answered by
+   `ITSAppUsesNonExemptEncryption = false` in `Info.plist` (the app uses only
+   standard HTTPS).
+
+The build targets the live `https://api.unicoachapp.com` deployment under the
+existing `NSAllowsArbitraryLoads` ATS exception — no transport-security change,
+same as the `prod` device build.
+
 ## Troubleshooting
 
 - **Login does not persist across an app relaunch.** You changed `APP_DOMAIN`
@@ -255,7 +328,15 @@ prod target, so keep the two host values in sync by hand if either changes.
   `signing.env` to the intended UDID (`xcrun devicectl list devices`).
 - **Dev-shell guard error (`must run under system Xcode`).** The script was
   wrapped in `nix develop -c`. Run it directly: `bin/build-ios` /
-  `bin/install-ios`.
+  `bin/install-ios` / `bin/release-ios`.
+- **TestFlight upload rejected: duplicate build number.** App Store Connect
+  already has a build with that `CFBundleVersion`. `bin/release-ios` derives the
+  build number from the HEAD commit count, so commit first (or pass a higher
+  `UNICOACH_BUILD_NUMBER`) and re-run.
+- **TestFlight upload fails to authenticate.** Check `appstore.env`: the Key ID,
+  Issuer ID, and the `AuthKey_<id>.p8` at `UNICOACH_ASC_KEY_PATH` must match a
+  current App Store Connect API key with the App Manager role. Use `--no-upload`
+  to confirm the archive/export succeeds independently of the upload.
 
 ## Manual on-device smoke test
 
