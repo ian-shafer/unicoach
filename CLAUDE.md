@@ -97,3 +97,9 @@ The dev shell (`flake.nix`) provides:
 - **Deno** — Markdown formatting (replaces `npx prettier`)
 - **ktlint** — Kotlin lint/format
 - **git** — self-consistent git on PATH
+
+## Product
+
+The canonical product positioning is in [`PRODUCT.md`](PRODUCT.md). All
+public-facing and brand copy — the home page, taglines, and any other
+user-visible surface — must reflect it.

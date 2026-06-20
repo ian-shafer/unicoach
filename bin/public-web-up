@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+public-web-up [options]
+
+Boots the public-web daemon from a pre-built installDist binary and waits
+for it to respond to HTTP requests.
+
+The binary MUST be pre-built via `bin/build-public-web` before invoking
+this script. If the binary is absent, this script exits non-zero immediately
+without invoking Gradle.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -gt 0 ]; then
+  help "public-web-up does not accept positional arguments: $*"
+fi
+
+BINARY="$PROJECT_ROOT/public-web/build/install/public-web/bin/public-web"
+
+if [ ! -x "$BINARY" ]; then
+  fatal "public-web binary not found at [$BINARY]. Run 'bin/build-public-web' first."
+fi
+
+"$PROJECT_ROOT/bin/daemon-up" public-web -- "$BINARY"
+
+"$PROJECT_ROOT/bin/public-web-wait-for-health"

@@ -11,7 +11,7 @@ help() {
 build [options]
 
 Full project build. Delegates to per-module build scripts in dependency order:
-  common -> db -> service -> queue -> net -> rest-server -> queue-worker -> admin-server
+  common -> db -> service -> queue -> net -> rest-server -> queue-worker -> admin-server -> public-web
 
 Exits immediately with the failing script's exit code if any per-module
 build fails.
@@ -43,6 +43,7 @@ MODULES=(
   build-rest-server
   build-queue-worker
   build-admin-server
+  build-public-web
 )
 
 for module in "${MODULES[@]}"; do

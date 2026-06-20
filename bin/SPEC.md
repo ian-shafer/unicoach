@@ -9,152 +9,13 @@ deploy (system Xcode), and infrastructure & deploy. Every shell script sources
 the system-Xcode iOS scripts (`build-ios`, `install-ios`, `release-ios`,
 `ios-scripts-tests`) and the dev-shell predicate (`is-nix`), which source only
 `bin/functions` because `bin/common` requires the Nix dev shell they must run
-outside of (see §II). The single non-shell script, `bin/compile-skills.py`, is
-exempt from the shell-script invariants in §II.
+outside of (see [`INVARIANTS.md`](./INVARIANTS.md)). The single non-shell
+script, `bin/compile-skills.py`, is exempt from the shell-script invariants (see
+[`INVARIANTS.md`](./INVARIANTS.md)).
 
 ---
 
-## II. Invariants
-
-### Common Invariants
-
-Every shell script MUST source `bin/common` as its first non-comment,
-non-shebang line, optionally preceded by an `export ENV_FILE=…` assignment — the
-only sanctioned pre-source statement. `bin/test` and most test harnesses use it
-to select `.env.test`; `bin/test-fuzz` points it at `.env.fuzz` so the whole
-child-process tree (postgres-up, db-reset, build-rest-server,
-rest-server-up/down) binds to the dedicated fuzz DB and port 8082 (see §III
-"Test Scripts"). `bin/common` establishes the following environment:
-
-- Sets `set -euo pipefail`.
-- Resolves and exports `PROJECT_ROOT` to the repository root.
-- Sources `bin/functions` (shared function library).
-- Loads `$ENV_FILE` (defaults to `$PROJECT_ROOT/.env`) into the process
-  environment. Fatals if the file does not exist.
-- Exports `PGPORT="$POSTGRES_PORT"`. `POSTGRES_PORT` is required; under `set -u`
-  an unset value aborts here rather than defaulting.
-- Exports `DB_SCHEMA_DIR` (defaults to `$PROJECT_ROOT/db/schema`), consumed by
-  `db-migrate` and `db-status`.
-
-**System-Xcode exception.** `is-nix`, `build-ios`, `install-ios`, `release-ios`,
-and `ios-scripts-tests` MUST NOT source `bin/common`; they source only
-`bin/functions` (for `log-info`/`fatal`) and resolve `PROJECT_ROOT` themselves.
-`bin/common` loads `.env` and assumes the Nix dev shell, but these scripts run
-under the **system** Xcode toolchain — never `nix develop` — so sourcing it
-would defeat their purpose. Bypassing `bin/common` does not mean they read no
-environment: `build-ios`, `install-ios`, and `release-ios` perform their own
-loading of the target file `ios-app/env/<target>.env`, the repo `.env`, and (for
-device work) `ios-app/env/signing.env` (see §III). Unlike `bin/common`, which
-fatals on a missing `$ENV_FILE`, `build-ios` tolerates a missing repo `.env` (it
-is sourced only when present).
-
-### Help Interface
-
-Every operational script directly invoked by the architect MUST define a
-`help()` function triggered by `-h` or `--help`. Test harnesses (`*-tests`,
-`test*`) are exempt. The structure:
-
-```bash
-help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
-  cat << 'EOF'
-<script-name> [options] [arguments]
-
-<description>
-
-Options:
-  -h, --help: Help
-EOF
-  exit "$exit_code"
-}
-```
-
-- Called with no arguments: prints usage, exits `0`.
-- Called with an error message: prints the message to stderr, prints usage,
-  exits `1`.
-
-> **Sanctioned deviation:** `bin/test`'s `help()` error branch exits `2`, not
-> the template's `1`, to keep caller-side usage errors distinct from a test-run
-> failure's `1`. This is the Exit Codes multi-code rule below applied directly;
-> see §III "Test Suites".
-
-> **Sanctioned deviation:** the `infra-*` wrappers (`infra-init`, `infra-plan`,
-> `infra-apply`, `infra-output`, `infra-bootstrap`) define no `help()`. Each is
-> a one-line `exec tofu -chdir=… "$@"` passthrough, so `-h`/`--help` is
-> forwarded to `tofu`, which owns the usage text. See §III "Infrastructure &
-> Deploy Scripts".
-
-### Exit Codes
-
-- `0`: success.
-- Non-zero: MUST be documented in the script's `help()` output. Scripts MUST
-  define distinct non-zero codes when there are multiple failure reasons, so
-  calling scripts can distinguish why a dependency failed. `bin/test` is the
-  canonical instance: usage errors exit `2` (its `help()` error branch), a
-  test-run failure propagates `gradlew`'s `1` through `exec`.
-
-### Logging
-
-All log output MUST go to stderr. Three functions:
-
-| Function      | Prefix      | Side Effects                                    |
-| ------------- | ----------- | ----------------------------------------------- |
-| `log-info`    | None.       | None.                                           |
-| `log-warning` | `[WARNING]` | None.                                           |
-| `fatal`       | `[FATAL]`   | Exits with the given status code (default `1`). |
-
-### Path Resolution
-
-All scripts MUST refer to other scripts and files using absolute paths,
-typically via `$PROJECT_ROOT` (e.g., `"$PROJECT_ROOT/bin/<script>"`).
-
-### Shared Cluster
-
-The PostgreSQL cluster is shared by every git worktree; isolation is
-per-database only. Test harnesses that use the shared cluster MUST NOT stop or
-wipe it. A harness that needs cluster-lifecycle control MUST stand up its own
-private cluster (private `POSTGRES_DATA_DIR` + port).
-
-### Cluster Lifecycle Ownership
-
-The schema/DDL scripts — `db-create`, `db-create-role`, and `db-migrate` — MUST
-connect to an already-running cluster reachable at `PGHOST:PGPORT` and MUST NOT
-start or initialise one (no `initdb`, no `postgres-up`, no `pg_ctl`). Cluster
-startup is owned by the environment: locally `bin/test` runs `postgres-up`
-before `db-reset`, `bin/db-scripts-tests` stands up its own private cluster, and
-in production managed RDS supplies the running cluster. The local and deploy
-paths do not fork on cluster provisioning.
-
-### Admin-Grant Bootstrap Exception
-
-`bin/admin-grant` is the **sole sanctioned exception** to the bin-layer rule
-that schema mutations route through the typed DAOs. It MUST set `is_admin` via a
-single `psql` transaction that reads-and-bumps the row's `version` in one
-`UPDATE`, so the in-app versioning, timestamp, and history-capture triggers
-still fire and the change lands in `users_versions` like any other versioned
-write. It exists only to mint the **first** admin — the in-tool grant path
-cannot be used until an admin exists. All subsequent grants/revocations MUST go
-through the in-tool DAO path, not this script. No other `bin/` script may issue
-raw entity-mutating SQL.
-
-### Port Liveness
-
-A script that must determine whether a TCP port is already served MUST probe it
-with a pure-bash `/dev/tcp` connect (`exec 3<>/dev/tcp/127.0.0.1/$PORT` succeeds
-iff something accepts the connection) — occupant-agnostic, dependency-free, and
-reliable: it refuses instantly on a closed port with no hang and needs no
-timeout. It MUST NOT use `nc -z` (reports bound ports as closed on BSD/macOS) or
-an HTTP `curl` probe (misses a non-HTTP listener). `bin/test-fuzz` applies this
-as a port guard: it fatals on an already-served target port before building or
-booting its own rest-server.
-
----
-
-## III. Behavioral Contracts
+## II. Behavioral Contracts
 
 > Per-script argument details are intentionally omitted — run `<script> --help`
 > or read the source. This section covers only non-obvious invariants and
@@ -261,25 +122,35 @@ server.
 
 ### Daemons
 
-Individual daemons use the Daemon Lifecycle scripts (§III) and follow the naming
+Individual daemons use the Daemon Lifecycle scripts (§II) and follow the naming
 convention `<service>-{up,down,bounce,check}`. A daemon MAY additionally provide
 `<service>-wait-for-health`, which blocks until the daemon is healthy. "Healthy"
 is defined by the logic in each script.
 
-Current daemons: `rest-server`, `queue-worker`, `admin-server`.
+Current daemons: `rest-server`, `queue-worker`, `admin-server`, `public-web`.
 
-| Script                  | Behavior                                                                                                                                            |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists.            |
-| `<svc>-down`            | Delegates to `daemon-down`.                                                                                                                         |
-| `<svc>-bounce`          | Delegates to `daemon-bounce`.                                                                                                                       |
-| `<svc>-check`           | Runs the service's health check — an HTTP `GET /healthz` probe (`rest-server`, `admin-server`) or PID liveness via `daemon-check` (`queue-worker`). |
-| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                                    |
+| Script                  | Behavior                                                                                                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists.                          |
+| `<svc>-down`            | Delegates to `daemon-down`.                                                                                                                                       |
+| `<svc>-bounce`          | Runs `<svc>-down` then `<svc>-up` (e.g. `rest-server`, `queue-worker`, `admin-server`, `public-web`).                                                             |
+| `<svc>-check`           | Runs the service's health check — an HTTP `GET /healthz` probe (`rest-server`, `admin-server`, `public-web`) or PID liveness via `daemon-check` (`queue-worker`). |
+| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                                                  |
 
 `admin-server-check` and `admin-server-wait-for-health` probe `GET /healthz` on
 `ADMIN_SERVER_PORT` (default `8081`) — a dedicated port variable, distinct from
 the rest-server's `PORT`, because the admin server runs as a separate process
 alongside the rest-server.
+
+`public-web-check` and `public-web-wait-for-health` probe `GET /healthz` on
+`PUBLIC_WEB_PORT` (default `8082`) via `curl -sf` — a dedicated port variable,
+distinct from `PORT` and `ADMIN_SERVER_PORT`, because the public-web server runs
+as its own separate process. `public-web-up` fatals if the `installDist` binary
+at `public-web/build/install/public-web/bin/public-web` is absent (directing to
+`bin/build-public-web`), starts the daemon via `daemon-up`, then blocks on
+`public-web-wait-for-health` (a `wait-for` poll of `public-web-check`, default
+timeout `4s`). `public-web-bounce` runs `public-web-down` then `public-web-up`.
+`admin-server-bounce` likewise runs `admin-server-down` then `admin-server-up`.
 
 ---
 
@@ -287,8 +158,9 @@ alongside the rest-server.
 
 `bin/build` builds all Kotlin source. It delegates to per-module
 `bin/build-<module>` scripts in dependency order:
-`common → db → service → queue → net → rest-server → queue-worker → admin-server`.
-Fast-fails on the first module failure.
+`common → db → service → queue → net → rest-server → queue-worker → admin-server → public-web`.
+`public-web` depends only on `:common`, so its build position is unconstrained;
+it is appended last. Fast-fails on the first module failure.
 
 Each `bin/build-<module>` script runs exactly one `./gradlew` task via `exec`:
 `:module:assemble` for libraries, `:module:installDist` for daemons.
@@ -459,7 +331,8 @@ placed before env resolution so the guard message wins over a missing-env error.
   triggers); **observably repeatable** — re-running bumps `version` again, it is
   not idempotent. Fatals if PostgreSQL is offline, on a `psql` failure, or when
   no active user matches the email. Connects as `POSTGRES_USER` to
-  `POSTGRES_DB`. See the Admin-Grant Bootstrap Exception invariant (§II).
+  `POSTGRES_DB`. See the Admin-Grant Bootstrap Exception invariant in
+  [`INVARIANTS.md`](./INVARIANTS.md).
 
 ---
 
@@ -579,12 +452,13 @@ DB and port). Five lifecycle-ownership models exist:
 - **`bin/test`**: Test orchestrator owning a closed, validated CLI. It parses
   its own options and never forwards raw arguments to `gradlew` (no `--`
   passthrough). Positional arguments are friendly module names
-  (`common db net queue queue-worker rest-server service email chat` — a
-  hardcoded set kept in sync with `settings.gradle.kts` by hand), each mapped to
-  an explicit `:<module>:<task>` task; repeats are de-duplicated. The per-module
-  `<task>` is `test` by default, or `check` when the optional leading `check`
-  keyword is given (`bin/test check [module ...]`) — Gradle's `check` runs
-  ktlint plus tests for a full Kotlin verification over the same Postgres
+  (`common db net queue queue-worker rest-server service email chat admin-server
+  public-web`
+  — a hardcoded set kept in sync with `settings.gradle.kts` by hand), each
+  mapped to an explicit `:<module>:<task>` task; repeats are de-duplicated. The
+  per-module `<task>` is `test` by default, or `check` when the optional leading
+  `check` keyword is given (`bin/test check [module ...]`) — Gradle's `check`
+  runs ktlint plus tests for a full Kotlin verification over the same Postgres
   lifecycle, and is the form the `bin/pre-commit` Kotlin gate invokes. `check`
   is a keyword, not a module and not an option. Unknown modules and unknown
   options are rejected, never forwarded. **Core invariant:** `bin/test` always
@@ -596,10 +470,11 @@ DB and port). Five lifecycle-ownership models exist:
   Argument validation completes **before** any side effect, so an invalid
   invocation (unknown module/option, `--tests` without exactly one module) fails
   without resetting the test database. Exit codes: usage errors exit `2` (the
-  `help()` error branch, §II sanctioned deviation); a test run that executed but
-  did not all pass propagates `gradlew`'s `1` unchanged through `exec`; success
-  and `--help` exit `0`; downstream lifecycle failures propagate their own codes
-  via `set -e`. After validation, under `set -e`, runs in order: `postgres-up` →
+  `help()` error branch, a sanctioned deviation per
+  [`INVARIANTS.md`](./INVARIANTS.md)); a test run that executed but did not all
+  pass propagates `gradlew`'s `1` unchanged through `exec`; success and `--help`
+  exit `0`; downstream lifecycle failures propagate their own codes via
+  `set -e`. After validation, under `set -e`, runs in order: `postgres-up` →
   `db-reset` → `db-tests` → `exec gradlew` with the constructed task list. The
   `db-tests` step runs sequentially (never backgrounded), after migration and
   before the terminal `exec`; a non-zero shell-harness exit aborts the run
@@ -662,13 +537,14 @@ DB and port). Five lifecycle-ownership models exist:
 `.git/hooks` is not version-controlled), and prints activation instructions.
 
 **`bin/compile-skills.py`**: Python; exempt from the shell-script invariants in
-§II (sources nothing, defines no `help()`). Regenerates the aggregated
-`.agents/skills/*-review-chain/SKILL.md` files from the `*-review-*`
-micro-skills. Idempotent; overwrites the generated files in place.
+[`INVARIANTS.md`](./INVARIANTS.md) (sources nothing, defines no `help()`).
+Regenerates the aggregated `.agents/skills/*-review-chain/SKILL.md` files from
+the `*-review-*` micro-skills. Idempotent; overwrites the generated files in
+place.
 
 ---
 
-## IV. Infrastructure & Environment
+## III. Infrastructure & Environment
 
 - **Shell**: All scripts target `bash` via `#!/usr/bin/env bash`.
 - **Toolchain**: Provided by `flake.nix` (`temurin-bin-21`, `postgresql_18`,
@@ -712,9 +588,12 @@ micro-skills. Idempotent; overwrites the generated files in place.
   port guard, boot, registration, and fuzz target. `ADMIN_SERVER_PORT` (default
   `8081`) is the admin daemon's bind port, read by
   `admin-server-check`/`admin-server-wait-for-health`, and is independent of
-  `PORT`. `db-create-role` (and `db-bootstrap` via it) additionally require
-  `DATABASE_USER`, `DATABASE_PASSWORD`, and `POSTGRES_USER`, and honor
-  `POSTGRES_ADMIN_DB` (default `postgres`). `deploy` additionally honors
+  `PORT`. `PUBLIC_WEB_PORT` (default `8082`) is the public-web daemon's bind
+  port, read by `public-web-check`/`public-web-wait-for-health`, and is likewise
+  independent of `PORT` and `ADMIN_SERVER_PORT`. `db-create-role` (and
+  `db-bootstrap` via it) additionally require `DATABASE_USER`,
+  `DATABASE_PASSWORD`, and `POSTGRES_USER`, and honor `POSTGRES_ADMIN_DB`
+  (default `postgres`). `deploy` additionally honors
   `AWS_REGION`/`AWS_DEFAULT_REGION` (default `us-east-1`).
 - **Shared cluster, per-database isolation**: every git worktree shares one
   PostgreSQL cluster at the checkout-independent absolute path
@@ -724,7 +603,7 @@ micro-skills. Idempotent; overwrites the generated files in place.
 
 ---
 
-## V. History
+## IV. History
 
 - [x] [RFC-02: Hello World OpenAPI Spec](../rfc/02-hello-world-open-api-spec.md)
 - [x] [RFC-03: Daemon Scripts](../rfc/03-daemon-scripts.md)
@@ -768,3 +647,10 @@ micro-skills. Idempotent; overwrites the generated files in place.
       `admin-grant` (the sole sanctioned raw-SQL entity mutation, minting the
       first admin); wired `admin-server` into `bin/test` and
       `build-admin-server` into `bin/build`.
+- [x] [RFC-61: Public Web Module (Dynamic HTML via Shared Layout)](../rfc/61-static-marketing-site.md)
+      — added `build-public-web` and the
+      `public-web-{up,down,bounce,check,wait-for-health}` daemon scripts (HTTP
+      `GET /healthz` health probe on `PUBLIC_WEB_PORT`, default `8082`);
+      backfilled `admin-server-bounce` (`admin-server-down` then
+      `admin-server-up`); wired `public-web` into `bin/test` `MODULES` and
+      `build-public-web` last into `bin/build`.
