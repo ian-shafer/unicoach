@@ -51,12 +51,36 @@ but the test DB.
 Feature work is designed in numbered RFCs under `rfc/` (`NN-title.md`). The
 binding convention: **a committed/implemented RFC is immutable — NEVER edit
 it.** The design still evolves, but a changed decision lands in a **new,
-higher-numbered RFC** that carries the change into the code and `SPEC.md`; the
-earlier RFC's file is left exactly as committed. **An RFC's prose references the
-`SPEC.md` and code — never another RFC**, even when changing an earlier
-decision. Code + applied migrations are the source of truth for current
-behaviour — when an RFC and the code disagree, the code wins. See
-[`rfc/README.md`](rfc/README.md) for the full convention.
+higher-numbered RFC** that carries the change into the code, `SPEC.md`, and (if
+a durable guarantee changes) `INVARIANTS.md`; the earlier RFC's file is left
+exactly as committed. **An RFC's prose references the `SPEC.md` and code — never
+another RFC**, even when changing an earlier decision. Code + applied migrations
+are the source of truth for current behaviour — when an RFC and the code
+disagree, the code wins. See [`rfc/README.md`](rfc/README.md) for the full
+convention.
+
+## Specs and invariants
+
+A documented directory carries up to **two sibling Markdown files** with
+strictly separated mandates. They exist for LLM consumption — a context-window
+substitute for reading the directory:
+
+- **`SPEC.md` — descriptive.** States _what the code does_ (present tense), so
+  an LLM gets context without reading every file. It carries **no**
+  `MUST`/`NEVER` language and no "Invariants" section. It is **fully LLM-managed
+  with no human gate**, and is expected to change whenever the code changes — a
+  convenience layer, not a contract. Authored/synced by the `spec-writer` /
+  `spec-sync-loop` skills.
+- **`INVARIANTS.md` — prescriptive.** Records the **few** durable guarantees
+  that must remain true as the code evolves (typically 0–5; **often none, in
+  which case the file is simply absent**), each as a **Rule** plus a **Why**. A
+  true invariant is prescriptive, not type-enforced, breaks something real if
+  violated, and is specific to this directory — most "musts" do **not** qualify.
+  It is **human-gated** (kept small and reviewed). Authored by the
+  `invariants-writer` skill.
+
+Treat both as point-in-time descriptions: the **code + applied migrations remain
+the source of truth**. When a file and the code disagree, the code wins.
 
 ## Transient pipeline output
 
