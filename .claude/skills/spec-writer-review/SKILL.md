@@ -51,26 +51,28 @@ Evaluate the `SPEC.md` against every criterion below. Do not skip steps.
 
 ### 1. Spec Identification
 
-Identify the `SPEC.md` file to review. If the user has already provided the
-file content or path, use it immediately. Only ask for the path if it is
-absent from the current context.
+Identify the `SPEC.md` file to review. If the user has already provided the file
+content or path, use it immediately. Only ask for the path if it is absent from
+the current context.
 
 Also identify the **target directory** the spec describes (the directory
 containing `SPEC.md` or explicitly referenced by the user).
 
 ### 2. Structure Verification
 
-Verify the spec contains these exact required sections from `spec-writer/SKILL.md §3`:
+Verify the spec contains these exact required sections from
+`spec-writer/SKILL.md §3`:
 
 - `## I. Overview`
-- `## II. Invariants`
-- `## III. Behavioral Contracts`
-- `## IV. Infrastructure & Environment`
-- `## V. History`
+- `## II. Behavioral Contracts`
+- `## III. Infrastructure & Environment`
+- `## IV. History`
 
 Missing or misspelled required sections: flag as `Critical`. Extra sections are
-permitted (e.g., `## II-B. Data Types`). Do not stop to ask the user — proceed
-with the remaining review.
+permitted (e.g., `## II-B. Data Types`). An `## Invariants` section is **not**
+permitted — invariants live in the sibling `INVARIANTS.md`; flag its presence in
+`SPEC.md` as `Major` (see §4). Do not stop to ask the user — proceed with the
+remaining review.
 
 ### 3. Overview
 
@@ -81,64 +83,53 @@ Verify:
   currently is.
 - Avoids narrative filler (e.g., "This module was created to...").
 
-### 4. Invariants
+### 4. No Prescriptive Language (the descriptive/prescriptive split)
 
-This is the highest-signal section. Evaluate rigorously:
+`SPEC.md` is **descriptive only**. Durable guarantees and prohibitions live in
+the sibling `INVARIANTS.md` (authored by the `invariants-writer` skill). Enforce
+the split:
 
-- **Testability**: Every invariant MUST use strong modal verbs: `MUST`, `MUST
-  NOT`, `NEVER`. Flag any invariant using `should`, `try to`, `ideally`, or
-  similar weak language as `Major`.
-- **Completeness**: Cross-reference the actual source files in the target
-  directory. Identify durable *guarantees* present in the code that are
-  **absent** from the Invariants section — a guarantee earns an invariant only
-  if a plausible wrong change would violate it AND there is a deliberate reason
-  it must hold. Flag missing invariants as `Critical` (if a core contract) or
-  `Major` (if a significant edge case). A type's supertype list, the capability
-  interfaces it implements, or its field roster is NOT, by itself, a missing
-  invariant — restating it is transcription (see Transcription Smell). The test:
-  "`Convo` MUST NOT implement `Versioned`" (OCC deliberately disabled) is a
-  guarantee worth flagging if absent; "`ConvoResponse` MUST implement
-  `Identifiable<ConvoResponseId>`" is transcription — no plausible change strips
-  an entity of its identity, and the data class declaration already states it.
-- **Accuracy**: Flag any invariant that contradicts the current code as
-  `Critical`.
-- **Scope**: Flag invariants that describe *how* the system was built (narrative
-  history) rather than *what* it enforces. These belong in `## V. History`.
-- **Layer Purity**: Flag any invariant or contract that references a consuming or
-  sibling layer the module does not depend on (e.g. HTTP, Ktor, persistence,
-  another module's dispatcher) as `Major` — this is a coupling leak. Apply the
-  **Dependency-Change Test**: if a change to a *dependency's* internals (with this
-  module's own code untouched) would force an edit to the line, it has leaked that
-  dependency's implementation — flag `Major`. Describing what a collaborator does
-  with execution context (e.g. "runs on `Database`'s IO dispatcher") is such a leak.
-- **Signal / Generality**: Flag any invariant or contract that applies generically
-  to all or most classes in the module or across the codebase (e.g. "MUST NOT
-  manage execution context on behalf of collaborators", "MUST handle its own
-  errors") as `Minor` — a module spec carries only module-specific guarantees;
-  universal principles are noise that dilute real invariants. Recommend deletion,
-  not rewording.
-- **Transcription Smell**: Flag invariants that merely restate an implementation
-  call, hard-code a default value, or mirror a type's declaration — rather than
-  the guarantee that survives a refactor — as `Minor`. The most common form in
-  this codebase is **capability/shape transcription**: "`X` MUST implement
-  `Identifiable<…>`/`Created`/`Updated`", "carries fields `a`, `b`, `c`", or any
-  bullet that just re-lists a data class's supertypes or property roster. The
-  source already states all of that; an invariant must instead capture the
-  *deliberate decision* a refactor could wrongly undo — e.g. the ABSENCE of a
-  capability ("MUST NOT implement `Versioned`"), an append-only constraint
-  ("`Created` only — never `Updated` or `SoftDeletable`"), or a backing-type
-  choice ("wraps `Long`, MUST NOT be modeled as `UUID`"). Forbidding a specific
-  *mechanism* (e.g. "MUST NOT contain `withContext`") is also transcription; note
-  that the fix is often deletion — if the underlying rule is a universal
-  principle, do not reword it into one (see Signal / Generality).
+- **Modal prescription**: Flag any line in `SPEC.md` that uses `MUST`,
+  `MUST
+  NOT`, `NEVER`, `SHALL`, or `REQUIRED` as `Major`. The behavior may be
+  worth describing in the present tense, but the prescriptive form belongs in
+  `INVARIANTS.md`. Recommend either (a) restate descriptively ("`from` returns
+  `Result.failure` on a missing key"), or (b) move to `INVARIANTS.md` if it is a
+  durable guarantee. Weak modals (`should`, `try to`, `ideally`) are also
+  flagged `Major` — they are vague and non-descriptive.
+- **An `## Invariants` section present in `SPEC.md`**: Flag as `Major`. Its
+  content must be re-expressed descriptively (kept in SPEC.md) or relocated to
+  `INVARIANTS.md` (the true invariants only). Do not evaluate whether the
+  invariants themselves are well-formed — that is the `invariants-writer`
+  skill's job, reviewed against `INVARIANTS.md`, not here.
+- **Descriptive accuracy**: Flag any statement that contradicts the current code
+  as `Critical`.
+- **Descriptive completeness**: Cross-reference the source. Flag a public
+  interface (class, function, script, endpoint) with no behavioral description
+  as `Critical` (primary interface) or `Major` (secondary/utility). The spec's
+  job is to let an LLM reason about the directory without opening the source.
+- **Scope**: Flag any line that narrates _how_ the system was built rather than
+  _what_ it currently does. Narrative history belongs in `## IV. History`.
+- **Layer Purity**: Flag any line that references a consuming or sibling layer
+  the module does not depend on (e.g. HTTP, Ktor, persistence, another module's
+  dispatcher) as `Major` — a coupling leak. Apply the **Dependency-Change
+  Test**: if a change to a _dependency's_ internals (with this module's own code
+  untouched) would force an edit to the line, it has leaked that dependency's
+  implementation. Describing what a collaborator does internally (e.g. "runs on
+  `Database`'s IO dispatcher") is such a leak.
+- **Transcription Smell**: Flag lines that copy a type's declaration —
+  re-listing a data class's supertypes or field roster ("carries fields `a`,
+  `b`, `c`"), or transcribing an implementation call (`withContext(x)`) when the
+  observable behavior is the point — as `Minor`. Describe behavior at a useful
+  altitude; the source already states its own shape.
 
 ### 5. Behavioral Contracts
 
 Evaluate depth across these axes:
 
 - **Coverage**: Every public interface in the target directory (classes,
-  functions, scripts, endpoints) MUST have a corresponding contract entry.
-  Flag missing entries as `Critical` (primary interfaces) or `Major`
+  functions, scripts, endpoints) MUST have a corresponding contract entry. Flag
+  missing entries as `Critical` (primary interfaces) or `Major`
   (secondary/utility interfaces).
 - **Side Effects**: Each contract MUST explicitly document side effects (DB
   writes, network calls, file mutations). Flag vague or absent side-effect
@@ -147,8 +138,8 @@ Evaluate depth across these axes:
   return types or exit codes — not vague "returns error" statements. Flag
   missing or imprecise error specifications as `Major`.
 - **Idempotency**: For each operation, idempotency MUST be explicitly stated
-  (`Idempotent: yes/no` or equivalent). Flag absent idempotency declarations
-  on stateful operations as `Minor`.
+  (`Idempotent: yes/no` or equivalent). Flag absent idempotency declarations on
+  stateful operations as `Minor`.
 
 ### 6. Infrastructure & Environment
 
@@ -165,9 +156,9 @@ Verify:
 
 Verify:
 
-- Apply the RFC Discovery Algorithm from `spec-writer/SKILL.md §2`: scan
-  `rfc/` for every RFC whose `Files Modified` section references a path within
-  the target directory.
+- Apply the RFC Discovery Algorithm from `spec-writer/SKILL.md §2`: scan `rfc/`
+  for every RFC whose `Files Modified` section references a path within the
+  target directory.
 - Every discovered RFC MUST appear as a checked entry:
   `- [x] [RFC-N: Title](../rfc/N-title.md)`.
 - Flag any missing RFC as `Major`.
@@ -179,7 +170,7 @@ Verify:
 
 Evaluate overall spec density against `spec-writer/SKILL.md §3 Core Philosophy`:
 
-- **Too sparse**: If the spec is missing contracts or invariants that an LLM
+- **Too sparse**: If the spec is missing behavioral descriptions that an LLM
   would need to reason about the module without opening the source files, flag
   as `Major`.
 - **Too verbose**: If the spec duplicates type definitions, copies code
@@ -190,7 +181,7 @@ Evaluate overall spec density against `spec-writer/SKILL.md §3 Core Philosophy`
 - **No cross-layer leaks**: Flag any reference to an ephemeral RFC artifact that
   a spec reader cannot resolve from the spec itself — most commonly RFC
   decision-IDs such as `(D-3)` or `(D-8 / D-9)`. A spec is a durable,
-  self-contained blueprint; the *reason* must be stated inline, never cited by
+  self-contained blueprint; the _reason_ must be stated inline, never cited by
   RFC decision label. Flag as `Minor`.
 
 ### 9. Link and Reference Accuracy

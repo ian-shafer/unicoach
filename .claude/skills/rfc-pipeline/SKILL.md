@@ -32,11 +32,15 @@ Two execution mechanisms, chosen by whether the phase needs a human in the loop:
   _persistent_ worktree on the `pipeline/rfc-<n>` branch instead. Running each
   pipeline in its own worktree is exactly what lets multiple RFC pipelines
   proceed concurrently without colliding on a shared working tree.
-- **Interactive phases → a separate conversation.** Design and spec-sync need
-  live back-and-forth with the Architect, which a background agent cannot do.
-  For these, give the Architect a copy-pasteable prompt to run in a **new
-  conversation**, then pause and wait for them to return. The stated reason is
-  _"to keep my context window clean so I can stay focused on my job."_
+- **Interactive phases → a separate conversation.** Design needs live
+  back-and-forth with the Architect, which a background agent cannot do. For it,
+  give the Architect a copy-pasteable prompt to run in a **new conversation**,
+  then pause and wait for them to return. The stated reason is _"to keep my
+  context window clean so I can stay focused on my job."_ Note that **SPEC.md
+  synchronization is no longer interactive** — it is LLM-managed and runs as a
+  background agent (Phase 3a). The only Phase 3 human touchpoint is the
+  **minimal, inline** review gate for `INVARIANTS.md` (Phase 3b), handled in
+  this orchestrator conversation, not a separate one.
 
 Use `subagent_type: general-purpose` for all background agents (it has full tool
 access and can invoke the sibling skills). Continue an existing background agent
@@ -83,14 +87,42 @@ concurrent pipelines never contend for the working tree.
 
 ### Phase 0 — pipeline worktree (before Phase 1)
 
-Create a dedicated worktree on a new pipeline branch off the default branch, and
-record the base commit. The worktree isolates this run so several pipelines can
-proceed at once:
+**First, pick the next free RFC number `<n>` — and claim it by creating the
+worktree.** The committed `rfc/NN-*.md` files are NOT the only claim on a
+number: a concurrent pipeline reserves its number the moment it creates the
+`pipeline/rfc-<n>` branch and worktree, **before** any RFC file is committed.
+Choosing a number by looking only at committed files will collide with an
+in-flight pipeline. So `<n>` must be greater than **both**:
+
+- the highest committed `rfc/NN-*.md`, **and**
+- the highest existing `pipeline/rfc-NN` branch or `../unicoach-rfc-NN`
+  worktree.
+
+```sh
+ls rfc/ | grep -oE '^[0-9]+' | sort -n | tail -1          # highest committed RFC file
+git branch --list 'pipeline/rfc-*'                         # branches already claiming a number
+git worktree list                                          # worktrees already claiming a number
+```
+
+Take `<n>` = one past the max across all three. An existing `pipeline/rfc-<k>`
+branch or worktree — even one that is empty, clean, and sitting at the base
+commit — is an **active ownership claim by another run**; never reuse or
+repurpose it, treat its number as taken and move past it. **Creating your own
+worktree is what locks in your ownership**, so do it immediately and atomically
+before any design work, so a parallel pipeline starting at the same moment sees
+your branch and skips your number.
+
+Then create a dedicated worktree on a new pipeline branch off the default
+branch, and record the base commit. The worktree isolates this run so several
+pipelines can proceed at once:
 
 ```sh
 git rev-parse main                                          # base commit — record the literal SHA
 git worktree add -b pipeline/rfc-<n> ../unicoach-rfc-<n> main
 ```
+
+If `git worktree add` fails because the branch or path already exists, you
+guessed a taken number — bump `<n>` and retry rather than forcing past it.
 
 Set `<codebase-root>` to the absolute path of `../unicoach-rfc-<n>` and use it
 as the target for every agent and every `git -C "<codebase-root>" …` command.
@@ -157,11 +189,11 @@ before every spawn, so after the agent returns `git status --porcelain` is its
 **exact** footprint. Every spawn declares an allowlist; the orchestrator asserts
 the footprint is a subset of it.
 
-| Agent                             | May write (tracked)      | Post-run assertion                                                   |
-| --------------------------------- | ------------------------ | -------------------------------------------------------------------- |
-| `/rfc-review-loop`                | `rfc/<rfc-file>.md` only | porcelain ⊆ {the RFC}; any code/test write ⇒ **FAIL**                |
-| `/rfc-impl-review`, review chains | nothing                  | porcelain **empty** ⇒ pass; else **FAIL**                            |
-| `/rfc-impl`, `/rfc-impl-fix`      | code, tests, config      | porcelain contains **no `*/SPEC.md`** (the Spec Touch Ban, enforced) |
+| Agent                             | May write (tracked)      | Post-run assertion                                                                                       |
+| --------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `/rfc-review-loop`                | `rfc/<rfc-file>.md` only | porcelain ⊆ {the RFC}; any code/test write ⇒ **FAIL**                                                    |
+| `/rfc-impl-review`, review chains | nothing                  | porcelain **empty** ⇒ pass; else **FAIL**                                                                |
+| `/rfc-impl`, `/rfc-impl-fix`      | code, tests, config      | porcelain contains **no `*/SPEC.md` and no `*/INVARIANTS.md`** (the Spec/Invariants Touch Ban, enforced) |
 
 - `.scratch/` is gitignored, so review/impl chains may write reports there
   freely — those writes never appear in `git status --porcelain` and need no
@@ -243,8 +275,9 @@ stateDiagram-v2
     Option_D_Done --> Phase3_Sync : "Ready for Specs"
 
     state Phase3_Sync {
-        [*] --> Spec_Synchronization : "Prompt spec-sync-loop"
-        Spec_Synchronization --> Commit_Generation : "Specs sync complete"
+        [*] --> Spec_Synchronization : "Autonomous spec-sync-loop (bg agent)"
+        Spec_Synchronization --> Invariants_Gate : "SPEC.md synced"
+        Invariants_Gate --> Commit_Generation : "INVARIANTS.md approved inline"
         Commit_Generation --> [*] : "Architect commits code"
     }
 ```
@@ -337,11 +370,13 @@ any result as green.
 
    Checkpoint before spawning (`pipeline(rfc-<n>): before impl`); the spawn
    prompt MUST state the **write-scope** (code, tests, config — but **no
-   `*/SPEC.md`**) and the subagent rules (never commit, never stash). Print the
-   transparency line first, then spawn. Pause and wait for the agent to
-   complete. On return, **verify write-scope** (`git status --porcelain`
-   contains no `*/SPEC.md`), **independently re-run the test suite** (do not
-   trust the agent's green claim), and checkpoint (`pipeline(rfc-<n>): impl`).
+   `*/SPEC.md` and no `*/INVARIANTS.md`**) and the subagent rules (never commit,
+   never stash). Print the transparency line first, then spawn. Pause and wait
+   for the agent to complete. On return, **verify write-scope**
+   (`git status
+   --porcelain` contains no `*/SPEC.md` and no
+   `*/INVARIANTS.md`), **independently re-run the test suite** (do not trust the
+   agent's green claim), and checkpoint (`pipeline(rfc-<n>): impl`).
 
 2. **Autonomous Implementation Review**: Once implementation is complete, spawn
    a background agent with the **`Agent`** tool:
@@ -408,9 +443,9 @@ any result as green.
         (`pipeline(rfc-<n>): rfc-refine [i]`), then spawn a background agent
         running `/rfc-impl-fix` to apply only the RFC design changes
         incrementally to the existing implementation. The spawn prompt MUST
-        state the **write-scope** (code, tests, config — **no `*/SPEC.md`**) and
-        the subagent rules. You MUST pass the captured RFC design diff as the
-        action items to implement:
+        state the **write-scope** (code, tests, config — **no `*/SPEC.md` and no
+        `*/INVARIANTS.md`**) and the subagent rules. You MUST pass the captured
+        RFC design diff as the action items to implement:
         - **subagent_type**: `general-purpose`
         - **description**: `RFC impl fix — <rfc-file>`
         - **run_in_background**: `true`
@@ -472,40 +507,92 @@ any result as green.
    Repeat this loop until the Architect explicitly states they are done and
    satisfied (e.g., "done", "looks good", "ready for specs").
 
-### Phase 3: Specs & Commit
+### Phase 3: Specs, Invariants & Commit
 
-1. **Specification Synchronization**: For every directory that was modified
-   during the implementation phase, instruct the Architect to run the
-   `/spec-sync-loop` skill. Explain that they must open a **new conversation**
-   to do this _"to keep my context window clean so I can stay focused on my
-   job."_ Provide an explicit, copy-pasteable prompt they can use to start the
-   new conversation. This will ensure that all `SPEC.md` files are strictly
-   verified and updated via interactive `/spec-editor` sessions before the code
-   is committed. If a directory does not yet have a `SPEC.md` file, explicitly
-   instruct the Architect to run the `/spec-writer` skill first to
-   generate/author a new specification from the codebase and relevant RFCs
-   before running the sync loop.
+Phase 3 maintains two sibling per-directory documents with strictly separated
+mandates:
 
-   - **CRITICAL:** Do NOT print the final commit messages during this step.
-     Simply instruct them to sync the specs and return here once done.
+- **`SPEC.md`** — _descriptive_: what the code does, so an LLM gets context
+  without reading every file. **Fully LLM-managed, no human gate.** Synced
+  autonomously by a background agent (3a).
+- **`INVARIANTS.md`** — _prescriptive_: the few durable guarantees that must
+  remain true as the code evolves, each with its WHY. **Human-gated**, but the
+  review is minimal because invariants are few. Drafted by a background agent,
+  approved **inline in this orchestrator conversation** (3b).
 
-2. **Commit Message Generation & Code Approval**: Once the Architect confirms
-   the `SPEC.md` sync changes are done:
+First, determine the set of directories the implementation touched:
+`git -C "<codebase-root>" diff --name-only <base-sha> HEAD`, then reduce to the
+distinct source directories (exclude `rfc/` and the RFC file itself).
 
-   - **Squash the pipeline checkpoints**: collapse all WIP checkpoints into a
-     clean staging state with `git reset --soft <base-sha>` (the recorded base
-     SHA; working tree and index preserved, only the WIP history dropped). The
-     two final commits are created from this state.
-   - **Final independent test run**: before generating commit messages, re-run
-     the suite yourself (project test harness) and confirm it is green — do not
-     rely on any earlier agent report.
-   - Ingest the final workspace diff (`git diff <base-sha>` / `git status`).
-   - Generate and provide two formatted commit messages for the Architect to
-     copy-paste (following the repository's commit guidelines): one for the
-     new/updated RFC markdown document, and one for the actual code
-     implementation (including the synchronized specs).
-   - Instruct them to verify everything locally and manually commit the changes
-     once they approve. Wait for their confirmation that the code is committed.
+#### 3a. SPEC.md Synchronization (autonomous)
+
+Do NOT ask the Architect to copy-paste prompts and do NOT use `/spec-editor`.
+SPEC.md is LLM-managed. Spawn a background agent with the **`Agent`** tool:
+
+- **subagent_type**: `general-purpose`
+- **description**: `RFC spec sync — <rfc-file>`
+- **run_in_background**: `true`
+- **prompt**: instruct it to run `/spec-sync-loop` (3 iterations) on **each**
+  touched directory in `<codebase-root>` (creating a new `SPEC.md` via
+  `/spec-writer` where one is absent), and to **report any durable guarantee it
+  notices that belongs in `INVARIANTS.md`** (it must NOT write `INVARIANTS.md`
+  itself). The prompt MUST state the **write-scope** (`*/SPEC.md` files only —
+  **no `*/INVARIANTS.md`**, no code/test/config) and the subagent rules (never
+  commit, never stash).
+
+Checkpoint before spawning (`pipeline(rfc-<n>): before spec-sync`). Print the
+transparency line, then spawn. On return, **verify write-scope**
+(`git status
+--porcelain` ⊆ `SPEC.md` files; any code/test/`INVARIANTS.md` write
+⇒ reset and escalate) and checkpoint (`pipeline(rfc-<n>): spec-sync`).
+
+#### 3b. INVARIANTS.md (autonomous draft, minimal inline human gate)
+
+Spawn a background agent with the **`Agent`** tool:
+
+- **subagent_type**: `general-purpose`
+- **description**: `RFC invariants — <rfc-file>`
+- **run_in_background**: `true`
+- **prompt**: instruct it to run `/invariants-writer` on **each** touched
+  directory in `<codebase-root>`, distilling the few true invariants from each
+  directory's `SPEC.md` + code + in-scope RFCs through the five-gate filter, and
+  to **return the proposed `INVARIANTS.md` drafts plus the filter rationale**
+  (what it kept and, briefly, what it filtered out and why). It MUST NOT write
+  any `INVARIANTS.md` file to disk — `INVARIANTS.md` is human-gated; the
+  orchestrator owns the write. Many directories will legitimately yield **zero**
+  invariants and therefore **no file** — that is expected. The prompt MUST state
+  the **write-scope** (writes nothing tracked; reports only) and the subagent
+  rules.
+
+Checkpoint before spawning (`pipeline(rfc-<n>): before invariants`). On return,
+**verify write-scope** (`git status --porcelain` empty). Then run the **inline
+human gate**: present each proposed `INVARIANTS.md` (they are short — a handful
+of lines each) to the Architect in this conversation, note which directories
+yielded no invariants, and ask for approval or edits. Apply the
+Architect-approved invariants by writing the `INVARIANTS.md` files yourself,
+then checkpoint (`pipeline(rfc-<n>): invariants`).
+
+- **CRITICAL:** Do NOT print the final commit messages during this step.
+
+#### 3c. Commit Message Generation & Code Approval
+
+Once the SPEC.md sync is done and the Architect has approved the `INVARIANTS.md`
+files:
+
+- **Squash the pipeline checkpoints**: collapse all WIP checkpoints into a clean
+  staging state with `git reset --soft <base-sha>` (the recorded base SHA;
+  working tree and index preserved, only the WIP history dropped). The two final
+  commits are created from this state.
+- **Final independent test run**: before generating commit messages, re-run the
+  suite yourself (project test harness) and confirm it is green — do not rely on
+  any earlier agent report.
+- Ingest the final workspace diff (`git diff <base-sha>` / `git status`).
+- Generate and provide two formatted commit messages for the Architect to
+  copy-paste (following the repository's commit guidelines): one for the
+  new/updated RFC markdown document, and one for the actual code implementation
+  (including the synchronized `SPEC.md` and the approved `INVARIANTS.md` files).
+- Instruct them to verify everything locally and manually commit the changes
+  once they approve. Wait for their confirmation that the code is committed.
 
 3. **Land the branch & tear down the worktree**: Once the Architect confirms the
    commits exist on `pipeline/rfc-<n>` (inside the worktree), help them land the

@@ -1,33 +1,56 @@
 ---
 name: spec-sync-loop
 description: >-
-  A pre-configured macro skill that loops to ensure a directory's SPEC.md is
-  complete, accurate, and reflects the current codebase. Delegates execution
-  to skill-loop chaining spec-writer-review and spec-editor.
+  A pre-configured macro skill that autonomously loops to ensure a directory's
+  SPEC.md is complete, accurate, and reflects the current codebase. Delegates
+  execution to skill-loop chaining spec-writer-review and spec-writer. SPEC.md
+  is LLM-managed with no human gate; invariants are handled separately by
+  invariants-writer.
 ---
 
 # Spec Sync Loop
 
-This skill acts as a specific execution macro for the generic `skill-loop`.
-It ensures that a directory's `SPEC.md` stays strictly in sync with the codebase by adversarially reviewing it and then immediately passing findings to an interactive, human-in-the-loop editing session.
+This skill acts as a specific execution macro for the generic `skill-loop`. It
+keeps a directory's `SPEC.md` strictly in sync with the codebase by
+adversarially reviewing it and then immediately applying the findings — fully
+autonomously, with **no human-in-the-loop step**.
+
+`SPEC.md` is **descriptive** (what the code does) and is fully LLM-managed. This
+loop never touches `INVARIANTS.md` — the directory's prescriptive durable
+guarantees are authored and human-gated separately by the `invariants-writer`
+skill. If, while syncing, the loop notices a durable guarantee that belongs in
+`INVARIANTS.md`, it records the observation in its report for the orchestrator
+to route to `invariants-writer`; it does **not** write `INVARIANTS.md` itself.
 
 ## Invocation Parameters
 
 Invocation MUST define the following parameter:
 
-- **Target Directory**: The path to the directory containing the `SPEC.md` to be reviewed (e.g., `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/`).
+- **Target Directory**: The path to the directory containing the `SPEC.md` to be
+  synced (e.g., `rest-server/src/main/kotlin/ed/unicoach/rest/plugins/`).
 
 Invocation MAY optionally define:
-- **Iterations**: Integer count of total loop executions (Defaults to 1 if not specified, as human-in-the-loop typically resolves issues quickly).
 
-If the user does not provide a Target Directory in their prompt, you MUST pause and ask them to provide it before continuing.
+- **Iterations**: Integer count of total loop executions (Defaults to 3).
+
+If the user does not provide a Target Directory in their prompt, you MUST pause
+and ask them to provide it before continuing.
+
+If the target directory has no `SPEC.md` yet, the first `spec-writer` pass
+generates it from the codebase and in-scope RFCs.
 
 ## Execution
 
-Once the Target Directory is known, you MUST immediately delegate execution to `skill-loop/SKILL.md` using the following parameters:
+Once the Target Directory is known, you MUST immediately delegate execution to
+`skill-loop/SKILL.md` using the following parameters:
 
 - **Target**: <The Target Directory provided by the user>
-- **Iterations**: <The Iterations provided by the user, or 1 if unspecified>
-- **Skills Chain**: `spec-writer-review` -> `spec-editor`
+- **Iterations**: <The Iterations provided by the user, or 3 if unspecified>
+- **Skills Chain**: `spec-writer-review` -> `spec-writer`
 
-Follow the initialization and execution state machine instructions defined in `skill-loop/SKILL.md` exactly. The loop must first execute `spec-writer-review` to produce a findings report. Then, it MUST execute `spec-editor` to propose those findings interactively to the Architect for strict human approval before any edits are written to disk.
+Follow the initialization and execution state machine instructions defined in
+`skill-loop/SKILL.md` exactly. The loop first executes `spec-writer-review` to
+produce a findings report, then executes `spec-writer` to apply the accepted
+findings and regenerate the `SPEC.md`. This repeats until the review returns a
+PASS verdict (zero Critical, zero Major) or the iteration budget is exhausted.
+No interactive approval is solicited — `SPEC.md` is LLM-managed.
