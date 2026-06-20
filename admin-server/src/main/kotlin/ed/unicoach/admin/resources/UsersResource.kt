@@ -21,7 +21,9 @@ import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.SoftDeleteScope
+import ed.unicoach.db.models.StudentEdit
 import ed.unicoach.db.models.User
+import ed.unicoach.db.models.UserEdit
 import ed.unicoach.db.models.UserId
 import ed.unicoach.util.Argon2Hasher
 import io.ktor.server.application.call
@@ -98,13 +100,13 @@ class UsersResource(
     limit: Int,
     offset: Int,
     scope: SoftDeleteScope,
-  ): Result<List<User>> = db.withConnection { session -> UsersDao.listAll(session, scope, limit, offset) }
+  ): Result<List<User>> = db.withConnection { session -> UsersDao.list(session, scope, limit, offset) }
 
   override suspend fun get(
     db: Database,
     id: UserId,
     includeDeleted: Boolean,
-  ): Result<User> = db.withConnection { session -> UsersDao.findById(session, id, includeDeleted) }
+  ): Result<User> = db.withConnection { session -> UsersDao.findById(session, id, includeDeleted.toScope()) }
 
   override val create: (suspend (Database, Map<String, String>) -> Result<UserId>) = ::createUser
 
@@ -114,7 +116,7 @@ class UsersResource(
     { db, id ->
       db
         .withConnection { session ->
-          UsersDao.findById(session, id, includeDeleted = true).mapCatching { user ->
+          UsersDao.findById(session, id, SoftDeleteScope.ALL).mapCatching { user ->
             UsersDao.delete(session, id, user.version).getOrThrow()
           }
         }.map { }
@@ -124,7 +126,7 @@ class UsersResource(
     { db, id ->
       db
         .withConnection { session ->
-          UsersDao.findById(session, id, includeDeleted = true).mapCatching { user ->
+          UsersDao.findById(session, id, SoftDeleteScope.ALL).mapCatching { user ->
             UsersDao.undelete(session, id, user.version).getOrThrow()
           }
         }.map { }
@@ -194,17 +196,22 @@ class UsersResource(
       }
 
     return db.withConnection { session ->
-      val current = UsersDao.findById(session, id, includeDeleted = true).getOrThrow()
-      // Carry the form's version so the DAO's WHERE version = ? enforces OCC.
-      val edited =
-        current.copy(
-          version = formVersion,
-          email = email.value,
-          name = name.value,
-          displayName = displayName,
-          isAdmin = form["isAdmin"] == "true",
-        )
-      UsersDao.update(session, edited).map { }
+      // Confirm the row exists (including soft-deleted) before the OCC update;
+      // the form's version drives the DAO's WHERE version = ? enforcement.
+      UsersDao
+        .findById(session, id, SoftDeleteScope.ALL)
+        .mapCatching {
+          val edit =
+            UserEdit(
+              id = id,
+              version = formVersion,
+              email = email.value,
+              name = name.value,
+              displayName = displayName,
+              isAdmin = form["isAdmin"] == "true",
+            )
+          UsersDao.update(session, edit).getOrThrow()
+        }.map { }
     }
   }
 
@@ -240,8 +247,16 @@ class UsersResource(
       }
       db
         .withConnection { session ->
-          StudentsDao.findByUserId(session, userId, includeDeleted = true).mapCatching { existing ->
-            StudentsDao.update(session, existing.copy(expectedHighSchoolGraduationDate = parsed.value)).getOrThrow()
+          StudentsDao.findByUserId(session, userId, SoftDeleteScope.ALL).mapCatching { existing ->
+            StudentsDao
+              .update(
+                session,
+                StudentEdit(
+                  id = existing.id,
+                  version = existing.version,
+                  expectedHighSchoolGraduationDate = parsed.value,
+                ),
+              ).getOrThrow()
           }
         }.fold(
           onSuccess = { call.respondRedirect("/$slug/${userId.value}") },
@@ -253,7 +268,7 @@ class UsersResource(
       val userId = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondRedirect("/$slug")
       db
         .withConnection { session ->
-          StudentsDao.findByUserId(session, userId, includeDeleted = true).mapCatching { existing ->
+          StudentsDao.findByUserId(session, userId, SoftDeleteScope.ALL).mapCatching { existing ->
             StudentsDao.delete(session, existing.id, existing.version).getOrThrow()
           }
         }.fold(

@@ -96,7 +96,7 @@ class AuthService(
           SessionsDao
             .create(
               session = session,
-              newSession =
+              input =
                 ed.unicoach.db.models.NewSession(
                   userId = user.id,
                   tokenHash = newHash,
@@ -219,7 +219,7 @@ class AuthService(
         SessionsDao
           .create(
             session = session,
-            newSession =
+            input =
               ed.unicoach.db.models.NewSession(
                 userId = user!!.id,
                 tokenHash = newHash,

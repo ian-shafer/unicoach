@@ -11,6 +11,7 @@ import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.Student
+import ed.unicoach.db.models.StudentEdit
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
 import ed.unicoach.error.FieldError
@@ -93,7 +94,11 @@ class StudentService(
         val updateResult =
           StudentsDao.update(
             session,
-            existing.copy(expectedHighSchoolGraduationDate = parsed.value),
+            StudentEdit(
+              id = existing.id,
+              version = existing.version,
+              expectedHighSchoolGraduationDate = parsed.value,
+            ),
           )
         if (updateResult.isSuccess) {
           return@withConnection Result.success(UpdateStudentResult.Success(updateResult.getOrThrow()))

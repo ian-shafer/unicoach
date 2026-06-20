@@ -63,7 +63,7 @@ object SessionsResource : AdminResource<Session, SessionId> {
     limit: Int,
     offset: Int,
     scope: SoftDeleteScope,
-  ): Result<List<Session>> = db.withConnection { session -> SessionsDao.listAll(session, limit, offset) }
+  ): Result<List<Session>> = db.withConnection { session -> SessionsDao.list(session, limit, offset) }
 
   override suspend fun get(
     db: Database,
@@ -75,7 +75,7 @@ object SessionsResource : AdminResource<Session, SessionId> {
   override val update: (suspend (Database, SessionId, Map<String, String>) -> Result<Unit>)? = null
 
   override val delete: (suspend (Database, SessionId) -> Result<Unit>) =
-    { db, id -> db.withConnection { session -> SessionsDao.deleteById(session, id) } }
+    { db, id -> db.withConnection { session -> SessionsDao.destroy(session, id) } }
 
   override val undelete: (suspend (Database, SessionId) -> Result<Unit>)? = null
 

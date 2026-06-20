@@ -10,53 +10,32 @@ import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.SsoProviderId
 import ed.unicoach.db.models.User
+import ed.unicoach.db.models.UserEdit
 import ed.unicoach.db.models.UserId
 import ed.unicoach.db.models.UserVersion
+import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
 
-object UsersDao {
+object UsersDao :
+  SoftDeleteFindable<User, UserId>,
+  SoftDeleteListable<User>,
+  Creatable<NewUser, User>,
+  Updatable<UserEdit, User>,
+  OccDeletable<User, UserId>,
+  VersionHistory<UserId, UserVersion> {
   private fun mapUser(rs: ResultSet): User {
     val id = UserId(UUID.fromString(rs.getString("id")))
     val version = rs.getInt("version")
-    val createdAt = rs.getTimestamp("created_at").toInstant()
-    val updatedAt = rs.getTimestamp("updated_at").toInstant()
-    val deletedAt = rs.getTimestamp("deleted_at")?.toInstant()
+    val createdAt = rs.getInstant("created_at")
+    val updatedAt = rs.getInstant("updated_at")
+    val deletedAt = rs.getInstantOrNull("deleted_at")
 
     val email = (EmailAddress.create(rs.getString("email")) as ValidationResult.Valid).value
     val name = (PersonName.create(rs.getString("name")) as ValidationResult.Valid).value
     val displayNameStr = rs.getString("display_name")
     val displayName = displayNameStr?.let { (DisplayName.create(it) as ValidationResult.Valid).value }
-
-    val passwordHashStr = rs.getString("password_hash")
-    val ssoStr = rs.getString("sso_provider_id")
-
-    val authMethod =
-      when {
-        passwordHashStr != null && ssoStr != null -> {
-          AuthMethod.Both(
-            (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
-            (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
-          )
-        }
-
-        passwordHashStr != null -> {
-          AuthMethod.Password(
-            (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
-          )
-        }
-
-        ssoStr != null -> {
-          AuthMethod.SSO(
-            (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
-          )
-        }
-
-        else -> {
-          throw CorruptPersistedAuthMethodException(userId = id)
-        }
-      }
 
     return User(
       id = id,
@@ -67,7 +46,7 @@ object UsersDao {
       email = email,
       name = name,
       displayName = displayName,
-      authMethod = authMethod,
+      authMethod = readAuthMethod(rs, id),
       isAdmin = rs.getBoolean("is_admin"),
     )
   }
@@ -75,43 +54,14 @@ object UsersDao {
   private fun mapUserVersion(rs: ResultSet): UserVersion {
     val id = UserId(UUID.fromString(rs.getString("id")))
     val version = rs.getInt("version")
-    val createdAt = rs.getTimestamp("created_at").toInstant()
-    val updatedAt = rs.getTimestamp("updated_at").toInstant()
-    val deletedAt = rs.getTimestamp("deleted_at")?.toInstant()
+    val createdAt = rs.getInstant("created_at")
+    val updatedAt = rs.getInstant("updated_at")
+    val deletedAt = rs.getInstantOrNull("deleted_at")
 
     val email = (EmailAddress.create(rs.getString("email")) as ValidationResult.Valid).value
     val name = (PersonName.create(rs.getString("name")) as ValidationResult.Valid).value
     val displayNameStr = rs.getString("display_name")
     val displayName = displayNameStr?.let { (DisplayName.create(it) as ValidationResult.Valid).value }
-
-    val passwordHashStr = rs.getString("password_hash")
-    val ssoStr = rs.getString("sso_provider_id")
-
-    val authMethod =
-      when {
-        passwordHashStr != null && ssoStr != null -> {
-          AuthMethod.Both(
-            (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
-            (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
-          )
-        }
-
-        passwordHashStr != null -> {
-          AuthMethod.Password(
-            (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
-          )
-        }
-
-        ssoStr != null -> {
-          AuthMethod.SSO(
-            (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
-          )
-        }
-
-        else -> {
-          throw CorruptPersistedAuthMethodException(userId = id)
-        }
-      }
 
     return UserVersion(
       id = id,
@@ -122,39 +72,109 @@ object UsersDao {
       email = email,
       name = name,
       displayName = displayName,
-      authMethod = authMethod,
+      authMethod = readAuthMethod(rs, id),
       isAdmin = rs.getBoolean("is_admin"),
     )
   }
 
-  fun findById(
-    session: SqlSession,
+  /** Reconstructs the auth method from the two nullable auth columns. */
+  private fun readAuthMethod(
+    rs: ResultSet,
     id: UserId,
-    includeDeleted: Boolean = false,
-  ): Result<User> {
-    return try {
-      session.prepareStatement("SELECT * FROM users WHERE id = ?").use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) {
-            return Result.failure(NotFoundException())
-          }
-          val user = mapUser(rs)
-          if (!includeDeleted && user.deletedAt != null) {
-            return Result.failure(NotFoundException())
-          }
-          Result.success(user)
-        }
+  ): AuthMethod {
+    val passwordHashStr = rs.getString("password_hash")
+    val ssoStr = rs.getString("sso_provider_id")
+    return when {
+      passwordHashStr != null && ssoStr != null -> {
+        AuthMethod.Both(
+          (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
+          (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
+        )
       }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
+
+      passwordHashStr != null -> {
+        AuthMethod.Password(
+          (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
+        )
+      }
+
+      ssoStr != null -> {
+        AuthMethod.SSO(
+          (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
+        )
+      }
+
+      else -> {
+        throw CorruptPersistedAuthMethodException(userId = id)
+      }
     }
   }
+
+  /**
+   * Binds a single auth column at [index]: the `password_hash` value when
+   * [password] is true, else the `sso_provider_id` value. NULL (as
+   * `Types.VARCHAR`) when the [method] does not carry that credential. Used by
+   * the column-map `create` path, where each column binds independently by
+   * position.
+   */
+  private fun bindAuthMethodColumn(
+    stmt: PreparedStatement,
+    index: Int,
+    method: AuthMethod,
+    password: Boolean,
+  ) {
+    val value =
+      when (method) {
+        is AuthMethod.Both -> if (password) method.hash.value else method.providerId.value
+        is AuthMethod.Password -> if (password) method.hash.value else null
+        is AuthMethod.SSO -> if (password) null else method.providerId.value
+      }
+    stmt.setStringOrNull(index, value)
+  }
+
+  /** Binds the full auth-method column pair (password_hash, sso_provider_id). */
+  private fun bindAuthMethod(
+    stmt: PreparedStatement,
+    hashIndex: Int,
+    method: AuthMethod,
+  ) {
+    when (method) {
+      is AuthMethod.Both -> {
+        stmt.setString(hashIndex, method.hash.value)
+        stmt.setString(hashIndex + 1, method.providerId.value)
+      }
+
+      is AuthMethod.Password -> {
+        stmt.setString(hashIndex, method.hash.value)
+        stmt.setNull(hashIndex + 1, java.sql.Types.VARCHAR)
+      }
+
+      is AuthMethod.SSO -> {
+        stmt.setNull(hashIndex, java.sql.Types.VARCHAR)
+        stmt.setString(hashIndex + 1, method.providerId.value)
+      }
+    }
+  }
+
+  override fun findById(
+    session: SqlSession,
+    id: UserId,
+    scope: SoftDeleteScope,
+  ): Result<User> =
+    session
+      .queryOne(
+        "SELECT * FROM users WHERE id = ?",
+        bind = { it.setObject(1, id.value) },
+        map = ::mapUser,
+      ).mapCatching { user ->
+        if (!scope.admits(user.deletedAt)) throw NotFoundException()
+        user
+      }
 
   fun findByIdForUpdate(
     session: SqlSession,
     id: UserId,
-    includeDeleted: Boolean = false,
+    scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
   ): Result<User> {
     return try {
       session.prepareStatement("SELECT * FROM users WHERE id = ? FOR UPDATE NOWAIT").use { stmt ->
@@ -164,7 +184,7 @@ object UsersDao {
             return Result.failure(NotFoundException())
           }
           val user = mapUser(rs)
-          if (!includeDeleted && user.deletedAt != null) {
+          if (!scope.admits(user.deletedAt)) {
             return Result.failure(NotFoundException())
           }
           Result.success(user)
@@ -180,253 +200,119 @@ object UsersDao {
     }
   }
 
+  /** Whether a [SoftDeleteScope] admits a row with the given `deletedAt`. */
+  private fun SoftDeleteScope.admits(deletedAt: java.time.Instant?): Boolean =
+    when (this) {
+      SoftDeleteScope.ACTIVE -> deletedAt == null
+      SoftDeleteScope.DELETED -> deletedAt != null
+      SoftDeleteScope.ALL -> true
+    }
+
   fun findByEmail(
     session: SqlSession,
     email: EmailAddress,
-  ): Result<User> {
-    return try {
-      session.prepareStatement("SELECT * FROM users WHERE email = ? AND deleted_at IS NULL").use { stmt ->
-        stmt.setString(1, email.value)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) {
-            return Result.failure(NotFoundException())
-          }
-          Result.success(mapUser(rs))
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-  }
+  ): Result<User> =
+    session.queryOne(
+      "SELECT * FROM users WHERE email = ? AND deleted_at IS NULL",
+      bind = { it.setString(1, email.value) },
+      map = ::mapUser,
+    )
 
   fun findVersion(
     session: SqlSession,
     id: UserId,
     targetVersion: Int,
-  ): Result<UserVersion> {
-    return try {
-      session.prepareStatement("SELECT * FROM users_versions WHERE id = ? AND version = ?").use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.setInt(2, targetVersion)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) {
-            return Result.failure(NotFoundException())
-          }
-          Result.success(mapUserVersion(rs))
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-  }
+  ): Result<UserVersion> =
+    session.queryOne(
+      "SELECT * FROM users_versions WHERE id = ? AND version = ?",
+      bind = {
+        it.setObject(1, id.value)
+        it.setInt(2, targetVersion)
+      },
+      map = ::mapUserVersion,
+    )
 
-  fun create(
+  override fun create(
     session: SqlSession,
-    user: NewUser,
+    input: NewUser,
   ): Result<User> =
-    try {
-      val sql =
-        """
-        INSERT INTO users (email, name, display_name, password_hash, sso_provider_id, is_admin)
-        VALUES (?, ?, ?, ?, ?, ?)
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setString(1, user.email.value)
-        stmt.setString(2, user.name.value)
-        if (user.displayName != null) stmt.setString(3, user.displayName.value) else stmt.setNull(3, java.sql.Types.VARCHAR)
+    session.insertReturning(
+      table = "users",
+      columns =
+        linkedMapOf<String, Bind>(
+          "email" to { stmt, i -> stmt.setString(i, input.email.value) },
+          "name" to { stmt, i -> stmt.setString(i, input.name.value) },
+          "display_name" to { stmt, i -> stmt.setStringOrNull(i, input.displayName?.value) },
+          "password_hash" to { stmt, i -> bindAuthMethodColumn(stmt, i, input.authMethod, password = true) },
+          "sso_provider_id" to { stmt, i -> bindAuthMethodColumn(stmt, i, input.authMethod, password = false) },
+          "is_admin" to { stmt, i -> stmt.setBoolean(i, input.isAdmin) },
+        ),
+      map = ::mapUser,
+      mapError = ::mapCreateUpdateError,
+    )
 
-        when (val method = user.authMethod) {
-          is AuthMethod.Both -> {
-            stmt.setString(4, method.hash.value)
-            stmt.setString(5, method.providerId.value)
-          }
-
-          is AuthMethod.Password -> {
-            stmt.setString(4, method.hash.value)
-            stmt.setNull(5, java.sql.Types.VARCHAR)
-          }
-
-          is AuthMethod.SSO -> {
-            stmt.setNull(4, java.sql.Types.VARCHAR)
-            stmt.setString(5, method.providerId.value)
-          }
-        }
-        stmt.setBoolean(6, user.isAdmin)
-
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapUser(rs))
-          } else {
-            Result.failure(DatabaseException(RuntimeException("Insert succeeded but returning failed")))
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapCreateUpdateError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-
-  private fun doUpdate(
+  override fun update(
     session: SqlSession,
-    user: User,
+    edit: UserEdit,
   ): Result<User> =
-    try {
-      val sql =
-        """
-        UPDATE users
-        SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?, is_admin = ?
-        WHERE id = ? AND version = ?
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        val nextVersion = user.version + 1
-        stmt.setInt(1, nextVersion)
-        stmt.setString(2, user.email.value)
-        stmt.setString(3, user.name.value)
-        if (user.displayName != null) stmt.setString(4, user.displayName.value) else stmt.setNull(4, java.sql.Types.VARCHAR)
+    session.updateColumnsReturning(
+      table = "users",
+      id = edit.id.value,
+      currentVersion = edit.version,
+      columns =
+        linkedMapOf<String, Bind>(
+          "email" to { stmt, i -> stmt.setString(i, edit.email.value) },
+          "name" to { stmt, i -> stmt.setString(i, edit.name.value) },
+          "display_name" to { stmt, i -> stmt.setStringOrNull(i, edit.displayName?.value) },
+          "is_admin" to { stmt, i -> stmt.setBoolean(i, edit.isAdmin) },
+        ),
+      map = ::mapUser,
+      mapError = ::mapCreateUpdateError,
+    )
 
-        when (val method = user.authMethod) {
-          is AuthMethod.Both -> {
-            stmt.setString(5, method.hash.value)
-            stmt.setString(6, method.providerId.value)
-          }
-
-          is AuthMethod.Password -> {
-            stmt.setString(5, method.hash.value)
-            stmt.setNull(6, java.sql.Types.VARCHAR)
-          }
-
-          is AuthMethod.SSO -> {
-            stmt.setNull(5, java.sql.Types.VARCHAR)
-            stmt.setString(6, method.providerId.value)
-          }
-        }
-        stmt.setBoolean(7, user.isAdmin)
-        stmt.setObject(8, user.id.value)
-        stmt.setInt(9, user.version)
-
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapUser(rs))
-          } else {
-            // Because we could not find it, check if id exists to distinguish NotFound vs ConcurrentModification
-            session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
-              checkStmt.setObject(1, user.id.value)
-              checkStmt.executeQuery().use { checkRs ->
-                if (checkRs.next()) {
-                  Result.failure(ConcurrentModificationException())
-                } else {
-                  Result.failure(NotFoundException())
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapCreateUpdateError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-
-  fun update(
-    session: SqlSession,
-    user: User,
-  ): Result<User> = doUpdate(session, user)
-
+  /**
+   * Restores a full historical row (auth columns included) under the bypass GUC
+   * so the logical-timestamp trigger does not advance `created_at`. Two
+   * statements in the caller's transaction: the `SET LOCAL` bypass, then the
+   * full-row OCC update.
+   */
   fun updatePhysicalRecord(
     session: SqlSession,
     user: User,
-  ): Result<User> =
-    try {
-      session.prepareStatement("SET LOCAL unicoach.bypass_logical_timestamp = 'true'").use { it.execute() }
-      doUpdate(session, user)
-    } catch (e: SQLException) {
-      Result.failure(mapDatabaseError(e))
+  ): Result<User> {
+    val bypass = session.execute("SET LOCAL unicoach.bypass_logical_timestamp = 'true'")
+    if (bypass.isFailure) {
+      return Result.failure(bypass.exceptionOrNull()!!)
     }
+    return updateFullRow(session, user.id, user.version, user.email, user.name, user.displayName, user.authMethod, user.isAdmin)
+  }
 
-  fun delete(
+  override fun delete(
     session: SqlSession,
     id: UserId,
     currentVersion: Int,
   ): Result<User> =
-    try {
-      val sql =
-        """
-        UPDATE users
-        SET version = ?, deleted_at = NOW()
-        WHERE id = ? AND version = ?
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        val nextVersion = currentVersion + 1
-        stmt.setInt(1, nextVersion)
-        stmt.setObject(2, id.value)
-        stmt.setInt(3, currentVersion)
+    session.softDeleteReturning(
+      table = "users",
+      id = id.value,
+      currentVersion = currentVersion,
+      deleted = true,
+      map = ::mapUser,
+    )
 
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapUser(rs))
-          } else {
-            session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
-              checkStmt.setObject(1, id.value)
-              checkStmt.executeQuery().use { checkRs ->
-                if (checkRs.next()) {
-                  Result.failure(ConcurrentModificationException())
-                } else {
-                  Result.failure(NotFoundException())
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-
-  fun undelete(
+  override fun undelete(
     session: SqlSession,
     id: UserId,
     currentVersion: Int,
   ): Result<User> =
-    try {
-      val sql =
-        """
-        UPDATE users
-        SET version = ?, deleted_at = NULL
-        WHERE id = ? AND version = ?
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setInt(1, currentVersion + 1)
-        stmt.setObject(2, id.value)
-        stmt.setInt(3, currentVersion)
-
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapUser(rs))
-          } else {
-            session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
-              checkStmt.setObject(1, id.value)
-              checkStmt.executeQuery().use { checkRs ->
-                if (checkRs.next()) {
-                  Result.failure(ConcurrentModificationException())
-                } else {
-                  Result.failure(NotFoundException())
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapCreateUpdateError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+    session.softDeleteReturning(
+      table = "users",
+      id = id.value,
+      currentVersion = currentVersion,
+      deleted = false,
+      map = ::mapUser,
+      mapError = ::mapCreateUpdateError,
+    )
 
   fun revertToVersion(
     session: SqlSession,
@@ -443,63 +329,48 @@ object UsersDao {
     }
 
     val target = versionResult.getOrThrow()
+    return updateFullRow(session, id, currentVersion, target.email, target.name, target.displayName, target.authMethod, target.isAdmin)
+  }
 
-    return try {
-      val sql =
-        """
-        UPDATE users
-        SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?, is_admin = ?
-        WHERE id = ? AND version = ?
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
+  /**
+   * Full-row OCC writer restoring every mutable column (auth included). Shared by
+   * [revertToVersion] and [updatePhysicalRecord]; not exposed through `update`,
+   * whose narrowed [UserEdit] path never touches the auth columns.
+   */
+  private fun updateFullRow(
+    session: SqlSession,
+    id: UserId,
+    currentVersion: Int,
+    email: EmailAddress,
+    name: PersonName,
+    displayName: DisplayName?,
+    authMethod: AuthMethod,
+    isAdmin: Boolean,
+  ): Result<User> {
+    val sql =
+      """
+      UPDATE users
+      SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?, is_admin = ?
+      WHERE id = ? AND version = ?
+      RETURNING *
+      """.trimIndent()
+    return session.occUpdate(
+      table = "users",
+      sql = sql,
+      bind = { stmt ->
         stmt.setInt(1, currentVersion + 1)
-        stmt.setString(2, target.email.value)
-        stmt.setString(3, target.name.value)
-        if (target.displayName != null) stmt.setString(4, target.displayName.value) else stmt.setNull(4, java.sql.Types.VARCHAR)
-
-        when (val method = target.authMethod) {
-          is AuthMethod.Both -> {
-            stmt.setString(5, method.hash.value)
-            stmt.setString(6, method.providerId.value)
-          }
-
-          is AuthMethod.Password -> {
-            stmt.setString(5, method.hash.value)
-            stmt.setNull(6, java.sql.Types.VARCHAR)
-          }
-
-          is AuthMethod.SSO -> {
-            stmt.setNull(5, java.sql.Types.VARCHAR)
-            stmt.setString(6, method.providerId.value)
-          }
-        }
-        stmt.setBoolean(7, target.isAdmin)
+        stmt.setString(2, email.value)
+        stmt.setString(3, name.value)
+        stmt.setStringOrNull(4, displayName?.value)
+        bindAuthMethod(stmt, 5, authMethod)
+        stmt.setBoolean(7, isAdmin)
         stmt.setObject(8, id.value)
         stmt.setInt(9, currentVersion)
-
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapUser(rs))
-          } else {
-            session.prepareStatement("SELECT version FROM users WHERE id = ?").use { checkStmt ->
-              checkStmt.setObject(1, id.value)
-              checkStmt.executeQuery().use { checkRs ->
-                if (checkRs.next()) {
-                  Result.failure(ConcurrentModificationException())
-                } else {
-                  Result.failure(NotFoundException())
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapCreateUpdateError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+      },
+      idValue = id.value,
+      map = ::mapUser,
+      mapError = ::mapCreateUpdateError,
+    )
   }
 
   /**
@@ -507,60 +378,39 @@ object UsersDao {
    * filter is a fixed SQL fragment (no caller data); admin lists default to
    * [SoftDeleteScope.ALL] so soft-deleted rows stay visible.
    */
-  fun listAll(
+  override fun list(
     session: SqlSession,
-    scope: SoftDeleteScope = SoftDeleteScope.ALL,
+    scope: SoftDeleteScope,
     limit: Int,
     offset: Int,
-  ): Result<List<User>> =
-    try {
-      val predicate =
-        when (scope) {
-          SoftDeleteScope.ACTIVE -> "deleted_at IS NULL"
-          SoftDeleteScope.DELETED -> "deleted_at IS NOT NULL"
-          SoftDeleteScope.ALL -> "TRUE"
-        }
-      val sql =
-        """
-        SELECT * FROM users
-        WHERE $predicate
-        ORDER BY created_at DESC, id
-        LIMIT ? OFFSET ?
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setInt(1, limit)
-        stmt.setInt(2, offset)
-        stmt.executeQuery().use { rs ->
-          val users = mutableListOf<User>()
-          while (rs.next()) {
-            users.add(mapUser(rs))
-          }
-          Result.success(users)
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+  ): Result<List<User>> {
+    val sql =
+      """
+      SELECT * FROM users
+      WHERE ${scope.predicate()}
+      ORDER BY created_at DESC, id
+      LIMIT ? OFFSET ?
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = {
+        it.setInt(1, limit)
+        it.setInt(2, offset)
+      },
+      map = ::mapUser,
+    )
+  }
 
   /** Admin read surface: a user's full version history, ascending by version. */
-  fun listVersions(
+  override fun listVersions(
     session: SqlSession,
     id: UserId,
   ): Result<List<UserVersion>> =
-    try {
-      session.prepareStatement("SELECT * FROM users_versions WHERE id = ? ORDER BY version").use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          val versions = mutableListOf<UserVersion>()
-          while (rs.next()) {
-            versions.add(mapUserVersion(rs))
-          }
-          Result.success(versions)
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+    session.queryList(
+      "SELECT * FROM users_versions WHERE id = ? ORDER BY version",
+      bind = { it.setObject(1, id.value) },
+      map = ::mapUserVersion,
+    )
 
   /**
    * Shared SQLSTATE discrimination for create/update operations that may

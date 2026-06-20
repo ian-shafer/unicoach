@@ -157,6 +157,17 @@ state.
   carries a RELATIVE `expiration: Duration` (a TTL the DAO converts to an
   absolute `expires_at`), not an absolute timestamp; a null `userId` marks an
   anonymous/pre-auth session.
+- **Update-input records** — `UserEdit` and `StudentEdit` — are the siblings of
+  the `New*` creation inputs for the two mutable, versioned, soft-deletable
+  entities. Each carries the entity identity (`id`), the expected OCC `version`
+  the caller read, and only the mutable business fields the DAO `update` writes
+  — never a server-managed or immutable column (`createdAt`, `deletedAt`,
+  `updatedAt`). `UserEdit` carries `email`, `name`, `displayName?`, `isAdmin`
+  and deliberately OMITS the auth method (`password_hash`/`sso_provider_id`),
+  which mutates only through dedicated auth flows; `StudentEdit` carries only
+  the validated `expectedHighSchoolGraduationDate`. A `Convo` has no edit-input
+  record (its single-column rename is last-write-wins on a non-versioned
+  entity).
 - No model in this package carries `rowCreatedAt`/`rowUpdatedAt`. The
   `row_created_at`/`row_updated_at` Postgres columns and their triggers REMAIN
   in the database but are deliberately NOT projected into the domain models.
@@ -328,6 +339,23 @@ actually has. There MUST be no welded multi-capability supertype.
   creation call sites unchanged. The DAO layer MUST NOT re-validate fields
   already validated by factory methods.
 
+### `UserEdit` (data class) — See [UserEdit.kt](./UserEdit.kt)
+
+- **Side Effects**: None (pure data carrier).
+- **Contract**: The update input for `User`. Carries `id`, the expected OCC
+  `version`, and the mutable business fields `email`, `name`, `displayName?`,
+  `isAdmin`. It carries no auth method and no immutable column, so the DAO's
+  `update` covers only those four columns plus the OCC `version`. Fields are
+  pre-validated value types (the same factories the creation path uses).
+
+### `StudentEdit` (data class) — See [StudentEdit.kt](./StudentEdit.kt)
+
+- **Side Effects**: None (pure data carrier).
+- **Contract**: The update input for `Student`. Carries `id`, the expected OCC
+  `version`, and the single mutable business field
+  `expectedHighSchoolGraduationDate: PartialDate` (a validated `PartialDate`,
+  never a raw date string).
+
 ---
 
 ## IV. Infrastructure & Environment
@@ -440,3 +468,9 @@ actually has. There MUST be no welded multi-capability supertype.
       to leave existing non-privileged construction sites unchanged). Touched no
       other model: `StudentVersion` predates this RFC (introduced by RFC-31,
       revised by RFC-36) and was unchanged.
+- [x] [RFC-62: DAO Capability Interfaces and Shared Query Scaffolding](../../../../../../../../rfc/62-dao-interfaces.md)
+      — Added the `UserEdit` and `StudentEdit` update-input records, siblings of
+      the `NewUser`/`NewStudent` creation inputs, carrying the entity identity,
+      the expected OCC `version`, and only the mutable business fields the DAO
+      `update` writes (`UserEdit` omits the auth method). No change to any
+      existing model type.

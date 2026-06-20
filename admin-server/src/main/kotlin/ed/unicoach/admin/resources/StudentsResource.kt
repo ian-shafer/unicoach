@@ -16,6 +16,13 @@ import ed.unicoach.db.models.UserId
 import java.util.UUID
 
 /**
+ * Maps the admin engine's `includeDeleted` flag to a [SoftDeleteScope] at the DAO
+ * call boundary: `true` admits soft-deleted rows ([SoftDeleteScope.ALL]), `false`
+ * restricts to active rows ([SoftDeleteScope.ACTIVE]).
+ */
+internal fun Boolean.toScope(): SoftDeleteScope = if (this) SoftDeleteScope.ALL else SoftDeleteScope.ACTIVE
+
+/**
  * The embedded `students` profile. Per the canonical-routing invariant an
  * EMBEDDED_ENTITY has no standalone list/detail URL; its `get`/`list` members
  * exist so the owner's [AdminEdge.Embedded] edge can render the inline panel, but
@@ -80,7 +87,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
     db: Database,
     id: StudentId,
     includeDeleted: Boolean,
-  ): Result<Student> = db.withConnection { session -> StudentsDao.findById(session, id, includeDeleted) }
+  ): Result<Student> = db.withConnection { session -> StudentsDao.findById(session, id, includeDeleted.toScope()) }
 
   override val create: (suspend (Database, Map<String, String>) -> Result<StudentId>)? = null
   override val update: (suspend (Database, StudentId, Map<String, String>) -> Result<Unit>)? = null
@@ -101,7 +108,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
     userId: UserId,
   ): Result<EdgePanel.Embedded> {
     val studentResult =
-      db.withConnection { session -> StudentsDao.findByUserId(session, userId, includeDeleted = true) }
+      db.withConnection { session -> StudentsDao.findByUserId(session, userId, SoftDeleteScope.ALL) }
 
     val student =
       when (val e = studentResult.exceptionOrNull()) {

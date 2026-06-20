@@ -95,7 +95,7 @@ class SessionsDaoTest {
   }
 
   @Test
-  fun `listByUser filters to the owner and listAll pages newest-first`() {
+  fun `listByUser filters to the owner and list pages newest-first`() {
     val owner = createUser()
     val other = createUser()
 
@@ -110,26 +110,26 @@ class SessionsDaoTest {
     // created_at DESC: s2 (newer) before s1.
     assertEquals(s2.id, byOwner.first().id)
 
-    val all = SessionsDao.listAll(session, limit = 50, offset = 0).getOrThrow()
+    val all = SessionsDao.list(session, limit = 50, offset = 0).getOrThrow()
     assertTrue(all.size >= 3)
     // Paging advances the cursor.
-    val page0 = SessionsDao.listAll(session, limit = 1, offset = 0).getOrThrow()
-    val page1 = SessionsDao.listAll(session, limit = 1, offset = 1).getOrThrow()
+    val page0 = SessionsDao.list(session, limit = 1, offset = 0).getOrThrow()
+    val page1 = SessionsDao.list(session, limit = 1, offset = 1).getOrThrow()
     assertTrue(page0.first().id != page1.first().id)
   }
 
   @Test
-  fun `deleteById physically removes the row`() {
+  fun `destroy physically removes the row`() {
     val user = createUser()
     val created = createSession(user, byteArrayOf(40, 41))
 
-    val deleteResult = SessionsDao.deleteById(session, created.id)
+    val deleteResult = SessionsDao.destroy(session, created.id)
     assertTrue(deleteResult.isSuccess)
 
     val refetch = SessionsDao.findById(session, created.id)
     assertTrue(refetch.isFailure && refetch.exceptionOrNull() is NotFoundException)
 
-    val deleteMissing = SessionsDao.deleteById(session, SessionId(UUID.randomUUID()))
+    val deleteMissing = SessionsDao.destroy(session, SessionId(UUID.randomUUID()))
     assertTrue(deleteMissing.isFailure && deleteMissing.exceptionOrNull() is NotFoundException)
   }
 

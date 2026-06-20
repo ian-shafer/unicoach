@@ -117,7 +117,7 @@ class UsersDaoTest {
   }
 
   @Test
-  fun `findById includeDeleted false correctly emits NotFound for softly deleted rows`() {
+  fun `findById ACTIVE scope correctly emits NotFound for softly deleted rows`() {
     val rawId = java.util.UUID.randomUUID()
     connection.createStatement().use { stmt ->
       stmt.execute(
@@ -135,7 +135,7 @@ class UsersDaoTest {
         session1,
         ed.unicoach.db.models
           .UserId(rawId),
-        includeDeleted = false,
+        ed.unicoach.db.models.SoftDeleteScope.ACTIVE,
       )
     assertTrue(resultDeleted.isFailure && resultDeleted.exceptionOrNull() is NotFoundException)
 
@@ -144,7 +144,7 @@ class UsersDaoTest {
         session1,
         ed.unicoach.db.models
           .UserId(rawId),
-        includeDeleted = true,
+        ed.unicoach.db.models.SoftDeleteScope.ALL,
       )
     assertTrue(resultIncluded.isSuccess)
   }
@@ -228,19 +228,21 @@ class UsersDaoTest {
               .create("OCC Next") as ValidationResult.Valid
           ).value,
       )
-    val validUpdateResult = UsersDao.update(session1, nextVersionUser)
+    val validUpdateResult = UsersDao.update(session1, editOf(nextVersionUser))
     assertTrue(validUpdateResult.isSuccess)
 
     // Attempt update with original stale model
     val staleUpdateResult =
       UsersDao.update(
         session1,
-        createdUser.copy(
-          name =
-            (
-              ed.unicoach.db.models.PersonName
-                .create("Stale Edit") as ValidationResult.Valid
-            ).value,
+        editOf(
+          createdUser.copy(
+            name =
+              (
+                ed.unicoach.db.models.PersonName
+                  .create("Stale Edit") as ValidationResult.Valid
+              ).value,
+          ),
         ),
       )
     assertTrue(
@@ -357,7 +359,7 @@ class UsersDaoTest {
         ed.unicoach.db.models.PersonName
           .create("Edited Name") as ValidationResult.Valid
       ).value
-    val updateResult = UsersDao.update(session1, v1User.copy(name = nameV2))
+    val updateResult = UsersDao.update(session1, editOf(v1User.copy(name = nameV2)))
     assertTrue(updateResult.isSuccess)
     val v2User = updateResult.getOrNull()!!
 
@@ -367,7 +369,7 @@ class UsersDaoTest {
         ed.unicoach.db.models.PersonName
           .create("Final Mistake") as ValidationResult.Valid
       ).value
-    val updateResult2 = UsersDao.update(session1, v2User.copy(name = nameV3))
+    val updateResult2 = UsersDao.update(session1, editOf(v2User.copy(name = nameV3)))
     assertTrue(updateResult2.isSuccess)
     val v3User = updateResult2.getOrNull()!!
 
@@ -423,6 +425,21 @@ class UsersDaoTest {
     )
   }
 
+  /**
+   * Projects a [User] into the [UserEdit] the public `update` now accepts. The OCC
+   * version, identity, and mutable business fields carry through; the auth method
+   * and timestamps are intentionally absent from the edit surface.
+   */
+  private fun editOf(user: ed.unicoach.db.models.User): ed.unicoach.db.models.UserEdit =
+    ed.unicoach.db.models.UserEdit(
+      id = user.id,
+      version = user.version,
+      email = user.email,
+      name = user.name,
+      displayName = user.displayName,
+      isAdmin = user.isAdmin,
+    )
+
   private fun newPasswordUser(
     emailLocal: String,
     nameText: String = "Admin Test",
@@ -441,6 +458,34 @@ class UsersDaoTest {
   }
 
   @Test
+  fun `update via UserEdit leaves authMethod and createdAt untouched`() {
+    val created = UsersDao.create(session, newPasswordUser("edit-immutable")).getOrThrow()
+    assertTrue(created.authMethod is AuthMethod.Password, "Precondition: created with a password auth method")
+
+    val newName = (PersonName.create("Renamed Via Edit") as ValidationResult.Valid).value
+    val edited =
+      UsersDao
+        .update(
+          session,
+          ed.unicoach.db.models.UserEdit(
+            id = created.id,
+            version = created.version,
+            email = created.email,
+            name = newName,
+            displayName = created.displayName,
+            isAdmin = created.isAdmin,
+          ),
+        ).getOrThrow()
+
+    val reloaded = UsersDao.findById(session, created.id, ed.unicoach.db.models.SoftDeleteScope.ALL).getOrThrow()
+    assertTrue(reloaded.name == newName, "Expected the mutable name to change")
+    assertTrue(reloaded.version == created.version + 1, "Expected OCC version increment")
+    assertTrue(reloaded.version == edited.version, "Returned and reloaded versions must agree")
+    assertTrue(reloaded.authMethod == created.authMethod, "authMethod must be untouched by UserEdit update")
+    assertTrue(reloaded.createdAt == created.createdAt, "createdAt must be untouched by UserEdit update")
+  }
+
+  @Test
   fun `create persists is_admin true and default false round-trips`() {
     val adminCreate = UsersDao.create(session, newPasswordUser("admin-roundtrip", isAdmin = true))
     assertTrue(adminCreate.isSuccess)
@@ -456,7 +501,7 @@ class UsersDaoTest {
     val created = UsersDao.create(session, newPasswordUser("grant-history", isAdmin = false)).getOrThrow()
     assertTrue(!created.isAdmin)
 
-    val granted = UsersDao.update(session, created.copy(isAdmin = true)).getOrThrow()
+    val granted = UsersDao.update(session, editOf(created.copy(isAdmin = true))).getOrThrow()
     assertTrue(granted.isAdmin, "Expected isAdmin = true after update")
     assertTrue(granted.version == created.version + 1, "Expected version bump on is_admin grant")
 
@@ -469,7 +514,7 @@ class UsersDaoTest {
   }
 
   @Test
-  fun `listAll honours scope ordering and paging`() {
+  fun `list honours scope ordering and paging`() {
     val first = UsersDao.create(session, newPasswordUser("list-1")).getOrThrow()
     Thread.sleep(5)
     val second = UsersDao.create(session, newPasswordUser("list-2")).getOrThrow()
@@ -479,18 +524,18 @@ class UsersDaoTest {
     // Soft-delete the second user.
     UsersDao.delete(session, second.id, second.version).getOrThrow()
 
-    val all = UsersDao.listAll(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 50, offset = 0).getOrThrow()
+    val all = UsersDao.list(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 50, offset = 0).getOrThrow()
     assertTrue(all.map { it.id }.containsAll(listOf(first.id, second.id, third.id)), "ALL must include the soft-deleted row")
 
-    val active = UsersDao.listAll(session, scope = ed.unicoach.db.models.SoftDeleteScope.ACTIVE, limit = 50, offset = 0).getOrThrow()
+    val active = UsersDao.list(session, scope = ed.unicoach.db.models.SoftDeleteScope.ACTIVE, limit = 50, offset = 0).getOrThrow()
     assertTrue(active.none { it.id == second.id }, "ACTIVE must exclude the soft-deleted row")
 
     // created_at DESC: newest (third) first.
     assertTrue(all.first().id == third.id, "Expected newest-first ordering, got ${all.first().id}")
 
     // Paging: first page of size 1 returns the newest, offset 1 the next.
-    val page0 = UsersDao.listAll(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 1, offset = 0).getOrThrow()
-    val page1 = UsersDao.listAll(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 1, offset = 1).getOrThrow()
+    val page0 = UsersDao.list(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 1, offset = 0).getOrThrow()
+    val page1 = UsersDao.list(session, scope = ed.unicoach.db.models.SoftDeleteScope.ALL, limit = 1, offset = 1).getOrThrow()
     assertTrue(page0.size == 1 && page1.size == 1)
     assertTrue(page0.first().id != page1.first().id, "Paging must advance the cursor")
   }
@@ -498,8 +543,8 @@ class UsersDaoTest {
   @Test
   fun `listVersions returns ascending version order`() {
     val v1 = UsersDao.create(session, newPasswordUser("versions-order")).getOrThrow()
-    val v2 = UsersDao.update(session, v1.copy(name = (PersonName.create("Edit Two") as ValidationResult.Valid).value)).getOrThrow()
-    UsersDao.update(session, v2.copy(name = (PersonName.create("Edit Three") as ValidationResult.Valid).value)).getOrThrow()
+    val v2 = UsersDao.update(session, editOf(v1.copy(name = (PersonName.create("Edit Two") as ValidationResult.Valid).value))).getOrThrow()
+    UsersDao.update(session, editOf(v2.copy(name = (PersonName.create("Edit Three") as ValidationResult.Valid).value))).getOrThrow()
 
     val versions = UsersDao.listVersions(session, v1.id).getOrThrow()
     val orderedVersions = versions.map { it.version }

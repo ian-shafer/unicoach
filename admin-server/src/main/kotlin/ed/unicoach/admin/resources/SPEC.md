@@ -83,10 +83,12 @@ for these three tables, never _how_ the engine does it.
 ### Soft-delete reads
 
 - `users`/`students` reads MUST include soft-deleted rows so a deleted row stays
-  visible and is marked: list passes `SoftDeleteScope.ALL`, detail/get passes
-  `includeDeleted = true`. Undelete MUST be offered only on `users` (the sole v1
-  table whose DAO has an `undelete`); `isDeleted` drives the marker/undelete
-  affordance.
+  visible and is marked: list passes `SoftDeleteScope.ALL`, detail/get maps the
+  engine's `includeDeleted` flag to a `SoftDeleteScope` via the package-internal
+  `Boolean.toScope()` extension (`true` → `SoftDeleteScope.ALL`, `false` →
+  `SoftDeleteScope.ACTIVE`) at the DAO call boundary. Undelete MUST be offered
+  only on `users` (the sole v1 table whose DAO has an `undelete`); `isDeleted`
+  drives the marker/undelete affordance.
 - `sessions` has no `deleted_at`; `SessionsResource.isDeleted` MUST always be
   `false` and the `scope` argument MUST be ignored.
 
@@ -112,20 +114,26 @@ for these three tables, never _how_ the engine does it.
 
 ### `UsersResource` (ENTITY, top-level)
 
-- **list** — reads via the users list DAO method with `SoftDeleteScope.ALL`.
-  Side effects: DB read. Errors: failed `Result` on DB fault. Idempotent: yes.
-- **get** — reads one user including soft-deleted. Side effects: DB read.
-  Errors: `NotFoundException` (→ 404), DB fault (→ error page). Idempotent: yes.
+- **list** — reads via `UsersDao.list(session, scope, limit, offset)` with
+  `SoftDeleteScope.ALL`. Side effects: DB read. Errors: failed `Result` on DB
+  fault. Idempotent: yes.
+- **get** — reads one user via
+  `UsersDao.findById(session, id, includeDeleted.toScope())`. Side effects: DB
+  read. Errors: `NotFoundException` (→ 404), DB fault (→ error page).
+  Idempotent: yes.
 - **create** — validates email/name/displayName/password, hashes the password,
-  builds `AuthMethod.Password`, inserts via the users-create DAO. Side effects:
-  one row inserted (no session created). Errors: `IllegalArgumentException` for
-  each invalid/blank field; `DuplicateEmailException` → form re-render with a
-  field error. Idempotent: no.
-- **update** — re-reads the row (including deleted), overlays the form's
-  `version`, email, name, displayName, isAdmin, then calls the users-update DAO.
-  Side effects: one versioned row update. Errors: missing/invalid version or
-  field → `IllegalArgumentException`; DAO `ConcurrentModificationException` on a
-  stale version → conflict page (no overwrite). Idempotent: no (version bumps).
+  builds `AuthMethod.Password`, inserts via `UsersDao.create`. Side effects: one
+  row inserted (no session created). Errors: `IllegalArgumentException` for each
+  invalid/blank field; `DuplicateEmailException` → form re-render with a field
+  error. Idempotent: no.
+- **update** — re-reads the row (`findById` with `SoftDeleteScope.ALL`) to
+  confirm existence, builds a `UserEdit` from the form's `version`, email, name,
+  displayName, isAdmin, then calls `UsersDao.update`; the form's version drives
+  the DAO's `WHERE version = ?` enforcement. Side effects: one versioned row
+  update (`email`/`name`/`display_name`/`is_admin` only). Errors:
+  missing/invalid version or field → `IllegalArgumentException`; DAO
+  `ConcurrentModificationException` on a stale version → conflict page (no
+  overwrite). Idempotent: no (version bumps).
 - **delete** — reads the current version, then soft-deletes via the users-delete
   DAO (sets `deleted_at`, bumps version). Side effects: one versioned soft
   delete. Idempotent: no.
@@ -145,9 +153,10 @@ for these three tables, never _how_ the engine does it.
   effects: one row inserted. Errors: bad owner id → redirect to `/user`;
   malformed date → redirect to the owner detail; DAO fault → rendered DAO-error
   page. On success: redirect to the owner detail.
-- **`POST /user/{id}/student/update`** — re-reads the owner's student (including
-  deleted), overlays the new graduation date, calls the students-update DAO.
-  Side effects: one versioned update. Errors: as above.
+- **`POST /user/{id}/student/update`** — re-reads the owner's student
+  (`findByUserId` with `SoftDeleteScope.ALL`), builds a `StudentEdit` from the
+  existing row's `id`/`version` and the new graduation date, calls
+  `StudentsDao.update`. Side effects: one versioned update. Errors: as above.
 - **`POST /user/{id}/student/delete`** — re-reads the owner's student, calls the
   students-delete DAO with its current version (soft delete). Side effects: one
   versioned soft delete. Errors: as above.
@@ -167,12 +176,12 @@ for these three tables, never _how_ the engine does it.
 
 ### `SessionsResource` (ENTITY, top-level)
 
-- **list** — reads via the sessions list DAO (`scope` ignored). Side effects: DB
-  read. Idempotent: yes.
-- **get** — reads one session by id. Side effects: DB read. Errors:
-  `NotFoundException` (→ 404). Idempotent: yes.
+- **list** — reads via `SessionsDao.list(session, limit, offset)` (`scope`
+  ignored). Side effects: DB read. Idempotent: yes.
+- **get** — reads one session via `SessionsDao.findById`. Side effects: DB read.
+  Errors: `NotFoundException` (→ 404). Idempotent: yes.
 - **create/update/undelete** — all `null`.
-- **delete** — physically removes the row via the sessions hard-delete DAO. Side
+- **delete** — physically removes the row via `SessionsDao.destroy`. Side
   effects: one row permanently deleted; a subsequent `get` returns
   `NotFoundException`. Idempotent: no.
 - **resolveEdges** — returns a single `Parent` panel: a link to `/user/{userId}`
@@ -191,3 +200,11 @@ for these three tables, never _how_ the engine does it.
 ## V. History
 
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../../../../../../../../rfc/60-admin-website.md)
+- [x] [RFC-62: DAO Capability Interfaces and Shared Query Scaffolding](../../../../../../../../rfc/62-dao-interfaces.md)
+      — Retargeted the descriptors to the renamed/narrowed DAO surface: the
+      soft-delete reads map the engine's `includeDeleted: Boolean` to a
+      `SoftDeleteScope` via the package-internal `Boolean.toScope()` extension;
+      `UsersDao.listAll`/`SessionsDao.listAll` calls became `list`,
+      `SessionsDao.deleteById` became `destroy`; the `users` update and the
+      owner-nested `students` update build a `UserEdit`/`StudentEdit` instead of
+      copying a whole row.

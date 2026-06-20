@@ -232,3 +232,7 @@ no HTTP types. Login credential verification is handled in this layer.
       `EmailAddress.create` (not blank-only), measures password length in
       Unicode code points, and restricts the complexity classes to ASCII ranges,
       matching the published `password` schema.
+- [x] [RFC-62: DAO Capability Interfaces and Shared Query Scaffolding](../../../../../../../rfc/62-dao-interfaces.md)
+      — Renamed the `SessionsDao.create` named argument `newSession` to `input`
+      at the two `AuthService` call sites (register and login). No behavioral
+      change.

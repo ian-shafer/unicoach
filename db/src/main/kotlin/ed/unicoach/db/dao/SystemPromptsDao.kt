@@ -17,7 +17,7 @@ object SystemPromptsDao {
       name = rs.getString("name"),
       version = rs.getString("version"),
       body = rs.getString("body"),
-      createdAt = rs.getTimestamp("created_at").toInstant(),
+      createdAt = rs.getInstant("created_at"),
     )
 
   /**
@@ -29,21 +29,12 @@ object SystemPromptsDao {
     name: String,
     version: String,
   ): Result<SystemPrompt> =
-    try {
-      session
-        .prepareStatement("SELECT * FROM system_prompts WHERE name = ? AND version = ?")
-        .use { stmt ->
-          stmt.setString(1, name)
-          stmt.setString(2, version)
-          stmt.executeQuery().use { rs ->
-            if (rs.next()) {
-              Result.success(mapPrompt(rs))
-            } else {
-              Result.failure(NotFoundException())
-            }
-          }
-        }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+    session.queryOne(
+      "SELECT * FROM system_prompts WHERE name = ? AND version = ?",
+      bind = { stmt ->
+        stmt.setString(1, name)
+        stmt.setString(2, version)
+      },
+      map = ::mapPrompt,
+    )
 }

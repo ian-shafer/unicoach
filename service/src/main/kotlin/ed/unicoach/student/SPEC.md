@@ -103,8 +103,10 @@ exposing pure domain results via sealed interfaces that contain no HTTP types.
 ### `StudentService.updateStudent(userId: UserId, expectedVersion: Int, graduationDateIso: String): Result<UpdateStudentResult>` — See [StudentService.kt](./StudentService.kt)
 
 - **Side Effects**: On a version match, one `UPDATE` on `students` via
-  `StudentsDao.update`. No write when validation fails, the student is absent,
-  or the version is stale.
+  `StudentsDao.update`, passing a `StudentEdit` built from the existing row's
+  `id`, its `version`, and the parsed graduation date (the only mutable field).
+  No write when validation fails, the student is absent, or the version is
+  stale.
 - **Validation**: `PartialDate.parse` runs first; failure →
   `UpdateStudentResult.ValidationFailure` with no DB access.
 - **Concurrency**: Reads the current student, compares its `version` to
@@ -190,3 +192,7 @@ exposing pure domain results via sealed interfaces that contain no HTTP types.
       (repointed the `ValidationResult` import from `db.models` to
       `common.models`; no behavior change)
 - [x] [RFC-36: Entity Model Capability Taxonomy](../../../../../../../rfc/36-entity-model-taxonomy.md)
+- [x] [RFC-62: DAO Capability Interfaces and Shared Query Scaffolding](../../../../../../../rfc/62-dao-interfaces.md)
+      — `updateStudent` builds a `StudentEdit` (id, expected version, graduation
+      date) for the `StudentsDao.update` call instead of copying the whole
+      `Student` row. No behavioral change.

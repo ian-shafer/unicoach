@@ -3,7 +3,9 @@ package ed.unicoach.db.dao
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
+import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.Student
+import ed.unicoach.db.models.StudentEdit
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.StudentVersion
 import ed.unicoach.db.models.UserId
@@ -11,7 +13,12 @@ import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
 
-object StudentsDao {
+object StudentsDao :
+  SoftDeleteFindable<Student, StudentId>,
+  Creatable<NewStudent, Student>,
+  Updatable<StudentEdit, Student>,
+  OccDeletable<Student, StudentId>,
+  VersionHistory<StudentId, StudentVersion> {
   /**
    * Reconstructs the [PartialDate] from the decomposed columns. The DB
    * constraints already guarantee a valid partial date is persisted, so an
@@ -48,68 +55,48 @@ object StudentsDao {
       userId = UserId(UUID.fromString(rs.getString("user_id"))),
       expectedHighSchoolGraduationDate = mapGraduationDate(rs),
       version = rs.getInt("version"),
-      createdAt = rs.getTimestamp("created_at").toInstant(),
-      updatedAt = rs.getTimestamp("updated_at").toInstant(),
-      deletedAt = rs.getTimestamp("deleted_at")?.toInstant(),
+      createdAt = rs.getInstant("created_at"),
+      updatedAt = rs.getInstant("updated_at"),
+      deletedAt = rs.getInstantOrNull("deleted_at"),
     )
 
-  private fun bindGraduationDate(
-    stmt: java.sql.PreparedStatement,
-    yearIndex: Int,
-    date: PartialDate,
-  ) {
-    stmt.setInt(yearIndex, date.year.value)
-    val month = date.month
-    if (month != null) stmt.setInt(yearIndex + 1, month.value) else stmt.setNull(yearIndex + 1, java.sql.Types.SMALLINT)
-    val day = date.day
-    if (day != null) stmt.setInt(yearIndex + 2, day) else stmt.setNull(yearIndex + 2, java.sql.Types.SMALLINT)
-  }
+  /** Whether a [SoftDeleteScope] admits a row with the given `deletedAt`. */
+  private fun SoftDeleteScope.admits(deletedAt: java.time.Instant?): Boolean =
+    when (this) {
+      SoftDeleteScope.ACTIVE -> deletedAt == null
+      SoftDeleteScope.DELETED -> deletedAt != null
+      SoftDeleteScope.ALL -> true
+    }
 
-  fun findById(
+  override fun findById(
     session: SqlSession,
     id: StudentId,
-    includeDeleted: Boolean = false,
+    scope: SoftDeleteScope,
   ): Result<Student> =
-    try {
-      session.prepareStatement("SELECT * FROM students WHERE id = ?").use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) {
-            return Result.failure(NotFoundException())
-          }
-          val student = mapStudent(rs)
-          if (!includeDeleted && student.deletedAt != null) {
-            return Result.failure(NotFoundException())
-          }
-          Result.success(student)
-        }
+    session
+      .queryOne(
+        "SELECT * FROM students WHERE id = ?",
+        bind = { it.setObject(1, id.value) },
+        map = ::mapStudent,
+      ).mapCatching { student ->
+        if (!scope.admits(student.deletedAt)) throw NotFoundException()
+        student
       }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
 
   fun findByUserId(
     session: SqlSession,
     userId: UserId,
-    includeDeleted: Boolean = false,
+    scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
   ): Result<Student> =
-    try {
-      session.prepareStatement("SELECT * FROM students WHERE user_id = ?").use { stmt ->
-        stmt.setObject(1, userId.value)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) {
-            return Result.failure(NotFoundException())
-          }
-          val student = mapStudent(rs)
-          if (!includeDeleted && student.deletedAt != null) {
-            return Result.failure(NotFoundException())
-          }
-          Result.success(student)
-        }
+    session
+      .queryOne(
+        "SELECT * FROM students WHERE user_id = ?",
+        bind = { it.setObject(1, userId.value) },
+        map = ::mapStudent,
+      ).mapCatching { student ->
+        if (!scope.admits(student.deletedAt)) throw NotFoundException()
+        student
       }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
 
   fun findByIdForUpdate(
     session: SqlSession,
@@ -157,121 +144,77 @@ object StudentsDao {
       Result.failure(mapDatabaseError(e))
     }
 
-  fun create(
+  override fun create(
     session: SqlSession,
-    student: NewStudent,
+    input: NewStudent,
   ): Result<Student> =
-    try {
-      val sql =
-        """
-        INSERT INTO students (
-          user_id,
-          expected_high_school_graduation_year,
-          expected_high_school_graduation_month,
-          expected_high_school_graduation_day
-        )
-        VALUES (?, ?, ?, ?)
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, student.userId.value)
-        bindGraduationDate(stmt, 2, student.expectedHighSchoolGraduationDate)
+    session.insertReturning(
+      table = "students",
+      columns =
+        gradDateColumns(
+          prefix = "user_id" to { stmt, i -> stmt.setObject(i, input.userId.value) },
+          date = input.expectedHighSchoolGraduationDate,
+        ),
+      map = ::mapStudent,
+      mapError = ::mapCreateUpdateError,
+    )
 
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapStudent(rs))
-          } else {
-            Result.failure(DatabaseException(RuntimeException("Insert succeeded but returning failed")))
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapCreateUpdateError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-
-  fun update(
+  override fun update(
     session: SqlSession,
-    student: Student,
+    edit: StudentEdit,
   ): Result<Student> =
-    try {
-      val sql =
-        """
-        UPDATE students
-        SET version = ?,
-            expected_high_school_graduation_year = ?,
-            expected_high_school_graduation_month = ?,
-            expected_high_school_graduation_day = ?
-        WHERE id = ? AND version = ?
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setInt(1, student.version + 1)
-        bindGraduationDate(stmt, 2, student.expectedHighSchoolGraduationDate)
-        stmt.setObject(5, student.id.value)
-        stmt.setInt(6, student.version)
+    session.updateColumnsReturning(
+      table = "students",
+      id = edit.id.value,
+      currentVersion = edit.version,
+      columns = gradDateColumns(prefix = null, date = edit.expectedHighSchoolGraduationDate),
+      map = ::mapStudent,
+      mapError = ::mapCreateUpdateError,
+    )
 
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapStudent(rs))
-          } else {
-            distinguishNotFoundOrConflict(session, student.id)
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapCreateUpdateError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+  /**
+   * Builds the three decomposed grad-date columns as independent single-column
+   * binders, optionally prefixed by another column (the `user_id` on create).
+   */
+  private fun gradDateColumns(
+    prefix: Pair<String, Bind>? = null,
+    date: PartialDate,
+  ): Map<String, Bind> {
+    val cols = linkedMapOf<String, Bind>()
+    if (prefix != null) cols[prefix.first] = prefix.second
+    cols["expected_high_school_graduation_year"] = { stmt, i -> stmt.setInt(i, date.year.value) }
+    cols["expected_high_school_graduation_month"] = { stmt, i -> stmt.setIntOrNull(i, date.month?.value) }
+    cols["expected_high_school_graduation_day"] = { stmt, i -> stmt.setIntOrNull(i, date.day) }
+    return cols
+  }
 
-  fun delete(
+  override fun delete(
     session: SqlSession,
     id: StudentId,
     currentVersion: Int,
   ): Result<Student> =
-    try {
-      val sql =
-        """
-        UPDATE students
-        SET version = ?, deleted_at = NOW()
-        WHERE id = ? AND version = ?
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setInt(1, currentVersion + 1)
-        stmt.setObject(2, id.value)
-        stmt.setInt(3, currentVersion)
+    session.softDeleteReturning(
+      table = "students",
+      id = id.value,
+      currentVersion = currentVersion,
+      deleted = true,
+      map = ::mapStudent,
+      mapError = ::mapCreateUpdateError,
+    )
 
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapStudent(rs))
-          } else {
-            distinguishNotFoundOrConflict(session, id)
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapCreateUpdateError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-
-  private fun distinguishNotFoundOrConflict(
+  override fun undelete(
     session: SqlSession,
     id: StudentId,
+    currentVersion: Int,
   ): Result<Student> =
-    session.prepareStatement("SELECT version FROM students WHERE id = ?").use { checkStmt ->
-      checkStmt.setObject(1, id.value)
-      checkStmt.executeQuery().use { checkRs ->
-        if (checkRs.next()) {
-          Result.failure(ConcurrentModificationException())
-        } else {
-          Result.failure(NotFoundException())
-        }
-      }
-    }
+    session.softDeleteReturning(
+      table = "students",
+      id = id.value,
+      currentVersion = currentVersion,
+      deleted = false,
+      map = ::mapStudent,
+      mapError = ::mapCreateUpdateError,
+    )
 
   private fun mapStudentVersion(rs: ResultSet): StudentVersion =
     StudentVersion(
@@ -279,30 +222,21 @@ object StudentsDao {
       userId = UserId(UUID.fromString(rs.getString("user_id"))),
       expectedHighSchoolGraduationDate = mapGraduationDate(rs),
       version = rs.getInt("version"),
-      createdAt = rs.getTimestamp("created_at").toInstant(),
-      updatedAt = rs.getTimestamp("updated_at").toInstant(),
-      deletedAt = rs.getTimestamp("deleted_at")?.toInstant(),
+      createdAt = rs.getInstant("created_at"),
+      updatedAt = rs.getInstant("updated_at"),
+      deletedAt = rs.getInstantOrNull("deleted_at"),
     )
 
   /** Admin read surface: a student's full version history, ascending by version. */
-  fun listVersions(
+  override fun listVersions(
     session: SqlSession,
     id: StudentId,
   ): Result<List<StudentVersion>> =
-    try {
-      session.prepareStatement("SELECT * FROM students_versions WHERE id = ? ORDER BY version").use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          val versions = mutableListOf<StudentVersion>()
-          while (rs.next()) {
-            versions.add(mapStudentVersion(rs))
-          }
-          Result.success(versions)
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+    session.queryList(
+      "SELECT * FROM students_versions WHERE id = ? ORDER BY version",
+      bind = { it.setObject(1, id.value) },
+      map = ::mapStudentVersion,
+    )
 
   /**
    * SQLSTATE discrimination for create/update operations.

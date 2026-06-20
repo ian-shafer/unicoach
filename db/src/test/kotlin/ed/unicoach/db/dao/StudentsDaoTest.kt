@@ -69,6 +69,17 @@ class StudentsDaoTest {
 
   private fun partialDate(iso: String): PartialDate = (PartialDate.parse(iso) as ValidationResult.Valid).value
 
+  /** Projects a [ed.unicoach.db.models.Student] into the [ed.unicoach.db.models.StudentEdit] the public `update` accepts. */
+  private fun editOf(
+    student: ed.unicoach.db.models.Student,
+    date: PartialDate = student.expectedHighSchoolGraduationDate,
+  ): ed.unicoach.db.models.StudentEdit =
+    ed.unicoach.db.models.StudentEdit(
+      id = student.id,
+      version = student.version,
+      expectedHighSchoolGraduationDate = date,
+    )
+
   private fun countVersions(id: StudentId): Int {
     connection.prepareStatement("SELECT COUNT(*) FROM students_versions WHERE id = ?").use { stmt ->
       stmt.setObject(1, id.value)
@@ -229,7 +240,7 @@ class StudentsDaoTest {
   }
 
   @Test
-  fun `findById and findByUserId exclude soft-deleted rows unless includeDeleted`() {
+  fun `findById and findByUserId exclude soft-deleted rows unless scope admits them`() {
     val u = createUser()
     val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
 
@@ -241,8 +252,8 @@ class StudentsDaoTest {
     assertTrue(StudentsDao.findById(session, created.id).exceptionOrNull() is NotFoundException)
     assertTrue(StudentsDao.findByUserId(session, u).exceptionOrNull() is NotFoundException)
 
-    assertTrue(StudentsDao.findById(session, created.id, includeDeleted = true).isSuccess)
-    assertTrue(StudentsDao.findByUserId(session, u, includeDeleted = true).isSuccess)
+    assertTrue(StudentsDao.findById(session, created.id, ed.unicoach.db.models.SoftDeleteScope.ALL).isSuccess)
+    assertTrue(StudentsDao.findByUserId(session, u, ed.unicoach.db.models.SoftDeleteScope.ALL).isSuccess)
   }
 
   @Test
@@ -255,7 +266,7 @@ class StudentsDaoTest {
       StudentsDao
         .update(
           session,
-          created.copy(expectedHighSchoolGraduationDate = partialDate("2029-09")),
+          editOf(created, partialDate("2029-09")),
         ).getOrThrow()
 
     assertEquals(2, updated.version)
@@ -269,10 +280,10 @@ class StudentsDaoTest {
     val u = createUser()
     val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
 
-    StudentsDao.update(session, created.copy(expectedHighSchoolGraduationDate = partialDate("2029"))).getOrThrow()
+    StudentsDao.update(session, editOf(created, partialDate("2029"))).getOrThrow()
 
     val staleResult =
-      StudentsDao.update(session, created.copy(expectedHighSchoolGraduationDate = partialDate("2030")))
+      StudentsDao.update(session, editOf(created, partialDate("2030")))
     assertTrue(
       staleResult.isFailure && staleResult.exceptionOrNull() is ConcurrentModificationException,
       "Expected ConcurrentModificationException, got $staleResult",
@@ -352,6 +363,37 @@ class StudentsDaoTest {
   }
 
   @Test
+  fun `undelete restores a soft-deleted student`() {
+    val u = createUser()
+    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+
+    val deleted = StudentsDao.delete(session, created.id, created.version).getOrThrow()
+    assertNotNull(deleted.deletedAt)
+
+    val restored = StudentsDao.undelete(session, created.id, deleted.version).getOrThrow()
+    assertTrue(restored.deletedAt == null, "Expected an active row after undelete")
+    assertEquals(deleted.version + 1, restored.version)
+
+    assertTrue(StudentsDao.findById(session, created.id).isSuccess, "Active scope must find the restored row")
+  }
+
+  @Test
+  fun `undelete with stale version yields ConcurrentModification`() {
+    val u = createUser()
+    val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
+    val deleted = StudentsDao.delete(session, created.id, created.version).getOrThrow()
+
+    // The row exists (soft-deleted) but at a newer version than `created.version`.
+    val staleResult = StudentsDao.undelete(session, created.id, created.version)
+    assertTrue(
+      staleResult.isFailure && staleResult.exceptionOrNull() is ConcurrentModificationException,
+      "Expected ConcurrentModificationException for a stale undelete, got $staleResult",
+    )
+    // Sanity: the row is still soft-deleted at the post-delete version.
+    assertNotNull(deleted.deletedAt)
+  }
+
+  @Test
   fun `findByIdForUpdate returns row and locks it`() {
     val u = createUser()
     val created = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
@@ -367,8 +409,8 @@ class StudentsDaoTest {
   fun `listVersions returns the students historical rows ascending`() {
     val u = createUser()
     val v1 = StudentsDao.create(session, NewStudent(u, partialDate("2028"))).getOrThrow()
-    val v2 = StudentsDao.update(session, v1.copy(expectedHighSchoolGraduationDate = partialDate("2029-06"))).getOrThrow()
-    StudentsDao.update(session, v2.copy(expectedHighSchoolGraduationDate = partialDate("2030-06-15"))).getOrThrow()
+    val v2 = StudentsDao.update(session, editOf(v1, partialDate("2029-06"))).getOrThrow()
+    StudentsDao.update(session, editOf(v2, partialDate("2030-06-15"))).getOrThrow()
 
     val versions = StudentsDao.listVersions(session, v1.id).getOrThrow()
     assertEquals(listOf(1, 2, 3), versions.map { it.version })

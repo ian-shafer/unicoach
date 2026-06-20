@@ -20,10 +20,8 @@ import ed.unicoach.db.models.SystemPromptId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
-import java.sql.Types
 import java.util.UUID
 
 /**
@@ -38,7 +36,10 @@ import java.util.UUID
  * separate caller transactions; [appendRequest] and [appendResponse] are
  * deliberately distinct methods with no combined "write whole turn" method.
  */
-object ConvosDao {
+object ConvosDao :
+  SoftDeleteFindable<Convo, ConvoId>,
+  Creatable<NewConvo, Convo>,
+  Deletable<Convo, ConvoId> {
   // ---------------------------------------------------------------------------
   // Row mappers
   // ---------------------------------------------------------------------------
@@ -48,10 +49,10 @@ object ConvosDao {
       id = ConvoId(UUID.fromString(rs.getString("id"))),
       studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
       name = parseConvoName(rs.getString("name")),
-      createdAt = rs.getTimestamp("created_at").toInstant(),
-      updatedAt = rs.getTimestamp("updated_at").toInstant(),
-      deletedAt = rs.getTimestamp("deleted_at")?.toInstant(),
-      archivedAt = rs.getTimestamp("archived_at")?.toInstant(),
+      createdAt = rs.getInstant("created_at"),
+      updatedAt = rs.getInstant("updated_at"),
+      deletedAt = rs.getInstantOrNull("deleted_at"),
+      archivedAt = rs.getInstantOrNull("archived_at"),
     )
 
   /**
@@ -78,11 +79,11 @@ object ConvosDao {
     ConvoRequest(
       id = ConvoRequestId(rs.getLong("id")),
       convoId = ConvoId(UUID.fromString(rs.getString("convo_id"))),
-      createdAt = rs.getTimestamp("created_at").toInstant(),
+      createdAt = rs.getInstant("created_at"),
       provider = rs.getString("provider"),
       modelRequested = rs.getString("model_requested"),
       systemPromptId = SystemPromptId(UUID.fromString(rs.getString("system_prompt_id"))),
-      requestParams = readJsonOrNull(rs, "request_params") as JsonObject?,
+      requestParams = rs.getJsonbOrNull("request_params") as JsonObject?,
       content = Json.parseToJsonElement(rs.getString("content")),
     )
 
@@ -94,7 +95,7 @@ object ConvosDao {
       id = ConvoResponseId(rs.getLong("${columnPrefix}id")),
       requestId = ConvoRequestId(rs.getLong("${columnPrefix}request_id")),
       convoId = ConvoId(UUID.fromString(rs.getString("${columnPrefix}convo_id"))),
-      content = readJsonOrNull(rs, "${columnPrefix}content"),
+      content = rs.getJsonbOrNull("${columnPrefix}content"),
       modelResolved = rs.getString("${columnPrefix}model_resolved"),
       stopReason = rs.getString("${columnPrefix}stop_reason"),
       inputTokens = rs.getInt("${columnPrefix}input_tokens").takeUnless { rs.wasNull() },
@@ -103,51 +104,19 @@ object ConvosDao {
       cacheWriteTokens = rs.getInt("${columnPrefix}cache_write_tokens").takeUnless { rs.wasNull() },
       providerRequestId = rs.getString("${columnPrefix}provider_request_id"),
       latencyMs = rs.getInt("${columnPrefix}latency_ms").takeUnless { rs.wasNull() },
-      createdAt = rs.getTimestamp("${columnPrefix}created_at").toInstant(),
+      createdAt = rs.getInstant("${columnPrefix}created_at"),
     )
 
   private fun mapResponseRaw(rs: ResultSet): ConvoResponseRaw =
     ConvoResponseRaw(
       responseId = ConvoResponseId(rs.getLong("response_id")),
-      createdAt = rs.getTimestamp("created_at").toInstant(),
+      createdAt = rs.getInstant("created_at"),
       payload = Json.parseToJsonElement(rs.getString("payload")),
     )
 
   // ---------------------------------------------------------------------------
-  // JSON bind/read helpers
+  // ArchiveScope predicate (fixed SQL fragment; no caller data)
   // ---------------------------------------------------------------------------
-
-  /** Binds a nullable [JsonElement] into a `?::jsonb` slot, NULL as `Types.OTHER`. */
-  private fun bindJsonOrNull(
-    stmt: PreparedStatement,
-    index: Int,
-    element: JsonElement?,
-  ) {
-    if (element != null) {
-      stmt.setString(index, element.toString())
-    } else {
-      stmt.setNull(index, Types.OTHER)
-    }
-  }
-
-  private fun readJsonOrNull(
-    rs: ResultSet,
-    column: String,
-  ): JsonElement? = rs.getString(column)?.let { Json.parseToJsonElement(it) }
-
-  // ---------------------------------------------------------------------------
-  // SoftDeleteScope predicates (fixed SQL fragments; no caller data)
-  // ---------------------------------------------------------------------------
-
-  private fun scopePredicate(
-    scope: SoftDeleteScope,
-    column: String,
-  ): String =
-    when (scope) {
-      SoftDeleteScope.ACTIVE -> "$column IS NULL"
-      SoftDeleteScope.DELETED -> "$column IS NOT NULL"
-      SoftDeleteScope.ALL -> "TRUE"
-    }
 
   private fun archivePredicate(
     scope: ArchiveScope,
@@ -163,28 +132,20 @@ object ConvosDao {
   // Convo entity
   // ---------------------------------------------------------------------------
 
-  fun findById(
+  override fun findById(
     session: SqlSession,
     id: ConvoId,
-    scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
+    scope: SoftDeleteScope,
   ): Result<Convo> =
-    try {
-      session.prepareStatement("SELECT * FROM convos WHERE id = ?").use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) {
-            return Result.failure(NotFoundException())
-          }
-          val convo = mapConvo(rs)
-          if (!scopeAdmits(scope, convo.deletedAt)) {
-            return Result.failure(NotFoundException())
-          }
-          Result.success(convo)
-        }
+    session
+      .queryOne(
+        "SELECT * FROM convos WHERE id = ?",
+        bind = { it.setObject(1, id.value) },
+        map = ::mapConvo,
+      ).mapCatching { convo ->
+        if (!scopeAdmits(scope, convo.deletedAt)) throw NotFoundException()
+        convo
       }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
 
   private fun scopeAdmits(
     scope: SoftDeleteScope,
@@ -200,137 +161,87 @@ object ConvosDao {
     session: SqlSession,
     studentId: StudentId,
     scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
-  ): Result<List<Convo>> =
-    try {
-      val sql =
-        """
-        SELECT * FROM convos
-        WHERE student_id = ? AND ${scopePredicate(scope, "deleted_at")}
-        ORDER BY created_at, id
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.executeQuery().use { rs ->
-          val convos = mutableListOf<Convo>()
-          while (rs.next()) {
-            convos.add(mapConvo(rs))
-          }
-          Result.success(convos)
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+  ): Result<List<Convo>> {
+    val sql =
+      """
+      SELECT * FROM convos
+      WHERE student_id = ? AND ${scope.predicate("deleted_at")}
+      ORDER BY created_at, id
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = { it.setObject(1, studentId.value) },
+      map = ::mapConvo,
+    )
+  }
 
-  fun create(
+  override fun create(
     session: SqlSession,
-    convo: NewConvo,
+    input: NewConvo,
   ): Result<Convo> =
-    try {
-      val sql =
-        """
-        INSERT INTO convos (student_id, name)
-        VALUES (?, ?)
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, convo.studentId.value)
-        stmt.setString(2, convo.name.value)
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapConvo(rs))
-          } else {
-            Result.failure(DatabaseException(RuntimeException("Insert succeeded but returning failed")))
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapConvoError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+    session.insertReturning(
+      table = "convos",
+      columns =
+        linkedMapOf<String, Bind>(
+          "student_id" to { stmt, i -> stmt.setObject(i, input.studentId.value) },
+          "name" to { stmt, i -> stmt.setString(i, input.name.value) },
+        ),
+      map = ::mapConvo,
+      mapError = ::mapConvoError,
+    )
 
+  /**
+   * Renames an active convo. The `deleted_at IS NULL` active-row guard is a
+   * non-id WHERE predicate that the generic `updateColumnsReturning` (id-only
+   * WHERE in non-OCC mode) cannot express without leaking renames onto
+   * soft-deleted rows, so this write stays hand-written via [mutateReturning].
+   */
   fun rename(
     session: SqlSession,
     id: ConvoId,
     name: ConvoName,
-  ): Result<Convo> =
-    try {
-      val sql =
-        """
-        UPDATE convos
-        SET name = ?
-        WHERE id = ? AND deleted_at IS NULL
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
+  ): Result<Convo> {
+    val sql =
+      """
+      UPDATE convos
+      SET name = ?
+      WHERE id = ? AND deleted_at IS NULL
+      RETURNING *
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { stmt ->
         stmt.setString(1, name.value)
         stmt.setObject(2, id.value)
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapConvo(rs))
-          } else {
-            Result.failure(NotFoundException())
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapConvoError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+      },
+      map = ::mapConvo,
+      mapError = ::mapConvoError,
+    )
+  }
 
-  fun delete(
+  override fun delete(
     session: SqlSession,
     id: ConvoId,
   ): Result<Convo> =
-    try {
-      val sql =
-        """
-        UPDATE convos
-        SET deleted_at = NOW()
-        WHERE id = ? AND deleted_at IS NULL
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapConvo(rs))
-          } else {
-            Result.failure(NotFoundException())
-          }
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+    session.softDeleteReturning(
+      table = "convos",
+      id = id.value,
+      currentVersion = null,
+      deleted = true,
+      map = ::mapConvo,
+    )
 
-  fun undelete(
+  override fun undelete(
     session: SqlSession,
     id: ConvoId,
   ): Result<Convo> =
-    try {
-      val sql =
-        """
-        UPDATE convos
-        SET deleted_at = NULL
-        WHERE id = ? AND deleted_at IS NOT NULL
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapConvo(rs))
-          } else {
-            Result.failure(NotFoundException())
-          }
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+    session.softDeleteReturning(
+      table = "convos",
+      id = id.value,
+      currentVersion = null,
+      deleted = false,
+      map = ::mapConvo,
+    )
 
   /**
    * Archives a convo: idempotent toggle that keeps the original `archived_at`
@@ -360,36 +271,28 @@ object ConvosDao {
     session: SqlSession,
     id: ConvoId,
     archive: Boolean,
-  ): Result<Convo> =
-    try {
-      // Precedent: UsersDao.updatePhysicalRecord. SET LOCAL holds for the rest
-      // of the transaction, so a combined rename+archive must rename first.
-      session
-        .prepareStatement("SET LOCAL unicoach.bypass_logical_timestamp = 'true'")
-        .use { it.execute() }
-      val setClause = if (archive) "archived_at = COALESCE(archived_at, NOW())" else "archived_at = NULL"
-      val sql =
-        """
-        UPDATE convos
-        SET $setClause
-        WHERE id = ? AND deleted_at IS NULL
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapConvo(rs))
-          } else {
-            Result.failure(NotFoundException())
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapConvoError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
+  ): Result<Convo> {
+    // Precedent: UsersDao.updatePhysicalRecord. SET LOCAL holds for the rest
+    // of the transaction, so a combined rename+archive must rename first.
+    val bypass = session.execute("SET LOCAL unicoach.bypass_logical_timestamp = 'true'")
+    if (bypass.isFailure) {
+      return Result.failure(bypass.exceptionOrNull()!!)
     }
+    val setClause = if (archive) "archived_at = COALESCE(archived_at, NOW())" else "archived_at = NULL"
+    val sql =
+      """
+      UPDATE convos
+      SET $setClause
+      WHERE id = ? AND deleted_at IS NULL
+      RETURNING *
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { it.setObject(1, id.value) },
+      map = ::mapConvo,
+      mapError = ::mapConvoError,
+    )
+  }
 
   /**
    * Lists a student's convos with each row's derived `lastActivityAt`
@@ -403,32 +306,24 @@ object ConvosDao {
     studentId: StudentId,
     archive: ArchiveScope = ArchiveScope.UNARCHIVED,
     scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
-  ): Result<List<ConvoWithActivity>> =
-    try {
-      val sql =
-        """
-        SELECT c.*, MAX(r.created_at) AS last_activity_at
-        FROM convos c
-        LEFT JOIN convo_requests r ON r.convo_id = c.id
-        WHERE c.student_id = ?
-          AND ${scopePredicate(scope, "c.deleted_at")}
-          AND ${archivePredicate(archive, "c.archived_at")}
-        GROUP BY c.id
-        ORDER BY MAX(r.created_at) DESC NULLS LAST, c.created_at DESC, c.id
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.executeQuery().use { rs ->
-          val rows = mutableListOf<ConvoWithActivity>()
-          while (rs.next()) {
-            rows.add(mapConvoWithActivity(rs))
-          }
-          Result.success(rows)
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+  ): Result<List<ConvoWithActivity>> {
+    val sql =
+      """
+      SELECT c.*, MAX(r.created_at) AS last_activity_at
+      FROM convos c
+      LEFT JOIN convo_requests r ON r.convo_id = c.id
+      WHERE c.student_id = ?
+        AND ${scope.predicate("c.deleted_at")}
+        AND ${archivePredicate(archive, "c.archived_at")}
+      GROUP BY c.id
+      ORDER BY MAX(r.created_at) DESC NULLS LAST, c.created_at DESC, c.id
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = { it.setObject(1, studentId.value) },
+      map = ::mapConvoWithActivity,
+    )
+  }
 
   /**
    * Loads one convo with its derived `lastActivityAt`, honouring [scope].
@@ -438,34 +333,26 @@ object ConvosDao {
     session: SqlSession,
     id: ConvoId,
     scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
-  ): Result<ConvoWithActivity> =
-    try {
-      val sql =
-        """
-        SELECT c.*, MAX(r.created_at) AS last_activity_at
-        FROM convos c
-        LEFT JOIN convo_requests r ON r.convo_id = c.id
-        WHERE c.id = ? AND ${scopePredicate(scope, "c.deleted_at")}
-        GROUP BY c.id
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapConvoWithActivity(rs))
-          } else {
-            Result.failure(NotFoundException())
-          }
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+  ): Result<ConvoWithActivity> {
+    val sql =
+      """
+      SELECT c.*, MAX(r.created_at) AS last_activity_at
+      FROM convos c
+      LEFT JOIN convo_requests r ON r.convo_id = c.id
+      WHERE c.id = ? AND ${scope.predicate("c.deleted_at")}
+      GROUP BY c.id
+      """.trimIndent()
+    return session.queryOne(
+      sql,
+      bind = { it.setObject(1, id.value) },
+      map = ::mapConvoWithActivity,
+    )
+  }
 
   private fun mapConvoWithActivity(rs: ResultSet): ConvoWithActivity =
     ConvoWithActivity(
       convo = mapConvo(rs),
-      lastActivityAt = rs.getTimestamp("last_activity_at")?.toInstant(),
+      lastActivityAt = rs.getInstantOrNull("last_activity_at"),
     )
 
   // ---------------------------------------------------------------------------
@@ -475,36 +362,29 @@ object ConvosDao {
   fun appendRequest(
     session: SqlSession,
     request: NewConvoRequest,
-  ): Result<ConvoRequest> =
-    try {
-      val sql =
-        """
-        INSERT INTO convo_requests (
-          convo_id, provider, model_requested, system_prompt_id, request_params, content
-        )
-        VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb)
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
+  ): Result<ConvoRequest> {
+    val sql =
+      """
+      INSERT INTO convo_requests (
+        convo_id, provider, model_requested, system_prompt_id, request_params, content
+      )
+      VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb)
+      RETURNING *
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { stmt ->
         stmt.setObject(1, request.convoId.value)
         stmt.setString(2, request.provider)
         stmt.setString(3, request.modelRequested)
         stmt.setObject(4, request.systemPromptId.value)
-        bindJsonOrNull(stmt, 5, request.requestParams)
+        stmt.setJsonbOrNull(5, request.requestParams)
         stmt.setString(6, request.content.toString())
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapRequest(rs))
-          } else {
-            Result.failure(DatabaseException(RuntimeException("Insert succeeded but returning failed")))
-          }
-        }
-      }
-    } catch (e: SQLException) {
-      Result.failure(mapConvoError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+      },
+      map = ::mapRequest,
+      mapError = ::mapConvoError,
+    )
+  }
 
   /**
    * Inserts the response row and, when [rawPayload] is non-null, the verbatim raw
@@ -517,54 +397,52 @@ object ConvosDao {
     session: SqlSession,
     response: NewConvoResponse,
     rawPayload: JsonElement?,
-  ): Result<ConvoResponse> =
-    try {
-      val sql =
-        """
-        INSERT INTO convo_responses (
-          request_id, convo_id, content, model_resolved, stop_reason,
-          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-          provider_request_id, latency_ms
-        )
-        VALUES (?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?)
-        RETURNING *
-        """.trimIndent()
-      val inserted =
-        session.prepareStatement(sql).use { stmt ->
+  ): Result<ConvoResponse> {
+    val sql =
+      """
+      INSERT INTO convo_responses (
+        request_id, convo_id, content, model_resolved, stop_reason,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        provider_request_id, latency_ms
+      )
+      VALUES (?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?)
+      RETURNING *
+      """.trimIndent()
+    val insertedResult =
+      session.mutateReturning(
+        sql,
+        bind = { stmt ->
           stmt.setLong(1, response.requestId.value)
           stmt.setObject(2, response.convoId.value)
-          bindJsonOrNull(stmt, 3, response.content)
-          if (response.modelResolved != null) stmt.setString(4, response.modelResolved) else stmt.setNull(4, Types.VARCHAR)
+          stmt.setJsonbOrNull(3, response.content)
+          stmt.setStringOrNull(4, response.modelResolved)
           stmt.setString(5, response.stopReason)
-          bindNullableInt(stmt, 6, response.inputTokens)
-          bindNullableInt(stmt, 7, response.outputTokens)
-          bindNullableInt(stmt, 8, response.cacheReadTokens)
-          bindNullableInt(stmt, 9, response.cacheWriteTokens)
-          if (response.providerRequestId != null) {
-            stmt.setString(10, response.providerRequestId)
-          } else {
-            stmt.setNull(10, Types.VARCHAR)
-          }
-          bindNullableInt(stmt, 11, response.latencyMs)
-          stmt.executeQuery().use { rs ->
-            if (rs.next()) {
-              mapResponse(rs)
-            } else {
-              return Result.failure(DatabaseException(RuntimeException("Insert succeeded but returning failed")))
-            }
-          }
-        }
+          stmt.setIntOrNull(6, response.inputTokens)
+          stmt.setIntOrNull(7, response.outputTokens)
+          stmt.setIntOrNull(8, response.cacheReadTokens)
+          stmt.setIntOrNull(9, response.cacheWriteTokens)
+          stmt.setStringOrNull(10, response.providerRequestId)
+          stmt.setIntOrNull(11, response.latencyMs)
+        },
+        map = ::mapResponse,
+        mapError = ::mapConvoError,
+      )
 
-      if (rawPayload != null) {
+    val inserted = insertedResult.getOrElse { return Result.failure(it) }
+
+    if (rawPayload != null) {
+      return try {
         insertRaw(session, inserted.id, rawPayload)
+        Result.success(inserted)
+      } catch (e: SQLException) {
+        Result.failure(mapConvoError(e))
+      } catch (e: Exception) {
+        Result.failure(mapDatabaseError(e))
       }
-
-      Result.success(inserted)
-    } catch (e: SQLException) {
-      Result.failure(mapConvoError(e))
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
     }
+
+    return Result.success(inserted)
+  }
 
   private fun insertRaw(
     session: SqlSession,
@@ -579,14 +457,6 @@ object ConvosDao {
     }
   }
 
-  private fun bindNullableInt(
-    stmt: PreparedStatement,
-    index: Int,
-    value: Int?,
-  ) {
-    if (value != null) stmt.setInt(index, value) else stmt.setNull(index, Types.INTEGER)
-  }
-
   // ---------------------------------------------------------------------------
   // Logs — read
   // ---------------------------------------------------------------------------
@@ -595,62 +465,54 @@ object ConvosDao {
     session: SqlSession,
     convoId: ConvoId,
     scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
-  ): Result<List<ConvoTurn>> =
-    try {
-      val sql =
-        """
-        SELECT
-          r.id   AS req_id,
-          r.convo_id AS req_convo_id,
-          r.created_at AS req_created_at,
-          r.provider AS req_provider,
-          r.model_requested AS req_model_requested,
-          r.system_prompt_id AS req_system_prompt_id,
-          r.request_params AS req_request_params,
-          r.content AS req_content,
-          resp.id AS resp_id,
-          resp.request_id AS resp_request_id,
-          resp.convo_id AS resp_convo_id,
-          resp.content AS resp_content,
-          resp.model_resolved AS resp_model_resolved,
-          resp.stop_reason AS resp_stop_reason,
-          resp.input_tokens AS resp_input_tokens,
-          resp.output_tokens AS resp_output_tokens,
-          resp.cache_read_tokens AS resp_cache_read_tokens,
-          resp.cache_write_tokens AS resp_cache_write_tokens,
-          resp.provider_request_id AS resp_provider_request_id,
-          resp.latency_ms AS resp_latency_ms,
-          resp.created_at AS resp_created_at
-        FROM convo_requests r
-        JOIN convos c ON c.id = r.convo_id
-        LEFT JOIN convo_responses resp ON resp.request_id = r.id
-        WHERE r.convo_id = ? AND ${scopePredicate(scope, "c.deleted_at")}
-        ORDER BY r.created_at, r.id
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, convoId.value)
-        stmt.executeQuery().use { rs ->
-          val turns = mutableListOf<ConvoTurn>()
-          while (rs.next()) {
-            turns.add(mapTurn(rs))
-          }
-          Result.success(turns)
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+  ): Result<List<ConvoTurn>> {
+    val sql =
+      """
+      SELECT
+        r.id   AS req_id,
+        r.convo_id AS req_convo_id,
+        r.created_at AS req_created_at,
+        r.provider AS req_provider,
+        r.model_requested AS req_model_requested,
+        r.system_prompt_id AS req_system_prompt_id,
+        r.request_params AS req_request_params,
+        r.content AS req_content,
+        resp.id AS resp_id,
+        resp.request_id AS resp_request_id,
+        resp.convo_id AS resp_convo_id,
+        resp.content AS resp_content,
+        resp.model_resolved AS resp_model_resolved,
+        resp.stop_reason AS resp_stop_reason,
+        resp.input_tokens AS resp_input_tokens,
+        resp.output_tokens AS resp_output_tokens,
+        resp.cache_read_tokens AS resp_cache_read_tokens,
+        resp.cache_write_tokens AS resp_cache_write_tokens,
+        resp.provider_request_id AS resp_provider_request_id,
+        resp.latency_ms AS resp_latency_ms,
+        resp.created_at AS resp_created_at
+      FROM convo_requests r
+      JOIN convos c ON c.id = r.convo_id
+      LEFT JOIN convo_responses resp ON resp.request_id = r.id
+      WHERE r.convo_id = ? AND ${scope.predicate("c.deleted_at")}
+      ORDER BY r.created_at, r.id
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = { it.setObject(1, convoId.value) },
+      map = ::mapTurn,
+    )
+  }
 
   private fun mapTurn(rs: ResultSet): ConvoTurn {
     val request =
       ConvoRequest(
         id = ConvoRequestId(rs.getLong("req_id")),
         convoId = ConvoId(UUID.fromString(rs.getString("req_convo_id"))),
-        createdAt = rs.getTimestamp("req_created_at").toInstant(),
+        createdAt = rs.getInstant("req_created_at"),
         provider = rs.getString("req_provider"),
         modelRequested = rs.getString("req_model_requested"),
         systemPromptId = SystemPromptId(UUID.fromString(rs.getString("req_system_prompt_id"))),
-        requestParams = readJsonOrNull(rs, "req_request_params") as JsonObject?,
+        requestParams = rs.getJsonbOrNull("req_request_params") as JsonObject?,
         content = Json.parseToJsonElement(rs.getString("req_content")),
       )
     // resp_id is NULL when the LEFT JOIN found no response row.
@@ -663,20 +525,11 @@ object ConvosDao {
     session: SqlSession,
     responseId: ConvoResponseId,
   ): Result<ConvoResponseRaw> =
-    try {
-      session.prepareStatement("SELECT * FROM convo_responses_raw WHERE response_id = ?").use { stmt ->
-        stmt.setLong(1, responseId.value)
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapResponseRaw(rs))
-          } else {
-            Result.failure(NotFoundException())
-          }
-        }
-      }
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
+    session.queryOne(
+      "SELECT * FROM convo_responses_raw WHERE response_id = ?",
+      bind = { it.setLong(1, responseId.value) },
+      map = ::mapResponseRaw,
+    )
 
   // ---------------------------------------------------------------------------
   // Error mapping

@@ -8,17 +8,21 @@ import ed.unicoach.db.models.UserId
 import java.sql.ResultSet
 import java.util.UUID
 
-object SessionsDao {
+object SessionsDao :
+  Findable<Session, SessionId>,
+  Listable<Session>,
+  Creatable<NewSession, Session>,
+  Destroyable<SessionId> {
   private fun mapSession(rs: ResultSet): Session {
     val id = SessionId(UUID.fromString(rs.getString("id")))
     val version = rs.getInt("version")
-    val createdAt = rs.getTimestamp("created_at").toInstant()
+    val createdAt = rs.getInstant("created_at")
     val userIdStr = rs.getString("user_id")
     val userId = if (userIdStr != null) UserId(UUID.fromString(userIdStr)) else null
     val metadata = rs.getString("metadata")
     val userAgent = rs.getString("user_agent")
     val initialIp = rs.getString("initial_ip")
-    val expiresAt = rs.getTimestamp("expires_at").toInstant()
+    val expiresAt = rs.getInstant("expires_at")
 
     return Session(
       id = id,
@@ -32,151 +36,124 @@ object SessionsDao {
     )
   }
 
-  private fun <T> executeSafely(block: () -> Result<T>): Result<T> =
-    try {
-      block()
-    } catch (e: Exception) {
-      Result.failure(mapDatabaseError(e))
-    }
-
-  fun findById(
+  override fun findById(
     session: SqlSession,
     id: SessionId,
   ): Result<Session> =
-    executeSafely {
-      session.prepareStatement("SELECT * FROM sessions WHERE id = ?").use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) {
-            return@executeSafely Result.failure(NotFoundException("Session not found"))
-          }
-          Result.success(mapSession(rs))
-        }
-      }
-    }
+    session.queryOne(
+      "SELECT * FROM sessions WHERE id = ?",
+      bind = { it.setObject(1, id.value) },
+      map = ::mapSession,
+      onNoRow = { NotFoundException("Session not found") },
+    )
 
   fun listByUser(
     session: SqlSession,
     userId: UserId,
     limit: Int,
     offset: Int,
-  ): Result<List<Session>> =
-    executeSafely {
-      val sql =
-        """
-        SELECT * FROM sessions
-        WHERE user_id = ?
-        ORDER BY created_at DESC, id
-        LIMIT ? OFFSET ?
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
+  ): Result<List<Session>> {
+    val sql =
+      """
+      SELECT * FROM sessions
+      WHERE user_id = ?
+      ORDER BY created_at DESC, id
+      LIMIT ? OFFSET ?
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = { stmt ->
         stmt.setObject(1, userId.value)
         stmt.setInt(2, limit)
         stmt.setInt(3, offset)
-        stmt.executeQuery().use { rs ->
-          val sessions = mutableListOf<Session>()
-          while (rs.next()) {
-            sessions.add(mapSession(rs))
-          }
-          Result.success(sessions)
-        }
-      }
-    }
+      },
+      map = ::mapSession,
+    )
+  }
 
-  fun listAll(
+  override fun list(
     session: SqlSession,
     limit: Int,
     offset: Int,
-  ): Result<List<Session>> =
-    executeSafely {
-      val sql =
-        """
-        SELECT * FROM sessions
-        ORDER BY created_at DESC, id
-        LIMIT ? OFFSET ?
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
+  ): Result<List<Session>> {
+    val sql =
+      """
+      SELECT * FROM sessions
+      ORDER BY created_at DESC, id
+      LIMIT ? OFFSET ?
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = { stmt ->
         stmt.setInt(1, limit)
         stmt.setInt(2, offset)
-        stmt.executeQuery().use { rs ->
-          val sessions = mutableListOf<Session>()
-          while (rs.next()) {
-            sessions.add(mapSession(rs))
-          }
-          Result.success(sessions)
-        }
-      }
-    }
+      },
+      map = ::mapSession,
+    )
+  }
 
   /**
    * Physical delete: `sessions` carries no `prevent_physical_delete` trigger, so
    * the row is removed outright (unlike soft-delete entities). A missing id is a
    * [NotFoundException].
    */
-  fun deleteById(
+  override fun destroy(
     session: SqlSession,
     id: SessionId,
   ): Result<Unit> =
-    executeSafely {
-      session.prepareStatement("DELETE FROM sessions WHERE id = ?").use { stmt ->
-        stmt.setObject(1, id.value)
-        val affected = stmt.executeUpdate()
-        if (affected == 0) {
-          Result.failure(NotFoundException("Session not found"))
-        } else {
-          Result.success(Unit)
-        }
+    session
+      .execute(
+        "DELETE FROM sessions WHERE id = ?",
+        bind = { it.setObject(1, id.value) },
+      ).mapCatching { affected ->
+        if (affected == 0) throw NotFoundException("Session not found")
       }
-    }
 
   fun findByTokenHash(
     session: SqlSession,
     tokenHash: TokenHash,
   ): Result<Session> =
-    executeSafely {
+    try {
       val sql = "SELECT * FROM sessions WHERE token_hash = ? AND is_revoked = false AND expires_at > NOW()"
       session.prepareStatement(sql).use { stmt ->
         stmt.setBytes(1, tokenHash.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
-            return@executeSafely Result.failure(NotFoundException("Session not found or expired"))
+            return Result.failure(NotFoundException("Session not found or expired"))
           }
           val foundHash = rs.getBytes("token_hash")
           if (!foundHash.contentEquals(tokenHash.value)) {
-            return@executeSafely Result.failure(NotFoundException("Session hash mismatch"))
+            return Result.failure(NotFoundException("Session hash mismatch"))
           }
           Result.success(mapSession(rs))
         }
       }
+    } catch (e: Exception) {
+      Result.failure(mapDatabaseError(e))
     }
 
-  fun create(
+  override fun create(
     session: SqlSession,
-    newSession: NewSession,
-  ): Result<Session> =
-    executeSafely {
-      val sql =
-        """
-        INSERT INTO sessions (user_id, token_hash, user_agent, initial_ip, metadata, expires_at)
-        VALUES (?, ?, ?, ?, ?::jsonb, NOW() + (${newSession.expiration.seconds} * INTERVAL '1 second'))
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        if (newSession.userId != null) stmt.setObject(1, newSession.userId.value) else stmt.setNull(1, java.sql.Types.OTHER)
-        stmt.setBytes(2, newSession.tokenHash.value)
-        if (newSession.userAgent != null) stmt.setString(3, newSession.userAgent) else stmt.setNull(3, java.sql.Types.VARCHAR)
-        if (newSession.initialIp != null) stmt.setString(4, newSession.initialIp) else stmt.setNull(4, java.sql.Types.VARCHAR)
-        if (newSession.metadata != null) stmt.setString(5, newSession.metadata) else stmt.setNull(5, java.sql.Types.VARCHAR)
-
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapSession(rs))
-          } else {
-            Result.failure(DatabaseException(RuntimeException("Insert succeeded but returning failed")))
-          }
-        }
-      }
-    }
+    input: NewSession,
+  ): Result<Session> {
+    val sql =
+      """
+      INSERT INTO sessions (user_id, token_hash, user_agent, initial_ip, metadata, expires_at)
+      VALUES (?, ?, ?, ?, ?::jsonb, NOW() + (${input.expiration.seconds} * INTERVAL '1 second'))
+      RETURNING *
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { stmt ->
+        if (input.userId != null) stmt.setObject(1, input.userId.value) else stmt.setNull(1, java.sql.Types.OTHER)
+        stmt.setBytes(2, input.tokenHash.value)
+        stmt.setStringOrNull(3, input.userAgent)
+        stmt.setStringOrNull(4, input.initialIp)
+        stmt.setStringOrNull(5, input.metadata)
+      },
+      map = ::mapSession,
+    )
+  }
 
   fun remintToken(
     session: SqlSession,
@@ -185,98 +162,78 @@ object SessionsDao {
     newUserId: UserId,
     newTokenHash: ByteArray,
     newExpirationSeconds: Long,
-  ): Result<Session> =
-    executeSafely {
-      val sql =
-        """
-        UPDATE sessions 
-        SET version = ?, user_id = ?, token_hash = ?, expires_at = NOW() + (? * INTERVAL '1 second')
-        WHERE id = ? AND version = ? AND is_revoked = false
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        val nextVersion = currentVersion + 1
-        stmt.setInt(1, nextVersion)
+  ): Result<Session> {
+    val sql =
+      """
+      UPDATE sessions
+      SET version = ?, user_id = ?, token_hash = ?, expires_at = NOW() + (? * INTERVAL '1 second')
+      WHERE id = ? AND version = ? AND is_revoked = false
+      RETURNING *
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { stmt ->
+        stmt.setInt(1, currentVersion + 1)
         stmt.setObject(2, newUserId.value)
         stmt.setBytes(3, newTokenHash)
         stmt.setLong(4, newExpirationSeconds)
         stmt.setObject(5, id.value)
         stmt.setInt(6, currentVersion)
-
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapSession(rs))
-          } else {
-            Result.failure(NotFoundException("Session could not be reminted either due to version mismatch or not found"))
-          }
-        }
-      }
-    }
+      },
+      map = ::mapSession,
+      onNoRow = { NotFoundException("Session could not be reminted either due to version mismatch or not found") },
+    )
+  }
 
   fun extendExpiry(
     session: SqlSession,
     id: SessionId,
     currentVersion: Int,
-  ): Result<Session> =
-    executeSafely {
-      val sql =
-        """
-        UPDATE sessions 
-        SET version = ?, expires_at = NOW() + INTERVAL '7 days'
-        WHERE id = ? AND version = ? AND is_revoked = false
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        val nextVersion = currentVersion + 1
-        stmt.setInt(1, nextVersion)
+  ): Result<Session> {
+    val sql =
+      """
+      UPDATE sessions
+      SET version = ?, expires_at = NOW() + INTERVAL '7 days'
+      WHERE id = ? AND version = ? AND is_revoked = false
+      RETURNING *
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { stmt ->
+        stmt.setInt(1, currentVersion + 1)
         stmt.setObject(2, id.value)
         stmt.setInt(3, currentVersion)
-
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapSession(rs))
-          } else {
-            Result.failure(NotFoundException("Session could not be extended either due to version mismatch or not found"))
-          }
-        }
-      }
-    }
+      },
+      map = ::mapSession,
+      onNoRow = { NotFoundException("Session could not be extended either due to version mismatch or not found") },
+    )
+  }
 
   fun revokeByTokenHash(
     session: SqlSession,
     tokenHash: TokenHash,
-  ): Result<Session> =
-    executeSafely {
-      val sql =
-        """
-        UPDATE sessions 
-        SET version = version + 1, is_revoked = true
-        WHERE token_hash = ? AND is_revoked = false
-        RETURNING *
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.setBytes(1, tokenHash.value)
-
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) {
-            Result.success(mapSession(rs))
-          } else {
-            Result.failure(NotFoundException("Session not found or already revoked"))
-          }
-        }
-      }
-    }
+  ): Result<Session> {
+    val sql =
+      """
+      UPDATE sessions
+      SET version = version + 1, is_revoked = true
+      WHERE token_hash = ? AND is_revoked = false
+      RETURNING *
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { it.setBytes(1, tokenHash.value) },
+      map = ::mapSession,
+      onNoRow = { NotFoundException("Session not found or already revoked") },
+    )
+  }
 
   fun expireZombieSessions(session: SqlSession): Result<Unit> =
-    executeSafely {
-      val sql =
+    session
+      .execute(
         """
-        DELETE FROM sessions 
+        DELETE FROM sessions
         WHERE expires_at < NOW() OR is_revoked = true
-        """.trimIndent()
-      session.prepareStatement(sql).use { stmt ->
-        stmt.executeUpdate()
-        Result.success(Unit)
-      }
-    }
+        """.trimIndent(),
+      ).map { }
 }
