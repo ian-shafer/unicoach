@@ -123,8 +123,10 @@ How each session gets its name depends on who owns it:
 - **Background agents.** This string is the **`Agent` tool's `description`**
   field — the task/session name the harness surfaces. The orchestrator sets it
   directly; no human step.
-- **Interactive child conversations.** Instruct the Architect to **title the new
-  conversation** with it (via `/rename` or `claude -n`).
+- **Interactive child conversations.** These too are sessions whose model cannot
+  rename itself, so auto-titling will be wrong. Instruct the Architect to run
+  `/rename [<skill-name>] rfc/<n> <rfc-name>` **as the first message** in the
+  new conversation (or launch it with `claude -n`), before running the skill.
 
 ## Change Tracking, Checkpoints & Agent Write-Scope
 
@@ -362,15 +364,26 @@ any result as green.
      <rfc-name>` in this conversation (the
      model cannot rename its own session). This is best-effort cosmetics —
      proceed regardless of whether they do it.
-   - Instruct the Architect to open a **new conversation**, **title it
-     `[rfc-design] rfc/<n> <rfc-name>`**, and run the `/rfc-design` skill to
+   - Instruct the Architect to open a **new conversation** and, **as the very
+     first thing in it, run** `/rename [rfc-design] rfc/<n> <rfc-name>` — the
+     design session's model cannot rename itself, so this manual step is what
+     gives that conversation the right name. Then run the `/rfc-design` skill to
      collaboratively draft the RFC.
    - Explain that this is required _"to keep my context window clean so I can
      stay focused on my job."_
-   - Provide an explicit, copy-pasteable prompt they can use that includes the
-     **current codebase root path** (e.g.,
-     `"Run /rfc-design to design a
-        new feature in <codebase-root>: <brief-description>"`).
+   - Provide an explicit, copy-pasteable block they can use that bundles
+     **both** the rename and the design prompt, substituting `<n>`,
+     `<rfc-name>`, `<codebase-root>`, and `<brief-description>`:
+
+     ```
+     /rename [rfc-design] rfc/<n> <rfc-name>
+     ```
+
+     then, as the next message:
+
+     ```
+     Run /rfc-design to design a new feature in <codebase-root>: <brief-description>
+     ```
    - Instruct them to return to this conversation and provide the target file
      path (e.g., `rfc/<rfc-file>.md`) once the draft is successfully written.
    - Pause and wait for the Architect's input.
@@ -490,14 +503,22 @@ any result as green.
    If the Architect determines that the design itself was incomplete or needs to
    change:
 
-   1. Instruct the Architect to open a **new conversation**, **title it
-      `[rfc-design] rfc/<n> <rfc-name>`**, to refine the design, explaining that
-      this is necessary _"to keep my context window clean so I can stay focused
-      on my job."_
-   2. Provide this exact copy-pasteable prompt:
-      `"Run /rfc-design to refine
-        the design of the existing RFC: rfc/<rfc-file>.md. Discuss the following
-        updates: <Architect-inputs>"`
+   1. Instruct the Architect to open a **new conversation** to refine the
+      design, explaining that this is necessary _"to keep my context window
+      clean so I can stay focused on my job."_ As the **very first thing in
+      it**, they run `/rename [rfc-design] rfc/<n> <rfc-name>` (the design
+      session cannot rename itself); reuse this run's existing `<n>` and
+      `<rfc-name>`.
+   2. Provide this exact copy-pasteable block — the rename first, then the
+      design prompt as the next message:
+
+      ```
+      /rename [rfc-design] rfc/<n> <rfc-name>
+      ```
+
+      ```
+      Run /rfc-design to refine the design of the existing RFC: rfc/<rfc-file>.md. Discuss the following updates: <Architect-inputs>
+      ```
    3. Pause and wait for them to return once the RFC has been updated.
    4. Once they return:
       - **Verify RFC Diffs**: Diff the working-tree RFC against the
