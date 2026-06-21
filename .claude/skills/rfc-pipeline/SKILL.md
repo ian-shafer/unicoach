@@ -48,16 +48,16 @@ with `SendMessage` if you need to hand it a follow-up without losing its
 context; otherwise spawn a fresh agent per phase.
 
 **Review-agent model policy.** This pipeline is heavyweight and its reviews are
-adversarial, so **run it on a capable session model.** The review _orchestrators_
-— the Phase 1 `/rfc-review-loop` (RFC design review) and **every**
-`/rfc-impl-review` / `/rfc-impl-review-loop` pass in Phase 2 — are **not** pinned;
-they inherit that session model and so never go stale as models change. The
-**only** model pinned anywhere in this pipeline is the **leaf** reviewers: the
-code-review and design-review chains fan out to many small parallel agents, and
-those are held to a mid tier (cheaper than the expected session model) via the
-`code-reviewer` and `design-reviewer` agent definitions in `.claude/agents/`.
-That single pin — `model:` in those two files — is the one place to revisit if
-the model lineup ever reshuffles.
+adversarial, so **run it on a capable session model.** The review
+_orchestrators_ — the Phase 1 `/rfc-review-loop` (RFC design review) and
+**every** `/rfc-impl-review` / `/rfc-impl-review-loop` pass in Phase 2 — are
+**not** pinned; they inherit that session model and so never go stale as models
+change. The **only** model pinned anywhere in this pipeline is the **leaf**
+reviewers: the code-review and design-review chains fan out to many small
+parallel agents, and those are held to a mid tier (cheaper than the expected
+session model) via the `code-reviewer` and `design-reviewer` agent definitions
+in `.claude/agents/`. That single pin — `model:` in those two files — is the one
+place to revisit if the model lineup ever reshuffles.
 
 ## Critical Behaviours
 
@@ -76,12 +76,43 @@ the model lineup ever reshuffles.
   work.
 - **Transparency before spawning**: Immediately before spawning any background
   agent, print one line in the chat stream naming the agent and its task, e.g.
-  `Spawning agent "RFC review loop — <rfc-file>": <one-line task summary>`. When
-  you instruct a background agent that it may itself spawn nested agents,
+  `Spawning agent "[rfc-review-loop] rfc/<n> <rfc-name>": <one-line task summary>`.
+  When you instruct a background agent that it may itself spawn nested agents,
   require it to list any nested agents it launched (name + task) in its final
   report, so you can surface them to the Architect. (Claude Code does not
   deliver live mid-run notifications from a background agent, so capture this in
   the agent's returned summary rather than expecting an interrupt.)
+
+## Session Naming
+
+Every session this pipeline creates — both the background agents it spawns and
+the separate conversations it asks the Architect to open — is named with one
+uniform convention so a run's sessions are identifiable at a glance and grouped
+by RFC:
+
+```
+[<skill-name>] rfc/<n> <rfc-name>
+```
+
+- `<skill-name>` is the skill that session **runs**, without the leading slash.
+  For the interactive design conversation that is `rfc-design`; for each
+  background agent it is the actual sub-skill the agent invokes
+  (`rfc-review-loop`, `rfc-impl`, `rfc-impl-review-loop`, `rfc-impl-fix`,
+  `rfc-impl-review`, `spec-sync-loop`, `invariants-writer`). It is **never**
+  literally `rfc-pipeline` — that is this orchestrator, not the spawned session.
+- `<n>` is this run's RFC number, claimed in Phase 0.
+- `<rfc-name>` is a short, human-readable title for the RFC in Sentence case,
+  derived from the RFC's H1 / brief description (e.g. `69-email-verification.md`
+  → `Email verification`). **Record it in orchestrator state alongside `<n>`**
+  and reuse the **same** string for every session in the run.
+
+Examples: `[rfc-design] rfc/69 Email verification`,
+`[rfc-impl] rfc/69 Email verification`,
+`[spec-sync-loop] rfc/69 Email verification`.
+
+For a **background agent**, this string is the **`Agent` tool's `description`**
+field — that is the task/session name the harness surfaces. For an **interactive
+conversation**, instruct the Architect to **title the new session** with it.
 
 ## Change Tracking, Checkpoints & Agent Write-Scope
 
@@ -309,8 +340,13 @@ any result as green.
    conversation from context bloat, do NOT execute the interactive design phase
    here. Instead:
 
-   - Instruct the Architect to open a **new conversation** and run the
-     `/rfc-design` skill to collaboratively draft the RFC.
+   - From the Architect's `<brief-description>`, derive `<rfc-name>` (a short
+     Sentence-case title, e.g. `Email verification`) and record it in
+     orchestrator state alongside `<n>`; it names every session in this run per
+     **Session Naming** above.
+   - Instruct the Architect to open a **new conversation**, **title it
+     `[rfc-design] rfc/<n> <rfc-name>`**, and run the `/rfc-design` skill to
+     collaboratively draft the RFC.
    - Explain that this is required _"to keep my context window clean so I can
      stay focused on my job."_
    - Provide an explicit, copy-pasteable prompt they can use that includes the
@@ -325,7 +361,7 @@ any result as green.
    Instead, spawn a background agent with the **`Agent`** tool:
 
    - **subagent_type**: `general-purpose`
-   - **description**: `RFC review loop — <rfc-file>`
+   - **description**: `[rfc-review-loop] rfc/<n> <rfc-name>`
    - **run_in_background**: `true`
    - **prompt**:
      `"Invoke the /rfc-review-loop skill on target RFC
@@ -372,7 +408,7 @@ any result as green.
    prompts. Spawn a background agent with the **`Agent`** tool:
 
    - **subagent_type**: `general-purpose`
-   - **description**: `RFC implementation — <rfc-file>`
+   - **description**: `[rfc-impl] rfc/<n> <rfc-name>`
    - **run_in_background**: `true`
    - **prompt**:
      `"Invoke the /rfc-impl skill on RFC rfc/<rfc-file>.md to
@@ -394,7 +430,7 @@ any result as green.
    a background agent with the **`Agent`** tool:
 
    - **subagent_type**: `general-purpose`
-   - **description**: `RFC impl review — <rfc-file>`
+   - **description**: `[rfc-impl-review-loop] rfc/<n> <rfc-name>`
    - **run_in_background**: `true`
    - **prompt**:
      `"Invoke the /rfc-impl-review-loop skill on target RFC
@@ -436,9 +472,10 @@ any result as green.
    If the Architect determines that the design itself was incomplete or needs to
    change:
 
-   1. Instruct the Architect to open a **new conversation** to refine the
-      design, explaining that this is necessary _"to keep my context window
-      clean so I can stay focused on my job."_
+   1. Instruct the Architect to open a **new conversation**, **title it
+      `[rfc-design] rfc/<n> <rfc-name>`**, to refine the design, explaining that
+      this is necessary _"to keep my context window clean so I can stay focused
+      on my job."_
    2. Provide this exact copy-pasteable prompt:
       `"Run /rfc-design to refine
         the design of the existing RFC: rfc/<rfc-file>.md. Discuss the following
@@ -459,7 +496,7 @@ any result as green.
         `*/INVARIANTS.md`**) and the subagent rules. You MUST pass the captured
         RFC design diff as the action items to implement:
         - **subagent_type**: `general-purpose`
-        - **description**: `RFC impl fix — <rfc-file>`
+        - **description**: `[rfc-impl-fix] rfc/<n> <rfc-name>`
         - **run_in_background**: `true`
         - **prompt**:
           `"Invoke the /rfc-impl-fix skill on target RFC
@@ -477,7 +514,7 @@ any result as green.
    2. Once the feedback is provided, spawn a background agent running
       `/rfc-impl-fix` to apply the corrections directly:
       - **subagent_type**: `general-purpose`
-      - **description**: `RFC impl fix — <rfc-file>`
+      - **description**: `[rfc-impl-fix] rfc/<n> <rfc-name>`
       - **run_in_background**: `true`
       - **prompt**:
         `"Invoke the /rfc-impl-fix skill on target RFC
@@ -488,7 +525,7 @@ any result as green.
       the corrections are correct and that no code standards or test suites were
       broken:
       - **subagent_type**: `general-purpose`
-      - **description**: `RFC impl review — <rfc-file>`
+      - **description**: `[rfc-impl-review] rfc/<n> <rfc-name>`
       - **run_in_background**: `true`
       - **prompt**:
         `"Invoke the /rfc-impl-review skill on target RFC
@@ -505,7 +542,7 @@ any result as green.
    2. If they say yes:
       - Spawn a background agent running the `/rfc-impl-review` skill:
         - **subagent_type**: `general-purpose`
-        - **description**: `RFC impl review — <rfc-file>`
+        - **description**: `[rfc-impl-review] rfc/<n> <rfc-name>`
         - **run_in_background**: `true`
         - **prompt**:
           `"Invoke the /rfc-impl-review skill on target RFC
@@ -542,7 +579,7 @@ Do NOT ask the Architect to copy-paste prompts and do NOT use `/spec-editor`.
 SPEC.md is LLM-managed. Spawn a background agent with the **`Agent`** tool:
 
 - **subagent_type**: `general-purpose`
-- **description**: `RFC spec sync — <rfc-file>`
+- **description**: `[spec-sync-loop] rfc/<n> <rfc-name>`
 - **run_in_background**: `true`
 - **prompt**: instruct it to run `/spec-sync-loop` (3 iterations) on **each**
   touched directory in `<codebase-root>` (creating a new `SPEC.md` via
@@ -563,7 +600,7 @@ transparency line, then spawn. On return, **verify write-scope**
 Spawn a background agent with the **`Agent`** tool:
 
 - **subagent_type**: `general-purpose`
-- **description**: `RFC invariants — <rfc-file>`
+- **description**: `[invariants-writer] rfc/<n> <rfc-name>`
 - **run_in_background**: `true`
 - **prompt**: instruct it to run `/invariants-writer` on **each** touched
   directory in `<codebase-root>`, distilling the few true invariants from each
