@@ -19,6 +19,7 @@ class AuthService(
   private val database: Database,
   private val argon2Hasher: Argon2Hasher,
   private val tokenGenerator: ed.unicoach.util.TokenGenerator,
+  private val emailVerificationService: EmailVerificationService,
   private val validator: Validator<RegistrationInput> = RegistrationValidator(),
 ) {
   suspend fun register(
@@ -57,62 +58,84 @@ class AuthService(
         authMethod = AuthMethod.Password(pwdHash),
       )
 
-    return try {
-      database.withConnection { session ->
-        val daoResult = UsersDao.create(session, newUser)
-        if (daoResult.isFailure) {
-          val ex = daoResult.exceptionOrNull()
-          if (ex is DuplicateEmailException) {
-            return@withConnection Result.success(RegisterResult.DuplicateEmail(emailAddr.value))
-          } else {
-            return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
+    // Raw verification token captured from inside the transaction for best-effort
+    // delivery after the commit. Null when registration did not reach a success.
+    var verificationRawToken: String? = null
+    var registeredUser: ed.unicoach.db.models.User? = null
+
+    val outcome =
+      try {
+        database.withConnection { session ->
+          val daoResult = UsersDao.create(session, newUser)
+          if (daoResult.isFailure) {
+            val ex = daoResult.exceptionOrNull()
+            if (ex is DuplicateEmailException) {
+              return@withConnection Result.success(RegisterResult.DuplicateEmail(emailAddr.value))
+            } else {
+              return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
+            }
           }
-        }
-        val user = daoResult.getOrNull()!!
+          val user = daoResult.getOrNull()!!
 
-        val newToken = tokenGenerator.generateToken()
-        val newHash = TokenHash.fromRawToken(newToken)
-        var wasReminted = false
+          val newToken = tokenGenerator.generateToken()
+          val newHash = TokenHash.fromRawToken(newToken)
+          var wasReminted = false
 
-        if (oldCookieToken != null) {
-          val oldHash = TokenHash.fromRawToken(oldCookieToken)
-          val found = SessionsDao.findByTokenHash(session, oldHash)
-          if (found.isSuccess) {
-            val sessionVal = found.getOrNull()!!
+          if (oldCookieToken != null) {
+            val oldHash = TokenHash.fromRawToken(oldCookieToken)
+            val found = SessionsDao.findByTokenHash(session, oldHash)
+            if (found.isSuccess) {
+              val sessionVal = found.getOrNull()!!
+              SessionsDao
+                .remintToken(
+                  session = session,
+                  id = sessionVal.id,
+                  currentVersion = sessionVal.version,
+                  newUserId = user.id,
+                  newTokenHash = newHash.value,
+                  newExpirationSeconds = sessionExpirationSeconds,
+                ).getOrThrow()
+              wasReminted = true
+            }
+          }
+
+          if (!wasReminted) {
             SessionsDao
-              .remintToken(
+              .create(
                 session = session,
-                id = sessionVal.id,
-                currentVersion = sessionVal.version,
-                newUserId = user.id,
-                newTokenHash = newHash.value,
-                newExpirationSeconds = sessionExpirationSeconds,
+                input =
+                  ed.unicoach.db.models.NewSession(
+                    userId = user.id,
+                    tokenHash = newHash,
+                    userAgent = userAgent,
+                    initialIp = initialIp,
+                    metadata = null,
+                    expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+                  ),
               ).getOrThrow()
-            wasReminted = true
           }
-        }
 
-        if (!wasReminted) {
-          SessionsDao
-            .create(
-              session = session,
-              input =
-                ed.unicoach.db.models.NewSession(
-                  userId = user.id,
-                  tokenHash = newHash,
-                  userAgent = userAgent,
-                  initialIp = initialIp,
-                  metadata = null,
-                  expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
-                ),
-            ).getOrThrow()
-        }
+          // Issue the verification token inside the user-creation transaction so it
+          // is atomic with the user + session; the raw token is captured for
+          // best-effort delivery after the commit.
+          verificationRawToken = emailVerificationService.issueToken(session, user.id).getOrThrow()
+          registeredUser = user
 
-        Result.success(RegisterResult.Success(user, newToken))
+          Result.success(RegisterResult.Success(user, newToken))
+        }
+      } catch (e: Exception) {
+        Result.failure(e)
       }
-    } catch (e: Exception) {
-      Result.failure(e)
+
+    // Post-commit, best-effort verification email. A send failure must not fail
+    // registration — the user can resend.
+    val rawToken = verificationRawToken
+    val user = registeredUser
+    if (outcome.isSuccess && outcome.getOrNull() is RegisterResult.Success && rawToken != null && user != null) {
+      emailVerificationService.sendVerificationEmail(user.email, rawToken)
     }
+
+    return outcome
   }
 
   suspend fun getCurrentUser(tokenHash: TokenHash): Result<ed.unicoach.db.models.User?> =

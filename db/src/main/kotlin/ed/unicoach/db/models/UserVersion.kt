@@ -11,6 +11,7 @@ data class UserVersion(
   val displayName: DisplayName?,
   val authMethod: AuthMethod,
   val isAdmin: Boolean,
+  val emailVerifiedAt: Instant?,
   override val createdAt: Instant,
   val updatedAt: Instant,
   val deletedAt: Instant?,

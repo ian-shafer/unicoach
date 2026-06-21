@@ -5,62 +5,24 @@
 The authentication and authorization layer for the admin server. This directory
 contains a single file — [`AdminAuth.kt`](./AdminAuth.kt) — owning the
 unauthenticated `/login` and `/logout` routes and the `is_admin` gate that
-fronts every other request. Its singular purpose is to translate the existing
-session/cookie auth machinery into the admin server's two-stage access control:
-**authentication** (any valid user may log in) and **authorization** (only an
-`is_admin` user may reach gated pages), kept strictly separate.
+fronts every other request. It translates the shared session/cookie auth
+machinery into the admin server's two-stage access control: **authentication**
+(any valid user may log in) and **authorization** (only an `is_admin` user may
+reach gated pages), kept as separate stages.
 
 ---
 
-## II. Invariants
-
-- Login MUST authenticate against the shared
-  [`AuthService`](../../../../../../../../service/src/main/kotlin/ed/unicoach/auth/AuthService.kt);
-  this module MUST NOT verify credentials, hash passwords, or read the user
-  store itself.
-- Login MUST NOT enforce authorization. A successful login grants a session to
-  **any** valid user regardless of `is_admin`; reaching a gated page still
-  requires passing the gate. Authentication and authorization MUST remain two
-  separate stages.
-- Every non-`Success` `LoginResult` MUST re-render the login form with the
-  single literal message `"invalid email or password"`. The module MUST NOT
-  branch its response on the specific failure variant (`UserNotFound`,
-  `PasswordMismatch`, `PasswordNotSet`, `InvalidEmail`) — no variant disclosure.
-- A failed login MUST NOT set, clear, or otherwise emit a session cookie.
-- A successful login MUST set the session cookie carrying the **raw** token (not
-  a hash) and redirect to `/`.
-- The session cookie MUST be written `HttpOnly` with `SameSite=Strict` and the
-  `path`/`domain`/`secure`/`maxAge` attributes sourced from
-  [`AdminConfig`](../AdminConfig.kt). A blank configured `cookieDomain` MUST
-  produce a host-only cookie (no `Domain` attribute).
-- The gate MUST run on every request **except** the exact paths `/login`,
-  `/logout`, and `/healthz`. The exemption set is matched against the path with
-  any query string stripped.
-- A gated request with a missing or blank cookie MUST redirect to `/login` and
-  MUST NOT invoke `AuthService`.
-- The gate MUST hash the raw cookie token via
-  [`TokenHash.fromRawToken`](../../../../../../../../db/src/main/kotlin/ed/unicoach/db/models/TokenHash.kt)
-  before resolving it; it MUST NOT pass the raw token to `AuthService`.
-- A gated request whose token resolves to no user (unknown/expired/revoked) MUST
-  redirect to `/login`.
-- A gated request resolving to a user with `isAdmin == false` MUST respond
-  `403 Forbidden` with an HTML page. It MUST NOT redirect — `/login` is exempt
-  from the gate, so a redirect would loop.
-- A gated request resolving to a user with `isAdmin == true` MUST place that
-  `User` under `CurrentAdminKey` in the call attributes and let the request
-  proceed. Downstream gated handlers MAY rely on `currentAdmin` being present.
-- Logout MUST revoke the session via `AuthService.logout` only when a cookie is
-  present, MUST clear the cookie unconditionally, and MUST redirect to `/login`.
-- Each unauthorized/unauthenticated/forbidden outcome MUST terminate the
-  pipeline so no downstream handler runs.
-
----
-
-## III. Behavioral Contracts
+## II. Behavioral Contracts
 
 ### `Route.adminAuthRoutes(authService, config)` — [`AdminAuth.kt`](./AdminAuth.kt)
 
 Registers the unauthenticated `/login` (GET + POST) and `/logout` (POST) routes.
+Login authenticates against the shared
+[`AuthService`](../../../../../../../../service/src/main/kotlin/ed/unicoach/auth/AuthService.kt);
+this layer does not verify credentials, hash passwords, or read the user store
+itself. Login does not enforce authorization — a successful login grants a
+session to **any** valid user regardless of `is_admin`, and reaching a gated
+page still requires passing the gate.
 
 - **`GET /login`** — Renders the login form with no error.
   - **Side effects**: None.
@@ -71,7 +33,9 @@ Registers the unauthenticated `/login` (GET + POST) and `/logout` (POST) routes.
   from config, `User-Agent` and remote host from the request), and unwraps the
   `Result`.
   - **Side effects**: Delegates to `AuthService.login`, which performs the
-    session write on success. On `Success`, writes the session cookie.
+    session write on success. On `Success`, writes the session cookie carrying
+    the **raw** token (not a hash). A non-`Success` outcome emits no session
+    cookie.
   - **Outcomes**:
 
     | `LoginResult`     | Response                                            |
@@ -79,6 +43,10 @@ Registers the unauthenticated `/login` (GET + POST) and `/logout` (POST) routes.
     | `Success`         | Set cookie (raw token), `302` redirect to `/`       |
     | any other variant | Re-render form, `401 Unauthorized`, generic message |
 
+    Every non-`Success` variant (`UserNotFound`, `PasswordMismatch`,
+    `PasswordNotSet`, `InvalidEmail`) re-renders the form with the single
+    literal message `"invalid email or password"`; the response does not branch
+    on the specific failure variant, so no variant is disclosed.
   - **Failure modes**: A non-`Success` result is a **contractual** login failure
     → `401` form re-render, never an exception. A `Result.failure` from
     `AuthService.login` is a **system** error and propagates (via `getOrThrow`)
@@ -88,22 +56,32 @@ Registers the unauthenticated `/login` (GET + POST) and `/logout` (POST) routes.
 - **`POST /logout`** — Reads the cookie; if present, hashes it via
   `TokenHash.fromRawToken` and calls `AuthService.logout`. Always clears the
   cookie and redirects to `/login`.
-  - **Side effects**: Revokes the session (when a cookie is present); clears the
-    cookie.
+  - **Side effects**: Revokes the session via `AuthService.logout` only when a
+    cookie is present; clears the cookie unconditionally.
   - **Failure modes**: A `Result.failure` from `AuthService.logout` propagates
     (via `getOrThrow`). A missing cookie is **not** an error — logout still
     clears and redirects.
   - **Idempotency**: Yes. Repeated logout (or logout with no cookie) clears the
     cookie and redirects identically.
 
+The session cookie is written `HttpOnly` with `SameSite=Strict`; its
+`path`/`domain`/`secure`/`maxAge` attributes are sourced from
+[`AdminConfig`](../AdminConfig.kt). A blank configured `cookieDomain` produces a
+host-only cookie (no `Domain` attribute).
+
 ### `Application.installAdminGate(authService, config)` — [`AdminAuth.kt`](./AdminAuth.kt)
 
 Installs a pipeline interceptor on `ApplicationCallPipeline.Plugins` that gates
-every non-exempt request.
+every request except the exact paths `/login`, `/logout`, and `/healthz`. The
+exemption set is matched against the request path with any query string
+stripped. For a non-exempt request the gate hashes the raw cookie token via
+[`TokenHash.fromRawToken`](../../../../../../../../db/src/main/kotlin/ed/unicoach/db/models/TokenHash.kt)
+before resolving it — the raw token is never passed to `AuthService`.
 
 - **Side effects**: For non-exempt paths with a present cookie, calls
   `AuthService.getCurrentUser`. Writes a redirect, a `403` page, or a call
-  attribute depending on outcome; otherwise none.
+  attribute depending on outcome; otherwise none. A missing or blank cookie
+  short-circuits to a redirect without invoking `AuthService`.
 - **Outcomes**:
 
   | Condition                             | Response                                      |
@@ -114,6 +92,10 @@ every non-exempt request.
   | User resolved, `isAdmin == false`     | `403 Forbidden` HTML page, pipeline finished  |
   | User resolved, `isAdmin == true`      | Put `User` in `CurrentAdminKey`, proceed      |
 
+  The `isAdmin == false` case responds `403` rather than redirecting: `/login`
+  is exempt from the gate, so a redirect would loop. Each
+  unauthenticated/unauthorized/forbidden outcome calls `finish()`, terminating
+  the pipeline so no downstream handler runs.
 - **Failure modes**: A `Result.failure` from `AuthService.getCurrentUser` is a
   **system** error and propagates (via `getOrThrow`); unauthenticated and
   unauthorized are **contractual** outcomes (redirect / `403`), not exceptions.
@@ -129,7 +111,7 @@ every non-exempt request.
 
 ---
 
-## IV. Infrastructure & Environment
+## III. Infrastructure & Environment
 
 This module reads no configuration directly; all settings arrive via the
 injected [`AdminConfig`](../AdminConfig.kt). The fields it consumes:
@@ -157,7 +139,7 @@ The HOCON keys backing these (`admin.session.*`) and their parsing are owned by
 
 ---
 
-## V. History
+## IV. History
 
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../../../../../../../../rfc/60-admin-website.md)
       — Introduced the admin server's authorization model: unauthenticated

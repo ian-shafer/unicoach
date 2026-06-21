@@ -34,7 +34,7 @@ import java.sql.DriverManager
 object AdminTestSupport {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "admin-server.conf")
+      .load("common.conf", "db.conf", "admin-server.conf", "service.conf", "email.conf")
       .getOrThrow()
 
   private val dbConfig = DatabaseConfig.from(config).getOrThrow()
@@ -42,7 +42,28 @@ object AdminTestSupport {
 
   val database = Database(dbConfig)
   val argon2Hasher = Argon2Hasher()
-  val authService = AuthService(database, argon2Hasher, TokenGenerator())
+  private val emailConfig =
+    ed.unicoach.email.EmailConfig
+      .from(config)
+      .getOrThrow()
+  private val emailService =
+    ed.unicoach.email.EmailService(
+      database,
+      ed.unicoach.email.EmailProviderFactory
+        .fromConfig(emailConfig)
+        .getOrThrow(),
+      emailConfig,
+    )
+  private val emailVerificationService =
+    ed.unicoach.auth.EmailVerificationService(
+      database,
+      emailService,
+      TokenGenerator(),
+      ed.unicoach.auth.EmailVerificationConfig
+        .from(config)
+        .getOrThrow(),
+    )
+  val authService = AuthService(database, argon2Hasher, TokenGenerator(), emailVerificationService)
 
   fun Application.installTestAdminModule() {
     adminModule(database, authService, argon2Hasher, adminConfig)

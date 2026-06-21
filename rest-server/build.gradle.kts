@@ -14,6 +14,7 @@ dependencies {
   implementation(project(":db"))
   implementation(project(":service"))
   implementation(project(":chat"))
+  implementation(project(":email"))
   implementation(project(":queue"))
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)

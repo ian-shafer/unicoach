@@ -5,11 +5,12 @@
 The descriptor-driven engine of the admin website. A registry of typed resource
 **descriptors** — one per database table — drives navigation, list/detail
 rendering, forms, and relationship weaving entirely from declaration; the engine
-itself is table-agnostic and contains no per-table logic. A descriptor's
-[`AdminKind`](./AdminResource.kt) selects its allowed operation set and render
-strategy, so adding a table is a matter of declaring a descriptor, not extending
-the router. The engine never builds SQL: every read and write delegates to the
-descriptor's typed handlers, which are backed by the existing DAOs.
+is table-agnostic and contains no per-table logic. A descriptor's
+[`AdminKind`](./AdminResource.kt) names its category, while its handler
+nullability selects the offered operation set, so adding a table is a matter of
+declaring a descriptor, not extending the router. The engine builds no SQL:
+every read and write delegates to the descriptor's typed handlers, which are
+backed by the existing DAOs.
 
 - [`AdminResource.kt`](./AdminResource.kt) — the descriptor contract
   (`AdminResource<ROW, ID>`) and the `AdminKind` taxonomy.
@@ -26,122 +27,7 @@ descriptor's typed handlers, which are backed by the existing DAOs.
 
 ---
 
-## II. Invariants
-
-### Descriptor-driven routing
-
-- The engine MUST register routes purely from the registry and each descriptor's
-  declared capabilities. It MUST NOT contain any per-table branch — a new table
-  is added by registering a descriptor, never by editing the router.
-- Route registration for create, update, undelete, and delete MUST be
-  **conditional on the corresponding handler being non-null**. When
-  `create`/`update`/`delete`/`undelete` is null the route MUST NOT be
-  registered. The mutation handlers (`POST /{slug}`, `POST /{slug}/{id}`,
-  `POST /{slug}/{id}/delete`, `GET /{slug}/{id}/edit`) additionally re-check the
-  handler at request time and MUST return a not-found page if it is absent.
-- Only resources with `topLevel == true` MUST receive the dashboard nav entry
-  and the `GET /{slug}` list route plus the full per-resource route set. A
-  non-top-level resource MUST NOT be listed or reachable through a generated
-  route.
-- `registerExtraRoutes` MUST be invoked for **every** registered resource
-  (top-level or not), inside the same route scope as the generic routes, so any
-  owner-nested action endpoints sit behind the same authorization gate.
-
-### Canonical routing
-
-- Every entity MUST have exactly **one** detail URL: `/{slug}/{id}`. The engine
-  MUST NOT register nested detail URLs (never `/user/{id}/session/{id}`).
-- Relationship panels MUST link child and parent rows to that single canonical
-  `/{slug}/{id}` URL. An [`EdgePanel`](./EdgePanel.kt)'s `href` is always a
-  canonical detail link, never a nested path.
-- `EMBEDDED_ENTITY` is the **sole** kind exempt from owning any standalone URL:
-  it MUST NOT have a list route or a detail route. Its mutating actions are
-  nested under its owner via `registerExtraRoutes`. Its `get`/`list` members
-  MUST still be implemented (the owner's `Embedded` edge calls `get` to render
-  the inline panel) but MUST NEVER be bound to a route.
-
-### Soft-delete visibility
-
-- Admin reads MUST surface soft-deleted rows. List reads MUST pass
-  `SoftDeleteScope.ALL`; detail and edit reads MUST pass
-  `includeDeleted = true`. A soft-deleted row therefore remains visible and is
-  marked via `isDeleted`.
-- An `undelete` route MUST be offered only when the descriptor supplies a
-  non-null `undelete` handler; resources without a restore path MUST NOT expose
-  one.
-
-### Paging without `COUNT(*)`
-
-- The engine MUST page lists with a **fixed page size** and MUST NOT issue a
-  count query to detect a following page. It MUST request `pageSize + 1` rows: a
-  present surplus row signals a next page, drives the "next" link, and MUST be
-  dropped before the table is rendered.
-- A "previous" link MUST render whenever the resolved offset is greater than
-  zero. The offset MUST be parsed from the request and MUST be coerced to a
-  non-negative value.
-
-### Engine / handler boundary
-
-- The engine MUST NOT build SQL or know table columns. Every read, create,
-  update, delete, undelete, and edge resolution MUST be delegated to the
-  descriptor's typed handlers, which the descriptor backs with the appropriate
-  DAOs. The engine consumes only `Result`, domain rows, the rendered `cells`
-  map, and resolved `EdgePanel`s.
-- Edge resolution MUST be performed inside the descriptor (`resolveEdges`),
-  which owns the foreign keys and DAOs, and MUST return flat, type-erased
-  [`EdgePanel`](./EdgePanel.kt)s. The router MUST NOT carry the descriptor's
-  `ROW`/`ID` generics into edge rendering — the type erasure at the `EdgePanel`
-  boundary is deliberate, keeping the generic router free of per-resource type
-  parameters.
-
-### Identifier handling
-
-- A path id segment MUST be parsed via the descriptor's `parseId`; a malformed
-  id (null parse) MUST resolve to a not-found page, never a server error. The
-  canonical path segment of an id MUST be produced via `idToPath`, the declared
-  inverse of `parseId` — redirect targets after create/update/undelete MUST be
-  built with `idToPath`, never by stringifying the id directly.
-
-### Sensitive fields
-
-- A field marked `sensitive` MUST be redacted in views, MUST be absent from all
-  forms (create and edit), and MUST NEVER be logged. This holds regardless of
-  the field's `editable` flag.
-
-### List-table column inclusion
-
-- A field's presence in the list table is governed by `inList && !sensitive`.
-  `inList` defaults `true`, so omitting it preserves the prior behaviour;
-  setting `inList = false` drops a field too large for a list cell (e.g. a 1 MB
-  body) from the list table only. `inList` is orthogonal to `sensitive`:
-  `sensitive` also removes a field from forms and detail, whereas
-  `inList = false` leaves detail and form rendering untouched.
-
-### Create-only extra inputs
-
-- `createExtraInputs` MUST appear only on the create form and MUST be passed
-  through the submitted form map to the `create` handler. They MUST NOT be
-  rendered in detail or edit views — they are non-stored inputs (e.g. a
-  plaintext password the handler hashes), never persisted columns.
-
-### Update concurrency
-
-- The update handler MUST forward the form's `version` so the DAO performs the
-  versioned (OCC) write. A `ConcurrentModificationException` surfaced by the
-  handler MUST render a conflict page prompting reload — it MUST NEVER be
-  silently swallowed or allowed to overwrite the row.
-
-### Operation/kind matrix is descriptor-owned
-
-- The mapping from `AdminKind` to the offered operation set (which of
-  create/update/delete/undelete are non-null, and whether delete is soft or
-  hard) MUST be expressed by each descriptor's handler nullability — the engine
-  MUST NOT enforce kind-specific operation rules itself. The engine's only
-  kind-aware behavior is the `EMBEDDED_ENTITY` route exemption above.
-
----
-
-## III. Behavioral Contracts
+## II. Behavioral Contracts
 
 ### `AdminResource<ROW, ID>` — [`AdminResource.kt`](./AdminResource.kt)
 
@@ -153,51 +39,64 @@ The per-table descriptor. `ROW` is the domain model, `ID` its typed id.
 - **`rowId`, `cells`, `isDeleted`, `parseId`, `idToPath`**: pure projections
   over a row or id; no I/O. `cells` produces the `field name -> rendered string`
   map used for both list/detail tables and pre-filling the edit form. `idToPath`
-  is the exact inverse of `parseId`.
-- **`list(db, limit, offset, scope)`**: reads a page of rows via a DAO.
+  is the inverse of `parseId`; redirect targets after create/update/undelete are
+  built from `idToPath`, not by stringifying the id. `parseId` returns `null`
+  for a malformed segment, which the router turns into a not-found page rather
+  than a server error.
+- **`list(db, limit, offset, scope)`**: reads a page of rows via a DAO. The
+  router calls it with `SoftDeleteScope.ALL`, so soft-deleted rows are included.
   - _Side effects_: DB read only.
   - _Errors_: returns `Result.failure` carrying the DAO's typed exception (e.g.
     `NotFoundException`, `DatabaseException`); the engine renders it via the
     shared error responders.
   - _Idempotent_: yes (read-only).
-- **`get(db, id, includeDeleted)`**: reads one row via a DAO.
+- **`get(db, id, includeDeleted)`**: reads one row via a DAO. The router calls
+  it with `includeDeleted = true`, so a soft-deleted row remains viewable and
+  editable; `isDeleted(row)` then drives the deleted marker and undelete action.
   - _Side effects_: DB read only.
   - _Errors_: `Result.failure` with the DAO's exception (notably
     `NotFoundException` for an unknown/out-of-scope id).
   - _Idempotent_: yes.
-- **`create(db, form)?`**: null when the kind offers no create.
-  Hashes/transforms non-stored inputs as needed and delegates to a DAO create.
+- **`create(db, form)?`**: `null` when the kind offers no create. Hashes or
+  transforms non-stored inputs as needed and delegates to a DAO create.
   - _Side effects_: one DB write (insert, firing the table's triggers).
   - _Errors_: `Result.failure` with a constraint exception
     (`DuplicateEmailException`, `ConstraintViolationException`) or
     `IllegalArgumentException` for bad input → form re-rendered with the
     message; other failures → DAO-error page.
   - _Idempotent_: no.
-- **`update(db, id, form)?`**: null when the kind offers no update. Performs the
-  versioned write under OCC.
+- **`update(db, id, form)?`**: `null` when the kind offers no update. Forwards
+  the form's `version` so the DAO performs the versioned (OCC) write.
   - _Side effects_: one DB write (versioned update; bumps version, captures
     history per the table's triggers).
-  - _Errors_: `ConcurrentModificationException` → conflict page; constraint /
-    `IllegalArgumentException` → form re-render; else DAO-error page.
+  - _Errors_: `ConcurrentModificationException` → conflict page prompting reload
+    (the stale write is not applied); constraint / `IllegalArgumentException` →
+    form re-render; else DAO-error page.
   - _Idempotent_: no (OCC — a stale `version` conflicts).
-- **`delete(db, id)?`**: null when the kind offers no delete. Soft or hard per
+- **`delete(db, id)?`**: `null` when the kind offers no delete. Soft or hard per
   the descriptor's backing DAO.
   - _Side effects_: one DB write (sets `deleted_at` + bumps version for soft;
     physical `DELETE` for hard).
   - _Errors_: `Result.failure` → DAO-error page.
   - _Idempotent_: no.
-- **`undelete(db, id)?`**: null unless restore is offered (soft-delete entities
-  only). Restores a soft-deleted row.
+- **`undelete(db, id)?`**: `null` unless restore is offered (soft-delete
+  entities only). Restores a soft-deleted row.
   - _Side effects_: one DB write.
+  - _Errors_: `Result.failure` → DAO-error page.
   - _Idempotent_: no.
-- **`resolveEdges(db, row)`**: resolves declared `edges` into flat `EdgePanel`s
-  using the descriptor's DAOs/foreign keys. Default returns an empty list.
+- **`resolveEdges(db, row)`**: resolves the declared `edges` into flat
+  `EdgePanel`s using the descriptor's DAOs and foreign keys. Default returns an
+  empty list. The router carries no `ROW`/`ID` generics into edge rendering —
+  the type erasure at the `EdgePanel` boundary keeps the generic router free of
+  per-resource type parameters.
   - _Side effects_: DB reads (one or more per edge).
   - _Errors_: `Result.failure` → DAO-error page on the detail route.
   - _Idempotent_: yes (read-only).
 - **`registerExtraRoutes(scope, db)`**: default no-op. Registers owner-nested
   action endpoints (e.g. an embedded entity's nested create/update/delete) into
-  the given gated route scope.
+  the given route scope. Invoked for every registered resource inside the same
+  scope as the generic routes, so nested actions sit behind the same
+  authorization gate.
   - _Side effects_: route-table registration only; no I/O at call time.
   - _Idempotent_: no — calling twice installs duplicate routes.
 
@@ -205,24 +104,30 @@ The per-table descriptor. `ROW` is the domain model, `ID` its typed id.
 
 The taxonomy (`ENTITY`, `EMBEDDED_ENTITY`, `IMMUTABLE_ENTITY`, `LOG`,
 `NON_ENTITY`, `SUPPORT`) classifying a resource. Its single engine-observable
-effect is the `EMBEDDED_ENTITY` route exemption (see Invariants); the concrete
-operation set per kind is realized through handler nullability on the
-descriptor, not branched on here.
+effect is the `EMBEDDED_ENTITY` route exemption: an embedded resource is the one
+kind that never owns a standalone list or detail route. The concrete operation
+set per kind is realized through handler nullability on the descriptor — the
+engine branches on the handlers, not on the kind, with that one exception.
 
 ### `AdminField` / `FieldType` — [`AdminField.kt`](./AdminField.kt)
 
 A column descriptor: how a field renders in views and forms. `editable == false`
-renders the field read-only; `sensitive == true` triggers the redaction /
-form-omission / no-log invariant above; `inList` (default `true`) governs only
-list-table inclusion (see the list-column invariant above) and leaves detail and
-form rendering unaffected. `enumValues` is consulted only when
-`type == FieldType.ENUM`. Pure data — no behavior or I/O.
+renders the field read-only; `sensitive == true` redacts the field in views and
+omits it from every form (create and edit), independent of `editable`. `inList`
+(default `true`) controls list-table visibility only: `inList == false` drops
+the field from the list table while detail and form rendering remain unaffected
+— used to keep an oversized value (e.g. a large prompt body) out of a list cell.
+It is orthogonal to `sensitive`, which removes the field from forms and detail
+as well. `enumValues` is consulted only when `type == FieldType.ENUM`.
+`FieldType` names the render/input strategy (`TEXT`, `MULTILINE`, `INT`, `BOOL`,
+`TIMESTAMP`, `JSON`, `ENUM`). Pure data — no behavior or I/O.
 
 ### `AdminEdge` — [`AdminEdge.kt`](./AdminEdge.kt)
 
 The declared relationships a detail page may render. Each variant maps to one
 edge renderer and is resolved by the owning descriptor's `resolveEdges` into an
-`EdgePanel`:
+`EdgePanel`. Linked rows target the single canonical `/{slug}/{id}` detail URL,
+never a nested path:
 
 - **`Parent`** — a link + summary of one parent row, targeting `targetSlug`'s
   canonical detail URL.
@@ -231,7 +136,9 @@ edge renderer and is resolved by the owning descriptor's `resolveEdges` into an
 - **`History`** — a read-only version-history panel for the current row.
 - **`Embedded`** — an owned (`EMBEDDED_ENTITY`) resource rendered inline;
   carries the embedded `AdminResource`. The embedded resource has no standalone
-  URL; its actions nest under the owner. Pure declarative data; no behavior.
+  URL; its actions nest under the owner.
+
+Pure declarative data; no behavior or I/O.
 
 ### `EdgePanel` — [`EdgePanel.kt`](./EdgePanel.kt)
 
@@ -263,49 +170,68 @@ resource list.
   unknown.
 - _Side effects_: none — pure in-memory lookup.
 - _Idempotent_: yes.
-- Slug uniqueness: descriptors are associated by `slug`; a duplicate slug in the
-  construction list collapses to the last entry (last-wins), so slugs MUST be
-  unique across registered resources.
+- The slug index is built with `associateBy { it.slug }`: when two resources
+  share a slug, the later one in the construction list wins and the earlier is
+  shadowed. There is no duplicate-slug detection at construction.
 
 ### `Route.registerAdminRoutes(registry, database)` — [`AdminRouting.kt`](./AdminRouting.kt)
 
 Registers the dashboard, the generic per-resource routes for every top-level
-resource, and each resource's owner-nested extra routes.
+resource, and each resource's owner-nested extra routes. Route registration is
+driven purely from the registry and each descriptor's declared capabilities;
+there is no per-table branch. Only `topLevel` resources receive the dashboard
+nav entry and the generic route set; a non-top-level resource is neither listed
+nor reachable through a generated route. `registerExtraRoutes` is invoked for
+every resource (top-level or not), in the same scope as the generic routes.
 
 - **Routes registered** (per top-level resource, conditionally):
 
-  | Route                        | Condition          | Effect                                                     |
-  | ---------------------------- | ------------------ | ---------------------------------------------------------- |
-  | `GET /`                      | always             | Dashboard: nav of top-level sections                       |
-  | `GET /{slug}`                | `topLevel`         | List page (table of `cells`; rows link to detail)          |
-  | `GET /{slug}/new`            | `create != null`   | Create form (`fields` + `createExtraInputs`)               |
-  | `POST /{slug}`               | `create != null`   | Create → redirect to new row's canonical detail            |
-  | `GET /{slug}/{id}`           | always             | Detail page (field table + resolved edge panels)           |
-  | `GET /{slug}/{id}/edit`      | always*            | Edit form; missing id/`update` → not-found page            |
-  | `POST /{slug}/{id}`          | always*            | Update → redirect to detail; OCC conflict → conflict page  |
-  | `POST /{slug}/{id}/delete`   | always*            | Delete → redirect to list; missing id/`delete` → not-found |
-  | `POST /{slug}/{id}/undelete` | `undelete != null` | Undelete → redirect to detail                              |
+  | Route                        | Condition          | Effect                                                               |
+  | ---------------------------- | ------------------ | -------------------------------------------------------------------- |
+  | `GET /`                      | always             | Dashboard: nav of top-level sections                                 |
+  | `GET /{slug}`                | `topLevel`         | List page (table of `cells`; rows link to detail)                    |
+  | `GET /{slug}/new`            | `create != null`   | Create form (`fields` + `createExtraInputs`)                         |
+  | `POST /{slug}`               | `create != null`   | Create → redirect to new row's canonical detail                      |
+  | `GET /{slug}/{id}`           | always             | Detail page (field table + resolved edge panels)                     |
+  | `GET /{slug}/{id}/edit`      | always\*           | Edit form; missing id / `update == null` → not-found page            |
+  | `POST /{slug}/{id}`          | always\*           | Update → redirect to detail; OCC conflict → conflict page            |
+  | `POST /{slug}/{id}/delete`   | always\*           | Delete → redirect to list; missing id / `delete == null` → not-found |
+  | `POST /{slug}/{id}/undelete` | `undelete != null` | Undelete → redirect to detail                                        |
 
-  *Registered unconditionally but re-checks handler nullability at request time
-  and returns a not-found page when absent. Create routes are gated at
-  registration time.
+  \*Registered unconditionally, then re-checks handler nullability at request
+  time and returns a not-found page when the handler is absent. The create
+  routes are gated at registration time instead.
 
+- **Paging**: lists are paged with a fixed page size (`PAGE_SIZE`, a
+  compile-time constant) and no `COUNT(*)`. The list call requests
+  `PAGE_SIZE + 1` rows; a present surplus row signals a next page, drives the
+  "next" link, and is dropped before the table renders. A "previous" link
+  renders whenever the resolved offset is greater than zero. The offset is
+  parsed from the `offset` query parameter and coerced to a non-negative value
+  (default `0`).
+- **`createExtraInputs`**: rendered only on the create form and passed through
+  the submitted form map to the `create` handler; absent from detail and edit
+  views.
 - **Side effects**: route-table registration at call time; the registered
   handlers perform DB reads/writes through descriptor handlers and emit HTML or
   redirects. No SQL is built here.
 - **Error handling**: handler `Result.failure` is dispatched to the shared
-  responders — not-found, conflict, constraint/validation (form re-render), and
-  a generic DAO-error page — never an unhandled throw to the client. A malformed
+  responders — not-found, conflict, constraint/validation (form re-render with a
+  message from `createFormErrorMessage`), and a generic DAO-error page — never
+  an unhandled throw to the client. `createFormErrorMessage` maps
+  `DuplicateEmailException`, `ConstraintViolationException`, and
+  `IllegalArgumentException` to user-facing messages and returns `null` for any
+  other throwable (which then falls through to the DAO-error page). A malformed
   id yields a not-found page.
 - **Idempotency**: registration is not idempotent (duplicate routes on a second
   call). The registered `GET` handlers are read-only/idempotent; `POST` mutation
-  handlers are not (subject to OCC for updates).
+  handlers are not (updates are subject to OCC).
 
 ---
 
-## IV. Infrastructure & Environment
+## III. Infrastructure & Environment
 
-- **Fixed page size**: list pagination uses a single compile-time page size
+- **Fixed page size**: list pagination uses a single compile-time `PAGE_SIZE`
   constant in [`AdminRouting.kt`](./AdminRouting.kt); it is not configurable and
   not derived from any environment variable.
 - **No module-specific config**: this package reads no HOCON keys or environment
@@ -317,22 +243,22 @@ resource, and each resource's owner-nested extra routes.
 
 ---
 
-## V. History
+## IV. History
 
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../../../../../../../../rfc/60-admin-website.md)
       — introduced the descriptor/registry/generic-routing engine:
       `AdminResource`/`AdminKind`, `AdminField`/`FieldType`, `AdminEdge`,
-      `EdgePanel`, `AdminRegistry`, and `AdminRouting`. Established the
-      canonical-routing invariant, the `EMBEDDED_ENTITY` no-standalone-URL
-      exemption, descriptor-driven conditional route registration,
-      include-deleted admin reads, `limit + 1` count-free paging, the
-      delegate-to-DAO (never build SQL) write path, and sensitive-field
-      redaction.
+      `EdgePanel`, `AdminRegistry`, and `AdminRouting`. Established canonical
+      routing (one `/{slug}/{id}` detail URL per entity), the `EMBEDDED_ENTITY`
+      no-standalone-URL exemption, descriptor-driven conditional route
+      registration, include-deleted admin reads, `PAGE_SIZE + 1` count-free
+      paging, the delegate-to-DAO (never build SQL) write path, OCC-aware
+      updates, and sensitive-field redaction.
 - [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
-      — Added `AdminField.inList: Boolean = true`, the list-table
-      column-inclusion affordance (orthogonal to `sensitive`): a field marked
-      `inList = false` is dropped from the list table but still rendered in
-      detail and forms. The default leaves every existing descriptor unaffected;
-      `system_prompts`' 1 MB `body` is the first consumer. No change to the
-      routing or kind matrix (`IMMUTABLE_ENTITY` already existed in the
-      taxonomy).
+      — added `AdminField.inList` (default `true`) so an oversized field (the
+      system-prompt body) is omitted from the list table while remaining in
+      detail and form views, orthogonal to `sensitive`.
+- [x] [RFC-65: Email Verification (Backend)](../../../../../../../../rfc/65-email-verification.md)
+      — reformatted the update route's `ConcurrentModificationException` branch
+      in [`AdminRouting.kt`](./AdminRouting.kt) to a block body; no behavioral
+      change to the engine.

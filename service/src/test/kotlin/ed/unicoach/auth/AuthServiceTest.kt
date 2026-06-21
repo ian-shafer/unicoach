@@ -25,6 +25,7 @@ import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.time.Duration
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -33,13 +34,16 @@ class AuthServiceTest {
     private lateinit var connection: Connection
     private lateinit var database: Database
 
+    private lateinit var appConfig: com.typesafe.config.Config
+
     @JvmStatic
     @BeforeAll
     fun setupAll() {
       val config =
         ed.unicoach.common.config.AppConfig
-          .load("common.conf", "db.conf", "service.conf")
+          .load("common.conf", "db.conf", "service.conf", "email.conf")
           .getOrThrow()
+      appConfig = config
       val dbConfig = DatabaseConfig.from(config).getOrThrow()
       database = Database(dbConfig)
       connection = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
@@ -70,7 +74,52 @@ class AuthServiceTest {
     }
 
   private val argon2Hasher = Argon2Hasher()
-  private val authService by lazy { AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator()) }
+
+  private fun emailVerificationService(): EmailVerificationService {
+    val emailConfig =
+      ed.unicoach.email.EmailConfig
+        .from(appConfig)
+        .getOrThrow()
+    val provider =
+      ed.unicoach.email.EmailProviderFactory
+        .fromConfig(emailConfig)
+        .getOrThrow()
+    val emailService = ed.unicoach.email.EmailService(database, provider, emailConfig)
+    val evConfig = EmailVerificationConfig.from(appConfig).getOrThrow()
+    return EmailVerificationService(database, emailService, ed.unicoach.util.TokenGenerator(), evConfig)
+  }
+
+  private fun newAuthService() = AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), emailVerificationService())
+
+  private class RejectingProvider : ed.unicoach.email.EmailProvider {
+    override val id: String = "rejecting"
+
+    override suspend fun send(email: ed.unicoach.email.OutboundEmail): ed.unicoach.email.ProviderResult =
+      ed.unicoach.email.ProviderResult
+        .Rejected("test rejection")
+  }
+
+  private fun authServiceWithRejectingEmail(): AuthService {
+    val emailConfig =
+      ed.unicoach.email.EmailConfig
+        .from(appConfig)
+        .getOrThrow()
+    val emailService = ed.unicoach.email.EmailService(database, RejectingProvider(), emailConfig)
+    val evConfig = EmailVerificationConfig.from(appConfig).getOrThrow()
+    val evService = EmailVerificationService(database, emailService, ed.unicoach.util.TokenGenerator(), evConfig)
+    return AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), evService)
+  }
+
+  private fun countRows(sql: String): Int {
+    connection.prepareStatement(sql).use { stmt ->
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        return rs.getInt(1)
+      }
+    }
+  }
+
+  private val authService by lazy { newAuthService() }
 
   private fun createTestUser(): ed.unicoach.db.models.User {
     val email = (EmailAddress.create("testme@example.com") as ValidationResult.Valid).value
@@ -112,7 +161,7 @@ class AuthServiceTest {
     runTest {
       // Weak passwords are rejected before any persistence occurs; the registrations
       // run against the same Postgres harness as the other tests in this class.
-      val service = AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator())
+      val service = newAuthService()
 
       val res1 = service.register("email@test.com", "Name", "short", null, 86400L, null, null)
       assertTrue(res1.isSuccess && res1.getOrNull() is RegisterResult.ValidationFailure)
@@ -290,5 +339,43 @@ class AuthServiceTest {
       val newHash = TokenHash.fromRawToken(loginResult.token)
       val newFindResult = SessionsDao.findByTokenHash(sqlSession, newHash)
       assertTrue(newFindResult.isSuccess)
+    }
+
+  @Test
+  fun `register inserts one verification token and one email_sends row`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val email = "verify_register@example.com"
+      val result = authService.register(email, "Verify Register", "Password123", null, 86400L, null, null)
+      assertTrue(result.isSuccess && result.getOrNull() is RegisterResult.Success)
+      val user = (result.getOrNull() as RegisterResult.Success).user
+
+      assertEquals(
+        1,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}'"),
+        "Exactly one verification token must exist for the new user",
+      )
+      assertEquals(1, countRows("SELECT COUNT(*) FROM email_sends"), "Log provider must record one email_sends row")
+    }
+
+  @Test
+  fun `register succeeds even when the email provider rejects the send`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val service = authServiceWithRejectingEmail()
+      val email = "verify_reject@example.com"
+      val result = service.register(email, "Verify Reject", "Password123", null, 86400L, null, null)
+
+      assertTrue(result.isSuccess && result.getOrNull() is RegisterResult.Success, "Registration must succeed despite send rejection")
+      val user = (result.getOrNull() as RegisterResult.Success).user
+
+      // The user and verification token still exist (transactional), even though the
+      // best-effort send was rejected.
+      assertEquals(
+        1,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}'"),
+        "Verification token must persist despite send rejection",
+      )
+      assertTrue(UsersDao.findById(sqlSession, user.id).isSuccess, "User must persist despite send rejection")
     }
 }

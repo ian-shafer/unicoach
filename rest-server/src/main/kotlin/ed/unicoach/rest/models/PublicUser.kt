@@ -6,4 +6,5 @@ data class PublicUser(
   val id: UUID,
   val email: String,
   val name: String,
+  val emailVerified: Boolean,
 )

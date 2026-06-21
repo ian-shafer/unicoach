@@ -88,17 +88,23 @@ private fun FlowContent.renderEdgePanel(panel: EdgePanel) {
   div("panel") {
     h2 { +panel.label }
     when (panel) {
-      is EdgePanel.ParentLink ->
+      is EdgePanel.ParentLink -> {
         p {
           a(href = panel.href) { +panel.summary }
         }
+      }
 
-      is EdgePanel.ParentAbsent ->
+      is EdgePanel.ParentAbsent -> {
         p { +"(none)" }
+      }
 
-      is EdgePanel.Table -> renderTablePanel(panel)
+      is EdgePanel.Table -> {
+        renderTablePanel(panel)
+      }
 
-      is EdgePanel.Embedded -> renderEmbeddedPanel(panel)
+      is EdgePanel.Embedded -> {
+        renderEmbeddedPanel(panel)
+      }
     }
   }
 }
@@ -163,7 +169,10 @@ private fun FlowContent.renderEmbeddedPanel(panel: EdgePanel.Embedded) {
     div("panel") {
       h3 { +nested.label }
       when (nested) {
-        is EdgePanel.Table -> renderTablePanel(nested)
+        is EdgePanel.Table -> {
+          renderTablePanel(nested)
+        }
+
         else -> {}
       }
     }

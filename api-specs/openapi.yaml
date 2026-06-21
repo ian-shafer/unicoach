@@ -161,6 +161,80 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/auth/verify-email:
+    post:
+      summary: Verify an email address with a single-use token
+      operationId: verifyEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+      responses:
+        '200':
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyEmailResponse'
+        '400':
+          description: >
+            Token invalid, expired, or already used. The error code is one of
+            invalid_token, token_expired, or token_already_used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Request body could not be deserialized into the expected shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/resend-verification:
+    post:
+      summary: Resend the verification email for the authenticated user
+      operationId: resendVerification
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: >
+            Verification email resent, or the user is already verified
+            (idempotent — no email is sent in the already-verified case).
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/students:
     post:
       summary: Create the current user's student profile
@@ -779,7 +853,7 @@ components:
           description: Must not be blank (server rejects a blank name).
     PublicUser:
       type: object
-      required: [id, email, name]
+      required: [id, email, name, emailVerified]
       properties:
         id:
           type: string
@@ -788,6 +862,9 @@ components:
           type: string
         name:
           type: string
+        emailVerified:
+          type: boolean
+          description: Whether the user's email address has been verified.
     RegisterResponse:
       type: object
       required: [user]
@@ -811,6 +888,21 @@ components:
         user:
           $ref: '#/components/schemas/PublicUser'
     MeResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: '#/components/schemas/PublicUser'
+    VerifyEmailRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 1
+          description: The single-use raw verification token from the email link.
+    VerifyEmailResponse:
       type: object
       required: [user]
       properties:

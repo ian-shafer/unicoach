@@ -130,7 +130,9 @@ fun Route.adminAuthRoutes(
         call.respondRedirect("/")
       }
 
-      else -> call.respondLoginForm(HttpStatusCode.Unauthorized, error = GENERIC_LOGIN_ERROR)
+      else -> {
+        call.respondLoginForm(HttpStatusCode.Unauthorized, error = GENERIC_LOGIN_ERROR)
+      }
     }
   }
 

@@ -1,6 +1,8 @@
 package ed.unicoach.rest
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.auth.EmailVerificationConfig
+import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatProviderFactory
@@ -9,6 +11,9 @@ import ed.unicoach.coaching.CoachingService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.email.EmailConfig
+import ed.unicoach.email.EmailProviderFactory
+import ed.unicoach.email.EmailService
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
@@ -43,7 +48,7 @@ fun startServer(
 ): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf")
+      .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
       .getOrThrow()
 
   val dbConfig =
@@ -81,7 +86,23 @@ fun startServer(
       .from(config)
       .getOrThrow()
 
+  val emailConfig =
+    EmailConfig
+      .from(config)
+      .getOrThrow()
+
+  val emailVerificationConfig =
+    EmailVerificationConfig
+      .from(config)
+      .getOrThrow()
+
   val database = Database(dbConfig)
+
+  val emailProvider =
+    EmailProviderFactory
+      .fromConfig(emailConfig)
+      .getOrThrow()
+  val emailService = EmailService(database, emailProvider, emailConfig)
 
   val queueService = QueueService(database)
 
@@ -103,7 +124,16 @@ fun startServer(
         database.close()
       }
 
-      appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig, clientKeyGateConfig)
+      appModule(
+        database,
+        sessionConfig,
+        requestSizeConfig,
+        chatProvider,
+        coachingConfig,
+        clientKeyGateConfig,
+        emailService,
+        emailVerificationConfig,
+      )
 
       install(SessionExpiryPlugin) {
         this.sessionConfig = sessionConfig
@@ -135,6 +165,8 @@ fun Application.appModule(
   chatProvider: ChatProvider,
   coachingConfig: CoachingConfig,
   clientKeyGateConfig: ClientKeyGateConfig,
+  emailService: EmailService,
+  emailVerificationConfig: EmailVerificationConfig,
 ) {
   configureSerialization()
   configureClientKeyGate(clientKeyGateConfig)
@@ -143,9 +175,11 @@ fun Application.appModule(
 
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
-  val authService = AuthService(database, argon2Hasher, tokenGenerator)
+  val emailVerificationService =
+    EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)
+  val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService)
   val studentService = ed.unicoach.student.StudentService(database)
   val coachingService = CoachingService(database, chatProvider, coachingConfig)
 
-  configureRouting(authService, studentService, coachingService, sessionConfig)
+  configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService)
 }

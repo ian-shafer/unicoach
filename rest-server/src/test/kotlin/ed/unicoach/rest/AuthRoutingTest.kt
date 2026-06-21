@@ -76,6 +76,53 @@ class AuthRoutingTest {
     }
 
   @Test
+  fun `register login and me report emailVerified false before verification`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val password = "Password123!"
+      val req = RegisterRequest(email, password, "Unverified User")
+
+      val registerResponse =
+        client.post(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody(mapper.writeValueAsString(req))
+        }
+      assertEquals(HttpStatusCode.Created, registerResponse.status)
+      assertTrue(
+        registerResponse.bodyAsText().replace(" ", "").contains("\"emailVerified\":false"),
+        "register must report emailVerified=false",
+      )
+
+      val cookiePair =
+        registerResponse.headers[HttpHeaders.SetCookie]!!
+          .split(";")
+          .first()
+          .trim()
+
+      val meResponse =
+        client.get(buildUrl("/api/v1/auth/me")) {
+          header(HttpHeaders.Cookie, cookiePair)
+        }
+      assertTrue(
+        meResponse.bodyAsText().replace(" ", "").contains("\"emailVerified\":false"),
+        "me must report emailVerified=false",
+      )
+
+      val loginReq =
+        ed.unicoach.rest.models
+          .LoginRequest(email, password)
+      val loginResponse =
+        client.post(buildUrl("/api/v1/auth/login")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody(mapper.writeValueAsString(loginReq))
+        }
+      assertTrue(
+        loginResponse.bodyAsText().replace(" ", "").contains("\"emailVerified\":false"),
+        "login must report emailVerified=false",
+      )
+    }
+
+  @Test
   fun `test CORS configuration validation hooks`() =
     runBlocking {
       val response =

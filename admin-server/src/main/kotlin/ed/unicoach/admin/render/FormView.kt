@@ -29,20 +29,22 @@ private fun FlowContent.renderInput(
   div {
     label { +field.label }
     when (field.type) {
-      FieldType.MULTILINE, FieldType.JSON ->
+      FieldType.MULTILINE, FieldType.JSON -> {
         textArea {
           name = field.name
           +(current ?: "")
         }
+      }
 
-      FieldType.BOOL ->
+      FieldType.BOOL -> {
         checkBoxInput {
           name = field.name
           value = "true"
           checked = current == "true"
         }
+      }
 
-      FieldType.ENUM ->
+      FieldType.ENUM -> {
         select {
           name = field.name
           field.enumValues.forEach { v ->
@@ -53,16 +55,19 @@ private fun FlowContent.renderInput(
             }
           }
         }
+      }
 
-      FieldType.INT ->
+      FieldType.INT -> {
         input(type = InputType.number, name = field.name) {
           value = current ?: ""
         }
+      }
 
-      else ->
+      else -> {
         input(type = InputType.text, name = field.name) {
           value = current ?: ""
         }
+      }
     }
   }
 }

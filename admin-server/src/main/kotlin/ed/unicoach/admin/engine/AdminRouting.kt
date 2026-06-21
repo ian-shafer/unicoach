@@ -172,7 +172,10 @@ private fun <ROW, ID> Route.registerResourceRoutes(
       onSuccess = { call.respondRedirect("/$slug/$idPath") },
       onFailure = { error ->
         when (error) {
-          is ConcurrentModificationException -> call.respondConflict()
+          is ConcurrentModificationException -> {
+            call.respondConflict()
+          }
+
           else -> {
             val message = createFormErrorMessage(error) ?: return@fold call.respondDaoError(error)
             call.respondHtml(HttpStatusCode.BadRequest) {

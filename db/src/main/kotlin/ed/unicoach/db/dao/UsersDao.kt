@@ -48,6 +48,7 @@ object UsersDao :
       displayName = displayName,
       authMethod = readAuthMethod(rs, id),
       isAdmin = rs.getBoolean("is_admin"),
+      emailVerifiedAt = rs.getInstantOrNull("email_verified_at"),
     )
   }
 
@@ -74,6 +75,7 @@ object UsersDao :
       displayName = displayName,
       authMethod = readAuthMethod(rs, id),
       isAdmin = rs.getBoolean("is_admin"),
+      emailVerifiedAt = rs.getInstantOrNull("email_verified_at"),
     )
   }
 
@@ -271,6 +273,45 @@ object UsersDao :
     )
 
   /**
+   * Marks a user's email verified: a versioned conditional update stamping
+   * `email_verified_at = NOW()` only while it is still NULL, bumping `version`,
+   * and returning the updated row. When no row matches (already verified), falls
+   * back to [findById] with [SoftDeleteScope.ACTIVE] and returns the existing
+   * user unchanged — idempotent, no second version bump — failing only if the
+   * user is truly absent. Written only by the dedicated verification path, never
+   * the generic [update] surface (the same isolation `authMethod` has).
+   */
+  fun markEmailVerified(
+    session: SqlSession,
+    id: UserId,
+  ): Result<User> {
+    val sql =
+      """
+      UPDATE users
+      SET version = version + 1, email_verified_at = NOW()
+      WHERE id = ? AND email_verified_at IS NULL AND deleted_at IS NULL
+      RETURNING *
+      """.trimIndent()
+    val updated =
+      session.mutateReturning(
+        sql,
+        bind = { it.setObject(1, id.value) },
+        map = ::mapUser,
+        mapError = ::mapCreateUpdateError,
+        onNoRow = { NotFoundException() },
+      )
+    if (updated.isSuccess) {
+      return updated
+    }
+    // No row matched: either the user is already verified (so return it unchanged)
+    // or it is truly absent (so propagate NotFound).
+    if (updated.exceptionOrNull() is NotFoundException) {
+      return findById(session, id, SoftDeleteScope.ACTIVE)
+    }
+    return updated
+  }
+
+  /**
    * Restores a full historical row (auth columns included) under the bypass GUC
    * so the logical-timestamp trigger does not advance `created_at`. Two
    * statements in the caller's transaction: the `SET LOCAL` bypass, then the
@@ -284,7 +325,17 @@ object UsersDao :
     if (bypass.isFailure) {
       return Result.failure(bypass.exceptionOrNull()!!)
     }
-    return updateFullRow(session, user.id, user.version, user.email, user.name, user.displayName, user.authMethod, user.isAdmin)
+    return updateFullRow(
+      session,
+      user.id,
+      user.version,
+      user.email,
+      user.name,
+      user.displayName,
+      user.authMethod,
+      user.isAdmin,
+      user.emailVerifiedAt,
+    )
   }
 
   override fun delete(
@@ -329,7 +380,17 @@ object UsersDao :
     }
 
     val target = versionResult.getOrThrow()
-    return updateFullRow(session, id, currentVersion, target.email, target.name, target.displayName, target.authMethod, target.isAdmin)
+    return updateFullRow(
+      session,
+      id,
+      currentVersion,
+      target.email,
+      target.name,
+      target.displayName,
+      target.authMethod,
+      target.isAdmin,
+      target.emailVerifiedAt,
+    )
   }
 
   /**
@@ -346,11 +407,12 @@ object UsersDao :
     displayName: DisplayName?,
     authMethod: AuthMethod,
     isAdmin: Boolean,
+    emailVerifiedAt: java.time.Instant?,
   ): Result<User> {
     val sql =
       """
       UPDATE users
-      SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?, is_admin = ?
+      SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?, is_admin = ?, email_verified_at = ?
       WHERE id = ? AND version = ?
       RETURNING *
       """.trimIndent()
@@ -364,8 +426,13 @@ object UsersDao :
         stmt.setStringOrNull(4, displayName?.value)
         bindAuthMethod(stmt, 5, authMethod)
         stmt.setBoolean(7, isAdmin)
-        stmt.setObject(8, id.value)
-        stmt.setInt(9, currentVersion)
+        if (emailVerifiedAt != null) {
+          stmt.setTimestamp(8, java.sql.Timestamp.from(emailVerifiedAt))
+        } else {
+          stmt.setNull(8, java.sql.Types.TIMESTAMP)
+        }
+        stmt.setObject(9, id.value)
+        stmt.setInt(10, currentVersion)
       },
       idValue = id.value,
       map = ::mapUser,

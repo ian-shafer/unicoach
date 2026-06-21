@@ -10,9 +10,14 @@ import ed.unicoach.admin.resources.StudentsResource
 import ed.unicoach.admin.resources.SystemPromptsResource
 import ed.unicoach.admin.resources.UsersResource
 import ed.unicoach.auth.AuthService
+import ed.unicoach.auth.EmailVerificationConfig
+import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.email.EmailConfig
+import ed.unicoach.email.EmailProviderFactory
+import ed.unicoach.email.EmailService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import io.ktor.server.application.Application
@@ -27,7 +32,7 @@ import io.ktor.server.routing.routing
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "admin-server.conf")
+      .load("common.conf", "db.conf", "admin-server.conf", "service.conf", "email.conf")
       .getOrThrow()
 
   val dbConfig =
@@ -42,7 +47,17 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val database = Database(dbConfig)
   val argon2Hasher = Argon2Hasher()
-  val authService = AuthService(database, argon2Hasher, TokenGenerator())
+  val tokenGenerator = TokenGenerator()
+  // The admin gate only authenticates via AuthService; it never registers users
+  // or sends verification mail. The EmailVerificationService is wired purely to
+  // satisfy the AuthService constructor (RFC 65); the log provider is inert here.
+  val emailConfig = EmailConfig.from(config).getOrThrow()
+  val emailProvider = EmailProviderFactory.fromConfig(emailConfig).getOrThrow()
+  val emailService = EmailService(database, emailProvider, emailConfig)
+  val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
+  val emailVerificationService =
+    EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)
+  val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService)
 
   val server =
     embeddedServer(Netty, port = adminConfig.port, host = adminConfig.host) {

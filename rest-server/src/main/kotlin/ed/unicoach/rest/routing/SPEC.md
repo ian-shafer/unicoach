@@ -6,14 +6,15 @@ The HTTP routing layer of the unicoach platform. This directory declares all
 `/api/v1/auth/*`, `/api/v1/students/*`, and `/api/v1/conversations/*` route
 handlers:
 
-- [`AuthRoutes.kt`](./AuthRoutes.kt) — authentication flows. Owns the full
-  session cookie lifecycle: minting on registration and login, reading on
-  identity resolution, and clearing on logout. Delegates all business decisions
-  to `AuthService`.
+- [`AuthRoutes.kt`](./AuthRoutes.kt) — authentication and email-verification
+  flows. Owns the full session cookie lifecycle: minting on registration and
+  login, reading on identity resolution, and clearing on logout. Delegates
+  credential/session decisions to `AuthService` and email-verification decisions
+  to `EmailVerificationService`.
 - [`StudentRoutes.kt`](./StudentRoutes.kt) — the owner-resolved student profile
   resource. Every handler resolves the current `User` from the session cookie
-  via `AuthService`, then delegates to `StudentService`. There is **no path
-  identifier** — the profile is always the caller's own.
+  via `AuthService`, then delegates to `StudentService`. There is no path
+  identifier — the profile is always the caller's own.
 - [`ConvoRoutes.kt`](./ConvoRoutes.kt) — the coaching-conversation resource
   family (the nine operations of `api-specs/openapi.yaml`). Resolves the caller
   to a `Student` (cookie → `User` → `Student`) before any `CoachingService`
@@ -25,179 +26,150 @@ calls and map service outcomes onto HTTP responses.
 
 ---
 
-## II. Invariants
+## II. Behavioral Contracts
 
-### Route Structure
+### II-A. Cross-Cutting Behavior
 
-- Auth routes MUST be nested under the `/api/v1/auth` route block, student
-  routes under `/api/v1/students`, and conversation routes under
-  `/api/v1/conversations`, each registered by its handler's
-  `registerRoutes(route)`.
-- Every leaf route block that permits a fixed set of methods MUST call
-  `rejectUnsupportedMethods(...)` listing exactly its allowed methods, so all
-  other methods return `405 Method Not Allowed` with an `Allow` header. This
-  covers `/register`, `/login`, `/auth/me`, `/logout`, `/students` (`POST`
-  only), `/students/me`, the conversation collection, `/conversations/stream`,
-  `/conversations/{conversationId}`, `/conversations/{conversationId}/messages`,
-  and `/conversations/{conversationId}/messages/stream`.
-- `POST /api/v1/auth/register` MUST reject non-`POST` verbs with `405` and an
-  RFC-9110 `Allow: POST` header via `rejectUnsupportedMethods(HttpMethod.Post)`,
-  consistent with its `/login`, `/me`, and `/logout` siblings. It MUST NOT be a
-  bare leaf `post("/register")` relying on Ktor's native method rejection, which
-  omits the `Allow` header.
-- The student resource is **owner-resolved**: routes MUST NOT expose a path id.
-  `POST` targets the collection (`/api/v1/students`); `GET`/`PATCH`/`DELETE`
-  target the singleton `/api/v1/students/me`.
+These behaviors recur across handlers and are described once here rather than
+re-tabulated per endpoint.
 
-### Token Handling
+#### Route Structure & Method Restriction
 
-- For **identity resolution** (`auth/me`, `logout`, and every student handler),
-  the raw cookie value MUST be hashed via `TokenHash.fromRawToken(token)`
-  (SHA-256) before being passed to any service call. The plain token is NEVER
-  used as a lookup key.
+- Auth routes register under the `/api/v1/auth` block, student routes under
+  `/api/v1/students`, and conversation routes under `/api/v1/conversations`,
+  each installed by its handler's `registerRoutes(route)`.
+- Every leaf route block that permits a fixed method set wraps it in a
+  `route(...)` block calling `rejectUnsupportedMethods(...)` with exactly its
+  allowed methods. Any other verb returns `405 Method Not Allowed` with an
+  RFC-9110 `Allow` header. This applies to `/register`, `/login`, `/auth/me`,
+  `/logout`, `/auth/verify-email`, `/auth/resend-verification` (all `POST`/`GET`
+  single-verb), `/students` (`POST`), `/students/me` (`GET`/`PATCH`/`DELETE`),
+  the conversation collection, `/conversations/stream`,
+  `/conversations/{conversationId}`, `…/messages`, and `…/messages/stream`.
+- The student resource is owner-resolved: no path id is exposed. `POST` targets
+  the collection (`/api/v1/students`); `GET`/`PATCH`/`DELETE` target the
+  singleton `/api/v1/students/me`.
+
+#### Token Handling
+
+- For **identity resolution** (`auth/me`, `logout`, `resend-verification`, and
+  every student/conversation handler), the raw cookie value is hashed via
+  `TokenHash.fromRawToken(token)` (SHA-256) before any service call. The plain
+  token is never a lookup key.
 - For **session hand-off** (`register`, `login`), the raw `oldCookieToken` is
   forwarded verbatim to the service, which owns the remint decision. This is the
   only path on which an unhashed token leaves the routing layer.
-- Raw tokens MUST NOT be validated against a format/regex at the routing layer —
-  any value is hashed and looked up, which matches 0 rows for invalid tokens.
-  This prevents distinguishing "wrong format" from "not found."
+- For **email verification** (`verify-email`), the body-carried verification
+  token is forwarded verbatim to `EmailVerificationService.verify`; it is not a
+  session token and is not hashed by the routing layer.
+- Raw tokens are not validated against a format/regex at the routing layer — any
+  value is hashed and looked up, which matches 0 rows for invalid tokens,
+  collapsing "wrong format" and "not found" into one outcome.
 
-### Session Cookie
+#### Session Cookie
 
-- The session cookie MUST be set with: `HttpOnly = true`, `SameSite = Strict`,
+- The session cookie is set with `HttpOnly = true`, `SameSite = Strict`,
   `path = "/"`, `secure = sessionConfig.cookieSecure`, and
   `domain = sessionConfig.cookieDomain`.
 - Cookie-clearing (on logout, and on a successful `DELETE /api/v1/students/me`)
-  MUST use `maxAge = 0L` with domain, path, secure, HttpOnly, and SameSite
-  attributes **identical** to those used when setting the cookie. A mismatch in
-  any attribute leaves the original cookie intact in the browser.
-- The cookie MUST be cleared only on a **definitive** account/session
-  termination: a `204` logout, or a `DeleteStudentResult.Success`. It MUST NOT
-  be cleared on a `DELETE` that returns `404 STUDENT_NOT_FOUND`, on an
-  unauthenticated request, or on any thrown service exception — the underlying
-  session may still be valid, and clearing would strand the client.
+  uses `maxAge = 0L` with domain, path, secure, HttpOnly, and SameSite
+  attributes identical to those used when setting the cookie (an attribute
+  mismatch would leave the original cookie intact in the browser).
+- The cookie is cleared only on a definitive account/session termination: a
+  `204` logout, or a `DeleteStudentResult.Success`. It is not cleared on a
+  `DELETE` returning `404 STUDENT_NOT_FOUND`, on an unauthenticated request, or
+  on any thrown service exception.
 
-### Error Mapping
+#### Error Mapping
 
-- Route logic MUST call `getOrThrow()` on `Result<T>` types returned by the
-  service layer.
-- `Exception` instances are propagated outwards and handled globally by the Ktor
-  `StatusPages` plugin.
+- Route logic calls `getOrThrow()` on `Result<T>` returned by the service layer.
+  Thrown `Exception`s propagate outward and are mapped by the Ktor `StatusPages`
+  plugin.
 - Known domain outcomes (e.g. `RegisterResult.ValidationFailure`,
-  `RegisterResult.DuplicateEmail`, `CreateStudentResult.AlreadyExists`,
-  `UpdateStudentResult.VersionConflict`) MUST be handled explicitly in
-  exhaustive `when` branches over the sealed result type.
+  `RegisterResult.DuplicateEmail`, `VerifyEmailResult.Expired`,
+  `CreateStudentResult.AlreadyExists`, `UpdateStudentResult.VersionConflict`)
+  are handled explicitly in exhaustive `when` branches over the sealed result
+  type.
 
-### Session Hand-off (Register / Login)
+#### Error-Code Casing (Per Route Family)
 
-- `register` and `login` MUST forward the raw incoming session cookie (if any)
-  to the service as `oldCookieToken`, so the service can remint an existing
-  anonymous session rather than orphan it. The routing layer does NOT decide
-  whether to remint or create — it only hands the old token across.
-- The cookie set on a successful `register`/`login` MUST be the opaque token
-  returned by the service outcome (`outcome.token`), never a value minted in the
-  routing layer.
+Error codes are a per-route-family convention, not a global one. `AuthRoutes`
+and `ConvoRoutes` emit **lowercase snake_case** codes (`unauthorized`,
+`validation_failed`, `conflict`, `invalid_token`, `token_expired`,
+`token_already_used`, `not_found`, `student_profile_required`,
+`coach_unavailable`, `coach_failed`). `StudentRoutes` emits **UPPERCASE** codes
+(`UNAUTHORIZED`, `VALIDATION_ERROR`, `STUDENT_NOT_FOUND`,
+`STUDENT_ALREADY_EXISTS`, `VERSION_CONFLICT`). A code's casing is part of that
+route's contract; clients match per route.
 
-### Student Owner Resolution
+#### User Projection
 
-- Every student handler MUST resolve the current `User` from the session cookie
-  before touching `StudentService`. Resolution hashes the raw cookie token via
-  `TokenHash.fromRawToken()` and calls `AuthService.getCurrentUser(tokenHash)`.
-- A missing cookie OR a `null` user (unknown/expired/revoked session) MUST
-  short-circuit to `401 UNAUTHORIZED` (`ErrorResponse(code = "UNAUTHORIZED")`)
-  **before** any `StudentService` call. `401` is the ONLY status that signals
-  "not authenticated"; it MUST NOT be conflated with `404`.
-- The resolved `User.id` is the sole owner key passed to `StudentService`. No
-  student id is ever read from the request path or body — the resource the
-  caller can read, modify, or delete is always its own.
-- "Authenticated but no profile" is a distinct, expected outcome: `GET`/`PATCH`/
-  `DELETE` on `/me` MUST return `404 STUDENT_NOT_FOUND`, never `401`.
-- `DELETE /api/v1/students/me` MUST resolve the user and forward **both** the
-  `User.id` and the session `tokenHash` to
-  `StudentService.deleteStudentAndAccount()`, so the account/session teardown is
-  owner-scoped to the presented session.
+`register`, `login`, `me`, and `verify-email` build a `PublicUser` from the
+service-returned `User`, including `emailVerified`, derived as
+`user.emailVerifiedAt != null`.
 
-### Error-Code Casing (Per Route Family)
+#### Conversation Caller Resolution
 
-- Error codes are a **per-route-family convention**, not a global one, and MUST
-  NOT be unified. `AuthRoutes` and `ConvoRoutes` emit **lowercase snake_case**
-  codes (`unauthorized`, `validation_failed`, `conflict`, `not_found`,
-  `student_profile_required`, `coach_unavailable`, `coach_failed`).
-  `StudentRoutes` emits **UPPERCASE** codes (`UNAUTHORIZED`, `VALIDATION_ERROR`,
-  `STUDENT_NOT_FOUND`, `STUDENT_ALREADY_EXISTS`, `VERSION_CONFLICT`). Clients
-  match per route — a code's casing is part of that route's contract.
-
-### Conversation Caller Resolution
-
-- Every conversation handler MUST resolve identity in two steps before any
+- Every conversation handler resolves identity in two steps before any
   `CoachingService` call: cookie → `AuthService.getCurrentUser` (`User`), then
   `StudentService.getStudentForUser` (`Student`). The resolved `Student.id` is
-  the sole owner key passed to `CoachingService`; no owner is ever read from the
-  request path or body.
-- A missing cookie OR a `null` user MUST short-circuit to `401`
-  (`code = "unauthorized"`) **before** any coaching call.
-- "Authenticated user with no `Student` profile" is **not** a single uniform
-  outcome — each operation chooses deliberately:
+  the sole owner key; no owner is read from path or body.
+- A missing cookie or a `null` user short-circuits to `401`
+  (`code = "unauthorized"`) before any coaching call.
+- "Authenticated user with no `Student` profile" is handled per operation:
   - **Create / stream-create** (`POST /conversations`,
-    `POST /conversations/stream`) MUST return `409`
-    (`code = "student_profile_required"`) — a profile is a precondition for
-    starting a conversation.
-  - **List** (`GET /conversations`) MUST return `200` with an **empty list** — a
-    profileless caller simply owns no conversations.
+    `POST /conversations/stream`) → `409` (`code = "student_profile_required"`).
+  - **List** (`GET /conversations`) → `200` with an empty list.
   - **All per-conversation reads/mutations** (`GET`/`PATCH`/`DELETE` on
-    `/{conversationId}`, `GET`/`POST` on `…/messages`, stream-message) MUST
-    return `404` (`code = "not_found"`) — the conversation is unreachable.
-- A malformed (non-UUID) `{conversationId}` path segment MUST map to `404`
+    `/{conversationId}`, `GET`/`POST` on `…/messages`, stream-message) → `404`
+    (`code = "not_found"`).
+- A malformed (non-UUID) `{conversationId}` segment maps to `404`
   (`code = "not_found"`), never `400`. The id is parsed leniently
   (`runCatching`); an unparseable id is indistinguishable from a non-existent
-  one and MUST NOT leak parse failure as a distinct status.
-- The `status` query parameter on `GET /conversations` MUST accept only `active`
-  (or absent) → unarchived and `archived` → archived; any other value MUST
-  return `400` (`code = "validation_failed"`, field `status`).
+  one.
+- The `status` query parameter on `GET /conversations` accepts only `active` (or
+  absent) → unarchived and `archived` → archived; any other value returns `400`
+  (`code = "validation_failed"`, field `status`).
 
-### Message Identity Projection
+#### Message Identity Projection
 
-- Wire `Message.id` values MUST be **opaque, role-prefixed** strings: a user
-  message is `"u_" + ConvoRequest.id`, a coach message is
-  `"c_" + ConvoResponse.id`. The prefix disambiguates the two id spaces in a
-  single flat message list; clients MUST treat the whole string as opaque and
-  MUST NOT parse the underlying turn id out of it.
+Wire `Message.id` values are opaque, role-prefixed strings: a user message is
+`"u_" + ConvoRequest.id`, a coach message is `"c_" + ConvoResponse.id`. The
+prefix disambiguates the two id spaces in a single flat message list; the whole
+string is opaque to clients.
 
-### SSE Streaming
+#### SSE Streaming
 
 - The two streaming endpoints (`POST /conversations/stream`,
-  `POST /conversations/{conversationId}/messages/stream`) MUST resolve all
-  **pre-flight** outcomes — unauthenticated, missing profile, unknown
-  conversation, and request `ValidationFailure` — as ordinary buffered HTTP
-  responses (`401`/`409`/`404`/`400`) **before** the event stream is opened. An
-  error MUST NOT be reported as an in-stream `error` frame once the
-  `text/event-stream` response has begun.
-- Once `streamReply` opens the stream it MUST write exactly **one opening
-  event** (`conversation` for create, `user_message` for message) first, then
-  relay zero or more `delta` frames, then terminate with exactly **one**
-  terminal frame — either a single `message` (on `ReplyEvent.Completed`) or a
-  single `error` (on `ReplyEvent.Failed`). The reply `Flow` carries exactly one
-  terminal event.
-- SSE responses MUST carry `Cache-Control: no-store` and content type
-  `text/event-stream`. Each event MUST be framed as
-  `event: {type}\ndata: {json}\n\n` and flushed.
-- SSE event payloads MUST be serialized by a dedicated mapper with
-  `INDENT_OUTPUT` disabled — a multi-line `data:` payload breaks SSE framing.
-  This mapper is private to the handler and MUST NOT be the shared
-  pretty-printing serializer.
-- A coach failure's retriability MUST drive its error code: a **retriable**
-  failure maps to `coach_unavailable`, a non-retriable failure to
-  `coach_failed`. This mapping is identical whether the failure surfaces as a
-  buffered `500` (create/post-message) or an in-stream `error` frame.
+  `POST /conversations/{conversationId}/messages/stream`) resolve all pre-flight
+  outcomes — unauthenticated, missing profile, unknown conversation, and request
+  `ValidationFailure` — as ordinary buffered HTTP responses
+  (`401`/`409`/`404`/`400`) before the event stream is opened. An error is not
+  reported as an in-stream `error` frame once the `text/event-stream` response
+  has begun.
+- Once `streamReply` opens the stream it writes exactly one opening event
+  (`conversation` for create, `user_message` for message), then relays zero or
+  more `delta` frames, then terminates with exactly one terminal frame — a
+  single `message` (on `ReplyEvent.Completed`) or a single `error` (on
+  `ReplyEvent.Failed`). The reply `Flow` carries exactly one terminal event.
+- SSE responses carry `Cache-Control: no-store` and content type
+  `text/event-stream`. Each event is framed as `event: {type}\ndata: {json}\n\n`
+  and flushed.
+- SSE event payloads are serialized by a handler-private mapper with
+  `INDENT_OUTPUT` disabled (a multi-line `data:` payload would break SSE
+  framing); it is not the shared pretty-printing serializer.
+- A coach failure's retriability drives its error code: a retriable failure maps
+  to `coach_unavailable`, a non-retriable failure to `coach_failed`. This
+  mapping is identical whether the failure surfaces as a buffered `500`
+  (create/post-message) or an in-stream `error` frame.
 
 ---
 
-## III. Behavioral Contracts
-
 ### `AuthRouteHandler.registerRoutes(route: Route)` — [`AuthRoutes.kt`](./AuthRoutes.kt)
 
-- **Behavior**: Registers all `/api/v1/auth/*` route handlers onto the Ktor
-  routing tree.
+- **Behavior**: Registers all `/api/v1/auth/*` route handlers (`/register`,
+  `/login`, `/me`, `/logout`, `/verify-email`, `/resend-verification`) onto the
+  Ktor routing tree.
 - **Side effects**: Route table registration only — no I/O at call time.
 - **Idempotency**: Not idempotent — calling twice installs duplicate routes.
 
@@ -212,7 +184,7 @@ calls and map service outcomes onto HTTP responses.
   - Calls `AuthService.register()`, forwarding `oldCookieToken`, the session
     expiration, the `User-Agent` header, and the remote host. All persistence
     (the `users` row, session minting/reminting, token generation) is owned by
-    the service; the routing layer performs none of it directly.
+    the service.
   - On `Success`, writes a `Set-Cookie` header carrying the opaque token
     returned by the service (`outcome.token`).
 - **Response mapping**:
@@ -224,8 +196,7 @@ calls and map service outcomes onto HTTP responses.
   | `RegisterResult.DuplicateEmail`      | `409 Conflict`    | `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])` |
   | Exceptions thrown by `.getOrThrow()` | (propagated)      | Mapped by `StatusPages`                                         |
 
-- **Method restriction**: Non-POST methods → `405 Method Not Allowed` with
-  `Allow: POST` (via `rejectUnsupportedMethods(HttpMethod.Post)`).
+- **Method restriction**: Non-POST → `405` with `Allow: POST`.
 - **Idempotency**: Not idempotent — duplicate email returns `409`.
 
 ---
@@ -237,7 +208,8 @@ calls and map service outcomes onto HTTP responses.
 - **Side effects**:
   - Calls `AuthService.login()` — verifies credentials and manages session
     state.
-  - Writes `Set-Cookie` header with the new opaque raw token upon success.
+  - Writes `Set-Cookie` with the new opaque raw token (`outcome.token`) on
+    success.
 - **Response mapping**:
 
   | Condition                            | Status             | Body                                 |
@@ -246,8 +218,7 @@ calls and map service outcomes onto HTTP responses.
   | All other `LoginResult` variants     | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
   | Exceptions thrown by `.getOrThrow()` | (propagated)       | Mapped by `StatusPages`              |
 
-- **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
-  `rejectUnsupportedMethods(HttpMethod.Post)`).
+- **Method restriction**: Non-POST → `405`.
 - **Idempotency**: Not idempotent — creates a new session.
 
 ---
@@ -256,8 +227,7 @@ calls and map service outcomes onto HTTP responses.
 
 - **Request**: No body. Session identity derived from the request cookie named
   `sessionConfig.cookieName`.
-- **Side effects**: Calls `AuthService.getCurrentUser()` — DB read only. No
-  writes.
+- **Side effects**: Calls `AuthService.getCurrentUser()` — DB read only.
 - **Response mapping**:
 
   | Condition                            | Status             | Body                                 |
@@ -267,9 +237,8 @@ calls and map service outcomes onto HTTP responses.
   | User returned `null`                 | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
   | Exceptions thrown by `.getOrThrow()` | (propagated)       | Mapped by `StatusPages`              |
 
-- **Method restriction**: Non-GET methods → `405 Method Not Allowed` (via
-  `rejectUnsupportedMethods(HttpMethod.Get)`).
-- **Idempotency**: Yes — read-only, no mutations.
+- **Method restriction**: Non-GET → `405`.
+- **Idempotency**: Yes — read-only.
 
 ---
 
@@ -287,10 +256,64 @@ calls and map service outcomes onto HTTP responses.
   | Success                              | `204 No Content` | Yes             | None                    |
   | Exceptions thrown by `.getOrThrow()` | (propagated)     | **No**          | Mapped by `StatusPages` |
 
-- **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
-  `rejectUnsupportedMethods(HttpMethod.Post)`).
+- **Method restriction**: Non-POST → `405`.
 - **Idempotency**: Yes — logout of an already-revoked, expired, or missing
   session returns `204`.
+
+---
+
+### `POST /api/v1/auth/verify-email` — [`AuthRoutes.kt`](./AuthRoutes.kt)
+
+- **Request**: JSON body `{"token": string}`. Deserialized as
+  `VerifyEmailRequest`. No authentication — the verification token is itself the
+  credential, so no session cookie is read.
+- **Side effects**: Calls `EmailVerificationService.verify(request.token)`. The
+  service owns token lookup, expiry/consumption checks, and the
+  `users.email_verified_at` update; the routing layer performs no persistence.
+  No cookie is set or cleared.
+- **Response mapping**:
+
+  | Condition                            | Status            | Body                                                                      |
+  | ------------------------------------ | ----------------- | ------------------------------------------------------------------------- |
+  | `VerifyEmailResult.Success`          | `200 OK`          | `VerifyEmailResponse { user: PublicUser }` (with `emailVerified == true`) |
+  | `VerifyEmailResult.InvalidToken`     | `400 Bad Request` | `ErrorResponse(code="invalid_token")`                                     |
+  | `VerifyEmailResult.Expired`          | `400 Bad Request` | `ErrorResponse(code="token_expired")`                                     |
+  | `VerifyEmailResult.AlreadyConsumed`  | `400 Bad Request` | `ErrorResponse(code="token_already_used")`                                |
+  | Exceptions thrown by `.getOrThrow()` | (propagated)      | Mapped by `StatusPages`                                                   |
+
+- **Method restriction**: Non-POST → `405` with `Allow: POST`.
+- **Idempotency**: Not idempotent in effect — the token is single-use; the first
+  call verifies, and a replay of the same token returns
+  `400 token_already_used`.
+
+---
+
+### `POST /api/v1/auth/resend-verification` — [`AuthRoutes.kt`](./AuthRoutes.kt)
+
+- **Request**: Empty body. Authenticated via the session cookie; the caller is
+  resolved identically to `me` (cookie → `TokenHash.fromRawToken` →
+  `AuthService.getCurrentUser`).
+- **Side effects**: On a resolved `User`, calls
+  `EmailVerificationService.resend(user)`. The service decides whether to mint a
+  fresh token and send a verification email. No cookie is set or cleared.
+- **Response mapping**:
+
+  | Condition                               | Status             | Body                                 |
+  | --------------------------------------- | ------------------ | ------------------------------------ |
+  | Cookie absent                           | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
+  | Resolved user is `null`                 | `401 Unauthorized` | `ErrorResponse(code="unauthorized")` |
+  | `resend()` succeeds (`Sent`)            | `204 No Content`   | None                                 |
+  | `resend()` succeeds (`AlreadyVerified`) | `204 No Content`   | None                                 |
+  | Exceptions thrown by `.getOrThrow()`    | (propagated)       | Mapped by `StatusPages`              |
+
+  Both `ResendResult` variants (`Sent`, `AlreadyVerified`) collapse to the same
+  `204` with no body, so the response never reveals whether an email was sent or
+  whether the account was already verified.
+
+- **Method restriction**: Non-POST → `405` with `Allow: POST`.
+- **Idempotency**: Yes for an authenticated caller — every successful call
+  returns `204` regardless of current verification state (each `Sent` call may,
+  as a side effect, issue another token/email).
 
 ---
 
@@ -320,8 +343,7 @@ calls and map service outcomes onto HTTP responses.
   | `CreateStudentResult.AlreadyExists`       | `409 Conflict`     | `ErrorResponse(code="STUDENT_ALREADY_EXISTS")`              |
   | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | Processed by `StatusPages`                                  |
 
-- **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
-  `rejectUnsupportedMethods(HttpMethod.Post)`).
+- **Method restriction**: Non-POST → `405`.
 - **Idempotency**: Not idempotent — a second create for the same owner returns
   `409 STUDENT_ALREADY_EXISTS`.
 
@@ -342,8 +364,8 @@ calls and map service outcomes onto HTTP responses.
   | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | Processed by `StatusPages`                   |
 
 - **Method restriction**: Only `GET`/`PATCH`/`DELETE` allowed on `/me`; others →
-  `405 Method Not Allowed`.
-- **Idempotency**: Yes — read-only, no mutations.
+  `405`.
+- **Idempotency**: Yes — read-only.
 
 ---
 
@@ -351,8 +373,8 @@ calls and map service outcomes onto HTTP responses.
 
 - **Request**: JSON body
   `{"expectedHighSchoolGraduationDate": string, "version": int}`. Deserialized
-  as `UpdateStudentRequest`. Owner resolved from the session cookie; `version`
-  carries the caller's expected OCC version.
+  as `UpdateStudentRequest`; `version` carries the caller's expected OCC
+  version.
 - **Side effects**: Calls
   `StudentService.updateStudent(userId, expectedVersion, ...)` — conditionally
   updates the caller's profile under OCC.
@@ -391,7 +413,7 @@ calls and map service outcomes onto HTTP responses.
 
 - **Method restriction**: as for `/me` above.
 - **Idempotency**: Not idempotent at the resource level — after a successful
-  delete, the account is gone and a subsequent request is unauthenticated.
+  delete the account is gone and a subsequent request is unauthenticated.
 
 ---
 
@@ -404,8 +426,7 @@ calls and map service outcomes onto HTTP responses.
 
 All handlers below first resolve the caller to a `Student` (cookie → `User` →
 `Student`); the `401`/`409`/`404`/`200-empty` resolution outcomes are governed
-by the **Conversation Caller Resolution** invariants and are not re-tabulated
-per row.
+by **Conversation Caller Resolution** (§II-A) and are not re-tabulated per row.
 
 ---
 
@@ -413,8 +434,8 @@ per row.
 
 - **Request**: JSON `CreateConversationRequest { message, name? }`.
 - **Side effects**: Calls
-  `CoachingService.startConvo(student.id, message, name)`, then **drains** the
-  reply `Flow` to its single terminal (buffered — the coach reply is fully
+  `CoachingService.startConvo(student.id, message, name)`, then drains the reply
+  `Flow` to its single terminal (buffered — the coach reply is fully
   materialized before responding).
 - **Response mapping**:
 
@@ -514,7 +535,7 @@ per row.
 
 - **Request**: JSON `PostMessageRequest { message }`.
 - **Side effects**: Calls
-  `CoachingService.postTurn(student.id, convoId, message)`, then **drains** the
+  `CoachingService.postTurn(student.id, convoId, message)`, then drains the
   reply `Flow` (buffered).
 - **Response mapping**:
 
@@ -544,7 +565,7 @@ per row.
 
 ---
 
-## IV. Infrastructure & Environment
+## III. Infrastructure & Environment
 
 This directory contains no module-specific infrastructure requirements beyond
 those inherited from the parent `rest` module. Relevant configuration:
@@ -557,13 +578,18 @@ those inherited from the parent `rest` module. Relevant configuration:
 | `session.expiration`   | `rest-server.conf` | Session TTL; forwarded to `AuthService.register()`/`login()` as `sessionExpirationSeconds` |
 
 All four values are parsed by `SessionConfig.from(config)` in the parent `auth/`
-package and injected into both route handlers as `sessionConfig`.
+package and injected into the route handlers as `sessionConfig`.
 
 ### Injected Dependencies
 
 - **`AuthService`** (`service` module): Provides `register()`, `login()`,
-  `getCurrentUser()`, and `logout()`. Used by both handlers —
-  `StudentRouteHandler` uses it solely for owner resolution.
+  `getCurrentUser()`, and `logout()`. Used by `AuthRouteHandler` for auth flows
+  and resend-verification owner resolution, and by `StudentRouteHandler` /
+  `ConvoRouteHandler` for owner resolution.
+- **`EmailVerificationService`** (`service` module): Provides `verify(token)`
+  and `resend(user)`. Held by `AuthRouteHandler` (constructed from an injected
+  `EmailService` and `EmailVerificationConfig`) and used only by the
+  `verify-email` and `resend-verification` handlers.
 - **`StudentService`** (`service` module): Provides `createStudent()`,
   `getStudentForUser()`, `updateStudent()`, and `deleteStudentAndAccount()`.
   `ConvoRouteHandler` uses it solely to resolve the caller's `Student`.
@@ -574,7 +600,7 @@ package and injected into both route handlers as `sessionConfig`.
 
 ---
 
-## V. History
+## IV. History
 
 - [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md)
       — Established the `/register` endpoint contract
@@ -595,8 +621,7 @@ package and injected into both route handlers as `sessionConfig`.
 - [x] [RFC-29: Request Payload Limits](../../../../../../../../rfc/29-request-payload-limits.md)
       — Removed the in-route `Content-Length`/4KB payload check from
       `AuthRoutes.kt`; body-size enforcement now lives in the `plugins/`
-      request-size limit and the `413` `StatusPages` mapping. Routing no longer
-      reads any payload bound.
+      request-size limit and the `413` `StatusPages` mapping.
 - [x] [RFC-31: Student Profile](../../../../../../../../rfc/31-student-profile.md)
       — Added `StudentRoutes.kt`: the owner-resolved student profile resource
       (`POST /api/v1/students`, `GET`/`PATCH`/`DELETE /api/v1/students/me`) with
@@ -607,8 +632,7 @@ package and injected into both route handlers as `sessionConfig`.
       — Collapsed the per-row student version from a wrapper value class to a
       plain `Int` at the model boundary, so `StudentRoutes.kt` passes
       `request.version` directly and reads `student.version` when building the
-      response. The `version: Int` JSON wire contract
-      (`UpdateStudentRequest`/`StudentResponse`) is unchanged.
+      response. The `version: Int` JSON wire contract is unchanged.
 - [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../../rfc/45-coaching-service.md)
       — Added `ConvoRoutes.kt`: the coaching-conversation resource family (nine
       operations under `/api/v1/conversations`) with two SSE-streaming POST
@@ -619,6 +643,14 @@ package and injected into both route handlers as `sessionConfig`.
       pre-flight-errors-before-the-stream / exactly-one-terminal-frame SSE
       contract.
 - [x] [RFC-52: Make the REST Surface Fuzz-Clean](../../../../../../../../rfc/52-make-rest-surface-fuzz-clean.md)
-      — wrapped `/api/v1/auth/register` in a `route("/register")` block with
-      `rejectUnsupportedMethods(HttpMethod.Post)`, so a non-POST verb now
-      returns `405` with an `Allow: POST` header, matching its auth siblings.
+      — Wrapped `/api/v1/auth/register` in a `route("/register")` block with
+      `rejectUnsupportedMethods(HttpMethod.Post)`, so a non-POST verb returns
+      `405` with an `Allow: POST` header.
+- [x] [RFC-65: Email Verification](../../../../../../../../rfc/65-email-verification.md)
+      — Added `POST /api/v1/auth/verify-email` (no auth; body
+      `VerifyEmailRequest` token; `200 VerifyEmailResponse`, or `400` with
+      lowercase `invalid_token`/`token_expired`/`token_already_used`) and
+      `POST /api/v1/auth/resend-verification` (cookie-authenticated, empty body,
+      `204` on both `Sent` and `AlreadyVerified`, `401` when unresolved). Added
+      `EmailVerificationService` to `AuthRouteHandler` and the `emailVerified`
+      field to the `PublicUser` projection built by `register`/`login`/`me`.

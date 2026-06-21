@@ -541,6 +541,51 @@ class UsersDaoTest {
   }
 
   @Test
+  fun `markEmailVerified flips email_verified_at bumps version and writes history`() {
+    val created = UsersDao.create(session, newPasswordUser("mark-verified")).getOrThrow()
+    assertTrue(created.emailVerifiedAt == null, "Precondition: new user is unverified")
+
+    val verified = UsersDao.markEmailVerified(session, created.id).getOrThrow()
+    assertTrue(verified.emailVerifiedAt != null, "Expected email_verified_at to be set")
+    assertTrue(verified.version == created.version + 1, "Expected version bump on verify")
+
+    val versions = UsersDao.listVersions(session, created.id).getOrThrow()
+    val v1 = versions.first { it.version == created.version }
+    val v2 = versions.first { it.version == verified.version }
+    assertTrue(v1.emailVerifiedAt == null, "Historical v1 should reflect unverified state")
+    assertTrue(v2.emailVerifiedAt != null, "Historical v2 should carry the verification timestamp")
+  }
+
+  @Test
+  fun `markEmailVerified is idempotent on an already-verified user`() {
+    val created = UsersDao.create(session, newPasswordUser("mark-verified-idem")).getOrThrow()
+    val first = UsersDao.markEmailVerified(session, created.id).getOrThrow()
+    val firstTimestamp = first.emailVerifiedAt
+    assertTrue(firstTimestamp != null)
+
+    val second = UsersDao.markEmailVerified(session, created.id).getOrThrow()
+    assertTrue(second.emailVerifiedAt == firstTimestamp, "Idempotent: original timestamp preserved")
+    assertTrue(second.version == first.version, "Idempotent: no second version bump")
+  }
+
+  @Test
+  fun `markEmailVerified fails NotFound for an absent user`() {
+    val result = UsersDao.markEmailVerified(session, UserId(java.util.UUID.randomUUID()))
+    assertTrue(result.isFailure && result.exceptionOrNull() is NotFoundException, "Expected NotFound, got $result")
+  }
+
+  @Test
+  fun `findById and mapUser round-trip emailVerifiedAt null and non-null`() {
+    val created = UsersDao.create(session, newPasswordUser("verified-roundtrip")).getOrThrow()
+    val reloadedNull = UsersDao.findById(session, created.id, ed.unicoach.db.models.SoftDeleteScope.ALL).getOrThrow()
+    assertTrue(reloadedNull.emailVerifiedAt == null, "Null email_verified_at must round-trip as null")
+
+    UsersDao.markEmailVerified(session, created.id).getOrThrow()
+    val reloadedSet = UsersDao.findById(session, created.id, ed.unicoach.db.models.SoftDeleteScope.ALL).getOrThrow()
+    assertTrue(reloadedSet.emailVerifiedAt != null, "Non-null email_verified_at must round-trip")
+  }
+
+  @Test
   fun `listVersions returns ascending version order`() {
     val v1 = UsersDao.create(session, newPasswordUser("versions-order")).getOrThrow()
     val v2 = UsersDao.update(session, editOf(v1.copy(name = (PersonName.create("Edit Two") as ValidationResult.Valid).value))).getOrThrow()

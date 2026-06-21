@@ -72,18 +72,40 @@ class ConvoStreamErrorRoutingTest {
     fun setupAll() {
       val config =
         AppConfig
-          .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf")
+          .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
           .getOrThrow()
       val database = Database(DatabaseConfig.from(config).getOrThrow())
       val sessionConfig = SessionConfig.from(config).getOrThrow()
       val requestSizeConfig = RequestSizeConfig.from(config).getOrThrow()
       val coachingConfig = CoachingConfig.from(config).getOrThrow()
       val clientKeyGateConfig = ClientKeyGateConfig.from(config).getOrThrow()
+      val emailConfig =
+        ed.unicoach.email.EmailConfig
+          .from(config)
+          .getOrThrow()
+      val emailProvider =
+        ed.unicoach.email.EmailProviderFactory
+          .fromConfig(emailConfig)
+          .getOrThrow()
+      val emailService = ed.unicoach.email.EmailService(database, emailProvider, emailConfig)
+      val emailVerificationConfig =
+        ed.unicoach.auth.EmailVerificationConfig
+          .from(config)
+          .getOrThrow()
 
       testServer =
         embeddedServer(Netty, port = 0, host = "127.0.0.1") {
           environment.monitor.subscribe(ApplicationStopped) { database.close() }
-          appModule(database, sessionConfig, requestSizeConfig, fakeProvider, coachingConfig, clientKeyGateConfig)
+          appModule(
+            database,
+            sessionConfig,
+            requestSizeConfig,
+            fakeProvider,
+            coachingConfig,
+            clientKeyGateConfig,
+            emailService,
+            emailVerificationConfig,
+          )
         }
       testServer.start(wait = false)
       boundPort =

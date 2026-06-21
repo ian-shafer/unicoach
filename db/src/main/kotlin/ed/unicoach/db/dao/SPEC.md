@@ -8,13 +8,14 @@ operation, composing à-la-carte **capability interfaces** ([Dao.kt](./Dao.kt))
 and delegating all query execution to shared `SqlSession` **query scaffolding**
 ([SqlSessionQueries.kt](./SqlSessionQueries.kt)).
 
-| DAO                | Table(s)                                                                |
-| ------------------ | ----------------------------------------------------------------------- |
-| `UsersDao`         | `users`, `users_versions`                                               |
-| `SessionsDao`      | `sessions`                                                              |
-| `StudentsDao`      | `students`, `students_versions`                                         |
-| `ConvosDao`        | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw`    |
-| `SystemPromptsDao` | `system_prompts` (append-only catalog: read + insert, no update/delete) |
+| DAO                     | Table(s)                                                              |
+| ----------------------- | --------------------------------------------------------------------- |
+| `UsersDao`              | `users`, `users_versions`                                             |
+| `SessionsDao`           | `sessions`                                                            |
+| `StudentsDao`           | `students`, `students_versions`                                       |
+| `ConvosDao`             | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw`  |
+| `SystemPromptsDao`      | `system_prompts` (immutable catalog: read + insert, no update/delete) |
+| `VerificationTokensDao` | `verification_tokens`                                                 |
 
 Every DAO method accepts a `SqlSession` as its first parameter. Connection
 pooling, transaction boundaries, and commit/rollback are managed exclusively by
@@ -58,17 +59,20 @@ value), inheriting the no-scope overload.
 Declared capability sets per DAO (operations not covered by an interface — token
 lookups, `rename`, `archive`/`unarchive`, parented `listBy*`, `appendRequest`,
 `remintToken`, `findByEmail`, `findVersion`, `revertToVersion`,
-`updatePhysicalRecord`, the `*ForUpdate` lock-reads, `expireZombieSessions`,
-`*WithActivity`, `listTurns`, `findRawByResponseId`, `findByNameAndVersion` —
-remain concrete methods on the DAO):
+`updatePhysicalRecord`, `markEmailVerified`, the `*ForUpdate` lock-reads,
+`expireZombieSessions`, `*WithActivity`, `listTurns`, `findRawByResponseId`,
+`findByNameAndVersion`, `consume`/`findByTokenHash`/`consumeAllForUser` — remain
+concrete methods on the DAO; `SystemPromptsDao.findById`/`list`/`create` are
+interface-backed via `Findable`/`Listable`/`Creatable`):
 
-| DAO                | Capability interfaces                                                                                                                                                                                                                                                                                         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UsersDao`         | `SoftDeleteFindable<User, UserId>`, `SoftDeleteListable<User>`, `Creatable<NewUser, User>`, `Updatable<UserEdit, User>`, `OccDeletable<User, UserId>`, `VersionHistory<UserId, UserVersion>`                                                                                                                  |
-| `StudentsDao`      | `SoftDeleteFindable<Student, StudentId>`, `Creatable<NewStudent, Student>`, `Updatable<StudentEdit, Student>`, `OccDeletable<Student, StudentId>`, `VersionHistory<StudentId, StudentVersion>`                                                                                                                |
-| `ConvosDao`        | `SoftDeleteFindable<Convo, ConvoId>`, `Creatable<NewConvo, Convo>`, `Deletable<Convo, ConvoId>`                                                                                                                                                                                                               |
-| `SessionsDao`      | `Findable<Session, SessionId>`, `Listable<Session>`, `Creatable<NewSession, Session>`, `Destroyable<SessionId>`                                                                                                                                                                                               |
-| `SystemPromptsDao` | `Findable<SystemPrompt, SystemPromptId>`, `Listable<SystemPrompt>`, `Creatable<NewSystemPrompt, SystemPrompt>` (plain, NOT soft-delete variants — `system_prompts` has no `deleted_at`); plus the concrete `findByNameAndVersion`. No `Updatable`/`Deletable`: the table's triggers forbid `UPDATE`/`DELETE`. |
+| DAO                     | Capability interfaces                                                                                                                                                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `UsersDao`              | `SoftDeleteFindable<User, UserId>`, `SoftDeleteListable<User>`, `Creatable<NewUser, User>`, `Updatable<UserEdit, User>`, `OccDeletable<User, UserId>`, `VersionHistory<UserId, UserVersion>`                                         |
+| `StudentsDao`           | `SoftDeleteFindable<Student, StudentId>`, `Creatable<NewStudent, Student>`, `Updatable<StudentEdit, Student>`, `OccDeletable<Student, StudentId>`, `VersionHistory<StudentId, StudentVersion>`                                       |
+| `ConvosDao`             | `SoftDeleteFindable<Convo, ConvoId>`, `Creatable<NewConvo, Convo>`, `Deletable<Convo, ConvoId>`                                                                                                                                      |
+| `SessionsDao`           | `Findable<Session, SessionId>`, `Listable<Session>`, `Creatable<NewSession, Session>`, `Destroyable<SessionId>`                                                                                                                      |
+| `SystemPromptsDao`      | `Findable<SystemPrompt, SystemPromptId>`, `Listable<SystemPrompt>`, `Creatable<NewSystemPrompt, SystemPrompt>` (plain, not the soft-delete variants — `system_prompts` has no `deleted_at`; `findByNameAndVersion` remains concrete) |
+| `VerificationTokensDao` | `Creatable<NewVerificationToken, VerificationToken>` (remaining methods — `consume`, `findByTokenHash`, `consumeAllForUser` — are concrete)                                                                                          |
 
 `Updatable<EDIT, ROW>` applies only to entities with a dedicated edit-input type
 covering the full mutable field set (`User` via `UserEdit`, `Student` via
@@ -177,7 +181,8 @@ wrapper (previously inside `SessionsDao`).
   `AuthMethod` (`Password`, `SSO`, or `Both`) via `readAuthMethod`. A row with
   both auth columns NULL throws `CorruptPersistedAuthMethodException` (a
   `PermanentError` `DaoException` carrying the offending `UserId`), since the DB
-  constraints guarantee at least one is non-NULL.
+  constraints guarantee at least one is non-NULL. Both mappers project the
+  nullable `email_verified_at` timestamp (NULL = unverified).
 - **`students`**: `mapStudent`/`mapStudentVersion` reconstruct the decomposed
   `expected_high_school_graduation_{year,month,day}` columns into a
   `PartialDate` via `PartialDate.of` (`mapGraduationDate`), preserving month/day
@@ -195,6 +200,11 @@ wrapper (previously inside `SessionsDao`).
 - **`system_prompts`**: `mapPrompt` maps every column verbatim (`name`,
   `version`, `body` as plain `String`); no soft-delete, version, or validated
   columns, so no corruption path.
+- **`verification_tokens`**: `mapToken` maps `id`/`user_id` as typed
+  `VerificationTokenId`/`UserId`, reads `expires_at`/`created_at` as `Instant`
+  and the nullable `consumed_at` (NULL = unconsumed). No validated value classes
+  and no corruption path; the `token_hash` BYTEA column is never projected into
+  the domain row.
 
 The `row_created_at`/`row_updated_at` columns exist in every entity table and
 are maintained by DB triggers, but no mapper projects them into a domain model.
@@ -241,14 +251,14 @@ route through `mapDatabaseError`):
 - `23505` / `23514` → `ConstraintViolationException`.
 - everything else → `mapDatabaseError`.
 
-`SystemPromptsDao.mapPromptError` (insert path only; reads route through
-`mapDatabaseError`):
+`SystemPromptsDao.mapPromptError` (the `create` insert path only; reads route
+through `mapDatabaseError`):
 
-- `23505` (duplicate `(name, version)`) / `23514` (any bound/CHECK violation) →
+- `23505` (duplicate `(name, version)`) / `23514` (CHECK violation) →
   `ConstraintViolationException`.
 - everything else → `mapDatabaseError`. The table's immutability triggers raise
   `P0001` only on `UPDATE`/`DELETE`, unreachable from the insert-only path, so
-  they are not special-cased here. Mirrors `ConvosDao.mapConvoError`.
+  they would fall through here.
 
 `55P03` in any `*ForUpdate` method (`SELECT … FOR UPDATE NOWAIT`) →
 `LockAcquisitionFailureException` (mapped inline, before `mapDatabaseError`).
@@ -327,14 +337,32 @@ interface SqlSession {
   `ConstraintViolationException` via `mapCreateUpdateError`.
 - **Idempotency**: No (version bumps).
 
+#### `markEmailVerified(session, id): Result<User>`
+
+- **Side Effects**: Read/write — a versioned conditional `mutateReturning`
+  (`SET version = version + 1, email_verified_at = NOW() WHERE id = ? AND email_verified_at IS NULL AND deleted_at IS NULL RETURNING *`),
+  stamping the verification timestamp and bumping `version` only while the
+  column is still NULL on an active row. On 0 rows it falls back to
+  `findById(session, id, ACTIVE)`, returning the existing row unchanged. Written
+  only by the dedicated verification path, never the `UserEdit`/`update` surface
+  (the same isolation the auth columns have).
+- **Error Handling**: `mapCreateUpdateError` on the conditional update
+  (`ConstraintViolationException`, etc.); a non-`NotFoundException` failure
+  propagates. When the conditional update matches no row, the fallback
+  `findById` returns `NotFoundException()` only when the user is truly absent
+  (or soft-deleted); an already-verified, active user yields `success(User)`.
+- **Idempotency**: Yes — the first call stamps `email_verified_at` and bumps the
+  version; a second call matches no row and returns the existing user unchanged,
+  with no further version bump (the first-verification timestamp is preserved).
+
 #### `updatePhysicalRecord(session, user): Result<User>`
 
 - **Side Effects**: Read/write — two statements in the caller transaction: a
   `SET LOCAL unicoach.bypass_logical_timestamp = 'true'` bypass (suppressing the
   `update_timestamp` trigger so `updated_at` does not advance), then a full-row
   OCC update via the private `updateFullRow` (`occUpdate`) restoring every
-  mutable column **including the auth columns**. Not routed through the
-  `UserEdit` path.
+  mutable column **including the auth columns and `email_verified_at`**. Not
+  routed through the `UserEdit` path.
 - **Error Handling**: Same OCC classification as `update`.
 - **Idempotency**: No.
 
@@ -358,7 +386,8 @@ interface SqlSession {
 #### `revertToVersion(session, id, targetHistoricalVersion, currentVersion): Result<User>`
 
 - **Side Effects**: Read/write — reads the historical version, then a full-row
-  OCC write via `updateFullRow` (auth columns restored).
+  OCC write via `updateFullRow` (auth columns and `email_verified_at` restored
+  to that version's value, since the marker is ordinary versioned state).
 - **Error Handling**: `TargetVersionMissingException()` if the historical
   version is absent; otherwise same OCC classification as `update`.
 - **Idempotency**: No.
@@ -691,50 +720,98 @@ the mutable-entity reads/writes and the append-only log append/read.
 
 ### `SystemPromptsDao` — [`SystemPromptsDao.kt`](./SystemPromptsDao.kt)
 
-Read + insert layer over the immutable `system_prompts` catalog. The table's
-triggers forbid `UPDATE`/`DELETE`, so a "new version" is a new immutable row;
-the DAO therefore implements `Findable`/`Listable`/`Creatable` (read + insert)
-but no `Updatable`/`Deletable`. It implements the PLAIN `Findable`/`Listable`
-(not the `SoftDelete*` variants) because `system_prompts` has no `deleted_at`
-column. Rows are authored by migration or the admin tool (RFC 63), never
-mutated. Stateless `object`; failures route through `mapDatabaseError` except on
-the insert path, which uses the dedicated `mapPromptError`.
+`object` implementing `Findable<SystemPrompt, SystemPromptId>`/
+`Listable<SystemPrompt>`/`Creatable<NewSystemPrompt, SystemPrompt>` over the
+immutable `system_prompts` catalog. The table's triggers forbid `UPDATE`/
+`DELETE`, so a "new version" is a new immutable row; the DAO exposes read and
+insert only (no update, no soft-delete — `system_prompts` has no `deleted_at`,
+hence the plain capability variants). Rows are authored by migration or the
+admin tool. Stateless `object`; the insert path discriminates SQLSTATE via
+`mapPromptError`, reads route through `mapDatabaseError`.
 
 #### `findById(session, id): Result<SystemPrompt>`
 
-- **Side Effects**: Read only — `queryOne` resolving the primary key.
+- **Side Effects**: Read only — `queryOne` by primary key.
 - **Error Handling**: `NotFoundException` when no row matches.
 - **Idempotency**: Yes.
 
 #### `list(session, limit, offset): Result<List<SystemPrompt>>`
 
 - **Side Effects**: Read only — `queryList` ordered
-  `name ASC, version ASC, created_at DESC LIMIT ? OFFSET ?`. The `created_at`
-  tie-breaker is redundant under `UNIQUE (name, version)` but kept so the page
-  order is total and stable.
+  `name ASC, version ASC, created_at DESC` (the `created_at` tie-breaker is
+  redundant under the `(name, version)` UNIQUE key but keeps the page order
+  total), paged via `LIMIT ?`/`OFFSET ?`.
+- **Error Handling**: `success(emptyList())` when no rows match.
 - **Idempotency**: Yes.
 
 #### `create(session, input: NewSystemPrompt): Result<SystemPrompt>`
 
-- **Side Effects**: Write — `insertReturning` over the three immutable columns
-  `name`, `version`, `body`; `id`/`created_at`/`row_created_at` are left to
-  their DB defaults and read back from `RETURNING *`.
-- **Error Handling**: Errors route through the dedicated `mapPromptError`, which
-  maps both a duplicate `(name, version)` (`23505`) and any bound/CHECK
-  violation (`23514`) to `ConstraintViolationException` (which the admin form
-  layer renders as a field error); all other SQLSTATEs fall through to
-  `mapDatabaseError`. The table's immutability triggers raise `P0001` only on
-  `UPDATE`/`DELETE`, unreachable from this insert-only path. Mirrors
-  `ConvosDao.mapConvoError`.
-- **Idempotency**: No — a successful `create` inserts a new row; a second call
-  with the same `(name, version)` fails with `ConstraintViolationException`.
+- **Side Effects**: Write — `insertReturning` over `name`, `version`, `body`. DB
+  generates `id` (`uuidv7()` default) and `created_at`. A new immutable row; the
+  catalog is append-only.
+- **Error Handling**: `ConstraintViolationException` on a duplicate
+  `(name, version)` (`23505`) or a CHECK violation (`23514`), via
+  `mapPromptError`; `mapDatabaseError` otherwise.
+- **Idempotency**: No — a second insert of the same `(name, version)` fails the
+  UNIQUE constraint.
 
 #### `findByNameAndVersion(session, name, version): Result<SystemPrompt>`
 
 - **Side Effects**: Read only — `queryOne` resolving the `(name, version)`
-  UNIQUE key. Not part of a capability interface (parented-by-name lookup).
+  UNIQUE key. Not part of a capability interface.
 - **Error Handling**: `NotFoundException` when no row matches.
 - **Idempotency**: Yes.
+
+---
+
+### `VerificationTokensDao` — [`VerificationTokensDao.kt`](./VerificationTokensDao.kt)
+
+`object` implementing `Creatable<NewVerificationToken, VerificationToken>`; the
+remaining methods are concrete. Single-use email-verification credential store
+over `verification_tokens`, which has no `version`/`deleted_at`/`_versions`
+table. Modeled on `SessionsDao` (a hashed credential): only the SHA-256
+`token_hash` is persisted; the raw token rides only in the email link. Failures
+route through `mapDatabaseError` (no specialized SQLSTATE mapper).
+
+#### `create(session, input: NewVerificationToken): Result<VerificationToken>`
+
+- **Side Effects**: Write — hand-written `mutateReturning` inserting one row
+  (`user_id`, `token_hash` as BYTEA, `expires_at`). DB generates `id`
+  (`uuidv7()`) and `created_at`; `consumed_at` defaults NULL.
+- **Error Handling**: No contractual errors; `NotFoundException` (the default
+  `onNoRow`) only if RETURNING yields no row. `mapDatabaseError` otherwise.
+- **Idempotency**: No.
+
+#### `consume(session, tokenHash): Result<VerificationToken>`
+
+- **Side Effects**: Read/write — a compare-and-swap `mutateReturning`
+  (`SET consumed_at = NOW() WHERE token_hash = ? AND consumed_at IS NULL AND expires_at > NOW() RETURNING *`)
+  that atomically claims the single unconsumed, unexpired token by hash and
+  returns the claimed row. Under concurrency exactly one caller claims the row;
+  the rest match 0 rows.
+- **Error Handling**: `NotFoundException()` on 0 rows — unknown hash, already
+  consumed, or expired all collapse to this (the `SessionsDao` no-row
+  convention). `mapDatabaseError` otherwise.
+- **Idempotency**: Effectively yes — a second `consume` of the same hash matches
+  no row and returns `NotFound`; the original `consumed_at` instant is
+  unchanged.
+
+#### `findByTokenHash(session, tokenHash): Result<VerificationToken>`
+
+- **Side Effects**: Read only — `queryOne` reading a token in any state
+  (consumed and expired included), used to classify a failed `consume`.
+- **Error Handling**: `NotFoundException()` when no row has the hash.
+- **Idempotency**: Yes.
+
+#### `consumeAllForUser(session, userId): Result<Int>`
+
+- **Side Effects**: Write — `execute`
+  (`UPDATE … SET consumed_at = NOW() WHERE user_id = ? AND consumed_at IS NULL`),
+  stamping every still-unconsumed token for the user; returns the affected
+  count. Already-consumed rows are untouched.
+- **Error Handling**: No contractual errors; `mapDatabaseError` on failure.
+- **Idempotency**: Yes — a re-run on a user with no unconsumed tokens affects 0
+  rows and returns `success(0)`.
 
 ---
 
@@ -837,12 +914,16 @@ rules are in §IV.
       `includeDeleted: Boolean` to `scope: SoftDeleteScope`; added
       `StudentsDao.undelete`.
 - [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
-      — Gave the formerly read-only `SystemPromptsDao` the plain
-      `Findable`/`Listable`/`Creatable` capability interfaces and their backing
-      `findById`/`list`/`create` methods (plain, not `SoftDelete*`, since
-      `system_prompts` has no `deleted_at`), all routed through the existing
-      scaffolding (`queryOne`, `queryList`, `insertReturning`). Added the
-      dedicated `mapPromptError` insert-path SQLSTATE map (`23505`/`23514` →
-      `ConstraintViolationException`, mirroring `ConvosDao.mapConvoError`). Left
-      `findByNameAndVersion` unchanged; no `Updatable`/`Deletable` (the table's
-      triggers forbid `UPDATE`/`DELETE`).
+      — Promoted `SystemPromptsDao` from a read-only reader to an immutable
+      catalog admin surface: adopted `Findable`/`Listable`/`Creatable`, added
+      `findById`, `list` (`name ASC, version ASC, created_at DESC`), and
+      `create` (append-only insert of a new `(name, version)` row via
+      `insertReturning`), plus the `mapPromptError` SQLSTATE map
+      (`23505`/`23514` → `ConstraintViolationException`).
+- [x] [RFC-65: Email Verification](../../../../../../../../rfc/65-email-verification.md)
+      — Added `VerificationTokensDao` over the new single-use
+      `verification_tokens` table (`create`, the compare-and-swap `consume`,
+      `findByTokenHash`, `consumeAllForUser`); added
+      `UsersDao.markEmailVerified` (versioned conditional update, idempotent
+      first-verification stamp); the `mapUser`/`mapUserVersion` mappers and the
+      shared `updateFullRow` now carry `email_verified_at`.

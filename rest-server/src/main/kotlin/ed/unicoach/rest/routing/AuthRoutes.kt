@@ -10,6 +10,8 @@ import ed.unicoach.rest.models.MeResponse
 import ed.unicoach.rest.models.PublicUser
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.RegisterResponse
+import ed.unicoach.rest.models.VerifyEmailRequest
+import ed.unicoach.rest.models.VerifyEmailResponse
 import ed.unicoach.rest.rejectUnsupportedMethods
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -38,6 +40,7 @@ private fun ApplicationCall.clearSessionCookie(sessionConfig: ed.unicoach.rest.a
 class AuthRouteHandler(
   private val authService: AuthService,
   private val sessionConfig: ed.unicoach.rest.auth.SessionConfig,
+  private val emailVerificationService: ed.unicoach.auth.EmailVerificationService,
 ) {
   fun registerRoutes(route: Route) {
     route.route("/api/v1/auth") {
@@ -55,6 +58,14 @@ class AuthRouteHandler(
       }
       route("/logout") {
         post { handleLogout() }
+        rejectUnsupportedMethods(HttpMethod.Post)
+      }
+      route("/verify-email") {
+        post { handleVerifyEmail() }
+        rejectUnsupportedMethods(HttpMethod.Post)
+      }
+      route("/resend-verification") {
+        post { handleResendVerification() }
         rejectUnsupportedMethods(HttpMethod.Post)
       }
     }
@@ -94,6 +105,7 @@ class AuthRouteHandler(
         id = outcome.user.id.value,
         email = outcome.user.email.value,
         name = outcome.user.name.value,
+        emailVerified = outcome.user.emailVerifiedAt != null,
       )
 
     call.response.cookies.append(
@@ -141,6 +153,7 @@ class AuthRouteHandler(
           id = user.id.value,
           email = user.email.value,
           name = user.name.value,
+          emailVerified = user.emailVerifiedAt != null,
         )
       call.respond(HttpStatusCode.OK, MeResponse(publicUser))
     }
@@ -194,6 +207,7 @@ class AuthRouteHandler(
         id = outcome.user.id.value,
         email = outcome.user.email.value,
         name = outcome.user.name.value,
+        emailVerified = outcome.user.emailVerifiedAt != null,
       )
 
     call.response.cookies.append(
@@ -213,5 +227,53 @@ class AuthRouteHandler(
     call.application.environment.log
       .info("Login failed: $outcome")
     call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Invalid email or password", null))
+  }
+
+  private suspend fun RoutingContext.handleVerifyEmail() {
+    val request = call.receive<VerifyEmailRequest>()
+    val outcome = emailVerificationService.verify(request.token).getOrThrow()
+    when (outcome) {
+      is ed.unicoach.auth.VerifyEmailResult.Success -> {
+        val publicUser =
+          PublicUser(
+            id = outcome.user.id.value,
+            email = outcome.user.email.value,
+            name = outcome.user.name.value,
+            emailVerified = outcome.user.emailVerifiedAt != null,
+          )
+        call.respond(HttpStatusCode.OK, VerifyEmailResponse(publicUser))
+      }
+
+      is ed.unicoach.auth.VerifyEmailResult.InvalidToken -> {
+        call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_token", "Verification token is invalid"))
+      }
+
+      is ed.unicoach.auth.VerifyEmailResult.Expired -> {
+        call.respond(HttpStatusCode.BadRequest, ErrorResponse("token_expired", "Verification token has expired"))
+      }
+
+      is ed.unicoach.auth.VerifyEmailResult.AlreadyConsumed -> {
+        call.respond(HttpStatusCode.BadRequest, ErrorResponse("token_already_used", "Verification token has already been used"))
+      }
+    }
+  }
+
+  private suspend fun RoutingContext.handleResendVerification() {
+    val token = call.request.cookies[sessionConfig.cookieName]
+    if (token == null) {
+      call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
+      return
+    }
+
+    val tokenHash = TokenHash.fromRawToken(token)
+    val user = authService.getCurrentUser(tokenHash).getOrThrow()
+    if (user == null) {
+      call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
+      return
+    }
+
+    // Idempotent: both Sent and AlreadyVerified collapse to 204 (no state leak).
+    emailVerificationService.resend(user).getOrThrow()
+    call.respond(HttpStatusCode.NoContent)
   }
 }

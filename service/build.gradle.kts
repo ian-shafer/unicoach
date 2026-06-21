@@ -7,6 +7,7 @@ dependencies {
   implementation(project(":common"))
   implementation(project(":db"))
   implementation(project(":chat"))
+  implementation(project(":email"))
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.slf4j.api)
 

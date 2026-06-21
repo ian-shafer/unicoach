@@ -2,217 +2,256 @@
 
 ## I. Overview
 
-This directory is the **authentication domain layer**. It owns the business
-logic for user registration, session-bound user resolution (`/me`), session
-revocation (logout), and background zombie-session cleanup. It bridges the HTTP
-boundary (handled by `rest-server`) and the data layer (handled by
-`service/db`), exposing pure domain results via sealed interfaces that contain
-no HTTP types. Login credential verification is handled in this layer.
+The authentication domain layer. It owns the business logic for user
+registration, login credential verification, session-bound user resolution
+(`/me`), session revocation (logout), email-verification token issuance and
+redemption, and background zombie-session cleanup. Outcomes are returned as
+pure-domain sealed interfaces wrapped in `Result<T>`; no transport or
+persistence types cross the public surface.
 
 ---
 
-## II. Invariants
-
-### General
-
-- `AuthService` MUST NOT import or reference any Ktor, HTTP, or REST-layer
-  types.
-- All `AuthService` methods MUST wrap their entire body in
-  `try/catch(Exception)` and return `Result.failure(e)` on any uncaught
-  exception.
-- `AuthService` MUST NOT own or hold a raw `java.sql.Connection` — all DB access
-  MUST go through `Database.withConnection`.
-
-### Registration
-
-- `AuthService.register()` MUST validate input via `RegistrationValidator`
-  before any database call. If validation fails, it MUST return
-  `RegisterResult.ValidationFailure` without touching the DB.
-- If `UsersDao.create()` returns `DuplicateEmailException`, `AuthService` MUST
-  return `RegisterResult.DuplicateEmail`, not a database error.
-- `AuthService.register()` MUST mint a token and create a session (or remint the
-  caller's existing session when `oldCookieToken` is supplied) on success.
-
-### Session Resolution (`getCurrentUser`)
-
-- `AuthService.getCurrentUser()` MUST return `Result.success(null)` for all of:
-  token not found, expired token, revoked token, anonymous session
-  (`user_id = null`), and soft-deleted user. Every one of these is signalled by
-  the DAO as a `NotFoundException`; any other DAO failure MUST surface as
-  `Result.failure(e)`.
-- `AuthService.getCurrentUser()` MUST NOT perform expiry extension inline — that
-  concern belongs to the `rest-server` layer.
-
-### Logout
-
-- `AuthService.logout()` MUST be idempotent. A `NotFoundException` MUST be
-  mapped to a `Result.success(Unit)`.
-- `AuthService.logout()` MUST NOT clear cookies — that is the routing layer's
-  responsibility.
-
-### RegistrationValidator
-
-- The validator MUST enforce: email is a valid email address, name non-blank,
-  password length 8–128 Unicode code points inclusive, at least 1 ASCII
-  uppercase letter, at least 1 ASCII lowercase letter, and at least 1 ASCII
-  digit.
-- Email MUST be validated for **format**, not merely non-blank, by delegating to
-  `EmailAddress.create` (`common`). Both a blank email and a malformed one (e.g.
-  no interior `@`) MUST yield an `email` field error. This makes the downstream
-  `as ValidationResult.Valid` cast in `AuthService.register` total — the
-  validator has already proven the email parses.
-- Password length MUST be measured in Unicode **code points**
-  (`codePointCount`), never UTF-16 code units, so an astral character (surrogate
-  pair) counts once — a 7-code-point astral password MUST be rejected even
-  though it spans 10 code units.
-- The uppercase/lowercase/digit complexity classes MUST be **ASCII ranges only**
-  (`A`–`Z`, `a`–`z`, `0`–`9`), never Unicode-aware
-  `isUpperCase`/`isLowerCase`/`isDigit`. A non-ASCII letter or digit (Greek `Ω`,
-  Arabic-Indic `٣`) MUST NOT satisfy any complexity rule. This keeps the
-  validator aligned with the published `password` schema's code-point length
-  bounds and ASCII character-class pattern.
-- `RegistrationValidator.validate()` MUST collect ALL field errors before
-  returning, not fail on the first violation.
-
-### SessionCleanupJob
-
-- `SessionCleanupJob.execute()` MUST NOT contain raw SQL — all DB mutation is
-  delegated to `SessionsDao.expireZombieSessions()`.
-- When `expireZombieSessions()` returns `Result.failure`, the job MUST log the
-  error and complete normally (MUST NOT re-throw and MUST NOT exit non-zero).
-- On any uncaught `Exception`, the job MUST log the failure and call
-  `exitProcess(1)`.
-
-### Result Sealed Interfaces
-
-- The `RegisterResult` and `LoginResult` sealed interfaces and their variants
-  MUST NOT carry HTTP status codes or any Ktor/REST-layer types; they model
-  expected domain outcomes only.
-
----
-
-## III. Behavioral Contracts
+## II. Behavioral Contracts
 
 ### `AuthService.register(email, name, password, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<RegisterResult>` — See [AuthService.kt](./AuthService.kt)
 
-- **Side Effects**: Writes one row to `users` via `UsersDao.create()`, then
-  mints a token and creates or remints a session via `SessionsDao`.
-- **Validation**: `RegistrationValidator` is called first; returns
-  `RegisterResult.ValidationFailure(errors, fieldErrors)` without DB access if
-  validation fails.
-- **Hashing**: `argon2Hasher.hash(password)` is invoked; thrown exceptions are
-  caught and returned as `Result.failure()`.
-- **Idempotency**: Not idempotent. Submitting the same email twice returns
-  `RegisterResult.DuplicateEmail` on the second call.
+- **Behavior**: Validates input, hashes the password, creates the user, mints a
+  session token, and issues an email-verification token — the user, session, and
+  verification token are written in a single `Database.withConnection`
+  transaction. After the transaction commits successfully, it attempts a
+  best-effort verification email.
+- **Validation**: `RegistrationValidator` runs first; on any field error returns
+  `RegisterResult.ValidationFailure(errors, fieldErrors)` with no DB access.
+- **Hashing**: `argon2Hasher.hash(password)` runs before the transaction; a
+  thrown exception is caught and returned as `Result.failure(e)`.
+- **Session**: When `oldCookieToken` resolves to an existing session, that
+  session is reminted (`SessionsDao.remintToken`) to the new user; otherwise a
+  new session is created (`SessionsDao.create`).
+- **Verification token**: Inside the transaction,
+  `EmailVerificationService.issueToken(session, user.id)` persists the token
+  hash and captures the raw token. The raw token is held only in a local
+  variable for post-commit delivery.
+- **Side Effects**: One `users` row, one `sessions` row (created or reminted),
+  and one verification-token row, all in one transaction. After commit, one
+  outbound email attempt via `EmailVerificationService.sendVerificationEmail`.
+- **Email delivery is best-effort**: A failed send does not roll back or fail
+  registration — `register` returns `RegisterResult.Success` regardless of send
+  outcome (a transient provider outage does not block account creation). The
+  freshly registered user is unverified — `user.emailVerifiedAt` is null at this
+  point.
+- **Idempotency**: Not idempotent. A second registration with the same email
+  returns `RegisterResult.DuplicateEmail`.
 - **Error mapping**:
-  - `Success` → `Result.success(RegisterResult.Success(user, newToken))`
-  - `DuplicateEmailException` →
+  - Success → `Result.success(RegisterResult.Success(user, token))`
+  - `DuplicateEmailException` from `UsersDao.create` →
     `Result.success(RegisterResult.DuplicateEmail(email))`
-  - Uncaught exception → `Result.failure(e)`
+  - Validation error → `Result.success(RegisterResult.ValidationFailure(...))`
+  - Any uncaught exception → `Result.failure(e)`
+
+### `AuthService.login(email, password, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<LoginResult>` — See [AuthService.kt](./AuthService.kt)
+
+- **Behavior**: Normalizes and parses the email, looks up the user, verifies the
+  password, then mints a new session (optionally revoking the session named by
+  `oldCookieToken`).
+- **Side Effects**: One read query (`UsersDao.findByEmail`); on success an
+  optional session revoke plus one `sessions` insert via `SessionsDao.create`.
+- **Idempotency**: Not idempotent — a successful login inserts a session row.
+- **Error mapping**:
+  - Success → `Result.success(LoginResult.Success(user, token))`
+  - Unparseable email → `Result.success(LoginResult.InvalidEmail(error))`
+  - No such user → `Result.success(LoginResult.UserNotFound)`
+  - SSO-only user (no password hash) →
+    `Result.success(LoginResult.PasswordNotSet)`
+  - Wrong password → `Result.success(LoginResult.PasswordMismatch)`
+  - Any uncaught exception → `Result.failure(e)`
 
 ### `AuthService.getCurrentUser(tokenHash: TokenHash): Result<User?>` — See [AuthService.kt](./AuthService.kt)
 
-- **Side Effects**: Two read-only DB queries (`SessionsDao.findByTokenHash`,
+- **Behavior**: Resolves the session for the token hash, then loads the
+  associated user.
+- **Side Effects**: Two read-only queries (`SessionsDao.findByTokenHash`,
   `UsersDao.findById`). No writes.
-- **Session lookup**: `SessionsDao.findByTokenHash` filters expired and revoked
-  sessions. `NotFoundException` → `Result.success(null)`. Other exceptions →
+- **Absent-user collapse**: Token not found, expired, revoked, anonymous session
+  (`session.userId == null`), and soft-deleted user all collapse to
+  `Result.success(null)`. The DAO signals the not-found cases as
+  `NotFoundException`.
+- **Idempotency**: Idempotent (read-only).
+- **Error mapping**: Any non-`NotFoundException` DAO failure →
   `Result.failure(e)`.
-- **Anonymous session**: If `session.userId == null` → `Result.success(null)`.
-- **User lookup**: `UsersDao.findById` with `includeDeleted = false`.
-  `NotFoundException` → `Result.success(null)`. `Success` →
-  `Result.success(user)`.
-- **Idempotency**: Fully idempotent (read-only).
-- **Error mapping** (uncaught): `Result.failure(e)`.
 
 ### `AuthService.logout(tokenHash: TokenHash): Result<Unit>` — See [AuthService.kt](./AuthService.kt)
 
-- **Side Effects**: One blind `UPDATE` on `sessions` via
-  `SessionsDao.revokeByTokenHash()`. Sets `is_revoked = true`, increments
-  `version`.
-- **Idempotency**: Idempotent. `NotFoundException` (already revoked or missing)
+- **Behavior**: Revokes the session matching the token hash via
+  `SessionsDao.revokeByTokenHash`.
+- **Side Effects**: One blind `UPDATE` on `sessions` (sets `is_revoked`,
+  increments `version`).
+- **Idempotency**: Idempotent. A `NotFoundException` (already revoked or absent)
   maps to `Result.success(Unit)`.
-- **Error mapping**:
-  - `Success` → `Result.success(Unit)`
-  - `NotFoundException` → `Result.success(Unit)`
-  - Uncaught exception → `Result.failure(e)`
+- **Error mapping**: Any other uncaught exception → `Result.failure(e)`.
+
+### `EmailVerificationService.issueToken(session: SqlSession, userId: UserId): Result<String>` — See [EmailVerificationService.kt](./EmailVerificationService.kt)
+
+- **Behavior**: Generates a raw token, derives its token hash, computes
+  `now + config.tokenTtl` as the expiry, and inserts the hash + expiry via
+  `VerificationTokensDao.create` **inside the caller's supplied transaction**
+  (atomic with the surrounding work). Returns the raw token for post-commit
+  delivery.
+- **Side Effects**: One verification-token row in the caller's transaction. At
+  rest only the hash is stored; the raw token never persists.
+- **Idempotency**: Not idempotent — each call inserts a new token row.
+- **Error mapping**: A DAO insert failure surfaces as `Result.failure`.
+
+### `EmailVerificationService.sendVerificationEmail(to: EmailAddress, rawToken: String): Result<Unit>` (suspend) — See [EmailVerificationService.kt](./EmailVerificationService.kt)
+
+- **Behavior**: Builds the verify link as `config.verifyUrlBase` with the raw
+  token appended as a `?token=` query parameter, constructs a fixed-literal
+  subject and body, and sends via `EmailService.send`. Best-effort, post-commit.
+- **Side Effects**: One outbound email send attempt. No DB access.
+- **Error handling**: Every failure path folds into a logged `Result.failure`
+  without throwing — a subject/body construction rejection (an `Invalid`
+  validation outcome) yields `Result.failure(IllegalStateException)`; a provider
+  rejection is logged and the underlying failure is returned. The caller treats
+  the result as advisory.
+- **Idempotency**: Not idempotent — each call attempts another send.
+
+### `EmailVerificationService.verify(rawToken: String): Result<VerifyEmailResult>` (suspend) — See [EmailVerificationService.kt](./EmailVerificationService.kt)
+
+- **Behavior**: Runs in its own transaction. Compare-and-swap consumes the token
+  by hash (`VerificationTokensDao.consume`); on success it marks the user
+  verified (`UsersDao.markEmailVerified`) and burns all sibling tokens for that
+  user (`VerificationTokensDao.consumeAllForUser`), returning
+  `VerifyEmailResult.Success(user)`.
+- **Failed consume classification**: A zero-row consume (`NotFoundException`) is
+  classified via `VerificationTokensDao.findByTokenHash`: hash matches no row →
+  `VerifyEmailResult.InvalidToken`; `consumedAt` set →
+  `VerifyEmailResult.AlreadyConsumed`; `expiresAt` in the past →
+  `VerifyEmailResult.Expired`; otherwise `VerifyEmailResult.InvalidToken`.
+- **Side Effects**: On success, marks the user verified and consumes the user's
+  outstanding tokens (the redeemed one plus its siblings). The classification
+  path is read-only.
+- **Idempotency**: Redeeming the same raw token twice yields
+  `VerifyEmailResult.Success` on the first call and
+  `VerifyEmailResult.AlreadyConsumed` on the second — the verified state is set
+  once.
+- **Error mapping**: An unexpected DAO/transaction failure surfaces as
+  `Result.failure`; the four expected outcomes are `Result.success`.
+
+### `EmailVerificationService.resend(user: User): Result<ResendResult>` (suspend) — See [EmailVerificationService.kt](./EmailVerificationService.kt)
+
+- **Behavior**: For an already-verified user (`user.emailVerifiedAt != null`),
+  returns `ResendResult.AlreadyVerified` with no DB write and no send.
+  Otherwise, in its own transaction, burns the user's outstanding tokens
+  (`consumeAllForUser`) and issues a fresh one, then attempts a best-effort
+  post-commit send, returning `ResendResult.Sent`.
+- **Side Effects**: For an unverified user, consumes outstanding tokens and
+  inserts one new token (one transaction), then one outbound email attempt.
+- **Email delivery is best-effort**: A send failure does not undo the issued
+  token; the result is still `ResendResult.Sent`.
+- **Idempotency**: Each call for an unverified user replaces any live token with
+  a fresh one, leaving a single consumable token. A call for a verified user is
+  a no-op.
+- **Error mapping**: A failure issuing the token surfaces as `Result.failure`;
+  the two expected outcomes are `Result.success`.
 
 ### `RegistrationValidator.validate(input: RegistrationInput): ValidationErrors` — See [RegistrationValidator.kt](./RegistrationValidator.kt)
 
-- **Side Effects**: None. Pure function.
-- **Idempotency**: Fully idempotent.
-- **Rules enforced** (all errors collected before returning):
-  - `email` blank or malformed (rejected by `EmailAddress.create`) →
-    `FieldError("email", "Email must be a valid email address")`
-  - `name` blank → `FieldError("name", "Name cannot be blank")`
-  - code-point length `< 8` → password too short
-  - code-point length `> 128` → password too long
-  - No ASCII uppercase (`A`–`Z`) → missing uppercase
-  - No ASCII lowercase (`a`–`z`) → missing lowercase
-  - No ASCII digit (`0`–`9`) → missing digit
-- **Returns**: `ValidationErrors(fieldErrors = ...)`. `hasErrors()` returns
-  `true` when `fieldErrors` is non-empty.
+- **Behavior**: Pure validation. Collects all field errors before returning.
+- **Side Effects**: None.
+- **Rules enforced**:
+  - `email` blank or malformed (delegated to `EmailAddress.create`) → `email`
+    field error. Validating format makes the downstream
+    `as ValidationResult.Valid` cast in `register` total.
+  - `name` blank → `name` field error.
+  - password length, measured in Unicode **code points**, outside `8..128` →
+    length field error (an astral surrogate-pair character counts once).
+  - missing ASCII uppercase (`A`–`Z`), lowercase (`a`–`z`), or digit (`0`–`9`) →
+    the corresponding complexity field error. Complexity classes are ASCII-only;
+    a non-ASCII letter or digit satisfies no rule.
+- **Returns**: `ValidationErrors`; `hasErrors()` is true when any field error
+  exists.
+- **Idempotency**: Idempotent (pure).
 
-### `SessionCleanupJob.execute()` — See [SessionCleanupJob.kt](./SessionCleanupJob.kt)
+### `SessionCleanupJob.execute()` (suspend) — See [SessionCleanupJob.kt](./SessionCleanupJob.kt)
 
-- **Side Effects**: Expires zombie session rows in `sessions` via
-  `SessionsDao.expireZombieSessions()`. Emits progress and outcome via an
-  injected SLF4J logger.
-- **On DB failure** (`Result.failure` from the DAO): logs the error; does not
-  re-throw; `execute()` returns normally.
-- **On uncaught exception**: logs the error and calls `exitProcess(1)`.
-- **Idempotency**: Idempotent (expiry is safe to re-run).
+- **Behavior**: Delegates zombie-session expiry to
+  `SessionsDao.expireZombieSessions`; emits progress and outcome through an
+  injected SLF4J logger. Does not self-schedule.
+- **Side Effects**: Expires zombie `sessions` rows.
+- **Error handling**: A `Result.failure` from the DAO is logged and `execute()`
+  returns normally. An uncaught exception is logged and the process exits via
+  `exitProcess(1)`.
+- **Idempotency**: Idempotent (re-running expiry is safe).
 
 ### `RegisterResult` (sealed interface) — See [RegisterResult.kt](./RegisterResult.kt)
 
-| Variant             | Carries                                                 | When returned                     |
-| ------------------- | ------------------------------------------------------- | --------------------------------- |
-| `Success`           | `user: User`, `token: String`                           | Successful registration           |
-| `ValidationFailure` | `errors: List<String>`, `fieldErrors: List<FieldError>` | Validator rejects input           |
-| `DuplicateEmail`    | `email: String`                                         | DB unique constraint hit on email |
-
-### `AuthService.login(...)` — See [AuthService.kt](./AuthService.kt)
-
-- **Side Effects**: One read-only DB query for the user via
-  `UsersDao.findByEmail()`. If successful, optionally revokes the old session
-  and creates a new session via `SessionsDao.create()`.
-- **Idempotency**: Not idempotent. Creating a session mutates the database.
-- **Error mapping**:
-  - `Success` → `Result.success(LoginResult.Success(user, newToken))`
-  - Invalid email → `Result.success(LoginResult.InvalidEmail(error))`
-  - User not found → `Result.success(LoginResult.UserNotFound)`
-  - Password not set → `Result.success(LoginResult.PasswordNotSet)`
-  - Password mismatch → `Result.success(LoginResult.PasswordMismatch)`
-  - Uncaught exception → `Result.failure(e)`
+| Variant             | Carries                 | When returned               |
+| ------------------- | ----------------------- | --------------------------- |
+| `Success`           | `user`, `token`         | Successful registration     |
+| `ValidationFailure` | `errors`, `fieldErrors` | Validator rejects input     |
+| `DuplicateEmail`    | `email`                 | Email unique-constraint hit |
 
 ### `LoginResult` (sealed interface) — See [LoginResult.kt](./LoginResult.kt)
 
-| Variant            | Carries                       | When returned           |
-| ------------------ | ----------------------------- | ----------------------- |
-| `Success`          | `user: User`, `token: String` | Successful login        |
-| `InvalidEmail`     | `error: ValidationError`      | Email format is invalid |
-| `UserNotFound`     | None                          | User does not exist     |
-| `PasswordNotSet`   | None                          | User uses SSO only      |
-| `PasswordMismatch` | None                          | Incorrect password      |
+| Variant            | Carries         | When returned           |
+| ------------------ | --------------- | ----------------------- |
+| `Success`          | `user`, `token` | Successful login        |
+| `InvalidEmail`     | `error`         | Email format is invalid |
+| `UserNotFound`     | —               | User does not exist     |
+| `PasswordNotSet`   | —               | SSO-only user           |
+| `PasswordMismatch` | —               | Incorrect password      |
+
+### `VerifyEmailResult` (sealed interface) — See [VerifyEmailResult.kt](./VerifyEmailResult.kt)
+
+| Variant           | Carries | When returned                          |
+| ----------------- | ------- | -------------------------------------- |
+| `Success`         | `user`  | Token consumed; user marked verified   |
+| `InvalidToken`    | —       | Token hash matches no row              |
+| `Expired`         | —       | Token exists but its expiry has passed |
+| `AlreadyConsumed` | —       | Token exists but was already consumed  |
+
+### `ResendResult` (sealed interface) — See [ResendResult.kt](./ResendResult.kt)
+
+| Variant           | Carries | When returned                                 |
+| ----------------- | ------- | --------------------------------------------- |
+| `Sent`            | —       | A fresh token was issued and a send attempted |
+| `AlreadyVerified` | —       | User already verified; no token, no send      |
 
 ---
 
-## IV. Infrastructure & Environment
+## III. Infrastructure & Environment
 
-- **Module**: `service` (Gradle). `AuthService` depends on `Database`,
-  `Argon2Hasher` (from `common`), and `Validator<RegistrationInput>`.
-- **Database**: Requires a live PostgreSQL connection pool via `Database`
-  (HikariCP). `AuthService` is constructed with an injected `Database` instance.
-- **Coroutine context**: `AuthService`'s `suspend` methods must be called from a
-  coroutine scope. The module performs no dispatcher switching and preserves the
-  caller's context.
-- **No HOCON keys** are read directly by this package. Configuration is injected
-  via constructor parameters (`database`, `argon2Hasher`).
-- **`SessionCleanupJob`** is intended to be invoked by an external scheduler
-  (e.g., cron). `execute()` is a `suspend` function and does NOT self-schedule.
+- **Module**: `service` (Gradle).
+- **Dependencies (constructor-injected)**:
+  - `AuthService` holds `Database`, `Argon2Hasher`, `TokenGenerator`,
+    `EmailVerificationService`, and a `Validator<RegistrationInput>` (defaulting
+    to `RegistrationValidator`).
+  - `EmailVerificationService` holds `Database`, `EmailService`,
+    `TokenGenerator`, and `EmailVerificationConfig`.
+- **Database**: Requires a live PostgreSQL connection pool via `Database`. All
+  DB access goes through `Database.withConnection`; the layer holds no raw
+  `java.sql.Connection`.
+- **Config — `EmailVerificationConfig`** — See
+  [EmailVerificationConfig.kt](./EmailVerificationConfig.kt): the
+  `from(config): Result<EmailVerificationConfig>` factory reads the
+  `emailVerification` config block and returns `Result.failure` (carrying the
+  underlying config exception) when a key is absent or unreadable; it performs
+  no value validation. Keys read:
+  - `emailVerification.tokenTtl` (a `Duration`) — bounds how long an issued
+    verification token stays consumable.
+  - `emailVerification.verifyUrlBase` (a `String`) — the link prefix the
+    verification email points at; the raw token is appended as a `?token=` query
+    parameter.
+- **Token storage**: A verification token is persisted only as its SHA-256 hash
+  plus an expiry; the raw token exists only in memory between issuance and the
+  outbound email link.
+- **Coroutine context**: `suspend` methods run on the caller's coroutine
+  context; the layer performs no dispatcher switching.
+- **`SessionCleanupJob`**: invoked by an external scheduler (e.g. cron);
+  `execute()` does not self-schedule.
 
 ---
 
-## V. History
+## IV. History
 
 - [x] [RFC-08: Auth Registration](../../../../../../../rfc/08-auth-registration.md)
 - [x] [RFC-10: Auth Login](../../../../../../../rfc/10-auth-login.md)
@@ -220,19 +259,9 @@ no HTTP types. Login credential verification is handled in this layer.
 - [x] [RFC-13: Auth Me](../../../../../../../rfc/13-auth-me.md)
 - [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md)
 - [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md)
-      (deleted `AuthResult`/`MeResult`/`LogoutResult`; service layer returns
-      `Result<T>`)
 - [x] [RFC-26: Login](../../../../../../../rfc/26-login.md)
 - [x] [RFC-28: Coroutine Context Refactor](../../../../../../../rfc/28-coroutine-context.md)
 - [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md)
-      (repointed `EmailAddress`/`ValidationResult`/`ValidationError` imports
-      from `db.models` to `common.models`; no behavior change)
 - [x] [RFC-52: Make the REST Surface Fuzz-Clean](../../../../../../../rfc/52-make-rest-surface-fuzz-clean.md)
-      — `RegistrationValidator` now validates email **format** via
-      `EmailAddress.create` (not blank-only), measures password length in
-      Unicode code points, and restricts the complexity classes to ASCII ranges,
-      matching the published `password` schema.
 - [x] [RFC-62: DAO Capability Interfaces and Shared Query Scaffolding](../../../../../../../rfc/62-dao-interfaces.md)
-      — Renamed the `SessionsDao.create` named argument `newSession` to `input`
-      at the two `AuthService` call sites (register and login). No behavioral
-      change.
+- [x] [RFC-65: Email Verification](../../../../../../../rfc/65-email-verification.md)

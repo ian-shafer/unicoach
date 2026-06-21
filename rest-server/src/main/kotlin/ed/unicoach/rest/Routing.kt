@@ -31,8 +31,9 @@ fun Application.configureRouting(
   studentService: ed.unicoach.student.StudentService,
   coachingService: ed.unicoach.coaching.CoachingService,
   sessionConfig: ed.unicoach.rest.auth.SessionConfig,
+  emailVerificationService: ed.unicoach.auth.EmailVerificationService,
 ) {
-  val authRouteHandler = AuthRouteHandler(authService, sessionConfig)
+  val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
   val convoRouteHandler = ConvoRouteHandler(authService, studentService, coachingService, sessionConfig)
   routing {

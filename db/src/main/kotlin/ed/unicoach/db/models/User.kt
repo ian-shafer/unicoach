@@ -10,6 +10,7 @@ data class User(
   val displayName: DisplayName?,
   val authMethod: AuthMethod,
   val isAdmin: Boolean,
+  val emailVerifiedAt: Instant?,
   override val version: Int,
   override val createdAt: Instant,
   override val updatedAt: Instant,
