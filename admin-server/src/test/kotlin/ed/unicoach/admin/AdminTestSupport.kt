@@ -7,14 +7,17 @@ import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.StudentsDao
+import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.NewStudent
+import ed.unicoach.db.models.NewSystemPrompt
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.Student
+import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
 import ed.unicoach.util.Argon2Hasher
@@ -78,6 +81,16 @@ object AdminTestSupport {
     runBlocking {
       val date = (PartialDate.parse(gradIso) as ValidationResult.Valid).value
       database.withConnection { session -> StudentsDao.create(session, NewStudent(userId, date)) }.getOrThrow()
+    }
+
+  /** Inserts a system_prompts catalog row directly (immutable; insert-only). */
+  fun seedSystemPrompt(
+    name: String,
+    version: String,
+    body: String,
+  ): SystemPrompt =
+    runBlocking {
+      database.withConnection { session -> SystemPromptsDao.create(session, NewSystemPrompt(name, version, body)) }.getOrThrow()
     }
 
   /** Logs in and returns the raw session cookie value for the admin session cookie. */

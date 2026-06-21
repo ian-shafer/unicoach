@@ -29,7 +29,7 @@ fun <ROW, ID> MAIN.renderList(
     div { a(href = "/${resource.slug}/new") { +"+ New ${resource.title}" } }
   }
 
-  val columns = resource.fields.filterNot { it.sensitive }
+  val columns = resource.fields.filter { it.inList && !it.sensitive }
 
   table {
     tr {

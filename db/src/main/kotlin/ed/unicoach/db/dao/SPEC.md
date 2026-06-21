@@ -8,13 +8,13 @@ operation, composing à-la-carte **capability interfaces** ([Dao.kt](./Dao.kt))
 and delegating all query execution to shared `SqlSession` **query scaffolding**
 ([SqlSessionQueries.kt](./SqlSessionQueries.kt)).
 
-| DAO                | Table(s)                                                             |
-| ------------------ | -------------------------------------------------------------------- |
-| `UsersDao`         | `users`, `users_versions`                                            |
-| `SessionsDao`      | `sessions`                                                           |
-| `StudentsDao`      | `students`, `students_versions`                                      |
-| `ConvosDao`        | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw` |
-| `SystemPromptsDao` | `system_prompts` (read-only catalog)                                 |
+| DAO                | Table(s)                                                                |
+| ------------------ | ----------------------------------------------------------------------- |
+| `UsersDao`         | `users`, `users_versions`                                               |
+| `SessionsDao`      | `sessions`                                                              |
+| `StudentsDao`      | `students`, `students_versions`                                         |
+| `ConvosDao`        | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw`    |
+| `SystemPromptsDao` | `system_prompts` (append-only catalog: read + insert, no update/delete) |
 
 Every DAO method accepts a `SqlSession` as its first parameter. Connection
 pooling, transaction boundaries, and commit/rollback are managed exclusively by
@@ -62,13 +62,13 @@ lookups, `rename`, `archive`/`unarchive`, parented `listBy*`, `appendRequest`,
 `*WithActivity`, `listTurns`, `findRawByResponseId`, `findByNameAndVersion` —
 remain concrete methods on the DAO):
 
-| DAO                | Capability interfaces                                                                                                                                                                          |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UsersDao`         | `SoftDeleteFindable<User, UserId>`, `SoftDeleteListable<User>`, `Creatable<NewUser, User>`, `Updatable<UserEdit, User>`, `OccDeletable<User, UserId>`, `VersionHistory<UserId, UserVersion>`   |
-| `StudentsDao`      | `SoftDeleteFindable<Student, StudentId>`, `Creatable<NewStudent, Student>`, `Updatable<StudentEdit, Student>`, `OccDeletable<Student, StudentId>`, `VersionHistory<StudentId, StudentVersion>` |
-| `ConvosDao`        | `SoftDeleteFindable<Convo, ConvoId>`, `Creatable<NewConvo, Convo>`, `Deletable<Convo, ConvoId>`                                                                                                |
-| `SessionsDao`      | `Findable<Session, SessionId>`, `Listable<Session>`, `Creatable<NewSession, Session>`, `Destroyable<SessionId>`                                                                                |
-| `SystemPromptsDao` | none (sole read is `findByNameAndVersion`; adopts the scaffolding only)                                                                                                                        |
+| DAO                | Capability interfaces                                                                                                                                                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UsersDao`         | `SoftDeleteFindable<User, UserId>`, `SoftDeleteListable<User>`, `Creatable<NewUser, User>`, `Updatable<UserEdit, User>`, `OccDeletable<User, UserId>`, `VersionHistory<UserId, UserVersion>`                                                                                                                  |
+| `StudentsDao`      | `SoftDeleteFindable<Student, StudentId>`, `Creatable<NewStudent, Student>`, `Updatable<StudentEdit, Student>`, `OccDeletable<Student, StudentId>`, `VersionHistory<StudentId, StudentVersion>`                                                                                                                |
+| `ConvosDao`        | `SoftDeleteFindable<Convo, ConvoId>`, `Creatable<NewConvo, Convo>`, `Deletable<Convo, ConvoId>`                                                                                                                                                                                                               |
+| `SessionsDao`      | `Findable<Session, SessionId>`, `Listable<Session>`, `Creatable<NewSession, Session>`, `Destroyable<SessionId>`                                                                                                                                                                                               |
+| `SystemPromptsDao` | `Findable<SystemPrompt, SystemPromptId>`, `Listable<SystemPrompt>`, `Creatable<NewSystemPrompt, SystemPrompt>` (plain, NOT soft-delete variants — `system_prompts` has no `deleted_at`); plus the concrete `findByNameAndVersion`. No `Updatable`/`Deletable`: the table's triggers forbid `UPDATE`/`DELETE`. |
 
 `Updatable<EDIT, ROW>` applies only to entities with a dedicated edit-input type
 covering the full mutable field set (`User` via `UserEdit`, `Student` via
@@ -240,6 +240,15 @@ route through `mapDatabaseError`):
   `NotFoundException()`).
 - `23505` / `23514` → `ConstraintViolationException`.
 - everything else → `mapDatabaseError`.
+
+`SystemPromptsDao.mapPromptError` (insert path only; reads route through
+`mapDatabaseError`):
+
+- `23505` (duplicate `(name, version)`) / `23514` (any bound/CHECK violation) →
+  `ConstraintViolationException`.
+- everything else → `mapDatabaseError`. The table's immutability triggers raise
+  `P0001` only on `UPDATE`/`DELETE`, unreachable from the insert-only path, so
+  they are not special-cased here. Mirrors `ConvosDao.mapConvoError`.
 
 `55P03` in any `*ForUpdate` method (`SELECT … FOR UPDATE NOWAIT`) →
 `LockAcquisitionFailureException` (mapped inline, before `mapDatabaseError`).
@@ -682,15 +691,48 @@ the mutable-entity reads/writes and the append-only log append/read.
 
 ### `SystemPromptsDao` — [`SystemPromptsDao.kt`](./SystemPromptsDao.kt)
 
-Read-only reader over the immutable `system_prompts` catalog. Rows are authored
-by migration, never by the application, so this DAO exposes no write methods. It
-declares no capability interface (its sole read is parented-by-name) but adopts
-the scaffolding. Stateless `object`; failures route through `mapDatabaseError`.
+Read + insert layer over the immutable `system_prompts` catalog. The table's
+triggers forbid `UPDATE`/`DELETE`, so a "new version" is a new immutable row;
+the DAO therefore implements `Findable`/`Listable`/`Creatable` (read + insert)
+but no `Updatable`/`Deletable`. It implements the PLAIN `Findable`/`Listable`
+(not the `SoftDelete*` variants) because `system_prompts` has no `deleted_at`
+column. Rows are authored by migration or the admin tool (RFC 63), never
+mutated. Stateless `object`; failures route through `mapDatabaseError` except on
+the insert path, which uses the dedicated `mapPromptError`.
+
+#### `findById(session, id): Result<SystemPrompt>`
+
+- **Side Effects**: Read only — `queryOne` resolving the primary key.
+- **Error Handling**: `NotFoundException` when no row matches.
+- **Idempotency**: Yes.
+
+#### `list(session, limit, offset): Result<List<SystemPrompt>>`
+
+- **Side Effects**: Read only — `queryList` ordered
+  `name ASC, version ASC, created_at DESC LIMIT ? OFFSET ?`. The `created_at`
+  tie-breaker is redundant under `UNIQUE (name, version)` but kept so the page
+  order is total and stable.
+- **Idempotency**: Yes.
+
+#### `create(session, input: NewSystemPrompt): Result<SystemPrompt>`
+
+- **Side Effects**: Write — `insertReturning` over the three immutable columns
+  `name`, `version`, `body`; `id`/`created_at`/`row_created_at` are left to
+  their DB defaults and read back from `RETURNING *`.
+- **Error Handling**: Errors route through the dedicated `mapPromptError`, which
+  maps both a duplicate `(name, version)` (`23505`) and any bound/CHECK
+  violation (`23514`) to `ConstraintViolationException` (which the admin form
+  layer renders as a field error); all other SQLSTATEs fall through to
+  `mapDatabaseError`. The table's immutability triggers raise `P0001` only on
+  `UPDATE`/`DELETE`, unreachable from this insert-only path. Mirrors
+  `ConvosDao.mapConvoError`.
+- **Idempotency**: No — a successful `create` inserts a new row; a second call
+  with the same `(name, version)` fails with `ConstraintViolationException`.
 
 #### `findByNameAndVersion(session, name, version): Result<SystemPrompt>`
 
 - **Side Effects**: Read only — `queryOne` resolving the `(name, version)`
-  UNIQUE key.
+  UNIQUE key. Not part of a capability interface (parented-by-name lookup).
 - **Error Handling**: `NotFoundException` when no row matches.
 - **Idempotency**: Yes.
 
@@ -794,3 +836,13 @@ rules are in §IV.
       `StudentEdit`; changed the soft-delete reads from
       `includeDeleted: Boolean` to `scope: SoftDeleteScope`; added
       `StudentsDao.undelete`.
+- [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
+      — Gave the formerly read-only `SystemPromptsDao` the plain
+      `Findable`/`Listable`/`Creatable` capability interfaces and their backing
+      `findById`/`list`/`create` methods (plain, not `SoftDelete*`, since
+      `system_prompts` has no `deleted_at`), all routed through the existing
+      scaffolding (`queryOne`, `queryList`, `insertReturning`). Added the
+      dedicated `mapPromptError` insert-path SQLSTATE map (`23505`/`23514` →
+      `ConstraintViolationException`, mirroring `ConvosDao.mapConvoError`). Left
+      `findByNameAndVersion` unchanged; no `Updatable`/`Deletable` (the table's
+      triggers forbid `UPDATE`/`DELETE`).

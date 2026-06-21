@@ -113,24 +113,10 @@ class UsersResource(
   override val update: (suspend (Database, UserId, Map<String, String>) -> Result<Unit>) = ::updateUser
 
   override val delete: (suspend (Database, UserId) -> Result<Unit>) =
-    { db, id ->
-      db
-        .withConnection { session ->
-          UsersDao.findById(session, id, SoftDeleteScope.ALL).mapCatching { user ->
-            UsersDao.delete(session, id, user.version).getOrThrow()
-          }
-        }.map { }
-    }
+    { db, id -> db.occSoftDelete(UsersDao, id, deleted = true) }
 
   override val undelete: (suspend (Database, UserId) -> Result<Unit>) =
-    { db, id ->
-      db
-        .withConnection { session ->
-          UsersDao.findById(session, id, SoftDeleteScope.ALL).mapCatching { user ->
-            UsersDao.undelete(session, id, user.version).getOrThrow()
-          }
-        }.map { }
-    }
+    { db, id -> db.occSoftDelete(UsersDao, id, deleted = false) }
 
   private suspend fun createUser(
     db: Database,

@@ -108,6 +108,15 @@ descriptor's typed handlers, which are backed by the existing DAOs.
   forms (create and edit), and MUST NEVER be logged. This holds regardless of
   the field's `editable` flag.
 
+### List-table column inclusion
+
+- A field's presence in the list table is governed by `inList && !sensitive`.
+  `inList` defaults `true`, so omitting it preserves the prior behaviour;
+  setting `inList = false` drops a field too large for a list cell (e.g. a 1 MB
+  body) from the list table only. `inList` is orthogonal to `sensitive`:
+  `sensitive` also removes a field from forms and detail, whereas
+  `inList = false` leaves detail and form rendering untouched.
+
 ### Create-only extra inputs
 
 - `createExtraInputs` MUST appear only on the create form and MUST be passed
@@ -204,7 +213,9 @@ descriptor, not branched on here.
 
 A column descriptor: how a field renders in views and forms. `editable == false`
 renders the field read-only; `sensitive == true` triggers the redaction /
-form-omission / no-log invariant above. `enumValues` is consulted only when
+form-omission / no-log invariant above; `inList` (default `true`) governs only
+list-table inclusion (see the list-column invariant above) and leaves detail and
+form rendering unaffected. `enumValues` is consulted only when
 `type == FieldType.ENUM`. Pure data — no behavior or I/O.
 
 ### `AdminEdge` — [`AdminEdge.kt`](./AdminEdge.kt)
@@ -317,3 +328,11 @@ resource, and each resource's owner-nested extra routes.
       include-deleted admin reads, `limit + 1` count-free paging, the
       delegate-to-DAO (never build SQL) write path, and sensitive-field
       redaction.
+- [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
+      — Added `AdminField.inList: Boolean = true`, the list-table
+      column-inclusion affordance (orthogonal to `sensitive`): a field marked
+      `inList = false` is dropped from the list table but still rendered in
+      detail and forms. The default leaves every existing descriptor unaffected;
+      `system_prompts`' 1 MB `body` is the first consumer. No change to the
+      routing or kind matrix (`IMMUTABLE_ENTITY` already existed in the
+      taxonomy).

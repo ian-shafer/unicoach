@@ -7,6 +7,7 @@ import ed.unicoach.admin.engine.registerAdminRoutes
 import ed.unicoach.admin.render.respondServiceUnavailable
 import ed.unicoach.admin.resources.SessionsResource
 import ed.unicoach.admin.resources.StudentsResource
+import ed.unicoach.admin.resources.SystemPromptsResource
 import ed.unicoach.admin.resources.UsersResource
 import ed.unicoach.auth.AuthService
 import ed.unicoach.common.config.AppConfig
@@ -86,6 +87,7 @@ fun Application.adminModule(
         UsersResource(argon2Hasher),
         StudentsResource,
         SessionsResource,
+        SystemPromptsResource,
       ),
     )
 

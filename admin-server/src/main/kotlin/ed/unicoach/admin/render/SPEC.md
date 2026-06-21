@@ -35,6 +35,15 @@ and mutates no state.
   `editable` flag, so a sensitive value can never be submitted back through a
   form.
 
+### List-table column filtering
+
+- The list view's columns are exactly the descriptor's fields satisfying
+  `inList && !sensitive`. `inList` defaults `true`, so a field is shown unless
+  it is explicitly excluded (`inList = false`, for a field too large for a list
+  cell) or sensitive. Unlike `sensitive`, `inList = false` affects only the list
+  table — detail and form rendering iterate the full field set and are
+  unaffected.
+
 ### Field-type → input mapping
 
 - The form input emitted for a field MUST be determined solely by its
@@ -141,9 +150,10 @@ emits the markup twice."
 ### `MAIN.renderList(resource, rows, offset, pageSize, hasNext)` — [`ListView.kt`](./ListView.kt)
 
 - **Behavior**: Emits the title, an optional "+ New" link when the descriptor
-  exposes a `create` handler, a table whose columns are the descriptor's
-  non-sensitive fields, one row per element of `rows` (first cell linked to the
-  canonical detail page, deleted rows badged), and the prev/next pager.
+  exposes a `create` handler, a table whose columns are the descriptor's fields
+  satisfying `inList && !sensitive`, one row per element of `rows` (first cell
+  linked to the canonical detail page, deleted rows badged), and the prev/next
+  pager.
 - **Inputs**: `rows` is the page already trimmed of the engine's surplus
   `limit + 1` probe row; `hasNext` reports whether that probe row existed.
 - **Side effects**: HTML emission only. No DB access.
@@ -226,3 +236,9 @@ emits the markup twice."
 ## V. History
 
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../../../../../../../../rfc/60-admin-website.md)
+- [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
+      — `renderList`'s column filter changed from `filterNot { it.sensitive }`
+      to `filter { it.inList && !it.sensitive }`, so a field marked
+      `inList = false` (a field too large for a list cell) is dropped from the
+      list table while detail and form rendering, which iterate the full field
+      set, are unaffected.

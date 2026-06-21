@@ -130,11 +130,12 @@ state.
   `ConvoResponseRaw` keeps the verbatim provider `payload` separate from the
   normalized `ConvoResponse` and MUST NOT be folded into it.
 - `SystemPrompt` is an immutable catalog row (`Identifiable` + `Created` only):
-  rows are authored by migration and MUST NEVER be `Updated`, `Versioned`, or
-  `SoftDeletable` — the catalog is append-only and rows are never mutated in
-  place. Its `version: String` is a catalog version LABEL, NOT an OCC counter,
-  and MUST NOT be modeled as the `Versioned` capability. It reuses the existing
-  `SystemPromptId` value class.
+  rows are authored by migration or the admin tool (via `NewSystemPrompt`) and
+  MUST NEVER be `Updated`, `Versioned`, or `SoftDeletable` — the catalog is
+  append-only and rows are never mutated in place; a "new version" is a fresh
+  row, never an edit. Its `version: String` is a catalog version LABEL, NOT an
+  OCC counter, and MUST NOT be modeled as the `Versioned` capability. It reuses
+  the existing `SystemPromptId` value class.
 - `ConvoWithActivity` is a pure read PROJECTION, not a persisted entity: it
   wraps a `Convo` plus a derived `lastActivityAt: Instant?`. It MUST NOT
   implement any capability interface and MUST NOT be treated as a row type.
@@ -153,10 +154,19 @@ state.
   a default — it defaults `false` so ordinary, non-privileged user creation
   needs no change at existing construction sites, and an admin is minted only by
   an explicit `isAdmin = true`), `NewStudent` (validated `PartialDate`),
-  `NewConvo`, `NewConvoRequest`, `NewConvoResponse`. `NewSession` additionally
-  carries a RELATIVE `expiration: Duration` (a TTL the DAO converts to an
-  absolute `expires_at`), not an absolute timestamp; a null `userId` marks an
-  anonymous/pre-auth session.
+  `NewConvo`, `NewConvoRequest`, `NewConvoResponse`, `NewSystemPrompt`.
+  `NewSession` additionally carries a RELATIVE `expiration: Duration` (a TTL the
+  DAO converts to an absolute `expires_at`), not an absolute timestamp; a null
+  `userId` marks an anonymous/pre-auth session.
+- `NewSystemPrompt` is the creation input for the immutable `SystemPrompt`
+  catalog row, the sibling of `NewUser`/`NewStudent`. It carries only the three
+  immutable domain columns (`name`, `version`, `body`) as plain `String`s —
+  matching the `String` fields of `SystemPrompt` itself, NOT value classes —
+  because canonicalization and bounds are DB-enforced by the `system_prompts`
+  table's `CHECK`/`UNIQUE` constraints. `id`, `created_at`, and `row_created_at`
+  are DB-defaulted and never client-supplied. There is no `SystemPromptEdit`
+  sibling: the catalog forbids `UPDATE`, so a "new version" is a fresh
+  `NewSystemPrompt`, never an edit of an existing row.
 - **Update-input records** — `UserEdit` and `StudentEdit` — are the siblings of
   the `New*` creation inputs for the two mutable, versioned, soft-deletable
   entities. Each carries the entity identity (`id`), the expected OCC `version`
@@ -474,3 +484,9 @@ actually has. There MUST be no welded multi-capability supertype.
       the expected OCC `version`, and only the mutable business fields the DAO
       `update` writes (`UserEdit` omits the auth method). No change to any
       existing model type.
+- [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
+      — Added the `NewSystemPrompt` creation-input record (three plain-`String`
+      columns `name`/`version`/`body`; bounds and canonicalization DB-enforced)
+      for the immutable `SystemPrompt` catalog, enabling an admin insert path.
+      No edit-input sibling, since the catalog forbids `UPDATE`. No change to
+      the `SystemPrompt` model itself or any other model type.

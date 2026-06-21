@@ -112,8 +112,8 @@ sibling subpackages and are referenced here only by responsibility.
 
 - **Side effects**: Installs the application-scope `StatusPages` catch-all;
   installs the authorization gate; builds the resource registry over the user,
-  student, and session descriptors; and registers the liveness, login/logout,
-  and descriptor-driven resource routes into the routing tree.
+  student, session, and system-prompt descriptors; and registers the liveness,
+  login/logout, and descriptor-driven resource routes into the routing tree.
 - **Inputs**: All collaborators are pre-constructed by `startServer` and passed
   in; the module performs no config parsing and constructs no IO-bound singleton
   of its own.
@@ -189,3 +189,8 @@ password hasher). It does NOT depend on `rest-server`, `queue`, `email`, or
 ## V. History
 
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../../../../../../../rfc/60-admin-website.md)
+- [x] [RFC-63: Admin System Prompts](../../../../../../../rfc/63-admin-system-prompts.md)
+      — `adminModule` now registers `SystemPromptsResource` alongside the user,
+      student, and session descriptors, so the admin gains a `system-prompt`
+      create + list/detail surface over the immutable catalog. No change to the
+      gate, config-load list, or module dependencies.

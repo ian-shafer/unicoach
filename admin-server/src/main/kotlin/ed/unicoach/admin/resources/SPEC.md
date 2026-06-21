@@ -5,13 +5,22 @@
 This directory holds the concrete [`AdminResource`](../engine/AdminResource.kt)
 descriptors that configure the admin engine for the v1 tables: `users`
 ([UsersResource.kt](./UsersResource.kt)), the embedded `students` profile
-([StudentsResource.kt](./StudentsResource.kt)), and `sessions`
-([SessionsResource.kt](./SessionsResource.kt)). Each descriptor **decides** one
-table's kind, its allowed operation set, its sensitive columns, its relationship
-edges, and the exact write path each operation takes through the typed DAOs. The
-generic routing, rendering, and paging machinery lives in
+([StudentsResource.kt](./StudentsResource.kt)), `sessions`
+([SessionsResource.kt](./SessionsResource.kt)), and the immutable
+`system_prompts` catalog
+([SystemPromptsResource.kt](./SystemPromptsResource.kt)). Each descriptor
+**decides** one table's kind, its allowed operation set, its sensitive columns,
+its relationship edges, and the exact write path each operation takes through
+the typed DAOs. The generic routing, rendering, and paging machinery lives in
 [`../engine`](../engine); this directory only declares _what_ the engine does
-for these three tables, never _how_ the engine does it.
+for these tables, never _how_ the engine does it.
+
+The shared soft-delete OCC helper [`occSoftDelete`](./OccDelete.kt) lives here
+too: the "load current version, then OCC delete/undelete" sequence expressed
+once against the `db/dao/Dao.kt` capability-interface intersection
+(`SoftDeleteFindable` + `OccDeletable`), so `UsersResource`'s
+`delete`/`undelete` are one-line delegations rather than duplicated inline
+read-then-write blocks.
 
 ## II. Invariants
 
@@ -26,6 +35,14 @@ for these three tables, never _how_ the engine does it.
   originate from auth flows) and MUST NOT offer `update` (its DAO mutators are
   domain lifecycle operations, not field edits) — both are `null`. It MUST NOT
   offer `undelete`.
+- `system_prompts` MUST be `AdminKind.IMMUTABLE_ENTITY` (the first instance of
+  this kind) and MUST offer `create` plus read/list/detail only. Its `update`,
+  `delete`, and `undelete` MUST all be `null` — the table's triggers forbid
+  `UPDATE`/`DELETE` and it has no soft-delete column — so the engine registers
+  no edit/delete routes and renders no Edit/Delete actions. `isDeleted` MUST
+  always be `false` and the read `scope`/`includeDeleted` arguments MUST be
+  ignored. A "new version" of a prompt is a fresh row created through `create`,
+  never an edit.
 - Entity deletes MUST be soft for `users` (and for the owner-nested `students`
   action), and MUST be physical for `sessions`. No descriptor may add or change
   a DB trigger; the soft-vs-physical choice reflects exactly which delete the
@@ -67,6 +84,29 @@ for these three tables, never _how_ the engine does it.
   version fails the DAO's versioned write rather than silently overwriting.
 - A `users` update with a missing/unparseable `version` form field MUST fail
   rather than default a version.
+- The soft-delete OCC dance (load the current row at `SoftDeleteScope.ALL` to
+  confirm existence, then issue the OCC delete/undelete keyed on that row's
+  version, both on a single `Database.withConnection` session) MUST be expressed
+  once in `occSoftDelete` ([OccDelete.kt](./OccDelete.kt)), programmed against
+  the `SoftDeleteFindable` + `OccDeletable` capability intersection, not a
+  concrete DAO. `UsersResource.delete`/`undelete` MUST delegate to it. The
+  helper MUST propagate the DAO's `NotFoundException` (unknown id) and
+  `ConcurrentModificationException` (version raced between read and write)
+  unchanged. The owner-nested `students` delete MUST NOT be retrofitted onto
+  this helper: it keys on `findByUserId`, a parented lookup off
+  `SoftDeleteFindable`, outside the helper's seam.
+
+### `system_prompts` create path
+
+- Create MUST `trim` `name` and `version` (identifiers whose surrounding
+  whitespace the table's `*_trimmed_check` would otherwise reject) but pass
+  `body` **verbatim** (trailing whitespace/newlines in a prompt body are
+  significant; the schema exempts `body` from a trimmed check). It MUST reject a
+  blank `name`/`version`/`body` client-side with an `IllegalArgumentException`
+  field message before any DB call. All other validity (length, size,
+  uniqueness) is DB-enforced and surfaces as `ConstraintViolationException`
+  (form re-render). The handler MUST build `NewSystemPrompt`, call
+  `SystemPromptsDao.create`, and return the new row's `id`.
 
 ### `users` create path
 
@@ -134,11 +174,12 @@ for these three tables, never _how_ the engine does it.
   missing/invalid version or field → `IllegalArgumentException`; DAO
   `ConcurrentModificationException` on a stale version → conflict page (no
   overwrite). Idempotent: no (version bumps).
-- **delete** — reads the current version, then soft-deletes via the users-delete
-  DAO (sets `deleted_at`, bumps version). Side effects: one versioned soft
-  delete. Idempotent: no.
-- **undelete** — reads the current version, then restores via the users-undelete
-  DAO. Side effects: one versioned restore. Idempotent: no.
+- **delete** — delegates to `db.occSoftDelete(UsersDao, id, deleted = true)`,
+  which reads the current version then soft-deletes (sets `deleted_at`, bumps
+  version). Side effects: one versioned soft delete. Idempotent: no.
+- **undelete** — delegates to `db.occSoftDelete(UsersDao, id, deleted = false)`,
+  which reads the current version then restores. Side effects: one versioned
+  restore. Idempotent: no.
 - **resolveEdges** — builds the embedded student panel, a sessions table (via
   the per-user sessions list DAO), and a `users_versions` history table (via the
   user-versions DAO). Side effects: DB reads only. Errors: any DAO fault →
@@ -188,14 +229,56 @@ for these three tables, never _how_ the engine does it.
   when `userId` is non-null, else an "owner absent" panel. Side effects: none
   (no DB read; the foreign key is already on the row). Idempotent: yes.
 
+### `SystemPromptsResource` (IMMUTABLE_ENTITY, top-level)
+
+`slug = "system-prompt"`, `title = "System Prompt"`. Fields (declaration order =
+detail-row order): `id` (TEXT, read-only), `name` (TEXT, editable), `version`
+(TEXT, editable), `createdAt` (TIMESTAMP, read-only), `body` (MULTILINE,
+editable, `inList = false`). `body` is `editable = true` so it renders as a
+create-form textarea and in full on detail, but `inList = false` so the up-to-1
+MB body is omitted from the list table; since `update` is null, no edit form is
+ever served, so `body` is never re-editable. No edges.
+
+- **list** — reads via `SystemPromptsDao.list(session, limit, offset)` (`scope`
+  ignored). Side effects: DB read. Idempotent: yes.
+- **get** — reads one prompt via `SystemPromptsDao.findById` (`includeDeleted`
+  ignored). Side effects: DB read. Errors: `NotFoundException` (→ 404).
+  Idempotent: yes.
+- **create** — trims `name`/`version`, passes `body` verbatim, rejects any blank
+  field with `IllegalArgumentException`, builds `NewSystemPrompt`, inserts via
+  `SystemPromptsDao.create`, returns the new row's `id`. Side effects: one row
+  inserted. Errors: blank field → `IllegalArgumentException` (form re-render);
+  duplicate `(name, version)` or bound/CHECK violation →
+  `ConstraintViolationException` (form re-render with the constraint message).
+  Idempotent: no.
+- **update/delete/undelete** — all `null`. The engine renders no Edit/Delete
+  actions, and the unconditionally-registered edit/delete/undelete routes
+  re-check nullability at request time and return the not-found page.
+- **isDeleted** — always `false`. **edges** — empty; **resolveEdges** — default
+  (empty).
+
+### `occSoftDelete` (shared helper, [OccDelete.kt](./OccDelete.kt))
+
+- **`Database.occSoftDelete(dao, id, deleted)`** — a `suspend` extension over
+  the `SoftDeleteFindable<ROW, ID>` + `OccDeletable<ROW, ID>` intersection. On a
+  single `withConnection` session: `findById(id, SoftDeleteScope.ALL)` to
+  confirm existence, then `delete(id, row.version)` when `deleted` is true, else
+  `undelete(id, row.version)`. Side effects: one versioned soft delete/restore.
+  Errors: propagates the DAO's `NotFoundException` (unknown id) and
+  `ConcurrentModificationException` (raced version) unchanged. Idempotent: no.
+  `UsersResource.delete`/`undelete` delegate to it
+  (`db.occSoftDelete(UsersDao, id, deleted = true/false)`); behaviour is
+  identical to the inline blocks it replaced.
+
 ## IV. Infrastructure & Environment
 
 - No descriptor in this directory reads environment variables or config keys
   directly. The `users` create path depends on an `Argon2Hasher` supplied by
-  constructor injection into `UsersResource`; `StudentsResource` and
-  `SessionsResource` are stateless `object`s. All DB access is via the injected
-  `Database`. Module-level config (bind host, cookie, session expiry) lives in
-  `admin-server.conf` / `AdminConfig`, outside this directory.
+  constructor injection into `UsersResource`; `StudentsResource`,
+  `SessionsResource`, and `SystemPromptsResource` are stateless `object`s. All
+  DB access is via the injected `Database`. Module-level config (bind host,
+  cookie, session expiry) lives in `admin-server.conf` / `AdminConfig`, outside
+  this directory.
 
 ## V. History
 
@@ -208,3 +291,11 @@ for these three tables, never _how_ the engine does it.
       `SessionsDao.deleteById` became `destroy`; the `users` update and the
       owner-nested `students` update build a `UserEdit`/`StudentEdit` instead of
       copying a whole row.
+- [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
+      — Added `SystemPromptsResource` (the first `AdminKind.IMMUTABLE_ENTITY`:
+      create + list/detail, no edit/delete, `body` `inList = false`) and the
+      shared `occSoftDelete` helper ([OccDelete.kt](./OccDelete.kt)) programmed
+      against the `SoftDeleteFindable` + `OccDeletable` capability intersection;
+      `UsersResource.delete`/`undelete` became one-line delegations to it. The
+      owner-nested `students` delete was deliberately not retrofitted (it keys
+      on the parented `findByUserId`, off the capability seam).
