@@ -95,24 +95,36 @@ by RFC:
 ```
 
 - `<skill-name>` is the skill that session **runs**, without the leading slash.
-  For the interactive design conversation that is `rfc-design`; for each
-  background agent it is the actual sub-skill the agent invokes
-  (`rfc-review-loop`, `rfc-impl`, `rfc-impl-review-loop`, `rfc-impl-fix`,
-  `rfc-impl-review`, `spec-sync-loop`, `invariants-writer`). It is **never**
-  literally `rfc-pipeline` — that is this orchestrator, not the spawned session.
+  - This orchestrator's **own** session is `rfc-pipeline`.
+  - The interactive design conversation is `rfc-design`.
+  - Each background agent uses the actual sub-skill it invokes
+    (`rfc-review-loop`, `rfc-impl`, `rfc-impl-review-loop`, `rfc-impl-fix`,
+    `rfc-impl-review`, `spec-sync-loop`, `invariants-writer`).
 - `<n>` is this run's RFC number, claimed in Phase 0.
 - `<rfc-name>` is a short, human-readable title for the RFC in Sentence case,
   derived from the RFC's H1 / brief description (e.g. `69-email-verification.md`
   → `Email verification`). **Record it in orchestrator state alongside `<n>`**
   and reuse the **same** string for every session in the run.
 
-Examples: `[rfc-design] rfc/69 Email verification`,
+Examples: `[rfc-pipeline] rfc/69 Email verification`,
+`[rfc-design] rfc/69 Email verification`,
 `[rfc-impl] rfc/69 Email verification`,
 `[spec-sync-loop] rfc/69 Email verification`.
 
-For a **background agent**, this string is the **`Agent` tool's `description`**
-field — that is the task/session name the harness surfaces. For an **interactive
-conversation**, instruct the Architect to **title the new session** with it.
+How each session gets its name depends on who owns it:
+
+- **This orchestrator session.** The harness auto-titles this conversation, and
+  the model **cannot rename its own session** — only the `/rename` slash command
+  can, and only the Architect can run it. So, as soon as both `<n>` and
+  `<rfc-name>` are known (right after Phase 1 establishes `<rfc-name>`), **ask
+  the Architect to run** `/rename [rfc-pipeline] rfc/<n> <rfc-name>` in this
+  conversation. Treat it as best-effort cosmetics — if they skip it, continue
+  the pipeline normally.
+- **Background agents.** This string is the **`Agent` tool's `description`**
+  field — the task/session name the harness surfaces. The orchestrator sets it
+  directly; no human step.
+- **Interactive child conversations.** Instruct the Architect to **title the new
+  conversation** with it (via `/rename` or `claude -n`).
 
 ## Change Tracking, Checkpoints & Agent Write-Scope
 
@@ -344,6 +356,12 @@ any result as green.
      Sentence-case title, e.g. `Email verification`) and record it in
      orchestrator state alongside `<n>`; it names every session in this run per
      **Session Naming** above.
+   - Now that both `<n>` and `<rfc-name>` are known, **ask the Architect to name
+     this orchestrator session** by running
+     `/rename [rfc-pipeline] rfc/<n>
+     <rfc-name>` in this conversation (the
+     model cannot rename its own session). This is best-effort cosmetics —
+     proceed regardless of whether they do it.
    - Instruct the Architect to open a **new conversation**, **title it
      `[rfc-design] rfc/<n> <rfc-name>`**, and run the `/rfc-design` skill to
      collaboratively draft the RFC.
