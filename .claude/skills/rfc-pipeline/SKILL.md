@@ -47,6 +47,18 @@ access and can invoke the sibling skills). Continue an existing background agent
 with `SendMessage` if you need to hand it a follow-up without losing its
 context; otherwise spawn a fresh agent per phase.
 
+**Review-agent model policy.** This pipeline is heavyweight and its reviews are
+adversarial, so **run it on a capable session model.** The review _orchestrators_
+— the Phase 1 `/rfc-review-loop` (RFC design review) and **every**
+`/rfc-impl-review` / `/rfc-impl-review-loop` pass in Phase 2 — are **not** pinned;
+they inherit that session model and so never go stale as models change. The
+**only** model pinned anywhere in this pipeline is the **leaf** reviewers: the
+code-review and design-review chains fan out to many small parallel agents, and
+those are held to a mid tier (cheaper than the expected session model) via the
+`code-reviewer` and `design-reviewer` agent definitions in `.claude/agents/`.
+That single pin — `model:` in those two files — is the one place to revisit if
+the model lineup ever reshuffles.
+
 ## Critical Behaviours
 
 - **Codebase Root Directory**: The orchestrator tracks the absolute path of this

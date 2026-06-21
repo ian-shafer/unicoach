@@ -24,14 +24,18 @@ them to provide it before continuing.
 
 1. **Discover Review Skills**: Scan the list of all active skills available in your execution context (defined in your system prompt or `<skills>` block) that match the pattern `design-review-*` (excluding `design-review-chain` itself).
 2.  **Concurrently Spawn Subagents**: Launch a background subagent for each
-    discovered design-review skill using `invoke_subagent`. Specify the
-    following for each subagent entry in the list:
-    - **TypeName**: `self`
-    -   **Role**: `[Skill Name] Reviewer` (e.g. `design-review-srp Reviewer`)
-    -   **Prompt**: `"Run the [Skill Name] skill on target '[Target]' and return
+    discovered design-review skill using the **`Agent`** tool — emit all the
+    spawns in a single message so they run in parallel. Specify the following for
+    each:
+    - **subagent_type**: `design-reviewer` — this agent definition
+      (`.claude/agents/design-reviewer.md`) pins the reviewer model and
+      a read-only tool set. Do **not** use `general-purpose`; the leaf reviewers
+      are deliberately scoped and must not edit the tree.
+    - **description**: `[Skill Name] Reviewer` (e.g. `design-review-srp Reviewer`)
+    - **run_in_background**: `true`
+    - **prompt**: `"Run the [Skill Name] skill on target '[Target]' and return
         a detailed verdict. Your response must clearly state the Status (PASS or
         FAIL) and the detailed Evaluation."`
-    - **Workspace**: `inherit`
 3. **Await Reports**: Pause and wait for all spawned subagents to finish and report back. If some subagents respond earlier, keep track of their reports in your conversation memory until every subagent has returned a verdict.
 4. **Compile Report**: Once all subagents have finished, compile their verdicts into a unified report using the markdown format below.
 
