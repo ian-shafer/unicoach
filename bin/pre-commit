@@ -33,6 +33,15 @@ if [ "$#" -ne 0 ]; then
   help "Error: pre-commit accepts no positional arguments."
 fi
 
+# The gate below needs deno, the JVM, and Postgres — all dev-shell tools. Refuse
+# early with a clear message rather than failing deep in the gate with
+# "deno: command not found" / "Unable to locate a Java Runtime". This is the
+# is-nix guard the iOS scripts use, in the opposite direction: they refuse inside
+# the dev shell, pre-commit refuses outside it.
+if ! "$PROJECT_ROOT/bin/is-nix" --quiet; then
+  fatal "pre-commit must run inside the Nix dev shell. Commit via 'nix develop -c git commit ...' or from a 'nix develop' shell."
+fi
+
 log-info "Running pre-commit checks concurrently..."
 
 "$PROJECT_ROOT/bin/test" check &

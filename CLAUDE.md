@@ -28,6 +28,18 @@ will fail with errors like **"Unable to locate a Java Runtime"** — that means
 the dev shell was not active, not that the tool is missing. Re-run via
 `nix develop -c`.
 
+**Committing also runs the toolchain.** `git commit` fires the `bin/pre-commit`
+hook, which runs `deno fmt --check` (Markdown) and `bin/test check` (Kotlin +
+Postgres) — all dev-shell tools. Commit from inside the shell, or wrap it:
+
+```sh
+nix develop -c git commit ...
+```
+
+A bare `git commit` is refused early by the hook with a message telling you to
+use the dev shell — the commit is blocked (your changes are not lost), so re-run
+it via `nix develop -c git commit` rather than reaching for `--no-verify`.
+
 ## Running tests
 
 Do **not** run `./gradlew test` directly — the DB-backed tests will fail with

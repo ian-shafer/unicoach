@@ -388,7 +388,9 @@ Scripts to inspect and mutate the application work queue. All delegate to
   additionally runs `bin/test-fuzz` against the REST contract — sequentially,
   after the concurrent checks pass — and fails the commit on contract drift.
   `bin/dev-bootstrap` installs the git `pre-commit` hook that invokes this
-  script.
+  script. It refuses to run outside the Nix dev shell (`is-nix --quiet`),
+  failing fast with an actionable message instead of deep in the gate on a
+  missing `deno`/JVM/Postgres — the inverse of the iOS scripts' `is-nix` guard.
 
 ---
 
