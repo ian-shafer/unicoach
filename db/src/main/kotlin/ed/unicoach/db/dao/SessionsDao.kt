@@ -1,5 +1,7 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.models.ValidationError
+import ed.unicoach.db.models.LoginMethod
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.Session
 import ed.unicoach.db.models.SessionId
@@ -19,6 +21,21 @@ object SessionsDao :
     val createdAt = rs.getInstant("created_at")
     val userIdStr = rs.getString("user_id")
     val userId = if (userIdStr != null) UserId(UUID.fromString(userIdStr)) else null
+    // A genuine SQL NULL is an anonymous session (no login method). A non-null
+    // value the enum cannot resolve is row corruption — surfaced as a
+    // CorruptPersistedValueException (a PermanentError), never silently mapped to
+    // null, which would make a corrupt row indistinguishable from an anonymous one.
+    val rawLoginMethod = rs.getString("login_method")
+    val loginMethod =
+      if (rawLoginMethod == null) {
+        null
+      } else {
+        LoginMethod.fromWire(rawLoginMethod)
+          ?: throw CorruptPersistedValueException(
+            rawLoginMethod,
+            ValidationError.InvalidFormat(expected = "a known LoginMethod wire value"),
+          )
+      }
     val metadata = rs.getString("metadata")
     val userAgent = rs.getString("user_agent")
     val initialIp = rs.getString("initial_ip")
@@ -29,6 +46,7 @@ object SessionsDao :
       version = version,
       createdAt = createdAt,
       userId = userId,
+      loginMethod = loginMethod,
       metadata = metadata,
       userAgent = userAgent,
       initialIp = initialIp,
@@ -138,18 +156,19 @@ object SessionsDao :
   ): Result<Session> {
     val sql =
       """
-      INSERT INTO sessions (user_id, token_hash, user_agent, initial_ip, metadata, expires_at)
-      VALUES (?, ?, ?, ?, ?::jsonb, NOW() + (${input.expiration.seconds} * INTERVAL '1 second'))
+      INSERT INTO sessions (user_id, login_method, token_hash, user_agent, initial_ip, metadata, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?::jsonb, NOW() + (${input.expiration.seconds} * INTERVAL '1 second'))
       RETURNING *
       """.trimIndent()
     return session.mutateReturning(
       sql,
       bind = { stmt ->
         if (input.userId != null) stmt.setObject(1, input.userId.value) else stmt.setNull(1, java.sql.Types.OTHER)
-        stmt.setBytes(2, input.tokenHash.value)
-        stmt.setStringOrNull(3, input.userAgent)
-        stmt.setStringOrNull(4, input.initialIp)
-        stmt.setStringOrNull(5, input.metadata)
+        stmt.setStringOrNull(2, input.loginMethod?.wire)
+        stmt.setBytes(3, input.tokenHash.value)
+        stmt.setStringOrNull(4, input.userAgent)
+        stmt.setStringOrNull(5, input.initialIp)
+        stmt.setStringOrNull(6, input.metadata)
       },
       map = ::mapSession,
     )
@@ -162,11 +181,12 @@ object SessionsDao :
     newUserId: UserId,
     newTokenHash: ByteArray,
     newExpirationSeconds: Long,
+    newLoginMethod: LoginMethod,
   ): Result<Session> {
     val sql =
       """
       UPDATE sessions
-      SET version = ?, user_id = ?, token_hash = ?, expires_at = NOW() + (? * INTERVAL '1 second')
+      SET version = ?, user_id = ?, login_method = ?, token_hash = ?, expires_at = NOW() + (? * INTERVAL '1 second')
       WHERE id = ? AND version = ? AND is_revoked = false
       RETURNING *
       """.trimIndent()
@@ -175,10 +195,11 @@ object SessionsDao :
       bind = { stmt ->
         stmt.setInt(1, currentVersion + 1)
         stmt.setObject(2, newUserId.value)
-        stmt.setBytes(3, newTokenHash)
-        stmt.setLong(4, newExpirationSeconds)
-        stmt.setObject(5, id.value)
-        stmt.setInt(6, currentVersion)
+        stmt.setString(3, newLoginMethod.wire)
+        stmt.setBytes(4, newTokenHash)
+        stmt.setLong(5, newExpirationSeconds)
+        stmt.setObject(6, id.value)
+        stmt.setInt(7, currentVersion)
       },
       map = ::mapSession,
       onNoRow = { NotFoundException("Session could not be reminted either due to version mismatch or not found") },

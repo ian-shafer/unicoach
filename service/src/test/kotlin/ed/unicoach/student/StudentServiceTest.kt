@@ -7,7 +7,7 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
-import ed.unicoach.db.models.AuthMethod
+import ed.unicoach.db.models.LoginMethod
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PartialDate
@@ -81,7 +81,7 @@ class StudentServiceTest {
     return UsersDao
       .create(
         sqlSession,
-        NewUser(email = email, name = name, displayName = null, authMethod = AuthMethod.Password(pwd)),
+        NewUser(email = email, name = name, displayName = null, passwordHash = pwd),
       ).getOrThrow()
   }
 
@@ -229,6 +229,7 @@ class StudentServiceTest {
             initialIp = null,
             metadata = null,
             expiration = Duration.ofDays(7),
+            loginMethod = LoginMethod.PASSWORD,
           ),
         ).getOrThrow()
 

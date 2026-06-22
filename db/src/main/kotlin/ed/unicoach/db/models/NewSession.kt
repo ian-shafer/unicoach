@@ -9,4 +9,5 @@ data class NewSession(
   val initialIp: String?,
   val metadata: String?,
   val expiration: Duration,
+  val loginMethod: LoginMethod? = null,
 )

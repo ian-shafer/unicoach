@@ -1,6 +1,7 @@
 package ed.unicoach.admin
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.auth.StubGoogleTokenVerifier
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
@@ -9,7 +10,6 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.dao.UsersDao
-import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.NewSystemPrompt
 import ed.unicoach.db.models.NewUser
@@ -63,7 +63,7 @@ object AdminTestSupport {
         .from(config)
         .getOrThrow(),
     )
-  val authService = AuthService(database, argon2Hasher, TokenGenerator(), emailVerificationService)
+  val authService = AuthService(database, argon2Hasher, TokenGenerator(), emailVerificationService, StubGoogleTokenVerifier())
 
   fun Application.installTestAdminModule() {
     adminModule(database, authService, argon2Hasher, adminConfig)
@@ -89,7 +89,7 @@ object AdminTestSupport {
           email = (EmailAddress.create(email) as ValidationResult.Valid).value,
           name = (PersonName.create(name) as ValidationResult.Valid).value,
           displayName = null,
-          authMethod = AuthMethod.Password((PasswordHash.create(hash) as ValidationResult.Valid).value),
+          passwordHash = (PasswordHash.create(hash) as ValidationResult.Valid).value,
           isAdmin = isAdmin,
         )
       database.withConnection { session -> UsersDao.create(session, newUser) }.getOrThrow()

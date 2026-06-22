@@ -3,15 +3,22 @@ package ed.unicoach.auth
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.DuplicateEmailException
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SessionsDao
+import ed.unicoach.db.dao.UserAuthIdentitiesDao
 import ed.unicoach.db.dao.UsersDao
-import ed.unicoach.db.models.AuthMethod
+import ed.unicoach.db.models.AuthProvider
+import ed.unicoach.db.models.LoginMethod
+import ed.unicoach.db.models.NewAuthIdentity
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
+import ed.unicoach.db.models.ProviderSubject
+import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.TokenHash
+import ed.unicoach.db.models.User
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
 
@@ -20,6 +27,7 @@ class AuthService(
   private val argon2Hasher: Argon2Hasher,
   private val tokenGenerator: ed.unicoach.util.TokenGenerator,
   private val emailVerificationService: EmailVerificationService,
+  private val googleTokenVerifier: GoogleTokenVerifier,
   private val validator: Validator<RegistrationInput> = RegistrationValidator(),
 ) {
   suspend fun register(
@@ -55,7 +63,7 @@ class AuthService(
         email = emailAddr,
         name = personName,
         displayName = null,
-        authMethod = AuthMethod.Password(pwdHash),
+        passwordHash = pwdHash,
       )
 
     // Raw verification token captured from inside the transaction for best-effort
@@ -94,6 +102,7 @@ class AuthService(
                   newUserId = user.id,
                   newTokenHash = newHash.value,
                   newExpirationSeconds = sessionExpirationSeconds,
+                  newLoginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
                 ).getOrThrow()
               wasReminted = true
             }
@@ -111,6 +120,7 @@ class AuthService(
                     initialIp = initialIp,
                     metadata = null,
                     expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+                    loginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
                   ),
               ).getOrThrow()
           }
@@ -209,12 +219,7 @@ class AuthService(
         return Result.success(LoginResult.UserNotFound)
       }
 
-      val pwdHash =
-        when (val method = user!!.authMethod) {
-          is AuthMethod.Password -> method.hash
-          is AuthMethod.Both -> method.hash
-          is AuthMethod.SSO -> null
-        }
+      val pwdHash = user!!.passwordHash
 
       if (pwdHash == null) {
         return Result.success(LoginResult.PasswordNotSet)
@@ -226,36 +231,243 @@ class AuthService(
         return Result.success(LoginResult.PasswordMismatch)
       }
 
-      val newToken = tokenGenerator.generateToken()
-      val newHash = TokenHash.fromRawToken(newToken)
-
-      database.withConnection { session ->
-        if (oldCookieToken != null) {
-          val oldHash = TokenHash.fromRawToken(oldCookieToken)
-          val revokeResult = SessionsDao.revokeByTokenHash(session, oldHash)
-          val exception = revokeResult.exceptionOrNull()
-          if (exception != null && exception !is ed.unicoach.db.dao.NotFoundException) {
-            throw exception
-          }
-        }
-
-        SessionsDao
-          .create(
+      val newToken =
+        database.withConnection { session ->
+          mintSession(
             session = session,
-            input =
-              ed.unicoach.db.models.NewSession(
-                userId = user!!.id,
-                tokenHash = newHash,
-                userAgent = userAgent,
-                initialIp = initialIp,
-                metadata = null,
-                expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
-              ),
-          ).getOrThrow()
-      }
+            user = user!!,
+            loginMethod = LoginMethod.PASSWORD,
+            oldCookieToken = oldCookieToken,
+            sessionExpirationSeconds = sessionExpirationSeconds,
+            userAgent = userAgent,
+            initialIp = initialIp,
+          )
+        }
 
       Result.success(LoginResult.Success(user!!, newToken))
     } catch (e: Exception) {
       Result.failure(e)
     }
+
+  /**
+   * Establishes a session from a Google ID token. Verifies the token, gates on
+   * `email_verified`, then in one transaction resolves the federated identity
+   * (returning login), links it onto an existing email-matched user, or creates a
+   * new user — minting a session with [LoginMethod.GOOGLE].
+   *
+   * Both first-time signup and returning login return [GoogleLoginResult.Success];
+   * the result does not distinguish them, so account existence is not disclosed.
+   */
+  suspend fun loginWithGoogle(
+    idToken: String,
+    oldCookieToken: String?,
+    sessionExpirationSeconds: Long,
+    userAgent: String?,
+    initialIp: String?,
+  ): Result<GoogleLoginResult> {
+    val verification = googleTokenVerifier.verify(idToken)
+    if (verification.isFailure) {
+      return when (verification.exceptionOrNull()) {
+        is GoogleTokenUnavailableException -> Result.success(GoogleLoginResult.VerificationUnavailable)
+        is GoogleTokenInvalidException -> Result.success(GoogleLoginResult.InvalidToken)
+        else -> Result.failure(verification.exceptionOrNull()!!)
+      }
+    }
+
+    val identity = verification.getOrThrow()
+    if (!identity.emailVerified) {
+      return Result.success(GoogleLoginResult.EmailNotVerified)
+    }
+
+    val subject =
+      when (val s = ProviderSubject.create(identity.subject)) {
+        is ValidationResult.Valid -> s.value
+        is ValidationResult.Invalid -> return Result.success(GoogleLoginResult.InvalidToken)
+      }
+    val email =
+      when (val e = EmailAddress.create(identity.email)) {
+        is ValidationResult.Valid -> e.value
+        is ValidationResult.Invalid -> return Result.success(GoogleLoginResult.InvalidToken)
+      }
+
+    // The whole transaction aborts on a UNIQUE(provider,subject) or
+    // users_email_unique_active_idx violation from a concurrent first login; an
+    // in-transaction re-read is impossible (the transaction is aborted), so we
+    // retry the entire block once. After the winner commits, the second attempt
+    // resolves deterministically as a returning login.
+    return try {
+      runGoogleSignIn(subject, email, identity.name, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp)
+    } catch (e: ConstraintViolationException) {
+      runGoogleSignIn(subject, email, identity.name, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp)
+    } catch (e: DuplicateEmailException) {
+      runGoogleSignIn(subject, email, identity.name, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp)
+    } catch (e: Exception) {
+      Result.failure(e)
+    }
+  }
+
+  /**
+   * One transactional sign-in attempt. A `23505`-derived violation
+   * ([ConstraintViolationException] or [DuplicateEmailException]) propagates so
+   * [loginWithGoogle] can retry the whole block; every other DAO failure is
+   * rethrown to abort and surface as a 500.
+   */
+  private suspend fun runGoogleSignIn(
+    subject: ProviderSubject,
+    email: EmailAddress,
+    nameClaim: String?,
+    oldCookieToken: String?,
+    sessionExpirationSeconds: Long,
+    userAgent: String?,
+    initialIp: String?,
+  ): Result<GoogleLoginResult> =
+    database.withConnection { session ->
+      when (val resolution = resolveOrProvisionUser(session, subject, email, nameClaim)) {
+        is UserResolution.Disabled -> Result.success(GoogleLoginResult.AccountDisabled)
+        is UserResolution.Resolved -> {
+          val token =
+            mintSession(
+              session = session,
+              user = resolution.user,
+              loginMethod = LoginMethod.GOOGLE,
+              oldCookieToken = oldCookieToken,
+              sessionExpirationSeconds = sessionExpirationSeconds,
+              userAgent = userAgent,
+              initialIp = initialIp,
+            )
+          Result.success(GoogleLoginResult.Success(resolution.user, token))
+        }
+      }
+    }
+
+  /** The user a Google sign-in resolves to, or the soft-deleted (disabled) signal. */
+  private sealed interface UserResolution {
+    data class Resolved(
+      val user: User,
+    ) : UserResolution
+
+    data object Disabled : UserResolution
+  }
+
+  /**
+   * Resolves the Google identity to its user within the open transaction:
+   * a returning login (existing `(GOOGLE, subject)` row), a link onto an active
+   * email-matched user, or a freshly created user. A `23505`-derived violation
+   * ([ConstraintViolationException]/[DuplicateEmailException]) propagates so
+   * [loginWithGoogle] can retry the whole block; every other DAO failure is
+   * rethrown to abort and surface as a 500.
+   */
+  private fun resolveOrProvisionUser(
+    session: ed.unicoach.db.dao.SqlSession,
+    subject: ProviderSubject,
+    email: EmailAddress,
+    nameClaim: String?,
+  ): UserResolution {
+    val existing = UserAuthIdentitiesDao.findByProviderAndSubject(session, AuthProvider.GOOGLE, subject)
+    val existingError = existing.exceptionOrNull()
+    if (existingError != null && existingError !is NotFoundException) {
+      throw existingError
+    }
+
+    if (existing.isSuccess) {
+      // Returning login: load the identity's user across all soft-delete states.
+      val resolved = UsersDao.findById(session, existing.getOrThrow().userId, SoftDeleteScope.ALL).getOrThrow()
+      return if (resolved.deletedAt != null) UserResolution.Disabled else UserResolution.Resolved(resolved)
+    }
+
+    // First sign-in for this subject: link to an active email match, else create.
+    val byEmail = UsersDao.findByEmail(session, email)
+    val byEmailError = byEmail.exceptionOrNull()
+    if (byEmailError != null && byEmailError !is NotFoundException) {
+      throw byEmailError
+    }
+
+    val target =
+      if (byEmail.isSuccess) {
+        byEmail.getOrThrow()
+      } else {
+        UsersDao
+          .create(
+            session,
+            NewUser(
+              email = email,
+              name = deriveName(nameClaim, email),
+              displayName = null,
+              passwordHash = null,
+            ),
+          ).getOrThrow()
+      }
+
+    UserAuthIdentitiesDao
+      .create(
+        session,
+        NewAuthIdentity(
+          userId = target.id,
+          provider = AuthProvider.GOOGLE,
+          subject = subject,
+          email = email,
+          emailVerified = true,
+        ),
+      ).getOrThrow()
+    return UserResolution.Resolved(target)
+  }
+
+  /**
+   * Revokes a live old-cookie session (mirroring `login`) and mints a fresh
+   * session bound to [user] with the given [loginMethod].
+   */
+  private fun mintSession(
+    session: ed.unicoach.db.dao.SqlSession,
+    user: User,
+    loginMethod: LoginMethod,
+    oldCookieToken: String?,
+    sessionExpirationSeconds: Long,
+    userAgent: String?,
+    initialIp: String?,
+  ): String {
+    if (oldCookieToken != null) {
+      val oldHash = TokenHash.fromRawToken(oldCookieToken)
+      val revoke = SessionsDao.revokeByTokenHash(session, oldHash)
+      val revokeError = revoke.exceptionOrNull()
+      if (revokeError != null && revokeError !is NotFoundException) {
+        throw revokeError
+      }
+    }
+
+    val newToken = tokenGenerator.generateToken()
+    val newHash = TokenHash.fromRawToken(newToken)
+    SessionsDao
+      .create(
+        session,
+        ed.unicoach.db.models.NewSession(
+          userId = user.id,
+          tokenHash = newHash,
+          userAgent = userAgent,
+          initialIp = initialIp,
+          metadata = null,
+          expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+          loginMethod = loginMethod,
+        ),
+      ).getOrThrow()
+    return newToken
+  }
+
+  /**
+   * Derives a [PersonName] from the `name` claim, falling back to the email
+   * local-part when the claim is absent or blank. A name that cannot form a valid
+   * [PersonName] throws — surfacing as a 500 (no silent placeholder).
+   */
+  private fun deriveName(
+    nameClaim: String?,
+    email: EmailAddress,
+  ): PersonName {
+    val candidate = nameClaim?.trim()?.takeIf { it.isNotEmpty() } ?: email.value.substringBefore('@')
+    return when (val result = PersonName.create(candidate)) {
+      is ValidationResult.Valid -> result.value
+      is ValidationResult.Invalid ->
+        throw IllegalStateException(
+          "Could not derive a valid PersonName from Google sign-in [candidate=$candidate, error=${result.error}]",
+        )
+    }
+  }
 }

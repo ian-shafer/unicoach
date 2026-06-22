@@ -12,12 +12,12 @@ creation/update input records (`New*`, `UserEdit`, `StudentEdit`).
 what may be edited through the generic `update` path: it MUST carry exactly the
 caller-editable fields, plus the identity and the expected OCC `version`, and
 nothing else — never a server-managed/immutable column (`createdAt`,
-`deletedAt`, `updatedAt`) or an out-of-band credential (the auth method,
-`password_hash`/`sso_provider_id`).
+`deletedAt`, `updatedAt`) or the out-of-band password credential
+(`password_hash`), which mutates only through dedicated auth flows.
 
 **Why:** `update` binds exactly the columns the Edit record carries, so the
-record's shape _is_ the editability boundary. Exposing the auth method would let
-an ordinary admin/profile update clobber credentials that change only through
+record's shape _is_ the editability boundary. Exposing `password_hash` would let
+an ordinary admin/profile update clobber a credential that changes only through
 dedicated auth flows; exposing an immutable column would let `update` overwrite
 it.
 

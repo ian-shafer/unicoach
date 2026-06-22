@@ -8,7 +8,6 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.dao.VerificationTokensDao
-import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.NewVerificationToken
 import ed.unicoach.db.models.PasswordHash
@@ -132,7 +131,7 @@ class EmailVerificationServiceTest {
     val pass = (PasswordHash.create("ahash") as ValidationResult.Valid).value
     val user =
       UsersDao
-        .create(sqlSession, NewUser(email = email, name = name, displayName = null, authMethod = AuthMethod.Password(pass)))
+        .create(sqlSession, NewUser(email = email, name = name, displayName = null, passwordHash = pass))
         .getOrThrow()
     if (verified) {
       return UsersDao.markEmailVerified(sqlSession, user.id).getOrThrow()

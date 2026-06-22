@@ -63,18 +63,16 @@ request/response in the `rest-server`. The plugins cover:
 - An unhandled `BadRequestException` MUST produce a `400 Bad Request` response
   with `code = "bad_request"` and a fixed message never derived from the cause —
   Jackson parsing internals MUST NOT reach the client.
-- An unhandled `PermanentError` MUST produce `code = "permanent_error"` with a
+- An unhandled `PermanentError` produces `code = "permanent_error"` with a
   status partitioned by fault ownership:
   - Server-fault subtypes — database faults and persisted-state corruption
-    (`DatabaseException`, `CorruptPersistedValueException`,
-    `CorruptPersistedAuthMethodException`) — MUST produce `500`. Persisted-state
-    corruption MUST NOT be presented as a client error; it is the server's
-    fault.
-  - Client-fault subtypes MUST keep their specific statuses: `NotFoundException`
-    → `404`, `DuplicateEmailException` → `409`.
-  - All remaining `PermanentError` subtypes MUST produce `400` — they are client
-    faults. A refactor flipping this fallback to `500` would wrongly blame the
-    server for client errors.
+    (`DatabaseException`, `CorruptPersistedValueException`) — produce `500`.
+    Persisted-state corruption is presented as a server fault, not a client
+    error.
+  - Client-fault subtypes keep their specific statuses: `NotFoundException` →
+    `404`, `DuplicateEmailException` → `409`.
+  - All remaining `PermanentError` subtypes produce `400` — they are client
+    faults.
 - An unhandled `TransientError` MUST produce a `503 Service Unavailable`
   response with `code = "internal_error"`.
 - Any other `Throwable` MUST produce a `500 Internal Server Error` with
@@ -177,13 +175,13 @@ request/response in the `rest-server`. The plugins cover:
   no network calls.
 - **Handled Exceptions**:
 
-  | Exception                                                                                                                     | HTTP Status                                                                           | `ErrorResponse.code`  | `ErrorResponse.message`                           |
-  | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------- |
-  | `PayloadTooLargeException`                                                                                                    | 413                                                                                   | `"payload_too_large"` | `"Request body exceeds the maximum allowed size"` |
-  | `BadRequestException`                                                                                                         | 400                                                                                   | `"bad_request"`       | `"Invalid JSON payload structure"` (fixed)        |
-  | `PermanentError` (client fault)                                                                                               | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (any other subtype) | `"permanent_error"`   | `cause.message ?: "Bad request"`                  |
-  | `PermanentError` (server fault: `DatabaseException`, `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`) | 500                                                                                   | `"permanent_error"`   | `cause.message ?: "Bad request"`                  |
-  | `TransientError`                                                                                                              | 503                                                                                   | `"internal_error"`    | `cause.message ?: "Internal server error"`        |
+  | Exception                                                                              | HTTP Status                                                                           | `ErrorResponse.code`  | `ErrorResponse.message`                           |
+  | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------- |
+  | `PayloadTooLargeException`                                                             | 413                                                                                   | `"payload_too_large"` | `"Request body exceeds the maximum allowed size"` |
+  | `BadRequestException`                                                                  | 400                                                                                   | `"bad_request"`       | `"Invalid JSON payload structure"` (fixed)        |
+  | `PermanentError` (client fault)                                                        | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (any other subtype) | `"permanent_error"`   | `cause.message ?: "Bad request"`                  |
+  | `PermanentError` (server fault: `DatabaseException`, `CorruptPersistedValueException`) | 500                                                                                   | `"permanent_error"`   | `cause.message ?: "Bad request"`                  |
+  | `TransientError`                                                                       | 503                                                                                   | `"internal_error"`    | `cause.message ?: "Internal server error"`        |
 
 - **Status handler**: A `status(HttpStatusCode.UnsupportedMediaType)` handler
   intercepts the `415` **response status** Ktor raises for an unreadable body
@@ -322,8 +320,8 @@ request/response in the `rest-server`. The plugins cover:
       fields serialize as ISO-8601 strings.
 - [x] [RFC-40: Validation Error Reporting](../../../../../../../../rfc/40-validation-error-reporting.md)
       — mapped server-fault `PermanentError`s (`DatabaseException`,
-      `CorruptPersistedValueException`, `CorruptPersistedAuthMethodException`)
-      to `500` in `StatusPages.kt`; client-fault mappings unchanged.
+      `CorruptPersistedValueException`) to `500` in `StatusPages.kt`;
+      client-fault mappings unchanged.
 - [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../../rfc/45-coaching-service.md)
       — extended `RequestSizeLimit.kt` body-limit resolution to exact override →
       longest matching prefix (`RequestSizeConfig.routePrefixOverrides`) →
@@ -339,3 +337,7 @@ request/response in the `rest-server`. The plugins cover:
       — introduced `ClientKeyGate.kt`: a pre-routing interceptor rejecting
       requests without a valid client key (`403`), exempting an exact-match path
       allowlist.
+- [x] [RFC-64: Google SSO Login](../../../../../../../../rfc/64-google-sso-login.md)
+      — removed the deleted `CorruptPersistedAuthMethodException` from
+      `StatusPages.kt`; server-fault `PermanentError`s mapping to `500` is now
+      `DatabaseException` and `CorruptPersistedValueException`.

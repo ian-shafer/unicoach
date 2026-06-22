@@ -32,12 +32,39 @@ from domain internals.
 - **`id` type**: `java.util.UUID`, not a domain wrapper. Jackson serializes
   `UUID` to a plain UUID string; a wrapper would produce a nested
   `{"id":{"value":"…"}}`.
+- **Factory**: `PublicUser.from(user: ed.unicoach.db.models.User)` projects a
+  domain `User` onto this public shape, unwrapping `user.id.value`,
+  `user.email.value`, `user.name.value`, and mapping
+  `emailVerified = user.emailVerifiedAt != null`. This is the package's only
+  direct reference to a `db` domain type; all other DTOs use platform-neutral
+  fields exclusively. The factory drops every domain field not in the public
+  roster (e.g. password-hash state, federated identities), so newly added domain
+  attributes do not reach the wire unless the projection is changed.
 - **Side Effects**: None. Pure value type.
 - **Error Handling**: None. Deserialization failures are handled upstream.
 - **Idempotency**: N/A (pure DTO).
 - **Shared Usage**: Embedded by `RegisterResponse`, `LoginResponse`,
-  `MeResponse`, and `VerifyEmailResponse`. A change to this type affects every
-  endpoint that returns user data.
+  `MeResponse`, and `VerifyEmailResponse`. The auth routes (password login,
+  Google login, register, me, verify-email) build it through `from`. A change to
+  this type affects every endpoint that returns user data.
+
+#### `GoogleLoginRequest` — [`GoogleLoginRequest.kt`](./GoogleLoginRequest.kt)
+
+- **Behavior**: Deserialized from the `POST /api/v1/auth/google` request body —
+  the federated-login surface where a client submits a Google-issued ID token.
+  Sole field `idToken: String` (the raw Google ID token JWT).
+- **Serialization note**: Carries a `kotlinx.serialization.@Serializable`
+  annotation (same as `LoginRequest`); the live route binds it via Jackson
+  regardless.
+- **Side Effects**: None at this layer. Token verification (RS256 signature,
+  issuer/audience/expiry checks) and session issuance occur in the auth service.
+- **Error Handling**: Jackson deserialization failures (missing/wrong-typed
+  `idToken`) propagate to `StatusPages` as `400 Bad Request` with an
+  `ErrorResponse`; a token that fails verification surfaces as an auth-route
+  error envelope from the service layer.
+- **Idempotency**: N/A (inbound DTO only).
+- **Sensitivity**: `idToken` is a bearer credential; downstream logging masks or
+  redacts it.
 
 #### `RegisterRequest` — [`RegisterRequest.kt`](./RegisterRequest.kt)
 
@@ -309,6 +336,12 @@ wire shape.
       one-file- per-schema naming, opaque `String` ids, nullable-with-default
       PATCH fields, and fixed per-event `type` discriminators without
       polymorphic Jackson config.
+- [x] [RFC-64: Google SSO Login](../../../../../../../../rfc/64-google-sso-login.md)
+      — Introduced `GoogleLoginRequest` (`idToken: String`) for the
+      `POST /api/v1/auth/google` federated-login surface. Added the
+      `PublicUser.from(user: User)` companion factory that projects a domain
+      `User` onto the public shape, dropping password-hash state and federated
+      identities.
 - [x] [RFC-65: Email Verification](../../../../../../../../rfc/65-email-verification.md)
       — Added `emailVerified: Boolean` to `PublicUser`, surfacing verification
       state on register, login, me, and verify-email responses; introduced

@@ -2,7 +2,6 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
-import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.NewVerificationToken
 import ed.unicoach.db.models.PasswordHash
@@ -70,7 +69,7 @@ class VerificationTokensDaoTest {
     return UsersDao
       .create(
         session,
-        NewUser(email = email, name = name, displayName = null, authMethod = AuthMethod.Password(pass)),
+        NewUser(email = email, name = name, displayName = null, passwordHash = pass),
       ).getOrThrow()
   }
 

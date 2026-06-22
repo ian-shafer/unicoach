@@ -288,9 +288,4 @@ private fun firstUserDetailHref(html: String): String {
   return requireNotNull(match) { "No user detail link found in list HTML" }.groupValues[1]
 }
 
-private fun ed.unicoach.db.models.User.authMethodHashOrEmpty(): String =
-  when (val m = authMethod) {
-    is ed.unicoach.db.models.AuthMethod.Password -> m.hash.value
-    is ed.unicoach.db.models.AuthMethod.Both -> m.hash.value
-    is ed.unicoach.db.models.AuthMethod.SSO -> "no-hash-sentinel"
-  }
+private fun ed.unicoach.db.models.User.authMethodHashOrEmpty(): String = passwordHash?.value ?: "no-hash-sentinel"

@@ -26,15 +26,19 @@ rejection is expressed as `ValidationResult.Invalid`.
 
 - [`DisplayName.create(value)`](./DisplayName.kt),
   [`PersonName.create(value)`](./PersonName.kt),
-  [`PasswordHash.create(value)`](./PasswordHash.kt),
-  [`SsoProviderId.create(value)`](./SsoProviderId.kt) — trim, then accept any
+  [`PasswordHash.create(value)`](./PasswordHash.kt) — trim, then accept any
   non-blank result; a blank-after-trim input returns
   `Invalid(ValidationError.Blank)`. `PasswordHash.create` wraps a pre-computed
   hash string and does not itself hash.
+- [`ProviderSubject.create(value)`](./ProviderSubject.kt) — trims, rejects blank
+  with `Invalid(Blank)`, and rejects input longer than 255 characters (measured
+  after trim) with `Invalid(TooLong(maxLength = 255))` (matching the
+  `user_auth_identities_subject_*` check constraints). Its constructor is
+  private; `create()` is the sole construction path. It wraps a provider's
+  stable subject identifier (Google's `sub` claim).
 - [`ConvoName.create(value)`](./ConvoName.kt) — trims, rejects blank with
   `Invalid(Blank)`, and rejects input longer than 255 characters (measured after
-  trim) with `Invalid(TooLong(maxLength = 255))`. It is the one factory here
-  that emits a rejection variant beyond `Blank`/`InvalidFormat`.
+  trim) with `Invalid(TooLong(maxLength = 255))`.
 
 ### II-B. `PartialDate` — variable-precision calendar value
 
@@ -81,17 +85,33 @@ equality.
   surfaces as an unchecked `NoSuchAlgorithmException` (fatal misconfiguration).
   **Idempotent**: yes — same token yields the same hash.
 
-### II-D. `AuthMethod` — credential discriminator
+### II-D. Authentication credentials and federated identity
 
-[`AuthMethod`](./AuthMethod.kt) is a sealed interface with three variants:
-`Password` (carries a `PasswordHash`), `SSO` (carries a `SsoProviderId`), and
-`Both` (carries both). It is exhaustively matchable; the variant determines
-which credentials a user holds.
+A user's password credential lives directly on the entity as a nullable
+`passwordHash: PasswordHash?` on `User`/`NewUser`/`UserVersion` — a user may
+have no password (a Google-only account). Federated logins are modeled as
+separate `AuthIdentity` rows rather than as a flag on the user. There is no
+`AuthMethod` sealed type and no `SsoProviderId` value class.
+
+- [`LoginMethod`](./LoginMethod.kt) is an enum recording how a session
+  authenticated, persisted as `sessions.login_method`. Its variants are
+  `PASSWORD("password")` and `GOOGLE("google")`, each carrying a `wire: String`.
+  Its companion `fromWire(value: String): LoginMethod?` resolves a persisted
+  wire value back to the enum, returning null on an unknown value.
+- [`AuthProvider`](./AuthProvider.kt) is an enum naming a federated identity
+  provider, persisted as `user_auth_identities.provider`. It currently has a
+  single variant `GOOGLE("google")` carrying a `wire: String`, with a
+  `fromWire(value: String): AuthProvider?` companion that returns null on an
+  unknown value.
+- [`ProviderSubject`](./ProviderSubject.kt) is the `@JvmInline value class`
+  wrapping a provider's stable subject identifier (Google's `sub` claim) — the
+  only key used to resolve a returning login. See II-A for its `create()`
+  contract.
 
 ### II-E. Identity types
 
 [`UserId`](./UserId.kt), [`StudentId`](./StudentId.kt),
-[`SessionId`](./SessionId.kt),
+[`SessionId`](./SessionId.kt), [`AuthIdentityId`](./AuthIdentityId.kt),
 [`VerificationTokenId`](./VerificationTokenId.kt), [`ConvoId`](./ConvoId.kt),
 and [`SystemPromptId`](./SystemPromptId.kt) wrap a `UUID`;
 [`ConvoRequestId`](./ConvoRequestId.kt) and
@@ -140,21 +160,34 @@ against their tables' `row_created_at`).
 - **Mutable entities** — [`User`](./User.kt) and [`Student`](./Student.kt) —
   implement `Created`, `Updated`, `Versioned`, and `SoftDeletable`: `version` is
   an OCC counter and a non-null `deletedAt` marks a soft delete. `User` carries
-  `authMethod: AuthMethod`, an `isAdmin: Boolean` privilege flag, and
-  `emailVerifiedAt: Instant?` — the email-verification marker, non-null once the
-  user has proven control of the address, null while unverified. `Student`
-  carries a validated `expectedHighSchoolGraduationDate: PartialDate`.
+  a nullable `passwordHash: PasswordHash?` credential (null for a Google-only
+  account; federated logins live in separate `AuthIdentity` rows), an
+  `isAdmin: Boolean` privilege flag, and `emailVerifiedAt: Instant?` — the
+  email-verification marker, non-null once the user has proven control of the
+  address, null while unverified. `Student` carries a validated
+  `expectedHighSchoolGraduationDate: PartialDate`.
 - **Version-snapshot rows** — [`UserVersion`](./UserVersion.kt) and
   [`StudentVersion`](./StudentVersion.kt) — implement `Created` and `Versioned`
   only. They are immutable history rows that carry `updatedAt` and `deletedAt`
   as plain values (the state captured at the instant the version was written)
   without implementing `Updated`/`SoftDeletable`, and they mirror the live
-  entity's domain fields. `UserVersion` mirrors `User`, including
-  `emailVerifiedAt: Instant?` (faithful history of the verification marker).
+  entity's domain fields. `UserVersion` mirrors `User`, including the nullable
+  `passwordHash: PasswordHash?` credential and `emailVerifiedAt: Instant?`
+  (faithful history of the verification marker).
 - [`Session`](./Session.kt) — `Created` and `Versioned` only: a versioned,
   immutable row carrying `expiresAt: Instant`, an optional `userId` (null for an
-  anonymous/pre-auth session), and request metadata. It holds the typed
-  `SessionId` and version but no token value or raw hash.
+  anonymous/pre-auth session), a nullable `loginMethod: LoginMethod?` recording
+  how the session authenticated (null when unset, e.g. an anonymous/pre-auth
+  session), and request metadata. It holds the typed `SessionId` and version but
+  no token value or raw hash.
+- [`AuthIdentity`](./AuthIdentity.kt) — an immutable federated-identity row,
+  `Identifiable` and `Created` only — recording the fact that a
+  `(provider, subject)` pair belongs to a `userId`, established at `createdAt`.
+  It carries a typed `AuthIdentityId`, an `AuthProvider`, a `ProviderSubject`,
+  and `email: EmailAddress` / `emailVerified: Boolean`. The
+  `email`/`emailVerified` fields are provenance-only — the claims the provider
+  asserted when the row was created; they are never re-synced and never read on
+  the login path (the login path resolves only on `(provider, subject)`).
 - [`VerificationToken`](./VerificationToken.kt) — a single-use
   email-verification credential row, `Created` only (it is neither a versioned
   aggregate nor an append-only log). It carries `id: VerificationTokenId`,
@@ -219,15 +252,21 @@ sole creation input for its aggregate. Fields are pre-validated value types and
 DAOs do not re-validate them.
 
 - [`NewUser`](./NewUser.kt) — every field mandatory except `displayName`
-  (nullable) and `isAdmin` (defaults `false`, so non-privileged creation sites
-  need no change; an admin is minted only by explicit `isAdmin = true`). It
-  carries no `emailVerifiedAt`: the verification marker is written only by the
-  dedicated verification path, never at creation.
+  (nullable), the nullable `passwordHash: PasswordHash?` credential (null for a
+  Google-only account), and `isAdmin` (defaults `false`, so non-privileged
+  creation sites need no change; an admin is minted only by explicit
+  `isAdmin = true`). It carries no `emailVerifiedAt`: the verification marker is
+  written only by the dedicated verification path, never at creation.
 - [`NewStudent`](./NewStudent.kt) — carries a validated `PartialDate`.
+- [`NewAuthIdentity`](./NewAuthIdentity.kt) — the creation input for an
+  `AuthIdentity` insert, carrying the `userId`, `provider` (`AuthProvider`),
+  `subject` (`ProviderSubject`), and the provenance `email`/`emailVerified`
+  claims.
 - [`NewSession`](./NewSession.kt) — carries a `tokenHash: TokenHash`, an
-  optional `userId` (null for anonymous), and a relative `expiration: Duration`
-  (a TTL the DAO converts to an absolute `expires_at`), not an absolute
-  timestamp.
+  optional `userId` (null for anonymous), a relative `expiration: Duration` (a
+  TTL the DAO converts to an absolute `expires_at`), not an absolute timestamp,
+  and a nullable `loginMethod: LoginMethod? = null` recording how the session
+  authenticated.
 - [`NewVerificationToken`](./NewVerificationToken.kt) — carries
   `userId: UserId`, a `tokenHash: TokenHash` (the SHA-256 hash, built via
   `TokenHash.fromRawToken`, the same construction sessions use), and an absolute
@@ -261,9 +300,9 @@ DAO `update` writes — never a server-managed/immutable column
 (`createdAt`/`deletedAt`/`updatedAt`).
 
 - [`UserEdit`](./UserEdit.kt) — carries `email`, `name`, `displayName?`,
-  `isAdmin`. It omits the auth method (`password_hash`/`sso_provider_id`) and
-  the `emailVerifiedAt` marker, both of which mutate only through dedicated
-  flows, so the generic update path cannot clobber them.
+  `isAdmin`. It omits the `password_hash` credential and the `emailVerifiedAt`
+  marker, both of which mutate only through dedicated flows, so the generic
+  update path cannot clobber them.
 - [`StudentEdit`](./StudentEdit.kt) — carries only the validated
   `expectedHighSchoolGraduationDate`.
 
@@ -367,6 +406,22 @@ edited through a versioned DAO `update`.
       canonicalization and bounds DB-enforced rather than factory-validated).
       `SystemPrompt` and `SystemPromptId` (from RFC-38) remain a read-only
       catalog row and its id.
+- [x] [RFC-64: Google SSO Login](../../../../../../../../rfc/64-google-sso-login.md)
+      — Replaced the sealed `AuthMethod` model (and the `SsoProviderId` value
+      class) with a credential-on-entity / identity-row model. Deleted
+      `AuthMethod.kt` and `SsoProviderId.kt`. Added `LoginMethod`
+      (`PASSWORD`/`GOOGLE` enum, persisted as `sessions.login_method`),
+      `AuthProvider` (`GOOGLE` enum, persisted as
+      `user_auth_identities.provider`), the `ProviderSubject` validated value
+      class (Google's `sub` claim; trims, rejects blank and >255), the
+      `AuthIdentityId` (`UUID`-backed) id value class, and the `AuthIdentity`
+      immutable federated-identity row (`Identifiable` + `Created`) with its
+      `NewAuthIdentity` creation input. Replaced `User`/`NewUser`'s
+      `authMethod: AuthMethod` with a nullable `passwordHash: PasswordHash?`
+      credential and added `passwordHash` to the `UserVersion` snapshot; added
+      the nullable `loginMethod` to `Session` and `NewSession`. The
+      `emailVerifiedAt` marker and the `VerificationToken` types from RFC-65 are
+      retained.
 - [x] [RFC-65: Email Verification](../../../../../../../../rfc/65-email-verification.md)
       — Added `emailVerifiedAt: Instant?` to `User` and `UserVersion`, and
       introduced the `VerificationTokenId`, `VerificationToken`, and

@@ -8,7 +8,7 @@ data class User(
   val email: EmailAddress,
   val name: PersonName,
   val displayName: DisplayName?,
-  val authMethod: AuthMethod,
+  val passwordHash: PasswordHash?,
   val isAdmin: Boolean,
   val emailVerifiedAt: Instant?,
   override val version: Int,

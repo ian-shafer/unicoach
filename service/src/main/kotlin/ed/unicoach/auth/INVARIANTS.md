@@ -1,9 +1,27 @@
 # INVARIANTS — service/auth
 
 The authentication and email-verification domain services (`AuthService`,
-`EmailVerificationService`) and their result and config types.
+`EmailVerificationService`) and their result and config types: registration,
+password login, Google federated sign-in, email verification, session
+resolution, logout, and zombie-session cleanup. This layer owns credential
+verification and bridges the HTTP boundary and the data layer.
 
 ## Invariants
+
+### Every user always retains at least one usable credential
+
+**Rule:** Every `users` row MUST always be reachable by at least one credential
+— a non-null `password_hash` OR at least one `user_auth_identities` row. A flow
+MUST NOT null a user's `password_hash`, MUST NOT delete its last identity, and
+MUST create a user and its first credential atomically (Google provisioning
+inserts the `users` row and its `user_auth_identities` row in one transaction).
+
+**Why:** RFC 64 removed the row-local `users_auth_method_check` DB constraint
+(migration `0017.drop-users-sso-provider-id.sql`) because the credential now
+spans two tables and a row-local `CHECK` can no longer express it. The guarantee
+is therefore enforced ONLY here. A user left with no credential is permanently
+locked out with no recovery path, and a non-atomic provision can commit a
+credential-less `users` row if the identity insert fails.
 
 ### Verification-email delivery is best-effort and never fails registration or resend
 
@@ -33,4 +51,5 @@ surfaces "already verified" as a distinct status or error breaks it.
 
 ## History
 
+- [x] [RFC-64: Google SSO Login](../../../../../../../rfc/64-google-sso-login.md)
 - [x] [RFC-65: Email Verification (Backend)](../../../../../../../rfc/65-email-verification.md)

@@ -13,7 +13,6 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.UsersDao
-import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.DisplayName
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.NewUser
@@ -151,7 +150,7 @@ class UsersResource(
         email = email.value,
         name = name.value,
         displayName = displayName,
-        authMethod = AuthMethod.Password(pwdHash),
+        passwordHash = pwdHash,
         isAdmin = form["isAdmin"] == "true",
       )
 

@@ -11,6 +11,7 @@ and delegating all query execution to shared `SqlSession` **query scaffolding**
 | DAO                     | Table(s)                                                              |
 | ----------------------- | --------------------------------------------------------------------- |
 | `UsersDao`              | `users`, `users_versions`                                             |
+| `UserAuthIdentitiesDao` | `user_auth_identities` (append-only)                                  |
 | `SessionsDao`           | `sessions`                                                            |
 | `StudentsDao`           | `students`, `students_versions`                                       |
 | `ConvosDao`             | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw`  |
@@ -69,6 +70,7 @@ interface-backed via `Findable`/`Listable`/`Creatable`):
 | DAO                     | Capability interfaces                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `UsersDao`              | `SoftDeleteFindable<User, UserId>`, `SoftDeleteListable<User>`, `Creatable<NewUser, User>`, `Updatable<UserEdit, User>`, `OccDeletable<User, UserId>`, `VersionHistory<UserId, UserVersion>`                                                                                                                                                                                                                                                                        |
+| `UserAuthIdentitiesDao` | `Creatable<NewAuthIdentity, AuthIdentity>` (append-only; no update/delete surface; reads `findByProviderAndSubject`/`listByUser` stay concrete)                                                                                                                                                                                                                                                                                                                     |
 | `StudentsDao`           | `SoftDeleteFindable<Student, StudentId>`, `Creatable<NewStudent, Student>`, `Updatable<StudentEdit, Student>`, `OccDeletable<Student, StudentId>`, `VersionHistory<StudentId, StudentVersion>`                                                                                                                                                                                                                                                                      |
 | `ConvosDao`             | `SoftDeleteFindable<Convo, ConvoId>`, `Creatable<NewConvo, Convo>`, `Deletable<Convo, ConvoId>`                                                                                                                                                                                                                                                                                                                                                                     |
 | `SessionsDao`           | `Findable<Session, SessionId>`, `Listable<Session>`, `Creatable<NewSession, Session>`, `Destroyable<SessionId>`                                                                                                                                                                                                                                                                                                                                                     |
@@ -178,13 +180,24 @@ wrapper (previously inside `SessionsDao`).
 
 - **`users`**: `mapUser`/`mapUserVersion` read `version` as a plain `Int`, map
   `email`/`name`/`display_name` into value classes via their `.create()`
-  factories (unwrapping `ValidationResult.Valid`), read `is_admin` as a plain
-  `Boolean`, and synthesize `password_hash`/`sso_provider_id` into a sealed
-  `AuthMethod` (`Password`, `SSO`, or `Both`) via `readAuthMethod`. A row with
-  both auth columns NULL throws `CorruptPersistedAuthMethodException` (a
-  `PermanentError` `DaoException` carrying the offending `UserId`), since the DB
-  constraints guarantee at least one is non-NULL. Both mappers project the
-  nullable `email_verified_at` timestamp (NULL = unverified).
+  factories (unwrapping `ValidationResult.Valid`), and read `is_admin` as a
+  plain `Boolean`. The credential is the single nullable `password_hash` column,
+  read by `readPasswordHash`
+  (`rs.getString("password_hash")?.let { PasswordHash.create(it) }`) into a
+  nullable `PasswordHash` — a SQL NULL maps to a `null` credential (a
+  federated-only user). There is no `AuthMethod` sealed type, no
+  `sso_provider_id` column, and no corrupt-auth-method path on this mapper. Both
+  mappers also project the nullable `email_verified_at` timestamp (NULL =
+  unverified).
+- **`user_auth_identities`**: `mapIdentity` reconstructs an `AuthIdentity` from
+  `id`/`user_id` (UUIDs), `provider` (via `AuthProvider.fromWire`), `subject`
+  (via `ProviderSubject.create`), `email` (via `EmailAddress.create`), and the
+  plain `email_verified` Boolean and `created_at` timestamp. Any failed
+  reconstruction (an unknown provider wire value, or an `Invalid` subject/email)
+  throws `CorruptPersistedValueException` (a `PermanentError` carrying the
+  offending raw value and the structured `ValidationError`) — never a
+  `ConstraintViolationException`, so a corrupt row is not mistaken for the
+  in-transaction `(provider, subject)` retry signal.
 - **`students`**: `mapStudent`/`mapStudentVersion` reconstruct the decomposed
   `expected_high_school_graduation_{year,month,day}` columns into a
   `PartialDate` via `PartialDate.of` (`mapGraduationDate`), preserving month/day
@@ -197,8 +210,11 @@ wrapper (previously inside `SessionsDao`).
   independent `archived_at` lifecycle timestamps.
 - **`sessions`**: `mapSession` maps `id` as a typed `SessionId`, reads `version`
   as a plain `Int`, and projects a nullable `user_id`, `metadata`, `user_agent`,
-  `initial_ip`, and `expires_at`. No validated value classes; no corruption
-  path.
+  `initial_ip`, and `expires_at`. It reconstructs a nullable `login_method` via
+  `LoginMethod.fromWire`: a SQL NULL maps to a `null` login method (an anonymous
+  session), while a non-null value the enum cannot resolve throws
+  `CorruptPersistedValueException` (so a corrupt row is never silently collapsed
+  into an anonymous one).
 - **`system_prompts`**: `mapPrompt` maps every column verbatim (`name`,
   `version`, `body` as plain `String`); no soft-delete, version, or validated
   columns, so no corruption path.
@@ -235,6 +251,15 @@ Non-`SQLException` throwables (e.g. `ClassCastException`) default to
 - `23505` containing `users_email_unique_active_idx` →
   `DuplicateEmailException`; other `23505` and any `23514` →
   `ConstraintViolationException`.
+- everything else → `mapDatabaseError`.
+
+`UserAuthIdentitiesDao.mapCreateError` (the `create` write path only; reads
+route through `mapDatabaseError`):
+
+- `23505` (the `(provider, subject)` unique index) / `23514` (a CHECK) →
+  `ConstraintViolationException` — the in-transaction signal a Google-login flow
+  retries on when a concurrent insert wins the race to link the same federated
+  identity.
 - everything else → `mapDatabaseError`.
 
 `StudentsDao.mapCreateUpdateError`:
@@ -341,10 +366,11 @@ interface SqlSession {
 
 #### `create(session, input: NewUser): Result<User>`
 
-- **Side Effects**: Write — `insertReturning` over six columns (`email`, `name`,
-  `display_name`, `password_hash`, `sso_provider_id`, `is_admin`). The DB
-  generates `id` (`uuidv7()` default) and timestamps. `bindAuthMethodColumn`
-  binds each auth column independently from the `NewUser.authMethod`.
+- **Side Effects**: Write — `insertReturning` over five columns (`email`,
+  `name`, `display_name`, `password_hash`, `is_admin`). The DB generates `id`
+  (`uuidv7()` default) and timestamps. `password_hash` is bound from the
+  nullable `NewUser.passwordHash` via `setStringOrNull` (a NULL credential is a
+  federated-only user).
 - **Error Handling**: `DuplicateEmailException` on the active-email index;
   `ConstraintViolationException` otherwise (via `mapCreateUpdateError`).
 - **Idempotency**: No.
@@ -352,10 +378,10 @@ interface SqlSession {
 #### `update(session, edit: UserEdit): Result<User>`
 
 - **Side Effects**: Read/write — `updateColumnsReturning` with OCC over four
-  columns only: `email`, `name`, `display_name`, `is_admin`. It does **not**
-  write `password_hash`/`sso_provider_id` (the auth method mutates only through
-  dedicated auth flows) nor any immutable column. The OCC path prepends
-  `version = edit.version + 1` and matches `WHERE id = ? AND version = ?`.
+  columns only: `email`, `name`, `display_name`, `is_admin`. It does not write
+  `password_hash` (the credential mutates only through dedicated auth flows) nor
+  any immutable column. The OCC path prepends `version = edit.version + 1` and
+  matches `WHERE id = ? AND version = ?`.
 - **Error Handling**: `NotFoundException`/`ConcurrentModificationException` (via
   the `occUpdate` probe on 0 rows); `DuplicateEmailException`/
   `ConstraintViolationException` via `mapCreateUpdateError`.
@@ -385,8 +411,8 @@ interface SqlSession {
   `SET LOCAL unicoach.bypass_logical_timestamp = 'true'` bypass (suppressing the
   `update_timestamp` trigger so `updated_at` does not advance), then a full-row
   OCC update via the private `updateFullRow` (`occUpdate`) restoring every
-  mutable column **including the auth columns and `email_verified_at`**. Not
-  routed through the `UserEdit` path.
+  mutable column **including the `password_hash` credential and
+  `email_verified_at`**. Not routed through the `UserEdit` path.
 - **Error Handling**: Same OCC classification as `update`.
 - **Idempotency**: No.
 
@@ -410,8 +436,9 @@ interface SqlSession {
 #### `revertToVersion(session, id, targetHistoricalVersion, currentVersion): Result<User>`
 
 - **Side Effects**: Read/write — reads the historical version, then a full-row
-  OCC write via `updateFullRow` (auth columns and `email_verified_at` restored
-  to that version's value, since the marker is ordinary versioned state).
+  OCC write via `updateFullRow` (the `password_hash` credential and
+  `email_verified_at` restored to that version's value, since the marker is
+  ordinary versioned state).
 - **Error Handling**: `TargetVersionMissingException()` if the historical
   version is absent; otherwise same OCC classification as `update`.
 - **Idempotency**: No.
@@ -431,6 +458,43 @@ interface SqlSession {
 - **Side Effects**: Read only — `users_versions` ascending by `version` (replay
   order).
 - **Error Handling**: `success(emptyList())` for an id with no history.
+- **Idempotency**: Yes.
+
+---
+
+### `UserAuthIdentitiesDao` — [`UserAuthIdentitiesDao.kt`](./UserAuthIdentitiesDao.kt)
+
+`object` implementing `Creatable<NewAuthIdentity, AuthIdentity>` over the
+append-only `user_auth_identities` table — the link between a `users` row and a
+federated provider identity. There is no update or delete surface; rows are only
+inserted and read. Both reads stay concrete methods (their shapes are not
+`findById`/`list`). Reads route through `mapDatabaseError`; the write path
+discriminates SQLSTATE via `mapCreateError`.
+
+#### `create(session, input: NewAuthIdentity): Result<AuthIdentity>`
+
+- **Side Effects**: Write — `insertReturning` over `user_id`, `provider`,
+  `subject`, `email`, `email_verified`. The DB generates `id` and `created_at`.
+- **Error Handling**: `ConstraintViolationException` on the
+  `(provider, subject)` unique index (`23505`) or a CHECK (`23514`) via
+  `mapCreateError`; `CorruptPersistedValueException` if the RETURNING row fails
+  reconstruction; otherwise `mapDatabaseError`.
+- **Idempotency**: No — a second insert of the same `(provider, subject)` is
+  rejected by the unique index.
+
+#### `findByProviderAndSubject(session, provider, subject): Result<AuthIdentity>`
+
+- **Side Effects**: Read only — resolves the stable `(provider, subject)` key.
+  Unaffected by `users` soft-delete; the identity row persists regardless of the
+  owning user's state (user-state checks are the caller's responsibility).
+- **Error Handling**: `NotFoundException()` when no identity matches.
+- **Idempotency**: Yes.
+
+#### `listByUser(session, userId): Result<List<AuthIdentity>>`
+
+- **Side Effects**: Read only — all identities linked to a user, oldest-first
+  (`ORDER BY created_at, id`).
+- **Error Handling**: `success(emptyList())` for an unknown user.
 - **Idempotency**: Yes.
 
 ---
@@ -464,16 +528,19 @@ methods take no `SoftDeleteScope`.
 - **Side Effects**: Write — hand-written `mutateReturning` because
   `expires_at = NOW() + (input.expiration.seconds * INTERVAL '1 second')` is a
   SQL expression outside `insertReturning`'s `Bind` model. A null `userId` is
-  bound as `Types.OTHER`.
+  bound as `Types.OTHER`; the nullable `login_method` is bound from
+  `input.loginMethod?.wire` via `setStringOrNull` (NULL for an anonymous
+  session).
 - **Error Handling**: No contractual errors; `NotFoundException` (the default
   `onNoRow`) only if RETURNING yields no row.
 - **Idempotency**: No.
 
-#### `remintToken(session, id, currentVersion, newUserId, newTokenHash, newExpirationSeconds): Result<Session>`
+#### `remintToken(session, id, currentVersion, newUserId, newTokenHash, newExpirationSeconds, newLoginMethod): Result<Session>`
 
 - **Side Effects**: Read/write — `mutateReturning` rotating `token_hash`,
-  rebinding `user_id`, and resetting `expires_at` (session fixation defense),
-  guarded by `WHERE id = ? AND version = ? AND is_revoked = false`.
+  rebinding `user_id` and `login_method`, and resetting `expires_at` (session
+  fixation defense), guarded by
+  `WHERE id = ? AND version = ? AND is_revoked = false`.
 - **Error Handling**: its specific `NotFoundException` message on 0 rows
   (version mismatch, absent, or revoked).
 - **Idempotency**: No.
@@ -978,10 +1045,9 @@ rules are in §IV.
       on-demand `findRawByResponseId`, no OCC/`version` guard on `convos`, and
       the `mapConvoError` SQLSTATE map.
 - [x] [RFC-40: Validation Error Reporting](../../../../../../../../rfc/40-validation-error-reporting.md)
-      — Added
-      `CorruptPersistedValueException`/`CorruptPersistedAuthMethodException` and
-      the `DaoException` pass-through guard in `mapDatabaseError`; row mappers
-      throw corruption exceptions on failed re-validation.
+      — Added `CorruptPersistedValueException` and the `DaoException`
+      pass-through guard in `mapDatabaseError`; row mappers throw corruption
+      exceptions on failed re-validation.
 - [x] [RFC-45: Coaching Service and Conversation REST Surface](../../../../../../../../rfc/45-coaching-service.md)
       — Added `SystemPromptsDao`; added `ConvosDao.archive`/`unarchive` and the
       activity-derived reads `listByStudentWithActivity`/`findByIdWithActivity`;
@@ -1015,6 +1081,17 @@ rules are in §IV.
       `create` (append-only insert of a new `(name, version)` row via
       `insertReturning`), plus the `mapPromptError` SQLSTATE map
       (`23505`/`23514` → `ConstraintViolationException`).
+- [x] [RFC-64: Google SSO Login](../../../../../../../../rfc/64-google-sso-login.md)
+      — Added `UserAuthIdentitiesDao` (append-only over `user_auth_identities`:
+      `create`, `findByProviderAndSubject`, `listByUser`, with `mapCreateError`
+      mapping `23505`/`23514` to `ConstraintViolationException`). Reshaped the
+      `users` credential from a synthesized `AuthMethod`
+      (`password_hash`/`sso_provider_id`) to a single nullable `password_hash`
+      column read by `readPasswordHash`, deleting `AuthMethod`,
+      `readAuthMethod`/`bindAuthMethodColumn`, and
+      `CorruptPersistedAuthMethodException`. Added `login_method`
+      mapping/binding to `SessionsDao` (`mapSession`, `create`) and a
+      `newLoginMethod` parameter to `remintToken`.
 - [x] [RFC-65: Email Verification](../../../../../../../../rfc/65-email-verification.md)
       — Added `VerificationTokensDao` over the new single-use
       `verification_tokens` table (`create`, the compare-and-swap `consume`,

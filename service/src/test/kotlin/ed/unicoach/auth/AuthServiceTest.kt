@@ -8,7 +8,7 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
-import ed.unicoach.db.models.AuthMethod
+import ed.unicoach.db.models.LoginMethod
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
@@ -89,7 +89,8 @@ class AuthServiceTest {
     return EmailVerificationService(database, emailService, ed.unicoach.util.TokenGenerator(), evConfig)
   }
 
-  private fun newAuthService() = AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), emailVerificationService())
+  private fun newAuthService() =
+    AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), emailVerificationService(), StubGoogleTokenVerifier())
 
   private class RejectingProvider : ed.unicoach.email.EmailProvider {
     override val id: String = "rejecting"
@@ -107,7 +108,7 @@ class AuthServiceTest {
     val emailService = ed.unicoach.email.EmailService(database, RejectingProvider(), emailConfig)
     val evConfig = EmailVerificationConfig.from(appConfig).getOrThrow()
     val evService = EmailVerificationService(database, emailService, ed.unicoach.util.TokenGenerator(), evConfig)
-    return AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), evService)
+    return AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), evService, StubGoogleTokenVerifier())
   }
 
   private fun countRows(sql: String): Int {
@@ -129,7 +130,7 @@ class AuthServiceTest {
     val result =
       UsersDao.create(
         sqlSession,
-        NewUser(email = email, name = name, displayName = null, authMethod = AuthMethod.Password(pwdHash)),
+        NewUser(email = email, name = name, displayName = null, passwordHash = pwdHash),
       )
     assertTrue(result.isSuccess)
     return result.getOrNull()!!
@@ -150,6 +151,7 @@ class AuthServiceTest {
           initialIp = "127.0.0.1",
           metadata = null,
           expiration = expiration,
+          loginMethod = if (userId != null) LoginMethod.PASSWORD else null,
         ),
       )
     assertTrue(result.isSuccess)
@@ -280,6 +282,22 @@ class AuthServiceTest {
       val loginResult = result.getOrNull()
       assertTrue(loginResult is LoginResult.Success)
       assertTrue(loginResult.user.email.value == email)
+
+      val loginHash = TokenHash.fromRawToken(loginResult.token)
+      val loginSession = SessionsDao.findByTokenHash(sqlSession, loginHash).getOrThrow()
+      assertTrue(loginSession.loginMethod == LoginMethod.PASSWORD, "login must mint a PASSWORD session")
+    }
+
+  @Test
+  fun `register creates a PASSWORD session`() =
+    runTest {
+      val email = "register_method@example.com"
+      val regResult = authService.register(email, "Register Method", "Password123", null, 86400L, null, null)
+      val success = regResult.getOrNull() as RegisterResult.Success
+
+      val regHash = TokenHash.fromRawToken(success.token)
+      val regSession = SessionsDao.findByTokenHash(sqlSession, regHash).getOrThrow()
+      assertTrue(regSession.loginMethod == LoginMethod.PASSWORD, "register must mint a PASSWORD session")
     }
 
   @Test

@@ -1,11 +1,9 @@
 package ed.unicoach.rest.plugins
 
 import ed.unicoach.common.models.ValidationError
-import ed.unicoach.db.dao.CorruptPersistedAuthMethodException
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.DatabaseException
 import ed.unicoach.db.dao.StudentAlreadyExistsException
-import ed.unicoach.db.models.UserId
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
@@ -13,7 +11,6 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import org.junit.jupiter.api.Test
-import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -54,13 +51,6 @@ class StatusPagesTest {
         error = ValidationError.InvalidFormat(expected = "YYYY | YYYY-MM | YYYY-MM-DD"),
       )
     }
-    assertEquals(HttpStatusCode.InternalServerError, capturedStatus)
-    assertTrue(capturedBody.contains("permanent_error"), "body was: $capturedBody")
-  }
-
-  @Test
-  fun `CorruptPersistedAuthMethodException maps to 500`() {
-    probeFor { throw CorruptPersistedAuthMethodException(userId = UserId(UUID.randomUUID())) }
     assertEquals(HttpStatusCode.InternalServerError, capturedStatus)
     assertTrue(capturedBody.contains("permanent_error"), "body was: $capturedBody")
   }

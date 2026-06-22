@@ -89,8 +89,8 @@ Defined in [`0006`](./0006.create-coaching-conversations.sql) (not `0000`) via
 idempotent `CREATE OR REPLACE`.
 
 - **Trigger types**: `BEFORE UPDATE` and `BEFORE DELETE` respectively, attached
-  to the four append-only log tables (`convo_requests`, `convo_responses`,
-  `convo_responses_raw`, `email_sends`).
+  to the five append-only log tables (`convo_requests`, `convo_responses`,
+  `convo_responses_raw`, `email_sends`, `user_auth_identities`).
 - **Side effects**: Always raise `ERRCODE P0001` ("Log rows are append-only and
   cannot be updated." / "Log rows cannot be deleted; prune by
   partition/retention."), enforcing the append-only contract. Distinct from
@@ -221,32 +221,40 @@ upsert). Physical deletes are permitted (no `prevent_physical_delete()`).
 
 #### Table Summary
 
-| Table                 | Type             | Adv. Timestamps | OCC Versioning | Version History | Logical Deletes |
-| --------------------- | ---------------- | --------------- | -------------- | --------------- | --------------- |
-| `users`               | Entity           | ✅              | ✅             | ✅              | ✅              |
-| `users_versions`      | Support          | —               | —              | —               | —               |
-| `students`            | Entity           | ✅              | ✅             | ✅              | ✅              |
-| `students_versions`   | Support          | —               | —              | —               | —               |
-| `sessions`            | Credential       | ✅              | ✅             | ❌              | ❌              |
-| `verification_tokens` | Credential       | ❌              | ❌             | ❌              | ❌              |
-| `jobs`                | Non-entity       | ❌              | ❌             | ❌              | ❌              |
-| `job_attempts`        | Non-entity       | ❌              | ❌             | ❌              | ❌              |
-| `convos`              | Entity           | ✅              | ❌             | ❌              | ✅              |
-| `convo_requests`      | Log              | —               | —              | —               | —               |
-| `convo_responses`     | Log              | —               | —              | —               | —               |
-| `convo_responses_raw` | Log              | —               | —              | —               | —               |
-| `system_prompts`      | Immutable Entity | —               | —              | —               | —               |
-| `email_sends`         | Log              | —               | —              | —               | —               |
-| `colleges`            | Reference        | ❌              | ❌             | ❌              | ❌              |
-| `college_programs`    | Reference        | ❌              | ❌             | ❌              | ❌              |
+| Table                  | Type             | Adv. Timestamps | OCC Versioning | Version History | Logical Deletes |
+| ---------------------- | ---------------- | --------------- | -------------- | --------------- | --------------- |
+| `users`                | Entity           | ✅              | ✅             | ✅              | ✅              |
+| `users_versions`       | Support          | —               | —              | —               | —               |
+| `user_auth_identities` | Log              | —               | —              | —               | —               |
+| `students`             | Entity           | ✅              | ✅             | ✅              | ✅              |
+| `students_versions`    | Support          | —               | —              | —               | —               |
+| `sessions`             | Credential       | ✅              | ✅             | ❌              | ❌              |
+| `verification_tokens`  | Credential       | ❌              | ❌             | ❌              | ❌              |
+| `jobs`                 | Non-entity       | ❌              | ❌             | ❌              | ❌              |
+| `job_attempts`         | Non-entity       | ❌              | ❌             | ❌              | ❌              |
+| `convos`               | Entity           | ✅              | ❌             | ❌              | ✅              |
+| `convo_requests`       | Log              | —               | —              | —               | —               |
+| `convo_responses`      | Log              | —               | —              | —               | —               |
+| `convo_responses_raw`  | Log              | —               | —              | —               | —               |
+| `system_prompts`       | Immutable Entity | —               | —              | —               | —               |
+| `email_sends`          | Log              | —               | —              | —               | —               |
+| `colleges`             | Reference        | ❌              | ❌             | ❌              | ❌              |
+| `college_programs`     | Reference        | ❌              | ❌             | ❌              | ❌              |
 
 ### `users`
 
 A standard entity (advanced timestamps + OCC versioning + version history +
 logical deletes).
 
-- **Auth method**: Every row has `password_hash IS NOT NULL` or
-  `sso_provider_id IS NOT NULL` (`users_auth_method_check`).
+- **Auth credentials**: `password_hash` is nullable — a user authenticating only
+  via a federated identity carries no password. There is no row-local CHECK
+  requiring at least one credential; the federated credential lives in the
+  separate `user_auth_identities` table, so "every user has at least one auth
+  method" is enforced in application code (AuthService), not in DDL. The schema
+  carries no `sso_provider_id` column (dropped in
+  [`0017`](./0017.drop-users-sso-provider-id.sql), along with
+  `users_auth_method_check` and the `sso_provider_id` length/non-empty checks
+  and index); the federated credential is no longer a column on `users`.
 - **String normalization**: `email` is lowercased and trimmed; `name` and
   `display_name` are trimmed — by the `trim_users_strings()` trigger plus
   matching check constraints.
@@ -270,6 +278,48 @@ logical deletes).
   (`ON DELETE
   RESTRICT` on the version FK); the version rows carry no DB-level
   delete guard, so their preservation is a writer-side invariant.
+
+### `user_auth_identities` — Append-Only Log
+
+The log of federated (SSO) login identities. One immutable row records that a
+federated `(provider, subject)` belongs to a user, established at a point in
+time. Carries none of the entity mix-ins — no `version`, `updated_at`,
+`deleted_at`, or versions table.
+
+- **Append-only**: rows are inserted once, never updated or deleted.
+  `prevent_log_update()` (`trigger_00_prevent_user_auth_identities_update`) and
+  `prevent_log_delete()` (`trigger_01_prevent_user_auth_identities_delete`)
+  raise `P0001`.
+- **Identity**: `id UUID NOT NULL PRIMARY KEY DEFAULT uuidv7()`.
+- **Timestamps**: `created_at` (logical fact time) and `row_created_at`
+  (physical insert time), both `TIMESTAMPTZ NOT NULL DEFAULT NOW()`. No
+  `updated_at`/`row_updated_at`.
+- **Ownership**:
+  `user_id UUID NOT NULL REFERENCES users(id) ON DELETE
+  CASCADE`, indexed by
+  `user_auth_identities_user_id_idx`. The CASCADE is inert in practice — the
+  parent `users` row is `prevent_physical_delete()`-protected and only ever
+  soft-deleted — so it never fires.
+- **One user per federated identity**:
+  `user_auth_identities_provider_subject_idx` is a UNIQUE index on
+  `(provider, subject)`. A federated identity maps to at most one user. It does
+  NOT restrict a user to one identity per provider — distinct subjects may link
+  to the same user.
+- **Provider allowlist**: `provider TEXT NOT NULL` constrained to `'google'`
+  (`user_auth_identities_provider_check`).
+- **Subject bounds**: `subject TEXT NOT NULL`, ≤255 chars
+  (`..._subject_length_check`) and non-empty after trim
+  (`..._subject_not_empty_check`).
+- **Email provenance only**: `email TEXT NOT NULL` and
+  `email_verified BOOLEAN
+  NOT NULL` capture the claims the provider asserted
+  at row creation. They are never re-synced and never read on the login path —
+  lookup is strictly by `(provider, subject)` — and carry no uniqueness or FK
+  guarantee. `email` is bounded ≤254 (`..._email_length_check`), non-empty
+  (`..._email_not_empty_check`), lowercase (`..._email_lowercase_check`,
+  `email = LOWER(email)`), and contains `'@'` (`..._email_format_check`,
+  `LIKE '%@%'`). There is no trim trigger; callers supply already-normalized
+  values or the checks reject them.
 
 ### `students`
 
@@ -311,6 +361,16 @@ history, no logical deletes.
   `users`. `user_id` is updatable, so an anonymous session can transition to
   authenticated via UPDATE; the schema does not constrain that transition
   further.
+- **Login method**: `login_method TEXT NULL` records how a user-bound session
+  authenticated, constrained to `'password'` or `'google'`
+  (`sessions_login_method_check`). It is paired to `user_id` by
+  `sessions_login_method_presence_check`
+  (`(user_id IS NULL) = (login_method IS
+  NULL)`): NULL exactly for anonymous
+  sessions, non-null for every user-bound session, so an authenticated session
+  can never lack a method and an anonymous one can never carry one. When an
+  anonymous session transitions to authenticated, the UPDATE that sets `user_id`
+  also sets `login_method` to satisfy the pairing.
 - **Lifecycle**: `is_revoked` (boolean, default `false`) and `expires_at` (NOT
   NULL, indexed via `sessions_expires_at_idx`).
 - **Bounds**: `user_agent` ≤512 chars, `initial_ip` ≤64 chars, `metadata` ≤2048
@@ -636,6 +696,7 @@ institution-level 2-digit `PCIP` families.
 - [x] [RFC-43: Provider-Agnostic LLM Chat Provider](../../rfc/43-chat-provider.md)
 - [x] [RFC-45: Coaching Service and Conversation REST Surface](../../rfc/45-coaching-service.md)
 - [x] [RFC-60: Admin Website](../../rfc/60-admin-website.md)
+- [x] [RFC-64: Google SSO Login](../../rfc/64-google-sso-login.md)
 - [x] [RFC-65: Email Verification](../../rfc/65-email-verification.md)
 - [x] [RFC-67: College Knowledge](../../rfc/67-college-knowledge.md) — Added the
       `colleges` and `college_programs` reference tables (curated College

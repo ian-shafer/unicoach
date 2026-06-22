@@ -1,7 +1,6 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationError
-import ed.unicoach.db.models.UserId
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 
@@ -43,12 +42,7 @@ class DatabaseException(
 class CorruptPersistedValueException(
   val value: String,
   val error: ValidationError,
-) : DaoException("Persisted value failed reconstruction"),
-  PermanentError
-
-class CorruptPersistedAuthMethodException(
-  val userId: UserId,
-) : DaoException("Persisted user row has no auth method"),
+) : DaoException("Persisted value failed reconstruction: $error"),
   PermanentError
 
 class LockAcquisitionFailureException(

@@ -111,10 +111,10 @@ read-then-write blocks.
 ### `users` create path
 
 - Create MUST hash the submitted plaintext password via the injected
-  `Argon2Hasher` and build `AuthMethod.Password(...)` directly, then call the
-  users-create DAO method. It MUST NOT route through `AuthService.register`,
-  because registration also mints a session — an unwanted side effect for an
-  admin-created row.
+  `Argon2Hasher` into a `PasswordHash` and set it on `NewUser.passwordHash`
+  directly (no `AuthMethod` wrapper), then call the users-create DAO method. It
+  MUST NOT route through `AuthService.register`, because registration also mints
+  a session — an unwanted side effect for an admin-created row.
 - Create MUST reject blank/invalid email, name, display name, or a blank
   password before touching the DAO, surfacing each as a field-level failure.
 - A duplicate email MUST surface the DAO's `DuplicateEmailException` as a
@@ -161,11 +161,11 @@ read-then-write blocks.
   `UsersDao.findById(session, id, includeDeleted.toScope())`. Side effects: DB
   read. Errors: `NotFoundException` (→ 404), DB fault (→ error page).
   Idempotent: yes.
-- **create** — validates email/name/displayName/password, hashes the password,
-  builds `AuthMethod.Password`, inserts via `UsersDao.create`. Side effects: one
-  row inserted (no session created). Errors: `IllegalArgumentException` for each
-  invalid/blank field; `DuplicateEmailException` → form re-render with a field
-  error. Idempotent: no.
+- **create** — validates email/name/displayName/password, hashes the password to
+  a `PasswordHash` and sets `NewUser.passwordHash` directly (no `AuthMethod`),
+  inserts via `UsersDao.create`. Side effects: one row inserted (no session
+  created). Errors: `IllegalArgumentException` for each invalid/blank field;
+  `DuplicateEmailException` → form re-render with a field error. Idempotent: no.
 - **update** — re-reads the row (`findById` with `SoftDeleteScope.ALL`) to
   confirm existence, builds a `UserEdit` from the form's `version`, email, name,
   displayName, isAdmin, then calls `UsersDao.update`; the form's version drives
@@ -299,3 +299,9 @@ ever served, so `body` is never re-editable. No edges.
       `UsersResource.delete`/`undelete` became one-line delegations to it. The
       owner-nested `students` delete was deliberately not retrofitted (it keys
       on the parented `findByUserId`, off the capability seam).
+- [x] [RFC-64: Google SSO Login](../../../../../../../../rfc/64-google-sso-login.md)
+      — Incidental call-site update for the reshaped `NewUser`: the `AuthMethod`
+      sealed type (and `SsoProviderId`) was removed, so the `users` create path
+      now hashes the password into a `PasswordHash` and sets
+      `NewUser.passwordHash` directly instead of wrapping it in
+      `AuthMethod.Password`.

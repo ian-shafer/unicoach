@@ -7,6 +7,7 @@ data class Session(
   override val version: Int,
   override val createdAt: Instant,
   val userId: UserId?,
+  val loginMethod: LoginMethod?,
   val metadata: String?,
   val userAgent: String?,
   val initialIp: String?,

@@ -3,6 +3,9 @@ package ed.unicoach.rest
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
+import ed.unicoach.auth.GoogleAuthConfig
+import ed.unicoach.auth.GoogleTokenVerifier
+import ed.unicoach.auth.GoogleTokenVerifierFactory
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatProviderFactory
@@ -96,6 +99,11 @@ fun startServer(
       .from(config)
       .getOrThrow()
 
+  val googleTokenVerifier =
+    GoogleTokenVerifierFactory
+      .fromConfig(GoogleAuthConfig.from(config).getOrThrow())
+      .getOrThrow()
+
   val database = Database(dbConfig)
 
   val emailProvider =
@@ -133,6 +141,7 @@ fun startServer(
         clientKeyGateConfig,
         emailService,
         emailVerificationConfig,
+        googleTokenVerifier,
       )
 
       install(SessionExpiryPlugin) {
@@ -167,6 +176,7 @@ fun Application.appModule(
   clientKeyGateConfig: ClientKeyGateConfig,
   emailService: EmailService,
   emailVerificationConfig: EmailVerificationConfig,
+  googleTokenVerifier: GoogleTokenVerifier,
 ) {
   configureSerialization()
   configureClientKeyGate(clientKeyGateConfig)
@@ -177,7 +187,7 @@ fun Application.appModule(
   val tokenGenerator = TokenGenerator()
   val emailVerificationService =
     EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)
-  val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService)
+  val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)
   val studentService = ed.unicoach.student.StudentService(database)
   val coachingService = CoachingService(database, chatProvider, coachingConfig)
 

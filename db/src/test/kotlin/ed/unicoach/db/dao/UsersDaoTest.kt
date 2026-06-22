@@ -2,7 +2,6 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
-import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
@@ -168,9 +167,7 @@ class UsersDaoTest {
         email = newEmail,
         name = newName,
         displayName = null,
-        authMethod =
-          ed.unicoach.db.models.AuthMethod
-            .Password(newPass),
+        passwordHash = newPass,
       )
 
     val createResult1 = UsersDao.create(session1, newUser)
@@ -210,9 +207,7 @@ class UsersDaoTest {
         email = email,
         name = name,
         displayName = null,
-        authMethod =
-          ed.unicoach.db.models.AuthMethod
-            .Password(pass),
+        passwordHash = pass,
       )
 
     val createResult = UsersDao.create(session1, newUser)
@@ -279,9 +274,7 @@ class UsersDaoTest {
         email = email,
         name = name,
         displayName = null,
-        authMethod =
-          ed.unicoach.db.models.AuthMethod
-            .Password(pass),
+        passwordHash = pass,
       )
 
     // 1. Create first user
@@ -343,9 +336,7 @@ class UsersDaoTest {
         email = email,
         name = nameV1,
         displayName = null,
-        authMethod =
-          ed.unicoach.db.models.AuthMethod
-            .Password(pass),
+        passwordHash = pass,
       )
 
     // V1
@@ -390,45 +381,55 @@ class UsersDaoTest {
   }
 
   @Test
-  fun `findVersion on a both-null auth row returns failure with CorruptPersistedAuthMethodException`() {
-    val rawId = java.util.UUID.randomUUID()
-    val userId = UserId(rawId)
+  fun `create and findByEmail round-trip a password user and an SSO-only user`() {
+    val pwUser =
+      UsersDao
+        .create(session, newPasswordUser("pw-roundtrip"))
+        .getOrThrow()
+    assertTrue(pwUser.passwordHash != null, "Password user must carry a passwordHash")
 
-    // Insert a normal user; the versioning trigger writes its version-1 row into
-    // users_versions. The base users table forbids the both-null auth state via
-    // users_auth_method_check, but users_versions has no such constraint, so we
-    // null both auth columns there to force the corruption reachable via findVersion.
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$rawId', 'corrupt-$rawId@test.com', 'Corrupt User', 'ahash')",
-      )
-    }
-    connection
-      .prepareStatement(
-        "UPDATE users_versions SET password_hash = NULL, sso_provider_id = NULL WHERE id = ? AND version = ?",
-      ).use { stmt ->
-        stmt.setObject(1, rawId)
-        stmt.setInt(2, 1)
-        stmt.executeUpdate()
-      }
+    val ssoOnly =
+      UsersDao
+        .create(
+          session,
+          NewUser(
+            email = (EmailAddress.create("sso-roundtrip@example.com") as ValidationResult.Valid).value,
+            name = (PersonName.create("SSO Only") as ValidationResult.Valid).value,
+            displayName = null,
+            passwordHash = null,
+          ),
+        ).getOrThrow()
+    assertTrue(ssoOnly.passwordHash == null, "SSO-only user must have a null passwordHash")
 
-    val result = UsersDao.findVersion(session, userId, targetVersion = 1)
-    assertTrue(result.isFailure, "Expected failure for a both-null auth version row, got $result")
-    val error = result.exceptionOrNull()
-    assertTrue(
-      error is CorruptPersistedAuthMethodException,
-      "Expected CorruptPersistedAuthMethodException, got $error",
-    )
-    assertTrue(
-      error.userId == userId,
-      "Expected the carried userId to equal the inserted id, got ${error.userId}",
-    )
+    val reloadedPw = UsersDao.findById(session, pwUser.id).getOrThrow()
+    assertTrue(reloadedPw.passwordHash == pwUser.passwordHash, "findById must round-trip the passwordHash")
+
+    val byEmail = UsersDao.findByEmail(session, ssoOnly.email).getOrThrow()
+    assertTrue(byEmail.id == ssoOnly.id && byEmail.passwordHash == null, "findByEmail must round-trip the null passwordHash")
+  }
+
+  @Test
+  fun `version history reconstructs an SSO-only user without sso_provider_id`() {
+    val ssoOnly =
+      UsersDao
+        .create(
+          session,
+          NewUser(
+            email = (EmailAddress.create("sso-history@example.com") as ValidationResult.Valid).value,
+            name = (PersonName.create("SSO History") as ValidationResult.Valid).value,
+            displayName = null,
+            passwordHash = null,
+          ),
+        ).getOrThrow()
+
+    val v1 = UsersDao.findVersion(session, ssoOnly.id, targetVersion = ssoOnly.version).getOrThrow()
+    assertTrue(v1.passwordHash == null, "Historical SSO-only row must reconstruct with a null passwordHash")
   }
 
   /**
    * Projects a [User] into the [UserEdit] the public `update` now accepts. The OCC
-   * version, identity, and mutable business fields carry through; the auth method
-   * and timestamps are intentionally absent from the edit surface.
+   * version, identity, and mutable business fields carry through; the password
+   * credential and timestamps are intentionally absent from the edit surface.
    */
   private fun editOf(user: ed.unicoach.db.models.User): ed.unicoach.db.models.UserEdit =
     ed.unicoach.db.models.UserEdit(
@@ -452,15 +453,15 @@ class UsersDaoTest {
       email = email,
       name = name,
       displayName = null,
-      authMethod = AuthMethod.Password(pass),
+      passwordHash = pass,
       isAdmin = isAdmin,
     )
   }
 
   @Test
-  fun `update via UserEdit leaves authMethod and createdAt untouched`() {
+  fun `update via UserEdit leaves password_hash and createdAt untouched`() {
     val created = UsersDao.create(session, newPasswordUser("edit-immutable")).getOrThrow()
-    assertTrue(created.authMethod is AuthMethod.Password, "Precondition: created with a password auth method")
+    assertTrue(created.passwordHash != null, "Precondition: created with a password credential")
 
     val newName = (PersonName.create("Renamed Via Edit") as ValidationResult.Valid).value
     val edited =
@@ -481,7 +482,7 @@ class UsersDaoTest {
     assertTrue(reloaded.name == newName, "Expected the mutable name to change")
     assertTrue(reloaded.version == created.version + 1, "Expected OCC version increment")
     assertTrue(reloaded.version == edited.version, "Returned and reloaded versions must agree")
-    assertTrue(reloaded.authMethod == created.authMethod, "authMethod must be untouched by UserEdit update")
+    assertTrue(reloaded.passwordHash == created.passwordHash, "password_hash must be untouched by UserEdit update")
     assertTrue(reloaded.createdAt == created.createdAt, "createdAt must be untouched by UserEdit update")
   }
 

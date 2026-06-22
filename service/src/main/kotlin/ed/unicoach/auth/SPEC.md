@@ -2,12 +2,15 @@
 
 ## I. Overview
 
-The authentication domain layer. It owns the business logic for user
-registration, login credential verification, session-bound user resolution
-(`/me`), session revocation (logout), email-verification token issuance and
-redemption, and background zombie-session cleanup. Outcomes are returned as
-pure-domain sealed interfaces wrapped in `Result<T>`; no transport or
-persistence types cross the public surface.
+This directory is the **authentication domain layer**. It owns the business
+logic for user registration, password login, Google federated sign-in,
+session-bound user resolution (`/me`), session revocation (logout),
+email-verification token issuance and redemption, and background zombie-session
+cleanup. It bridges the HTTP boundary (handled by `rest-server`) and the data
+layer (handled by `service/db`), exposing pure domain results via sealed
+interfaces wrapped in `Result<T>`; no transport or persistence types cross the
+public surface. Credential verification (password hashing, Google ID-token
+verification) is handled in this layer.
 
 ---
 
@@ -26,7 +29,8 @@ persistence types cross the public surface.
   thrown exception is caught and returned as `Result.failure(e)`.
 - **Session**: When `oldCookieToken` resolves to an existing session, that
   session is reminted (`SessionsDao.remintToken`) to the new user; otherwise a
-  new session is created (`SessionsDao.create`).
+  new session is created (`SessionsDao.create`). Either way the session carries
+  `LoginMethod.PASSWORD`.
 - **Verification token**: Inside the transaction,
   `EmailVerificationService.issueToken(session, user.id)` persists the token
   hash and captures the raw token. The raw token is held only in a local
@@ -50,32 +54,82 @@ persistence types cross the public surface.
 
 ### `AuthService.login(email, password, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<LoginResult>` — See [AuthService.kt](./AuthService.kt)
 
-- **Behavior**: Normalizes and parses the email, looks up the user, verifies the
-  password, then mints a new session (optionally revoking the session named by
-  `oldCookieToken`).
-- **Side Effects**: One read query (`UsersDao.findByEmail`); on success an
-  optional session revoke plus one `sessions` insert via `SessionsDao.create`.
+- **Behavior**: Trims and lowercases the email, parses it
+  (`EmailAddress.create`), looks up the user, verifies the password, then mints
+  a new session via `mintSession` (revoking a live `oldCookieToken` session
+  first) with `LoginMethod.PASSWORD`.
+- **Side Effects**: One read-only lookup via `UsersDao.findByEmail`. On a valid
+  password an optional old-session revoke plus one `sessions` insert via
+  `SessionsDao.create` (with `LoginMethod.PASSWORD`).
+- **Password presence**: Reads `user.passwordHash`; a `null` hash (Google-only
+  account) returns `LoginResult.PasswordNotSet`.
 - **Idempotency**: Not idempotent — a successful login inserts a session row.
 - **Error mapping**:
-  - Success → `Result.success(LoginResult.Success(user, token))`
-  - Unparseable email → `Result.success(LoginResult.InvalidEmail(error))`
+  - Success → `Result.success(LoginResult.Success(user, newToken))`
+  - Unparseable/malformed email →
+    `Result.success(LoginResult.InvalidEmail(error))`
   - No such user → `Result.success(LoginResult.UserNotFound)`
-  - SSO-only user (no password hash) →
+  - User has no password hash (Google-only) →
     `Result.success(LoginResult.PasswordNotSet)`
   - Wrong password → `Result.success(LoginResult.PasswordMismatch)`
   - Any uncaught exception → `Result.failure(e)`
+
+### `AuthService.loginWithGoogle(idToken, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<GoogleLoginResult>` — See [AuthService.kt](./AuthService.kt)
+
+Establishes a session from a Google ID token. Both first-time signup and a
+returning login return `GoogleLoginResult.Success` — the result does not
+distinguish them, so account existence is not disclosed.
+
+- **Flow**:
+  1. `googleTokenVerifier.verify(idToken)`. A `GoogleTokenUnavailableException`
+     maps to `GoogleLoginResult.VerificationUnavailable`; a
+     `GoogleTokenInvalidException` maps to `GoogleLoginResult.InvalidToken`; any
+     other failure → `Result.failure(e)`.
+  2. Gate on the verified identity: `emailVerified == false` →
+     `GoogleLoginResult.EmailNotVerified`.
+  3. Re-validate the identity's `subject` (`ProviderSubject.create`) and `email`
+     (`EmailAddress.create`); either being invalid →
+     `GoogleLoginResult.InvalidToken`.
+  4. Run the sign-in transaction (`runGoogleSignIn`); retried **once** on a
+     `ConstraintViolationException` or `DuplicateEmailException` from a
+     concurrent first-login race (the aborted transaction cannot re-read, so the
+     whole block re-runs and the loser resolves as a returning login). Any other
+     exception → `Result.failure(e)`.
+- **Identity resolution** (`resolveOrProvisionUser`, within the transaction):
+  - **Returning login**: an existing `(GOOGLE, subject)` identity loads its user
+    across all soft-delete states (`SoftDeleteScope.ALL`). A `deletedAt != null`
+    user → `GoogleLoginResult.AccountDisabled`; otherwise the user is resolved.
+  - **Link**: no `(GOOGLE, subject)` identity but an active email-matched user
+    exists → a `user_auth_identities` row (`emailVerified = true`) is linked
+    onto that user.
+  - **Create**: neither exists → a new `users` row is created
+    (`passwordHash = null`, name from the `name` claim or, when absent/blank,
+    the email local-part via `deriveName`) plus a linked `user_auth_identities`
+    row.
+- **Session**: On a resolved user, `mintSession` revokes a live old-cookie
+  session then creates a fresh session with `LoginMethod.GOOGLE`.
+- **Side Effects**: Network/crypto in the verifier; within one transaction,
+  reads `user_auth_identities` and `users`, may insert a `users` row and/or a
+  `user_auth_identities` row, and writes a `sessions` row.
+- **Idempotency**: Not idempotent (mints a session, may provision a user). A
+  second sign-in for an already-provisioned subject resolves as a returning
+  login.
+- **Name derivation** (`deriveName`): a candidate that cannot form a valid
+  `PersonName` throws `IllegalStateException` (surfacing as a `Result.failure`,
+  i.e. a 500); there is no silent placeholder.
 
 ### `AuthService.getCurrentUser(tokenHash: TokenHash): Result<User?>` — See [AuthService.kt](./AuthService.kt)
 
 - **Behavior**: Resolves the session for the token hash, then loads the
   associated user.
 - **Side Effects**: Two read-only queries (`SessionsDao.findByTokenHash`,
-  `UsersDao.findById`). No writes.
+  `UsersDao.findById` with `includeDeleted = false`). No writes.
 - **Absent-user collapse**: Token not found, expired, revoked, anonymous session
   (`session.userId == null`), and soft-deleted user all collapse to
   `Result.success(null)`. The DAO signals the not-found cases as
   `NotFoundException`.
-- **Idempotency**: Idempotent (read-only).
+- **Idempotency**: Idempotent (read-only). Expiry extension is not performed
+  here.
 - **Error mapping**: Any non-`NotFoundException` DAO failure →
   `Result.failure(e)`.
 
@@ -182,23 +236,98 @@ persistence types cross the public surface.
   `exitProcess(1)`.
 - **Idempotency**: Idempotent (re-running expiry is safe).
 
+### `GoogleTokenVerifier.verify(idToken: String): Result<GoogleIdentity>` — See [GoogleTokenVerifier.kt](./GoogleTokenVerifier.kt)
+
+- **Behavior**: Verifies a Google ID token and projects it into a
+  `GoogleIdentity` (subject, email, emailVerified, optional name). Hidden behind
+  an interface so it is swappable and offline-testable.
+- **Failure carriers**:
+  - `GoogleTokenInvalidException` (a `PermanentError`) — any signature or claim
+    failure: malformed, expired, wrong `aud`/`iss`, bad signature, missing
+    `sub`/`email`, unknown signing key.
+  - `GoogleTokenUnavailableException` (a `TransientError`) — the JWKS endpoint
+    could not be reached.
+- **`DisabledGoogleTokenVerifier`**: a fail-closed object that rejects every
+  token with `GoogleTokenInvalidException`. Wired on hosts with no Google route
+  (e.g. admin-server) so a credential can never be accepted there.
+
+### `JwksGoogleTokenVerifier` — See [JwksGoogleTokenVerifier.kt](./JwksGoogleTokenVerifier.kt)
+
+- **Behavior**: Production verifier. Decodes the JWT, fetches the RSA key from a
+  `JwkProvider` by `kid`, verifies the RS256 signature plus `iss` / `aud`
+  (any-of the configured `clientIds`) / `exp` / `iat` with `clockSkew` leeway,
+  then reads `sub`, `email`, `email_verified`, `name`.
+- **Side Effects**: Network — fetches Google's JWKS (cached/rate-limited).
+- **Email-verified**: an absent or non-`true` `email_verified` claim yields
+  `emailVerified = false`.
+- **Error mapping**: a JWKS fetch/transport failure (timeout, unknown host, IO)
+  → `GoogleTokenUnavailableException`; a decode, signature, claim, unknown-key,
+  or missing-`sub`/`email` failure → `GoogleTokenInvalidException`.
+
+### `StubGoogleTokenVerifier` — See [StubGoogleTokenVerifier.kt](./StubGoogleTokenVerifier.kt)
+
+- **Behavior**: Offline test/dev verifier (`PROVIDER_ID = "stub"`); no network,
+  no crypto. Parses the fake-token format `stub:` followed by `field=value`
+  pairs separated by `;`. Recognised fields: `sub` (required), `email`
+  (required), `email_verified` (defaults `false`), `name` (optional).
+- **Error mapping**: `stub:invalid`, a missing prefix, or a missing
+  `sub`/`email` → `GoogleTokenInvalidException`; the literal `stub:unavailable`
+  → `GoogleTokenUnavailableException` (exercising the transient path offline).
+
+### `GoogleAuthConfig.from(config: Config): Result<GoogleAuthConfig>` — See [GoogleAuthConfig.kt](./GoogleAuthConfig.kt)
+
+- **Behavior**: Typed reader for the `auth.google` block of `service.conf`,
+  mirroring `SessionConfig`/`ChatConfig`'s Result-returning, fail-fast contract.
+  Returns `Result.failure` when the section is absent or unreadable. Performs
+  **no value validation** — the factory is the single place an unusable
+  configuration is rejected.
+- **Fields**: `provider`, `clientIds`, `issuers`, `jwksUri`, `clockSkew`,
+  `connectTimeout`, `readTimeout`.
+- **List parsing**: `clientIds` and `issuers` accept either a HOCON list or a
+  comma-separated string (the shape the `GOOGLE_CLIENT_IDS` env override
+  produces); blank entries are dropped.
+
+### `GoogleTokenVerifierFactory.fromConfig(config: GoogleAuthConfig): Result<GoogleTokenVerifier>` — See [GoogleTokenVerifierFactory.kt](./GoogleTokenVerifierFactory.kt)
+
+- **Behavior**: Selector on `config.provider`, mirroring `ChatProviderFactory`:
+  - `"stub"` → `StubGoogleTokenVerifier`
+  - `"google"` → `JwksGoogleTokenVerifier` (fails fast when `clientIds` is
+    empty)
+  - any other value → `Result.failure(IllegalArgumentException)` (no silent
+    fallback).
+
 ### `RegisterResult` (sealed interface) — See [RegisterResult.kt](./RegisterResult.kt)
 
-| Variant             | Carries                 | When returned               |
-| ------------------- | ----------------------- | --------------------------- |
-| `Success`           | `user`, `token`         | Successful registration     |
-| `ValidationFailure` | `errors`, `fieldErrors` | Validator rejects input     |
-| `DuplicateEmail`    | `email`                 | Email unique-constraint hit |
+| Variant             | Carries                                                 | When returned                     |
+| ------------------- | ------------------------------------------------------- | --------------------------------- |
+| `Success`           | `user: User`, `token: String`                           | Successful registration           |
+| `ValidationFailure` | `errors: List<String>`, `fieldErrors: List<FieldError>` | Validator rejects input           |
+| `DuplicateEmail`    | `email: String`                                         | DB unique constraint hit on email |
 
 ### `LoginResult` (sealed interface) — See [LoginResult.kt](./LoginResult.kt)
 
-| Variant            | Carries         | When returned           |
-| ------------------ | --------------- | ----------------------- |
-| `Success`          | `user`, `token` | Successful login        |
-| `InvalidEmail`     | `error`         | Email format is invalid |
-| `UserNotFound`     | —               | User does not exist     |
-| `PasswordNotSet`   | —               | SSO-only user           |
-| `PasswordMismatch` | —               | Incorrect password      |
+| Variant            | Carries                       | When returned                |
+| ------------------ | ----------------------------- | ---------------------------- |
+| `Success`          | `user: User`, `token: String` | Successful login             |
+| `InvalidEmail`     | `error: ValidationError`      | Email format is invalid      |
+| `UserNotFound`     | None                          | User does not exist          |
+| `PasswordNotSet`   | None                          | Account has no password hash |
+| `PasswordMismatch` | None                          | Incorrect password           |
+
+### `GoogleLoginResult` (sealed interface) — See [GoogleLoginResult.kt](./GoogleLoginResult.kt)
+
+| Variant                   | Carries                       | When returned                                   |
+| ------------------------- | ----------------------------- | ----------------------------------------------- |
+| `Success`                 | `user: User`, `token: String` | Sign-in succeeded (signup or returning login)   |
+| `InvalidToken`            | None                          | Token failed verification or carried bad claims |
+| `EmailNotVerified`        | None                          | `email_verified` was false                      |
+| `AccountDisabled`         | None                          | The resolved user is soft-deleted               |
+| `VerificationUnavailable` | None                          | Google's JWKS endpoint was unreachable          |
+
+### `GoogleIdentity` (data class) — See [GoogleIdentity.kt](./GoogleIdentity.kt)
+
+The claims read from a verified Google ID token (`subject`, `email`,
+`emailVerified`, optional `name`).
 
 ### `VerifyEmailResult` (sealed interface) — See [VerifyEmailResult.kt](./VerifyEmailResult.kt)
 
@@ -223,13 +352,20 @@ persistence types cross the public surface.
 - **Module**: `service` (Gradle).
 - **Dependencies (constructor-injected)**:
   - `AuthService` holds `Database`, `Argon2Hasher`, `TokenGenerator`,
-    `EmailVerificationService`, and a `Validator<RegistrationInput>` (defaulting
-    to `RegistrationValidator`).
+    `EmailVerificationService`, a `GoogleTokenVerifier`, and a
+    `Validator<RegistrationInput>` (defaulting to `RegistrationValidator`).
   - `EmailVerificationService` holds `Database`, `EmailService`,
     `TokenGenerator`, and `EmailVerificationConfig`.
-- **Database**: Requires a live PostgreSQL connection pool via `Database`. All
-  DB access goes through `Database.withConnection`; the layer holds no raw
-  `java.sql.Connection`.
+- **Database**: Requires a live PostgreSQL connection pool via `Database`
+  (HikariCP). All DB access goes through `Database.withConnection`; the layer
+  holds no raw `java.sql.Connection`. The Google sign-in path runs its identity
+  resolution and session-minting in a single transaction.
+- **Credential model**: A user's credential is a nullable `password_hash` plus
+  zero-or-more `user_auth_identities` rows (e.g. a `(GOOGLE, subject)` federated
+  identity). The "at least one usable credential" guarantee is an application
+  invariant enforced in `AuthService`, not a row-local DB CHECK (the
+  `users_auth_method_check` / `sso_provider_id` column was dropped in migration
+  `0017.drop-users-sso-provider-id.sql`).
 - **Config — `EmailVerificationConfig`** — See
   [EmailVerificationConfig.kt](./EmailVerificationConfig.kt): the
   `from(config): Result<EmailVerificationConfig>` factory reads the
@@ -241,13 +377,17 @@ persistence types cross the public surface.
   - `emailVerification.verifyUrlBase` (a `String`) — the link prefix the
     verification email points at; the raw token is appended as a `?token=` query
     parameter.
+- **Google configuration**: `GoogleAuthConfig` reads the `auth.google` block of
+  `service.conf` — `provider`, `clientIds` (env override `GOOGLE_CLIENT_IDS`),
+  `issuers`, `jwksUri`, `clockSkew`, `connectTimeout`, `readTimeout`. The
+  verifier and other collaborators are injected via constructor.
 - **Token storage**: A verification token is persisted only as its SHA-256 hash
   plus an expiry; the raw token exists only in memory between issuance and the
   outbound email link.
 - **Coroutine context**: `suspend` methods run on the caller's coroutine
   context; the layer performs no dispatcher switching.
 - **`SessionCleanupJob`**: invoked by an external scheduler (e.g. cron);
-  `execute()` does not self-schedule.
+  `execute()` is a `suspend` function and does not self-schedule.
 
 ---
 
@@ -264,4 +404,20 @@ persistence types cross the public surface.
 - [x] [RFC-34: Transactional Email Service](../../../../../../../rfc/34-transactional-email-service.md)
 - [x] [RFC-52: Make the REST Surface Fuzz-Clean](../../../../../../../rfc/52-make-rest-surface-fuzz-clean.md)
 - [x] [RFC-62: DAO Capability Interfaces and Shared Query Scaffolding](../../../../../../../rfc/62-dao-interfaces.md)
+      — Renamed the `SessionsDao.create` named argument to `input` at the
+      `AuthService` call sites. No behavioral change.
+- [x] [RFC-64: Google SSO Login](../../../../../../../rfc/64-google-sso-login.md)
+      — Added the `GoogleTokenVerifier` abstraction (`Jwks`/`Stub`/`Disabled`
+      verifiers, factory, and `GoogleAuthConfig`) and
+      `AuthService.loginWithGoogle`, which provisions or resolves a federated
+      user and mints a `LoginMethod.GOOGLE` session. The credential model became
+      a nullable `password_hash` plus `user_auth_identities` rows (removed
+      `authMethod`/`AuthMethod`/`SsoProviderId` and dropped the
+      `sso_provider_id` column / `users_auth_method_check` in migration
+      `0017.drop-users-sso-provider-id.sql`). `register`/`login` now thread
+      `LoginMethod.PASSWORD` through shared session minting, and `login` reads
+      `user.passwordHash` (returning `PasswordNotSet` when null).
 - [x] [RFC-65: Email Verification](../../../../../../../rfc/65-email-verification.md)
+      — Added `EmailVerificationService` (token issuance/redemption/resend) and
+      `EmailVerificationConfig`; `register` issues a verification token inside
+      its transaction and sends a best-effort verification email post-commit.

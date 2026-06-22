@@ -4,6 +4,7 @@ import ed.unicoach.auth.AuthService
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.models.ErrorResponse
+import ed.unicoach.rest.models.GoogleLoginRequest
 import ed.unicoach.rest.models.LoginRequest
 import ed.unicoach.rest.models.LoginResponse
 import ed.unicoach.rest.models.MeResponse
@@ -23,6 +24,21 @@ import io.ktor.server.routing.*
 import io.ktor.server.routing.RoutingContext
 
 // Removed respondAppError
+
+private fun ApplicationCall.setSessionCookie(
+  token: String,
+  sessionConfig: ed.unicoach.rest.auth.SessionConfig,
+) {
+  response.cookies.append(
+    name = sessionConfig.cookieName,
+    value = token,
+    domain = sessionConfig.cookieDomain,
+    path = "/",
+    secure = sessionConfig.cookieSecure,
+    httpOnly = true,
+    extensions = mapOf("SameSite" to "Strict"),
+  )
+}
 
 private fun ApplicationCall.clearSessionCookie(sessionConfig: ed.unicoach.rest.auth.SessionConfig) {
   response.cookies.append(
@@ -50,6 +66,10 @@ class AuthRouteHandler(
       }
       route("/login") {
         post { handleLogin() }
+        rejectUnsupportedMethods(HttpMethod.Post)
+      }
+      route("/google") {
+        post { handleGoogleLogin() }
         rejectUnsupportedMethods(HttpMethod.Post)
       }
       route("/me") {
@@ -100,25 +120,8 @@ class AuthRouteHandler(
   }
 
   private suspend fun RoutingContext.respondRegisterSuccess(outcome: ed.unicoach.auth.RegisterResult.Success) {
-    val publicUser =
-      PublicUser(
-        id = outcome.user.id.value,
-        email = outcome.user.email.value,
-        name = outcome.user.name.value,
-        emailVerified = outcome.user.emailVerifiedAt != null,
-      )
-
-    call.response.cookies.append(
-      name = sessionConfig.cookieName,
-      value = outcome.token,
-      domain = sessionConfig.cookieDomain,
-      path = "/",
-      secure = sessionConfig.cookieSecure,
-      httpOnly = true,
-      extensions = mapOf("SameSite" to "Strict"),
-    )
-
-    call.respond(HttpStatusCode.Created, RegisterResponse(publicUser))
+    call.setSessionCookie(outcome.token, sessionConfig)
+    call.respond(HttpStatusCode.Created, RegisterResponse(PublicUser.from(outcome.user)))
   }
 
   private suspend fun RoutingContext.respondRegisterValidationFailure(outcome: ed.unicoach.auth.RegisterResult.ValidationFailure) {
@@ -148,14 +151,7 @@ class AuthRouteHandler(
     if (user == null) {
       call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
     } else {
-      val publicUser =
-        PublicUser(
-          id = user.id.value,
-          email = user.email.value,
-          name = user.name.value,
-          emailVerified = user.emailVerifiedAt != null,
-        )
-      call.respond(HttpStatusCode.OK, MeResponse(publicUser))
+      call.respond(HttpStatusCode.OK, MeResponse(PublicUser.from(user)))
     }
   }
 
@@ -202,25 +198,8 @@ class AuthRouteHandler(
   }
 
   private suspend fun RoutingContext.respondLoginSuccess(outcome: ed.unicoach.auth.LoginResult.Success) {
-    val publicUser =
-      PublicUser(
-        id = outcome.user.id.value,
-        email = outcome.user.email.value,
-        name = outcome.user.name.value,
-        emailVerified = outcome.user.emailVerifiedAt != null,
-      )
-
-    call.response.cookies.append(
-      name = sessionConfig.cookieName,
-      value = outcome.token,
-      domain = sessionConfig.cookieDomain,
-      path = "/",
-      secure = sessionConfig.cookieSecure,
-      httpOnly = true,
-      extensions = mapOf("SameSite" to "Strict"),
-    )
-
-    call.respond(HttpStatusCode.OK, LoginResponse(publicUser))
+    call.setSessionCookie(outcome.token, sessionConfig)
+    call.respond(HttpStatusCode.OK, LoginResponse(PublicUser.from(outcome.user)))
   }
 
   private suspend fun RoutingContext.respondLoginUnauthorized(outcome: ed.unicoach.auth.LoginResult) {
@@ -234,14 +213,7 @@ class AuthRouteHandler(
     val outcome = emailVerificationService.verify(request.token).getOrThrow()
     when (outcome) {
       is ed.unicoach.auth.VerifyEmailResult.Success -> {
-        val publicUser =
-          PublicUser(
-            id = outcome.user.id.value,
-            email = outcome.user.email.value,
-            name = outcome.user.name.value,
-            emailVerified = outcome.user.emailVerifiedAt != null,
-          )
-        call.respond(HttpStatusCode.OK, VerifyEmailResponse(publicUser))
+        call.respond(HttpStatusCode.OK, VerifyEmailResponse(PublicUser.from(outcome.user)))
       }
 
       is ed.unicoach.auth.VerifyEmailResult.InvalidToken -> {
@@ -254,6 +226,52 @@ class AuthRouteHandler(
 
       is ed.unicoach.auth.VerifyEmailResult.AlreadyConsumed -> {
         call.respond(HttpStatusCode.BadRequest, ErrorResponse("token_already_used", "Verification token has already been used"))
+      }
+    }
+  }
+
+  private suspend fun RoutingContext.handleGoogleLogin() {
+    val request = call.receive<GoogleLoginRequest>()
+    val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
+
+    val outcome =
+      authService
+        .loginWithGoogle(
+          idToken = request.idToken,
+          oldCookieToken = oldCookieToken,
+          sessionExpirationSeconds = sessionConfig.expiration.seconds,
+          userAgent = call.request.headers["User-Agent"],
+          initialIp = call.request.origin.remoteHost,
+        ).getOrThrow()
+
+    respondGoogleLoginOutcome(outcome)
+  }
+
+  private suspend fun RoutingContext.respondGoogleLoginOutcome(outcome: ed.unicoach.auth.GoogleLoginResult) {
+    when (outcome) {
+      is ed.unicoach.auth.GoogleLoginResult.Success -> respondGoogleLoginSuccess(outcome)
+      is ed.unicoach.auth.GoogleLoginResult.InvalidToken -> {
+        call.application.environment.log
+          .info("Google login failed: $outcome")
+        call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Invalid Google ID token", null))
+      }
+      is ed.unicoach.auth.GoogleLoginResult.EmailNotVerified -> {
+        call.application.environment.log
+          .info("Google login failed: $outcome")
+        call.respond(HttpStatusCode.Forbidden, ErrorResponse("email_not_verified", "Google account email is not verified", null))
+      }
+      is ed.unicoach.auth.GoogleLoginResult.AccountDisabled -> {
+        call.application.environment.log
+          .info("Google login failed: $outcome")
+        call.respond(HttpStatusCode.Forbidden, ErrorResponse("account_disabled", "Account is disabled", null))
+      }
+      is ed.unicoach.auth.GoogleLoginResult.VerificationUnavailable -> {
+        call.application.environment.log
+          .warn("Google login failed: $outcome")
+        call.respond(
+          HttpStatusCode.ServiceUnavailable,
+          ErrorResponse("service_unavailable", "Google sign-in is temporarily unavailable", null),
+        )
       }
     }
   }
@@ -275,5 +293,10 @@ class AuthRouteHandler(
     // Idempotent: both Sent and AlreadyVerified collapse to 204 (no state leak).
     emailVerificationService.resend(user).getOrThrow()
     call.respond(HttpStatusCode.NoContent)
+  }
+
+  private suspend fun RoutingContext.respondGoogleLoginSuccess(outcome: ed.unicoach.auth.GoogleLoginResult.Success) {
+    call.setSessionCookie(outcome.token, sessionConfig)
+    call.respond(HttpStatusCode.OK, LoginResponse(PublicUser.from(outcome.user)))
   }
 }

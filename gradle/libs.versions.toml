@@ -6,6 +6,7 @@ postgresql = "42.7.3"
 argon2 = "2.11"
 hikaricp = "6.2.1"
 java-jwt = "4.4.0"
+jwks-rsa = "0.24.1"
 coroutines = "1.10.1"
 typesafe-config = "1.4.3"
 kotlinx-serialization = "1.11.0"
@@ -35,6 +36,7 @@ postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" 
 argon2 = { module = "de.mkammerer:argon2-jvm", version.ref = "argon2" }
 hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
 java-jwt = { module = "com.auth0:java-jwt", version.ref = "java-jwt" }
+jwks-rsa = { module = "com.auth0:jwks-rsa", version.ref = "jwks-rsa" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 typesafe-config = { module = "com.typesafe:config", version.ref = "typesafe-config" }

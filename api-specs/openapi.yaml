@@ -110,6 +110,75 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/auth/google:
+    post:
+      summary: Sign in with a Google ID token
+      description: >
+        Verifies a Google ID token and establishes a session. Both first-time
+        signup and returning login return 200 with the session cookie; the
+        response does not distinguish them, so account existence is not disclosed.
+      operationId: loginWithGoogle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleLoginRequest'
+      responses:
+        '200':
+          description: User successfully authenticated
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: The opaque session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Malformed request body (e.g. wrong JSON value types)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Malformed, expired, or otherwise invalid Google ID token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Email not verified, or the matched account is disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Request body could not be deserialized into the expected shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Google sign-in is temporarily unavailable (JWKS endpoint unreachable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/auth/me:
     get:
       summary: Get current authenticated user
@@ -887,6 +956,14 @@ components:
       properties:
         user:
           $ref: '#/components/schemas/PublicUser'
+    GoogleLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [idToken]
+      properties:
+        idToken:
+          type: string
+          description: A Google-issued ID token (JWT)
     MeResponse:
       type: object
       required: [user]

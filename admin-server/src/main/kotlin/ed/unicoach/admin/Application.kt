@@ -12,6 +12,7 @@ import ed.unicoach.admin.resources.UsersResource
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
+import ed.unicoach.auth.StubGoogleTokenVerifier
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -51,13 +52,16 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   // The admin gate only authenticates via AuthService; it never registers users
   // or sends verification mail. The EmailVerificationService is wired purely to
   // satisfy the AuthService constructor (RFC 65); the log provider is inert here.
+  // The StubGoogleTokenVerifier (RFC 64) is likewise inert: the admin gate never
+  // exercises the Google login path.
   val emailConfig = EmailConfig.from(config).getOrThrow()
   val emailProvider = EmailProviderFactory.fromConfig(emailConfig).getOrThrow()
   val emailService = EmailService(database, emailProvider, emailConfig)
   val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
   val emailVerificationService =
     EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)
-  val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService)
+  val authService =
+    AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, StubGoogleTokenVerifier())
 
   val server =
     embeddedServer(Netty, port = adminConfig.port, host = adminConfig.host) {

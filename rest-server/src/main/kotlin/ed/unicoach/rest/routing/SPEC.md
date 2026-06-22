@@ -96,7 +96,8 @@ re-tabulated per endpoint.
 Error codes are a per-route-family convention, not a global one. `AuthRoutes`
 and `ConvoRoutes` emit **lowercase snake_case** codes (`unauthorized`,
 `validation_failed`, `conflict`, `invalid_token`, `token_expired`,
-`token_already_used`, `not_found`, `student_profile_required`,
+`token_already_used`, `email_not_verified`, `account_disabled`,
+`service_unavailable`, `not_found`, `student_profile_required`,
 `coach_unavailable`, `coach_failed`). `StudentRoutes` emits **UPPERCASE** codes
 (`UNAUTHORIZED`, `VALIDATION_ERROR`, `STUDENT_NOT_FOUND`,
 `STUDENT_ALREADY_EXISTS`, `VERSION_CONFLICT`). A code's casing is part of that
@@ -220,6 +221,42 @@ string is opaque to clients.
 
 - **Method restriction**: Non-POST → `405`.
 - **Idempotency**: Not idempotent — creates a new session.
+
+---
+
+### `POST /api/v1/auth/google` — [`AuthRoutes.kt`](./AuthRoutes.kt)
+
+- **Request**: JSON body `{"idToken": string}`. Deserialized as
+  `GoogleLoginRequest`. The raw incoming session cookie (if any) is read as
+  `oldCookieToken`.
+- **Side effects**:
+  - Calls `AuthService.loginWithGoogle()`, forwarding `idToken`,
+    `oldCookieToken`, the session expiration, the `User-Agent` header, and the
+    remote host. All token verification, user provisioning, and session
+    minting/reminting are owned by the service; the routing layer performs none
+    of it directly.
+  - On `Success`, writes a `Set-Cookie` header carrying the opaque token
+    returned by the service (`outcome.token`). The cookie attributes are
+    identical to those of `register`/`login` (`HttpOnly`, `SameSite=Strict`,
+    `path=/`, `secure`/`domain` from `SessionConfig`).
+- **Response mapping**:
+
+  | Condition                                   | Status                    | Body                                                                |
+  | ------------------------------------------- | ------------------------- | ------------------------------------------------------------------- |
+  | `GoogleLoginResult.Success`                 | `200 OK`                  | `LoginResponse { user: PublicUser }` (same shape as password login) |
+  | `GoogleLoginResult.InvalidToken`            | `401 Unauthorized`        | `ErrorResponse(code="unauthorized", "Invalid Google ID token")`     |
+  | `GoogleLoginResult.EmailNotVerified`        | `403 Forbidden`           | `ErrorResponse(code="email_not_verified", …)`                       |
+  | `GoogleLoginResult.AccountDisabled`         | `403 Forbidden`           | `ErrorResponse(code="account_disabled", …)`                         |
+  | `GoogleLoginResult.VerificationUnavailable` | `503 Service Unavailable` | `ErrorResponse(code="service_unavailable", …)`                      |
+  | Exceptions thrown by `.getOrThrow()`        | (propagated)              | Mapped by `StatusPages`                                             |
+
+  The four failure branches log at the `info` level, except
+  `VerificationUnavailable`, which logs at `warn`.
+
+- **Method restriction**: Non-POST methods → `405 Method Not Allowed` (via
+  `rejectUnsupportedMethods(HttpMethod.Post)`).
+- **Idempotency**: Not idempotent — a successful sign-in mints a new session; a
+  first-time Google identity provisions a user.
 
 ---
 
@@ -583,8 +620,9 @@ package and injected into the route handlers as `sessionConfig`.
 ### Injected Dependencies
 
 - **`AuthService`** (`service` module): Provides `register()`, `login()`,
-  `getCurrentUser()`, and `logout()`. Used by `AuthRouteHandler` for auth flows
-  and resend-verification owner resolution, and by `StudentRouteHandler` /
+  `loginWithGoogle()`, `getCurrentUser()`, and `logout()`. Used by
+  `AuthRouteHandler` for auth flows (including Google login) and
+  resend-verification owner resolution, and by `StudentRouteHandler` /
   `ConvoRouteHandler` for owner resolution.
 - **`EmailVerificationService`** (`service` module): Provides `verify(token)`
   and `resend(user)`. Held by `AuthRouteHandler` (constructed from an injected
@@ -646,6 +684,16 @@ package and injected into the route handlers as `sessionConfig`.
       — Wrapped `/api/v1/auth/register` in a `route("/register")` block with
       `rejectUnsupportedMethods(HttpMethod.Post)`, so a non-POST verb returns
       `405` with an `Allow: POST` header.
+- [x] [RFC-64: Google SSO Login](../../../../../../../../rfc/64-google-sso-login.md)
+      — Added `POST /api/v1/auth/google` to the `/api/v1/auth` block (alongside
+      `register`/`login`/`me`/`logout`, with
+      `rejectUnsupportedMethods(HttpMethod.Post)`). The handler receives
+      `GoogleLoginRequest { idToken }`, forwards the old cookie token to
+      `AuthService.loginWithGoogle()`, and maps `GoogleLoginResult`: `Success` →
+      `200 LoginResponse` + session cookie (same shape as password login),
+      `InvalidToken` → `401 unauthorized`, `EmailNotVerified` →
+      `403 email_not_verified`, `AccountDisabled` → `403 account_disabled`,
+      `VerificationUnavailable` → `503 service_unavailable`.
 - [x] [RFC-65: Email Verification](../../../../../../../../rfc/65-email-verification.md)
       — Added `POST /api/v1/auth/verify-email` (no auth; body
       `VerifyEmailRequest` token; `200 VerifyEmailResponse`, or `400` with

@@ -2,18 +2,15 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
-import ed.unicoach.db.models.AuthMethod
 import ed.unicoach.db.models.DisplayName
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.SoftDeleteScope
-import ed.unicoach.db.models.SsoProviderId
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserEdit
 import ed.unicoach.db.models.UserId
 import ed.unicoach.db.models.UserVersion
-import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -46,7 +43,7 @@ object UsersDao :
       email = email,
       name = name,
       displayName = displayName,
-      authMethod = readAuthMethod(rs, id),
+      passwordHash = readPasswordHash(rs),
       isAdmin = rs.getBoolean("is_admin"),
       emailVerifiedAt = rs.getInstantOrNull("email_verified_at"),
     )
@@ -73,90 +70,15 @@ object UsersDao :
       email = email,
       name = name,
       displayName = displayName,
-      authMethod = readAuthMethod(rs, id),
+      passwordHash = readPasswordHash(rs),
       isAdmin = rs.getBoolean("is_admin"),
       emailVerifiedAt = rs.getInstantOrNull("email_verified_at"),
     )
   }
 
-  /** Reconstructs the auth method from the two nullable auth columns. */
-  private fun readAuthMethod(
-    rs: ResultSet,
-    id: UserId,
-  ): AuthMethod {
-    val passwordHashStr = rs.getString("password_hash")
-    val ssoStr = rs.getString("sso_provider_id")
-    return when {
-      passwordHashStr != null && ssoStr != null -> {
-        AuthMethod.Both(
-          (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
-          (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
-        )
-      }
-
-      passwordHashStr != null -> {
-        AuthMethod.Password(
-          (PasswordHash.create(passwordHashStr) as ValidationResult.Valid).value,
-        )
-      }
-
-      ssoStr != null -> {
-        AuthMethod.SSO(
-          (SsoProviderId.create(ssoStr) as ValidationResult.Valid).value,
-        )
-      }
-
-      else -> {
-        throw CorruptPersistedAuthMethodException(userId = id)
-      }
-    }
-  }
-
-  /**
-   * Binds a single auth column at [index]: the `password_hash` value when
-   * [password] is true, else the `sso_provider_id` value. NULL (as
-   * `Types.VARCHAR`) when the [method] does not carry that credential. Used by
-   * the column-map `create` path, where each column binds independently by
-   * position.
-   */
-  private fun bindAuthMethodColumn(
-    stmt: PreparedStatement,
-    index: Int,
-    method: AuthMethod,
-    password: Boolean,
-  ) {
-    val value =
-      when (method) {
-        is AuthMethod.Both -> if (password) method.hash.value else method.providerId.value
-        is AuthMethod.Password -> if (password) method.hash.value else null
-        is AuthMethod.SSO -> if (password) null else method.providerId.value
-      }
-    stmt.setStringOrNull(index, value)
-  }
-
-  /** Binds the full auth-method column pair (password_hash, sso_provider_id). */
-  private fun bindAuthMethod(
-    stmt: PreparedStatement,
-    hashIndex: Int,
-    method: AuthMethod,
-  ) {
-    when (method) {
-      is AuthMethod.Both -> {
-        stmt.setString(hashIndex, method.hash.value)
-        stmt.setString(hashIndex + 1, method.providerId.value)
-      }
-
-      is AuthMethod.Password -> {
-        stmt.setString(hashIndex, method.hash.value)
-        stmt.setNull(hashIndex + 1, java.sql.Types.VARCHAR)
-      }
-
-      is AuthMethod.SSO -> {
-        stmt.setNull(hashIndex, java.sql.Types.VARCHAR)
-        stmt.setString(hashIndex + 1, method.providerId.value)
-      }
-    }
-  }
+  /** Reconstructs the nullable password credential directly from `password_hash`. */
+  private fun readPasswordHash(rs: ResultSet): PasswordHash? =
+    rs.getString("password_hash")?.let { (PasswordHash.create(it) as ValidationResult.Valid).value }
 
   override fun findById(
     session: SqlSession,
@@ -245,8 +167,7 @@ object UsersDao :
           "email" to { stmt, i -> stmt.setString(i, input.email.value) },
           "name" to { stmt, i -> stmt.setString(i, input.name.value) },
           "display_name" to { stmt, i -> stmt.setStringOrNull(i, input.displayName?.value) },
-          "password_hash" to { stmt, i -> bindAuthMethodColumn(stmt, i, input.authMethod, password = true) },
-          "sso_provider_id" to { stmt, i -> bindAuthMethodColumn(stmt, i, input.authMethod, password = false) },
+          "password_hash" to { stmt, i -> stmt.setStringOrNull(i, input.passwordHash?.value) },
           "is_admin" to { stmt, i -> stmt.setBoolean(i, input.isAdmin) },
         ),
       map = ::mapUser,
@@ -279,7 +200,7 @@ object UsersDao :
    * back to [findById] with [SoftDeleteScope.ACTIVE] and returns the existing
    * user unchanged — idempotent, no second version bump — failing only if the
    * user is truly absent. Written only by the dedicated verification path, never
-   * the generic [update] surface (the same isolation `authMethod` has).
+   * the generic [update] surface (the same isolation `password_hash` has).
    */
   fun markEmailVerified(
     session: SqlSession,
@@ -332,7 +253,7 @@ object UsersDao :
       user.email,
       user.name,
       user.displayName,
-      user.authMethod,
+      user.passwordHash,
       user.isAdmin,
       user.emailVerifiedAt,
     )
@@ -387,16 +308,17 @@ object UsersDao :
       target.email,
       target.name,
       target.displayName,
-      target.authMethod,
+      target.passwordHash,
       target.isAdmin,
       target.emailVerifiedAt,
     )
   }
 
   /**
-   * Full-row OCC writer restoring every mutable column (auth included). Shared by
-   * [revertToVersion] and [updatePhysicalRecord]; not exposed through `update`,
-   * whose narrowed [UserEdit] path never touches the auth columns.
+   * Full-row OCC writer restoring every mutable column (the password credential
+   * included). Shared by [revertToVersion] and [updatePhysicalRecord]; not
+   * exposed through `update`, whose narrowed [UserEdit] path never touches
+   * `password_hash`.
    */
   private fun updateFullRow(
     session: SqlSession,
@@ -405,14 +327,14 @@ object UsersDao :
     email: EmailAddress,
     name: PersonName,
     displayName: DisplayName?,
-    authMethod: AuthMethod,
+    passwordHash: PasswordHash?,
     isAdmin: Boolean,
     emailVerifiedAt: java.time.Instant?,
   ): Result<User> {
     val sql =
       """
       UPDATE users
-      SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, sso_provider_id = ?, is_admin = ?, email_verified_at = ?
+      SET version = ?, email = ?, name = ?, display_name = ?, password_hash = ?, is_admin = ?, email_verified_at = ?
       WHERE id = ? AND version = ?
       RETURNING *
       """.trimIndent()
@@ -424,15 +346,15 @@ object UsersDao :
         stmt.setString(2, email.value)
         stmt.setString(3, name.value)
         stmt.setStringOrNull(4, displayName?.value)
-        bindAuthMethod(stmt, 5, authMethod)
-        stmt.setBoolean(7, isAdmin)
+        stmt.setStringOrNull(5, passwordHash?.value)
+        stmt.setBoolean(6, isAdmin)
         if (emailVerifiedAt != null) {
-          stmt.setTimestamp(8, java.sql.Timestamp.from(emailVerifiedAt))
+          stmt.setTimestamp(7, java.sql.Timestamp.from(emailVerifiedAt))
         } else {
-          stmt.setNull(8, java.sql.Types.TIMESTAMP)
+          stmt.setNull(7, java.sql.Types.TIMESTAMP)
         }
-        stmt.setObject(9, id.value)
-        stmt.setInt(10, currentVersion)
+        stmt.setObject(8, id.value)
+        stmt.setInt(9, currentVersion)
       },
       idValue = id.value,
       map = ::mapUser,

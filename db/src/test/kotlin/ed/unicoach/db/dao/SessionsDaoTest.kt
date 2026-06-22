@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.LoginMethod
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.SessionId
 import ed.unicoach.db.models.TokenHash
@@ -78,6 +79,7 @@ class SessionsDaoTest {
         initialIp = null,
         metadata = null,
         expiration = Duration.ofDays(7),
+        loginMethod = if (userId != null) LoginMethod.PASSWORD else null,
       ),
     ).getOrThrow()
 
@@ -258,5 +260,107 @@ class SessionsDaoTest {
 
     val secondRevokeResult = SessionsDao.revokeByTokenHash(session, tokenHash)
     assertTrue(secondRevokeResult.isFailure && secondRevokeResult.exceptionOrNull() is NotFoundException)
+  }
+
+  @Test
+  fun `create round-trips login_method for password and google`() {
+    val user = createUser()
+
+    val passwordSession =
+      SessionsDao
+        .create(
+          session,
+          NewSession(
+            userId = user,
+            tokenHash = TokenHash(byteArrayOf(50, 1)),
+            userAgent = null,
+            initialIp = null,
+            metadata = null,
+            expiration = Duration.ofDays(7),
+            loginMethod = LoginMethod.PASSWORD,
+          ),
+        ).getOrThrow()
+    assertEquals(LoginMethod.PASSWORD, passwordSession.loginMethod)
+
+    val googleSession =
+      SessionsDao
+        .create(
+          session,
+          NewSession(
+            userId = user,
+            tokenHash = TokenHash(byteArrayOf(50, 2)),
+            userAgent = null,
+            initialIp = null,
+            metadata = null,
+            expiration = Duration.ofDays(7),
+            loginMethod = LoginMethod.GOOGLE,
+          ),
+        ).getOrThrow()
+    assertEquals(LoginMethod.GOOGLE, googleSession.loginMethod)
+  }
+
+  @Test
+  fun `create with a user but no login_method is rejected by the presence check`() {
+    val user = createUser()
+    val result =
+      SessionsDao.create(
+        session,
+        NewSession(
+          userId = user,
+          tokenHash = TokenHash(byteArrayOf(51, 1)),
+          userAgent = null,
+          initialIp = null,
+          metadata = null,
+          expiration = Duration.ofDays(7),
+          loginMethod = null,
+        ),
+      )
+    assertTrue(result.isFailure, "Authenticated session without a login_method must be rejected")
+  }
+
+  @Test
+  fun `create with no user but a login_method is rejected by the presence check`() {
+    val result =
+      SessionsDao.create(
+        session,
+        NewSession(
+          userId = null,
+          tokenHash = TokenHash(byteArrayOf(52, 1)),
+          userAgent = null,
+          initialIp = null,
+          metadata = null,
+          expiration = Duration.ofDays(7),
+          loginMethod = LoginMethod.PASSWORD,
+        ),
+      )
+    assertTrue(result.isFailure, "Anonymous session carrying a login_method must be rejected")
+  }
+
+  @Test
+  fun `create anonymous session with null login_method succeeds`() {
+    val created = createSession(null, byteArrayOf(53, 1))
+    assertTrue(created.userId == null)
+    assertEquals(null, created.loginMethod)
+  }
+
+  @Test
+  fun `remintToken sets login_method on the formerly anonymous row`() {
+    val anon = createSession(null, byteArrayOf(54, 1))
+    val user = createUser()
+
+    val reminted =
+      SessionsDao
+        .remintToken(
+          session = session,
+          id = anon.id,
+          currentVersion = anon.version,
+          newUserId = user,
+          newTokenHash = byteArrayOf(54, 2),
+          newExpirationSeconds = Duration.ofDays(7).seconds,
+          newLoginMethod = LoginMethod.GOOGLE,
+        ).getOrThrow()
+
+    assertEquals(user, reminted.userId)
+    assertEquals(LoginMethod.GOOGLE, reminted.loginMethod)
   }
 }

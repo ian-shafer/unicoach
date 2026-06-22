@@ -6,10 +6,12 @@ The HTTP presentation layer of the unicoach platform. It hosts the Ktor/Netty
 embedded server, wires all application plugins, and exposes the REST API surface
 under `/api/v1`. It constructs the application's services (`AuthService`,
 `StudentService`, `CoachingService`, `EmailService`, `EmailVerificationService`)
-from boot-time config and injects them into the route handlers, then translates
-between domain results (from `service` and `db`) and HTTP responses, managing
-session cookie lifecycle and asynchronous session expiry enqueueing. It contains
-no domain logic.
+from boot-time config and injects them into the route handlers, including
+fail-fast boot-time construction of the chat provider the coaching service
+depends on and the Google ID-token verifier the auth service depends on. It then
+translates between domain results (from `service` and `db`) and HTTP responses,
+managing session cookie lifecycle and asynchronous session expiry enqueueing. It
+contains no domain logic.
 
 ---
 
@@ -36,12 +38,15 @@ no domain logic.
 - **Boot-time construction (all fail-fast)**: Each of `DatabaseConfig`,
   `SessionConfig`, `RequestSizeConfig`, `QueueConfig`, `ChatConfig` +
   `ChatProviderFactory.fromConfig`, `CoachingConfig`, `ClientKeyGateConfig`,
-  `EmailConfig`, and `EmailVerificationConfig` is resolved with `getOrThrow()`
-  before the server binds. The email provider is built via
-  `EmailProviderFactory.fromConfig(emailConfig)` and folded into
+  `EmailConfig`, `EmailVerificationConfig`, and the Google ID-token verifier
+  (`GoogleTokenVerifierFactory.fromConfig(GoogleAuthConfig.from(config).getOrThrow())`)
+  is resolved with `getOrThrow()` before the server binds. The email provider is
+  built via `EmailProviderFactory.fromConfig(emailConfig)` and folded into
   `EmailService(database, emailProvider, emailConfig)`. A missing or invalid key
-  in any of these blocks crashes the process at startup rather than on the first
-  request.
+  in any of these blocks — including a missing/invalid `auth.google` block
+  (supplied by `service.conf`) — crashes the process at startup rather than on
+  the first request. The resulting `GoogleTokenVerifier` is injected into
+  `AuthService`.
 - **Email provider selection**: `email.provider` defaults to `"log"`
   (`LogOnlyEmailProvider`), which records each outbound email to the log but
   does not transmit it; `"ses"` selects the SES-backed provider. Any other value
@@ -55,7 +60,7 @@ no domain logic.
   server binds.
 - **Idempotency**: Not idempotent — calling twice binds two server instances.
 
-### `Application.appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig, clientKeyGateConfig, emailService, emailVerificationConfig)` — [`Application.kt`](./Application.kt)
+### `Application.appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig, clientKeyGateConfig, emailService, emailVerificationConfig, googleTokenVerifier)` — [`Application.kt`](./Application.kt)
 
 - **Behavior**: Installs the request-pipeline plugins, then constructs the
   services and registers all routes. Plugins install in order:
@@ -65,14 +70,15 @@ no domain logic.
   via `configureRequestSizeLimit(requestSizeConfig)`.
 - **Service construction**: Builds `Argon2Hasher` and `TokenGenerator`, then
   `EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)`,
-  `AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService)`,
+  `AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)`,
   `StudentService(database)`, and
   `CoachingService(database, chatProvider, coachingConfig)`. Routes are
   registered via
   `configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService)`.
 - **Inputs**: The pre-built `chatProvider`, `coachingConfig`, `emailService`,
-  and `emailVerificationConfig` are passed in (resolved fail-fast by
-  `startServer`), so `appModule` itself parses no config.
+  `emailVerificationConfig`, and `googleTokenVerifier` are passed in (resolved
+  fail-fast by `startServer`), so `appModule` itself parses no config (no chat
+  or Google-auth config parsing).
 - **Scope**: Excludes `SessionExpiryPlugin` installation. Tests calling
   `appModule()` directly bypass the queue-write side effect.
 - **Idempotency**: Not idempotent — Ktor plugin installation throws if repeated
@@ -133,6 +139,9 @@ no domain logic.
   block consumed by `EmailConfig.from`.
 - The `emailVerification` block consumed by `EmailVerificationConfig.from` lives
   in `service.conf` (supplied by the `:service` dependency).
+- `service.conf` (supplied by the `:service` dependency) also surfaces the
+  `auth.google` block consumed by `GoogleAuthConfig.from(config)` (its
+  `GOOGLE_CLIENT_IDS` env override feeds `auth.google.clientIds`).
 - `net.conf` is not loaded by `rest-server` — only `queue-worker` loads it.
 
 ### HOCON Configuration
@@ -159,6 +168,7 @@ Keys read by this directory's wiring:
 | `email.ses.secretAccessKey`         | email.conf   | String (optional)            | Static SES secret (`${?EMAIL_SES_SECRET_ACCESS_KEY}`); default chain when absent |
 | `emailVerification.tokenTtl`        | service.conf | Duration                     | Verification-token lifetime (`${?EMAIL_VERIFICATION_TOKEN_TTL}` override)        |
 | `emailVerification.verifyUrlBase`   | service.conf | String                       | Verification-link prefix (`${?EMAIL_VERIFICATION_VERIFY_URL_BASE}` override)     |
+| `auth.google.clientIds`             | service.conf | List\<String\>               | Accepted Google OAuth client IDs (`${?GOOGLE_CLIENT_IDS}` override)              |
 
 ### Runtime Dependencies
 
@@ -219,6 +229,11 @@ the `service` module's `coaching` package; `EmailVerificationService`/
       — Loaded `ClientKeyGateConfig` fail-fast in `startServer`, threaded it
       through `appModule`, and installed the gate after serialization and before
       routing so it fronts every route.
+- [x] [RFC-64: Google SSO Login](../../../../../../../rfc/64-google-sso-login.md)
+      — Built the Google ID-token verifier fail-fast in `startServer`
+      (`GoogleTokenVerifierFactory.fromConfig(GoogleAuthConfig.from(config).getOrThrow())`),
+      threaded `googleTokenVerifier` through `appModule`, and injected it into
+      `AuthService`.
 - [x] [RFC-65: Email Verification (Backend)](../../../../../../../rfc/65-email-verification.md)
       — Added `email.conf` to the config load list; resolved `EmailConfig`,
       `EmailProviderFactory.fromConfig`, `EmailService`, and

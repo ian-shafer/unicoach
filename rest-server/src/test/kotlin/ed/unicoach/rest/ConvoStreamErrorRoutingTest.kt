@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import ed.unicoach.auth.StubGoogleTokenVerifier
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
@@ -105,6 +106,7 @@ class ConvoStreamErrorRoutingTest {
             clientKeyGateConfig,
             emailService,
             emailVerificationConfig,
+            StubGoogleTokenVerifier(),
           )
         }
       testServer.start(wait = false)

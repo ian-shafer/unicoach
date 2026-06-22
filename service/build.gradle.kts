@@ -10,6 +10,9 @@ dependencies {
   implementation(project(":email"))
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.slf4j.api)
+  implementation(libs.typesafe.config)
+  implementation(libs.java.jwt)
+  implementation(libs.jwks.rsa)
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)

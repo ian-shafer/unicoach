@@ -1,6 +1,5 @@
 package ed.unicoach.rest.plugins
 
-import ed.unicoach.db.dao.CorruptPersistedAuthMethodException
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.DatabaseException
 import ed.unicoach.db.dao.DuplicateEmailException
@@ -55,7 +54,6 @@ fun Application.configureStatusPages() {
 
               is DatabaseException,
               is CorruptPersistedValueException,
-              is CorruptPersistedAuthMethodException,
               -> HttpStatusCode.InternalServerError
 
               else -> HttpStatusCode.BadRequest
