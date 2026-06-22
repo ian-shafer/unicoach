@@ -93,6 +93,11 @@ class ConvoStreamErrorRoutingTest {
         ed.unicoach.auth.EmailVerificationConfig
           .from(config)
           .getOrThrow()
+      val queueService = ed.unicoach.queue.QueueService(database)
+      val extractionConfig =
+        ed.unicoach.coaching.extraction.ExtractionConfig
+          .from(config)
+          .getOrThrow()
 
       testServer =
         embeddedServer(Netty, port = 0, host = "127.0.0.1") {
@@ -107,6 +112,8 @@ class ConvoStreamErrorRoutingTest {
             emailService,
             emailVerificationConfig,
             StubGoogleTokenVerifier(),
+            queueService,
+            extractionConfig,
           )
         }
       testServer.start(wait = false)

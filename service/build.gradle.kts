@@ -8,6 +8,7 @@ dependencies {
   implementation(project(":db"))
   implementation(project(":chat"))
   implementation(project(":email"))
+  implementation(project(":queue"))
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.slf4j.api)
   implementation(libs.typesafe.config)

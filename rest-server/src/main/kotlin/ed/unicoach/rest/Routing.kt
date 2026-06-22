@@ -32,10 +32,13 @@ fun Application.configureRouting(
   coachingService: ed.unicoach.coaching.CoachingService,
   sessionConfig: ed.unicoach.rest.auth.SessionConfig,
   emailVerificationService: ed.unicoach.auth.EmailVerificationService,
+  queueService: ed.unicoach.queue.QueueService,
+  extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
-  val convoRouteHandler = ConvoRouteHandler(authService, studentService, coachingService, sessionConfig)
+  val convoRouteHandler =
+    ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)
   routing {
     route("/healthz") {
       get {

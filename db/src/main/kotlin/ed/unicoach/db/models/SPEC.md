@@ -116,10 +116,13 @@ separate `AuthIdentity` rows rather than as a flag on the user. There is no
 and [`SystemPromptId`](./SystemPromptId.kt) wrap a `UUID`;
 [`ConvoRequestId`](./ConvoRequestId.kt) and
 [`ConvoResponseId`](./ConvoResponseId.kt) wrap a `Long` (the BIGINT identity
-keys of `convo_requests`/`convo_responses`). All implement `Id` and derive
-`asString` from the wrapped value. None carry a factory or validation — they are
-constructed directly. The `Long`-backed log-row ids are structurally distinct
-from the `UUID`-backed ids.
+keys of `convo_requests`/`convo_responses`). [`ClaimId`](./ClaimId.kt) wraps a
+`UUID`; [`ObservationId`](./ObservationId.kt) and
+[`ExtractionRunId`](./ExtractionRunId.kt) wrap a `Long` (the BIGINT identity
+keys of the append-only `observations`/`extraction_runs` logs). All implement
+`Id` and derive `asString` from the wrapped value. None carry a factory or
+validation — they are constructed directly. The `Long`-backed log-row ids are
+structurally distinct from the `UUID`-backed ids.
 
 [`CollegeId`](./CollegeId.kt) and `CollegeProgramId` also wrap a `UUID` and
 implement `Id`, deriving `asString` from `value.toString()`. They are the
@@ -328,6 +331,94 @@ edited through a versioned DAO `update`.
   `college` module's service boundary before reaching the DAO — the model itself
   enforces no bound.
 
+### II-L. Coaching-memory aggregates (extraction)
+
+The extraction pass distills finished coaching turns into durable memory: an
+append-only record of what the student said, the coach's current revisable
+beliefs, the link between the two, and a per-pass run ledger.
+
+- [`Observation`](./Observation.kt) — a row of the append-only `observations`
+  log: `Identifiable + Created` only, an immutable verbatim record of something
+  a student said. It carries the `studentId`, the `convoId`, the
+  `sourceRequestId: ConvoRequestId` it was extracted from, the verbatim `quote`,
+  and two distinct instants: `createdAt` is the ingest time (when extraction
+  recorded it) while `utteredAt` is the event time (the source turn's
+  `created_at`).
+- [`Claim`](./Claim.kt) — a row of the mutable `claims` entity:
+  `Identifiable + Created + Updated`, the coach's current, revisable belief
+  about a student. It is **not** `Versioned`; its lifecycle is captured by
+  `status` plus the `supersededById`/`supersededAt`/`retractedAt` pointers
+  rather than a versions table. It carries the `studentId`, the `statement`
+  prose, the classifying enums (`origin`, `status`, `kind`, `subject`, `topic`,
+  `visibility`), and a `confidence: Int` — a `0..1000` fixed-point value
+  recomputed in code from the claim's support set, never assigned by the LLM.
+- [`ClaimSupport`](./ClaimSupport.kt) — a row of the append-only `claim_support`
+  link log: `Created` only, the immutable fact that an `Observation` was cited
+  as support for a `Claim`. A pure link keyed on the composite
+  `(claimId,
+  observationId)`; it carries no surrogate id and implements no
+  `Identifiable`.
+- [`ExtractionRun`](./ExtractionRun.kt) — a row of the append-only
+  `extraction_runs` log: `Identifiable + Created` only, one billed extraction
+  LLM call over a conversation. It serves three roles: the conversation
+  watermark (the highest `throughRequestId: ConvoRequestId` over `applied`
+  rows), the provenance of the pass's writes (`systemPromptId`, `provider`,
+  `modelResolved: String?`), and the per-pass token ledger (the four nullable
+  token counts, recorded for every billed call including failures). It carries
+  the `convoId`, `studentId`, the `outcome`, and the three write counts
+  (`observationsWritten`, `claimsWritten`, `claimsSuperseded`). `provider` is a
+  plain `String` (DB-constrained to `anthropic`/`log`), not a typed enum like
+  `outcome`.
+
+The classifying enums each persist as a lowercase `value` string matching a
+table `CHECK` (project convention, not a native Postgres enum), and each exposes
+a `fromValue(value: String): T?` companion that returns null on an unknown
+string:
+
+- [`ClaimOrigin`](./ClaimOrigin.kt) — whether a claim was `STUDENT_STATED` or
+  `COACH_INFERRED`.
+- [`ClaimStatus`](./ClaimStatus.kt) — lifecycle state: `ACTIVE`, `SUPERSEDED`,
+  `RETRACTED`.
+- [`ClaimKind`](./ClaimKind.kt) — the kind of belief: `GOAL`, `PREFERENCE`,
+  `CONSTRAINT`, `FACT`, `CONCERN`.
+- [`ClaimSubject`](./ClaimSubject.kt) — what the claim is about: `STUDENT`,
+  `FAMILY`, `COLLEGE`, `APPLICATION`.
+- [`ClaimTopic`](./ClaimTopic.kt) — the coaching topic: `ACADEMICS`,
+  `ACTIVITIES`, `FINANCES`, `LOCATION`, `CAREER`, `TIMELINE`, `WELLBEING`.
+- [`ClaimVisibility`](./ClaimVisibility.kt) — `STUDENT_VISIBLE` or `INTERNAL`,
+  where `INTERNAL` means "not surfaced to the student unprompted"
+  (coaching-process notes), not "hidden from the student".
+- [`ExtractionOutcome`](./ExtractionOutcome.kt) — `APPLIED` (advanced the
+  watermark and wrote memory) or `FAILED` (billed tokens but produced unusable
+  output: watermark unchanged, write counts zero).
+
+The extraction creation/update inputs (pure data carriers, siblings of the
+`New*`/`*Edit` records described in II-I/II-J):
+
+- [`NewObservation`](./NewObservation.kt) — the insert input for an
+  `observations` row, omitting the DB-generated id and `createdAt`.
+- [`NewClaim`](./NewClaim.kt) — the insert input for a fresh `claims` row,
+  omitting the DB-generated id, timestamps, lifecycle pointers, and `status`/
+  `confidence` entirely. The DB defaults `status` to `active` and `confidence`
+  to `0`; a freshly-created claim's confidence is recomputed from its support
+  set in the same write transaction.
+- [`NewClaimSupport`](./NewClaimSupport.kt) — the insert input for a
+  `claim_support` link, carrying the `(claimId, observationId)` pair and
+  omitting the DB-generated `createdAt`.
+- [`NewExtractionRun`](./NewExtractionRun.kt) — the insert input for an
+  `extraction_runs` row, omitting the DB-generated id and `createdAt`. The three
+  write counts default to `0` (a `failed` run records zero writes, enforced by a
+  DB `CHECK`) and all four token fields default to null (populated when the
+  provider reports usage).
+- [`ClaimRevision`](./ClaimRevision.kt) — the update input for
+  `ClaimsDao.revise` (not a `*Edit` record, as `Claim` is non-versioned and
+  carries no OCC `version`): the next `status`, the recomputed `confidence`, and
+  an optional `supersededById` (defaulting null). The DAO derives
+  `superseded_at`/ `retracted_at` from the `status` so the DB
+  lifecycle-consistency CHECKs hold — `superseded` requires a non-null
+  `supersededById` and stamps `superseded_at`; `retracted` stamps `retracted_at`
+  with a null `supersededById`; `active` clears both pointers.
+
 ---
 
 ## III. Infrastructure & Environment
@@ -430,6 +521,21 @@ edited through a versioned DAO `update`.
       model, `created_at` mapped while `row_created_at` is ignored). `NewUser`
       and `UserEdit` were left unchanged so the marker stays out of the generic
       creation/update path.
+- [x] [RFC-66: Extraction](../../../../../../../../rfc/66-extraction.md) — Added
+      the coaching-memory models: the append-only `Observation` log row
+      (`Identifiable + Created`) with its `ObservationId` (`Long`-backed) id and
+      `NewObservation` input; the mutable, non-versioned `Claim` entity
+      (`Identifiable + Created + Updated`, lifecycle via `status` +
+      supersession/ retraction pointers, `confidence` a `0..1000` fixed-point
+      recomputed in code) with its `ClaimId` (`UUID`-backed) id, `NewClaim`
+      input, and `ClaimRevision` update input; the six claim classifying enums
+      (`ClaimOrigin`, `ClaimStatus`, `ClaimKind`, `ClaimSubject`, `ClaimTopic`,
+      `ClaimVisibility`); the append-only `ClaimSupport` link row (`Created`,
+      composite-keyed, no surrogate id) with its `NewClaimSupport` input; and
+      the append-only `ExtractionRun` log row (`Identifiable + Created`,
+      watermark + provenance + token ledger) with its `ExtractionRunId`
+      (`Long`-backed) id, `ExtractionOutcome` enum, and `NewExtractionRun`
+      input. No change to any existing model type.
 - [x] [RFC-67: College Knowledge](../../../../../../../../rfc/67-college-knowledge.md)
       — Added the College Scorecard reference models: the `CollegeId` /
       `CollegeProgramId` (`UUID`-backed) surface ids; the `College` and

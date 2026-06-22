@@ -11,6 +11,7 @@ import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -84,6 +85,11 @@ fun startServer(
       .from(config)
       .getOrThrow()
 
+  val extractionConfig =
+    ExtractionConfig
+      .from(config)
+      .getOrThrow()
+
   val clientKeyGateConfig =
     ClientKeyGateConfig
       .from(config)
@@ -142,6 +148,8 @@ fun startServer(
         emailService,
         emailVerificationConfig,
         googleTokenVerifier,
+        queueService,
+        extractionConfig,
       )
 
       install(SessionExpiryPlugin) {
@@ -177,6 +185,8 @@ fun Application.appModule(
   emailService: EmailService,
   emailVerificationConfig: EmailVerificationConfig,
   googleTokenVerifier: GoogleTokenVerifier,
+  queueService: QueueService,
+  extractionConfig: ExtractionConfig,
 ) {
   configureSerialization()
   configureClientKeyGate(clientKeyGateConfig)
@@ -191,5 +201,13 @@ fun Application.appModule(
   val studentService = ed.unicoach.student.StudentService(database)
   val coachingService = CoachingService(database, chatProvider, coachingConfig)
 
-  configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService)
+  configureRouting(
+    authService,
+    studentService,
+    coachingService,
+    sessionConfig,
+    emailVerificationService,
+    queueService,
+    extractionConfig,
+  )
 }

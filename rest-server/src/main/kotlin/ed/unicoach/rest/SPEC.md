@@ -8,10 +8,13 @@ under `/api/v1`. It constructs the application's services (`AuthService`,
 `StudentService`, `CoachingService`, `EmailService`, `EmailVerificationService`)
 from boot-time config and injects them into the route handlers, including
 fail-fast boot-time construction of the chat provider the coaching service
-depends on and the Google ID-token verifier the auth service depends on. It then
-translates between domain results (from `service` and `db`) and HTTP responses,
-managing session cookie lifecycle and asynchronous session expiry enqueueing. It
-contains no domain logic.
+depends on, the Google ID-token verifier the auth service depends on, and the
+`ExtractionConfig` the conversation route handler depends on. It constructs a
+single `QueueService` at the composition root and shares it across the
+session-expiry plugin and the conversation route handler. It then translates
+between domain results (from `service` and `db`) and HTTP responses, managing
+session cookie lifecycle and asynchronous session expiry enqueueing. It contains
+no domain logic.
 
 ---
 
@@ -37,30 +40,36 @@ contains no domain logic.
   When `wait = true`, joins the current thread to keep the process alive.
 - **Boot-time construction (all fail-fast)**: Each of `DatabaseConfig`,
   `SessionConfig`, `RequestSizeConfig`, `QueueConfig`, `ChatConfig` +
-  `ChatProviderFactory.fromConfig`, `CoachingConfig`, `ClientKeyGateConfig`,
-  `EmailConfig`, `EmailVerificationConfig`, and the Google ID-token verifier
+  `ChatProviderFactory.fromConfig`, `CoachingConfig`, `ExtractionConfig`,
+  `ClientKeyGateConfig`, `EmailConfig`, `EmailVerificationConfig`, and the
+  Google ID-token verifier
   (`GoogleTokenVerifierFactory.fromConfig(GoogleAuthConfig.from(config).getOrThrow())`)
-  is resolved with `getOrThrow()` before the server binds. The email provider is
-  built via `EmailProviderFactory.fromConfig(emailConfig)` and folded into
-  `EmailService(database, emailProvider, emailConfig)`. A missing or invalid key
-  in any of these blocks — including a missing/invalid `auth.google` block
-  (supplied by `service.conf`) — crashes the process at startup rather than on
-  the first request. The resulting `GoogleTokenVerifier` is injected into
-  `AuthService`.
+  is resolved with `getOrThrow()` before the server binds. `ExtractionConfig`
+  comes from the `service` module's `coaching.extraction` package and reads the
+  `extraction` block of `service.conf`. The email provider is built via
+  `EmailProviderFactory.fromConfig(emailConfig)` and folded into
+  `EmailService(database, emailProvider, emailConfig)`. A single
+  `QueueService(database)` is constructed once at this composition root and
+  shared. A missing or invalid key in any of these blocks — including a
+  missing/invalid `auth.google` or `extraction` block (both supplied by
+  `service.conf`) — crashes the process at startup rather than on the first
+  request. The resulting `GoogleTokenVerifier` is injected into `AuthService`.
 - **Email provider selection**: `email.provider` defaults to `"log"`
   (`LogOnlyEmailProvider`), which records each outbound email to the log but
   does not transmit it; `"ses"` selects the SES-backed provider. Any other value
   fails boot.
 - **Side effects**: Opens the HikariCP pool (`Database`), starts the Netty
   listener, installs `SessionExpiryPlugin` (inside the `embeddedServer` lambda,
-  not in `appModule`), and subscribes an `ApplicationStopped` hook that calls
-  `database.close()`.
+  not in `appModule`) wired with the shared `queueService`, and subscribes an
+  `ApplicationStopped` hook that calls `database.close()`. The same
+  `queueService` is threaded into `appModule` so the conversation route handler
+  shares it.
 - **Error handling**: Any `getOrThrow()` failure propagates as an uncaught
   exception, crashing the process with the underlying config message before the
   server binds.
 - **Idempotency**: Not idempotent — calling twice binds two server instances.
 
-### `Application.appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig, clientKeyGateConfig, emailService, emailVerificationConfig, googleTokenVerifier)` — [`Application.kt`](./Application.kt)
+### `Application.appModule(database, sessionConfig, requestSizeConfig, chatProvider, coachingConfig, clientKeyGateConfig, emailService, emailVerificationConfig, googleTokenVerifier, queueService, extractionConfig)` — [`Application.kt`](./Application.kt)
 
 - **Behavior**: Installs the request-pipeline plugins, then constructs the
   services and registers all routes. Plugins install in order:
@@ -74,22 +83,26 @@ contains no domain logic.
   `StudentService(database)`, and
   `CoachingService(database, chatProvider, coachingConfig)`. Routes are
   registered via
-  `configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService)`.
+  `configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService, queueService, extractionConfig)`.
 - **Inputs**: The pre-built `chatProvider`, `coachingConfig`, `emailService`,
-  `emailVerificationConfig`, and `googleTokenVerifier` are passed in (resolved
-  fail-fast by `startServer`), so `appModule` itself parses no config (no chat
-  or Google-auth config parsing).
-- **Scope**: Excludes `SessionExpiryPlugin` installation. Tests calling
-  `appModule()` directly bypass the queue-write side effect.
+  `emailVerificationConfig`, `googleTokenVerifier`, `queueService`, and
+  `extractionConfig` are passed in (resolved/constructed fail-fast by
+  `startServer`), so `appModule` itself parses no config (no chat, Google-auth,
+  or extraction config parsing). The `queueService` and `extractionConfig` are
+  forwarded to `configureRouting`.
+- **Scope**: Excludes `SessionExpiryPlugin` installation, so tests calling
+  `appModule()` directly do not register the expiry-enqueue path. The live
+  `queueService` is still forwarded into the conversation route handler, so the
+  conversation-write enqueue path is wired.
 - **Idempotency**: Not idempotent — Ktor plugin installation throws if repeated
   on the same `Application`.
 
-### `Application.configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService)` — [`Routing.kt`](./Routing.kt)
+### `Application.configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService, queueService, extractionConfig)` — [`Routing.kt`](./Routing.kt)
 
 - **Behavior**: Constructs
   `AuthRouteHandler(authService, sessionConfig, emailVerificationService)`,
   `StudentRouteHandler(authService, studentService, sessionConfig)`, and
-  `ConvoRouteHandler(authService, studentService, coachingService, sessionConfig)`,
+  `ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)`,
   then registers their routes inside a single top-level `routing { }` block.
 - **Routes registered**:
   - `GET /healthz` → `200 OK`, `Content-Type: application/json`, constant body
@@ -142,33 +155,44 @@ contains no domain logic.
 - `service.conf` (supplied by the `:service` dependency) also surfaces the
   `auth.google` block consumed by `GoogleAuthConfig.from(config)` (its
   `GOOGLE_CLIENT_IDS` env override feeds `auth.google.clientIds`).
+- `service.conf` also surfaces the `extraction` block consumed by
+  `ExtractionConfig.from(config)` (a `coaching.extraction` reader in the
+  `:service` module).
 - `net.conf` is not loaded by `rest-server` — only `queue-worker` loads it.
 
 ### HOCON Configuration
 
 Keys read by this directory's wiring:
 
-| Key                                 | Source       | Type                         | Description                                                                      |
-| ----------------------------------- | ------------ | ---------------------------- | -------------------------------------------------------------------------------- |
-| `server.host`                       | rest-server  | String                       | Netty bind host                                                                  |
-| `server.port`                       | rest-server  | Int                          | Netty bind port (overridable by `startServer`'s `port` argument)                 |
-| `server.requestSize.maxSize`        | rest-server  | Size string                  | Default max request body size (e.g. `"8 KiB"`); parsed via `Config.getBytes`     |
-| `server.requestSize.routeOverrides` | rest-server  | Object\<path → size string\> | Per-exact-path body-size overrides (e.g. `"/api/v1/auth/register" = "1 KiB"`)    |
-| `session.expiration`                | rest-server  | Duration                     | Session TTL                                                                      |
-| `session.cookieName`                | rest-server  | String                       | Cookie name                                                                      |
-| `session.cookieDomain`              | rest-server  | String                       | Cookie domain attribute                                                          |
-| `session.cookieSecure`              | rest-server  | Boolean                      | `Secure` cookie flag                                                             |
-| `sessionExpiry.ignorePathPrefixes`  | rest-server  | List\<String\>               | Paths excluded from expiry enqueue                                               |
-| `clientKeyGate.keys`                | rest-server  | String (comma-separated)     | Valid client keys; empty disables the gate (`${?UNICOACH_CLIENT_KEYS}` override) |
-| `clientKeyGate.allowlistPaths`      | rest-server  | List\<String\>               | Paths exempt from the gate (e.g. `["/healthz"]`)                                 |
-| `email.defaultFrom`                 | email.conf   | String                       | Default `From` address (`${?EMAIL_DEFAULT_FROM}` override)                       |
-| `email.provider`                    | email.conf   | String                       | `"log"` or `"ses"` (`${?EMAIL_PROVIDER}` override); selects the email provider   |
-| `email.ses.region`                  | email.conf   | String                       | SES region (`${?EMAIL_SES_REGION}` override); read only for the `"ses"` provider |
-| `email.ses.accessKeyId`             | email.conf   | String (optional)            | Static SES access key (`${?EMAIL_SES_ACCESS_KEY_ID}`); default chain when absent |
-| `email.ses.secretAccessKey`         | email.conf   | String (optional)            | Static SES secret (`${?EMAIL_SES_SECRET_ACCESS_KEY}`); default chain when absent |
-| `emailVerification.tokenTtl`        | service.conf | Duration                     | Verification-token lifetime (`${?EMAIL_VERIFICATION_TOKEN_TTL}` override)        |
-| `emailVerification.verifyUrlBase`   | service.conf | String                       | Verification-link prefix (`${?EMAIL_VERIFICATION_VERIFY_URL_BASE}` override)     |
-| `auth.google.clientIds`             | service.conf | List\<String\>               | Accepted Google OAuth client IDs (`${?GOOGLE_CLIENT_IDS}` override)              |
+| Key                                 | Source       | Type                         | Description                                                                       |
+| ----------------------------------- | ------------ | ---------------------------- | --------------------------------------------------------------------------------- |
+| `server.host`                       | rest-server  | String                       | Netty bind host                                                                   |
+| `server.port`                       | rest-server  | Int                          | Netty bind port (overridable by `startServer`'s `port` argument)                  |
+| `server.requestSize.maxSize`        | rest-server  | Size string                  | Default max request body size (e.g. `"8 KiB"`); parsed via `Config.getBytes`      |
+| `server.requestSize.routeOverrides` | rest-server  | Object\<path → size string\> | Per-exact-path body-size overrides (e.g. `"/api/v1/auth/register" = "1 KiB"`)     |
+| `session.expiration`                | rest-server  | Duration                     | Session TTL                                                                       |
+| `session.cookieName`                | rest-server  | String                       | Cookie name                                                                       |
+| `session.cookieDomain`              | rest-server  | String                       | Cookie domain attribute                                                           |
+| `session.cookieSecure`              | rest-server  | Boolean                      | `Secure` cookie flag                                                              |
+| `sessionExpiry.ignorePathPrefixes`  | rest-server  | List\<String\>               | Paths excluded from expiry enqueue                                                |
+| `clientKeyGate.keys`                | rest-server  | String (comma-separated)     | Valid client keys; empty disables the gate (`${?UNICOACH_CLIENT_KEYS}` override)  |
+| `clientKeyGate.allowlistPaths`      | rest-server  | List\<String\>               | Paths exempt from the gate (e.g. `["/healthz"]`)                                  |
+| `email.defaultFrom`                 | email.conf   | String                       | Default `From` address (`${?EMAIL_DEFAULT_FROM}` override)                        |
+| `email.provider`                    | email.conf   | String                       | `"log"` or `"ses"` (`${?EMAIL_PROVIDER}` override); selects the email provider    |
+| `email.ses.region`                  | email.conf   | String                       | SES region (`${?EMAIL_SES_REGION}` override); read only for the `"ses"` provider  |
+| `email.ses.accessKeyId`             | email.conf   | String (optional)            | Static SES access key (`${?EMAIL_SES_ACCESS_KEY_ID}`); default chain when absent  |
+| `email.ses.secretAccessKey`         | email.conf   | String (optional)            | Static SES secret (`${?EMAIL_SES_SECRET_ACCESS_KEY}`); default chain when absent  |
+| `emailVerification.tokenTtl`        | service.conf | Duration                     | Verification-token lifetime (`${?EMAIL_VERIFICATION_TOKEN_TTL}` override)         |
+| `emailVerification.verifyUrlBase`   | service.conf | String                       | Verification-link prefix (`${?EMAIL_VERIFICATION_VERIFY_URL_BASE}` override)      |
+| `auth.google.clientIds`             | service.conf | List\<String\>               | Accepted Google OAuth client IDs (`${?GOOGLE_CLIENT_IDS}` override)               |
+| `extraction.enabled`                | service.conf | Boolean                      | Master switch for the extraction pass (`${?EXTRACTION_ENABLED}` override)         |
+| `extraction.debounce`               | service.conf | Duration                     | Debounce delay coalescing rapid turns (`${?EXTRACTION_DEBOUNCE}` override)        |
+| `extraction.promptName`             | service.conf | String                       | Extraction prompt catalog name (`${?EXTRACTION_PROMPT_NAME}` override)            |
+| `extraction.promptVersion`          | service.conf | String                       | Extraction prompt version (`${?EXTRACTION_PROMPT_VERSION}` override)              |
+| `extraction.model`                  | service.conf | String                       | Distillation model id (`${?EXTRACTION_MODEL}` override)                           |
+| `extraction.maxTokens`              | service.conf | Int                          | Distillation max output tokens (`${?EXTRACTION_MAX_TOKENS}` override)             |
+| `extraction.windowMaxTurns`         | service.conf | Int                          | Cap on turns assembled into one pass (`${?EXTRACTION_WINDOW_MAX_TURNS}` override) |
+| `extraction.confidenceHalfLifeDays` | service.conf | Double                       | Confidence-decay half-life in days (`${?EXTRACTION_CONFIDENCE_HALF_LIFE_DAYS}`)   |
 
 ### Runtime Dependencies
 
@@ -184,7 +208,8 @@ Keys read by this directory's wiring:
 
 `rest-server` depends on `common`, `db`, `service`, `chat`, `queue`, and
 `email`. It does not depend on `net`. `CoachingService`/`CoachingConfig` live in
-the `service` module's `coaching` package; `EmailVerificationService`/
+the `service` module's `coaching` package, and `ExtractionConfig` in its
+`coaching.extraction` package; `EmailVerificationService`/
 `EmailVerificationConfig` live in the `service` module's `auth` package;
 `ChatProvider`/`ChatConfig`/`ChatProviderFactory` come from `chat`;
 `EmailConfig`/`EmailProviderFactory`/`EmailService` come from `email`.
@@ -243,3 +268,9 @@ the `service` module's `coaching` package; `EmailVerificationService`/
       `emailVerificationService` into `configureRouting` → `AuthRouteHandler`.
       First production callsite of the `:email` module (default provider
       `"log"`).
+- [x] [RFC-66: Extraction](../../../../../../../rfc/66-extraction.md) — Resolved
+      `ExtractionConfig` fail-fast in `startServer` (reading the `extraction`
+      block of `service.conf`); constructed a single `QueueService(database)` at
+      the composition root and shared it between `SessionExpiryPlugin` and the
+      conversation route handler; threaded `queueService`/`extractionConfig`
+      through `appModule` → `configureRouting` → `ConvoRouteHandler`.

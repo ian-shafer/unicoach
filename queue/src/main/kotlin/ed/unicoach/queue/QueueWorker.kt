@@ -220,6 +220,16 @@ class QueueWorker(
               is JobResult.Success -> null
             }
 
+          if (jobResult is JobResult.RetriableFailure && jobResult.cause != null) {
+            logger.warn(
+              "Job [{}] attempt [{}] failed retriably: {}",
+              claimedJob.id,
+              attemptNumber,
+              jobResult.message,
+              jobResult.cause,
+            )
+          }
+
           jobsDao.insertAttempt(session, claimedJob.id, attemptNumber, startedAt, status, errorMsg)
 
           when (jobResult) {

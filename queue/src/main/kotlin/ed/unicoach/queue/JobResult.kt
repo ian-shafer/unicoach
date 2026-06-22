@@ -9,6 +9,7 @@ sealed interface JobResult {
 
   data class RetriableFailure(
     val message: String,
+    val cause: Throwable? = null,
   ) : JobResult {
     override val status = AttemptStatus.RETRIABLE_FAILURE
   }

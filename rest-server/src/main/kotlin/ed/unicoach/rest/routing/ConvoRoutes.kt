@@ -18,6 +18,7 @@ import ed.unicoach.coaching.UpdateConvoResult
 import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequest
+import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ConvoResponse
 import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ConvoWithActivity
@@ -62,6 +63,7 @@ import io.ktor.server.routing.route
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.json.put
 import java.time.Instant
 import java.util.UUID
 
@@ -70,7 +72,11 @@ class ConvoRouteHandler(
   private val studentService: StudentService,
   private val coachingService: CoachingService,
   private val sessionConfig: SessionConfig,
+  private val queueService: ed.unicoach.queue.QueueService,
+  private val extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
 ) {
+  private val logger = org.slf4j.LoggerFactory.getLogger(ConvoRouteHandler::class.java)
+
   // SSE mapper: like configureSerialization but INDENT_OUTPUT must be off (a
   // multi-line data: payload breaks SSE framing).
   private val sseMapper: ObjectMapper =
@@ -150,6 +156,7 @@ class ConvoRouteHandler(
       is StartConvoResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
           is ReplyEvent.Completed -> {
+            enqueueExtraction(outcome.convo.id, outcome.userTurn.id)
             call.respond(
               HttpStatusCode.Created,
               CreateConversationResponse(
@@ -241,6 +248,7 @@ class ConvoRouteHandler(
       is PostTurnResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
           is ReplyEvent.Completed -> {
+            enqueueExtraction(outcome.convo.id, outcome.userTurn.id)
             call.respond(
               HttpStatusCode.Created,
               PostMessageResponse(
@@ -273,7 +281,7 @@ class ConvoRouteHandler(
       }
 
       is StartConvoResult.Started -> {
-        streamReply(outcome.reply) { writer ->
+        streamReply(outcome.reply, outcome.convo.id, outcome.userTurn.id) { writer ->
           writeSseEvent(
             writer,
             "conversation",
@@ -303,16 +311,23 @@ class ConvoRouteHandler(
       }
 
       is PostTurnResult.Started -> {
-        streamReply(outcome.reply) { writer ->
+        streamReply(outcome.reply, outcome.convo.id, outcome.userTurn.id) { writer ->
           writeSseEvent(writer, "user_message", UserMessageEvent(userMessage = userMessageOf(outcome.userTurn)))
         }
       }
     }
   }
 
-  /** Opens the SSE response, writes the opening event, relays deltas, then exactly one terminal frame. */
+  /**
+   * Opens the SSE response, writes the opening event, relays deltas, then exactly
+   * one terminal frame. On a successful terminal ([ReplyEvent.Completed]) it
+   * enqueues the extraction job after the frame is written — never on a failed
+   * one (RFC 66).
+   */
   private suspend fun RoutingContext.streamReply(
     reply: Flow<ReplyEvent>,
+    convoId: ConvoId,
+    throughRequestId: ConvoRequestId,
     writeOpening: suspend (ByteWriteChannel) -> Unit,
   ) {
     call.response.header(HttpHeaders.CacheControl, "no-store")
@@ -326,6 +341,7 @@ class ConvoRouteHandler(
 
           is ReplyEvent.Completed -> {
             writeSseEvent(this, "message", MessageCompletedEvent(message = coachMessageOf(event.response)))
+            enqueueExtraction(convoId, throughRequestId)
           }
 
           is ReplyEvent.Failed -> {
@@ -387,6 +403,44 @@ class ConvoRouteHandler(
     reply.collect { event -> if (event is ReplyEvent.Terminal) terminal = event }
     return terminal ?: ReplyEvent.Failed(retriable = true, reason = "no terminal")
   }
+
+  /**
+   * Enqueues an [ed.unicoach.queue.JobType.EXTRACT_CONVERSATION] job for the
+   * conversation, debounced by `extraction.debounce` (RFC 66). Called only on a
+   * successful terminal turn, never on a failed one; skipped entirely when
+   * `extraction.enabled = false`. The enqueue is fire-and-forget — a queue
+   * failure must not alter the turn's HTTP/SSE response, so it is logged and
+   * swallowed.
+   */
+  private suspend fun enqueueExtraction(
+    convoId: ConvoId,
+    throughRequestId: ConvoRequestId,
+  ) {
+    if (!extractionConfig.enabled) return
+    val payload =
+      ed.unicoach.queue
+        .ExtractionPayload(convoId = convoId.asString, throughRequestId = throughRequestId.value)
+    try {
+      val result =
+        queueService.enqueue(
+          jobType = ed.unicoach.queue.JobType.EXTRACT_CONVERSATION,
+          payload = mapPayload(payload),
+          delay = extractionConfig.debounce,
+        )
+      if (result is ed.unicoach.queue.EnqueueResult.DatabaseFailure) {
+        logger.warn("extraction enqueue failed for convo=[{}]", convoId.asString, result.error)
+      }
+    } catch (e: Exception) {
+      logger.warn("extraction enqueue threw for convo=[{}]", convoId.asString, e)
+    }
+  }
+
+  /** Serializes an [ed.unicoach.queue.ExtractionPayload] into the kotlinx JsonObject the queue API takes. */
+  private fun mapPayload(payload: ed.unicoach.queue.ExtractionPayload): kotlinx.serialization.json.JsonObject =
+    kotlinx.serialization.json.buildJsonObject {
+      put("convoId", payload.convoId)
+      put("throughRequestId", payload.throughRequestId)
+    }
 
   // ---------------------------------------------------------------------------
   // Projections

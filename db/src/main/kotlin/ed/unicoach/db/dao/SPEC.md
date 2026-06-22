@@ -18,6 +18,18 @@ and delegating all query execution to shared `SqlSession` **query scaffolding**
 | `SystemPromptsDao`      | `system_prompts` (immutable catalog: read + insert, no update/delete) |
 | `VerificationTokensDao` | `verification_tokens`                                                 |
 | `CollegesDao`           | `colleges`, `college_programs` (reference data: upsert + search)      |
+| `ObservationsDao`       | `observations` (append-only log)                                      |
+| `ClaimsDao`             | `claims` (mutable entity, no `version`/OCC)                           |
+| `ClaimSupportDao`       | `claim_support` (append-only link log; reads `observations`)          |
+| `ExtractionRunsDao`     | `extraction_runs` (append-only log)                                   |
+| `AdvisoryLockDao`       | none — issues `pg_advisory_xact_lock` only (no table)                 |
+
+The last five DAOs are the RFC 66 coaching-memory extraction surface: a model
+silently mines each conversation turn into durable `observations` (verbatim
+quotes), distills them into `claims` (deduplicated statements about the student)
+backed by `claim_support` citations, records each pass in `extraction_runs`, and
+serializes concurrent same-student passes through a per-student transaction
+advisory lock (`AdvisoryLockDao`).
 
 Every DAO method accepts a `SqlSession` as its first parameter. Connection
 pooling, transaction boundaries, and commit/rollback are managed exclusively by
@@ -63,9 +75,12 @@ lookups, `rename`, `archive`/`unarchive`, parented `listBy*`, `appendRequest`,
 `remintToken`, `findByEmail`, `findVersion`, `revertToVersion`,
 `updatePhysicalRecord`, `markEmailVerified`, the `*ForUpdate` lock-reads,
 `expireZombieSessions`, `*WithActivity`, `listTurns`, `findRawByResponseId`,
-`findByNameAndVersion`, `consume`/`findByTokenHash`/`consumeAllForUser` — remain
-concrete methods on the DAO; `SystemPromptsDao.findById`/`list`/`create` are
-interface-backed via `Findable`/`Listable`/`Creatable`):
+`findByNameAndVersion`, `consume`/`findByTokenHash`/`consumeAllForUser`, the
+RFC-66 reads `listByConvoRange`/`listByStudent`/`listActiveByStudent`/
+`listObservationsForClaim`/`watermark`, the `claims` lifecycle write `revise`,
+the idempotent `link`, the `append` aliases, and `AdvisoryLockDao.lockStudent` —
+remain concrete methods on the DAO; `SystemPromptsDao.findById`/`list`/`create`
+are interface-backed via `Findable`/`Listable`/`Creatable`):
 
 | DAO                     | Capability interfaces                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -77,6 +92,11 @@ interface-backed via `Findable`/`Listable`/`Creatable`):
 | `SystemPromptsDao`      | `Findable<SystemPrompt, SystemPromptId>`, `Listable<SystemPrompt>`, `Creatable<NewSystemPrompt, SystemPrompt>` (plain, not the soft-delete variants — `system_prompts` has no `deleted_at`; `findByNameAndVersion` remains concrete)                                                                                                                                                                                                                                |
 | `VerificationTokensDao` | `Creatable<NewVerificationToken, VerificationToken>` (remaining methods — `consume`, `findByTokenHash`, `consumeAllForUser` — are concrete)                                                                                                                                                                                                                                                                                                                         |
 | `CollegesDao`           | NONE — declares no capability interface. Its operations (`upsert`/`upsertProgram` hand-rolled `ON CONFLICT`, the natural-key `findByUnitId`, the dynamic `search`) match no à-la-carte interface, so every method is concrete. The interfaces model student-entity CRUD over a surface id; the upsert key is the federal natural key (`unit_id`; `(college_id, cip_code, credential_level)`), not the surface UUID, and `Creatable.create` has no upsert semantics. |
+| `ObservationsDao`       | `Creatable<NewObservation, Observation>` (append-only log; `append` is an alias of `create`; the range/student reads `listByConvoRange`/`listByStudent` stay concrete)                                                                                                                                                                                                                                                                                              |
+| `ClaimsDao`             | `Findable<Claim, ClaimId>`, `Creatable<NewClaim, Claim>` (the lifecycle write `revise` and the hot read `listActiveByStudent` stay concrete; `claims` has no `version`, so no `Updatable`/`OccDeletable`)                                                                                                                                                                                                                                                           |
+| `ClaimSupportDao`       | `Creatable<NewClaimSupport, ClaimSupport>` (append-only link log; `create` delegates to the idempotent `link`; the read `listObservationsForClaim` stays concrete)                                                                                                                                                                                                                                                                                                  |
+| `ExtractionRunsDao`     | `Creatable<NewExtractionRun, ExtractionRun>` (append-only log; `append` is an alias of `create`; the read `watermark` stays concrete)                                                                                                                                                                                                                                                                                                                               |
+| `AdvisoryLockDao`       | NONE — its sole method `lockStudent` is neither a row read nor a write, so no à-la-carte interface fits.                                                                                                                                                                                                                                                                                                                                                            |
 
 `Updatable<EDIT, ROW>` applies only to entities with a dedicated edit-input type
 covering the full mutable field set (`User` via `UserEdit`, `Student` via
@@ -231,6 +251,35 @@ wrapper (previously inside `SessionsDao`).
   projection) additionally reads the SQL `text[]` `program_titles` column via
   JDBC `getArray` (a `text[]` cannot be read as a typed scalar), freeing the
   `java.sql.Array` handle afterward; a NULL array collapses to an empty list.
+- **`observations`**: `mapObservation` reads `id` as a `Long` `ObservationId`
+  (the log uses a `BIGINT` surrogate, not a UUID), `student_id`/`convo_id` as
+  typed UUIDs, `source_request_id` as a `Long` `ConvoRequestId`, `uttered_at`/
+  `created_at` as `Instant`, and `quote` as a plain `String`. No validated value
+  classes and no corruption path.
+- **`claims`**: `mapClaim` reads `id` as a UUID `ClaimId`, the six enum columns
+  (`origin`, `status`, `kind`, `subject`, `topic`, `visibility`) via the private
+  `parseEnum` (each model's `fromValue`), `statement` as a plain `String`,
+  `confidence` as a plain `Int`, the nullable `superseded_by_id` as a
+  `ClaimId?`, and the nullable `superseded_at`/`retracted_at` timestamps.
+  `parseEnum` throws a `SQLException` (→ `DatabaseException`, a
+  `PermanentError`) when a persisted enum string resolves to null — the DB CHECK
+  already guarantees a valid member, so a null signals row corruption, not a
+  user-facing failure. Unlike the validated-value mappers it does not raise
+  `CorruptPersistedValueException`.
+- **`claim_support`**: `mapSupport` reads the `(claim_id, observation_id)`
+  composite key (UUID + `Long`) and `created_at`. The same file also carries a
+  local `mapObservation` (identical shape to `ObservationsDao`'s) for the
+  joined-observation read. No corruption path.
+- **`extraction_runs`**: `mapRun` reads `id` as a `Long` `ExtractionRunId`,
+  `convo_id`/`student_id`/`system_prompt_id` as typed UUIDs,
+  `through_request_id` as a `Long` `ConvoRequestId`, `outcome` via the private
+  `parseOutcome` (`ExtractionOutcome.fromValue`, throwing a `SQLException` on an
+  unrecognized value, same corruption convention as `claims`), `provider` as a
+  plain `String`, the nullable `model_resolved`, the three non-null count
+  columns (`observations_written`/`claims_written`/`claims_superseded`) as
+  `Int`, and the four nullable token-usage columns
+  (`input_tokens`/`output_tokens`/ `cache_read_tokens`/`cache_write_tokens`)
+  read via `getInt` + `wasNull()`.
 
 The `row_created_at`/`row_updated_at` columns exist in every entity table and
 are maintained by DB triggers, but no mapper projects them into a domain model.
@@ -308,6 +357,52 @@ through `mapDatabaseError`):
   CHECK-violating row as a `PermanentError`.
 - everything else → `mapDatabaseError`. Mirrors `ConvosDao.mapConvoError` /
   `SystemPromptsDao.mapPromptError`.
+
+`ObservationsDao.mapObservationError` (the `create`/`append` write path;
+`listByConvoRange`/`listByStudent` route through `mapDatabaseError`):
+
+- `23503` (FK) → `NotFoundException` with a message resolved from the violated
+  constraint name (`observations_student_id_fkey` → "Owning student not found";
+  `observations_convo_id_fkey` → "Convo not found";
+  `observations_source_request_id_fkey` → "Source request not found"; unmatched
+  → bare `NotFoundException()`).
+- `23505` / `23514` → `ConstraintViolationException`.
+- everything else → `mapDatabaseError`.
+
+`ClaimsDao.mapClaimError` (the `create` and `revise` write paths; `findById`/
+`listActiveByStudent` route through `mapDatabaseError`):
+
+- `23503` (FK) → `NotFoundException` (`claims_student_id_fkey` → "Owning student
+  not found"; `claims_superseded_by_id_fkey` → "Superseding claim not found";
+  unmatched → bare `NotFoundException()`).
+- `23505` / `23514` → `ConstraintViolationException` (the latter covers the
+  lifecycle-consistency CHECKs `claims_superseded_consistency_check`/
+  `claims_retracted_consistency_check`).
+- everything else → `mapDatabaseError`.
+
+`ClaimSupportDao.mapSupportError` (the `link`/`create` write path;
+`listObservationsForClaim`/`readExisting` route through `mapDatabaseError`):
+
+- `23503` (FK) → `NotFoundException` (`claim_support_claim_id_fkey` → "Claim not
+  found"; `claim_support_observation_id_fkey` → "Observation not found";
+  unmatched → bare `NotFoundException()`). No `23505` branch — the composite PK
+  collision is absorbed by `ON CONFLICT DO NOTHING`, never surfacing as an
+  error.
+- everything else → `mapDatabaseError`.
+
+`ExtractionRunsDao.mapRunError` (the `create`/`append` write path; `watermark`
+routes through `mapDatabaseError`):
+
+- `23503` (FK) → `NotFoundException` (`extraction_runs_convo_id_fkey` → "Convo
+  not found"; `extraction_runs_student_id_fkey` → "Owning student not found";
+  `extraction_runs_through_request_id_fkey` → "Through request not found";
+  `extraction_runs_system_prompt_id_fkey` → "System prompt not found"; unmatched
+  → bare `NotFoundException()`).
+- `23505` / `23514` → `ConstraintViolationException`.
+- everything else → `mapDatabaseError`.
+
+`AdvisoryLockDao.lockStudent` declares no SQLSTATE map — it wraps its own
+try/catch and routes any failure straight through `mapDatabaseError`.
 
 `55P03` in any `*ForUpdate` method (`SELECT … FOR UPDATE NOWAIT`) →
 `LockAcquisitionFailureException` (mapped inline, before `mapDatabaseError`).
@@ -977,6 +1072,184 @@ upserts and returns a `Result`; it does not bracket itself in a savepoint.
 
 ---
 
+### `ObservationsDao` — [`ObservationsDao.kt`](./ObservationsDao.kt)
+
+`object` implementing `Creatable<NewObservation, Observation>` over the
+append-only `observations` log (RFC 66) — verbatim student quotes mined from
+conversation turns. The log is insert-only; DB immutability triggers reject any
+`UPDATE`/`DELETE`, so there is no update/delete/soft-delete surface. The write
+path discriminates SQLSTATE via `mapObservationError`; reads route through
+`mapDatabaseError`.
+
+#### `create(session, input: NewObservation): Result<Observation>` / `append(session, input): Result<Observation>`
+
+- **Side Effects**: Write — `insertReturning` over `student_id`, `convo_id`,
+  `source_request_id`, `uttered_at`, `quote`. The DB generates the `BIGINT` `id`
+  and `created_at`. `append` is a log-flavoured alias that delegates verbatim to
+  `create`.
+- **Error Handling**: `NotFoundException` (student/convo/source-request FK) via
+  `mapObservationError`; `ConstraintViolationException` on `23505`/`23514`.
+- **Idempotency**: No — every append is a distinct row.
+
+#### `listByConvoRange(session, convoId, afterRequestId, throughRequestId): Result<List<Observation>>`
+
+- **Side Effects**: Read only — the window of one convo's observations whose
+  `source_request_id` lies in `(afterRequestId, throughRequestId]`, ordered
+  `created_at, id`. This is the incremental-extraction read: the half-open lower
+  bound is the prior watermark, the inclusive upper bound the new target.
+- **Error Handling**: `success(emptyList())` when none match.
+- **Idempotency**: Yes.
+
+#### `listByStudent(session, studentId): Result<List<Observation>>`
+
+- **Side Effects**: Read only — every observation for a student, ordered
+  `created_at, id`.
+- **Error Handling**: `success(emptyList())` when none match.
+- **Idempotency**: Yes.
+
+---
+
+### `ClaimsDao` — [`ClaimsDao.kt`](./ClaimsDao.kt)
+
+`object` implementing `Findable<Claim, ClaimId>`/`Creatable<NewClaim, Claim>`
+over the mutable `claims` entity (RFC 66) — deduplicated statements distilled
+about a student. `claims` has **no `version` column** (RFC 66 disabled
+versioning), so no mutation carries an OCC guard; concurrent same-student passes
+serialize on the per-student advisory lock (`AdvisoryLockDao`), not on OCC. The
+write paths (`create`, `revise`) discriminate SQLSTATE via `mapClaimError`;
+reads route through `mapDatabaseError`.
+
+#### `create(session, input: NewClaim): Result<Claim>`
+
+- **Side Effects**: Write — `insertReturning` over `student_id`, `origin`,
+  `kind`, `subject`, `topic`, `visibility`, `statement` (the six enums bound as
+  their `.value` strings). DB generates `id` (UUID), `created_at`, `updated_at`,
+  and defaults `status` (`active`) and `confidence`.
+- **Error Handling**: `NotFoundException("Owning student not found")` on the
+  `student_id` FK; `ConstraintViolationException` on `23505`/`23514`.
+- **Idempotency**: No.
+
+#### `findById(session, id: ClaimId): Result<Claim>`
+
+- **Side Effects**: Read only — `queryOne` by primary key.
+- **Error Handling**: `NotFoundException()` when absent.
+- **Idempotency**: Yes.
+
+#### `listActiveByStudent(session, studentId): Result<List<Claim>>`
+
+- **Side Effects**: Read only — the student's `status = 'active'` claims,
+  ordered `created_at, id`. The hot read, served by `claims_student_active_idx`.
+- **Error Handling**: `success(emptyList())` when none match.
+- **Idempotency**: Yes.
+
+#### `revise(session, id, revision: ClaimRevision): Result<Claim>`
+
+- **Side Effects**: Read/write — `mutateReturning` updating a claim's lifecycle
+  (`status`, `confidence`, `superseded_by_id`) by id. The `superseded_at`/
+  `retracted_at` timestamp columns are **derived in SQL from the target status**
+  (`NOW()` when superseding/retracting, else `NULL`) so the row always satisfies
+  the DB lifecycle-consistency CHECKs; the `update_timestamp` trigger bumps
+  `updated_at`. The `superseded_by_id` is bound as the UUID or SQL NULL.
+- **Error Handling**: `NotFoundException` on 0 rows (no claim with that id);
+  `NotFoundException("Superseding claim not found")` on the `superseded_by_id`
+  FK; `ConstraintViolationException` on a lifecycle CHECK; via `mapClaimError`.
+- **Idempotency**: No — `updated_at` advances each call.
+
+---
+
+### `ClaimSupportDao` — [`ClaimSupportDao.kt`](./ClaimSupportDao.kt)
+
+`object` implementing `Creatable<NewClaimSupport, ClaimSupport>` over the
+append-only `claim_support` link log (RFC 66) — the citation edges joining each
+`claims` row to the `observations` that back it (composite PK
+`(claim_id, observation_id)`). The write path discriminates SQLSTATE via
+`mapSupportError`; the reads route through `mapDatabaseError`.
+
+#### `link(session, claimId, observationId): Result<ClaimSupport>` / `create(session, input: NewClaimSupport): Result<ClaimSupport>`
+
+- **Side Effects**: Write — an **idempotent** insert:
+  `INSERT … ON CONFLICT (claim_id, observation_id) DO NOTHING RETURNING *`. A
+  first insert returns the new row; a repeat conflicts, RETURNING yields
+  nothing, the helper's `onNoRow` raises a private `ConflictNoOp` sentinel, and
+  `recoverCatching` reads the existing row back via `readExisting` — so
+  re-citing the same observation for the same claim is a no-op success, never a
+  duplicate-key error. `create` delegates verbatim to `link`.
+- **Error Handling**: `NotFoundException` (`claim_support_claim_id_fkey` →
+  "Claim not found"; `claim_support_observation_id_fkey` → "Observation not
+  found") via `mapSupportError`. No duplicate-key error path (absorbed by
+  `ON CONFLICT`).
+- **Idempotency**: Yes — repeat links collapse to the existing row.
+
+#### `listObservationsForClaim(session, claimId): Result<List<Observation>>`
+
+- **Side Effects**: Read only — JOINs `claim_support` to `observations`, ordered
+  `o.created_at, o.id`; the "what backs this claim" read.
+- **Error Handling**: `success(emptyList())` when none match.
+- **Idempotency**: Yes.
+
+---
+
+### `ExtractionRunsDao` — [`ExtractionRunsDao.kt`](./ExtractionRunsDao.kt)
+
+`object` implementing `Creatable<NewExtractionRun, ExtractionRun>` over the
+append-only `extraction_runs` log (RFC 66) — one row per extraction pass
+(success or failure), recording the window applied, the resolved model/provider,
+the write counts, and token usage. The log is insert-only. The write path
+discriminates SQLSTATE via `mapRunError`; `watermark` routes through
+`mapDatabaseError`.
+
+#### `create(session, input: NewExtractionRun): Result<ExtractionRun>` / `append(session, input): Result<ExtractionRun>`
+
+- **Side Effects**: Write — `insertReturning` over the convo/student/
+  through-request/system-prompt ids, `outcome`, `provider`, the nullable
+  `model_resolved`, the three non-null write counts, and the four nullable
+  token-usage columns. DB generates the `BIGINT` `id` and `created_at`. `append`
+  is an alias of `create`.
+- **Error Handling**: `NotFoundException` (convo/student/through-request/
+  system-prompt FK) via `mapRunError`; `ConstraintViolationException` on
+  `23505`/`23514`.
+- **Idempotency**: No — every pass is a distinct row.
+
+#### `watermark(session, convoId): Result<Long>`
+
+- **Side Effects**: Read only — `COALESCE(MAX(through_request_id), 0)` over the
+  convo's `outcome = 'applied'` rows, or 0 when none. The idempotency anchor for
+  incremental extraction; `failed` rows are ignored (they billed tokens but did
+  not advance the window).
+- **Error Handling**: `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
+
+---
+
+### `AdvisoryLockDao` — [`AdvisoryLockDao.kt`](./AdvisoryLockDao.kt)
+
+`object` exposing transaction-scoped advisory locks (RFC 66) — a net-new pattern
+in this codebase. Declares no capability interface and touches no table. The
+lock SQL lives here because the raw `SqlSession.execute` helper is `internal` to
+`:db` and not visible from `:service`, so this is the public surface callers
+use.
+
+#### `lockStudent(session, studentId): Result<Unit>`
+
+- **Side Effects**: Read/write — acquires the per-student transaction-scoped
+  advisory lock via `SELECT pg_advisory_xact_lock(hashtextextended(?::text, 0))`
+  (the student UUID stringified as the lock key). Built on a raw
+  `prepareStatement`/`executeQuery` — not the generic helpers, which expect an
+  update count or a RETURNING row — and the result set is drained and discarded;
+  only the lock side-effect matters. Blocks until the lock is free, serializing
+  all passes for the same student against the shared `claims`/`claim_support`
+  state; distinct students hash to distinct keys and never contend. The lock is
+  held for the remainder of the caller's transaction and released on
+  commit/rollback — callers keep the LLM call outside the transaction that holds
+  it.
+- **Error Handling**: any thrown exception →
+  `Result.failure(mapDatabaseError(e))` (its own try/catch; no SQLSTATE
+  discrimination).
+- **Idempotency**: No — re-acquiring within the same transaction is a stateful
+  lock operation (Postgres permits re-entrant `pg_advisory_xact_lock`).
+
+---
+
 ### Result Types — Kotlin `Result<T>`
 
 All DAO methods return standard Kotlin `Result<T>`. Exceptions are wrapped in
@@ -1099,17 +1372,33 @@ rules are in §IV.
       `UsersDao.markEmailVerified` (versioned conditional update, idempotent
       first-verification stamp); the `mapUser`/`mapUserVersion` mappers and the
       shared `updateFullRow` now carry `email_verified_at`.
-- [x] [RFC-67: College Knowledge](../../../../../../../../rfc/67-college-knowledge.md)
-      — Added `CollegesDao` over the `colleges`/`college_programs` reference
-      tables: the codebase's first hand-rolled
-      `INSERT … ON CONFLICT … DO UPDATE` upserts (`upsert` on `unit_id`,
-      `upsertProgram` on `(college_id, cip_code, credential_level)`), the
-      natural-key `findByUnitId` (NotFound folded to `null`), and the dynamic
-      parameterized `search` (one `AND` per non-null `CollegeQuery` filter,
-      optional `college_programs` JOIN with `cip_code LIKE prefix || '%'` +
-      `array_agg`, deterministic `ORDER BY … LIMIT`). Declares no capability
-      interface (the upsert key is a federal natural key). Added the
-      `mapCollegeError` write-path SQLSTATE map (`23503` → NotFound;
-      `23505`/`23514` → `ConstraintViolationException`) and the
+- [x] [RFC-66: Coaching Memory Extraction](../../../../../../../../rfc/66-extraction.md)
+      — Added the coaching-memory extraction DAOs: `ObservationsDao`
+      (append-only `observations` log: `create`/`append`, `listByConvoRange`,
+      `listByStudent`, with the `mapObservationError` FK map); `ClaimsDao`
+      (mutable `claims` entity with no `version`/OCC: `create`, `findById`,
+      `listActiveByStudent`, the lifecycle write `revise` with SQL-derived
+      supersede/retract timestamps, and the `mapClaimError` map);
+      `ClaimSupportDao` (append-only `claim_support` link log: the idempotent
+      `link`/`create` via `ON CONFLICT DO NOTHING` + read-back,
+      `listObservationsForClaim`, and the `mapSupportError` map with no
+      duplicate-key path); `ExtractionRunsDao` (append-only `extraction_runs`
+      log: `create`/`append`, the `applied`-only `watermark`, and the
+      `mapRunError` map); and `AdvisoryLockDao` (the codebase's first
+      advisory-lock surface — `lockStudent` via
+      `pg_advisory_xact_lock(hashtextextended(...))`, serializing same-student
+      passes). None declares a new capability interface beyond
+      `Creatable`/`Findable`, and none adds a new `DaoException`. — Added
+      `CollegesDao` over the `colleges`/`college_programs` reference tables: the
+      codebase's first hand-rolled `INSERT … ON CONFLICT … DO UPDATE` upserts
+      (`upsert` on `unit_id`, `upsertProgram` on
+      `(college_id, cip_code, credential_level)`), the natural-key
+      `findByUnitId` (NotFound folded to `null`), and the dynamic parameterized
+      `search` (one `AND` per non-null `CollegeQuery` filter, optional
+      `college_programs` JOIN with `cip_code LIKE prefix || '%'` + `array_agg`,
+      deterministic `ORDER BY … LIMIT`). Declares no capability interface (the
+      upsert key is a federal natural key). Added the `mapCollegeError`
+      write-path SQLSTATE map (`23503` → NotFound; `23505`/`23514` →
+      `ConstraintViolationException`) and the
       `mapCollege`/`mapProgram`/`mapMatch` row mappers (including `text[]`
       `program_titles` via JDBC `getArray`).

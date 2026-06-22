@@ -132,6 +132,38 @@ service-returned `User`, including `emailVerified`, derived as
   absent) → unarchived and `archived` → archived; any other value returns `400`
   (`code = "validation_failed"`, field `status`).
 
+#### Conversation Extraction Enqueue (Fire-and-Forget)
+
+After a coaching turn completes successfully, `ConvoRouteHandler` enqueues a
+background conversation-extraction job. This is a fire-and-forget side-effect
+that never participates in the turn's response.
+
+- **Gate**: The enqueue is skipped entirely when `extractionConfig.enabled` is
+  `false` (the `extraction.enabled` config key). When disabled,
+  `enqueueExtraction` returns immediately and no queue call is made.
+- **Trigger**: It fires only on a successful terminal — `ReplyEvent.Completed`.
+  It is never enqueued for a `ReplyEvent.Failed` turn, nor for any request that
+  short-circuited earlier (unauthenticated, missing profile, unknown
+  conversation, request `ValidationFailure`). All four turn-producing endpoints
+  enqueue it: buffered create (`POST /conversations`), buffered post-message
+  (`POST …/messages`), and the two SSE endpoints (`POST /conversations/stream`,
+  `POST …/messages/stream`). In the SSE path the enqueue runs _after_ the
+  terminal `message` frame has been written and flushed to the client.
+- **Job**: It calls `QueueService.enqueue` with
+  `jobType = JobType.EXTRACT_CONVERSATION`, a `delay` of `extraction.debounce`
+  (coalescing rapid turns into one effective pass), and a payload built from
+  `ExtractionPayload(convoId = <convo UUID string>, throughRequestId = <user
+  ConvoRequest id>)`
+  serialized to the kotlinx `JsonObject` the queue API takes (`convoId`,
+  `throughRequestId`). The user turn enqueued is the turn just produced by
+  `startConvo`/`postTurn` (`outcome.userTurn.id`).
+- **Fire-and-forget**: The enqueue does not block and does not affect the
+  response. A returned `EnqueueResult.DatabaseFailure` is logged at `warn` and
+  ignored; any thrown exception is caught, logged at `warn`, and swallowed.
+  Neither alters the HTTP status, the JSON body, or the SSE frame sequence — the
+  turn's response is already determined (and, for a stream, already partly
+  written) before the enqueue is attempted.
+
 #### Message Identity Projection
 
 Wire `Message.id` values are opaque, role-prefixed strings: a user message is
@@ -152,7 +184,10 @@ string is opaque to clients.
   (`conversation` for create, `user_message` for message), then relays zero or
   more `delta` frames, then terminates with exactly one terminal frame — a
   single `message` (on `ReplyEvent.Completed`) or a single `error` (on
-  `ReplyEvent.Failed`). The reply `Flow` carries exactly one terminal event.
+  `ReplyEvent.Failed`). The reply `Flow` carries exactly one terminal event. On
+  a `message` terminal (success), the extraction enqueue (see **Conversation
+  Extraction Enqueue**) fires after that frame is written; on an `error`
+  terminal it does not.
 - SSE responses carry `Cache-Control: no-store` and content type
   `text/event-stream`. Each event is framed as `event: {type}\ndata: {json}\n\n`
   and flushed.
@@ -473,7 +508,9 @@ by **Conversation Caller Resolution** (§II-A) and are not re-tabulated per row.
 - **Side effects**: Calls
   `CoachingService.startConvo(student.id, message, name)`, then drains the reply
   `Flow` to its single terminal (buffered — the coach reply is fully
-  materialized before responding).
+  materialized before responding). On a `ReplyEvent.Completed` terminal, a
+  fire-and-forget `EXTRACT_CONVERSATION` enqueue is fired before responding (see
+  **Conversation Extraction Enqueue**, §II-A) — never on a failed terminal.
 - **Response mapping**:
 
   | Condition                            | Status                      | Body                                                                     |
@@ -491,7 +528,9 @@ by **Conversation Caller Resolution** (§II-A) and are not re-tabulated per row.
 - **Request**: JSON `CreateConversationRequest { message, name? }`.
 - **Side effects**: Calls `CoachingService.startConvo(...)`. On `Started`, opens
   an SSE stream: opening `conversation` event, then relayed `delta` frames, then
-  one terminal `message` or `error` frame.
+  one terminal `message` or `error` frame. A successful (`message`) terminal
+  also fires the fire-and-forget `EXTRACT_CONVERSATION` enqueue after the frame
+  is written (see **Conversation Extraction Enqueue**, §II-A).
 - **Response mapping**: Pre-flight failures are buffered HTTP before the stream
   opens — `401`/`409` (resolution), `400` (`validation_failed`). On `Started`:
   `200 OK`, `Content-Type: text/event-stream`, `Cache-Control: no-store`, body
@@ -573,7 +612,9 @@ by **Conversation Caller Resolution** (§II-A) and are not re-tabulated per row.
 - **Request**: JSON `PostMessageRequest { message }`.
 - **Side effects**: Calls
   `CoachingService.postTurn(student.id, convoId, message)`, then drains the
-  reply `Flow` (buffered).
+  reply `Flow` (buffered). On a `ReplyEvent.Completed` terminal, a
+  fire-and-forget `EXTRACT_CONVERSATION` enqueue is fired before responding (see
+  **Conversation Extraction Enqueue**, §II-A) — never on a failed terminal.
 - **Response mapping**:
 
   | Condition                              | Status                      | Body                                                        |
@@ -592,7 +633,9 @@ by **Conversation Caller Resolution** (§II-A) and are not re-tabulated per row.
 - **Request**: JSON `PostMessageRequest { message }`.
 - **Side effects**: Calls `CoachingService.postTurn(...)`. On `Started`, opens
   an SSE stream: opening `user_message` event, then `delta` frames, then one
-  terminal `message` or `error` frame.
+  terminal `message` or `error` frame. A successful (`message`) terminal also
+  fires the fire-and-forget `EXTRACT_CONVERSATION` enqueue after the frame is
+  written (see **Conversation Extraction Enqueue**, §II-A).
 - **Response mapping**: Pre-flight failures are buffered HTTP before the stream
   opens — `401`/`404` (resolution / malformed id / `NotFound`), `400`
   (`validation_failed`). On `Started`: `200 OK`, `text/event-stream`,
@@ -613,9 +656,16 @@ those inherited from the parent `rest` module. Relevant configuration:
 | `session.cookieDomain` | `rest-server.conf` | Cookie `Domain` attribute                                                                  |
 | `session.cookieSecure` | `rest-server.conf` | Cookie `Secure` flag                                                                       |
 | `session.expiration`   | `rest-server.conf` | Session TTL; forwarded to `AuthService.register()`/`login()` as `sessionExpirationSeconds` |
+| `extraction.enabled`   | `service.conf`     | Master gate for the `ConvoRouteHandler` extraction enqueue (skipped when `false`)          |
+| `extraction.debounce`  | `service.conf`     | Job `delay` for the `EXTRACT_CONVERSATION` enqueue, coalescing rapid turns                 |
 
-All four values are parsed by `SessionConfig.from(config)` in the parent `auth/`
-package and injected into the route handlers as `sessionConfig`.
+The four `session.*` values are parsed by `SessionConfig.from(config)` in the
+parent `auth/` package and injected into the route handlers as `sessionConfig`.
+The `extraction.*` block is read by `ExtractionConfig.from(config)` (in the
+`service` module's `coaching/extraction/` package) and injected into
+`ConvoRouteHandler` as `extractionConfig`; only `enabled` and `debounce` are
+consulted by the routing layer (the remaining extraction keys shape the worker's
+distillation pass, not the enqueue).
 
 ### Injected Dependencies
 
@@ -634,6 +684,14 @@ package and injected into the route handlers as `sessionConfig`.
 - **`CoachingService`** (`service` module): Provides `startConvo()`,
   `listConvos()`, `getConvo()`, `updateConvo()`, `deleteConvo()`, `listTurns()`,
   and `postTurn()`. Used only by `ConvoRouteHandler`.
+- **`QueueService`** (`queue` module): Provides
+  `enqueue(jobType, payload,
+  delay)`. `ConvoRouteHandler` uses it solely to
+  enqueue the fire-and-forget `EXTRACT_CONVERSATION` job after a successful
+  coaching turn.
+- **`ExtractionConfig`** (`service` module, `coaching/extraction/` package):
+  Carries `enabled` (the enqueue gate) and `debounce` (the job delay).
+  `ConvoRouteHandler` reads only these two of its fields.
 - **`SessionConfig`** (`rest/auth/` package): Cookie parameters.
 
 ---
@@ -702,3 +760,16 @@ package and injected into the route handlers as `sessionConfig`.
       `204` on both `Sent` and `AlreadyVerified`, `401` when unresolved). Added
       `EmailVerificationService` to `AuthRouteHandler` and the `emailVerified`
       field to the `PublicUser` projection built by `register`/`login`/`me`.
+- [x] [RFC-66: Extraction](../../../../../../../../rfc/66-extraction.md) — Added
+      the fire-and-forget conversation-extraction enqueue to
+      `ConvoRouteHandler`. The handler now takes `QueueService` and
+      `ExtractionConfig`; after a successful coaching turn
+      (`ReplyEvent.Completed`) on any of the four turn-producing endpoints
+      (buffered create/post-message and both SSE endpoints), and only when
+      `extraction.enabled` is `true`, it enqueues an `EXTRACT_CONVERSATION` job
+      (`ExtractionPayload { convoId, throughRequestId
+      }`) with
+      `delay = extraction.debounce`. The enqueue does not block or alter the
+      response: a `DatabaseFailure` or thrown exception is logged at `warn` and
+      swallowed; in the SSE path it runs after the terminal `message` frame is
+      written.

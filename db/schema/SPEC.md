@@ -240,6 +240,10 @@ upsert). Physical deletes are permitted (no `prevent_physical_delete()`).
 | `email_sends`          | Log              | —               | —              | —               | —               |
 | `colleges`             | Reference        | ❌              | ❌             | ❌              | ❌              |
 | `college_programs`     | Reference        | ❌              | ❌             | ❌              | ❌              |
+| `observations`         | Log              | —               | —              | —               | —               |
+| `claims`               | Entity           | ✅              | ❌             | ❌              | ❌              |
+| `claim_support`        | Log              | —               | —              | —               | —               |
+| `extraction_runs`      | Log              | —               | —              | —               | —               |
 
 ### `users`
 
@@ -561,7 +565,14 @@ updated or deleted; a "new version" is a new row with a new `id`, so there is no
   [`0011`](./0011.seed-coach-system-prompt.sql)). The seed is application-level
   reference data (§I) and, being an immutable-entity row, is itself immutable: a
   revised coach prompt is a new `coach/v2` row, leaving `coach/v1` — and every
-  `convo_requests` turn that pinned it — intact.
+  `convo_requests` turn that pinned it — intact. A second seed
+  (`name='extraction'`, `version='v1'`, migration
+  [`0020`](./0020.seed-extraction-system-prompt.sql)) adds the coaching-memory
+  extraction prompt, pinned by `extraction_runs.system_prompt_id`; its body
+  instructs the extraction LLM to emit a strict JSON document of
+  observation/claim operations over a transcript window and deliberately omits
+  confidence (that is code-recomputed). Like the coach seed it is immutable — a
+  revision is a new `extraction/v2` row.
 
 ### `email_sends` — Append-Only Log
 
@@ -660,6 +671,156 @@ institution-level 2-digit `PCIP` families.
   `update_colleges_timestamp()`), carried for uniformity with `colleges`; no
   reader consumes them — the table is bulk-upserted only.
 
+### Coaching Memory (RFC 66)
+
+The coaching-memory substrate distilled from a conversation's transcript by the
+extraction pass, defined in
+[`0019.create-coaching-memory.sql`](./0019.create-coaching-memory.sql). Four
+tables compose an evidence-and-belief model: `observations` (immutable verbatim
+records of what a student said), `claims` (the coach's current revisable
+belief), `claim_support` (the many-to-many link between them), and
+`extraction_runs` (the provenance/watermark/token ledger of each extraction
+call). All reuse the shared guard functions; closed enums are TEXT + named
+CHECK, not native pg enums.
+
+### `observations` — Append-Only Log
+
+Immutable records of what a student said: a verbatim quote span tied to the
+exact source turn. An observation is true forever, so belief revision happens at
+the `claims` layer, never here. Carries none of the entity mix-ins — no
+`version`, `updated_at`, `deleted_at`, or versions table; only `created_at`
+(ingest time).
+
+- **Append-only**: `prevent_log_update()`
+  (`trigger_00_prevent_observations_update`) and `prevent_log_delete()`
+  (`trigger_01_prevent_observations_delete`) raise `P0001`.
+- **Identity / ordering**: `id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`
+  (internal, monotonic).
+- **Event vs ingest time**: `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()` is
+  the ingest time; `uttered_at TIMESTAMPTZ NOT NULL` is the event time (the
+  source turn's `created_at`), supplied by the writer.
+- **Provenance FKs (all `ON DELETE CASCADE`)**:
+  `student_id UUID NOT NULL REFERENCES students(id)`,
+  `convo_id UUID NOT NULL REFERENCES convos(id)`, and
+  `source_request_id BIGINT NOT NULL REFERENCES convo_requests(id)` — the user
+  turn the quote came from. The CASCADEs are inert while the parents are
+  `prevent_physical_delete()`/`prevent_log_delete()`-protected.
+- **Quote bounded & non-empty**: `quote TEXT NOT NULL`, ≤4096 chars
+  (`observations_quote_length_check`) and non-empty after trim
+  (`observations_quote_not_empty_check`).
+- **Indexes**: `observations_student_id_created_at_idx` on
+  `(student_id, created_at)` (per-student timeline) and
+  `observations_convo_source_idx` on `(convo_id, source_request_id)`.
+
+### `claims`
+
+A mutable entity (advanced timestamps) with OCC versioning, version history, and
+logical deletes all disabled. It is the coach's current belief about a student —
+revisable in place: it gains confidence, is superseded by a newer belief, or is
+retracted, while its supporting observations stay immutable.
+
+- **Immutability/delete guards**: `prevent_physical_delete()`
+  (`trigger_00_prevent_claims_physical_delete`) blocks physical deletes;
+  `prevent_immutable_updates()` (`trigger_00a_prevent_claims_immutable_updates`)
+  blocks changes to `id`, `created_at`, `row_created_at`. Belief state lives in
+  mutable domain columns, updated in place (a claim is never soft-deleted — it
+  transitions to `superseded`/`retracted` instead).
+- **Advanced timestamps**: full 4-timestamp pattern, maintained by
+  `update_timestamp()` (`trigger_03_enforce_claims_updated_at`).
+- **Ownership**:
+  `student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE`.
+- **Coded categoricals (TEXT + named CHECK)**: `origin` ∈ {`student_stated`,
+  `coach_inferred`}; `status` ∈ {`active`, `superseded`, `retracted`} (default
+  `active`); `kind` ∈ {`goal`, `preference`, `constraint`, `fact`, `concern`};
+  `subject` ∈ {`student`, `family`, `college`, `application`}; `topic` ∈
+  {`academics`, `activities`, `finances`, `location`, `career`, `timeline`,
+  `wellbeing`}; `visibility` ∈ {`student_visible`, `internal`} (default
+  `student_visible`).
+- **Statement bounded & non-empty**: `statement TEXT NOT NULL`, ≤2048
+  (`claims_statement_length_check`) and non-empty after trim
+  (`claims_statement_not_empty_check`).
+- **Confidence (code-recomputed fixed-point)**:
+  `confidence INTEGER NOT NULL DEFAULT 0`, `BETWEEN 0 AND 1000`
+  (`claims_confidence_range_check`) — a 0..1000 fixed-point score recomputed in
+  application code from the support set, not assigned by the extraction LLM.
+- **Supersession chain**:
+  `superseded_by_id UUID NULL REFERENCES claims(id) ON DELETE RESTRICT` points a
+  superseded claim at its successor; `RESTRICT` never fires because claims are
+  never physically deleted. `claims_not_self_superseded_check` forbids a claim
+  pointing at itself.
+- **Lifecycle consistency CHECKs**: `claims_superseded_consistency_check` makes
+  `status = 'superseded'` hold exactly when both `superseded_by_id` and
+  `superseded_at` are set; `claims_retracted_consistency_check` makes
+  `status = 'retracted'` hold exactly when `retracted_at` is set.
+- **Indexes**: `claims_student_active_idx` on `student_id`
+  `WHERE status = 'active'` (the hot active-belief read) and
+  `claims_student_status_idx` on `(student_id, status)`.
+
+### `claim_support` — Append-Only Link Log
+
+The many-to-many link from claims to the observations backing them. Each row is
+an immutable fact: "this observation was cited as support for this claim." A
+claim with no `claim_support` rows is a pure cross-claim inference
+(`coach_inferred`).
+
+- **Append-only**: `prevent_log_update()`
+  (`trigger_00_prevent_claim_support_update`) and `prevent_log_delete()`
+  (`trigger_01_prevent_claim_support_delete`) raise `P0001`.
+- **Composite identity**: `PRIMARY KEY (claim_id, observation_id)` — a
+  claim/observation pair links at most once.
+  `claim_id UUID NOT NULL REFERENCES claims(id) ON DELETE CASCADE` and
+  `observation_id BIGINT NOT NULL REFERENCES observations(id) ON DELETE
+  CASCADE`
+  (both CASCADEs inert under the parents' delete guards).
+- **Timestamp**: `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`.
+- **Reverse-lookup index**: `claim_support_observation_idx` on `observation_id`
+  ("which claims does this observation support").
+
+### `extraction_runs` — Append-Only Log
+
+One row per billed extraction LLM call over a conversation — success or failure.
+Serves three jobs: the conversation's extraction **watermark**
+(`MAX(through_request_id) WHERE outcome = 'applied'`), the **provenance** of the
+call that produced a pass's claims (model + pinned prompt), and the per-pass
+**token ledger** so every token spent on a student is recorded even when the
+pass fails and retries. Carries none of the entity mix-ins — only `created_at`.
+
+- **Append-only**: `prevent_log_update()`
+  (`trigger_00_prevent_extraction_runs_update`) and `prevent_log_delete()`
+  (`trigger_01_prevent_extraction_runs_delete`) raise `P0001`.
+- **Identity / ordering**: `id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`.
+- **Stream + per-user accounting (all `ON DELETE CASCADE`)**:
+  `convo_id UUID NOT NULL REFERENCES convos(id)`,
+  `student_id UUID NOT NULL REFERENCES students(id)` (denormalized from the
+  convo so per-student token totals are a single-table scan), and
+  `through_request_id BIGINT NOT NULL REFERENCES convo_requests(id)` — the
+  window target attempted, counting toward the watermark only when
+  `outcome = 'applied'`.
+- **Outcome**: `outcome TEXT NOT NULL` ∈ {`applied`, `failed`}
+  (`extraction_runs_outcome_check`). `applied` advanced the watermark and wrote
+  memory; `failed` billed tokens but produced unusable output.
+- **Provenance**:
+  `system_prompt_id UUID NOT NULL REFERENCES system_prompts(id) ON DELETE
+  RESTRICT`
+  pins the exact immutable extraction prompt (`RESTRICT` protects the shared
+  parent, mirroring `convo_requests`); `provider TEXT NOT NULL` ∈ {`anthropic`,
+  `log`} (`extraction_runs_provider_check`); `model_resolved TEXT
+  NULL`, ≤255
+  when present (`extraction_runs_model_resolved_length_check`).
+- **Write counts**: `observations_written`, `claims_written`,
+  `claims_superseded` (each `INTEGER NOT NULL DEFAULT 0`, `>= 0` via
+  `extraction_runs_counts_nonneg_check`). A `failed` row wrote no memory —
+  `extraction_runs_failed_counts_check` forces all three to 0 unless
+  `outcome = 'applied'`.
+- **Token ledger**: `input_tokens`, `output_tokens`, `cache_read_tokens`,
+  `cache_write_tokens` are nullable and, when present, `>= 0`
+  (`extraction_runs_tokens_nonneg_check`) — the same four-column shape as
+  `convo_responses`, so chat + extraction spend are summable.
+- **Indexes**: `extraction_runs_convo_watermark_idx` on
+  `(convo_id, through_request_id) WHERE outcome = 'applied'` (the watermark
+  read) and `extraction_runs_student_idx` on `(student_id, created_at)`
+  (per-user token-accounting scan).
+
 ---
 
 ## III. Infrastructure & Environment
@@ -698,6 +859,15 @@ institution-level 2-digit `PCIP` families.
 - [x] [RFC-60: Admin Website](../../rfc/60-admin-website.md)
 - [x] [RFC-64: Google SSO Login](../../rfc/64-google-sso-login.md)
 - [x] [RFC-65: Email Verification](../../rfc/65-email-verification.md)
+- [x] [RFC-66: Extraction](../../rfc/66-extraction.md) — Added the
+      coaching-memory substrate in `0019.create-coaching-memory.sql`:
+      `observations` and `claim_support` (append-only logs), `extraction_runs`
+      (append-only provenance/watermark/token ledger), and `claims` (a mutable
+      entity guarded by `prevent_physical_delete()` +
+      `prevent_immutable_updates()` rather than soft-deleted, with
+      lifecycle-consistency CHECKs for the active/superseded/retracted states
+      and a code-recomputed fixed-point `confidence`). Seeded the
+      `extraction/v1` system prompt in `0020.seed-extraction-system-prompt.sql`.
 - [x] [RFC-67: College Knowledge](../../rfc/67-college-knowledge.md) — Added the
       `colleges` and `college_programs` reference tables (curated College
       Scorecard data) in `0015.create-colleges.sql`, the first non-entity,

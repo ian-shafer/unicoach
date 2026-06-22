@@ -13,6 +13,9 @@ dependencies {
   implementation(project(":queue"))
   implementation(project(":service"))
   implementation(project(":net"))
+  // Direct dependency (was only transitive via :service) to build the
+  // ChatProvider for extraction and bring chat.conf onto the classpath (RFC 66).
+  implementation(project(":chat"))
 
   implementation(libs.logback.classic)
   implementation(libs.logstash.logback.encoder)
