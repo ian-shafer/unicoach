@@ -101,6 +101,15 @@ keys of `convo_requests`/`convo_responses`). All implement `Id` and derive
 constructed directly. The `Long`-backed log-row ids are structurally distinct
 from the `UUID`-backed ids.
 
+[`CollegeId`](./CollegeId.kt) and `CollegeProgramId` also wrap a `UUID` and
+implement `Id`, deriving `asString` from `value.toString()`. They are the
+DB-generated surface ids of the `colleges`/`college_programs` reference rows;
+the federal `UNITID` natural key lives as a plain `Int` field, not a wrapped id.
+`CollegeProgramId` is defined alongside `CollegeProgram` in
+[`CollegeProgram.kt`](./CollegeProgram.kt) rather than its own file, because
+`college_programs` is bulk-upserted reference data with no standalone id-keyed
+read path.
+
 [`Id.asString`](./Entity.kt) is a derived, total, backing-agnostic string view
 of an identity (e.g. `UUID.toString()`) for logging, serialization, and generic
 code; it never throws and stores nothing.
@@ -168,6 +177,19 @@ against their tables' `row_created_at`).
   and `Created` only; rows are authored by migration and never mutated. Its
   `version: String` is a catalog version _label_, not an OCC counter, so it does
   not implement `Versioned`.
+- **Reference rows** — [`College`](./College.kt) and
+  [`CollegeProgram`](./CollegeProgram.kt) — implement
+  `Identifiable + Created + Updated` and deliberately omit `Versioned` and
+  `SoftDeletable`: they are bulk-upserted projections of an external snapshot
+  (College Scorecard), carry no per-row provenance or audit obligation, and are
+  re-derivable from the pinned file. `College` mirrors the `colleges` columns
+  (identity/location/size/selectivity/cost plus the three outcome signals
+  `graduationRate`, `medianEarnings`, `pctPell`); its `unitId: Int` is the
+  federal natural key as a plain `Int` (the upsert key), not a wrapped id.
+  `CollegeProgram` mirrors `college_programs` (`collegeId`, `cipCode`,
+  `cipTitle`, `credentialLevel`); `credentialLevel` is a non-null `Int` (always
+  present in the field-of-study source). Adding `Versioned`/`SoftDeletable` to
+  either is a schema mismatch — those tables have no `version`/`deleted_at`.
 
 ### II-H. Read projections and pairings
 
@@ -180,6 +202,14 @@ against their tables' `row_created_at`).
   its `ConvoResponse?`. The response is nullable because request and response
   are written in separate transactions: a committed request can exist with no
   response row (provider in flight, or the response transaction never ran).
+- [`CollegeMatch`](./CollegeMatch.kt) — a pure read projection of
+  `CollegesDao.search` (not a persisted row, implements no capability). It
+  carries the curated context columns (including the three outcome signals) plus
+  `programTitles: List<String>` — the `cip_title`s of programs matched by the
+  query's `cipPrefix`, empty when no program filter was applied. Of the three
+  outcome signals only `graduationRate` is also a query filter
+  (`minGraduationRate`); `medianEarnings` and `pctPell` are surfaced as context
+  for the coach to reason over in prose, never thresholded on.
 
 ### II-I. Creation input records (`New*`)
 
@@ -213,6 +243,14 @@ DAOs do not re-validate them.
   canonicalization and bounds are enforced by the table's `CHECK`/`UNIQUE`
   constraints, not by a factory in this package. `id`, `createdAt`, and the
   `row_created_at` audit column are DB-defaulted and never client-supplied.
+- [`NewCollege`](./NewCollege.kt) and
+  [`NewCollegeProgram`](./NewCollegeProgram.kt) — the upsert inputs for the
+  reference rows: no `id` (DB-generated) and no timestamps (DB-managed).
+  `NewCollege` is keyed on `unitId`; `NewCollegeProgram` on
+  `(collegeId, cipCode, credentialLevel)`. Every Scorecard-derived optional
+  column is nullable so a blank source cell maps to `null`. They carry no
+  validation — column bounds are DB-enforced by the
+  `colleges`/`college_programs` `CHECK`/`UNIQUE` constraints.
 
 ### II-J. Update input records (`*Edit`)
 
@@ -230,9 +268,11 @@ DAO `update` writes — never a server-managed/immutable column
   `expectedHighSchoolGraduationDate`.
 
 `Convo` has no edit-input record (its single-column rename is last-write-wins on
-a non-versioned entity).
+a non-versioned entity). The reference rows (`College`/`CollegeProgram`) have no
+`*Edit` record either: they are bulk-upserted from their `New*` inputs, never
+edited through a versioned DAO `update`.
 
-### II-K. Read-time filter enums
+### II-K. Read-time filter enums and inputs
 
 - [`SoftDeleteScope`](./SoftDeleteScope.kt) — domain-agnostic companion to
   `SoftDeletable` with `ACTIVE` (`deleted_at IS NULL`), `DELETED`
@@ -242,6 +282,12 @@ a non-versioned entity).
   axis with `UNARCHIVED` (`archived_at IS NULL`), `ARCHIVED`
   (`archived_at IS NOT NULL`), and `ALL`. A separate, orthogonal axis from
   `SoftDeleteScope`.
+- [`CollegeQuery`](./CollegeQuery.kt) — the typed filter input for
+  `CollegesDao.search` (not a row type). Every field except `limit` is nullable
+  (`null` = unconstrained axis); list fields (`states`, `locales`, `control`)
+  are OR-sets. `limit: Int` is mandatory and is clamped to `1..25` by the
+  `college` module's service boundary before reaching the DAO — the model itself
+  enforces no bound.
 
 ---
 
@@ -329,3 +375,14 @@ a non-versioned entity).
       model, `created_at` mapped while `row_created_at` is ignored). `NewUser`
       and `UserEdit` were left unchanged so the marker stays out of the generic
       creation/update path.
+- [x] [RFC-67: College Knowledge](../../../../../../../../rfc/67-college-knowledge.md)
+      — Added the College Scorecard reference models: the `CollegeId` /
+      `CollegeProgramId` (`UUID`-backed) surface ids; the `College` and
+      `CollegeProgram` reference rows (`Identifiable + Created + Updated`,
+      deliberately not `Versioned`/`SoftDeletable`); the `NewCollege` /
+      `NewCollegeProgram` upsert inputs (no id/timestamps, all Scorecard
+      optionals nullable); the `CollegeQuery` typed filter (every field but the
+      mandatory `limit` nullable; `limit` clamped `1..25` at the service); and
+      the `CollegeMatch` search projection (curated context columns plus matched
+      `programTitles`, only `graduationRate` filterable). No change to any
+      existing model type.

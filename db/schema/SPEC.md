@@ -144,6 +144,19 @@ idempotent `CREATE OR REPLACE`.
 - **Side effects**: Sets `NEW.updated_at = NOW()` (a simpler variant without the
   logical/physical split). **Idempotency**: Not idempotent.
 
+#### `update_colleges_timestamp()`
+
+- **Trigger type**: `BEFORE UPDATE` on `colleges` and `college_programs`
+  (`trigger_03_enforce_{table}_updated_at`). Expects column `updated_at`.
+- **Side effects**: Sets `NEW.updated_at = NOW()` — a plain `updated_at` advance
+  with NO logical/physical split and no bypass support, mirroring
+  `update_jobs_timestamp()`. Defined in [`0015`](./0015.create-colleges.sql)
+  (not `0000`), shared by both `colleges` and `college_programs`. It is the
+  reference-table sibling of `update_timestamp()`: those tables carry only
+  logical timestamps, so no `row_updated_at` and no
+  `unicoach.bypass_logical_timestamp` handling. **Idempotency**: Not idempotent
+  (timestamp advances on each call).
+
 #### `notify_jobs()`
 
 - **Trigger type**: `AFTER INSERT OR UPDATE` on `jobs`.
@@ -196,6 +209,16 @@ A **credential** table stores only the hash of a secret whose plaintext lives
 outside the database (the cookie/email link). It carries neither the entity
 mix-ins nor the log guards (`sessions`, `verification_tokens`).
 
+A **reference** table (`colleges`, `college_programs`) holds externally-sourced
+federal data (College Scorecard), mutated only by re-ingestion upsert on a
+natural key, never by the application request flow. It carries only logical
+`created_at`/`updated_at` (no physical/logical split, so no `row_created_at`/
+`row_updated_at`) advanced by the plain `update_colleges_timestamp()` trigger,
+and none of the four mix-ins: no OCC `version`/version history (the pinned
+snapshot is the archive — history is not a guarantee), no soft-delete
+(`deleted_at`), and no append-only log guards (rows are updated in place by
+upsert). Physical deletes are permitted (no `prevent_physical_delete()`).
+
 #### Table Summary
 
 | Table                 | Type             | Adv. Timestamps | OCC Versioning | Version History | Logical Deletes |
@@ -214,6 +237,8 @@ mix-ins nor the log guards (`sessions`, `verification_tokens`).
 | `convo_responses_raw` | Log              | —               | —              | —               | —               |
 | `system_prompts`      | Immutable Entity | —               | —              | —               | —               |
 | `email_sends`         | Log              | —               | —              | —               | —               |
+| `colleges`            | Reference        | ❌              | ❌             | ❌              | ❌              |
+| `college_programs`    | Reference        | ❌              | ❌             | ❌              | ❌              |
 
 ### `users`
 
@@ -510,6 +535,71 @@ logged here (retry is the queue's domain, `job_attempts`).
   (e.g. log-only); deliberately not constrained by CHECK or enum (open-ended
   adapter set), unlike the closed allowlist on `convo_requests`.
 
+### `colleges` — Reference Table
+
+Curated institution-level College Scorecard data (RFC 67), defined in
+[`0015.create-colleges.sql`](./0015.create-colleges.sql). A reference table (see
+the Reference type note above): bulk-upserted, no entity mix-ins.
+
+- **Surface id + natural key**:
+  `id UUID NOT NULL PRIMARY KEY DEFAULT
+  uuidv7()` is the project-convention
+  DB-generated surface id; `unit_id INTEGER NOT NULL` is the federal `UNITID`
+  natural key and the upsert target, with a SEPARATE
+  `colleges_unit_id_unique_idx` (UNIQUE) — the PK is not the upsert key.
+- **Logical timestamps only**: `created_at` + `updated_at`
+  (`TIMESTAMPTZ NOT NULL DEFAULT NOW()`); `updated_at` is advanced on upsert by
+  the `trigger_03_enforce_colleges_updated_at` `BEFORE UPDATE` trigger
+  (`update_colleges_timestamp()`). No `row_created_at`/`row_updated_at`.
+- **Coded categoricals (range-checked, nullable where the source is)**:
+  `control SMALLINT NOT NULL` ∈ {1 public, 2 private-nonprofit, 3 for-profit}
+  (`colleges_control_valid_check`); `region` 0–9 and `locale` 11–43 when
+  present.
+- **Rate columns**: `admission_rate`, `graduation_rate`, `pct_pell` are
+  `DOUBLE PRECISION` and, when present, `BETWEEN 0 AND 1`.
+- **Coalesced net price**: `net_price` is a single average-net-price column —
+  the loader writes `NPT4_PUB` for public (`control = 1`) else `NPT4_PRIV`.
+- **Non-negative integer metrics**: `undergrad_enrollment`, `sat_avg`,
+  `cost_attendance`, `net_price`, `tuition_in_state`, `tuition_out_state`,
+  `median_earnings` are each `>= 0` when present.
+- **TEXT bounds**: `name`/`city` NOT NULL, trimmed, non-empty, ≤255; `state` is
+  exactly 2 chars (`colleges_state_length_check`, `length(state) = 2`);
+  `website`/`opeid` ≤255 when present.
+- **Filter-supporting indexes**: `colleges_state_idx`, `colleges_control_idx`,
+  `colleges_undergrad_enrollment_idx`, `colleges_admission_rate_idx`,
+  `colleges_net_price_idx`, `colleges_graduation_rate_idx` back the
+  `CollegesDao.search` range/equality filters.
+- **Physical deletes permitted**: no `prevent_physical_delete()` trigger;
+  `college_programs` cascades on a parent delete.
+
+### `college_programs` — Reference Table
+
+CIP program offerings per institution (full 6-digit CIP granularity), defined in
+the same migration. Enables "offers marine biology" filtering finer than the
+institution-level 2-digit `PCIP` families.
+
+- **Ownership**:
+  `college_id UUID NOT NULL REFERENCES colleges(id) ON DELETE
+  CASCADE` — a
+  college owns many programs; deleting a college removes its programs.
+- **CIP code**: `cip_code TEXT NOT NULL`, a 6-character digit string enforced by
+  `college_programs_cip_code_format_check (cip_code ~ '^[0-9]{6}$')`. Prefix
+  matching at query time (`cip_code LIKE prefix || '%'`) lets a 2/4/6-digit
+  prefix all resolve.
+- **`cip_title`**: NOT NULL, non-empty, ≤255.
+- **`credential_level SMALLINT NOT NULL`**: the Scorecard `CREDLEV`, always
+  present in the field-of-study source, `BETWEEN 1 AND 8`. Declared NOT NULL so
+  the upsert key needs no `COALESCE` sentinel.
+- **Upsert key**: `college_programs_unique_idx` UNIQUE
+  `(college_id, cip_code, credential_level)` — the conflict target for
+  `upsertProgram`.
+- **Lookup indexes**: `college_programs_cip_code_idx` (program-prefix lookups)
+  and `college_programs_college_id_idx` (the join from a matched college).
+- **Timestamps/trigger**: same logical-only `created_at`/`updated_at` +
+  `trigger_03_enforce_college_programs_updated_at` (reusing
+  `update_colleges_timestamp()`), carried for uniformity with `colleges`; no
+  reader consumes them — the table is bulk-upserted only.
+
 ---
 
 ## III. Infrastructure & Environment
@@ -547,5 +637,11 @@ logged here (retry is the queue's domain, `job_attempts`).
 - [x] [RFC-45: Coaching Service and Conversation REST Surface](../../rfc/45-coaching-service.md)
 - [x] [RFC-60: Admin Website](../../rfc/60-admin-website.md)
 - [x] [RFC-65: Email Verification](../../rfc/65-email-verification.md)
-      </content>
-      </invoke>
+- [x] [RFC-67: College Knowledge](../../rfc/67-college-knowledge.md) — Added the
+      `colleges` and `college_programs` reference tables (curated College
+      Scorecard data) in `0015.create-colleges.sql`, the first non-entity,
+      non-log mutable reference tables. Introduced `update_colleges_timestamp()`
+      (plain `updated_at` advance, no logical/physical split) and the
+      `trigger_03_enforce_{table}_updated_at` triggers; the "Reference" table
+      type (logical timestamps only, bulk-upserted on a natural key, no OCC/
+      version-history/soft-delete/log guards, physical deletes permitted).

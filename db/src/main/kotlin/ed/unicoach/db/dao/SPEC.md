@@ -16,6 +16,7 @@ and delegating all query execution to shared `SqlSession` **query scaffolding**
 | `ConvosDao`             | `convos`, `convo_requests`, `convo_responses`, `convo_responses_raw`  |
 | `SystemPromptsDao`      | `system_prompts` (immutable catalog: read + insert, no update/delete) |
 | `VerificationTokensDao` | `verification_tokens`                                                 |
+| `CollegesDao`           | `colleges`, `college_programs` (reference data: upsert + search)      |
 
 Every DAO method accepts a `SqlSession` as its first parameter. Connection
 pooling, transaction boundaries, and commit/rollback are managed exclusively by
@@ -65,14 +66,15 @@ lookups, `rename`, `archive`/`unarchive`, parented `listBy*`, `appendRequest`,
 concrete methods on the DAO; `SystemPromptsDao.findById`/`list`/`create` are
 interface-backed via `Findable`/`Listable`/`Creatable`):
 
-| DAO                     | Capability interfaces                                                                                                                                                                                                                |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `UsersDao`              | `SoftDeleteFindable<User, UserId>`, `SoftDeleteListable<User>`, `Creatable<NewUser, User>`, `Updatable<UserEdit, User>`, `OccDeletable<User, UserId>`, `VersionHistory<UserId, UserVersion>`                                         |
-| `StudentsDao`           | `SoftDeleteFindable<Student, StudentId>`, `Creatable<NewStudent, Student>`, `Updatable<StudentEdit, Student>`, `OccDeletable<Student, StudentId>`, `VersionHistory<StudentId, StudentVersion>`                                       |
-| `ConvosDao`             | `SoftDeleteFindable<Convo, ConvoId>`, `Creatable<NewConvo, Convo>`, `Deletable<Convo, ConvoId>`                                                                                                                                      |
-| `SessionsDao`           | `Findable<Session, SessionId>`, `Listable<Session>`, `Creatable<NewSession, Session>`, `Destroyable<SessionId>`                                                                                                                      |
-| `SystemPromptsDao`      | `Findable<SystemPrompt, SystemPromptId>`, `Listable<SystemPrompt>`, `Creatable<NewSystemPrompt, SystemPrompt>` (plain, not the soft-delete variants — `system_prompts` has no `deleted_at`; `findByNameAndVersion` remains concrete) |
-| `VerificationTokensDao` | `Creatable<NewVerificationToken, VerificationToken>` (remaining methods — `consume`, `findByTokenHash`, `consumeAllForUser` — are concrete)                                                                                          |
+| DAO                     | Capability interfaces                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UsersDao`              | `SoftDeleteFindable<User, UserId>`, `SoftDeleteListable<User>`, `Creatable<NewUser, User>`, `Updatable<UserEdit, User>`, `OccDeletable<User, UserId>`, `VersionHistory<UserId, UserVersion>`                                                                                                                                                                                                                                                                        |
+| `StudentsDao`           | `SoftDeleteFindable<Student, StudentId>`, `Creatable<NewStudent, Student>`, `Updatable<StudentEdit, Student>`, `OccDeletable<Student, StudentId>`, `VersionHistory<StudentId, StudentVersion>`                                                                                                                                                                                                                                                                      |
+| `ConvosDao`             | `SoftDeleteFindable<Convo, ConvoId>`, `Creatable<NewConvo, Convo>`, `Deletable<Convo, ConvoId>`                                                                                                                                                                                                                                                                                                                                                                     |
+| `SessionsDao`           | `Findable<Session, SessionId>`, `Listable<Session>`, `Creatable<NewSession, Session>`, `Destroyable<SessionId>`                                                                                                                                                                                                                                                                                                                                                     |
+| `SystemPromptsDao`      | `Findable<SystemPrompt, SystemPromptId>`, `Listable<SystemPrompt>`, `Creatable<NewSystemPrompt, SystemPrompt>` (plain, not the soft-delete variants — `system_prompts` has no `deleted_at`; `findByNameAndVersion` remains concrete)                                                                                                                                                                                                                                |
+| `VerificationTokensDao` | `Creatable<NewVerificationToken, VerificationToken>` (remaining methods — `consume`, `findByTokenHash`, `consumeAllForUser` — are concrete)                                                                                                                                                                                                                                                                                                                         |
+| `CollegesDao`           | NONE — declares no capability interface. Its operations (`upsert`/`upsertProgram` hand-rolled `ON CONFLICT`, the natural-key `findByUnitId`, the dynamic `search`) match no à-la-carte interface, so every method is concrete. The interfaces model student-entity CRUD over a surface id; the upsert key is the federal natural key (`unit_id`; `(college_id, cip_code, credential_level)`), not the surface UUID, and `Creatable.create` has no upsert semantics. |
 
 `Updatable<EDIT, ROW>` applies only to entities with a dedicated edit-input type
 covering the full mutable field set (`User` via `UserEdit`, `Student` via
@@ -205,6 +207,14 @@ wrapper (previously inside `SessionsDao`).
   and the nullable `consumed_at` (NULL = unconsumed). No validated value classes
   and no corruption path; the `token_hash` BYTEA column is never projected into
   the domain row.
+- **`colleges`/`college_programs`**: `mapCollege`/`mapProgram` map every column
+  verbatim into the plain reference models — no validated value classes and no
+  corruption path. They use scoped `ResultSet.intOrNull`/`doubleOrNull`
+  (`getInt`/`getDouble` + `wasNull()`, per `ConvosDao`) for the nullable numeric
+  columns rather than the shared scaffolding. `mapMatch` (the `search`
+  projection) additionally reads the SQL `text[]` `program_titles` column via
+  JDBC `getArray` (a `text[]` cannot be read as a typed scalar), freeing the
+  `java.sql.Array` handle afterward; a NULL array collapses to an empty list.
 
 The `row_created_at`/`row_updated_at` columns exist in every entity table and
 are maintained by DB triggers, but no mapper projects them into a domain model.
@@ -259,6 +269,20 @@ through `mapDatabaseError`):
 - everything else → `mapDatabaseError`. The table's immutability triggers raise
   `P0001` only on `UPDATE`/`DELETE`, unreachable from the insert-only path, so
   they would fall through here.
+
+`CollegesDao.mapCollegeError` (the upsert write paths only; `findByUnitId`/
+`search` route through `mapDatabaseError`):
+
+- `23503` (FK — a program referencing an absent college) → `NotFoundException`
+  ("Referenced college not found").
+- `23505` (the natural-key UNIQUE) / `23514` (any CHECK — dirty source data such
+  as `admission_rate > 1`, `control` outside {1,2,3}, malformed `cip_code`) →
+  `ConstraintViolationException`. NOTE: `23514` here maps to the PERMANENT
+  `ConstraintViolationException`, NOT the generic `DatabaseException` that the
+  shared `mapDatabaseError` would assign — so a college loader skips a
+  CHECK-violating row as a `PermanentError`.
+- everything else → `mapDatabaseError`. Mirrors `ConvosDao.mapConvoError` /
+  `SystemPromptsDao.mapPromptError`.
 
 `55P03` in any `*ForUpdate` method (`SELECT … FOR UPDATE NOWAIT`) →
 `LockAcquisitionFailureException` (mapped inline, before `mapDatabaseError`).
@@ -815,6 +839,77 @@ route through `mapDatabaseError` (no specialized SQLSTATE mapper).
 
 ---
 
+### `CollegesDao` — [`CollegesDao.kt`](./CollegesDao.kt)
+
+Stateless `object` over the two College Scorecard reference tables (RFC 67),
+same object/`SqlSession`/caller-transaction shape as `ConvosDao`. Declares no
+capability interface (§II): the upsert key is a federal natural key, not the
+surface UUID, so no `Creatable`/`Findable` interface fits. The upserts are
+hand-rolled `INSERT … ON CONFLICT … DO UPDATE` — the only `ON CONFLICT` upsert
+in the codebase, written fresh because the scaffolding's typed
+`Creatable`/`insertReturning` helpers have no upsert mode. The tables have no
+`version`, so no upsert carries an OCC guard (last-write-wins). Write paths
+discriminate SQLSTATE via `mapCollegeError`; reads route through
+`mapDatabaseError`. NOTE: the loader's per-row `SAVEPOINT` discipline lives in
+the `college` module's `CollegeScorecardLoader`, NOT here — the DAO issues plain
+upserts and returns a `Result`; it does not bracket itself in a savepoint.
+
+#### `upsert(session, input: NewCollege): Result<College>`
+
+- **Side Effects**: Write — `mutateReturning` over a hand-rolled
+  `INSERT … (21 curated columns) … ON CONFLICT (unit_id) DO UPDATE SET …
+  RETURNING *`.
+  On conflict every curated column is overwritten from `input`; `id` and
+  `created_at` are preserved and the `_03` trigger advances `updated_at`. The DB
+  generates `id` (`uuidv7()`) on a fresh insert.
+- **Error Handling**: `ConstraintViolationException` on the `unit_id` UNIQUE or
+  any CHECK (`23505`/`23514`); other SQLSTATEs via `mapDatabaseError` (transient
+  classification).
+- **Idempotency**: Yes at the row level — re-upserting the same `unit_id`
+  overwrites in place with no duplicate row (`id` stable).
+
+#### `upsertProgram(session, input: NewCollegeProgram): Result<CollegeProgram>`
+
+- **Side Effects**: Write — hand-rolled
+  `INSERT … ON CONFLICT (college_id, cip_code, credential_level) DO UPDATE SET
+  cip_title = EXCLUDED.cip_title RETURNING *`.
+  On conflict only `cip_title` is refreshed; `id`/`created_at` preserved,
+  `updated_at` advanced by the trigger.
+- **Error Handling**: `NotFoundException` ("Referenced college not found") on
+  the `college_id` FK (`23503`); `ConstraintViolationException` on the
+  natural-key UNIQUE or a CHECK (`23505`/`23514`); else `mapDatabaseError`.
+- **Idempotency**: Yes at the row level.
+
+#### `findByUnitId(session, unitId: Int): Result<College?>`
+
+- **Side Effects**: Read only — `queryOne` on the `unit_id` natural key, folding
+  the `queryOne` `NotFoundException` into `Result.success(null)` so an absent
+  college is a domain `null`, not a failure (the loader uses this to decide
+  whether a program's owning college exists). Other failures propagate.
+- **Idempotency**: Yes.
+
+#### `search(session, query: CollegeQuery): Result<List<CollegeMatch>>`
+
+- **Side Effects**: Read only — builds a parameterized `SELECT` appending one
+  `AND` clause per non-null filter; JOINs `college_programs` ONLY when
+  `cipPrefix` is set (matching `cip_code LIKE ? || '%'` so a 2/4/6-digit prefix
+  all resolve, and aggregating the matched titles into `program_titles` via
+  `array_agg(DISTINCT …)`; without a program filter `program_titles` is a
+  literal empty `text[]`). Always `GROUP BY c.id`, then the deterministic
+  `ORDER BY c.undergrad_enrollment DESC NULLS LAST, c.unit_id ASC` and the
+  caller-supplied `LIMIT ?`. The list-membership filters (`states`, `locales`,
+  `control`) expand to `IN (?, …)` with one bound parameter per element.
+- **SQL-injection safety**: Only fixed column identifiers and `?` placeholders
+  are concatenated into the SQL text — every filter VALUE (including each list
+  element and the `LIMIT`) is bound as a positional parameter, never
+  interpolated. The `limit` value is trusted: the `college` module's service
+  clamps it to `1..25` before the DAO is called.
+- **Error Handling**: `success(emptyList())` when nothing matches;
+  `mapDatabaseError` on failure.
+- **Idempotency**: Yes.
+
+---
+
 ### Result Types — Kotlin `Result<T>`
 
 All DAO methods return standard Kotlin `Result<T>`. Exceptions are wrapped in
@@ -927,3 +1022,17 @@ rules are in §IV.
       `UsersDao.markEmailVerified` (versioned conditional update, idempotent
       first-verification stamp); the `mapUser`/`mapUserVersion` mappers and the
       shared `updateFullRow` now carry `email_verified_at`.
+- [x] [RFC-67: College Knowledge](../../../../../../../../rfc/67-college-knowledge.md)
+      — Added `CollegesDao` over the `colleges`/`college_programs` reference
+      tables: the codebase's first hand-rolled
+      `INSERT … ON CONFLICT … DO UPDATE` upserts (`upsert` on `unit_id`,
+      `upsertProgram` on `(college_id, cip_code, credential_level)`), the
+      natural-key `findByUnitId` (NotFound folded to `null`), and the dynamic
+      parameterized `search` (one `AND` per non-null `CollegeQuery` filter,
+      optional `college_programs` JOIN with `cip_code LIKE prefix || '%'` +
+      `array_agg`, deterministic `ORDER BY … LIMIT`). Declares no capability
+      interface (the upsert key is a federal natural key). Added the
+      `mapCollegeError` write-path SQLSTATE map (`23503` → NotFound;
+      `23505`/`23514` → `ConstraintViolationException`) and the
+      `mapCollege`/`mapProgram`/`mapMatch` row mappers (including `text[]`
+      `program_titles` via JDBC `getArray`).

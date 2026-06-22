@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+ingest-colleges <institution.csv> <fields.csv>
+
+Loads a version-pinned College Scorecard CSV pair into the `colleges` and
+`college_programs` reference tables via the :college ingester (RFC 67). Upserts
+on the natural keys, so re-running re-applies the same snapshot with no
+duplicates. Malformed rows are logged and skipped.
+
+Run inside the nix dev shell (the JVM lives there):
+  nix develop -c bin/ingest-colleges <institution.csv> <fields.csv>
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) fatal "Unknown option: $1" ;;
+  *) break ;;
+  esac
+done
+
+if [ "$#" -ne 2 ]; then
+  help "ingest-colleges requires exactly two arguments: <institution.csv> <fields.csv>"
+fi
+
+# Absolutize the CSV paths: the :college:run task executes with the module
+# directory as its working directory, so a path relative to the caller's CWD
+# would not resolve. realpath fails loudly if a file is missing.
+INSTITUTION_CSV="$(realpath "$1")" || fatal "institution CSV not found: [$1]"
+FIELDS_CSV="$(realpath "$2")" || fatal "fields CSV not found: [$2]"
+
+# Gradle word-splits the --args value on whitespace using its own shell-like
+# parser, so each CSV path is single-quoted to survive a path containing spaces:
+# each path then arrives at IngestApplication as exactly one argument.
+exec "$PROJECT_ROOT/gradlew" :college:run --args="'$INSTITUTION_CSV' '$FIELDS_CSV'"
