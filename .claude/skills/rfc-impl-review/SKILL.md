@@ -33,8 +33,16 @@ You MUST execute the review by following these exact phases sequentially:
 
 Validate that the code changes did not spill over into unrelated files.
 
-- Compare exactly what was expected in the `Files Modified` section of the RFC
-  against what files were _actually_ modified.
+- Establish the **changed-file set** to review: the files that differ between
+  the base revision and the implementation tip, via
+  `git diff --name-only <base>...HEAD`. `<base>` is the base revision the caller
+  supplies; absent one, default to `main` (the `...` merge-base form, so the set
+  is unaffected by `<base>` advancing after the branch point). If the
+  implementation is uncommitted in the working tree (so `<base>...HEAD` is
+  empty), fall back to `git status --porcelain`. Carry this set forward as the
+  review target for Phase 3.
+- Compare that changed-file set against the `Files Modified` section of the RFC:
+  any file in one but not the other is a discrepancy to report.
 - If an extraneous file was modified, clearly identify it as an isolation
   failure.
 - **Spec Touch Ban:** Explicitly check if any `SPEC.md` files were modified. If
@@ -90,7 +98,10 @@ verdict `🔴 REVISION REQUIRED`.
 ### Phase 3. Chain Delegation
 
 You MUST delegate the deep structural and code reviews to the dedicated macro
-chains. Execute the following chains on the target implementation files:
+chains. Pass the **changed-file set established in Phase 1** to each chain as its
+**Target** — the explicit file set, not a directory, component, or single
+artifact — so the leaf reviewers open exactly the files the isolation check
+audited (a leaf still reads each file whole; the set bounds _which_ files):
 
 1. `design-review-chain`
 2. `code-review-chain`

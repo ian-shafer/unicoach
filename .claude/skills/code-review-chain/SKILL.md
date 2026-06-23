@@ -17,7 +17,7 @@ This skill acts as a specific execution macro. It ensures that when a user asks 
 
 Invocation MUST define the following parameter:
 
-- **Target**: The file, artifact, or component under review.
+- **Target**: The list of files to review.
 - **Scratch Dir** _(optional)_: A run-scoped directory supplied by the caller
   (e.g. `rfc-impl-review` under the `rfc-pipeline` orchestrator). When present,
   each leaf reviewer persists its verdict there so a stalled aggregation never
