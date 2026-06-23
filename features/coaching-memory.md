@@ -146,15 +146,15 @@ merged)`.
 "Implemented" means code merged, not RFC written. Slugs are the stable handles;
 `rfc/NN-*.md` numbers are assigned at design time and backfilled here.
 
-| slug                | description                                                                                                         | status   | rfc |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------- | -------- | --- |
-| `extraction`        | per-conversation pass: observations → claims; defines the obs / claim / claim_support schema                        | drafting | 66  |
-| `college-knowledge` | college dataset (Scorecard/IPEDS) + retrieval; shared by live chat and reflection                                   | planned  | —   |
-| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                           | planned  | —   |
-| `synthesis`         | reflection loop; defines the commitments schema; internal lenses (gap / timing / contradiction), pull delivery      | planned  | —   |
-| `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset                                   | planned  | —   |
-| `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments)                                                 | planned  | —   |
-| `token-ledger`      | cross-cutting per-user LLM token/cost ledger (one usage row per call); unifies chat + extraction + reflection spend | planned  | —   |
+| slug                | description                                                                                                         | status      | rfc |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
+| `extraction`        | per-conversation pass: observations → claims; defines the obs / claim / claim_support schema                        | implemented | 66  |
+| `college-knowledge` | college dataset (Scorecard/IPEDS) + retrieval; shared by live chat and reflection                                   | planned     | —   |
+| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                           | planned     | —   |
+| `synthesis`         | reflection loop; defines the commitments schema; internal lenses (gap / timing / contradiction), pull delivery      | planned     | —   |
+| `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset                                   | planned     | —   |
+| `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments)                                                 | planned     | —   |
+| `token-ledger`      | cross-cutting per-user LLM token/cost ledger (one usage row per call); unifies chat + extraction + reflection spend | planned     | —   |
 
 > **`token-ledger` is cross-cutting infrastructure, not a coaching-memory
 > node.** It was surfaced by `extraction`'s per-user token requirement but is
