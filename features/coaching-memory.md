@@ -110,8 +110,18 @@ no observation behind them — they are the coach reasoning across other claims.
   the marquee piece.
 - **The college-knowledge layer is foundational and shared** with live chat, so
   it is sequenced as its own root RFC.
-- **No standalone schema RFC.** The obs/claim/commitment tables ship inside
-  `extraction` (the first consumer) as a vertical slice, per YAGNI.
+- **No standalone schema RFC.** The obs/claim/claim_support tables ship inside
+  `extraction` (their first consumer); the `commitments` table ships inside
+  `synthesis` (its first consumer), not `extraction` — extraction never writes a
+  commitment, so defining it there would be a writerless schema. Each lands as a
+  vertical slice, per YAGNI.
+- **Every token spent on a student is recorded.** No LLM call — chat,
+  extraction, or later reflection passes — may consume tokens without a
+  persisted usage row tied to that student, including failed/retried calls
+  (record at the call boundary, not on success). `extraction` logs this in
+  `extraction_runs` per billed call; chat already logs it in `convo_responses`.
+  A future cross-feature token ledger unifies them into one source of truth for
+  per-user spend.
 
 ## Open forks
 
@@ -136,14 +146,30 @@ merged)`.
 "Implemented" means code merged, not RFC written. Slugs are the stable handles;
 `rfc/NN-*.md` numbers are assigned at design time and backfilled here.
 
-| slug                | description                                                                                  | status  | rfc |
-| ------------------- | -------------------------------------------------------------------------------------------- | ------- | --- |
-| `extraction`        | per-conversation pass: observations → claims; defines the obs/claim/commitment schema        | planned | —   |
-| `college-knowledge` | college dataset (Scorecard/IPEDS) + retrieval; shared by live chat and reflection            | planned | —   |
-| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations    | planned | —   |
-| `synthesis`         | reflection loop + commitments; internal lenses (gap / timing / contradiction), pull delivery | planned | —   |
-| `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset            | planned | —   |
-| `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments)                          | planned | —   |
+| slug                | description                                                                                                         | status   | rfc |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- | -------- | --- |
+| `extraction`        | per-conversation pass: observations → claims; defines the obs / claim / claim_support schema                        | drafting | 66  |
+| `college-knowledge` | college dataset (Scorecard/IPEDS) + retrieval; shared by live chat and reflection                                   | planned  | —   |
+| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                           | planned  | —   |
+| `synthesis`         | reflection loop; defines the commitments schema; internal lenses (gap / timing / contradiction), pull delivery      | planned  | —   |
+| `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset                                   | planned  | —   |
+| `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments)                                                 | planned  | —   |
+| `token-ledger`      | cross-cutting per-user LLM token/cost ledger (one usage row per call); unifies chat + extraction + reflection spend | planned  | —   |
+
+> **`token-ledger` is cross-cutting infrastructure, not a coaching-memory
+> node.** It was surfaced by `extraction`'s per-user token requirement but is
+> independent of the spine and **not** part of the dependency tree below. Sketch
+> for the future RFC: a single append-only `token_usage` table — one row per LLM
+> call (`student_id`, `source` ∈ {chat, extraction, synthesis, …}, `source_ref`,
+> `model`, input/output/cache tokens, `created_at`) — written at the
+> `ChatProvider` chokepoint so no call site can bill a student without
+> recording. Existing per-feature token columns (`convo_responses`,
+> `extraction_runs`) backfill or dual-write into it, then become read-throughs.
+> The chokepoint enforces _"no `ChatProvider` call bills a student without a
+> recorded usage row"_ by construction; the only residual is the
+> non-transactional bill-vs-record window (provider billed but the local write
+> lost to a crash), which the RFC must close by reconciling against provider
+> usage / request ids.
 
 ## Dependency tree
 
