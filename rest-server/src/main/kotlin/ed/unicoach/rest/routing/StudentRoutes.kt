@@ -2,11 +2,12 @@ package ed.unicoach.rest.routing
 
 import ed.unicoach.auth.AuthService
 import ed.unicoach.db.models.Student
-import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.auth.resolveCaller
 import ed.unicoach.rest.models.CreateStudentRequest
+import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.models.PublicStudent
 import ed.unicoach.rest.models.StudentResponse
@@ -39,18 +40,16 @@ private fun toPublicStudent(student: Student): PublicStudent =
   )
 
 private suspend fun RoutingContext.respondUnauthorized() {
-  call.respond(HttpStatusCode.Unauthorized, ErrorResponse("UNAUTHORIZED", "Not authenticated"))
+  call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
 }
 
 private suspend fun RoutingContext.respondStudentNotFound() {
-  call.respond(HttpStatusCode.NotFound, ErrorResponse("STUDENT_NOT_FOUND", "No student profile for the current user"))
+  call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.STUDENT_NOT_FOUND, "No student profile for the current user"))
 }
 
 private suspend fun RoutingContext.respondValidationFailure(fieldErrors: List<FieldError>) {
-  call.respond(HttpStatusCode.BadRequest, ErrorResponse("VALIDATION_ERROR", "Invalid student parameters", fieldErrors))
+  call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.VALIDATION_ERROR, "Invalid student parameters", fieldErrors))
 }
-
-private fun RoutingContext.tokenFrom(sessionConfig: SessionConfig): String? = call.request.cookies[sessionConfig.cookieName]
 
 class StudentRouteHandler(
   private val authService: AuthService,
@@ -72,11 +71,7 @@ class StudentRouteHandler(
     }
   }
 
-  private suspend fun RoutingContext.resolveUser(): User? {
-    val token = tokenFrom(sessionConfig) ?: return null
-    val tokenHash = TokenHash.fromRawToken(token)
-    return authService.getCurrentUser(tokenHash).getOrThrow()
-  }
+  private suspend fun RoutingContext.resolveUser(): User? = call.resolveCaller(authService, sessionConfig)?.user
 
   private suspend fun RoutingContext.handleCreate() {
     val user = resolveUser()
@@ -96,7 +91,7 @@ class StudentRouteHandler(
       }
 
       is CreateStudentResult.AlreadyExists -> {
-        call.respond(HttpStatusCode.Conflict, ErrorResponse("STUDENT_ALREADY_EXISTS", "A student profile already exists"))
+        call.respond(HttpStatusCode.Conflict, ErrorResponse(ErrorCode.STUDENT_ALREADY_EXISTS, "A student profile already exists"))
       }
     }
   }
@@ -146,25 +141,19 @@ class StudentRouteHandler(
       }
 
       is UpdateStudentResult.VersionConflict -> {
-        call.respond(HttpStatusCode.Conflict, ErrorResponse("VERSION_CONFLICT", "Student was modified concurrently"))
+        call.respond(HttpStatusCode.Conflict, ErrorResponse(ErrorCode.VERSION_CONFLICT, "Student was modified concurrently"))
       }
     }
   }
 
   private suspend fun RoutingContext.handleDelete() {
-    val token = tokenFrom(sessionConfig)
-    if (token == null) {
-      respondUnauthorized()
-      return
-    }
-    val tokenHash = TokenHash.fromRawToken(token)
-    val user = authService.getCurrentUser(tokenHash).getOrThrow()
-    if (user == null) {
+    val caller = call.resolveCaller(authService, sessionConfig)
+    if (caller == null) {
       respondUnauthorized()
       return
     }
 
-    when (studentService.deleteStudentAndAccount(user.id, tokenHash).getOrThrow()) {
+    when (studentService.deleteStudentAndAccount(caller.user.id, caller.tokenHash).getOrThrow()) {
       is DeleteStudentResult.Success -> {
         clearSessionCookie()
         call.respond(HttpStatusCode.NoContent)

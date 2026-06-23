@@ -77,7 +77,7 @@ class StudentClientTests: XCTestCase {
 
     func testCreateStudentValidationError() async throws {
         let errorPayload = ErrorResponse(
-            code: "VALIDATION_ERROR",
+            code: "validation_error",
             message: "Validation failed",
             fieldErrors: [FieldError(field: "expectedHighSchoolGraduationDate", message: "Invalid date")]
         )
@@ -92,13 +92,13 @@ class StudentClientTests: XCTestCase {
             _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "bad"))
             XCTFail("Should have thrown")
         } catch let error as ErrorResponse {
-            XCTAssertEqual(error.code, "VALIDATION_ERROR")
+            XCTAssertEqual(error.code, "validation_error")
             XCTAssertEqual(error.fieldError(for: "expectedHighSchoolGraduationDate"), "Invalid date")
         }
     }
 
     func testCreateStudentAlreadyExists() async throws {
-        let errorPayload = ErrorResponse(code: "STUDENT_ALREADY_EXISTS", message: "Already exists", fieldErrors: nil)
+        let errorPayload = ErrorResponse(code: "student_already_exists", message: "Already exists", fieldErrors: nil)
         let errorData = try JSONEncoder().encode(errorPayload)
 
         MockURLProtocol.requestHandler = { request in
@@ -110,12 +110,12 @@ class StudentClientTests: XCTestCase {
             _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "2028"))
             XCTFail("Should have thrown")
         } catch let error as ErrorResponse {
-            XCTAssertEqual(error.code, "STUDENT_ALREADY_EXISTS")
+            XCTAssertEqual(error.code, "student_already_exists")
         }
     }
 
     func testCreateStudentUnauthorized() async throws {
-        let errorPayload = ErrorResponse(code: "UNAUTHORIZED", message: "Unauthorized", fieldErrors: nil)
+        let errorPayload = ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil)
         let errorData = try JSONEncoder().encode(errorPayload)
 
         MockURLProtocol.requestHandler = { request in
@@ -127,7 +127,7 @@ class StudentClientTests: XCTestCase {
             _ = try await studentClient.createStudent(request: CreateStudentRequest(expectedHighSchoolGraduationDate: "2028"))
             XCTFail("Should have thrown")
         } catch let error as ErrorResponse {
-            XCTAssertEqual(error.code, "UNAUTHORIZED")
+            XCTAssertEqual(error.code, "unauthorized")
         }
     }
 
@@ -147,7 +147,7 @@ class StudentClientTests: XCTestCase {
     }
 
     func testFetchProfileNotFoundReturnsNil() async throws {
-        let errorPayload = ErrorResponse(code: "STUDENT_NOT_FOUND", message: "Not found", fieldErrors: nil)
+        let errorPayload = ErrorResponse(code: "student_not_found", message: "Not found", fieldErrors: nil)
         let errorData = try JSONEncoder().encode(errorPayload)
 
         MockURLProtocol.requestHandler = { request in
@@ -160,7 +160,7 @@ class StudentClientTests: XCTestCase {
     }
 
     func testFetchProfileUnauthorizedThrows() async throws {
-        let errorPayload = ErrorResponse(code: "UNAUTHORIZED", message: "Unauthorized", fieldErrors: nil)
+        let errorPayload = ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil)
         let errorData = try JSONEncoder().encode(errorPayload)
 
         MockURLProtocol.requestHandler = { request in
@@ -172,7 +172,7 @@ class StudentClientTests: XCTestCase {
             _ = try await studentClient.fetchProfile()
             XCTFail("Should have thrown")
         } catch let error as ErrorResponse {
-            XCTAssertEqual(error.code, "UNAUTHORIZED")
+            XCTAssertEqual(error.code, "unauthorized")
         }
     }
 

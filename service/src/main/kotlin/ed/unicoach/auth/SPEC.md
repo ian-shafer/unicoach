@@ -2,15 +2,14 @@
 
 ## I. Overview
 
-This directory is the **authentication domain layer**. It owns the business
-logic for user registration, password login, Google federated sign-in,
-session-bound user resolution (`/me`), session revocation (logout),
-email-verification token issuance and redemption, and background zombie-session
-cleanup. It bridges the HTTP boundary (handled by `rest-server`) and the data
-layer (handled by `service/db`), exposing pure domain results via sealed
+The **authentication domain layer**. It owns the business logic for user
+registration, password login, Google federated sign-in, session-bound caller
+resolution (token hash to live session plus its user), session revocation
+(logout), email-verification token issuance and redemption, and background
+zombie-session cleanup. Credential verification (password hashing, Google
+ID-token verification) lives here. Outcomes are returned as pure-domain sealed
 interfaces wrapped in `Result<T>`; no transport or persistence types cross the
-public surface. Credential verification (password hashing, Google ID-token
-verification) is handled in this layer.
+public surface.
 
 ---
 
@@ -21,8 +20,8 @@ verification) is handled in this layer.
 - **Behavior**: Validates input, hashes the password, creates the user, mints a
   session token, and issues an email-verification token — the user, session, and
   verification token are written in a single `Database.withConnection`
-  transaction. After the transaction commits successfully, it attempts a
-  best-effort verification email.
+  transaction. After the transaction commits, it attempts a best-effort
+  verification email.
 - **Validation**: `RegistrationValidator` runs first; on any field error returns
   `RegisterResult.ValidationFailure(errors, fieldErrors)` with no DB access.
 - **Hashing**: `argon2Hasher.hash(password)` runs before the transaction; a
@@ -33,16 +32,15 @@ verification) is handled in this layer.
   `LoginMethod.PASSWORD`.
 - **Verification token**: Inside the transaction,
   `EmailVerificationService.issueToken(session, user.id)` persists the token
-  hash and captures the raw token. The raw token is held only in a local
-  variable for post-commit delivery.
+  hash and returns the raw token, which is held only in a local variable for
+  post-commit delivery.
 - **Side Effects**: One `users` row, one `sessions` row (created or reminted),
   and one verification-token row, all in one transaction. After commit, one
   outbound email attempt via `EmailVerificationService.sendVerificationEmail`.
 - **Email delivery is best-effort**: A failed send does not roll back or fail
   registration — `register` returns `RegisterResult.Success` regardless of send
   outcome (a transient provider outage does not block account creation). The
-  freshly registered user is unverified — `user.emailVerifiedAt` is null at this
-  point.
+  freshly registered user is unverified (`user.emailVerifiedAt` is null).
 - **Idempotency**: Not idempotent. A second registration with the same email
   returns `RegisterResult.DuplicateEmail`.
 - **Error mapping**:
@@ -59,7 +57,7 @@ verification) is handled in this layer.
   a new session via `mintSession` (revoking a live `oldCookieToken` session
   first) with `LoginMethod.PASSWORD`.
 - **Side Effects**: One read-only lookup via `UsersDao.findByEmail`. On a valid
-  password an optional old-session revoke plus one `sessions` insert via
+  password, an optional old-session revoke plus one `sessions` insert via
   `SessionsDao.create` (with `LoginMethod.PASSWORD`).
 - **Password presence**: Reads `user.passwordHash`; a `null` hash (Google-only
   account) returns `LoginResult.PasswordNotSet`.
@@ -118,20 +116,37 @@ distinguish them, so account existence is not disclosed.
   `PersonName` throws `IllegalStateException` (surfacing as a `Result.failure`,
   i.e. a 500); there is no silent placeholder.
 
-### `AuthService.getCurrentUser(tokenHash: TokenHash): Result<User?>` — See [AuthService.kt](./AuthService.kt)
+### `AuthService.resolveSession(tokenHash: TokenHash): Result<AuthenticatedSession?>` — See [AuthService.kt](./AuthService.kt)
 
-- **Behavior**: Resolves the session for the token hash, then loads the
-  associated user.
+- **Behavior**: Resolves a token hash to the live session row paired with the
+  user account it belongs to. Looks up the session by token hash, then loads the
+  session's user. A populated `AuthenticatedSession` is returned only when both
+  a live session and its user exist; the pairing gives downstream callers the
+  session row (e.g. for its state) alongside the resolved user without a second
+  lookup.
 - **Side Effects**: Two read-only queries (`SessionsDao.findByTokenHash`,
-  `UsersDao.findById` with `includeDeleted = false`). No writes.
-- **Absent-user collapse**: Token not found, expired, revoked, anonymous session
-  (`session.userId == null`), and soft-deleted user all collapse to
-  `Result.success(null)`. The DAO signals the not-found cases as
-  `NotFoundException`.
-- **Idempotency**: Idempotent (read-only). Expiry extension is not performed
-  here.
+  `UsersDao.findById`) within a single `Database.withConnection` scope. No
+  writes.
+- **Absent-caller collapse**: Three user-absent outcomes collapse to
+  `Result.success(null)` — no session row (DAO `NotFoundException`), an
+  anonymous session (`session.userId == null`), and a soft-deleted user
+  (`NotFoundException` from `findById`). Together these cover token-not-found,
+  expired, and revoked (all surfaced by the session lookup as
+  `NotFoundException`). Expiry extension is not performed here.
+- **Idempotency**: Idempotent (read-only).
 - **Error mapping**: Any non-`NotFoundException` DAO failure →
   `Result.failure(e)`.
+
+### `AuthService.getCurrentUser(tokenHash: TokenHash): Result<User?>` — See [AuthService.kt](./AuthService.kt)
+
+- **Behavior**: The user-only projection of `resolveSession` — delegates to it
+  and maps a populated result to its `user`, retained for callers that need only
+  the user. Each user-absent outcome maps to `Result.success(null)`.
+- **Side Effects**: Inherits `resolveSession`'s two read-only queries. No
+  writes.
+- **Idempotency**: Idempotent (read-only).
+- **Error mapping**: Propagates `resolveSession`'s — any non-`NotFoundException`
+  DAO failure → `Result.failure(e)`.
 
 ### `AuthService.logout(tokenHash: TokenHash): Result<Unit>` — See [AuthService.kt](./AuthService.kt)
 
@@ -170,15 +185,15 @@ distinguish them, so account existence is not disclosed.
 
 ### `EmailVerificationService.verify(rawToken: String): Result<VerifyEmailResult>` (suspend) — See [EmailVerificationService.kt](./EmailVerificationService.kt)
 
-- **Behavior**: Runs in its own transaction. Compare-and-swap consumes the token
-  by hash (`VerificationTokensDao.consume`); on success it marks the user
+- **Behavior**: Runs in its own transaction. A compare-and-swap consumes the
+  token by hash (`VerificationTokensDao.consume`); on success it marks the user
   verified (`UsersDao.markEmailVerified`) and burns all sibling tokens for that
   user (`VerificationTokensDao.consumeAllForUser`), returning
   `VerifyEmailResult.Success(user)`.
 - **Failed consume classification**: A zero-row consume (`NotFoundException`) is
   classified via `VerificationTokensDao.findByTokenHash`: hash matches no row →
   `VerifyEmailResult.InvalidToken`; `consumedAt` set →
-  `VerifyEmailResult.AlreadyConsumed`; `expiresAt` in the past →
+  `VerifyEmailResult.AlreadyConsumed`; `expiresAt` not after now →
   `VerifyEmailResult.Expired`; otherwise `VerifyEmailResult.InvalidToken`.
 - **Side Effects**: On success, marks the user verified and consumes the user's
   outstanding tokens (the redeemed one plus its siblings). The classification
@@ -296,6 +311,13 @@ distinguish them, so account existence is not disclosed.
   - any other value → `Result.failure(IllegalArgumentException)` (no silent
     fallback).
 
+### `AuthenticatedSession` (data class) — See [AuthService.kt](./AuthService.kt)
+
+A resolved caller: a live session row paired with its existing user account.
+Returned by `resolveSession` only on success — the present `user` is the
+type-level signal that resolution found both a live session and its account, so
+a caller holding an `AuthenticatedSession` needs no further existence checks.
+
 ### `RegisterResult` (sealed interface) — See [RegisterResult.kt](./RegisterResult.kt)
 
 | Variant             | Carries                                                 | When returned                     |
@@ -356,10 +378,10 @@ The claims read from a verified Google ID token (`subject`, `email`,
     `Validator<RegistrationInput>` (defaulting to `RegistrationValidator`).
   - `EmailVerificationService` holds `Database`, `EmailService`,
     `TokenGenerator`, and `EmailVerificationConfig`.
-- **Database**: Requires a live PostgreSQL connection pool via `Database`
-  (HikariCP). All DB access goes through `Database.withConnection`; the layer
-  holds no raw `java.sql.Connection`. The Google sign-in path runs its identity
-  resolution and session-minting in a single transaction.
+- **Database**: Requires a live PostgreSQL connection pool via `Database`. All
+  DB access goes through `Database.withConnection`; the layer holds no raw
+  `java.sql.Connection`. The Google sign-in path runs its identity resolution
+  and session-minting in a single transaction.
 - **Credential model**: A user's credential is a nullable `password_hash` plus
   zero-or-more `user_auth_identities` rows (e.g. a `(GOOGLE, subject)` federated
   identity). The "at least one usable credential" guarantee is an application
@@ -421,3 +443,7 @@ The claims read from a verified Google ID token (`subject`, `email`,
       — Added `EmailVerificationService` (token issuance/redemption/resend) and
       `EmailVerificationConfig`; `register` issues a verification token inside
       its transaction and sends a best-effort verification email post-commit.
+- [x] [RFC-69: Email Verification Gate](../../../../../../../rfc/69-email-verification-gate.md)
+      — Added `AuthService.resolveSession` returning `AuthenticatedSession` (the
+      live session paired with its user), with `getCurrentUser` retained as a
+      thin user-only delegate over it.

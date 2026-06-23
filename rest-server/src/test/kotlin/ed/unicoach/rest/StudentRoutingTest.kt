@@ -1,6 +1,8 @@
 package ed.unicoach.rest
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import ed.unicoach.common.config.AppConfig
+import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.UpdateStudentRequest
@@ -21,6 +23,8 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import java.sql.Connection
+import java.sql.DriverManager
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -29,6 +33,7 @@ class StudentRoutingTest {
     private lateinit var testServer: EmbeddedServer<*, *>
     private lateinit var client: HttpClient
     private var boundPort: Int = 0
+    private lateinit var dbConnection: Connection
 
     @JvmStatic
     @BeforeAll
@@ -42,6 +47,10 @@ class StudentRoutingTest {
             .port
         }
       client = HttpClient(CIO)
+
+      val config = AppConfig.load("common.conf", "db.conf").getOrThrow()
+      val dbConfig = DatabaseConfig.from(config).getOrThrow()
+      dbConnection = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
     }
 
     @JvmStatic
@@ -49,6 +58,7 @@ class StudentRoutingTest {
     fun teardownAll() {
       if (::testServer.isInitialized) testServer.stop(1000, 5000)
       if (::client.isInitialized) client.close()
+      if (::dbConnection.isInitialized && !dbConnection.isClosed) dbConnection.close()
     }
   }
 
@@ -58,15 +68,35 @@ class StudentRoutingTest {
 
   private fun uniqueEmail(): String = "student${java.util.UUID.randomUUID()}@company.com"
 
-  /** Registers a fresh user and returns the `name=value` session cookie pair. */
+  /**
+   * Marks a registered user verified by direct SQL on the test DB (mirrors the
+   * fuzz harness). Registration leaves the user unverified, so the email-
+   * verification gate would 403 every gated student route until this runs.
+   */
+  private fun markEmailVerified(email: String) {
+    dbConnection
+      .prepareStatement(
+        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
+      ).use { stmt ->
+        stmt.setString(1, email)
+        stmt.executeUpdate()
+      }
+  }
+
+  /**
+   * Registers a fresh user, marks its email verified (so it passes the
+   * verification gate), and returns the `name=value` session cookie pair.
+   */
   private suspend fun registerAndGetCookie(): String {
-    val req = RegisterRequest(uniqueEmail(), "Password123!", "Student User")
+    val email = uniqueEmail()
+    val req = RegisterRequest(email, "Password123!", "Student User")
     val response =
       client.post(buildUrl("/api/v1/auth/register")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
+    markEmailVerified(email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()
@@ -114,7 +144,7 @@ class StudentRoutingTest {
         }
       assertEquals(HttpStatusCode.BadRequest, response.status)
       val body = response.bodyAsText()
-      assertTrue(body.contains("VALIDATION_ERROR"))
+      assertTrue(body.contains("validation_error"))
       assertTrue(body.contains("expectedHighSchoolGraduationDate"))
     }
 
@@ -137,7 +167,7 @@ class StudentRoutingTest {
           setBody(mapper.writeValueAsString(CreateStudentRequest("2029")))
         }
       assertEquals(HttpStatusCode.Conflict, second.status)
-      assertTrue(second.bodyAsText().contains("STUDENT_ALREADY_EXISTS"))
+      assertTrue(second.bodyAsText().contains("student_already_exists"))
     }
 
   // --- GET /students/me ---
@@ -169,7 +199,7 @@ class StudentRoutingTest {
           header(HttpHeaders.Cookie, cookie)
         }
       assertEquals(HttpStatusCode.NotFound, response.status)
-      assertTrue(response.bodyAsText().contains("STUDENT_NOT_FOUND"))
+      assertTrue(response.bodyAsText().contains("student_not_found"))
     }
 
   @Test
@@ -224,7 +254,7 @@ class StudentRoutingTest {
           setBody(mapper.writeValueAsString(UpdateStudentRequest("2030", 1)))
         }
       assertEquals(HttpStatusCode.Conflict, stale.status)
-      assertTrue(stale.bodyAsText().contains("VERSION_CONFLICT"))
+      assertTrue(stale.bodyAsText().contains("version_conflict"))
     }
 
   @Test
@@ -244,7 +274,7 @@ class StudentRoutingTest {
           setBody(mapper.writeValueAsString(UpdateStudentRequest("not-a-date", 1)))
         }
       assertEquals(HttpStatusCode.BadRequest, response.status)
-      assertTrue(response.bodyAsText().contains("VALIDATION_ERROR"))
+      assertTrue(response.bodyAsText().contains("validation_error"))
     }
 
   @Test
@@ -322,7 +352,7 @@ class StudentRoutingTest {
           header(HttpHeaders.Cookie, cookie)
         }
       assertEquals(HttpStatusCode.NotFound, response.status)
-      assertTrue(response.bodyAsText().contains("STUDENT_NOT_FOUND"))
+      assertTrue(response.bodyAsText().contains("student_not_found"))
     }
 
   @Test

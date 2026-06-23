@@ -13,8 +13,8 @@ depends on, the Google ID-token verifier the auth service depends on, and the
 single `QueueService` at the composition root and shares it across the
 session-expiry plugin and the conversation route handler. It then translates
 between domain results (from `service` and `db`) and HTTP responses, managing
-session cookie lifecycle and asynchronous session expiry enqueueing. It contains
-no domain logic.
+session cookie lifecycle, the email-verification gate, and asynchronous session
+expiry enqueueing. It contains no domain logic.
 
 ---
 
@@ -84,6 +84,13 @@ no domain logic.
   `CoachingService(database, chatProvider, coachingConfig)`. Routes are
   registered via
   `configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService, queueService, extractionConfig)`.
+- **Email-verification gate**: After service construction and before
+  `configureRouting`, installs the `Plugins`-phase gate via
+  `configureEmailVerificationGate(authService, sessionConfig)` (defined in
+  [`plugins/`](./plugins/SPEC.md)). Because it registers after
+  `configureClientKeyGate`, the client-key gate runs ahead of it in the shared
+  `Plugins` phase; gate semantics (exempt paths, `403 email_not_verified`) are
+  owned by [`plugins/SPEC.md`](./plugins/SPEC.md).
 - **Inputs**: The pre-built `chatProvider`, `coachingConfig`, `emailService`,
   `emailVerificationConfig`, `googleTokenVerifier`, `queueService`, and
   `extractionConfig` are passed in (resolved/constructed fail-fast by
@@ -147,7 +154,8 @@ no domain logic.
 `AppConfig.load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")`
 
 - `chat.conf` is supplied by the `:chat` dependency and surfaces `chat.provider`
-  (default `"log"`; production config pins `"anthropic"`).
+  (default `"log"`; `"anthropic"` selectable via the `${?CHAT_PROVIDER}`
+  override).
 - `email.conf` is supplied by the `:email` dependency and surfaces the `email`
   block consumed by `EmailConfig.from`.
 - The `emailVerification` block consumed by `EmailVerificationConfig.from` lives
@@ -222,12 +230,10 @@ the `service` module's `coaching` package, and `ExtractionConfig` in its
 - [x] [RFC-08: Auth Registration](../../../../../../../rfc/08-auth-registration.md)
 - [x] [RFC-09: Global Config](../../../../../../../rfc/09-global-config.md)
 - [x] [RFC-11: Sessions](../../../../../../../rfc/11-sessions.md)
-- [x] [RFC-13: Auth Me](../../../../../../../rfc/13-auth-me.md)
 - [x] [RFC-14: DB Module](../../../../../../../rfc/14-db-module.md)
 - [x] [RFC-15: Queue Data Layer](../../../../../../../rfc/15-queue-data-layer.md)
 - [x] [RFC-19: Daemon Health Marker](../../../../../../../rfc/19-daemon-health-marker.md)
 - [x] [RFC-21: Session Expiry Queue](../../../../../../../rfc/21-session-expiry-queue.md)
-- [x] [RFC-22: Auth Logout](../../../../../../../rfc/22-auth-logout.md)
 - [x] [RFC-23: Native Daemon Scripts](../../../../../../../rfc/23-native-daemon-scripts.md)
 - [x] [RFC-24: Result Types](../../../../../../../rfc/24-result-types.md) —
       Introduced the `StatusPages` `PermanentError`/`TransientError` mapping and
@@ -274,3 +280,10 @@ the `service` module's `coaching` package, and `ExtractionConfig` in its
       the composition root and shared it between `SessionExpiryPlugin` and the
       conversation route handler; threaded `queueService`/`extractionConfig`
       through `appModule` → `configureRouting` → `ConvoRouteHandler`.
+- [x] [RFC-69: Email-Verification Gate + Error-Code Unification (Backend)](../../../../../../../rfc/69-email-verification-gate.md)
+      — Inserted `configureEmailVerificationGate(authService, sessionConfig)` in
+      `appModule` at the `authService`-construction point, after
+      `configureClientKeyGate`/`configureStatusPages` and immediately before
+      `configureRouting`, so a `Plugins`-phase 403 gate fronts every non-exempt
+      route. The gate and error-code unification internals (the `ErrorCode`
+      enum, `ResolvedCaller` caching) live in this dir's subpackages.

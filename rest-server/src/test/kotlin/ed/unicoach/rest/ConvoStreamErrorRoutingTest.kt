@@ -49,6 +49,7 @@ class ConvoStreamErrorRoutingTest {
     private lateinit var testServer: EmbeddedServer<*, *>
     private lateinit var client: HttpClient
     private var boundPort: Int = 0
+    private lateinit var dbConnection: java.sql.Connection
 
     @Volatile
     private var deltas: List<String> = emptyList()
@@ -75,7 +76,9 @@ class ConvoStreamErrorRoutingTest {
         AppConfig
           .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
           .getOrThrow()
-      val database = Database(DatabaseConfig.from(config).getOrThrow())
+      val dbConfig = DatabaseConfig.from(config).getOrThrow()
+      val database = Database(dbConfig)
+      dbConnection = java.sql.DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
       val sessionConfig = SessionConfig.from(config).getOrThrow()
       val requestSizeConfig = RequestSizeConfig.from(config).getOrThrow()
       val coachingConfig = CoachingConfig.from(config).getOrThrow()
@@ -132,6 +135,7 @@ class ConvoStreamErrorRoutingTest {
     fun teardownAll() {
       if (::testServer.isInitialized) testServer.stop(1000, 5000)
       if (::client.isInitialized) client.close()
+      if (::dbConnection.isInitialized && !dbConnection.isClosed) dbConnection.close()
     }
   }
 
@@ -140,7 +144,8 @@ class ConvoStreamErrorRoutingTest {
   private fun buildUrl(path: String) = "http://localhost:$boundPort$path"
 
   private suspend fun registerWithStudent(): String {
-    val req = RegisterRequest("err${java.util.UUID.randomUUID()}@company.com", "Password123!", "Err User")
+    val email = "err${java.util.UUID.randomUUID()}@company.com"
+    val req = RegisterRequest(email, "Password123!", "Err User")
     val reg =
       client.post(buildUrl("/api/v1/auth/register")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
@@ -151,6 +156,14 @@ class ConvoStreamErrorRoutingTest {
         .split(";")
         .first()
         .trim()
+    // Mark verified so the gate allows the gated student + conversation routes below.
+    dbConnection
+      .prepareStatement(
+        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
+      ).use { stmt ->
+        stmt.setString(1, email)
+        stmt.executeUpdate()
+      }
     client.post(buildUrl("/api/v1/students")) {
       header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
       header(HttpHeaders.Cookie, cookie)

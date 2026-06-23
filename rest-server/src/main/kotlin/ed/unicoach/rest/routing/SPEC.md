@@ -13,7 +13,7 @@ handlers:
   to `EmailVerificationService`.
 - [`StudentRoutes.kt`](./StudentRoutes.kt) — the owner-resolved student profile
   resource. Every handler resolves the current `User` from the session cookie
-  via `AuthService`, then delegates to `StudentService`. There is no path
+  via `resolveCaller`, then delegates to `StudentService`. There is no path
   identifier — the profile is always the caller's own.
 - [`ConvoRoutes.kt`](./ConvoRoutes.kt) — the coaching-conversation resource
   family (the nine operations of `api-specs/openapi.yaml`). Resolves the caller
@@ -50,12 +50,23 @@ re-tabulated per endpoint.
   the collection (`/api/v1/students`); `GET`/`PATCH`/`DELETE` target the
   singleton `/api/v1/students/me`.
 
-#### Token Handling
+#### Caller Resolution
 
-- For **identity resolution** (`auth/me`, `logout`, `resend-verification`, and
-  every student/conversation handler), the raw cookie value is hashed via
-  `TokenHash.fromRawToken(token)` (SHA-256) before any service call. The plain
-  token is never a lookup key.
+- For **identity resolution** (`me`, `resend-verification`, and every
+  student/conversation handler), the cookie-bearing caller is resolved through
+  `ApplicationCall.resolveCaller(authService, sessionConfig)` (see
+  [`../auth/CallerResolution.kt`](../auth/CallerResolution.kt)). `resolveCaller`
+  reads the cookie named `sessionConfig.cookieName`, hashes it once via
+  `TokenHash.fromRawToken(token)` (SHA-256), calls
+  `AuthService.resolveSession(tokenHash)`, and on a non-null result caches a
+  `ResolvedCaller(tokenHash, session, user)` on `call.attributes`. A handler
+  reads `.user` (or the whole `ResolvedCaller` when it also needs `.tokenHash`).
+- The resolution is **memoized per call**: a missing cookie or a null resolution
+  caches nothing and returns `null`; a successful resolution is cached, so a
+  later `resolveCaller` on the same call (e.g. the email-verification gate plus
+  the handler) performs one `sessions`+`users` lookup, not two.
+- `logout` does not use `resolveCaller`: it reads the raw cookie, hashes it with
+  `TokenHash.fromRawToken`, and calls `AuthService.logout(tokenHash)` directly.
 - For **session hand-off** (`register`, `login`), the raw `oldCookieToken` is
   forwarded verbatim to the service, which owns the remint decision. This is the
   only path on which an unhashed token leaves the routing layer.
@@ -77,7 +88,7 @@ re-tabulated per endpoint.
   mismatch would leave the original cookie intact in the browser).
 - The cookie is cleared only on a definitive account/session termination: a
   `204` logout, or a `DeleteStudentResult.Success`. It is not cleared on a
-  `DELETE` returning `404 STUDENT_NOT_FOUND`, on an unauthenticated request, or
+  `DELETE` returning `404 student_not_found`, on an unauthenticated request, or
   on any thrown service exception.
 
 #### Error Mapping
@@ -91,17 +102,36 @@ re-tabulated per endpoint.
   are handled explicitly in exhaustive `when` branches over the sealed result
   type.
 
-#### Error-Code Casing (Per Route Family)
+#### Error Codes (`ErrorCode` enum)
 
-Error codes are a per-route-family convention, not a global one. `AuthRoutes`
-and `ConvoRoutes` emit **lowercase snake_case** codes (`unauthorized`,
-`validation_failed`, `conflict`, `invalid_token`, `token_expired`,
-`token_already_used`, `email_not_verified`, `account_disabled`,
-`service_unavailable`, `not_found`, `student_profile_required`,
-`coach_unavailable`, `coach_failed`). `StudentRoutes` emits **UPPERCASE** codes
-(`UNAUTHORIZED`, `VALIDATION_ERROR`, `STUDENT_NOT_FOUND`,
-`STUDENT_ALREADY_EXISTS`, `VERSION_CONFLICT`). A code's casing is part of that
-route's contract; clients match per route.
+Every `ErrorResponse.code` is an `ErrorCode` enum value, not a free string.
+Jackson serializes each value to its **lowercase snake_case** wire string via
+the enum's `@JsonValue` `wire` property. The enum is the single source of truth
+for the wire code; a route cannot emit a stringly-typed or mis-cased code. See
+[`../models/ErrorCode.kt`](../models/ErrorCode.kt).
+
+All error codes emitted by routes in this directory are lowercase snake_case.
+The per-route-family vocabulary is:
+
+- `AuthRoutes`: `unauthorized`, `validation_failed`, `conflict`,
+  `invalid_token`, `token_expired`, `token_already_used`, `email_not_verified`,
+  `account_disabled`, `service_unavailable`.
+- `StudentRoutes`: `unauthorized`, `validation_error`, `student_not_found`,
+  `student_already_exists`, `version_conflict`. (`validation_error` is a
+  distinct enum value from `AuthRoutes`/`ConvoRoutes`'s `validation_failed`,
+  retained as a casing-only normalization of the former `VALIDATION_ERROR`.)
+- `ConvoRoutes`: `unauthorized`, `validation_failed`, `not_found`,
+  `student_profile_required`, `coach_unavailable`, `coach_failed`.
+
+#### Email-Verified Gating (External to Routing)
+
+Email-verified gating is not performed by any handler here. A `plugins/`
+interceptor (`EmailVerificationGate`) enforces it ahead of the handler for
+non-exempt paths, rejecting an unverified caller with `403`
+(`code = "email_not_verified"`) before route logic runs. The gate reuses the
+same `resolveCaller` cache, so a gated request resolves identity once. Handlers
+in this directory assume verification has already been satisfied (or the path is
+exempt) and do not re-check it.
 
 #### User Projection
 
@@ -112,7 +142,7 @@ service-returned `User`, including `emailVerified`, derived as
 #### Conversation Caller Resolution
 
 - Every conversation handler resolves identity in two steps before any
-  `CoachingService` call: cookie → `AuthService.getCurrentUser` (`User`), then
+  `CoachingService` call: cookie → `resolveCaller` (`ResolvedCaller.user`), then
   `StudentService.getStudentForUser` (`Student`). The resolved `Student.id` is
   the sole owner key; no owner is read from path or body.
 - A missing cookie or a `null` user short-circuits to `401`
@@ -299,7 +329,8 @@ string is opaque to clients.
 
 - **Request**: No body. Session identity derived from the request cookie named
   `sessionConfig.cookieName`.
-- **Side effects**: Calls `AuthService.getCurrentUser()` — DB read only.
+- **Side effects**: Resolves the caller via `resolveCaller`
+  (`AuthService.resolveSession`) — DB read only.
 - **Response mapping**:
 
   | Condition                            | Status             | Body                                 |
@@ -363,8 +394,8 @@ string is opaque to clients.
 ### `POST /api/v1/auth/resend-verification` — [`AuthRoutes.kt`](./AuthRoutes.kt)
 
 - **Request**: Empty body. Authenticated via the session cookie; the caller is
-  resolved identically to `me` (cookie → `TokenHash.fromRawToken` →
-  `AuthService.getCurrentUser`).
+  resolved identically to `me` (cookie → `resolveCaller` →
+  `AuthService.resolveSession`).
 - **Side effects**: On a resolved `User`, calls
   `EmailVerificationService.resend(user)`. The service decides whether to mint a
   fresh token and send a verification email. No cookie is set or cleared.
@@ -409,15 +440,15 @@ string is opaque to clients.
 
   | Condition                                 | Status             | Body                                                        |
   | ----------------------------------------- | ------------------ | ----------------------------------------------------------- |
-  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")`                        |
+  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="unauthorized")`                        |
   | `CreateStudentResult.Success`             | `201 Created`      | `StudentResponse { student: PublicStudent }`                |
-  | `CreateStudentResult.ValidationFailure`   | `400 Bad Request`  | `ErrorResponse(code="VALIDATION_ERROR", fieldErrors=[...])` |
-  | `CreateStudentResult.AlreadyExists`       | `409 Conflict`     | `ErrorResponse(code="STUDENT_ALREADY_EXISTS")`              |
+  | `CreateStudentResult.ValidationFailure`   | `400 Bad Request`  | `ErrorResponse(code="validation_error", fieldErrors=[...])` |
+  | `CreateStudentResult.AlreadyExists`       | `409 Conflict`     | `ErrorResponse(code="student_already_exists")`              |
   | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | Processed by `StatusPages`                                  |
 
 - **Method restriction**: Non-POST → `405`.
 - **Idempotency**: Not idempotent — a second create for the same owner returns
-  `409 STUDENT_ALREADY_EXISTS`.
+  `409 student_already_exists`.
 
 ---
 
@@ -430,9 +461,9 @@ string is opaque to clients.
 
   | Condition                                 | Status             | Body                                         |
   | ----------------------------------------- | ------------------ | -------------------------------------------- |
-  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")`         |
+  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="unauthorized")`         |
   | Profile found                             | `200 OK`           | `StudentResponse { student: PublicStudent }` |
-  | Profile is `null`                         | `404 Not Found`    | `ErrorResponse(code="STUDENT_NOT_FOUND")`    |
+  | Profile is `null`                         | `404 Not Found`    | `ErrorResponse(code="student_not_found")`    |
   | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | Processed by `StatusPages`                   |
 
 - **Method restriction**: Only `GET`/`PATCH`/`DELETE` allowed on `/me`; others →
@@ -454,33 +485,35 @@ string is opaque to clients.
 
   | Condition                                 | Status             | Body                                                        |
   | ----------------------------------------- | ------------------ | ----------------------------------------------------------- |
-  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="UNAUTHORIZED")`                        |
+  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | `ErrorResponse(code="unauthorized")`                        |
   | `UpdateStudentResult.Success`             | `200 OK`           | `StudentResponse { student: PublicStudent }`                |
-  | `UpdateStudentResult.ValidationFailure`   | `400 Bad Request`  | `ErrorResponse(code="VALIDATION_ERROR", fieldErrors=[...])` |
-  | `UpdateStudentResult.NotFound`            | `404 Not Found`    | `ErrorResponse(code="STUDENT_NOT_FOUND")`                   |
-  | `UpdateStudentResult.VersionConflict`     | `409 Conflict`     | `ErrorResponse(code="VERSION_CONFLICT")`                    |
+  | `UpdateStudentResult.ValidationFailure`   | `400 Bad Request`  | `ErrorResponse(code="validation_error", fieldErrors=[...])` |
+  | `UpdateStudentResult.NotFound`            | `404 Not Found`    | `ErrorResponse(code="student_not_found")`                   |
+  | `UpdateStudentResult.VersionConflict`     | `409 Conflict`     | `ErrorResponse(code="version_conflict")`                    |
   | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | Processed by `StatusPages`                                  |
 
 - **Method restriction**: as for `/me` above.
 - **Idempotency**: Not idempotent under OCC — a stale `version` returns
-  `409 VERSION_CONFLICT`.
+  `409 version_conflict`.
 
 ---
 
 ### `DELETE /api/v1/students/me` — [`StudentRoutes.kt`](./StudentRoutes.kt)
 
-- **Request**: No body. Owner resolved from the session cookie; the session
-  `tokenHash` is also captured for the teardown.
+- **Request**: No body. Owner resolved from the session cookie via
+  `resolveCaller`, which yields both the `User` and the session `tokenHash` from
+  one `ResolvedCaller`; no separate token hashing is performed.
 - **Side effects**: Calls
-  `StudentService.deleteStudentAndAccount(userId, tokenHash)` — tears down the
-  caller's profile and account. On `Success`, clears the session cookie.
+  `StudentService.deleteStudentAndAccount(user.id, caller.tokenHash)` — tears
+  down the caller's profile and account. On `Success`, clears the session
+  cookie.
 - **Response mapping**:
 
   | Condition                                 | Status             | Cookie Cleared? | Body                                      |
   | ----------------------------------------- | ------------------ | --------------- | ----------------------------------------- |
-  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | No              | `ErrorResponse(code="UNAUTHORIZED")`      |
+  | Unauthenticated (no cookie / `null` user) | `401 Unauthorized` | No              | `ErrorResponse(code="unauthorized")`      |
   | `DeleteStudentResult.Success`             | `204 No Content`   | **Yes**         | None                                      |
-  | `DeleteStudentResult.NotFound`            | `404 Not Found`    | No              | `ErrorResponse(code="STUDENT_NOT_FOUND")` |
+  | `DeleteStudentResult.NotFound`            | `404 Not Found`    | No              | `ErrorResponse(code="student_not_found")` |
   | Exceptions thrown by `.getOrThrow()`      | per `StatusPages`  | No              | Processed by `StatusPages`                |
 
 - **Method restriction**: as for `/me` above.
@@ -670,10 +703,10 @@ distillation pass, not the enqueue).
 ### Injected Dependencies
 
 - **`AuthService`** (`service` module): Provides `register()`, `login()`,
-  `loginWithGoogle()`, `getCurrentUser()`, and `logout()`. Used by
-  `AuthRouteHandler` for auth flows (including Google login) and
-  resend-verification owner resolution, and by `StudentRouteHandler` /
-  `ConvoRouteHandler` for owner resolution.
+  `loginWithGoogle()`, `logout()`, and `resolveSession()` (the last used by
+  `resolveCaller` for identity resolution). Used by `AuthRouteHandler` for the
+  auth flows (including Google login) and resend-verification owner resolution,
+  and by `StudentRouteHandler` / `ConvoRouteHandler` for owner resolution.
 - **`EmailVerificationService`** (`service` module): Provides `verify(token)`
   and `resend(user)`. Held by `AuthRouteHandler` (constructed from an injected
   `EmailService` and `EmailVerificationConfig`) and used only by the
@@ -773,3 +806,12 @@ distillation pass, not the enqueue).
       response: a `DatabaseFailure` or thrown exception is logged at `warn` and
       swallowed; in the SSE path it runs after the terminal `message` frame is
       written.
+- [x] [RFC-69: Email-Verification Gate + Error-Code Unification](../../../../../../../../rfc/69-email-verification-gate.md)
+      — Replaced per-handler cookie→user lookups with the per-call-cached
+      `resolveCaller`/`ResolvedCaller` (over `AuthService.resolveSession`),
+      retyped `ErrorResponse.code` from `String` to the `ErrorCode` enum, and
+      lowercased the five student error codes (`unauthorized`,
+      `validation_error`, `student_not_found`, `student_already_exists`,
+      `version_conflict`) so all codes emitted here are lowercase snake_case.
+      Moved email-verified enforcement out of routing into the `plugins/`
+      `EmailVerificationGate` (`403 email_not_verified` for non-exempt paths).

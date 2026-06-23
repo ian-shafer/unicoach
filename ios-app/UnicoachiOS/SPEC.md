@@ -195,19 +195,23 @@ tokens and shared UI components are specified separately in
 
 ### Error-code casing (wire contract)
 
-- **Error-code casing is split per route family and is load-bearing.** Student
-  routes (`/api/v1/students*`) emit UPPERCASE codes (`UNAUTHORIZED`,
-  `STUDENT_NOT_FOUND`, `VALIDATION_ERROR`, `STUDENT_ALREADY_EXISTS`); auth
-  routes (`/api/v1/auth/*`) emit lowercase codes (`unauthorized`,
-  `validation_failed`, `conflict`); conversation routes
-  (`/api/v1/conversations*`) emit lowercase codes (`student_profile_required`).
-  Code matching MUST be exact and per-route: `checkSession` matches
+- **Error-code casing is load-bearing.** Every server-emitted error code is
+  lowercase snake_case across all route families — auth (`/api/v1/auth/*`:
+  `unauthorized`, `validation_failed`, `conflict`), student
+  (`/api/v1/students*`: `unauthorized`, `student_not_found`, `validation_error`,
+  `student_already_exists`), and conversation (`/api/v1/conversations*`:
+  `student_profile_required`). Client-synthesized codes (`TIMEOUT`,
+  `NETWORK_ERROR`, `SERVER_ERROR`, `VALIDATION`, `UNKNOWN`, `DECODE_ERROR`)
+  remain UPPERCASE, so the two namespaces never collide. Code matching is exact
+  and case-sensitive against these literals: `checkSession` matches
   `"unauthorized"` (from `/auth/me`); `resolveProfileState` matches
-  `"UNAUTHORIZED"` (from `/students/me`); `ConversationViewModel.handle()`
-  matches the lowercase server code (`"student_profile_required"`) and UPPERCASE
-  client-synthesized codes case-sensitively. Tests MUST pin both casings
-  (`AppViewModelTests`). Normalizing either side breaks session routing and
-  re-onboarding routing silently.
+  `"unauthorized"` (from `/students/me`); `OnboardingViewModel.submit()` matches
+  `"student_already_exists"` (from `POST /students`);
+  `ConversationViewModel.handle()` matches the server code
+  `"student_profile_required"` alongside the UPPERCASE client-synthesized codes.
+  Tests pin the literals (`AppViewModelTests`, `OnboardingViewModelTests`).
+  Normalizing either side breaks session routing and re-onboarding routing
+  silently.
 
 ### Observability
 
@@ -418,7 +422,7 @@ func createStudent(request: CreateStudentRequest) async throws -> PublicStudent
 
 - `POST /api/v1/students`; 201 → returns the student unwrapped from
   `StudentResponse`. Server errors propagate as `ErrorResponse`: 400
-  `VALIDATION_ERROR`, 401 `UNAUTHORIZED`, 409 `STUDENT_ALREADY_EXISTS`.
+  `validation_error`, 401 `unauthorized`, 409 `student_already_exists`.
 - **Idempotency**: Not idempotent at the client; the server enforces the
   per-user singleton via 409.
 
@@ -428,7 +432,7 @@ func fetchProfile() async throws -> PublicStudent?
 
 - `GET /api/v1/students/me`; 200 → student; **HTTP 404 → `nil`** — "no profile
   yet" is a domain outcome, not an error. The `nil` mapping MUST key on the HTTP
-  status code, NEVER on the body's `STUDENT_NOT_FOUND` code (the body is never
+  status code, NEVER on the body's `student_not_found` code (the body is never
   decoded on 404). 401 and other statuses throw.
 - **Idempotency**: Yes (safe GET).
 
@@ -544,7 +548,7 @@ func onRegisterSuccess(_ user: PublicUser) async
 - **Trigger**: Awaited by `LoginViewModel` / `RegistrationViewModel` on endpoint
   success. Both resolve the profile state: `studentClient.fetchProfile()` →
   `nil` ⇒ `.onboarding(user)`; non-`nil` ⇒ `.authenticated(user)`. Errors:
-  `"TIMEOUT"` / `"NETWORK_ERROR"` → `.noConnectivity`; `"UNAUTHORIZED"` →
+  `"TIMEOUT"` / `"NETWORK_ERROR"` → `.noConnectivity`; `"unauthorized"` →
   `.unauthenticated`; everything else → `.serverError`.
 
 ```
@@ -635,7 +639,7 @@ See [`OnboardingViewModel.swift`](./OnboardingViewModel.swift).
 - **Side effects**: `POST` via `StudentClient.createStudent` with
   `CreateStudentRequest(expectedHighSchoolGraduationDate: isoDate)`.
 - **Success**: Invokes `onComplete()`.
-- **Failure**: **`STUDENT_ALREADY_EXISTS` MUST be treated as success** (invokes
+- **Failure**: **`student_already_exists` MUST be treated as success** (invokes
   `onComplete()`): a retried onboarding converges instead of dead-ending the
   user. Other `ErrorResponse` → published `errorResponse`; unknown errors →
   `ErrorResponse(code: "UNKNOWN")`. `isLoading` is guarded by `defer`.
@@ -1018,3 +1022,4 @@ names map 1:1 to JSON keys with no custom `CodingKeys`.
 - [x] [RFC-54: Client-Key Gate](../../rfc/54-client-key-gate.md)
 - [x] [RFC-56: iOS Conversation History](../../rfc/56-ios-conversation-history.md)
 - [x] [RFC-58: iOS conversation-list archive and delete actions](../../rfc/58-ios-conversation-list-actions.md)
+- [x] [RFC-69: Email-Verification Gate + Error-Code Unification (Backend)](../../rfc/69-email-verification-gate.md)

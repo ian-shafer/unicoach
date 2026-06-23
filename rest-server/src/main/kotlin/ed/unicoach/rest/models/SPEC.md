@@ -3,12 +3,13 @@
 ## I. Overview
 
 This package is the **HTTP boundary data-transfer layer** for the `rest-server`
-module. It defines the Kotlin `data class` DTOs serialized to and from JSON on
-every REST endpoint. The types carry no business logic, no domain validation,
-and no persistence concerns; they are the structural contract between the JSON
-wire format and the routing layer. Fields use platform-neutral JVM types
-(`String`, `java.util.UUID`, `Boolean`, `Int`, `java.time.Instant`) or other
-DTOs in this package — never domain value classes from `service` (e.g. `UserId`,
+module. It defines the Kotlin `data class` DTOs — plus the `ErrorCode` enum that
+types the wire error code — serialized to and from JSON on every REST endpoint.
+The types carry no business logic, no domain validation, and no persistence
+concerns; they are the structural contract between the JSON wire format and the
+routing layer. Fields use platform-neutral JVM types (`String`,
+`java.util.UUID`, `Boolean`, `Int`, `java.time.Instant`) or other DTOs in this
+package — never domain value classes from `service` (e.g. `UserId`,
 `EmailAddress`, `StudentId`, `PartialDate`) — so the wire shape stays decoupled
 from domain internals.
 
@@ -149,22 +150,63 @@ from domain internals.
 
 ### Error envelope
 
+#### `ErrorCode` — [`ErrorCode.kt`](./ErrorCode.kt)
+
+- **Behavior**: The closed enum of every REST wire error code. Each constant
+  pairs an idiomatic Kotlin name with a `wire: String` carrying its lowercase
+  snake_case wire form. Jackson serializes a constant to its `wire` string via
+  `@get:JsonValue` on that property; deserialization maps a wire string back to
+  the matching constant. Because `ErrorResponse.code` is typed `ErrorCode`, a
+  wire code cannot be stringly constructed or mis-cased at a call site — the
+  only way to emit a new code is to add a constant here. Every `wire` value is
+  lowercase snake_case (`^[a-z][a-z0-9_]*$`).
+- **Constants** (Kotlin name → wire): `UNAUTHORIZED` → `unauthorized`,
+  `VALIDATION_FAILED` → `validation_failed`, `CONFLICT` → `conflict`,
+  `INVALID_TOKEN` → `invalid_token`, `TOKEN_EXPIRED` → `token_expired`,
+  `TOKEN_ALREADY_USED` → `token_already_used`, `NOT_FOUND` → `not_found`,
+  `STUDENT_PROFILE_REQUIRED` → `student_profile_required`, `COACH_UNAVAILABLE` →
+  `coach_unavailable`, `COACH_FAILED` → `coach_failed`, `VALIDATION_ERROR` →
+  `validation_error`, `STUDENT_NOT_FOUND` → `student_not_found`,
+  `STUDENT_ALREADY_EXISTS` → `student_already_exists`, `VERSION_CONFLICT` →
+  `version_conflict`, `BAD_REQUEST` → `bad_request`, `PAYLOAD_TOO_LARGE` →
+  `payload_too_large`, `PERMANENT_ERROR` → `permanent_error`, `INTERNAL_ERROR` →
+  `internal_error`, `FORBIDDEN` → `forbidden`, `EMAIL_NOT_VERIFIED` →
+  `email_not_verified`, `ACCOUNT_DISABLED` → `account_disabled`,
+  `SERVICE_UNAVAILABLE` → `service_unavailable`.
+- **`VALIDATION_ERROR` vs `VALIDATION_FAILED`**: Two distinct constants with
+  distinct wire strings (`validation_error`, `validation_failed`).
+  `VALIDATION_ERROR` is the legacy student-family synonym; both currently
+  coexist as separate codes.
+- **`EMAIL_NOT_VERIFIED`**: The wire code emitted with HTTP `403` when the
+  email-verification gate blocks an authenticated-but-unverified caller on a
+  gated path.
+- **`ACCOUNT_DISABLED` / `SERVICE_UNAVAILABLE`**: The two Google-SSO wire codes.
+  `account_disabled` signals a federated login rejected because the matched
+  account is disabled; `service_unavailable` signals the upstream Google
+  verification path is unreachable (e.g. JWKS fetch failure). Both are emitted
+  by the `POST /api/v1/auth/google` route from the auth service.
+- **Side Effects**: None. Pure value enum.
+- **Error Handling**: N/A.
+- **Idempotency**: N/A (pure enum).
+
 #### `ErrorResponse` — [`ErrorResponse.kt`](./ErrorResponse.kt)
 
 - **Behavior**: The uniform error envelope returned on every failure response
-  across all REST routes. Fields: `code: String`, `message: String`,
-  `fieldErrors: List<FieldError>? = null`. `FieldError` is imported from
+  across all REST routes. Fields: `code: ErrorCode`, `message: String`,
+  `fieldErrors: List<FieldError>? = null`. The `code` is the enum-typed
+  [`ErrorCode`](./ErrorCode.kt) (serialized to its lowercase snake_case wire
+  string), not a free `String`. `FieldError` is imported from
   [`common/.../error/FieldError.kt`](../../../../../../../../common/src/main/kotlin/ed/unicoach/error/FieldError.kt)
   and is not redefined here.
 - **`fieldErrors` shape**: Defaults to `null` (not `emptyList()`), so non-
   validation errors serialize with the key omitted entirely. `fieldErrors` is
   populated only on `400` validation responses.
-- **Code families**: Auth routes (register, login, me, verify-email) use
-  lowercase codes (e.g. `unauthorized`, `invalid_token`, `token_expired`,
-  `token_already_used`). Student routes use uppercase codes: `VALIDATION_ERROR`,
-  `STUDENT_ALREADY_EXISTS`, `STUDENT_NOT_FOUND`, `VERSION_CONFLICT`,
-  `UNAUTHORIZED`. Graduation-date validation errors use
-  `field = "expectedHighSchoolGraduationDate"`.
+- **Code casing**: Every wire code across every route family — auth,
+  conversation, student, and cross-cutting plugins — is lowercase snake_case,
+  drawn from the [`ErrorCode`](./ErrorCode.kt) enum. The student-family codes
+  (`validation_error`, `student_already_exists`, `student_not_found`,
+  `version_conflict`) share this casing with the rest. Graduation-date
+  validation errors use `field = "expectedHighSchoolGraduationDate"`.
 - **Side Effects**: None. Pure outbound DTO.
 - **Idempotency**: N/A (outbound DTO only).
 - **Reuse**: This is the single error envelope across all REST responses; it is
@@ -182,8 +224,8 @@ from domain internals.
   a domain `PartialDate` and pattern validation occur downstream.
 - **Side Effects**: None at this layer.
 - **Error Handling**: A malformed or impossible date surfaces downstream as a
-  `400 VALIDATION_ERROR`; missing/wrong-typed JSON propagates to `StatusPages`
-  as `400 Bad Request`.
+  `400` with code `validation_error`; missing/wrong-typed JSON propagates to
+  `StatusPages` as `400 Bad Request`.
 - **Idempotency**: N/A (inbound DTO only).
 
 #### `UpdateStudentRequest` — [`UpdateStudentRequest.kt`](./UpdateStudentRequest.kt)
@@ -193,9 +235,9 @@ from domain internals.
   above), `version: Int` — the OCC version the client last observed, echoed back
   for the optimistic-concurrency check downstream.
 - **Side Effects**: None at this layer.
-- **Error Handling**: A stale `version` surfaces as `409 VERSION_CONFLICT`; a
-  bad date as `400 VALIDATION_ERROR`; an absent profile as
-  `404 STUDENT_NOT_FOUND`.
+- **Error Handling**: A stale `version` surfaces as `409` with code
+  `version_conflict`; a bad date as `400` with code `validation_error`; an
+  absent profile as `404` with code `student_not_found`.
 - **Idempotency**: N/A (inbound DTO only).
 
 #### `PublicStudent` — [`StudentResponse.kt`](./StudentResponse.kt)
@@ -341,8 +383,16 @@ wire shape.
       `POST /api/v1/auth/google` federated-login surface. Added the
       `PublicUser.from(user: User)` companion factory that projects a domain
       `User` onto the public shape, dropping password-hash state and federated
-      identities.
+      identities. Contributed the `ACCOUNT_DISABLED` (`account_disabled`) and
+      `SERVICE_UNAVAILABLE` (`service_unavailable`) wire codes for
+      federated-login rejection and upstream-verification failure.
 - [x] [RFC-65: Email Verification](../../../../../../../../rfc/65-email-verification.md)
       — Added `emailVerified: Boolean` to `PublicUser`, surfacing verification
       state on register, login, me, and verify-email responses; introduced
       `VerifyEmailRequest` (`token`) and `VerifyEmailResponse` (`user`).
+- [x] [RFC-69: Email-Verification Gate + Error-Code Unification](../../../../../../../../rfc/69-email-verification-gate.md)
+      — Introduced the `ErrorCode` enum as the single source of the wire error
+      code and retyped `ErrorResponse.code` from `String` to `ErrorCode`;
+      unified all wire codes to lowercase snake_case (lowercasing the five
+      former-UPPERCASE student codes); added `EMAIL_NOT_VERIFIED`
+      (`email_not_verified`) for the `403` verification gate.

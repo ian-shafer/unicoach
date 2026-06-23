@@ -6,6 +6,7 @@ import ed.unicoach.db.dao.DuplicateEmailException
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
+import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.*
@@ -26,7 +27,7 @@ fun Application.configureStatusPages() {
       call.respond(
         HttpStatusCode.BadRequest,
         ErrorResponse(
-          code = "bad_request",
+          code = ErrorCode.BAD_REQUEST,
           message = "Request body could not be read as the expected application/json payload",
         ),
       )
@@ -34,13 +35,13 @@ fun Application.configureStatusPages() {
     exception<PayloadTooLargeException> { call, _ ->
       call.respond(
         HttpStatusCode.PayloadTooLarge,
-        ErrorResponse("payload_too_large", "Request body exceeds the maximum allowed size"),
+        ErrorResponse(ErrorCode.PAYLOAD_TOO_LARGE, "Request body exceeds the maximum allowed size"),
       )
     }
     exception<BadRequestException> { call, cause ->
       call.respond(
         HttpStatusCode.BadRequest,
-        ErrorResponse(code = "bad_request", message = "Invalid JSON payload structure"),
+        ErrorResponse(code = ErrorCode.BAD_REQUEST, message = "Invalid JSON payload structure"),
       )
     }
     exception<Throwable> { call, cause ->
@@ -59,16 +60,19 @@ fun Application.configureStatusPages() {
               else -> HttpStatusCode.BadRequest
             }
           val message = cause.message ?: "Bad request"
-          call.respond(status, ErrorResponse(code = "permanent_error", message = message))
+          call.respond(status, ErrorResponse(code = ErrorCode.PERMANENT_ERROR, message = message))
         }
 
         is TransientError -> {
           val message = cause.message ?: "Internal server error"
-          call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse(code = "internal_error", message = message))
+          call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse(code = ErrorCode.INTERNAL_ERROR, message = message))
         }
 
         else -> {
-          call.respond(HttpStatusCode.InternalServerError, ErrorResponse(code = "internal_error", message = "An internal error occurred"))
+          call.respond(
+            HttpStatusCode.InternalServerError,
+            ErrorResponse(code = ErrorCode.INTERNAL_ERROR, message = "An internal error occurred"),
+          )
         }
       }
     }

@@ -2,6 +2,8 @@ package ed.unicoach.rest
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import ed.unicoach.common.config.AppConfig
+import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.PostMessageRequest
@@ -24,6 +26,8 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
+import java.sql.Connection
+import java.sql.DriverManager
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -33,6 +37,7 @@ class ConvoRoutingTest {
     private lateinit var testServer: EmbeddedServer<*, *>
     private lateinit var client: HttpClient
     private var boundPort: Int = 0
+    private lateinit var dbConnection: Connection
 
     @JvmStatic
     @BeforeAll
@@ -46,6 +51,10 @@ class ConvoRoutingTest {
             .port
         }
       client = HttpClient(CIO)
+
+      val config = AppConfig.load("common.conf", "db.conf").getOrThrow()
+      val dbConfig = DatabaseConfig.from(config).getOrThrow()
+      dbConnection = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
     }
 
     @JvmStatic
@@ -53,6 +62,7 @@ class ConvoRoutingTest {
     fun teardownAll() {
       if (::testServer.isInitialized) testServer.stop(1000, 5000)
       if (::client.isInitialized) client.close()
+      if (::dbConnection.isInitialized && !dbConnection.isClosed) dbConnection.close()
     }
   }
 
@@ -62,14 +72,27 @@ class ConvoRoutingTest {
 
   private fun uniqueEmail(): String = "convo${java.util.UUID.randomUUID()}@company.com"
 
+  /** Marks a registered user verified by direct SQL so it passes the verification gate. */
+  private fun markEmailVerified(email: String) {
+    dbConnection
+      .prepareStatement(
+        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
+      ).use { stmt ->
+        stmt.setString(1, email)
+        stmt.executeUpdate()
+      }
+  }
+
   private suspend fun registerAndGetCookie(): String {
-    val req = RegisterRequest(uniqueEmail(), "Password123!", "Convo User")
+    val email = uniqueEmail()
+    val req = RegisterRequest(email, "Password123!", "Convo User")
     val response =
       client.post(buildUrl("/api/v1/auth/register")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
+    markEmailVerified(email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()

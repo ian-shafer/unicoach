@@ -23,15 +23,16 @@ import ed.unicoach.db.models.ConvoResponse
 import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.Student
-import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.rest.auth.SessionConfig
+import ed.unicoach.rest.auth.resolveCaller
 import ed.unicoach.rest.models.Conversation
 import ed.unicoach.rest.models.ConversationCreatedEvent
 import ed.unicoach.rest.models.ConversationListResponse
 import ed.unicoach.rest.models.ConversationResponse
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.CreateConversationResponse
+import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.models.Message
 import ed.unicoach.rest.models.MessageCompletedEvent
@@ -119,19 +120,16 @@ class ConvoRouteHandler(
   // Caller resolution
   // ---------------------------------------------------------------------------
 
-  private suspend fun RoutingContext.resolveUser(): User? {
-    val token = call.request.cookies[sessionConfig.cookieName] ?: return null
-    return authService.getCurrentUser(TokenHash.fromRawToken(token)).getOrThrow()
-  }
+  private suspend fun RoutingContext.resolveUser(): User? = call.resolveCaller(authService, sessionConfig)?.user
 
   private suspend fun RoutingContext.resolveStudent(user: User): Student? = studentService.getStudentForUser(user.id).getOrThrow()
 
   private suspend fun RoutingContext.respondUnauthorized() {
-    call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
+    call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
   }
 
   private suspend fun RoutingContext.respondNotFound() {
-    call.respond(HttpStatusCode.NotFound, ErrorResponse("not_found", "No such conversation"))
+    call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.NOT_FOUND, "No such conversation"))
   }
 
   private fun RoutingContext.pathConvoId(): ConvoId? {
@@ -367,7 +365,7 @@ class ConvoRouteHandler(
   // ---------------------------------------------------------------------------
 
   private suspend fun RoutingContext.respondStudentProfileRequired() {
-    call.respond(HttpStatusCode.Conflict, ErrorResponse("student_profile_required", "A student profile is required"))
+    call.respond(HttpStatusCode.Conflict, ErrorResponse(ErrorCode.STUDENT_PROFILE_REQUIRED, "A student profile is required"))
   }
 
   private suspend fun RoutingContext.respondValidationFailed(
@@ -376,18 +374,18 @@ class ConvoRouteHandler(
   ) {
     call.respond(
       HttpStatusCode.BadRequest,
-      ErrorResponse("validation_failed", "Validation failed", listOf(ed.unicoach.error.FieldError(field, message))),
+      ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", listOf(ed.unicoach.error.FieldError(field, message))),
     )
   }
 
   private fun validationError(fieldErrors: List<ed.unicoach.error.FieldError>): ErrorResponse =
-    ErrorResponse("validation_failed", "Validation failed", fieldErrors)
+    ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", fieldErrors)
 
   private fun failedError(failed: ReplyEvent.Failed): ErrorResponse =
     if (failed.retriable) {
-      ErrorResponse("coach_unavailable", "The coach is temporarily unavailable — try again.")
+      ErrorResponse(ErrorCode.COACH_UNAVAILABLE, "The coach is temporarily unavailable — try again.")
     } else {
-      ErrorResponse("coach_failed", "The coach could not respond to this message.")
+      ErrorResponse(ErrorCode.COACH_FAILED, "The coach could not respond to this message.")
     }
 
   private fun RoutingContext.archiveScopeFromQuery(): ArchiveScope? =

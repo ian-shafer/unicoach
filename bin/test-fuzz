@@ -150,6 +150,18 @@ if [ -z "$TOKEN" ]; then
 fi
 log-info "Captured session for [$FUZZ_EMAIL]."
 
+# 7a. Mark the fuzz user verified. Registration leaves email_verified_at NULL, and
+#     the email-verification gate returns 403 email_not_verified on every gated
+#     route (students/*) for an unverified caller — which would make Schemathesis
+#     report drift against the documented statuses. Bump version alongside the
+#     update so the users versioning trigger does not reject the write.
+log-info "Marking the fuzz user verified so gated routes return their documented statuses..."
+psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA <<SQL || fatal "Failed to mark fuzz user verified."
+UPDATE users
+SET version = version + 1, email_verified_at = NOW()
+WHERE email = '${FUZZ_EMAIL}' AND email_verified_at IS NULL AND deleted_at IS NULL;
+SQL
+
 # Surface the excluded coverage so the gap is never silent.
 log-info "Excluding from this run: /api/v1/conversations* (9 unimplemented), logoutUser + deleteStudentMe (session-destructive), and the ignored_auth check (false positive under static cookie injection). The full --checks all set otherwise runs, including unsupported_method and every data-conformance check."
 

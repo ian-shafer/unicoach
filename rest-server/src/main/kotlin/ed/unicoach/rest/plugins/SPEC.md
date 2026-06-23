@@ -2,244 +2,132 @@
 
 ## I. Overview
 
-This directory contains Ktor application-level plugins that are installed once
-at server startup and apply cross-cutting concerns to every HTTP
-request/response in the `rest-server`. The plugins cover:
+Ktor application-level plugins and pipeline interceptors installed once at
+server startup, applying cross-cutting concerns to every HTTP request/response
+in the `rest-server`. Coverage:
 
-1. **Serialization** — JSON codec configuration (Jackson).
-2. **StatusPages** — Global exception-to-HTTP-status mapping.
+1. **Serialization** — JSON codec configuration (Jackson): unknown-field and
+   missing-field rejection, scalar type-punning rejection, and ISO-8601 temporal
+   output.
+2. **StatusPages** — Global exception/response-status to HTTP-status mapping
+   onto the shared `ErrorResponse` JSON shape, with codes drawn from the
+   `ed.unicoach.rest.models.ErrorCode` enum.
 3. **SessionExpiryPlugin** — Post-response hook that asynchronously enqueues
-   session expiry extension jobs.
+   session-expiry-extension jobs.
 4. **RequestSizeLimit** — Application-scope request body size enforcement,
    rejecting oversized bodies with `413`.
-5. **ClientKeyGate** — A pre-routing interceptor that rejects any request
-   lacking a valid client key with `403`, exempting only a path allowlist.
+5. **ClientKeyGate** — A pre-routing interceptor rejecting any request lacking a
+   valid client key with `403`, exempting only an exact-match path allowlist.
+6. **EmailVerificationGate** — A pre-routing interceptor rejecting
+   authenticated-but-unverified callers with `403` on non-exempt paths.
 
 ---
 
-## II. Invariants
+## II. Behavioral Contracts
 
-### Serialization (`Serialization.kt`)
-
-- The server MUST install `ContentNegotiation` with the Jackson codec via
-  `configureSerialization()` before any route handles a request.
-- Jackson MUST be configured with
-  `DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES = true` — any JSON payload
-  containing a field not present in the target data class MUST be rejected.
-- Jackson MUST be configured with
-  `DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES = true` — any JSON
-  payload omitting a required constructor field MUST be rejected.
-- The Jackson mapper MUST reject JSON scalar **type-punning**, configured by
-  disabling `MapperFeature.ALLOW_COERCION_OF_SCALARS` **and** a `Textual`
-  `CoercionConfig` that fails the `Boolean`/`Integer`/`Float` input shapes. Both
-  directions MUST fail deserialization: a JSON string supplied for a
-  numeric/boolean target (e.g. `UpdateStudentRequest.version: Int`) and a JSON
-  boolean/number supplied for a `String` target (e.g. `RegisterRequest.name`). A
-  mismatched scalar MUST NOT be silently coerced to the target type (no `false`
-  → `"false"`, no `"1"` → `1`); the failure surfaces as a `400`, never a coerced
-  `2xx`. Disabling `ALLOW_COERCION_OF_SCALARS` alone does NOT cover the
-  boolean/number → `String` case — the `Textual` `CoercionConfig` is required.
-- `SerializationFeature.INDENT_OUTPUT` MUST be enabled (formatted JSON output).
-- The Jackson `JavaTimeModule` MUST be registered, and
-  `SerializationFeature.WRITE_DATES_AS_TIMESTAMPS` MUST be disabled, so that
-  `java.time.Instant` (and other `java.time` values) serialize as ISO-8601
-  strings rather than numeric epoch arrays. Any response body carrying an
-  `Instant` field MUST emit it as an ISO-8601 string.
-
-### StatusPages (`StatusPages.kt`)
-
-- The server MUST install `StatusPages` via `configureStatusPages()` before any
-  route handles a request.
-- An **unreadable request body** — a JSON `null`, an unparseable payload, or a
-  non-`application/json` content type — MUST uniformly produce a `400` JSON
-  `ErrorResponse` (`code = "bad_request"`). Ktor surfaces every such body as a
-  `415` **response status** (not a typed exception any `exception<>` handler can
-  intercept), so a `status(HttpStatusCode.UnsupportedMediaType)` handler MUST
-  catch it and respond `400`. The server MUST NOT emit a `415` `text/plain`
-  body. Responding `400` from the `415`-status handler MUST NOT recurse — there
-  is no `status(400)` handler.
-- An unhandled `PayloadTooLargeException` MUST produce a `413 Payload Too Large`
-  response with `code = "payload_too_large"`.
-- An unhandled `BadRequestException` MUST produce a `400 Bad Request` response
-  with `code = "bad_request"` and a fixed message never derived from the cause —
-  Jackson parsing internals MUST NOT reach the client.
-- An unhandled `PermanentError` produces `code = "permanent_error"` with a
-  status partitioned by fault ownership:
-  - Server-fault subtypes — database faults and persisted-state corruption
-    (`DatabaseException`, `CorruptPersistedValueException`) — produce `500`.
-    Persisted-state corruption is presented as a server fault, not a client
-    error.
-  - Client-fault subtypes keep their specific statuses: `NotFoundException` →
-    `404`, `DuplicateEmailException` → `409`.
-  - All remaining `PermanentError` subtypes produce `400` — they are client
-    faults.
-- An unhandled `TransientError` MUST produce a `503 Service Unavailable`
-  response with `code = "internal_error"`.
-- Any other `Throwable` MUST produce a `500 Internal Server Error` with
-  `code = "internal_error"`.
-- The `ErrorResponse` type used here MUST be the shared
-  `ed.unicoach.rest.models.ErrorResponse` — no ad-hoc response types are
-  permitted.
-
-### SessionExpiryPlugin (`SessionExpiryPlugin.kt`)
-
-- The plugin MUST fire on the `ResponseSent` hook — **after** the response has
-  been fully delivered to the client.
-- The plugin MUST NOT enqueue when the request cookie named
-  `sessionConfig.cookieName` is absent.
-- The plugin MUST NOT enqueue when the request path matches any prefix in
-  `ignorePathPrefixes`.
-- The plugin MUST NOT enqueue when the response HTTP status is outside the
-  `200–299` range.
-- Enqueue work MUST run in a fire-and-forget coroutine off the request pipeline
-  — application-scoped and IO-bound, never blocking the response.
-- The plugin MUST NEVER propagate exceptions to the caller — all errors MUST be
-  caught, logged at `error` level, and swallowed.
-- On server shutdown, in-flight fire-and-forget coroutines are silently
-  cancelled by Ktor. This is an accepted trade-off; the next request
-  re-enqueues.
-- Plugin installation MUST fail at startup if `sessionConfig` or `queueService`
-  is unassigned — both are required configuration with no defaults.
-- The token hash transmitted in the queue payload MUST be the SHA-256 hash of
-  the raw cookie value, Base64-encoded (standard, not URL-safe), computed via
-  `TokenHash.fromRawToken(token)`.
-- The plugin MUST NOT perform any database reads or writes. Its only I/O side
-  effect is a single call to `queueService.enqueue()`.
-
-### RequestSizeLimit (`RequestSizeLimit.kt`)
-
-- The server MUST enforce a request body size limit on every routed call via a
-  single application-scope `install(RequestBodyLimit)` in
-  `configureRequestSizeLimit()`. There MUST NOT be any per-route opt-in — a
-  route added in the future is covered without per-route wiring.
-- The applicable limit MUST be selected per request by a fixed resolution order:
-  **exact-path override** (`routeOverrides`) → **longest matching path prefix**
-  (`routePrefixOverrides`) → `defaultMax`. An exact match MUST win over any
-  prefix match; among competing prefixes the longest matching key MUST win.
-  Matching is slash- and case-sensitive. This guarantees a dynamic path such as
-  `/api/v1/conversations/{id}/messages` resolves to its prefix's limit while an
-  exact entry for a specific path still takes precedence.
-- A request body exceeding the applicable limit (declared `Content-Length` or
-  streamed bytes) MUST raise `PayloadTooLargeException`, mapped to `413` by
-  StatusPages.
-- An over-limit body MUST be rejected before `ContentNegotiation` runs, so it
-  produces a `413` — never a Jackson `400`.
-
-### ClientKeyGate (`ClientKeyGate.kt`)
-
-- The gate MUST intercept `ApplicationCallPipeline.Plugins` — before routing —
-  so it fronts every route. A request that does not carry a valid client key
-  MUST be rejected with `403` and the pipeline MUST be `finish()`ed before any
-  route handler runs.
-- The gate MUST apply to ALL routes, including the public `auth/register` and
-  `auth/login` routes. The ONLY exemption is an exact-match path allowlist (the
-  `/healthz` health-check, so load-balancer probes pass). Matching MUST be
-  exact, not prefix: `/healthzextra` MUST NOT be exempt.
-- The gate MUST be independent of the session cookie: it MUST NOT read or depend
-  on the session, and contributes no cookie or session side effect. The client
-  key answers "is this one of my clients?"; the session answers "who is the
-  user?". A protected route requires both.
-- An empty `validKeys` set MUST disable the gate (fail open) — every request
-  passes. This is the local/CI default.
-- A rejected request MUST receive `403` with the shared
-  `ErrorResponse(code = "forbidden", ...)`. A missing header and an invalid key
-  MUST return the identical response — the gate MUST NOT reveal which condition
-  failed.
-- Key comparison MUST be constant-time and MUST NOT short-circuit on the first
-  match, so neither which key matched nor how many keys were checked is
-  observable through request timing.
-- The header name (`X-Unicoach-Client-Key`) MUST be a compile-time constant, not
-  a config value.
-
----
-
-## III. Behavioral Contracts
+All `ErrorResponse.code` values are members of the
+`ed.unicoach.rest.models.ErrorCode` enum; the lowercase snake_case strings shown
+below are that enum's `@JsonValue` wire forms (the single source of truth for
+the wire code).
 
 ### `configureSerialization()` ([Serialization.kt](./Serialization.kt))
 
 - **Signature**: `fun Application.configureSerialization()`
-- **Side Effects**: Installs the Ktor `ContentNegotiation` plugin with Jackson,
-  with the `JavaTimeModule` registered and `WRITE_DATES_AS_TIMESTAMPS` disabled
-  for ISO-8601 temporal output. No database writes, no network calls.
-- **Error Handling**: If installation fails (e.g., duplicate plugin install),
-  Ktor throws internally at startup — not a runtime HTTP error.
-- **Idempotency**: MUST be called exactly once at startup. Calling it twice on
-  the same `Application` instance results in a Ktor `DuplicatePluginException`.
+- **Behavior**: Installs Ktor `ContentNegotiation` with the Jackson codec. The
+  mapper enables `FAIL_ON_UNKNOWN_PROPERTIES` (a JSON field absent from the
+  target data class is rejected) and `FAIL_ON_MISSING_CREATOR_PROPERTIES` (an
+  omitted required constructor field is rejected).
+- **Scalar type-punning**: Two configurations together reject scalar coercion in
+  both directions, so a mismatched scalar surfaces as a `400` rather than a
+  silently coerced `2xx`:
+  - `MapperFeature.ALLOW_COERCION_OF_SCALARS` is disabled — a JSON string for a
+    numeric/boolean target (e.g. `UpdateStudentRequest.version: Int`) fails.
+  - A `Textual` `CoercionConfig` fails the `Boolean`/`Integer`/`Float` input
+    shapes — a JSON boolean/number for a `String` target (e.g.
+    `RegisterRequest.name`) fails. Disabling `ALLOW_COERCION_OF_SCALARS` alone
+    does not cover this direction.
+- **Temporal output**: `SerializationFeature.INDENT_OUTPUT` is enabled; the
+  `JavaTimeModule` is registered and `WRITE_DATES_AS_TIMESTAMPS` disabled, so
+  `java.time.Instant` (and other `java.time` values) serialize as ISO-8601
+  strings, not numeric epoch arrays.
+- **Side Effects**: None — no DB writes, no network calls.
+- **Error Handling**: A duplicate install throws a Ktor
+  `DuplicatePluginException` at startup, not a runtime HTTP error.
+- **Idempotency**: Installed once at startup. A second call on the same
+  `Application` throws `DuplicatePluginException`.
 
 ---
 
 ### `configureStatusPages()` ([StatusPages.kt](./StatusPages.kt))
 
 - **Signature**: `fun Application.configureStatusPages()`
-- **Side Effects**: Installs the Ktor `StatusPages` plugin. No database writes,
-  no network calls.
-- **Handled Exceptions**:
+- **Behavior**: Installs the Ktor `StatusPages` plugin. Every handled outcome
+  responds with the shared `ed.unicoach.rest.models.ErrorResponse` JSON shape.
+  Dispatch routes to the handler for the most specific superclass; the
+  `PayloadTooLargeException` and `BadRequestException` handlers take precedence
+  over the `exception<Throwable>` catch-all.
+- **Side Effects**: None — no DB writes, no network calls.
+- **Handled exceptions and statuses**:
 
-  | Exception                                                                              | HTTP Status                                                                           | `ErrorResponse.code`  | `ErrorResponse.message`                           |
-  | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------- |
-  | `PayloadTooLargeException`                                                             | 413                                                                                   | `"payload_too_large"` | `"Request body exceeds the maximum allowed size"` |
-  | `BadRequestException`                                                                  | 400                                                                                   | `"bad_request"`       | `"Invalid JSON payload structure"` (fixed)        |
-  | `PermanentError` (client fault)                                                        | 404 (`NotFoundException`) / 409 (`DuplicateEmailException`) / 400 (any other subtype) | `"permanent_error"`   | `cause.message ?: "Bad request"`                  |
-  | `PermanentError` (server fault: `DatabaseException`, `CorruptPersistedValueException`) | 500                                                                                   | `"permanent_error"`   | `cause.message ?: "Bad request"`                  |
-  | `TransientError`                                                                       | 503                                                                                   | `"internal_error"`    | `cause.message ?: "Internal server error"`        |
+  | Trigger                                                                  | HTTP Status | `ErrorResponse.code`  | `ErrorResponse.message`                                                                                                |
+  | ------------------------------------------------------------------------ | ----------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+  | `PayloadTooLargeException`                                               | 413         | `"payload_too_large"` | `"Request body exceeds the maximum allowed size"`                                                                      |
+  | `BadRequestException`                                                    | 400         | `"bad_request"`       | `"Invalid JSON payload structure"` (fixed; never derived from the cause, so Jackson internals do not reach the client) |
+  | `PermanentError` — `NotFoundException`                                   | 404         | `"permanent_error"`   | `cause.message ?: "Bad request"`                                                                                       |
+  | `PermanentError` — `DuplicateEmailException`                             | 409         | `"permanent_error"`   | `cause.message ?: "Bad request"`                                                                                       |
+  | `PermanentError` — `DatabaseException`, `CorruptPersistedValueException` | 500         | `"permanent_error"`   | `cause.message ?: "Bad request"`                                                                                       |
+  | `PermanentError` — any other subtype                                     | 400         | `"permanent_error"`   | `cause.message ?: "Bad request"`                                                                                       |
+  | `TransientError`                                                         | 503         | `"internal_error"`    | `cause.message ?: "Internal server error"`                                                                             |
+  | Any other `Throwable`                                                    | 500         | `"internal_error"`    | `"An internal error occurred"`                                                                                         |
 
-- **Status handler**: A `status(HttpStatusCode.UnsupportedMediaType)` handler
-  intercepts the `415` **response status** Ktor raises for an unreadable body
-  (JSON `null`, unparseable payload, or non-`application/json` content type) and
-  responds `400` with
-  `ErrorResponse(code = "bad_request", message = "Request
-  body could not be read as the expected application/json payload")`.
-  This is a status handler, not an `exception<>` handler — the underlying
-  `CannotTransformContentToTypeException` reaches no exception handler.
-- **Dispatch**: `StatusPages` routes to the handler for the most specific
-  superclass; the `PayloadTooLargeException` and `BadRequestException` handlers
-  take precedence over the `exception<Throwable>` catch-all.
-- **Fallback**: any `Throwable` that is neither `PermanentError` nor
-  `TransientError` produces a `500 Internal Server Error` with
-  `code = "internal_error"`, message `"An internal error occurred"`.
-- **Idempotency**: MUST be called exactly once at startup.
+  Server-fault `PermanentError` subtypes (database faults and persisted-state
+  corruption — `DatabaseException`, `CorruptPersistedValueException`) map to
+  `500`; persisted-state corruption is presented as a server fault, not a client
+  error. The remaining `PermanentError` subtypes map to `400` as client faults.
+- **Unreadable body (status handler)**: A
+  `status(HttpStatusCode.UnsupportedMediaType)` handler intercepts the `415`
+  **response status** Ktor raises for an unreadable body (a JSON `null`, an
+  unparseable payload, or a non-`application/json` content type, surfaced as
+  `CannotTransformContentToTypeException`, which no `exception<>` handler
+  intercepts). It responds `400` with
+  `ErrorResponse(code = "bad_request", message = "Request body could not be read as the expected application/json payload")`,
+  replacing the opaque `415` `text/plain` body. Responding `400` here does not
+  recurse — there is no `status(400)` handler.
+- **Idempotency**: Installed once at startup; a second call throws
+  `DuplicatePluginException`.
 
 ---
 
 ### `SessionExpiryPlugin` / `SessionExpiryPluginConfig` ([SessionExpiryPlugin.kt](./SessionExpiryPlugin.kt))
 
-- **Type**: Ktor `ApplicationPlugin` created via `createApplicationPlugin`.
-- **Plugin Name**: `"SessionExpiryPlugin"` (used by Ktor's internal registry).
-- **Configuration** (`SessionExpiryPluginConfig`):
-
-  | Field                | Type            | Required | Default      |
-  | -------------------- | --------------- | -------- | ------------ |
-  | `sessionConfig`      | `SessionConfig` | Yes      | `lateinit`   |
-  | `queueService`       | `QueueService`  | Yes      | `lateinit`   |
-  | `ignorePathPrefixes` | `Set<String>`   | No       | `emptySet()` |
-
-- **Hook**: `on(ResponseSent)`
-
-- **Execution Flow** (all guards evaluated in order; first failure
-  short-circuits):
-
-  1. Read cookie `cookieName` from request. If absent → return.
+- **Type**: Ktor `ApplicationPlugin` via `createApplicationPlugin`, registered
+  under the name `"SessionExpiryPlugin"`.
+- **Configuration** (`SessionExpiryPluginConfig`): `sessionConfig` and
+  `queueService` are `lateinit` (required, no default; an unassigned value fails
+  at startup). `ignorePathPrefixes` defaults to `emptySet()`.
+- **Hook**: `on(ResponseSent)` — fires after the response is fully delivered to
+  the client.
+- **Per-call flow** (guards in order; first failure returns without enqueue):
+  1. Read the cookie named `sessionConfig.cookieName`. Absent → return.
   2. Read `call.request.uri`. If any `ignorePathPrefixes` element is a prefix →
      return.
-  3. Read `call.response.status()?.value`. If null or outside `200..299` →
-     return.
-  4. Launch `call.application.launch(Dispatchers.IO)`: a. Hash cookie:
-     `TokenHash.fromRawToken(token)`. b. Base64-encode hash bytes (standard
-     encoder). c. Build
-     `SessionExpiryPayload(tokenHash = encodedHash).asJson()`. d. Call
-     `queueService.enqueue(JobType.SESSION_EXTEND_EXPIRY, payload)`. e. On
-     `EnqueueResult.DatabaseFailure` → log error. On `EnqueueResult.Success` →
-     no-op. f. On any uncaught exception → log error and swallow.
-
-- **Side Effects**: One write to the job queue (PostgreSQL `jobs` table) per
-  qualifying request, executed asynchronously on `Dispatchers.IO`.
-- **Error Handling**:
-  - `EnqueueResult.DatabaseFailure`: logged at `error` level via
-    `LoggerFactory.getLogger("SessionExpiryPlugin")`, not re-thrown.
-  - Any `Exception` in the coroutine: logged at `error` level, swallowed.
-- **Idempotency**: Not idempotent per-request — multiple requests with the same
-  session cookie will enqueue multiple jobs. Deduplication is handled downstream
-  by the `SessionExpiryHandler` via OCC versioning and the sliding window check.
+  3. Read `call.response.status()?.value`. Null or outside `200..299` → return.
+  4. Launch a fire-and-forget coroutine on `call.application` /
+     `Dispatchers.IO`: SHA-256-hash the raw cookie value via
+     `TokenHash.fromRawToken(token)`, Base64-encode the hash with the standard
+     (non-URL-safe) encoder, build
+     `SessionExpiryPayload(tokenHash = ...).asJson()`, and call
+     `queueService.enqueue(JobType.SESSION_EXTEND_EXPIRY, payload)`.
+- **Side Effects**: One write to the job queue per qualifying request, performed
+  asynchronously off the request pipeline. No DB reads.
+- **Error Handling**: An `EnqueueResult.DatabaseFailure` and any uncaught
+  exception in the coroutine are logged at `error` level (logger
+  `"SessionExpiryPlugin"`) and swallowed; nothing propagates to the caller. On
+  server shutdown Ktor cancels in-flight coroutines, silently dropping them; the
+  next request after restart re-enqueues.
+- **Idempotency**: Not idempotent per request — multiple requests with the same
+  session cookie enqueue multiple jobs. Deduplication is handled downstream by
+  the session-expiry handler.
 
 ---
 
@@ -247,16 +135,23 @@ request/response in the `rest-server`. The plugins cover:
 
 - **Signature**:
   `fun Application.configureRequestSizeLimit(config: RequestSizeConfig)`
-- **Side Effects**: Installs the Ktor `RequestBodyLimit` plugin once at
-  application scope with a path-aware `bodyLimit` callback. No database writes,
-  no network calls.
-- **Limit Selection**: delegated to `resolveLimit(config, path)`, which resolves
-  in order exact override → longest matching prefix override → `defaultMax`.
-- **Error Handling**: a body exceeding the applicable limit raises
+- **Behavior**: Installs the Ktor `RequestBodyLimit` plugin once at application
+  scope with a path-aware `bodyLimit` callback, so every routed call is covered
+  with no per-route opt-in. The limit is selected by
+  `resolveLimit(config, path)` in fixed order: exact-path override
+  (`routeOverrides`) → longest matching path prefix (`routePrefixOverrides`) →
+  `defaultMax`. An exact match wins over any prefix; among prefixes the longest
+  matching key wins; matching is slash- and case-sensitive. A dynamic path such
+  as `/api/v1/conversations/{id}/messages` resolves to its prefix's limit while
+  an exact entry still takes precedence.
+- **Side Effects**: None — no DB writes, no network calls.
+- **Error Handling**: A body exceeding the applicable limit (declared
+  `Content-Length` or streamed bytes) raises
   `io.ktor.server.plugins.PayloadTooLargeException`, mapped to `413` by
-  `configureStatusPages()`.
-- **Idempotency**: MUST be called exactly once at startup. A second call on the
-  same `Application` results in a Ktor `DuplicatePluginException`.
+  `configureStatusPages()`. The over-limit body is rejected before
+  `ContentNegotiation` runs, so it yields a `413` rather than a Jackson `400`.
+- **Idempotency**: Installed once at startup; a second call throws
+  `DuplicatePluginException`.
 
 ---
 
@@ -264,41 +159,89 @@ request/response in the `rest-server`. The plugins cover:
 
 - **Signature**:
   `fun Application.configureClientKeyGate(config: ClientKeyGateConfig)`
-- **Side Effects**: Installs one interceptor on
-  `ApplicationCallPipeline.Plugins`. No database writes, no network calls. On
-  rejection, writes a `403` response and `finish()`es the pipeline.
-- **Per-call flow**: empty `validKeys` → proceed (disabled); exact-match path in
-  `allowlistPaths` → proceed; otherwise the `X-Unicoach-Client-Key` header MUST
-  match a configured key (constant-time, over the whole set) or the call is
-  rejected `403` with `ErrorResponse(code = "forbidden")`.
-- **Idempotency**: Installs once at startup; the per-request check is read-only
-  and side-effect-free except for the rejection response.
+- **Behavior**: Installs one interceptor on `ApplicationCallPipeline.Plugins` —
+  before routing — fronting every route, including the public `auth/register`
+  and `auth/login` routes. Per-call flow:
+  - `validKeys` empty → proceed (gate disabled / fail-open; the local/CI
+    default).
+  - `call.request.path()` an exact member of `allowlistPaths` → proceed.
+    Matching is exact, not prefix (`/healthzextra` is not exempt).
+  - Otherwise the `X-Unicoach-Client-Key` header (a compile-time constant
+    `CLIENT_KEY_HEADER`, not config) is compared against the configured set. A
+    missing header and an invalid key yield the identical response, so the gate
+    does not reveal which condition failed. Comparison is constant-time and
+    folds over the entire key set with boolean-OR accumulation (no first-match
+    short-circuit), keeping which key matched and how many were checked
+    unobservable through timing.
+- **Side Effects**: On rejection, responds `403` with
+  `ErrorResponse(code = "forbidden", message = "Valid client key required.")`
+  and `finish()`es the pipeline before any route handler runs. Otherwise
+  read-only — it does not read or mutate the session cookie and contributes no
+  session side effect.
+- **Idempotency**: Installed once at startup; the per-request check is
+  side-effect-free except for the rejection response.
 
 ---
 
-## IV. Infrastructure & Environment
+### `configureEmailVerificationGate()` ([EmailVerificationGate.kt](./EmailVerificationGate.kt))
 
-- **HOCON Key** (`rest-server.conf`): `sessionExpiry.ignorePathPrefixes` — a
-  list of path prefix strings. Example: `["/health"]`. Read by `Application.kt`
-  and passed to `SessionExpiryPluginConfig.ignorePathPrefixes`.
-- **HOCON Keys** (`rest-server.conf`): `clientKeyGate.keys` — comma-separated
+- **Signature**:
+  `fun Application.configureEmailVerificationGate(authService: AuthService, sessionConfig: SessionConfig)`
+- **Behavior**: Installs one interceptor on `ApplicationCallPipeline.Plugins` —
+  before routing. Registered after `configureClientKeyGate`, so the coarse
+  client-key check runs ahead of this finer verification check. Per-call flow:
+  1. **Exempt paths** pass unconditionally: `call.request.path()` equal to
+     `/healthz`, or starting with `/api/v1/auth/`. The `/healthz` match is
+     exact; the auth match is a `/api/v1/auth/` prefix. This keeps the health
+     probe and the entire verification lifecycle reachable while unverified.
+     Every other path is gated.
+  2. **No resolved caller** → proceed.
+     `call.resolveCaller(authService, sessionConfig)` returns `null` for a
+     missing session cookie or a null session resolution; in that case the gate
+     passes the request through so the downstream handler applies its own auth
+     check and emits its own `401`. The gate never converts an unauthenticated
+     request into a `403`.
+  3. **Authenticated but unverified** (resolved caller whose
+     `user.emailVerifiedAt` is null) → respond `403 Forbidden` with
+     `ErrorResponse(code = "email_not_verified", message = "Email verification required.")`
+     and `finish()` the pipeline. A verified caller falls through; its resolved
+     caller is already cached on `call.attributes` for the handler.
+- **Side Effects**: Reads identity via `resolveCaller`, which performs one
+  `sessions`+`users` lookup through `authService.resolveSession` and caches the
+  `ResolvedCaller` on `call.attributes` (shared with the downstream handler), so
+  the handler does not repeat the lookup. On rejection, writes the `403`
+  response. No writes of its own.
+- **Error Handling**: A DB fault inside `resolveCaller` propagates (via
+  `getOrThrow`) to `configureStatusPages()`, which maps it to `500`. Email
+  verification state is asserted only after identity resolves.
+- **Idempotency**: Installed once at startup; the per-request check is
+  side-effect-free except for the rejection response.
+
+---
+
+## III. Infrastructure & Environment
+
+- **HOCON key** (`rest-server.conf`): `sessionExpiry.ignorePathPrefixes` — a
+  list of path-prefix strings (e.g. `["/health"]`), read by `Application.kt` and
+  passed to `SessionExpiryPluginConfig.ignorePathPrefixes`.
+- **HOCON keys** (`rest-server.conf`): `clientKeyGate.keys` — comma-separated
   valid client keys, overridden by the `UNICOACH_CLIENT_KEYS` env var (empty =
   disabled gate); `clientKeyGate.allowlistPaths` — string list of gate-exempt
   paths. Parsed by `ClientKeyGateConfig` and passed to `configureClientKeyGate`.
-- **Gradle Plugin** (`rest-server/build.gradle.kts`): `SessionExpiryPlugin`
-  calls `SessionExpiryPayload(...).asJson()`, which requires the
-  `alias(libs.plugins.kotlin.serialization)` plugin to be applied at the
-  `rest-server` call site so the kotlinx-serialization compiler can generate the
-  serializer for `SessionExpiryPayload`.
-- **Queue Module Dependency**: `SessionExpiryPayload` lives in the `queue`
-  module (not `net`) so both `rest-server` (enqueuer) and `net` (handler) can
+- **Gradle plugin** (`rest-server/build.gradle.kts`): `SessionExpiryPlugin`
+  calls `SessionExpiryPayload(...).asJson()`, requiring
+  `alias(libs.plugins.kotlin.serialization)` at the `rest-server` call site so
+  the kotlinx-serialization compiler generates the `SessionExpiryPayload`
+  serializer.
+- **Queue module dependency**: `SessionExpiryPayload` lives in the `queue`
+  module (not `net`), so both `rest-server` (enqueuer) and `net` (handler)
   import it without a cross-dependency.
-- **Logger Name**: `"SessionExpiryPlugin"` — used for all error-level logging
-  emitted by the plugin.
+- **Logger name**: `"SessionExpiryPlugin"` — used for all error-level logging
+  from the plugin.
 
 ---
 
-## V. History
+## IV. History
 
 - [x] [RFC-08: Auth Registration](../../../../../../../../rfc/08-auth-registration.md)
       — introduced `Serialization.kt` and `StatusPages.kt`.
@@ -331,7 +274,7 @@ request/response in the `rest-server`. The plugins cover:
       `ALLOW_COERCION_OF_SCALARS` + `Textual` `CoercionConfig`);
       `StatusPages.kt` replaced the dead
       `exception<UnsupportedMediaTypeException>` handler with a
-      `status(UnsupportedMediaType)` handler that maps an unreadable body to a
+      `status(UnsupportedMediaType)` handler mapping an unreadable body to a
       `400` JSON `bad_request` instead of a `415` `text/plain`.
 - [x] [RFC-54: Client-Key Gate](../../../../../../../../rfc/54-client-key-gate.md)
       — introduced `ClientKeyGate.kt`: a pre-routing interceptor rejecting
@@ -341,3 +284,10 @@ request/response in the `rest-server`. The plugins cover:
       — removed the deleted `CorruptPersistedAuthMethodException` from
       `StatusPages.kt`; server-fault `PermanentError`s mapping to `500` is now
       `DatabaseException` and `CorruptPersistedValueException`.
+- [x] [RFC-69: Email-Verification Gate + Error-Code Unification](../../../../../../../../rfc/69-email-verification-gate.md)
+      — introduced `EmailVerificationGate.kt`: a pre-routing interceptor
+      rejecting authenticated-but-unverified callers with
+      `403 email_not_verified` on non-exempt paths (exempt: `/healthz`,
+      `/api/v1/auth/*`). Switched `StatusPages.kt` and `ClientKeyGate.kt` from
+      string literals to the typed `ed.unicoach.rest.models.ErrorCode` enum for
+      error-code unification.

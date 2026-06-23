@@ -93,7 +93,7 @@ class AppViewModel: ObservableObject {
             logger.error("Profile resolve failed: code=[\(error.code, privacy: .public)] message=[\(error.message, privacy: .public)]")
             if error.code == "TIMEOUT" || error.code == "NETWORK_ERROR" {
                 authState = .noConnectivity
-            } else if error.code == "UNAUTHORIZED" {
+            } else if error.code == "unauthorized" {
                 authState = .unauthenticated
             } else {
                 authState = .serverError

@@ -63,7 +63,7 @@ class AppViewModelTests: XCTestCase {
     func testCheckSessionProfileFetchUnauthorized() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
         mockClient.meResult = .success(MeResponse(user: user))
-        mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "UNAUTHORIZED", message: "Unauthorized", fieldErrors: nil))
+        mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil))
 
         await viewModel.checkSession()
 

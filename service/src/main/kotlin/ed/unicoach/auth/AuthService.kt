@@ -16,11 +16,22 @@ import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.ProviderSubject
+import ed.unicoach.db.models.Session
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
+
+/**
+ * A resolved caller: a live, non-expired session row whose user account exists.
+ * The non-null [user] is the type-level guarantee that resolution succeeded —
+ * [AuthService.resolveSession] never returns this with a missing user.
+ */
+data class AuthenticatedSession(
+  val session: Session,
+  val user: User,
+)
 
 class AuthService(
   private val database: Database,
@@ -148,7 +159,14 @@ class AuthService(
     return outcome
   }
 
-  suspend fun getCurrentUser(tokenHash: TokenHash): Result<ed.unicoach.db.models.User?> =
+  /**
+   * Resolves a token to the live session row and its user. Returns
+   * `Result.success(null)` for the three user-absent outcomes — no session row,
+   * an anonymous session (`userId == null`), or a soft-deleted user — so a
+   * populated [AuthenticatedSession] is only ever returned when both a live
+   * session and its user exist. A DB fault propagates as a failed `Result`.
+   */
+  suspend fun resolveSession(tokenHash: TokenHash): Result<AuthenticatedSession?> =
     try {
       database.withConnection { session ->
         val sessionResult = SessionsDao.findByTokenHash(session, tokenHash)
@@ -159,7 +177,8 @@ class AuthService(
           return@withConnection Result.failure(sessionResult.exceptionOrNull()!!)
         }
 
-        val userId = sessionResult.getOrNull()!!.userId ?: return@withConnection Result.success(null)
+        val sessionRow = sessionResult.getOrNull()!!
+        val userId = sessionRow.userId ?: return@withConnection Result.success(null)
 
         val userResult = UsersDao.findById(session, userId)
         if (userResult.isFailure) {
@@ -168,11 +187,19 @@ class AuthService(
           }
           return@withConnection Result.failure(userResult.exceptionOrNull()!!)
         }
-        Result.success(userResult.getOrNull())
+        Result.success(AuthenticatedSession(sessionRow, userResult.getOrNull()!!))
       }
     } catch (e: Exception) {
       Result.failure(e)
     }
+
+  /**
+   * The user-only projection of [resolveSession], retained for the user-only
+   * callers in `admin-server` and the exempt auth handlers. Behaviourally
+   * identical to the prior `getCurrentUser`: all three user-absent cases map to
+   * `null`.
+   */
+  suspend fun getCurrentUser(tokenHash: TokenHash): Result<User?> = resolveSession(tokenHash).map { it?.user }
 
   suspend fun logout(tokenHash: TokenHash): Result<Unit> =
     try {

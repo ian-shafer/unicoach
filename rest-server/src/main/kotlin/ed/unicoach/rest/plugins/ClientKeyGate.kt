@@ -1,6 +1,7 @@
 package ed.unicoach.rest.plugins
 
 import ed.unicoach.rest.config.ClientKeyGateConfig
+import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
@@ -26,7 +27,7 @@ fun Application.configureClientKeyGate(config: ClientKeyGateConfig) {
     if (provided == null || !matchesAnyKey(provided, config.validKeys)) {
       call.respond(
         HttpStatusCode.Forbidden,
-        ErrorResponse(code = "forbidden", message = "Valid client key required."),
+        ErrorResponse(code = ErrorCode.FORBIDDEN, message = "Valid client key required."),
       )
       finish()
     }

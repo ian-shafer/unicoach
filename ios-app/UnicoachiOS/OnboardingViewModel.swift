@@ -73,7 +73,7 @@ class OnboardingViewModel: ObservableObject {
             _ = try await studentClient.createStudent(request: request)
             onComplete()
         } catch let error as ErrorResponse {
-            if error.code == "STUDENT_ALREADY_EXISTS" {
+            if error.code == "student_already_exists" {
                 onComplete()
             } else {
                 logger.error("Student creation failed: code=[\(error.code, privacy: .public)] message=[\(error.message, privacy: .public)]")

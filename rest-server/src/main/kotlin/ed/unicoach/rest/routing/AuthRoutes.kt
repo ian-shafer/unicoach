@@ -3,6 +3,8 @@ package ed.unicoach.rest.routing
 import ed.unicoach.auth.AuthService
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.error.FieldError
+import ed.unicoach.rest.auth.resolveCaller
+import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.models.GoogleLoginRequest
 import ed.unicoach.rest.models.LoginRequest
@@ -128,28 +130,20 @@ class AuthRouteHandler(
     val restFieldErrors =
       outcome.fieldErrors.map { FieldError(it.field, it.message) } +
         outcome.errors.map { FieldError("general", it) }
-    call.respond(HttpStatusCode.BadRequest, ErrorResponse("validation_failed", "Invalid registration parameters", restFieldErrors))
+    call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.VALIDATION_FAILED, "Invalid registration parameters", restFieldErrors))
   }
 
   private suspend fun RoutingContext.respondRegisterDuplicateEmail() {
     call.respond(
       HttpStatusCode.Conflict,
-      ErrorResponse("conflict", "Email already in use", listOf(FieldError("email", "Email already in use"))),
+      ErrorResponse(ErrorCode.CONFLICT, "Email already in use", listOf(FieldError("email", "Email already in use"))),
     )
   }
 
   private suspend fun RoutingContext.handleMe() {
-    val token = call.request.cookies[sessionConfig.cookieName]
-    if (token == null) {
-      call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
-      return
-    }
-
-    val tokenHash = TokenHash.fromRawToken(token)
-
-    val user = authService.getCurrentUser(tokenHash).getOrThrow()
+    val user = call.resolveCaller(authService, sessionConfig)?.user
     if (user == null) {
-      call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
+      call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
     } else {
       call.respond(HttpStatusCode.OK, MeResponse(PublicUser.from(user)))
     }
@@ -205,7 +199,7 @@ class AuthRouteHandler(
   private suspend fun RoutingContext.respondLoginUnauthorized(outcome: ed.unicoach.auth.LoginResult) {
     call.application.environment.log
       .info("Login failed: $outcome")
-    call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Invalid email or password", null))
+    call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Invalid email or password", null))
   }
 
   private suspend fun RoutingContext.handleVerifyEmail() {
@@ -217,15 +211,15 @@ class AuthRouteHandler(
       }
 
       is ed.unicoach.auth.VerifyEmailResult.InvalidToken -> {
-        call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_token", "Verification token is invalid"))
+        call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.INVALID_TOKEN, "Verification token is invalid"))
       }
 
       is ed.unicoach.auth.VerifyEmailResult.Expired -> {
-        call.respond(HttpStatusCode.BadRequest, ErrorResponse("token_expired", "Verification token has expired"))
+        call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.TOKEN_EXPIRED, "Verification token has expired"))
       }
 
       is ed.unicoach.auth.VerifyEmailResult.AlreadyConsumed -> {
-        call.respond(HttpStatusCode.BadRequest, ErrorResponse("token_already_used", "Verification token has already been used"))
+        call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.TOKEN_ALREADY_USED, "Verification token has already been used"))
       }
     }
   }
@@ -253,40 +247,33 @@ class AuthRouteHandler(
       is ed.unicoach.auth.GoogleLoginResult.InvalidToken -> {
         call.application.environment.log
           .info("Google login failed: $outcome")
-        call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Invalid Google ID token", null))
+        call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Invalid Google ID token", null))
       }
       is ed.unicoach.auth.GoogleLoginResult.EmailNotVerified -> {
         call.application.environment.log
           .info("Google login failed: $outcome")
-        call.respond(HttpStatusCode.Forbidden, ErrorResponse("email_not_verified", "Google account email is not verified", null))
+        call.respond(HttpStatusCode.Forbidden, ErrorResponse(ErrorCode.EMAIL_NOT_VERIFIED, "Google account email is not verified", null))
       }
       is ed.unicoach.auth.GoogleLoginResult.AccountDisabled -> {
         call.application.environment.log
           .info("Google login failed: $outcome")
-        call.respond(HttpStatusCode.Forbidden, ErrorResponse("account_disabled", "Account is disabled", null))
+        call.respond(HttpStatusCode.Forbidden, ErrorResponse(ErrorCode.ACCOUNT_DISABLED, "Account is disabled", null))
       }
       is ed.unicoach.auth.GoogleLoginResult.VerificationUnavailable -> {
         call.application.environment.log
           .warn("Google login failed: $outcome")
         call.respond(
           HttpStatusCode.ServiceUnavailable,
-          ErrorResponse("service_unavailable", "Google sign-in is temporarily unavailable", null),
+          ErrorResponse(ErrorCode.SERVICE_UNAVAILABLE, "Google sign-in is temporarily unavailable", null),
         )
       }
     }
   }
 
   private suspend fun RoutingContext.handleResendVerification() {
-    val token = call.request.cookies[sessionConfig.cookieName]
-    if (token == null) {
-      call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
-      return
-    }
-
-    val tokenHash = TokenHash.fromRawToken(token)
-    val user = authService.getCurrentUser(tokenHash).getOrThrow()
+    val user = call.resolveCaller(authService, sessionConfig)?.user
     if (user == null) {
-      call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized", "Not authenticated"))
+      call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
       return
     }
 

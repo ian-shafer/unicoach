@@ -236,6 +236,50 @@ class AuthServiceTest {
     }
 
   @Test
+  fun `resolveSession returns session and user for a live token`() =
+    runTest {
+      val user = createTestUser()
+      val tokenHash = TokenHash(byteArrayOf(40, 41, 42))
+      createSession(userId = user.id, tokenHash = tokenHash)
+
+      val result = authService.resolveSession(tokenHash)
+      assertTrue(result.isSuccess)
+      val authenticated = result.getOrNull()!!
+      assertEquals(user.id, authenticated.session.userId)
+      assertEquals(user.id, authenticated.user.id)
+      assertEquals("testme@example.com", authenticated.user.email.value)
+    }
+
+  @Test
+  fun `resolveSession returns null for an unknown token`() =
+    runTest {
+      val tokenHash = TokenHash(byteArrayOf(43, 44, 45))
+      val result = authService.resolveSession(tokenHash)
+      assertTrue(result.isSuccess && result.getOrNull() == null)
+    }
+
+  @Test
+  fun `resolveSession returns null for an expired session`() =
+    runTest {
+      val user = createTestUser()
+      val tokenHash = TokenHash(byteArrayOf(46, 47, 48))
+      createSession(userId = user.id, tokenHash = tokenHash, expiration = Duration.ofSeconds(-1))
+
+      val result = authService.resolveSession(tokenHash)
+      assertTrue(result.isSuccess && result.getOrNull() == null)
+    }
+
+  @Test
+  fun `resolveSession returns null for an anonymous session row`() =
+    runTest {
+      val tokenHash = TokenHash(byteArrayOf(49, 50, 51))
+      createSession(userId = null, tokenHash = tokenHash)
+
+      val result = authService.resolveSession(tokenHash)
+      assertTrue(result.isSuccess && result.getOrNull() == null)
+    }
+
+  @Test
   fun `logout revokes active session`() =
     runTest {
       val user = createTestUser()

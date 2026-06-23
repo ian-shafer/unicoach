@@ -123,7 +123,7 @@ class OnboardingViewModelTests: XCTestCase {
     func testSubmitAlreadyExistsInvokesComplete() async {
         var completed = false
         let viewModel = makeViewModel(onComplete: { completed = true })
-        mockStudentClient.createStudentResult = .failure(ErrorResponse(code: "STUDENT_ALREADY_EXISTS", message: "Exists", fieldErrors: nil))
+        mockStudentClient.createStudentResult = .failure(ErrorResponse(code: "student_already_exists", message: "Exists", fieldErrors: nil))
 
         await viewModel.submit()
 
@@ -134,12 +134,12 @@ class OnboardingViewModelTests: XCTestCase {
     func testSubmitValidationErrorSetsError() async {
         var completed = false
         let viewModel = makeViewModel(onComplete: { completed = true })
-        mockStudentClient.createStudentResult = .failure(ErrorResponse(code: "VALIDATION_ERROR", message: "Bad", fieldErrors: nil))
+        mockStudentClient.createStudentResult = .failure(ErrorResponse(code: "validation_error", message: "Bad", fieldErrors: nil))
 
         await viewModel.submit()
 
         XCTAssertFalse(completed)
-        XCTAssertEqual(viewModel.errorResponse?.code, "VALIDATION_ERROR")
+        XCTAssertEqual(viewModel.errorResponse?.code, "validation_error")
     }
 
     func testSubmitUnknownErrorMapsToUnknown() async {

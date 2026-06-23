@@ -217,14 +217,27 @@ class ConvoExtractionEnqueueTest {
     path: String,
   ) = "http://localhost:$port$path"
 
+  /** Marks a registered user verified by direct SQL so it passes the verification gate. */
+  private fun markEmailVerified(email: String) {
+    connection
+      .prepareStatement(
+        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
+      ).use { stmt ->
+        stmt.setString(1, email)
+        stmt.executeUpdate()
+      }
+  }
+
   private suspend fun registerWithStudent(port: Int): String {
-    val req = RegisterRequest("enq${java.util.UUID.randomUUID()}@company.com", "Password123!", "Enq User")
+    val email = "enq${java.util.UUID.randomUUID()}@company.com"
+    val req = RegisterRequest(email, "Password123!", "Enq User")
     val reg =
       client.post(url(port, "/api/v1/auth/register")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, reg.status)
+    markEmailVerified(email)
     val cookie =
       reg.headers[HttpHeaders.SetCookie]!!
         .split(";")

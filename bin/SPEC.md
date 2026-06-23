@@ -424,8 +424,10 @@ DB and port). Five lifecycle-ownership models exist:
 - **Dedicated-DB daemon harness** (`test-fuzz`) MUST bind `ENV_FILE` to
   `.env.fuzz` (its own per-worktree fuzz DB + port 8082), reach a clean state
   via `postgres-up` + `db-reset` against that dedicated DB, build and boot a
-  fresh rest-server, and register an EXIT/INT/TERM trap that tears down ONLY the
-  daemon it started. It uses the shared cluster but MUST NOT stop or wipe it.
+  fresh rest-server, register a user, mark it email-verified via a direct `psql`
+  write (so the email-verification gate does not `403` the authenticated fuzz
+  traffic), and register an EXIT/INT/TERM trap that tears down ONLY the daemon
+  it started. It uses the shared cluster but MUST NOT stop or wipe it.
 - **No-Postgres harnesses** (`ios-scripts-tests`) own no Postgres lifecycle and
   source neither `bin/common` nor any cluster script. They shim
   `xcodebuild`/`xcrun` onto `PATH` (recording argv to a temp file) and redirect
@@ -493,20 +495,32 @@ DB and port). Five lifecycle-ownership models exist:
   version already matches) → port-guard (fatal if `$PORT` is already served,
   before any build/boot) → `postgres-up` → `db-reset` the dedicated fuzz DB →
   `build-rest-server` → `rest-server-up` → register a uniquely-named user and
-  capture its `UNICOACH_SESSION` cookie → run Schemathesis as a child (not
-  `exec`) so the EXIT/INT/TERM trap tears down the rest-server. The captured
-  cookie is injected via `-H "Cookie: …"` on every request, exercising the
-  authenticated surface. Excludes, by category: unimplemented routes
-  (`/api/v1/conversations*`), session-destructive operations (`logoutUser`,
-  `deleteStudentMe`), and the single non-applicable check `ignored_auth` (a
-  false positive under static cookie injection); the full `--checks all` set —
-  including `unsupported_method` and every data-conformance check — otherwise
-  runs. As a referee it surfaces — never masks — non-conformance: it runs the
-  full check set and EXITS `0` against a conformant server, reporting any
-  contract drift as a non-zero exit. A `413` (an oversized body rejected by the
-  application-scope `RequestBodyLimit`) is accepted as a valid
-  `negative_data_rejection` via the committed root `schemathesis.toml`, passed
-  to Schemathesis with `--config-file`.
+  capture its `UNICOACH_SESSION` cookie → mark that user email-verified via a
+  direct `psql` write → run Schemathesis as a child (not `exec`) so the
+  EXIT/INT/TERM trap tears down the rest-server. The captured cookie is injected
+  via `-H "Cookie: …"` on every request, exercising the authenticated surface.
+  **Verified-user mutation (DB side effect):** registration leaves
+  `email_verified_at` NULL, and the email-verification gate returns
+  `403 email_not_verified` on every gated route (`students/*`) for an unverified
+  caller — which would make Schemathesis report drift against the documented
+  statuses. After capturing the cookie the harness issues one `psql` statement
+  against the freshly-migrated fuzz DB —
+  `UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email
+  = <fuzz-email> AND email_verified_at IS NULL AND deleted_at IS NULL`
+  (run with `ON_ERROR_STOP=1`, as `POSTGRES_USER` against `POSTGRES_DB`; `fatal`
+  on failure) — marking the fuzz user verified so gated routes return their
+  documented statuses, and bumping `version` alongside the write so the `users`
+  versioning trigger does not reject it. Excludes, by category: unimplemented
+  routes (`/api/v1/conversations*`), session-destructive operations
+  (`logoutUser`, `deleteStudentMe`), and the single non-applicable check
+  `ignored_auth` (a false positive under static cookie injection); the full
+  `--checks all` set — including `unsupported_method` and every data-conformance
+  check — otherwise runs. As a referee it surfaces — never masks —
+  non-conformance: it runs the full check set and EXITS `0` against a conformant
+  server, reporting any contract drift as a non-zero exit. A `413` (an oversized
+  body rejected by the application-scope `RequestBodyLimit`) is accepted as a
+  valid `negative_data_rejection` via the committed root `schemathesis.toml`,
+  passed to Schemathesis with `--config-file`.
 - **`bin/scripts-tests`**: Tests scripts in `bin/`.
 - **`bin/db-scripts-tests`**: Tests `db-run`, `db-query`, `db-write`, `db-repl`,
   `db-bootstrap`, `db-create`, `db-migrate`, `db-status`, `db-drop` against its
@@ -656,3 +670,11 @@ place.
       backfilled `admin-server-bounce` (`admin-server-down` then
       `admin-server-up`); wired `public-web` into `bin/test` `MODULES` and
       `build-public-web` last into `bin/build`.
+- [x] [RFC-69: Email Verification Gate](../rfc/69-email-verification-gate.md) —
+      `bin/test-fuzz` marks its provisioned fuzz user email-verified via a
+      direct `psql`
+      `UPDATE users SET version = version + 1, email_verified_at = NOW()` after
+      capturing the session cookie, so the new email-verification gate returns
+      the documented statuses (not `403 email_not_verified`) on gated
+      `students/*` routes; the `version` bump satisfies the `users` versioning
+      trigger.

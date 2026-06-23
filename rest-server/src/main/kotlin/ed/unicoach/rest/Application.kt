@@ -25,6 +25,7 @@ import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.plugins.SessionExpiryPlugin
 import ed.unicoach.rest.plugins.configureClientKeyGate
+import ed.unicoach.rest.plugins.configureEmailVerificationGate
 import ed.unicoach.rest.plugins.configureRequestSizeLimit
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
@@ -200,6 +201,8 @@ fun Application.appModule(
   val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)
   val studentService = ed.unicoach.student.StudentService(database)
   val coachingService = CoachingService(database, chatProvider, coachingConfig)
+
+  configureEmailVerificationGate(authService, sessionConfig)
 
   configureRouting(
     authService,
