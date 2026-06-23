@@ -16,6 +16,15 @@ through interactive phases in strict sequential order. All skill references in
 this master orchestrator are prefixed with a slash (e.g., `/rfc-design`) to
 indicate they are executable macro tools rather than plain phrases.
 
+**Role — master.** This skill wears the **master** hat from `iterative-work`,
+which defines the master / orchestrator / worker contracts and the universal
+rules once: capture-on-completion, scratch ownership, checkpoint-at-gates,
+verify-on-return-_and_-stall, bounded fan-out, write-scope enforcement,
+never-trust-green. Below, this skill states only the **pipeline-specific
+mechanics** (worktree, git checkpoints, phase sequencing, the Spec/Invariants
+gates); where the two overlap, `iterative-work` is the contract and this file is
+the instantiation.
+
 ## How work is dispatched in Claude Code
 
 Two execution mechanisms, chosen by whether the phase needs a human in the loop:
@@ -195,6 +204,24 @@ it, or `git rev-parse HEAD`). Diff and squash against those recorded SHAs — do
 not rely on a shell variable or on diffing by commit message (git cannot diff by
 message; resolve via the captured SHA or `git log --grep`).
 
+**Establish the run scratch directory.** Set `<run-scratch>` to
+`<codebase-root>/.scratch/rfc-<n>/`, record it in orchestrator state next to
+`<codebase-root>` and the base SHA, and hand it — plus the exact sub-path — to
+**every** agent you spawn. It is the master-owned capture layer from
+`iterative-work` (write-once, skip-if-present, gitignored, survives recovery
+resets); here it just needs its fixed layout:
+
+```
+<run-scratch>/
+  phase1/review-loop/iter-<i>/…
+  phase2/impl/…
+  phase2/impl-review/iter-<i>/leaves/<lens>.json   # one file per leaf reviewer, write-once on completion
+  phase2/impl-review/iter-<i>/report.md            # compiled — reconstructable from leaves/
+  phase2/impl-fix/iter-<i>/ledger.jsonl            # one line per finding: applied | skipped | failed
+  phase3/spec-sync/<dir-slug>.json
+  phase3/invariants/<dir-slug>.json
+```
+
 ### Checkpoints
 
 A checkpoint is a WIP commit capturing the **entire** working tree (tracked and
@@ -236,8 +263,12 @@ cleanly:
 git reset --hard <last-good-checkpoint> && git clean -fd
 ```
 
-Then re-run the step or escalate to the Architect. A checkpoint commit is a
-restore point, so recovery is exact and immediate.
+The `-fd` (never `-x`) keeps `<run-scratch>` intact, so a re-spawn resumes from
+where it stalled. Per `iterative-work`, **verify before you trust or reset** — on
+every return _and_ every stall/kill, independently re-run the suite (a stalled
+agent may have left a broken tree): green + write-scope-clean ⇒ checkpoint and
+keep; else reset above and re-spawn against the same `<run-scratch>`. Then re-run
+or escalate to the Architect.
 
 ### Agent write-scope contract (enforced, not trusted)
 
@@ -275,6 +306,9 @@ broken tree.
 - **Never `git commit`** — the orchestrator owns all checkpoints.
 - **Never `git stash`** — it mutates shared state and can strand the tree if the
   agent crashes mid-stash. Use `git diff HEAD` for any baseline.
+- **Write durable output to your `<run-scratch>` sub-path** (write-once,
+  skip-if-present) per `iterative-work` — the chat reply is a summary, the
+  scratch file is the source of truth the orchestrator resumes you against.
 
 ### Phase 3 squash
 
@@ -444,42 +478,59 @@ any result as green.
    - **prompt**:
      `"Invoke the /rfc-impl skill on RFC rfc/<rfc-file>.md to
         execute the implementation plan. The codebase root is <codebase-root>.
-        If you spawn any nested agents, list them (name + task) in your final
-        report."`
+        Your run-scratch sub-path is <run-scratch>/phase2/impl/. If you spawn any
+        nested agents, list them (name + task) in your final report."`
 
    Checkpoint before spawning (`pipeline(rfc-<n>): before impl`); the spawn
    prompt MUST state the **write-scope** (code, tests, config — but **no
-   `*/SPEC.md` and no `*/INVARIANTS.md`**) and the subagent rules (never commit,
-   never stash). Print the transparency line first, then spawn. Pause and wait
-   for the agent to complete. On return, **verify write-scope**
-   (`git status
-   --porcelain` contains no `*/SPEC.md` and no
-   `*/INVARIANTS.md`), **independently re-run the test suite** (do not trust the
-   agent's green claim), and checkpoint (`pipeline(rfc-<n>): impl`).
+   `*/SPEC.md` and no `*/INVARIANTS.md`**), the `<run-scratch>` sub-path, and the
+   subagent rules (never commit, never stash). Print the transparency line first,
+   then spawn. Pause and wait. **On return _or stall/kill_, verify write-scope**
+   (`git status --porcelain` contains no `*/SPEC.md` and no `*/INVARIANTS.md`)
+   and **independently re-run the test suite** (do not trust the agent's green
+   claim, and a stalled agent may have left a broken tree). If green, checkpoint
+   (`pipeline(rfc-<n>): impl`); if broken, reset to `before impl` and re-spawn
+   against the same scratch path (it resumes where it left off).
 
-2. **Autonomous Implementation Review**: Once implementation is complete, spawn
-   a background agent with the **`Agent`** tool:
+2. **Autonomous Implementation Review — one iteration at a time.** Per
+   `iterative-work`, the master owns the iteration boundary: do **not** hand the
+   whole multi-iteration loop to one agent and wait blind. Drive the iterations
+   yourself, checkpointing each pass. For `i = 1` to 3 (stop early once a pass is
+   clean):
 
-   - **subagent_type**: `general-purpose`
-   - **description**: `[rfc-impl-review-loop] rfc/<n> <rfc-name>`
-   - **run_in_background**: `true`
-   - **prompt**:
-     `"Invoke the /rfc-impl-review-loop skill on target RFC
-        rfc/<rfc-file>.md with 3 iterations. The codebase root is
-        <codebase-root>. Return the final review findings, changes made, and an
-        uncommitted-diff summary."`
+   a. **Review pass.** Checkpoint (`pipeline(rfc-<n>): before impl-review [i]`),
+      then spawn a background `general-purpose` agent invoking **`/rfc-impl-review`
+      (a single pass, not the loop)** on `rfc/<rfc-file>.md`. The spawn prompt
+      MUST state `<codebase-root>`, the scratch sub-path
+      `<run-scratch>/phase2/impl-review/iter-<i>/`, the **write-scope** (writes
+      nothing tracked; durable output to scratch only), and the subagent rules.
+      The chains it delegates to write **one verdict file per leaf** under
+      `…/leaves/` the instant each finishes — so a stalled aggregator is
+      reconstructed from that directory, never re-run.
 
-   The spawn prompt MUST state the **write-scope** (the review writes nothing
-   tracked; reports go to gitignored `.scratch/`) and the subagent rules. Number
-   this loopable step (`impl-review [i]`). Pause and wait for the agent to
-   complete. On return, **verify write-scope** (`git status --porcelain` empty —
-   a review that edited source ⇒ reset and escalate). Once it finishes, present
-   the final review findings, changes made, and the uncommitted diff summary to
-   the Architect. You MUST explicitly verify that the generated review report
-   contains a `Test Verification Completeness Check` section with a passing
-   status; **and independently re-run the suite yourself** to confirm it — do
-   not rely on the report's claim alone. If the section is missing, the status
-   is FAILED, or your own run does not pass, halt and request revisions.
+   b. **On return _or stall/kill_.** Verify write-scope (`git status --porcelain`
+      empty). Reconstruct findings from `…/iter-<i>/` — read `report.md` if
+      present, else merge the per-leaf files in `…/leaves/` directly. Confirm the
+      `Test Verification Completeness Check` is present and passing **and
+      independently re-run the suite yourself**. Checkpoint
+      (`pipeline(rfc-<n>): impl-review [i]`).
+
+   c. **If clean** (no actionable findings, tests green): exit the loop.
+      **Otherwise** spawn a background **`/rfc-impl-fix`** pass with scratch
+      sub-path `<run-scratch>/phase2/impl-fix/iter-<i>/`, handing it the
+      reconstructed findings; it records a per-finding ledger
+      (`applied | skipped | failed`) write-once, so a stalled fix resumes at the
+      first unapplied finding. On return _or stall/kill_: verify write-scope (no
+      `*/SPEC.md`/`*/INVARIANTS.md`) and **independently re-run the suite** — if
+      broken, reset to `pipeline(rfc-<n>): impl-review [i]` and re-spawn the fix
+      (it resumes from its ledger); if green, checkpoint
+      (`pipeline(rfc-<n>): impl-fix [i]`).
+
+   Because every pass is checkpointed and every leaf and finding is captured
+   under `<run-scratch>`, a stall anywhere forfeits at most the single in-flight
+   unit — never a whole iteration. After the loop, present the final findings,
+   changes, and uncommitted diff to the Architect. If the completeness check is
+   missing/FAILED or your own run does not pass, halt and request revisions.
 
 3. **Architect Implementation Review**: Once the autonomous reviews and fixes
    pass (or if the Architect requests intermediate iterations), present the
@@ -532,16 +583,20 @@ any result as green.
         running `/rfc-impl-fix` to apply only the RFC design changes
         incrementally to the existing implementation. The spawn prompt MUST
         state the **write-scope** (code, tests, config — **no `*/SPEC.md` and no
-        `*/INVARIANTS.md`**) and the subagent rules. You MUST pass the captured
-        RFC design diff as the action items to implement:
+        `*/INVARIANTS.md`**), the `<run-scratch>` sub-path, and the subagent
+        rules. You MUST pass the captured RFC design diff as the action items to
+        implement:
         - **subagent_type**: `general-purpose`
         - **description**: `[rfc-impl-fix] rfc/<n> <rfc-name>`
         - **run_in_background**: `true`
         - **prompt**:
           `"Invoke the /rfc-impl-fix skill on target RFC
-                rfc/<rfc-file>.md. Treat the following captured RFC design diff
-                as the targeted action items to implement in the existing
-                codebase: <RFC-diff-text>"`
+                rfc/<rfc-file>.md. Your run-scratch sub-path is
+                <run-scratch>/phase2/impl-fix/refine-[i]/ — record a per-finding
+                ledger there (write-once) and skip any already applied on
+                re-entry. Treat the following captured RFC design diff as the
+                targeted action items to implement in the existing codebase:
+                <RFC-diff-text>"`
 
    #### Option B: Delegate Code Corrections (If implementation needs fixing but RFC is correct)
 
@@ -557,8 +612,11 @@ any result as green.
       - **run_in_background**: `true`
       - **prompt**:
         `"Invoke the /rfc-impl-fix skill on target RFC
-            rfc/<rfc-file>.md. Treat the following Architect feedback as the
-            review report/action items to implement: <Architect-feedback-text>"`
+            rfc/<rfc-file>.md. Your run-scratch sub-path is
+            <run-scratch>/phase2/impl-fix/delegate-[i]/ — record a per-finding
+            ledger there (write-once) and skip any already applied on re-entry.
+            Treat the following Architect feedback as the review report/action
+            items to implement: <Architect-feedback-text>"`
    3. Wait for the fix agent to complete.
    4. Once complete, spawn a background `/rfc-impl-review` pass to verify that
       the corrections are correct and that no code standards or test suites were
@@ -568,7 +626,9 @@ any result as green.
       - **run_in_background**: `true`
       - **prompt**:
         `"Invoke the /rfc-impl-review skill on target RFC
-            rfc/<rfc-file>.md."`
+            rfc/<rfc-file>.md. Your run-scratch sub-path is
+            <run-scratch>/phase2/impl-review/delegate-[i]/; the chains write one
+            verdict file per leaf under its leaves/ the instant each finishes."`
    5. Wait for the review agent to complete, then present the updated code diffs
       and review results to the Architect, repeating this iteration loop.
 
@@ -624,15 +684,20 @@ SPEC.md is LLM-managed. Spawn a background agent with the **`Agent`** tool:
   touched directory in `<codebase-root>` (creating a new `SPEC.md` via
   `/spec-writer` where one is absent), and to **report any durable guarantee it
   notices that belongs in `INVARIANTS.md`** (it must NOT write `INVARIANTS.md`
-  itself). The prompt MUST state the **write-scope** (`*/SPEC.md` files only —
-  **no `*/INVARIANTS.md`**, no code/test/config) and the subagent rules (never
-  commit, never stash).
+  itself). Give it the scratch sub-path `<run-scratch>/phase3/spec-sync/` and
+  tell it to record a per-directory completion artifact there
+  (`<dir-slug>.json`) the instant each directory's sync finishes, and to **skip
+  any directory whose artifact already exists** (so a re-spawn resumes at the
+  first unsynced directory). The prompt MUST state the **write-scope**
+  (`*/SPEC.md` files only — **no `*/INVARIANTS.md`**, no code/test/config) and the
+  subagent rules (never commit, never stash).
 
 Checkpoint before spawning (`pipeline(rfc-<n>): before spec-sync`). Print the
-transparency line, then spawn. On return, **verify write-scope**
-(`git status
---porcelain` ⊆ `SPEC.md` files; any code/test/`INVARIANTS.md` write
-⇒ reset and escalate) and checkpoint (`pipeline(rfc-<n>): spec-sync`).
+transparency line, then spawn. On return **_or stall/kill_, verify write-scope**
+(`git status --porcelain` ⊆ `SPEC.md` files; any code/test/`INVARIANTS.md` write
+⇒ reset and escalate). If it stalled, re-spawn against the same scratch sub-path
+— directories already synced are skipped. Then checkpoint
+(`pipeline(rfc-<n>): spec-sync`).
 
 #### 3b. INVARIANTS.md (autonomous draft, minimal inline human gate)
 
@@ -645,16 +710,23 @@ Spawn a background agent with the **`Agent`** tool:
   directory in `<codebase-root>`, distilling the few true invariants from each
   directory's `SPEC.md` + code + in-scope RFCs through the five-gate filter, and
   to **return the proposed `INVARIANTS.md` drafts plus the filter rationale**
-  (what it kept and, briefly, what it filtered out and why). It MUST NOT write
-  any `INVARIANTS.md` file to disk — `INVARIANTS.md` is human-gated; the
-  orchestrator owns the write. Many directories will legitimately yield **zero**
-  invariants and therefore **no file** — that is expected. The prompt MUST state
-  the **write-scope** (writes nothing tracked; reports only) and the subagent
-  rules.
+  (what it kept and, briefly, what it filtered out and why). Give it the scratch
+  sub-path `<run-scratch>/phase3/invariants/` and tell it to write each
+  directory's proposed draft + rationale there (`<dir-slug>.json`, recording
+  "zero invariants" explicitly where that is the outcome) the instant that
+  directory is assessed, and to **skip any directory whose artifact already
+  exists**. It MUST NOT write any `INVARIANTS.md` file to the tree —
+  `INVARIANTS.md` is human-gated; the orchestrator owns the write; scratch is not
+  the tree. Many directories will legitimately yield **zero** invariants and
+  therefore **no file** — that is expected. The prompt MUST state the
+  **write-scope** (writes nothing tracked; reports + scratch only) and the
+  subagent rules.
 
-Checkpoint before spawning (`pipeline(rfc-<n>): before invariants`). On return,
-**verify write-scope** (`git status --porcelain` empty). Then run the **inline
-human gate**: present each proposed `INVARIANTS.md` (they are short — a handful
+Checkpoint before spawning (`pipeline(rfc-<n>): before invariants`). On return
+**_or stall/kill_, verify write-scope** (`git status --porcelain` empty), and
+reconstruct the proposed drafts by reading `<run-scratch>/phase3/invariants/` if
+the agent died mid-run (re-spawn to finish any unassessed directories — done ones
+are skipped). Then run the **inline human gate**: present each proposed `INVARIANTS.md` (they are short — a handful
 of lines each) to the Architect in this conversation, note which directories
 yielded no invariants, and ask for approval or edits. Apply the
 Architect-approved invariants by writing the `INVARIANTS.md` files yourself,

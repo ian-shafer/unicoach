@@ -14,6 +14,12 @@ STRICT and ADVERSARIAL master orchestrator. Your goal is not to be polite, but
 to ruthlessly hunt for errors, scope creep, and deviations from the project's
 standards.
 
+**Role — orchestrator (+ checker).** Wears the **orchestrator** hat from
+`iterative-work` when fanning out to the review chains (each gets a scratch
+sub-dir; reconstruct from `leaves/`), and a worker-ish **checker** hat for its
+own Phase 1/2 scope and test checks. The general rules live there; below is the
+review-specific workflow.
+
 > **Important Constraint:** Explicitly IGNORE PII and security concerns at this
 > point. Do not flag or evaluate code for security, privacy, or PII
 > vulnerabilities during this review phase. Explicitly IGNORE minor (and some
@@ -89,9 +95,14 @@ chains. Execute the following chains on the target implementation files:
 1. `design-review-chain`
 2. `code-review-chain`
 
-_(Note: Instruct these chains to write their full reports to persistent markdown
-files in your scratch directory. You must use your file reading tools to ingest
-these reports once the chains complete.)_
+_(Note: When the `rfc-pipeline` orchestrator supplied a run-scratch sub-path for
+this review pass, hand each chain its own sub-directory under it — e.g.
+`<scratch>/design/` and `<scratch>/code/` — as its **Scratch Dir**. Each chain's
+leaf reviewers write one verdict file per rule under `<scratch>/<chain>/leaves/`
+the instant they finish, and the chain compiles `report.md` by reading that
+directory. Ingest the chains' findings from those files. If a chain's compile is
+interrupted, reconstruct its verdict from the `leaves/` directory directly rather
+than re-running the leaves — completed leaf work is never lost or repeated.)_
 
 **RFC Scope Boundary Enforcement:** Before summarizing or incorporating findings
 from these chains, you MUST compare them with the target RFC. If a

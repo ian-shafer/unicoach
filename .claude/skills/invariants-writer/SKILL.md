@@ -22,6 +22,10 @@ The two files have strictly separated mandates. Never put a "must" in `SPEC.md`;
 never put a behavioral description in `INVARIANTS.md`. If you are tempted to
 write "the code currently does X" in `INVARIANTS.md`, it belongs in `SPEC.md`.
 
+In `iterative-work` terms you wear the **worker** hat: one directory per unit,
+capturing each draft to scratch (write-once, skip-if-present) when a Scratch Dir
+is supplied — never writing the human-gated `INVARIANTS.md` yourself.
+
 ## Core principle: most "musts" are not invariants
 
 A directory typically has **0–5** invariants. Many directories have **zero** —
@@ -169,7 +173,13 @@ Rules for the structure:
    out, and obtain explicit approval before writing the file. When invoked by
    the `/rfc-pipeline` orchestrator, return the draft (and the filter rationale)
    as your result — the orchestrator presents it inline for the Architect's
-   approval; do not assume approval yourself.
+   approval; do not assume approval yourself. If the orchestrator supplied a
+   **Scratch Dir**, also write each directory's draft + rationale there
+   (`<dir-slug>.json`, recording "zero invariants" explicitly where that is the
+   outcome) the instant you finish assessing it — write-once, and skip any
+   directory whose artifact already exists. This is capture/resume only; it is
+   **not** the human-gated `INVARIANTS.md` write, which the orchestrator still
+   owns.
 
 ## Definition of done
 
