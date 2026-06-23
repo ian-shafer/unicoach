@@ -587,6 +587,93 @@ class UsersDaoTest {
   }
 
   @Test
+  fun `changeEmail rewrites email and clears verification for a verified user`() {
+    val created = UsersDao.create(session, newPasswordUser("change-verified")).getOrThrow()
+    UsersDao.markEmailVerified(session, created.id).getOrThrow()
+    val verified = UsersDao.findById(session, created.id, ed.unicoach.db.models.SoftDeleteScope.ALL).getOrThrow()
+    assertTrue(verified.emailVerifiedAt != null, "Precondition: user is verified")
+
+    val newEmail = (EmailAddress.create("changed-verified@example.com") as ValidationResult.Valid).value
+    val updated = UsersDao.changeEmail(session, created.id, newEmail).getOrThrow()
+
+    assertTrue(updated.email == newEmail, "Expected the email to be rewritten")
+    assertTrue(updated.emailVerifiedAt == null, "Expected verification to be cleared")
+    assertTrue(updated.version == verified.version + 1, "Expected version bump")
+  }
+
+  @Test
+  fun `changeEmail clears verification for an unverified user`() {
+    val created = UsersDao.create(session, newPasswordUser("change-unverified")).getOrThrow()
+    assertTrue(created.emailVerifiedAt == null, "Precondition: user is unverified")
+
+    val newEmail = (EmailAddress.create("changed-unverified@example.com") as ValidationResult.Valid).value
+    val updated = UsersDao.changeEmail(session, created.id, newEmail).getOrThrow()
+
+    assertTrue(updated.email == newEmail, "Expected the email to be rewritten")
+    assertTrue(updated.emailVerifiedAt == null, "Expected the user to remain unverified")
+    assertTrue(updated.version == created.version + 1, "Expected version bump")
+  }
+
+  @Test
+  fun `changeEmail captures the new email and null verification into history`() {
+    val created = UsersDao.create(session, newPasswordUser("change-history")).getOrThrow()
+    UsersDao.markEmailVerified(session, created.id).getOrThrow()
+
+    val newEmail = (EmailAddress.create("changed-history@example.com") as ValidationResult.Valid).value
+    val updated = UsersDao.changeEmail(session, created.id, newEmail).getOrThrow()
+
+    val versions = UsersDao.listVersions(session, created.id).getOrThrow()
+    val latest = versions.first { it.version == updated.version }
+    assertTrue(latest.email == newEmail, "History row must carry the new email")
+    assertTrue(latest.emailVerifiedAt == null, "History row must reflect cleared verification")
+  }
+
+  @Test
+  fun `changeEmail into an active user's email raises DuplicateEmail and leaves the row unchanged`() {
+    val userA = UsersDao.create(session, newPasswordUser("change-collide-a")).getOrThrow()
+    val userB = UsersDao.create(session, newPasswordUser("change-collide-b")).getOrThrow()
+
+    val result = UsersDao.changeEmail(session, userA.id, userB.email)
+    assertTrue(
+      result.isFailure && result.exceptionOrNull() is DuplicateEmailException,
+      "Expected DuplicateEmailException, got $result",
+    )
+
+    val reloaded = UsersDao.findById(session, userA.id, ed.unicoach.db.models.SoftDeleteScope.ALL).getOrThrow()
+    assertTrue(reloaded.email == userA.email, "A's email must be unchanged after a collision")
+    assertTrue(reloaded.version == userA.version, "A's version must be unchanged after a collision")
+  }
+
+  @Test
+  fun `changeEmail into a soft-deleted user's email succeeds`() {
+    val userA = UsersDao.create(session, newPasswordUser("change-softdel-a")).getOrThrow()
+    val userB = UsersDao.create(session, newPasswordUser("change-softdel-b")).getOrThrow()
+    UsersDao.delete(session, userB.id, userB.version).getOrThrow()
+
+    val updated = UsersDao.changeEmail(session, userA.id, userB.email).getOrThrow()
+    assertTrue(updated.email == userB.email, "Active uniqueness must not collide with a soft-deleted row")
+  }
+
+  @Test
+  fun `changeEmail to the same email re-arms verification`() {
+    val created = UsersDao.create(session, newPasswordUser("change-same")).getOrThrow()
+    UsersDao.markEmailVerified(session, created.id).getOrThrow()
+    val verified = UsersDao.findById(session, created.id, ed.unicoach.db.models.SoftDeleteScope.ALL).getOrThrow()
+
+    val updated = UsersDao.changeEmail(session, created.id, created.email).getOrThrow()
+    assertTrue(updated.email == created.email, "Same-email re-arm keeps the address")
+    assertTrue(updated.emailVerifiedAt == null, "Same-email re-arm clears verification")
+    assertTrue(updated.version == verified.version + 1, "Same-email re-arm bumps version")
+  }
+
+  @Test
+  fun `changeEmail fails NotFound for an absent user`() {
+    val newEmail = (EmailAddress.create("absent@example.com") as ValidationResult.Valid).value
+    val result = UsersDao.changeEmail(session, UserId(java.util.UUID.randomUUID()), newEmail)
+    assertTrue(result.isFailure && result.exceptionOrNull() is NotFoundException, "Expected NotFound, got $result")
+  }
+
+  @Test
   fun `listVersions returns ascending version order`() {
     val v1 = UsersDao.create(session, newPasswordUser("versions-order")).getOrThrow()
     val v2 = UsersDao.update(session, editOf(v1.copy(name = (PersonName.create("Edit Two") as ValidationResult.Valid).value))).getOrThrow()

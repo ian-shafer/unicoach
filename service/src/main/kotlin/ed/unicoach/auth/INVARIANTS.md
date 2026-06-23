@@ -23,19 +23,20 @@ is therefore enforced ONLY here. A user left with no credential is permanently
 locked out with no recovery path, and a non-atomic provision can commit a
 credential-less `users` row if the identity insert fails.
 
-### Verification-email delivery is best-effort and never fails registration or resend
+### Verification-email delivery is best-effort and never fails its triggering operation
 
-**Rule:** In `EmailVerificationService`, the post-commit `sendVerificationEmail`
-MUST NOT propagate a failure that rolls back or fails registration
-(`AuthService.register`) or `resend`. The token is persisted transactionally; a
-send failure (provider rejection or subject/body construction) is logged and
-folded into a `Result` the success path ignores.
+**Rule:** The post-commit `EmailVerificationService.sendVerificationEmail` MUST
+NOT propagate a failure that rolls back or fails the operation that triggered it
+— registration (`AuthService.register`), `EmailVerificationService.resend`, or
+`AuthService.changeEmail`. The token is persisted transactionally; a send
+failure (provider rejection or subject/body construction) is logged and folded
+into a `Result` the success path ignores.
 
 **Why:** Token persistence and the provider send are non-transactional, and the
 send happens after the transaction commits. Making the send all-or-nothing would
-let a transient provider outage block account creation entirely — a
-self-inflicted outage — when the user can simply resend. Best-effort delivery
-over a blocked signup is the deliberate trade-off.
+let a transient provider outage block account creation or an email change
+entirely — a self-inflicted outage — when the user can simply resend.
+Best-effort delivery over a blocked operation is the deliberate trade-off.
 
 ### `resend` never leaks verification state to the caller
 
@@ -53,3 +54,4 @@ surfaces "already verified" as a distinct status or error breaks it.
 
 - [x] [RFC-64: Google SSO Login](../../../../../../../rfc/64-google-sso-login.md)
 - [x] [RFC-65: Email Verification (Backend)](../../../../../../../rfc/65-email-verification.md)
+- [x] [RFC-70: Change-email flow](../../../../../../../rfc/70-change-email.md)

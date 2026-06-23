@@ -120,6 +120,8 @@ class AuthServiceTest {
     }
   }
 
+  private fun emailSendsCountTo(recipient: String): Int = countRows("SELECT COUNT(*) FROM email_sends WHERE recipient_email = '$recipient'")
+
   private val authService by lazy { newAuthService() }
 
   private fun createTestUser(): ed.unicoach.db.models.User {
@@ -439,5 +441,181 @@ class AuthServiceTest {
         "Verification token must persist despite send rejection",
       )
       assertTrue(UsersDao.findById(sqlSession, user.id).isSuccess, "User must persist despite send rejection")
+    }
+
+  @Test
+  fun `changeEmail rewrites the address re-arms verification and emails the new address`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val email = "change_src@example.com"
+      val reg = authService.register(email, "Change Src", "Password123", null, 86400L, null, null)
+      val user = (reg.getOrNull() as RegisterResult.Success).user
+      // Mark the user verified so the re-arm (clearing verification) is observable.
+      UsersDao.markEmailVerified(sqlSession, user.id).getOrThrow()
+      val verified = UsersDao.findById(sqlSession, user.id).getOrThrow()
+      assertTrue(verified.emailVerifiedAt != null, "Precondition: user is verified")
+
+      val newEmail = "change_dst@example.com"
+      val result = authService.changeEmail(verified, newEmail)
+      assertTrue(result.isSuccess, "changeEmail must succeed")
+      val outcome = result.getOrNull()
+      assertTrue(outcome is ChangeEmailResult.Success, "Expected Success, got $outcome")
+      val updated = outcome.user
+      assertEquals(newEmail, updated.email.value, "Email must be rewritten")
+      assertTrue(updated.emailVerifiedAt == null, "Verification must be cleared")
+
+      assertEquals(
+        1,
+        emailSendsCountTo(newEmail),
+        "A verification email must be sent to the new address",
+      )
+      assertEquals(
+        1,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NULL"),
+        "Exactly one fresh unconsumed token must exist after change-email",
+      )
+      assertEquals(
+        1,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NOT NULL"),
+        "The registration token must be consumed",
+      )
+    }
+
+  @Test
+  fun `changeEmail burns outstanding tokens and issues exactly one fresh token`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val email = "change_burn@example.com"
+      val reg = authService.register(email, "Change Burn", "Password123", null, 86400L, null, null)
+      val user = (reg.getOrNull() as RegisterResult.Success).user
+
+      // Issue an extra outstanding token before the call.
+      emailVerificationService().issueToken(sqlSession, user.id).getOrThrow()
+      assertEquals(
+        2,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NULL"),
+        "Precondition: two outstanding tokens",
+      )
+
+      val result = authService.changeEmail(user, "change_burn_new@example.com")
+      assertTrue(result.getOrNull() is ChangeEmailResult.Success)
+
+      assertEquals(
+        1,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NULL"),
+        "Exactly one fresh unconsumed token must remain",
+      )
+      assertEquals(
+        2,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NOT NULL"),
+        "Both prior tokens must be consumed",
+      )
+    }
+
+  @Test
+  fun `changeEmail to an address held by another active user yields DuplicateEmail with no mutation`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val takenEmail = "change_taken@example.com"
+      authService.register(takenEmail, "Taken", "Password123", null, 86400L, null, null)
+
+      val email = "change_collider@example.com"
+      val reg = authService.register(email, "Collider", "Password123", null, 86400L, null, null)
+      val user = (reg.getOrNull() as RegisterResult.Success).user
+      UsersDao.markEmailVerified(sqlSession, user.id).getOrThrow()
+      val verified = UsersDao.findById(sqlSession, user.id).getOrThrow()
+
+      val before = emailSendsCountTo(takenEmail)
+      val result = authService.changeEmail(verified, takenEmail)
+      assertTrue(result.isSuccess)
+      assertTrue(result.getOrNull() is ChangeEmailResult.DuplicateEmail, "Expected DuplicateEmail, got ${result.getOrNull()}")
+
+      val reloaded = UsersDao.findById(sqlSession, user.id).getOrThrow()
+      assertEquals(email, reloaded.email.value, "Collider's email must be unchanged")
+      assertTrue(reloaded.emailVerifiedAt != null, "Collider's verified state must be unchanged")
+      assertEquals(before, emailSendsCountTo(takenEmail), "No verification email must be sent to the taken address")
+    }
+
+  @Test
+  fun `changeEmail with an invalid address yields ValidationFailure with no mutation`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val email = "change_invalid@example.com"
+      val reg = authService.register(email, "Invalid", "Password123", null, 86400L, null, null)
+      val user = (reg.getOrNull() as RegisterResult.Success).user
+      val before = countRows("SELECT COUNT(*) FROM email_sends")
+
+      val result = authService.changeEmail(user, "not-an-email")
+      assertTrue(result.isSuccess)
+      assertTrue(result.getOrNull() is ChangeEmailResult.ValidationFailure, "Expected ValidationFailure, got ${result.getOrNull()}")
+
+      val reloaded = UsersDao.findById(sqlSession, user.id).getOrThrow()
+      assertEquals(email, reloaded.email.value, "Email must not change on validation failure")
+      assertEquals(before, countRows("SELECT COUNT(*) FROM email_sends"), "No email must be sent on validation failure")
+    }
+
+  @Test
+  fun `changeEmail normalizes the new address by trimming and lowercasing`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val email = "change_norm@example.com"
+      val reg = authService.register(email, "Norm", "Password123", null, 86400L, null, null)
+      val user = (reg.getOrNull() as RegisterResult.Success).user
+
+      val result = authService.changeEmail(user, "  New@Example.COM ")
+      val outcome = result.getOrNull()
+      assertTrue(outcome is ChangeEmailResult.Success, "Expected Success, got $outcome")
+      assertEquals("new@example.com", outcome.user.email.value)
+    }
+
+  @Test
+  fun `changeEmail to the same verified address re-arms verification`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val email = "change_same@example.com"
+      val reg = authService.register(email, "Same", "Password123", null, 86400L, null, null)
+      val user = (reg.getOrNull() as RegisterResult.Success).user
+      UsersDao.markEmailVerified(sqlSession, user.id).getOrThrow()
+      val verified = UsersDao.findById(sqlSession, user.id).getOrThrow()
+
+      val result = authService.changeEmail(verified, verified.email.value)
+      val outcome = result.getOrNull()
+      assertTrue(outcome is ChangeEmailResult.Success, "Expected Success, got $outcome")
+      assertTrue(outcome.user.emailVerifiedAt == null, "Verification must be re-armed")
+
+      assertEquals(
+        1,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NULL"),
+        "Exactly one fresh unconsumed token after same-email re-arm",
+      )
+      assertEquals(
+        1,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NOT NULL"),
+        "The pre-existing token must be consumed",
+      )
+    }
+
+  @Test
+  fun `changeEmail succeeds and commits even when the email provider rejects the send`() =
+    runTest {
+      connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
+      val service = newAuthService()
+      val email = "change_reject_src@example.com"
+      val reg = service.register(email, "Reject Src", "Password123", null, 86400L, null, null)
+      val user = (reg.getOrNull() as RegisterResult.Success).user
+
+      val rejectingService = authServiceWithRejectingEmail()
+      val newEmail = "change_reject_dst@example.com"
+      val result = rejectingService.changeEmail(user, newEmail)
+      assertTrue(result.isSuccess && result.getOrNull() is ChangeEmailResult.Success, "Change must succeed despite send rejection")
+
+      val reloaded = UsersDao.findById(sqlSession, user.id).getOrThrow()
+      assertEquals(newEmail, reloaded.email.value, "Email rewrite must be committed despite send rejection")
+      assertTrue(reloaded.emailVerifiedAt == null, "Verification reset must be committed")
+      assertEquals(
+        1,
+        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NULL"),
+        "A fresh token must be committed despite send rejection",
+      )
     }
 }

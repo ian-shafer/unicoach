@@ -42,19 +42,20 @@ re-tabulated per endpoint.
   `route(...)` block calling `rejectUnsupportedMethods(...)` with exactly its
   allowed methods. Any other verb returns `405 Method Not Allowed` with an
   RFC-9110 `Allow` header. This applies to `/register`, `/login`, `/auth/me`,
-  `/logout`, `/auth/verify-email`, `/auth/resend-verification` (all `POST`/`GET`
-  single-verb), `/students` (`POST`), `/students/me` (`GET`/`PATCH`/`DELETE`),
-  the conversation collection, `/conversations/stream`,
-  `/conversations/{conversationId}`, `…/messages`, and `…/messages/stream`.
+  `/logout`, `/auth/verify-email`, `/auth/resend-verification`,
+  `/auth/change-email` (all `POST`/`GET` single-verb), `/students` (`POST`),
+  `/students/me` (`GET`/`PATCH`/`DELETE`), the conversation collection,
+  `/conversations/stream`, `/conversations/{conversationId}`, `…/messages`, and
+  `…/messages/stream`.
 - The student resource is owner-resolved: no path id is exposed. `POST` targets
   the collection (`/api/v1/students`); `GET`/`PATCH`/`DELETE` target the
   singleton `/api/v1/students/me`.
 
 #### Caller Resolution
 
-- For **identity resolution** (`me`, `resend-verification`, and every
-  student/conversation handler), the cookie-bearing caller is resolved through
-  `ApplicationCall.resolveCaller(authService, sessionConfig)` (see
+- For **identity resolution** (`me`, `resend-verification`, `change-email`, and
+  every student/conversation handler), the cookie-bearing caller is resolved
+  through `ApplicationCall.resolveCaller(authService, sessionConfig)` (see
   [`../auth/CallerResolution.kt`](../auth/CallerResolution.kt)). `resolveCaller`
   reads the cookie named `sessionConfig.cookieName`, hashes it once via
   `TokenHash.fromRawToken(token)` (SHA-256), calls
@@ -135,9 +136,10 @@ exempt) and do not re-check it.
 
 #### User Projection
 
-`register`, `login`, `me`, and `verify-email` build a `PublicUser` from the
-service-returned `User`, including `emailVerified`, derived as
-`user.emailVerifiedAt != null`.
+`register`, `login`, `me`, `verify-email`, and `change-email` build a
+`PublicUser` from the service-returned `User`, including `emailVerified`,
+derived as `user.emailVerifiedAt != null` (always `false` on a `change-email`
+success, since the rewrite clears verification).
 
 #### Conversation Caller Resolution
 
@@ -234,8 +236,8 @@ string is opaque to clients.
 ### `AuthRouteHandler.registerRoutes(route: Route)` — [`AuthRoutes.kt`](./AuthRoutes.kt)
 
 - **Behavior**: Registers all `/api/v1/auth/*` route handlers (`/register`,
-  `/login`, `/me`, `/logout`, `/verify-email`, `/resend-verification`) onto the
-  Ktor routing tree.
+  `/login`, `/me`, `/logout`, `/verify-email`, `/resend-verification`,
+  `/change-email`) onto the Ktor routing tree.
 - **Side effects**: Route table registration only — no I/O at call time.
 - **Idempotency**: Not idempotent — calling twice installs duplicate routes.
 
@@ -417,6 +419,34 @@ string is opaque to clients.
 - **Idempotency**: Yes for an authenticated caller — every successful call
   returns `204` regardless of current verification state (each `Sent` call may,
   as a side effect, issue another token/email).
+
+---
+
+### `POST /api/v1/auth/change-email` — [`AuthRoutes.kt`](./AuthRoutes.kt)
+
+- **Request**: JSON body `{"email": string}`. Deserialized as
+  `ChangeEmailRequest`. Authenticated via the session cookie; the caller is
+  resolved identically to `me` (cookie → `TokenHash.fromRawToken` →
+  `AuthService.getCurrentUser`).
+- **Side effects**: On a resolved `User`, calls
+  `AuthService.changeEmail(user, request.email)`. The service owns the email
+  rewrite, verification reset, token burn/reissue, and best-effort send to the
+  new address; the routing layer performs no persistence. No cookie is set or
+  cleared.
+- **Response mapping**:
+
+  | Condition                             | Status             | Body                                                                       |
+  | ------------------------------------- | ------------------ | -------------------------------------------------------------------------- |
+  | Cookie absent                         | `401 Unauthorized` | `ErrorResponse(code="unauthorized")`                                       |
+  | Resolved user is `null`               | `401 Unauthorized` | `ErrorResponse(code="unauthorized")`                                       |
+  | `ChangeEmailResult.Success`           | `200 OK`           | `ChangeEmailResponse { user: PublicUser }` (with `emailVerified == false`) |
+  | `ChangeEmailResult.ValidationFailure` | `400 Bad Request`  | `ErrorResponse(code="validation_failed", fieldErrors=[{field="email"}])`   |
+  | `ChangeEmailResult.DuplicateEmail`    | `409 Conflict`     | `ErrorResponse(code="conflict", fieldErrors=[{field="email"}])`            |
+  | Exceptions thrown by `.getOrThrow()`  | (propagated)       | Mapped by `StatusPages`                                                    |
+
+- **Method restriction**: Non-POST → `405` with `Allow: POST`.
+- **Idempotency**: Not idempotent — a successful call rewrites the email,
+  re-arms verification, and issues a fresh token/email each time.
 
 ---
 
@@ -703,10 +733,11 @@ distillation pass, not the enqueue).
 ### Injected Dependencies
 
 - **`AuthService`** (`service` module): Provides `register()`, `login()`,
-  `loginWithGoogle()`, `logout()`, and `resolveSession()` (the last used by
-  `resolveCaller` for identity resolution). Used by `AuthRouteHandler` for the
-  auth flows (including Google login) and resend-verification owner resolution,
-  and by `StudentRouteHandler` / `ConvoRouteHandler` for owner resolution.
+  `loginWithGoogle()`, `logout()`, `resolveSession()`, and `changeEmail()` (the
+  `resolveSession` used by `resolveCaller` for identity resolution). Used by
+  `AuthRouteHandler` for the auth flows (including Google login) and
+  resend-verification / change-email owner resolution, and by
+  `StudentRouteHandler` / `ConvoRouteHandler` for owner resolution.
 - **`EmailVerificationService`** (`service` module): Provides `verify(token)`
   and `resend(user)`. Held by `AuthRouteHandler` (constructed from an injected
   `EmailService` and `EmailVerificationConfig`) and used only by the
@@ -815,3 +846,10 @@ distillation pass, not the enqueue).
       `version_conflict`) so all codes emitted here are lowercase snake_case.
       Moved email-verified enforcement out of routing into the `plugins/`
       `EmailVerificationGate` (`403 email_not_verified` for non-exempt paths).
+- [x] [RFC-70: Change-email flow](../../../../../../../../rfc/70-change-email.md)
+      — Added `POST /api/v1/auth/change-email` (cookie-authenticated; body
+      `ChangeEmailRequest` email; `200 ChangeEmailResponse` with
+      `emailVerified == false`, `400 validation_failed` on a bad address,
+      `409 conflict` on a duplicate, `401 unauthorized` when unresolved).
+      Resolves the caller identically to `me` and delegates to
+      `AuthService.changeEmail`.

@@ -233,6 +233,42 @@ object UsersDao :
   }
 
   /**
+   * Rewrites a user's email and re-arms verification in a single versioned
+   * conditional update: sets `email`, resets `email_verified_at` back to NULL,
+   * bumps `version`, and returns the updated row. A `23505` on
+   * `users_email_unique_active_idx` maps to [DuplicateEmailException]; an absent
+   * (or soft-deleted) user yields [NotFoundException]. Written only by the
+   * dedicated change-email path, never the generic [update] surface (the same
+   * isolation [markEmailVerified] has). It uses `version = version + 1` rather
+   * than an OCC `WHERE version = ?` write: the caller holds a freshly-read
+   * session user and concurrent double-submits are self-correcting, so an OCC
+   * lost-update rejection would add a failure mode with no correctness benefit.
+   */
+  fun changeEmail(
+    session: SqlSession,
+    id: UserId,
+    newEmail: EmailAddress,
+  ): Result<User> {
+    val sql =
+      """
+      UPDATE users
+      SET version = version + 1, email = ?, email_verified_at = NULL
+      WHERE id = ? AND deleted_at IS NULL
+      RETURNING *
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = {
+        it.setString(1, newEmail.value)
+        it.setObject(2, id.value)
+      },
+      map = ::mapUser,
+      mapError = ::mapCreateUpdateError,
+      onNoRow = { NotFoundException() },
+    )
+  }
+
+  /**
    * Restores a full historical row (auth columns included) under the bypass GUC
    * so the logical-timestamp trigger does not advance `created_at`. Two
    * statements in the caller's transaction: the `SET LOCAL` bypass, then the

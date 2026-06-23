@@ -9,6 +9,7 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.UserAuthIdentitiesDao
 import ed.unicoach.db.dao.UsersDao
+import ed.unicoach.db.dao.VerificationTokensDao
 import ed.unicoach.db.models.AuthProvider
 import ed.unicoach.db.models.LoginMethod
 import ed.unicoach.db.models.NewAuthIdentity
@@ -154,6 +155,72 @@ class AuthService(
     val user = registeredUser
     if (outcome.isSuccess && outcome.getOrNull() is RegisterResult.Success && rawToken != null && user != null) {
       emailVerificationService.sendVerificationEmail(user.email, rawToken)
+    }
+
+    return outcome
+  }
+
+  /**
+   * Rewrites the session user's email and re-arms verification. In one
+   * transaction it rewrites `users.email`, clears `email_verified_at`, burns the
+   * user's outstanding verification tokens, and issues a fresh one (the raw token
+   * captured for post-commit delivery). After commit it best-effort delivers the
+   * verification email to the new address — a send failure does not fail the
+   * request. Mirrors [register]'s transaction shape.
+   */
+  suspend fun changeEmail(
+    user: ed.unicoach.db.models.User,
+    newEmail: String,
+  ): Result<ChangeEmailResult> {
+    val emailValidation = EmailAddress.create(newEmail)
+    if (emailValidation !is ValidationResult.Valid) {
+      val message =
+        when (val error = (emailValidation as ValidationResult.Invalid).error) {
+          is ed.unicoach.common.models.ValidationError.Blank -> "Email must not be blank"
+          is ed.unicoach.common.models.ValidationError.InvalidFormat -> "Email must be of the form ${error.expected}"
+          is ed.unicoach.common.models.ValidationError.TooLong -> "Email must be at most ${error.maxLength} characters"
+        }
+      return Result.success(ChangeEmailResult.ValidationFailure(message))
+    }
+    val emailAddr = emailValidation.value
+
+    // Raw verification token captured from inside the transaction for best-effort
+    // delivery after the commit; the updated user carries the new address.
+    var verificationRawToken: String? = null
+    var updatedUser: ed.unicoach.db.models.User? = null
+
+    val outcome =
+      try {
+        database.withConnection { session ->
+          val daoResult = UsersDao.changeEmail(session, user.id, emailAddr)
+          if (daoResult.isFailure) {
+            val ex = daoResult.exceptionOrNull()
+            if (ex is DuplicateEmailException) {
+              return@withConnection Result.success(ChangeEmailResult.DuplicateEmail(emailAddr.value))
+            } else {
+              return@withConnection Result.failure(ex ?: RuntimeException("Error during email change"))
+            }
+          }
+          val rewritten = daoResult.getOrNull()!!
+
+          // Burn any in-flight token bound to the old address, then issue a fresh
+          // one atomic with the email rewrite.
+          VerificationTokensDao.consumeAllForUser(session, user.id).getOrThrow()
+          verificationRawToken = emailVerificationService.issueToken(session, user.id).getOrThrow()
+          updatedUser = rewritten
+
+          Result.success(ChangeEmailResult.Success(rewritten))
+        }
+      } catch (e: Exception) {
+        Result.failure(e)
+      }
+
+    // Post-commit, best-effort verification email to the new address. A send
+    // failure must not fail the request — the user can resend.
+    val rawToken = verificationRawToken
+    val refreshed = updatedUser
+    if (outcome.isSuccess && outcome.getOrNull() is ChangeEmailResult.Success && rawToken != null && refreshed != null) {
+      emailVerificationService.sendVerificationEmail(refreshed.email, rawToken)
     }
 
     return outcome

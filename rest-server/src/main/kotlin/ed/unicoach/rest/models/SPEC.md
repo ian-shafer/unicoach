@@ -29,7 +29,7 @@ from domain internals.
   user's verification timestamp (true once the user has verified, false
   otherwise); this DTO transports only the resolved boolean and never the
   underlying timestamp. The field surfaces verification state uniformly on
-  register, login, me, and verify-email responses.
+  register, login, me, verify-email, and change-email responses.
 - **`id` type**: `java.util.UUID`, not a domain wrapper. Jackson serializes
   `UUID` to a plain UUID string; a wrapper would produce a nested
   `{"id":{"value":"…"}}`.
@@ -45,9 +45,10 @@ from domain internals.
 - **Error Handling**: None. Deserialization failures are handled upstream.
 - **Idempotency**: N/A (pure DTO).
 - **Shared Usage**: Embedded by `RegisterResponse`, `LoginResponse`,
-  `MeResponse`, and `VerifyEmailResponse`. The auth routes (password login,
-  Google login, register, me, verify-email) build it through `from`. A change to
-  this type affects every endpoint that returns user data.
+  `MeResponse`, `VerifyEmailResponse`, and `ChangeEmailResponse`. The auth
+  routes (password login, Google login, register, me, verify-email,
+  change-email) build it through `from`. A change to this type affects every
+  endpoint that returns user data.
 
 #### `GoogleLoginRequest` — [`GoogleLoginRequest.kt`](./GoogleLoginRequest.kt)
 
@@ -144,6 +145,29 @@ from domain internals.
   verification. Sole field `user: PublicUser` — the same envelope shape as
   `MeResponse`/`LoginResponse`. On success the embedded
   `PublicUser.emailVerified` reads `true`.
+- **Side Effects**: None. Pure outbound DTO.
+- **Error Handling**: N/A (the error path uses `ErrorResponse`, not this type).
+- **Idempotency**: N/A (outbound DTO only).
+
+#### `ChangeEmailRequest` — [`ChangeEmailRequest.kt`](./ChangeEmailRequest.kt)
+
+- **Behavior**: Deserialized from the `POST /api/v1/auth/change-email` request
+  body. Sole field `email: String` — the new address. Validation and
+  normalization occur downstream in the auth service.
+- **Side Effects**: None at this layer.
+- **Error Handling**: Jackson deserialization failures propagate to
+  `StatusPages` as `400 Bad Request`. A blank/malformed/too-long address
+  surfaces downstream as `400 validation_failed` (field `email`); a collision on
+  the active-email unique index as `409 conflict`.
+- **Idempotency**: N/A (inbound DTO only).
+
+#### `ChangeEmailResponse` — [`ChangeEmailResponse.kt`](./ChangeEmailResponse.kt)
+
+- **Behavior**: Serialized as the `200 OK` body for a successful email change.
+  Sole field `user: PublicUser` — the same envelope shape as
+  `MeResponse`/`VerifyEmailResponse`. On success the embedded
+  `PublicUser.emailVerified` reads `false`, since the change re-arms
+  verification.
 - **Side Effects**: None. Pure outbound DTO.
 - **Error Handling**: N/A (the error path uses `ErrorResponse`, not this type).
 - **Idempotency**: N/A (outbound DTO only).
@@ -396,3 +420,7 @@ wire shape.
       unified all wire codes to lowercase snake_case (lowercasing the five
       former-UPPERCASE student codes); added `EMAIL_NOT_VERIFIED`
       (`email_not_verified`) for the `403` verification gate.
+- [x] [RFC-70: Change-email flow](../../../../../../../../rfc/70-change-email.md)
+      — Added `ChangeEmailRequest` (`email`) and `ChangeEmailResponse` (`user`,
+      embedding `PublicUser` with `emailVerified == false` on success), the
+      `POST /api/v1/auth/change-email` wire pair.

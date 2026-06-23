@@ -5,11 +5,12 @@
 The **authentication domain layer**. It owns the business logic for user
 registration, password login, Google federated sign-in, session-bound caller
 resolution (token hash to live session plus its user), session revocation
-(logout), email-verification token issuance and redemption, and background
-zombie-session cleanup. Credential verification (password hashing, Google
-ID-token verification) lives here. Outcomes are returned as pure-domain sealed
-interfaces wrapped in `Result<T>`; no transport or persistence types cross the
-public surface.
+(logout), email-verification token issuance and redemption, change-email
+(rewrite the address and re-arm verification), and background zombie-session
+cleanup. Credential verification (password hashing, Google ID-token
+verification) lives here. Outcomes are returned as pure-domain sealed interfaces
+wrapped in `Result<T>`; no transport or persistence types cross the public
+surface.
 
 ---
 
@@ -49,6 +50,39 @@ public surface.
     `Result.success(RegisterResult.DuplicateEmail(email))`
   - Validation error → `Result.success(RegisterResult.ValidationFailure(...))`
   - Any uncaught exception → `Result.failure(e)`
+
+### `AuthService.changeEmail(user: User, newEmail: String): Result<ChangeEmailResult>` — See [AuthService.kt](./AuthService.kt)
+
+- **Behavior**: Rewrites the session user's email and re-arms verification.
+  Validates the new address first; on validity, in a single
+  `Database.withConnection` transaction it rewrites `users.email` and clears
+  `email_verified_at` (`UsersDao.changeEmail`), burns the user's outstanding
+  verification tokens (`VerificationTokensDao.consumeAllForUser`), and issues a
+  fresh token (`EmailVerificationService.issueToken`, raw token captured for
+  post-commit delivery). After the transaction commits, it attempts a
+  best-effort verification email to the **new** address. Mirrors `register`'s
+  transaction shape.
+- **Validation**: `EmailAddress.create(newEmail)` runs first; on an `Invalid`
+  outcome returns `ChangeEmailResult.ValidationFailure(message)` with no DB
+  access, the message derived from the structured `ValidationError`
+  (`Blank`/`InvalidFormat`/`TooLong`).
+- **Side Effects**: One `users` row rewrite, the user's outstanding
+  verification-token rows consumed, and one new verification-token row — all in
+  one transaction. After commit, one outbound email attempt via
+  `EmailVerificationService.sendVerificationEmail` to the new address.
+- **Email delivery is best-effort**: A failed send does not roll back or fail
+  the change — the user can resend. The user is left unverified
+  (`email_verified_at` cleared) until the new address is verified.
+- **Idempotency**: Not idempotent — each call bumps the user version and issues
+  a fresh token.
+- **Error mapping**:
+  - Success → `Result.success(ChangeEmailResult.Success(user))` (the rewritten
+    user)
+  - `DuplicateEmailException` from `UsersDao.changeEmail` →
+    `Result.success(ChangeEmailResult.DuplicateEmail(newEmail))`
+  - Validation error →
+    `Result.success(ChangeEmailResult.ValidationFailure(...))`
+  - Any other uncaught exception → `Result.failure(e)`
 
 ### `AuthService.login(email, password, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp): Result<LoginResult>` — See [AuthService.kt](./AuthService.kt)
 
@@ -351,6 +385,14 @@ a caller holding an `AuthenticatedSession` needs no further existence checks.
 The claims read from a verified Google ID token (`subject`, `email`,
 `emailVerified`, optional `name`).
 
+### `ChangeEmailResult` (sealed interface) — See [ChangeEmailResult.kt](./ChangeEmailResult.kt)
+
+| Variant             | Carries   | When returned                                     |
+| ------------------- | --------- | ------------------------------------------------- |
+| `Success`           | `user`    | Email rewritten; verification re-armed            |
+| `ValidationFailure` | `message` | New email blank, malformed, or too long           |
+| `DuplicateEmail`    | `email`   | New email collides on the active-email unique idx |
+
 ### `VerifyEmailResult` (sealed interface) — See [VerifyEmailResult.kt](./VerifyEmailResult.kt)
 
 | Variant           | Carries | When returned                          |
@@ -447,3 +489,10 @@ The claims read from a verified Google ID token (`subject`, `email`,
       — Added `AuthService.resolveSession` returning `AuthenticatedSession` (the
       live session paired with its user), with `getCurrentUser` retained as a
       thin user-only delegate over it.
+- [x] [RFC-70: Change-email flow](../../../../../../../rfc/70-change-email.md) —
+      Added `AuthService.changeEmail` and the `ChangeEmailResult` sealed
+      interface (`Success`/`ValidationFailure`/`DuplicateEmail`): validate the
+      new address, then in one transaction rewrite `users.email`, clear
+      `email_verified_at`, burn the user's outstanding tokens, and issue a fresh
+      one, with a best-effort post-commit send to the new address — mirroring
+      the `register` transaction shape.

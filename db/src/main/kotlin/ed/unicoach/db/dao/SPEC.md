@@ -73,10 +73,11 @@ value), inheriting the no-scope overload.
 Declared capability sets per DAO (operations not covered by an interface — token
 lookups, `rename`, `archive`/`unarchive`, parented `listBy*`, `appendRequest`,
 `remintToken`, `findByEmail`, `findVersion`, `revertToVersion`,
-`updatePhysicalRecord`, `markEmailVerified`, the `*ForUpdate` lock-reads,
-`expireZombieSessions`, `*WithActivity`, `listTurns`, `findRawByResponseId`,
-`findByNameAndVersion`, `consume`/`findByTokenHash`/`consumeAllForUser`, the
-RFC-66 reads `listByConvoRange`/`listByStudent`/`listActiveByStudent`/
+`updatePhysicalRecord`, `markEmailVerified`, `changeEmail`, the `*ForUpdate`
+lock-reads, `expireZombieSessions`, `*WithActivity`, `listTurns`,
+`findRawByResponseId`, `findByNameAndVersion`,
+`consume`/`findByTokenHash`/`consumeAllForUser`, the RFC-66 reads
+`listByConvoRange`/`listByStudent`/`listActiveByStudent`/
 `listObservationsForClaim`/`watermark`, the `claims` lifecycle write `revise`,
 the idempotent `link`, the `append` aliases, and `AdvisoryLockDao.lockStudent` —
 remain concrete methods on the DAO; `SystemPromptsDao.findById`/`list`/`create`
@@ -499,6 +500,22 @@ interface SqlSession {
 - **Idempotency**: Yes — the first call stamps `email_verified_at` and bumps the
   version; a second call matches no row and returns the existing user unchanged,
   with no further version bump (the first-verification timestamp is preserved).
+
+#### `changeEmail(session, id, newEmail): Result<User>`
+
+- **Side Effects**: Read/write — a versioned conditional `mutateReturning`
+  (`SET version = version + 1, email = ?, email_verified_at = NULL WHERE id = ? AND deleted_at IS NULL RETURNING *`),
+  rewriting the email, resetting verification back to NULL, and bumping
+  `version` on an active row. Written only by the dedicated change-email path,
+  never the `UserEdit`/`update` surface (the same isolation `markEmailVerified`
+  has). Uses `version = version + 1` rather than an OCC `WHERE version = ?`
+  guard: the caller holds a freshly-read session user and concurrent
+  double-submits are self-correcting, so an OCC lost-update rejection would add
+  a failure mode with no correctness benefit.
+- **Error Handling**: `mapCreateUpdateError` — a `23505` on
+  `users_email_unique_active_idx` surfaces `DuplicateEmailException`; `onNoRow`
+  yields `NotFoundException()` when the user is absent or soft-deleted.
+- **Idempotency**: No (version bumps; re-arms verification on every call).
 
 #### `updatePhysicalRecord(session, user): Result<User>`
 
@@ -1402,3 +1419,9 @@ rules are in §IV.
       `ConstraintViolationException`) and the
       `mapCollege`/`mapProgram`/`mapMatch` row mappers (including `text[]`
       `program_titles` via JDBC `getArray`).
+- [x] [RFC-70: Change-email flow](../../../../../../../../rfc/70-change-email.md)
+      — Added `UsersDao.changeEmail` (versioned conditional update rewriting
+      `email`, resetting `email_verified_at` to NULL, and bumping `version` on
+      an active row via `mutateReturning`; `mapCreateUpdateError` maps the
+      active-email index collision to `DuplicateEmailException`), isolated from
+      the `UserEdit`/`update` surface like `markEmailVerified`.

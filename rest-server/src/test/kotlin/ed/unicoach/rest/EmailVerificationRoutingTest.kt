@@ -135,6 +135,26 @@ class EmailVerificationRoutingTest {
       }
     }
 
+  /**
+   * Recovers the raw verification token from the most recent verification email
+   * sent to [recipient]. Only the token hash is persisted, so the raw token is
+   * read back out of the delivered email body, the same way a real recipient
+   * would follow the verify link.
+   */
+  private fun latestTokenSentTo(recipient: String): String =
+    connection
+      .prepareStatement(
+        "SELECT body FROM email_sends WHERE recipient_email = ? ORDER BY created_at DESC LIMIT 1",
+      ).use { stmt ->
+        stmt.setString(1, recipient)
+        stmt.executeQuery().use { rs ->
+          assertTrue(rs.next(), "Expected a delivered email for $recipient")
+          val body = rs.getString("body")
+          Regex("[?&]token=([^\\s&]+)").find(body)?.groupValues?.get(1)
+            ?: error("No ?token= found in delivered email body: $body")
+        }
+      }
+
   @Test
   fun `full loop register insert-token verify-email then me reports verified`() =
     runBlocking {
@@ -265,6 +285,150 @@ class EmailVerificationRoutingTest {
         }
       assertEquals(HttpStatusCode.NoContent, response.status)
       assertEquals(before, emailSendsCount(), "An already-verified resend must not record a new email send")
+    }
+
+  /** Polls for the verification email delivered to [recipient] (post-commit, best-effort send). */
+  private fun awaitTokenSentTo(recipient: String): String {
+    repeat(50) {
+      val present =
+        connection
+          .prepareStatement("SELECT COUNT(*) FROM email_sends WHERE recipient_email = ?")
+          .use { stmt ->
+            stmt.setString(1, recipient)
+            stmt.executeQuery().use { rs ->
+              rs.next()
+              rs.getInt(1) > 0
+            }
+          }
+      if (present) return latestTokenSentTo(recipient)
+      Thread.sleep(100)
+    }
+    error("No verification email arrived for $recipient")
+  }
+
+  @Test
+  fun `change-email authenticated with a valid new email returns 200 unverified`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val (cookiePair, _) = registerUser(email)
+      val newEmail = uniqueEmail()
+
+      val response =
+        client.post(buildUrl("/api/v1/auth/change-email")) {
+          header(HttpHeaders.Cookie, cookiePair)
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"$newEmail"}""")
+        }
+      assertEquals(HttpStatusCode.OK, response.status)
+      val collapsed = response.bodyAsText().replace(" ", "")
+      assertTrue(collapsed.contains("\"email\":\"$newEmail\""), "Body must carry the new email, got ${response.bodyAsText()}")
+      assertTrue(collapsed.contains("\"emailVerified\":false"), "New email must be unverified, got ${response.bodyAsText()}")
+    }
+
+  @Test
+  fun `change-email with no session returns 401 unauthorized`() =
+    runBlocking {
+      val response =
+        client.post(buildUrl("/api/v1/auth/change-email")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"${uniqueEmail()}"}""")
+        }
+      assertEquals(HttpStatusCode.Unauthorized, response.status)
+      assertTrue(response.bodyAsText().contains("unauthorized"))
+    }
+
+  @Test
+  fun `change-email with a stale session cookie returns 401 unauthorized`() =
+    runBlocking {
+      val response =
+        client.post(buildUrl("/api/v1/auth/change-email")) {
+          header(HttpHeaders.Cookie, "UNICOACH_SESSION=definitely-not-a-real-token")
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"${uniqueEmail()}"}""")
+        }
+      assertEquals(HttpStatusCode.Unauthorized, response.status)
+      assertTrue(response.bodyAsText().contains("unauthorized"))
+    }
+
+  @Test
+  fun `change-email with an invalid email returns 400 validation_failed`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val (cookiePair, _) = registerUser(email)
+
+      val response =
+        client.post(buildUrl("/api/v1/auth/change-email")) {
+          header(HttpHeaders.Cookie, cookiePair)
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"bogus"}""")
+        }
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      val body = response.bodyAsText()
+      assertTrue(body.contains("validation_failed"), "Expected validation_failed, got $body")
+      assertTrue(body.contains("\"email\""), "Expected a field error on email, got $body")
+    }
+
+  @Test
+  fun `change-email to an address held by another active user returns 409 conflict`() =
+    runBlocking {
+      val takenEmail = uniqueEmail()
+      registerUser(takenEmail)
+
+      val email = uniqueEmail()
+      val (cookiePair, _) = registerUser(email)
+
+      val response =
+        client.post(buildUrl("/api/v1/auth/change-email")) {
+          header(HttpHeaders.Cookie, cookiePair)
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"$takenEmail"}""")
+        }
+      assertEquals(HttpStatusCode.Conflict, response.status)
+      val body = response.bodyAsText()
+      assertTrue(body.contains("conflict"), "Expected conflict, got $body")
+      assertTrue(body.contains("\"email\""), "Expected a field error on email, got $body")
+    }
+
+  @Test
+  fun `GET on change-email returns 405 with Allow POST`() =
+    runBlocking {
+      val response = client.get(buildUrl("/api/v1/auth/change-email"))
+      assertEquals(HttpStatusCode.MethodNotAllowed, response.status)
+      assertEquals("POST", response.headers[HttpHeaders.Allow])
+    }
+
+  @Test
+  fun `change-email then verify the new address end-to-end reports verified`() =
+    runBlocking {
+      val email = uniqueEmail()
+      val (cookiePair, _) = registerUser(email)
+      val newEmail = uniqueEmail()
+
+      val change =
+        client.post(buildUrl("/api/v1/auth/change-email")) {
+          header(HttpHeaders.Cookie, cookiePair)
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"$newEmail"}""")
+        }
+      assertEquals(HttpStatusCode.OK, change.status)
+
+      // Recover the new raw token from the delivered email (post-commit send).
+      val rawToken = awaitTokenSentTo(newEmail)
+
+      val verify =
+        client.post(buildUrl("/api/v1/auth/verify-email")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"token":"$rawToken"}""")
+        }
+      assertEquals(HttpStatusCode.OK, verify.status)
+      assertTrue(
+        verify.bodyAsText().replace(" ", "").contains("\"emailVerified\":true"),
+        "verify-email after change must report emailVerified=true, got ${verify.bodyAsText()}",
+      )
+      assertTrue(
+        verify.bodyAsText().replace(" ", "").contains("\"email\":\"$newEmail\""),
+        "verify-email must report the new address, got ${verify.bodyAsText()}",
+      )
     }
 
   @Test

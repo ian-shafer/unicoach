@@ -4,6 +4,8 @@ import ed.unicoach.auth.AuthService
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.auth.resolveCaller
+import ed.unicoach.rest.models.ChangeEmailRequest
+import ed.unicoach.rest.models.ChangeEmailResponse
 import ed.unicoach.rest.models.ErrorCode
 import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.models.GoogleLoginRequest
@@ -88,6 +90,10 @@ class AuthRouteHandler(
       }
       route("/resend-verification") {
         post { handleResendVerification() }
+        rejectUnsupportedMethods(HttpMethod.Post)
+      }
+      route("/change-email") {
+        post { handleChangeEmail() }
         rejectUnsupportedMethods(HttpMethod.Post)
       }
     }
@@ -285,5 +291,35 @@ class AuthRouteHandler(
   private suspend fun RoutingContext.respondGoogleLoginSuccess(outcome: ed.unicoach.auth.GoogleLoginResult.Success) {
     call.setSessionCookie(outcome.token, sessionConfig)
     call.respond(HttpStatusCode.OK, LoginResponse(PublicUser.from(outcome.user)))
+  }
+
+  private suspend fun RoutingContext.handleChangeEmail() {
+    val user = call.resolveCaller(authService, sessionConfig)?.user
+    if (user == null) {
+      call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
+      return
+    }
+
+    val request = call.receive<ChangeEmailRequest>()
+    val outcome = authService.changeEmail(user, request.email).getOrThrow()
+    when (outcome) {
+      is ed.unicoach.auth.ChangeEmailResult.Success -> {
+        call.respond(HttpStatusCode.OK, ChangeEmailResponse(PublicUser.from(outcome.user)))
+      }
+
+      is ed.unicoach.auth.ChangeEmailResult.ValidationFailure -> {
+        call.respond(
+          HttpStatusCode.BadRequest,
+          ErrorResponse(ErrorCode.VALIDATION_FAILED, "Invalid email", listOf(FieldError("email", outcome.message))),
+        )
+      }
+
+      is ed.unicoach.auth.ChangeEmailResult.DuplicateEmail -> {
+        call.respond(
+          HttpStatusCode.Conflict,
+          ErrorResponse(ErrorCode.CONFLICT, "Email already in use", listOf(FieldError("email", "Email already in use"))),
+        )
+      }
+    }
   }
 }

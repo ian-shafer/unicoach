@@ -73,8 +73,27 @@ prompts as editable, breaking the guarantee that an `id` pins one exact
 a mutated or deleted prompt would silently rewrite or orphan the prompt every
 past coaching turn was generated from.
 
+### Email and verification state mutate only through dedicated isolated writers
+
+**Rule:** The `email` and `email_verified_at` columns of `users` MUST be written
+only by the dedicated `UsersDao` writers — `changeEmail` (rewrite + reset to
+`NULL`), `markEmailVerified` (stamp), and the full-row restores
+(`updatePhysicalRecord`/`revertToVersion`). They MUST NOT be added to the
+generic `UserEdit`/`update` column set, nor reachable through any other generic
+mutation surface.
+
+**Why:** `email_verified_at` is the sole record of whether an address has been
+proven, and `changeEmail` deliberately resets it to `NULL`. Folding either
+column into the generic `update` path would give the ordinary profile-edit
+surface a second, unguarded channel to rewrite the address or alter verification
+state — letting a profile edit silently forge a verified address or clear a real
+verification. Confining these columns to purpose-built writers keeps that
+transition auditable and single-sourced.
+
 ## History
 
 - [x] [RFC-62: DAO Capability Interfaces and Shared Query Scaffolding](../../../../../../../../rfc/62-dao-interfaces.md)
 - [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
+- [x] [RFC-65: Email Verification (Backend)](../../../../../../../../rfc/65-email-verification.md)
 - [x] [RFC-67: College Knowledge](../../../../../../../../rfc/67-college-knowledge.md)
+- [x] [RFC-70: Change-email flow](../../../../../../../../rfc/70-change-email.md)
