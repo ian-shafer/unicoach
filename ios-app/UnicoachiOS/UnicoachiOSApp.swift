@@ -31,8 +31,15 @@ struct UnicoachiOSApp: App {
                     )
                 case .serverError:
                     ErrorView(
+                        title: "Server Problem",
+                        description: "Something went wrong on our end. Please try again in a moment.",
+                        systemImage: "exclamationmark.triangle",
+                        retryAction: { Task { await viewModel.checkSession() } }
+                    )
+                case .unexpectedError:
+                    ErrorView(
                         title: "Something Went Wrong",
-                        description: "We couldn't reach the server. Please try again later.",
+                        description: "The app ran into a problem it didn't expect. Please try again.",
                         systemImage: "exclamationmark.triangle",
                         retryAction: { Task { await viewModel.checkSession() } }
                     )

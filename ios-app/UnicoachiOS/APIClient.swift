@@ -103,12 +103,12 @@ final class APIClient: @unchecked Sendable {
                 throw ErrorResponse(code: "DECODE_ERROR", message: "Failed to parse response: [\(error)]", fieldErrors: nil)
             }
         }
-        throw decodeError(data: data)
+        throw decodeError(data: data, status: response.statusCode)
     }
 
     func expect(data: Data, response: HTTPURLResponse, expectedStatus: Int) throws {
         if response.statusCode != expectedStatus {
-            throw decodeError(data: data)
+            throw decodeError(data: data, status: response.statusCode)
         }
     }
 
@@ -185,7 +185,7 @@ final class APIClient: @unchecked Sendable {
             for try await byte in bytes {
                 data.append(byte)
             }
-            throw decodeError(data: data)
+            throw decodeError(data: data, status: httpResponse.statusCode)
         }
         return bytes
     }
@@ -204,15 +204,16 @@ final class APIClient: @unchecked Sendable {
         return ErrorResponse(code: "NETWORK_ERROR", message: error.localizedDescription, fieldErrors: nil)
     }
 
-    private func decodeError(data: Data) -> ErrorResponse {
+    private func decodeError(data: Data, status: Int) -> ErrorResponse {
         do {
-            let error = try jsonDecoder.decode(ErrorResponse.self, from: data)
-            logger.error("Server error response: code=[\(error.code, privacy: .public)] message=[\(error.message, privacy: .public)]")
+            var error = try jsonDecoder.decode(ErrorResponse.self, from: data)
+            error.status = status
+            logger.error("Server error response: status=[\(status, privacy: .public)] code=[\(error.code, privacy: .public)] message=[\(error.message, privacy: .public)]")
             return error
         } catch {
             let body = String(decoding: data, as: UTF8.self)
-            logger.error("Unparseable error body: [\(error, privacy: .public)] body=[\(body, privacy: .public)]")
-            return ErrorResponse(code: "SERVER_ERROR", message: String(localized: "An unexpected error occurred."), fieldErrors: nil)
+            logger.error("Unparseable error body: status=[\(status, privacy: .public)] [\(error, privacy: .public)] body=[\(body, privacy: .public)]")
+            return ErrorResponse(code: "SERVER_ERROR", message: String(localized: "An unexpected error occurred."), fieldErrors: nil, status: status)
         }
     }
 }

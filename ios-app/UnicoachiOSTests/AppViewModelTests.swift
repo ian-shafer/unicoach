@@ -83,11 +83,21 @@ class AppViewModelTests: XCTestCase {
     func testCheckSessionProfileFetchServerError() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
         mockClient.meResult = .success(MeResponse(user: user))
-        mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Server error", fieldErrors: nil))
+        mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Server error", fieldErrors: nil, status: 500))
 
         await viewModel.checkSession()
 
         XCTAssertEqual(viewModel.authState, .serverError)
+    }
+
+    func testCheckSessionProfileFetchUnexpectedErrorOnUnhandled4xx() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        mockClient.meResult = .success(MeResponse(user: user))
+        mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "email_not_verified", message: "Email verification required.", fieldErrors: nil, status: 403))
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .unexpectedError)
     }
 
     func testCheckSessionUnauthenticatedOn401() async {
@@ -107,11 +117,27 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testCheckSessionServerErrorOnServerFailure() async {
-        mockClient.meResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Server error", fieldErrors: nil))
+        mockClient.meResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Server error", fieldErrors: nil, status: 500))
 
         await viewModel.checkSession()
 
         XCTAssertEqual(viewModel.authState, .serverError)
+    }
+
+    func testCheckSessionUnexpectedErrorOnUnhandled4xx() async {
+        mockClient.meResult = .failure(ErrorResponse(code: "email_not_verified", message: "Email verification required.", fieldErrors: nil, status: 403))
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .unexpectedError)
+    }
+
+    func testCheckSessionUnexpectedErrorOnStatuslessClientError() async {
+        mockClient.meResult = .failure(ErrorResponse(code: "DECODE_ERROR", message: "Failed to parse response", fieldErrors: nil))
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .unexpectedError)
     }
 
     func testOnLoginSuccessRoutesToOnboarding() async {

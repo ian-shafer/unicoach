@@ -34,12 +34,14 @@ class AppViewModel: ObservableObject {
                 authState = .unauthenticated
             } else if error.code == "TIMEOUT" || error.code == "NETWORK_ERROR" {
                 authState = .noConnectivity
-            } else {
+            } else if let status = error.status, status >= 500 {
                 authState = .serverError
+            } else {
+                authState = .unexpectedError
             }
         } catch {
             logger.error("Session check failed (unexpected): [\(error, privacy: .public)]")
-            authState = .serverError
+            authState = .unexpectedError
         }
     }
 
@@ -95,12 +97,14 @@ class AppViewModel: ObservableObject {
                 authState = .noConnectivity
             } else if error.code == "unauthorized" {
                 authState = .unauthenticated
-            } else {
+            } else if let status = error.status, status >= 500 {
                 authState = .serverError
+            } else {
+                authState = .unexpectedError
             }
         } catch {
             logger.error("Profile resolve failed (unexpected): [\(error, privacy: .public)]")
-            authState = .serverError
+            authState = .unexpectedError
         }
     }
 }

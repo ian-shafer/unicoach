@@ -26,6 +26,15 @@ struct ErrorResponse: Codable, Error, Identifiable, Equatable {
     let code: String
     let message: String
     let fieldErrors: [FieldError]?
+    /// HTTP status of the originating response, when there was one. Stamped in by
+    /// `APIClient.decodeError`; stays `nil` for client-synthesized errors
+    /// (transport, decode, non-HTTP) that never had a status. Excluded from
+    /// `Codable` — the server error body carries no `status` field.
+    var status: Int? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case code, message, fieldErrors
+    }
 }
 
 extension ErrorResponse {

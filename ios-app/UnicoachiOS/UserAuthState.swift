@@ -5,7 +5,12 @@ enum UserAuthState: Equatable {
     case unauthenticated
     case onboarding(PublicUser)
     case authenticated(PublicUser)
+    /// The server reported a genuine 5xx — its problem, retry may help.
     case serverError
+    /// Any other unhandled failure (an unrecognized 4xx, or a client-side error
+    /// with no HTTP status). Not attributable to the server; usually a missing
+    /// handler on our side.
+    case unexpectedError
     case noConnectivity
 
     static func == (lhs: UserAuthState, rhs: UserAuthState) -> Bool {
@@ -13,6 +18,7 @@ enum UserAuthState: Equatable {
         case (.loading, .loading),
              (.unauthenticated, .unauthenticated),
              (.serverError, .serverError),
+             (.unexpectedError, .unexpectedError),
              (.noConnectivity, .noConnectivity):
             return true
         case (.onboarding(let lhsUser), .onboarding(let rhsUser)):
