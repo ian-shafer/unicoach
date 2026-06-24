@@ -4,7 +4,7 @@ import ed.unicoach.admin.auth.adminAuthRoutes
 import ed.unicoach.admin.auth.installAdminGate
 import ed.unicoach.admin.engine.AdminRegistry
 import ed.unicoach.admin.engine.registerAdminRoutes
-import ed.unicoach.admin.render.respondServiceUnavailable
+import ed.unicoach.admin.render.configureAdminStatusPages
 import ed.unicoach.admin.resources.SessionsResource
 import ed.unicoach.admin.resources.StudentsResource
 import ed.unicoach.admin.resources.SystemPromptsResource
@@ -23,11 +23,9 @@ import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
-import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
-import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.routing.routing
 
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
@@ -92,11 +90,7 @@ fun Application.adminModule(
   argon2Hasher: Argon2Hasher,
   adminConfig: AdminConfig,
 ) {
-  install(StatusPages) {
-    exception<Throwable> { call, _ ->
-      call.respondServiceUnavailable()
-    }
-  }
+  configureAdminStatusPages()
 
   installAdminGate(authService, adminConfig)
 
