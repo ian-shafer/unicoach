@@ -13,6 +13,8 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class UsersDaoTest {
@@ -378,6 +380,30 @@ class UsersDaoTest {
     // Validate V1 restored cleanly into V4
     assertTrue(v4User.name == nameV1, "Name was safely restored to V1 configuration")
     assertTrue(v4User.version == v3User.version + 1, "Version mathematically incremented accurately")
+  }
+
+  @Test
+  fun `revertToVersion to a missing version preserves the lookup keys and the cause`() {
+    val created = UsersDao.create(session, newPasswordUser("revert-missing")).getOrThrow()
+
+    // Version 999 was never written, so the historical lookup must miss.
+    val result =
+      UsersDao.revertToVersion(
+        session,
+        created.id,
+        targetHistoricalVersion = 999,
+        currentVersion = created.version,
+      )
+
+    assertTrue(result.isFailure)
+    val error = assertIs<TargetVersionMissingException>(result.exceptionOrNull())
+    assertEquals(created.id, error.entityId, "The failing entity id must survive the mapping")
+    assertEquals(999, error.targetVersion, "The requested version must survive the mapping")
+    assertIs<NotFoundException>(error.cause, "The originating lookup failure must remain the cause")
+    assertTrue(
+      error.message!!.contains(created.id.asString) && error.message!!.contains("999"),
+      "The log message must name both lookup keys, was: ${error.message}",
+    )
   }
 
   @Test

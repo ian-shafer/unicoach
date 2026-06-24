@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationError
+import ed.unicoach.db.models.Id
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 
@@ -14,9 +15,20 @@ class NotFoundException(
 ) : DaoException(message),
   PermanentError
 
+/**
+ * A version-revert named a historical version that has no row. Carries the exact
+ * lookup keys — the entity id and the requested version — plus the originating
+ * [NotFoundException] as the cause, so the failure can be diagnosed straight from
+ * the log without re-deriving what was queried.
+ */
 class TargetVersionMissingException(
-  message: String = "Target version missing",
-) : DaoException(message),
+  val entityId: Id,
+  val targetVersion: Int,
+  cause: Throwable? = null,
+) : DaoException(
+    "Target version missing: no version row for [${entityId.asString}] at version [$targetVersion]",
+    cause,
+  ),
   PermanentError
 
 class DuplicateEmailException(

@@ -327,28 +327,29 @@ object UsersDao :
     id: UserId,
     targetHistoricalVersion: Int,
     currentVersion: Int,
-  ): Result<User> {
-    val versionResult = findVersion(session, id, targetHistoricalVersion)
-    if (versionResult.isFailure) {
-      if (versionResult.exceptionOrNull() is NotFoundException) {
-        return Result.failure(TargetVersionMissingException())
-      }
-      return versionResult.map { it as User }
-    }
-
-    val target = versionResult.getOrThrow()
-    return updateFullRow(
-      session,
-      id,
-      currentVersion,
-      target.email,
-      target.name,
-      target.displayName,
-      target.passwordHash,
-      target.isAdmin,
-      target.emailVerifiedAt,
+  ): Result<User> =
+    findVersion(session, id, targetHistoricalVersion).fold(
+      onSuccess = { target ->
+        updateFullRow(
+          session,
+          id,
+          currentVersion,
+          target.email,
+          target.name,
+          target.displayName,
+          target.passwordHash,
+          target.isAdmin,
+          target.emailVerifiedAt,
+        )
+      },
+      onFailure = { cause ->
+        if (cause is NotFoundException) {
+          Result.failure(TargetVersionMissingException(id, targetHistoricalVersion, cause))
+        } else {
+          Result.failure(cause)
+        }
+      },
     )
-  }
 
   /**
    * Full-row OCC writer restoring every mutable column (the password credential
