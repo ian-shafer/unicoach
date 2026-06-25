@@ -245,9 +245,9 @@ echo "==== Testing deploy bundle completeness ===="
 # future regression re-dropping postgres-check (or any migration-path script).
 test_deploy_bundle_includes_migration_path() {
   local deploy="$PROJECT_ROOT/bin/deploy"
-  # Extract the BUNDLE_PATHS array body: the lines between "BUNDLE_PATHS=(" and ")".
+  # Extract the REPO_PATHS array body: the lines between "REPO_PATHS=(" and ")".
   local bundle
-  bundle="$(awk '/^BUNDLE_PATHS=\(/{f=1; next} f&&/^\)/{f=0} f' "$deploy")"
+  bundle="$(awk '/^REPO_PATHS=\(/{f=1; next} f&&/^\)/{f=0} f' "$deploy")"
   local required=(
     "bin/common"
     "bin/functions"
