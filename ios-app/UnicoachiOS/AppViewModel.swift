@@ -84,7 +84,43 @@ class AppViewModel: ObservableObject {
         authState = .unauthenticated
     }
 
+    /// Outcome of a verification re-check, reported back to the blocked screen.
+    enum VerificationRecheckOutcome: Equatable {
+        case verified
+        case stillUnverified
+        case failed
+    }
+
+    /// Re-runs `me()` to observe an `emailVerified` flip without unwinding the
+    /// blocked screen on transient failure. A verified user transitions out (via
+    /// `resolveProfileState`); an unverified user or any transient error leaves
+    /// the screen in place so it can render inline feedback. Only `unauthorized`
+    /// tears the screen down (to `.unauthenticated`).
+    func recheckVerification() async -> VerificationRecheckOutcome {
+        do {
+            let response = try await authClient.me()
+            if response.user.emailVerified {
+                await resolveProfileState(response.user)
+                return .verified
+            }
+            return .stillUnverified
+        } catch let error as ErrorResponse {
+            logger.error("Verification re-check failed: code=[\(error.code, privacy: .public)] message=[\(error.message, privacy: .public)]")
+            if error.code == "unauthorized" {
+                authState = .unauthenticated
+            }
+            return .failed
+        } catch {
+            logger.error("Verification re-check failed (unexpected): [\(error, privacy: .public)]")
+            return .failed
+        }
+    }
+
     private func resolveProfileState(_ user: PublicUser) async {
+        if !user.emailVerified {
+            authState = .verificationRequired(user)
+            return
+        }
         do {
             if try await studentClient.fetchProfile() != nil {
                 authState = .authenticated(user)
@@ -97,6 +133,12 @@ class AppViewModel: ObservableObject {
                 authState = .noConnectivity
             } else if error.code == "unauthorized" {
                 authState = .unauthenticated
+            } else if error.code == "email_not_verified" {
+                // Defensive: client-side gating means this normally isn't called
+                // while unverified, but a race (the routed user said verified, a
+                // concurrent change-email reset the flag) can still yield the
+                // gate's 403. Route to the blocked screen, not .unexpectedError.
+                authState = .verificationRequired(user)
             } else if let status = error.status, status >= 500 {
                 authState = .serverError
             } else {

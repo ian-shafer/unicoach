@@ -41,7 +41,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testCheckSessionAuthenticatedOnSuccess() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.meResult = .success(MeResponse(user: user))
         mockStudentClient.fetchProfileResult = .success(makeStudent())
 
@@ -51,7 +51,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testCheckSessionOnboardingWhenNoProfile() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.meResult = .success(MeResponse(user: user))
         mockStudentClient.fetchProfileResult = .success(nil)
 
@@ -61,7 +61,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testCheckSessionProfileFetchUnauthorized() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.meResult = .success(MeResponse(user: user))
         mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil))
 
@@ -71,7 +71,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testCheckSessionProfileFetchTimeout() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.meResult = .success(MeResponse(user: user))
         mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "TIMEOUT", message: "Timeout", fieldErrors: nil))
 
@@ -81,7 +81,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testCheckSessionProfileFetchServerError() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.meResult = .success(MeResponse(user: user))
         mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Server error", fieldErrors: nil, status: 500))
 
@@ -91,9 +91,9 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testCheckSessionProfileFetchUnexpectedErrorOnUnhandled4xx() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.meResult = .success(MeResponse(user: user))
-        mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "email_not_verified", message: "Email verification required.", fieldErrors: nil, status: 403))
+        mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "teapot", message: "I'm a teapot.", fieldErrors: nil, status: 418))
 
         await viewModel.checkSession()
 
@@ -125,7 +125,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testCheckSessionUnexpectedErrorOnUnhandled4xx() async {
-        mockClient.meResult = .failure(ErrorResponse(code: "email_not_verified", message: "Email verification required.", fieldErrors: nil, status: 403))
+        mockClient.meResult = .failure(ErrorResponse(code: "teapot", message: "I'm a teapot.", fieldErrors: nil, status: 418))
 
         await viewModel.checkSession()
 
@@ -141,7 +141,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testOnLoginSuccessRoutesToOnboarding() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockStudentClient.fetchProfileResult = .success(nil)
 
         await viewModel.onLoginSuccess(user)
@@ -150,7 +150,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testOnLoginSuccessRoutesToAuthenticated() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockStudentClient.fetchProfileResult = .success(makeStudent())
 
         await viewModel.onLoginSuccess(user)
@@ -159,7 +159,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testOnRegisterSuccessRoutesToOnboarding() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockStudentClient.fetchProfileResult = .success(nil)
 
         await viewModel.onRegisterSuccess(user)
@@ -168,7 +168,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testOnOnboardingCompleteTransitionsToAuthenticated() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         viewModel.authState = .onboarding(user)
 
         viewModel.onOnboardingComplete(user)
@@ -177,7 +177,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testOnStudentProfileRequiredRoutesAuthenticatedToOnboarding() async {
-        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         viewModel.authState = .authenticated(user)
 
         viewModel.onStudentProfileRequired()
@@ -195,7 +195,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testLogoutTransitionsToUnauthenticatedOnFailure() async {
-        viewModel.authState = .authenticated(PublicUser(id: UUID(), email: "test@example.com", name: "Test"))
+        viewModel.authState = .authenticated(PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true))
         mockClient.logoutResult = .failure(ErrorResponse(code: "SERVER_ERROR", message: "Error", fieldErrors: nil))
         let cookie = HTTPCookie(properties: [.domain: "example.com", .path: "/", .name: "session", .value: "123"])!
         mockCookieStorage.cookies = [cookie]
@@ -208,7 +208,7 @@ class AppViewModelTests: XCTestCase {
     }
 
     func testLogoutClearsCookiesOnSuccess() async {
-        viewModel.authState = .authenticated(PublicUser(id: UUID(), email: "test@example.com", name: "Test"))
+        viewModel.authState = .authenticated(PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true))
         mockClient.logoutResult = .success(())
         let cookie1 = HTTPCookie(properties: [.domain: "example.com", .path: "/", .name: "session", .value: "123"])!
         let cookie2 = HTTPCookie(properties: [.domain: "example.com", .path: "/", .name: "tracking", .value: "456"])!
@@ -219,5 +219,91 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.authState, .unauthenticated)
         XCTAssertEqual(mockCookieStorage.deletedCookies.count, 2)
         XCTAssertEqual(mockCookieStorage.cookies?.isEmpty, true)
+    }
+
+    // MARK: - Email verification routing
+
+    func testOnLoginSuccessUnverifiedRoutesToVerificationRequired() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: false)
+
+        await viewModel.onLoginSuccess(user)
+
+        XCTAssertEqual(viewModel.authState, .verificationRequired(user))
+        XCTAssertEqual(mockStudentClient.fetchProfileCallCount, 0)
+    }
+
+    func testOnRegisterSuccessUnverifiedRoutesToVerificationRequired() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: false)
+
+        await viewModel.onRegisterSuccess(user)
+
+        XCTAssertEqual(viewModel.authState, .verificationRequired(user))
+        XCTAssertEqual(mockStudentClient.fetchProfileCallCount, 0)
+    }
+
+    func testCheckSessionUnverifiedRoutesToVerificationRequired() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: false)
+        mockClient.meResult = .success(MeResponse(user: user))
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .verificationRequired(user))
+        XCTAssertEqual(mockStudentClient.fetchProfileCallCount, 0)
+    }
+
+    func testResolveProfileStateEmailNotVerifiedRaceRoutesToVerificationRequired() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        mockClient.meResult = .success(MeResponse(user: user))
+        mockStudentClient.fetchProfileResult = .failure(ErrorResponse(code: "email_not_verified", message: "Email verification required.", fieldErrors: nil, status: 403))
+
+        await viewModel.checkSession()
+
+        XCTAssertEqual(viewModel.authState, .verificationRequired(user))
+    }
+
+    func testRecheckVerificationVerifiedTransitionsToAuthenticated() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .verificationRequired(user)
+        mockClient.meResult = .success(MeResponse(user: user))
+        mockStudentClient.fetchProfileResult = .success(makeStudent())
+
+        let outcome = await viewModel.recheckVerification()
+
+        XCTAssertEqual(outcome, .verified)
+        XCTAssertEqual(viewModel.authState, .authenticated(user))
+    }
+
+    func testRecheckVerificationStillUnverifiedLeavesStateUnchanged() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: false)
+        viewModel.authState = .verificationRequired(user)
+        mockClient.meResult = .success(MeResponse(user: user))
+
+        let outcome = await viewModel.recheckVerification()
+
+        XCTAssertEqual(outcome, .stillUnverified)
+        XCTAssertEqual(viewModel.authState, .verificationRequired(user))
+        XCTAssertEqual(mockStudentClient.fetchProfileCallCount, 0)
+    }
+
+    func testRecheckVerificationUnauthorizedTearsDownToUnauthenticated() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: false)
+        viewModel.authState = .verificationRequired(user)
+        mockClient.meResult = .failure(ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil, status: 401))
+
+        let outcome = await viewModel.recheckVerification()
+
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(viewModel.authState, .unauthenticated)
+    }
+
+    func testRecheckVerificationTimeoutLeavesStateUnchanged() async {
+        let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: false)
+        viewModel.authState = .verificationRequired(user)
+        mockClient.meResult = .failure(ErrorResponse(code: "TIMEOUT", message: "Timeout", fieldErrors: nil))
+
+        let outcome = await viewModel.recheckVerification()
+
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(viewModel.authState, .verificationRequired(user))
     }
 }

@@ -28,7 +28,7 @@ class LoginViewModelTests: XCTestCase {
     }
     
     func testSuccessfulLoginInvokesCallback() async {
-        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.loginResult = .success(LoginResponse(user: expectedUser))
         
         viewModel.email = "test@example.com"
@@ -82,11 +82,13 @@ class LoginViewModelTests: XCTestCase {
                 if await viewModelRef?.isLoading == true {
                     isLoadingWhileRunning = true
                 }
-                return LoginResponse(user: PublicUser(id: UUID(), email: "test@example.com", name: "Test"))
+                return LoginResponse(user: PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true))
             }
             func register(request: RegisterRequest) async throws -> RegisterResponse { fatalError() }
             func logout() async throws { fatalError() }
             func me() async throws -> MeResponse { fatalError() }
+            func resendVerification() async throws { fatalError() }
+            func changeEmail(_ email: String) async throws -> PublicUser { fatalError() }
         }
         
         let delayedClient = DelayedAuthClient()

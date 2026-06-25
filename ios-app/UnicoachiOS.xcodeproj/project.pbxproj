@@ -55,6 +55,11 @@
 		F419AD7AD0C4D307069ED0E4 /* RegistrationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C8A2A153A20CE21B45852C9 /* RegistrationViewModel.swift */; };
 		F42153F746F1877B7A2463BD /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BA3C895E84184F93D916BB5 /* Models.swift */; };
 		FCB2B11F8FF11F5448DC44A8 /* MockAuthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B78E8AB9325BA342EC147D1 /* MockAuthClient.swift */; };
+		CCCC00010000000000000B01 /* VerificationRequiredView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F01 /* VerificationRequiredView.swift */; };
+		CCCC00010000000000000B02 /* VerificationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F02 /* VerificationViewModel.swift */; };
+		CCCC00010000000000000B03 /* ChangeEmailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F03 /* ChangeEmailViewModel.swift */; };
+		CCCC00010000000000000B04 /* VerificationViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F04 /* VerificationViewModelTests.swift */; };
+		CCCC00010000000000000B05 /* ChangeEmailViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -118,6 +123,11 @@
 		D62AAE67DF17D5BF66357229 /* LoginViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LoginViewModelTests.swift; sourceTree = "<group>"; };
 		E07CF0E17D649CCDB28346C4 /* AuthClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuthClientTests.swift; sourceTree = "<group>"; };
 		EF26463FA3E9D6158360F6B0 /* UserAuthState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UserAuthState.swift; sourceTree = "<group>"; };
+		CCCC00010000000000000F01 /* VerificationRequiredView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerificationRequiredView.swift; sourceTree = "<group>"; };
+		CCCC00010000000000000F02 /* VerificationViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerificationViewModel.swift; sourceTree = "<group>"; };
+		CCCC00010000000000000F03 /* ChangeEmailViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChangeEmailViewModel.swift; sourceTree = "<group>"; };
+		CCCC00010000000000000F04 /* VerificationViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerificationViewModelTests.swift; sourceTree = "<group>"; };
+		CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChangeEmailViewModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -181,6 +191,9 @@
 				AAAA00020000000000000F04 /* ConversationView.swift */,
 				AAAA00020000000000000F09 /* ConversationListViewModel.swift */,
 				AAAA00020000000000000F0A /* ConversationListView.swift */,
+				CCCC00010000000000000F01 /* VerificationRequiredView.swift */,
+				CCCC00010000000000000F02 /* VerificationViewModel.swift */,
+				CCCC00010000000000000F03 /* ChangeEmailViewModel.swift */,
 				AAAA00010000000000000A01 /* DesignSystem */,
 			);
 			path = UnicoachiOS;
@@ -223,6 +236,8 @@
 				AAAA00020000000000000F07 /* ConversationViewModelTests.swift */,
 				AAAA00020000000000000F08 /* MockConversationClient.swift */,
 				AAAA00020000000000000F0B /* ConversationListViewModelTests.swift */,
+				CCCC00010000000000000F04 /* VerificationViewModelTests.swift */,
+				CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */,
 			);
 			path = UnicoachiOSTests;
 			sourceTree = "<group>";
@@ -369,6 +384,9 @@
 				AAAA00020000000000000B04 /* ConversationView.swift in Sources */,
 				AAAA00020000000000000B09 /* ConversationListViewModel.swift in Sources */,
 				AAAA00020000000000000B0A /* ConversationListView.swift in Sources */,
+				CCCC00010000000000000B01 /* VerificationRequiredView.swift in Sources */,
+				CCCC00010000000000000B02 /* VerificationViewModel.swift in Sources */,
+				CCCC00010000000000000B03 /* ChangeEmailViewModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -393,6 +411,8 @@
 				AAAA00020000000000000B07 /* ConversationViewModelTests.swift in Sources */,
 				AAAA00020000000000000B08 /* MockConversationClient.swift in Sources */,
 				AAAA00020000000000000B0B /* ConversationListViewModelTests.swift in Sources */,
+				CCCC00010000000000000B04 /* VerificationViewModelTests.swift in Sources */,
+				CCCC00010000000000000B05 /* ChangeEmailViewModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -88,14 +88,18 @@ struct LoginView: View {
 
 private final class LoginPreviewAuthClient: AuthClientProtocol, @unchecked Sendable {
     func register(request: RegisterRequest) async throws -> RegisterResponse {
-        RegisterResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview"))
+        RegisterResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
     }
     func login(request: LoginRequest) async throws -> LoginResponse {
-        LoginResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview"))
+        LoginResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
     }
     func logout() async throws {}
     func me() async throws -> MeResponse {
-        MeResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview"))
+        MeResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
+    }
+    func resendVerification() async throws {}
+    func changeEmail(_ email: String) async throws -> PublicUser {
+        PublicUser(id: UUID(), email: email, name: "Preview", emailVerified: false)
     }
 }
 

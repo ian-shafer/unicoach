@@ -90,7 +90,7 @@ private final class HomePreviewConversationClient: ConversationClientProtocol, @
 
 #Preview {
     HomeView(
-        user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User"),
+        user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User", emailVerified: true),
         conversationClient: HomePreviewConversationClient(),
         onProfileRequired: {},
         onLogout: {}

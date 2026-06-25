@@ -44,7 +44,7 @@ class AuthClientTests: XCTestCase {
     }
     
     func testSuccessfulRegistration() async throws {
-        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         let responsePayload = RegisterResponse(user: expectedUser)
         let responseData = try JSONEncoder().encode(responsePayload)
         
@@ -83,7 +83,7 @@ class AuthClientTests: XCTestCase {
     }
 
     func testLoginSuccess() async throws {
-        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         let responsePayload = LoginResponse(user: expectedUser)
         let responseData = try JSONEncoder().encode(responsePayload)
         
@@ -148,7 +148,7 @@ class AuthClientTests: XCTestCase {
     }
 
     func testMeSuccess() async throws {
-        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         let responsePayload = MeResponse(user: expectedUser)
         let responseData = try JSONEncoder().encode(responsePayload)
         
@@ -178,6 +178,95 @@ class AuthClientTests: XCTestCase {
             XCTFail("Should have thrown an error")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "unauthorized")
+        }
+    }
+
+    func testResendVerificationSuccess() async throws {
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/auth/resend-verification")
+            XCTAssertEqual(request.httpMethod, "POST")
+
+            let response = HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+
+        try await authClient.resendVerification()
+    }
+
+    func testResendVerificationUnauthorized() async throws {
+        let errorPayload = ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil)
+        let errorData = try JSONEncoder().encode(errorPayload)
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            try await authClient.resendVerification()
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "unauthorized")
+        }
+    }
+
+    func testChangeEmailSuccess() async throws {
+        let expectedUser = PublicUser(id: UUID(), email: "new@example.com", name: "Test", emailVerified: false)
+        let responsePayload = ChangeEmailResponse(user: expectedUser)
+        let responseData = try JSONEncoder().encode(responsePayload)
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/auth/change-email")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, responseData)
+        }
+
+        let user = try await authClient.changeEmail("new@example.com")
+        XCTAssertEqual(user.email, "new@example.com")
+        XCTAssertFalse(user.emailVerified)
+    }
+
+    func testChangeEmailValidationFailed() async throws {
+        let errorPayload = ErrorResponse(
+            code: "validation_failed",
+            message: "Validation failed.",
+            fieldErrors: [FieldError(field: "email", message: "Invalid email address.")]
+        )
+        let errorData = try JSONEncoder().encode(errorPayload)
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.changeEmail("not-an-email")
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "validation_failed")
+            XCTAssertEqual(error.status, 400)
+            XCTAssertEqual(error.fieldError(for: "email"), "Invalid email address.")
+        }
+    }
+
+    func testChangeEmailConflict() async throws {
+        let errorPayload = ErrorResponse(code: "conflict", message: "Email already in use.", fieldErrors: nil)
+        let errorData = try JSONEncoder().encode(errorPayload)
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.changeEmail("taken@example.com")
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "conflict")
+            XCTAssertEqual(error.status, 409)
         }
     }
 }

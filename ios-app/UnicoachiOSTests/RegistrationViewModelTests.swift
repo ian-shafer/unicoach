@@ -31,7 +31,7 @@ class RegistrationViewModelTests: XCTestCase {
     }
     
     func testSuccessfulRegistrationInvokesCallback() async throws {
-        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test")
+        let expectedUser = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         mockClient.registerResult = .success(RegisterResponse(user: expectedUser))
         
         viewModel.email = "test@example.com"
@@ -70,11 +70,13 @@ class RegistrationViewModelTests: XCTestCase {
                 if await viewModelRef?.isLoading == true {
                     isLoadingWhileRunning = true
                 }
-                return RegisterResponse(user: PublicUser(id: UUID(), email: "test@example.com", name: "Test"))
+                return RegisterResponse(user: PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true))
             }
             func login(request: LoginRequest) async throws -> LoginResponse { fatalError() }
             func logout() async throws { fatalError() }
             func me() async throws -> MeResponse { fatalError() }
+            func resendVerification() async throws { fatalError() }
+            func changeEmail(_ email: String) async throws -> PublicUser { fatalError() }
         }
         
         let delayedClient = DelayedAuthClient()

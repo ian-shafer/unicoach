@@ -3,7 +3,8 @@ import SwiftUI
 @main
 struct UnicoachiOSApp: App {
     @StateObject private var viewModel = AppViewModel()
-    
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some Scene {
         WindowGroup {
             Group {
@@ -29,6 +30,13 @@ struct UnicoachiOSApp: App {
                         onProfileRequired: viewModel.onStudentProfileRequired,
                         onLogout: viewModel.logout
                     )
+                case .verificationRequired(let user):
+                    VerificationRequiredView(
+                        user: user,
+                        authClient: viewModel.authClient,
+                        onRecheck: viewModel.recheckVerification,
+                        onLogout: viewModel.logout
+                    )
                 case .serverError:
                     ErrorView(
                         title: "Server Problem",
@@ -50,6 +58,15 @@ struct UnicoachiOSApp: App {
                         systemImage: "wifi.slash",
                         retryAction: { Task { await viewModel.checkSession() } }
                     )
+                }
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                // Returning to the foreground is the primary detection path for an
+                // emailVerified flip: the user must leave the app to open the
+                // verification link (deep-linking is out of scope). Every .active
+                // transition silently re-checks while blocked; the outcome is ignored.
+                if newPhase == .active, case .verificationRequired = viewModel.authState {
+                    Task { _ = await viewModel.recheckVerification() }
                 }
             }
         }

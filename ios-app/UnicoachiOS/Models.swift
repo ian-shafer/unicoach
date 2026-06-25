@@ -10,6 +10,7 @@ struct PublicUser: Codable {
     let id: UUID
     let email: String
     let name: String
+    let emailVerified: Bool
 }
 
 struct RegisterResponse: Codable {
@@ -53,6 +54,14 @@ struct LoginResponse: Codable {
 }
 
 struct MeResponse: Codable {
+    let user: PublicUser
+}
+
+struct ChangeEmailRequest: Codable {
+    let email: String
+}
+
+struct ChangeEmailResponse: Codable {
     let user: PublicUser
 }
 
