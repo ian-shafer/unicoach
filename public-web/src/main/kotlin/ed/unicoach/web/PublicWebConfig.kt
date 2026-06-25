@@ -12,16 +12,20 @@ import com.typesafe.config.Config
 data class PublicWebConfig(
   val host: String,
   val port: Int,
+  val openInAppUrl: String,
 ) {
   companion object {
     fun from(config: Config): Result<PublicWebConfig> =
       runCatching {
         require(config.hasPath("publicWeb")) { "Missing configuration section: publicWeb" }
-        val server = config.getConfig("publicWeb").getConfig("server")
+        val publicWeb = config.getConfig("publicWeb")
+        val server = publicWeb.getConfig("server")
+        val openInApp = publicWeb.getConfig("openInApp")
 
         PublicWebConfig(
           host = server.getString("host"),
           port = server.getInt("port"),
+          openInAppUrl = openInApp.getString("url"),
         )
       }
   }

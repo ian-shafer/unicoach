@@ -9,8 +9,9 @@ handlers:
 - [`AuthRoutes.kt`](./AuthRoutes.kt) — authentication and email-verification
   flows. Owns the full session cookie lifecycle: minting on registration and
   login, reading on identity resolution, and clearing on logout. Delegates
-  credential/session decisions to `AuthService` and email-verification decisions
-  to `EmailVerificationService`.
+  credential/session decisions to `AuthService`, the single-use verify consume
+  to `EmailVerifier`, and verification-email resend to
+  `EmailVerificationService`.
 - [`StudentRoutes.kt`](./StudentRoutes.kt) — the owner-resolved student profile
   resource. Every handler resolves the current `User` from the session cookie
   via `resolveCaller`, then delegates to `StudentService`. There is no path
@@ -72,8 +73,8 @@ re-tabulated per endpoint.
   forwarded verbatim to the service, which owns the remint decision. This is the
   only path on which an unhashed token leaves the routing layer.
 - For **email verification** (`verify-email`), the body-carried verification
-  token is forwarded verbatim to `EmailVerificationService.verify`; it is not a
-  session token and is not hashed by the routing layer.
+  token is forwarded verbatim to `EmailVerifier.verify`; it is not a session
+  token and is not hashed by the routing layer.
 - Raw tokens are not validated against a format/regex at the routing layer — any
   value is hashed and looked up, which matches 0 rows for invalid tokens,
   collapsing "wrong format" and "not found" into one outcome.
@@ -372,10 +373,11 @@ string is opaque to clients.
 - **Request**: JSON body `{"token": string}`. Deserialized as
   `VerifyEmailRequest`. No authentication — the verification token is itself the
   credential, so no session cookie is read.
-- **Side effects**: Calls `EmailVerificationService.verify(request.token)`. The
-  service owns token lookup, expiry/consumption checks, and the
-  `users.email_verified_at` update; the routing layer performs no persistence.
-  No cookie is set or cleared.
+- **Side effects**: Calls `EmailVerifier.verify(request.token)`. The verifier
+  owns token lookup, expiry/consumption checks, and the
+  `users.email_verified_at` update; the routing layer performs no persistence. A
+  DB fault folds to `Result.failure` (the verifier does not throw), surfacing
+  through `.getOrThrow()`. No cookie is set or cleared.
 - **Response mapping**:
 
   | Condition                            | Status            | Body                                                                      |
@@ -738,10 +740,15 @@ distillation pass, not the enqueue).
   `AuthRouteHandler` for the auth flows (including Google login) and
   resend-verification / change-email owner resolution, and by
   `StudentRouteHandler` / `ConvoRouteHandler` for owner resolution.
-- **`EmailVerificationService`** (`service` module): Provides `verify(token)`
-  and `resend(user)`. Held by `AuthRouteHandler` (constructed from an injected
-  `EmailService` and `EmailVerificationConfig`) and used only by the
-  `verify-email` and `resend-verification` handlers.
+- **`EmailVerifier`** (`auth` module): Provides `verify(rawToken)`, the
+  single-use verification consume (token lookup, expiry/consumption checks, and
+  the `users.email_verified_at` update). `verify` folds a DB fault to
+  `Result.failure` rather than throwing. The production binding is
+  `DbEmailVerifier`. Held by `AuthRouteHandler` and used only by the
+  `verify-email` handler.
+- **`EmailVerificationService`** (`service` module): Provides `resend(user)`.
+  Held by `AuthRouteHandler` (constructed from an injected `EmailService` and
+  `EmailVerificationConfig`) and used only by the `resend-verification` handler.
 - **`StudentService`** (`service` module): Provides `createStudent()`,
   `getStudentForUser()`, `updateStudent()`, and `deleteStudentAndAccount()`.
   `ConvoRouteHandler` uses it solely to resolve the caller's `Student`.
@@ -853,3 +860,12 @@ distillation pass, not the enqueue).
       `409 conflict` on a duplicate, `401 unauthorized` when unresolved).
       Resolves the caller identically to `me` and delegates to
       `AuthService.changeEmail`.
+- [x] [RFC-71: Public-Web Email-Verification Page](../../../../../../../../rfc/71-public-web-email-verification-page.md)
+      — Repointed the `verify-email` handler from
+      `EmailVerificationService.verify` to the injected `EmailVerifier.verify`
+      (interface in the `auth` module, production binding `DbEmailVerifier`), so
+      `rest-server` and `public-web` share one in-process verify consume.
+      `AuthRouteHandler` gained an `emailVerifier` constructor dependency;
+      `EmailVerificationService` is still injected and now drives only
+      `resend-verification`. The endpoint, request/response shape, error codes,
+      and the email-verification gate are unchanged.

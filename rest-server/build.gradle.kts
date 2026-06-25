@@ -12,6 +12,7 @@ application {
 dependencies {
   implementation(project(":common"))
   implementation(project(":db"))
+  implementation(project(":auth"))
   implementation(project(":service"))
   implementation(project(":chat"))
   implementation(project(":email"))

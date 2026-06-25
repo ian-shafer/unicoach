@@ -5,12 +5,11 @@
 The **authentication domain layer**. It owns the business logic for user
 registration, password login, Google federated sign-in, session-bound caller
 resolution (token hash to live session plus its user), session revocation
-(logout), email-verification token issuance and redemption, change-email
-(rewrite the address and re-arm verification), and background zombie-session
-cleanup. Credential verification (password hashing, Google ID-token
-verification) lives here. Outcomes are returned as pure-domain sealed interfaces
-wrapped in `Result<T>`; no transport or persistence types cross the public
-surface.
+(logout), email-verification token issuance and resend, change-email (rewrite
+the address and re-arm verification), and background zombie-session cleanup.
+Credential verification (password hashing, Google ID-token verification) lives
+here. Outcomes are returned as pure-domain sealed interfaces wrapped in
+`Result<T>`; no transport or persistence types cross the public surface.
 
 ---
 
@@ -217,28 +216,6 @@ distinguish them, so account existence is not disclosed.
   the result as advisory.
 - **Idempotency**: Not idempotent — each call attempts another send.
 
-### `EmailVerificationService.verify(rawToken: String): Result<VerifyEmailResult>` (suspend) — See [EmailVerificationService.kt](./EmailVerificationService.kt)
-
-- **Behavior**: Runs in its own transaction. A compare-and-swap consumes the
-  token by hash (`VerificationTokensDao.consume`); on success it marks the user
-  verified (`UsersDao.markEmailVerified`) and burns all sibling tokens for that
-  user (`VerificationTokensDao.consumeAllForUser`), returning
-  `VerifyEmailResult.Success(user)`.
-- **Failed consume classification**: A zero-row consume (`NotFoundException`) is
-  classified via `VerificationTokensDao.findByTokenHash`: hash matches no row →
-  `VerifyEmailResult.InvalidToken`; `consumedAt` set →
-  `VerifyEmailResult.AlreadyConsumed`; `expiresAt` not after now →
-  `VerifyEmailResult.Expired`; otherwise `VerifyEmailResult.InvalidToken`.
-- **Side Effects**: On success, marks the user verified and consumes the user's
-  outstanding tokens (the redeemed one plus its siblings). The classification
-  path is read-only.
-- **Idempotency**: Redeeming the same raw token twice yields
-  `VerifyEmailResult.Success` on the first call and
-  `VerifyEmailResult.AlreadyConsumed` on the second — the verified state is set
-  once.
-- **Error mapping**: An unexpected DAO/transaction failure surfaces as
-  `Result.failure`; the four expected outcomes are `Result.success`.
-
 ### `EmailVerificationService.resend(user: User): Result<ResendResult>` (suspend) — See [EmailVerificationService.kt](./EmailVerificationService.kt)
 
 - **Behavior**: For an already-verified user (`user.emailVerifiedAt != null`),
@@ -393,15 +370,6 @@ The claims read from a verified Google ID token (`subject`, `email`,
 | `ValidationFailure` | `message` | New email blank, malformed, or too long           |
 | `DuplicateEmail`    | `email`   | New email collides on the active-email unique idx |
 
-### `VerifyEmailResult` (sealed interface) — See [VerifyEmailResult.kt](./VerifyEmailResult.kt)
-
-| Variant           | Carries | When returned                          |
-| ----------------- | ------- | -------------------------------------- |
-| `Success`         | `user`  | Token consumed; user marked verified   |
-| `InvalidToken`    | —       | Token hash matches no row              |
-| `Expired`         | —       | Token exists but its expiry has passed |
-| `AlreadyConsumed` | —       | Token exists but was already consumed  |
-
 ### `ResendResult` (sealed interface) — See [ResendResult.kt](./ResendResult.kt)
 
 | Variant           | Carries | When returned                                 |
@@ -496,3 +464,9 @@ The claims read from a verified Google ID token (`subject`, `email`,
       `email_verified_at`, burn the user's outstanding tokens, and issue a fresh
       one, with a best-effort post-commit send to the new address — mirroring
       the `register` transaction shape.
+- [x] [RFC-71: Public Web Email-Verification Page](../../../../../../../rfc/71-public-web-email-verification-page.md)
+      — Moved the email-verification redemption logic out of this directory.
+      `EmailVerificationService` lost its `verify` method and its
+      `classifyFailedConsume` helper, and the `VerifyEmailResult` sealed type
+      moved to the new `auth` module (`auth/src/main/kotlin/ed/unicoach/auth`).
+      The service retains `issueToken`, `sendVerificationEmail`, and `resend`.

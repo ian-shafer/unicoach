@@ -1,8 +1,10 @@
 package ed.unicoach.rest
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.auth.DbEmailVerifier
 import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
+import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.GoogleAuthConfig
 import ed.unicoach.auth.GoogleTokenVerifier
 import ed.unicoach.auth.GoogleTokenVerifierFactory
@@ -198,6 +200,7 @@ fun Application.appModule(
   val tokenGenerator = TokenGenerator()
   val emailVerificationService =
     EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)
+  val emailVerifier: EmailVerifier = DbEmailVerifier(database)
   val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)
   val studentService = ed.unicoach.student.StudentService(database)
   val coachingService = CoachingService(database, chatProvider, coachingConfig)
@@ -210,6 +213,7 @@ fun Application.appModule(
     coachingService,
     sessionConfig,
     emailVerificationService,
+    emailVerifier,
     queueService,
     extractionConfig,
   )

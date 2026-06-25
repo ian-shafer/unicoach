@@ -79,11 +79,13 @@ expiry enqueueing. It contains no domain logic.
   via `configureRequestSizeLimit(requestSizeConfig)`.
 - **Service construction**: Builds `Argon2Hasher` and `TokenGenerator`, then
   `EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)`,
+  an `EmailVerifier` as `DbEmailVerifier(database)` (the read-side
+  verification-status lookup from the `service` module's `auth` package),
   `AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)`,
   `StudentService(database)`, and
   `CoachingService(database, chatProvider, coachingConfig)`. Routes are
   registered via
-  `configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService, queueService, extractionConfig)`.
+  `configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService, emailVerifier, queueService, extractionConfig)`.
 - **Email-verification gate**: After service construction and before
   `configureRouting`, installs the `Plugins`-phase gate via
   `configureEmailVerificationGate(authService, sessionConfig)` (defined in
@@ -104,10 +106,10 @@ expiry enqueueing. It contains no domain logic.
 - **Idempotency**: Not idempotent — Ktor plugin installation throws if repeated
   on the same `Application`.
 
-### `Application.configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService, queueService, extractionConfig)` — [`Routing.kt`](./Routing.kt)
+### `Application.configureRouting(authService, studentService, coachingService, sessionConfig, emailVerificationService, emailVerifier, queueService, extractionConfig)` — [`Routing.kt`](./Routing.kt)
 
 - **Behavior**: Constructs
-  `AuthRouteHandler(authService, sessionConfig, emailVerificationService)`,
+  `AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)`,
   `StudentRouteHandler(authService, studentService, sessionConfig)`, and
   `ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)`,
   then registers their routes inside a single top-level `routing { }` block.
@@ -287,3 +289,8 @@ the `service` module's `coaching` package, and `ExtractionConfig` in its
       `configureRouting`, so a `Plugins`-phase 403 gate fronts every non-exempt
       route. The gate and error-code unification internals (the `ErrorCode`
       enum, `ResolvedCaller` caching) live in this dir's subpackages.
+- [x] [RFC-71: Public-Web Email-Verification Page](../../../../../../../rfc/71-public-web-email-verification-page.md)
+      — Constructed an `EmailVerifier` as `DbEmailVerifier(database)` in
+      `appModule` and threaded it through `configureRouting` into
+      `AuthRouteHandler`, supplying the read-side verification-status lookup the
+      public-web verification route depends on.

@@ -61,6 +61,7 @@ class AuthRouteHandler(
   private val authService: AuthService,
   private val sessionConfig: ed.unicoach.rest.auth.SessionConfig,
   private val emailVerificationService: ed.unicoach.auth.EmailVerificationService,
+  private val emailVerifier: ed.unicoach.auth.EmailVerifier,
 ) {
   fun registerRoutes(route: Route) {
     route.route("/api/v1/auth") {
@@ -210,7 +211,7 @@ class AuthRouteHandler(
 
   private suspend fun RoutingContext.handleVerifyEmail() {
     val request = call.receive<VerifyEmailRequest>()
-    val outcome = emailVerificationService.verify(request.token).getOrThrow()
+    val outcome = emailVerifier.verify(request.token).getOrThrow()
     when (outcome) {
       is ed.unicoach.auth.VerifyEmailResult.Success -> {
         call.respond(HttpStatusCode.OK, VerifyEmailResponse(PublicUser.from(outcome.user)))

@@ -9,7 +9,6 @@ import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.dao.VerificationTokensDao
 import ed.unicoach.db.models.NewUser
-import ed.unicoach.db.models.NewVerificationToken
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
@@ -152,60 +151,6 @@ class EmailVerificationServiceTest {
       val expectedLow = before.plus(ttl).minus(1, ChronoUnit.MINUTES)
       val expectedHigh = Instant.now().plus(ttl).plus(1, ChronoUnit.MINUTES)
       assertTrue(token.expiresAt.isAfter(expectedLow) && token.expiresAt.isBefore(expectedHigh), "expiresAt ~ now + ttl")
-    }
-
-  @Test
-  fun `verify happy path marks the user verified and burns sibling tokens`() =
-    runTest {
-      val user = createUser()
-      val svc = service()
-      val raw = svc.issueToken(sqlSession, user.id).getOrThrow()
-      // A sibling outstanding token that must be burned by verify.
-      val siblingHash = TokenHash.fromRawToken("sibling-raw")
-      VerificationTokensDao
-        .create(sqlSession, NewVerificationToken(user.id, siblingHash, Instant.now().plus(1, ChronoUnit.DAYS)))
-        .getOrThrow()
-
-      val result = svc.verify(raw).getOrThrow()
-      assertTrue(result is VerifyEmailResult.Success, "Expected Success, got $result")
-      assertTrue(result.user.emailVerifiedAt != null)
-
-      val sibling = VerificationTokensDao.findByTokenHash(sqlSession, siblingHash).getOrThrow()
-      assertTrue(sibling.consumedAt != null, "Sibling token must be burned")
-    }
-
-  @Test
-  fun `verify with an unknown token yields InvalidToken`() =
-    runTest {
-      val result = service().verify("never-issued").getOrThrow()
-      assertTrue(result is VerifyEmailResult.InvalidToken, "Expected InvalidToken, got $result")
-    }
-
-  @Test
-  fun `verify with an expired token yields Expired`() =
-    runTest {
-      val user = createUser()
-      val raw = "expired-raw"
-      VerificationTokensDao
-        .create(sqlSession, NewVerificationToken(user.id, TokenHash.fromRawToken(raw), Instant.now().minus(1, ChronoUnit.DAYS)))
-        .getOrThrow()
-
-      val result = service().verify(raw).getOrThrow()
-      assertTrue(result is VerifyEmailResult.Expired, "Expected Expired, got $result")
-    }
-
-  @Test
-  fun `verify with a consumed token yields AlreadyConsumed`() =
-    runTest {
-      val user = createUser()
-      val raw = "consumed-raw"
-      VerificationTokensDao
-        .create(sqlSession, NewVerificationToken(user.id, TokenHash.fromRawToken(raw), Instant.now().plus(1, ChronoUnit.DAYS)))
-        .getOrThrow()
-      VerificationTokensDao.consume(sqlSession, TokenHash.fromRawToken(raw)).getOrThrow()
-
-      val result = service().verify(raw).getOrThrow()
-      assertTrue(result is VerifyEmailResult.AlreadyConsumed, "Expected AlreadyConsumed, got $result")
     }
 
   @Test

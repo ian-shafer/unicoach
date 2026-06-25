@@ -4,13 +4,13 @@
 
 The server-side HTML rendering layer of `public-web`. It produces every page the
 site serves — the brand/home page, the legal pages (Terms of Service, Privacy
-Policy), and the branded 404/503 error pages — as `kotlinx.html` markup. A
-single shared `siteLayout` skeleton supplies the common chrome (head linking
-`/site.css`, top-level header, footer); each page renderer authors only a body
-that is injected into the layout's content slot, so every page inherits
-identical chrome. The layer holds no domain logic, reads no database, and
-mutates no state; every page body is authored in the DSL, never from a static
-HTML file.
+Policy), the email-verification confirm/result pages, and the branded 404/503
+error pages — as `kotlinx.html` markup. A single shared `siteLayout` skeleton
+supplies the common chrome (head linking `/site.css`, top-level header, footer);
+each page renderer authors only a body that is injected into the layout's
+content slot, so every page inherits identical chrome. The layer holds no domain
+logic, reads no database, and mutates no state; every page body is authored in
+the DSL, never from a static HTML file.
 
 ---
 
@@ -89,6 +89,40 @@ beyond that).
   `respondServiceUnavailablePage` from the `exception<Throwable>` catch-all (see
   the sibling [`Routing.kt`](../Routing.kt)).
 
+### `ApplicationCall.respondVerifyEmailConfirm(token: String)` — [`VerifyEmailPage.kt`](./VerifyEmailPage.kt)
+
+- **Behavior**: Writes the email-verification **confirm** page through
+  `siteLayout` (page title `Verify email`). The body is a `verify-email` section
+  with the heading marker `Confirm your email`, a one-line instruction, and a
+  `method="post" action="/verify-email"` form whose only fields are a hidden
+  `token` input (carrying the passed `token` verbatim as its value) and a submit
+  button. The page performs no token verification and changes no state — it
+  renders the form whose submission is what consumes the token, so a GET
+  prefetch of the mailed link does not burn the single-use token.
+- **Side effects**: Writes one `200` `text/html` response. No DB or network
+  access.
+
+### `ApplicationCall.respondVerifyEmailResult(outcome, openInAppUrl, isIPhone)` — [`VerifyEmailPage.kt`](./VerifyEmailPage.kt)
+
+- **Behavior**: Writes the email-verification **result** page through
+  `siteLayout` (page title `Verify email`) for a completed verify attempt. The
+  body is a `verify-email` section whose heading marker and copy are selected by
+  the `outcome` (a `VerifyEmailOutcome` from the sibling `web` package), one
+  distinct heading per case:
+  - `Verified` → `Email verified`
+  - `InvalidToken` → `Link not valid`
+  - `Expired` → `Link expired`
+  - `AlreadyUsed` → `Already verified`
+  - `Unavailable` → `Verification unavailable`
+
+  An **"Open in app"** link is appended only when `isIPhone` is true,
+  `openInAppUrl` is non-null and non-blank, and `outcome` is `Verified` or
+  `AlreadyUsed`; otherwise no link renders. The URL is emitted verbatim as the
+  link `href` (escaped as an attribute value by `kotlinx.html`); this layer does
+  no scheme validation or parsing and treats the link as inert markup.
+- **Side effects**: Writes one `200` `text/html` response. No DB or network
+  access.
+
 ---
 
 ## III. Infrastructure & Environment
@@ -108,3 +142,4 @@ beyond that).
 ## IV. History
 
 - [x] [RFC-61: Public Web Module (Dynamic HTML via Shared Layout)](../../../../../../../../rfc/61-static-marketing-site.md)
+- [x] [RFC-71: Public-Web Email-Verification Page](../../../../../../../../rfc/71-public-web-email-verification-page.md)

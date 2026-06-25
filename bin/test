@@ -4,7 +4,7 @@ export ENV_FILE="$(dirname $0)/../.env.test"
 source "$(dirname "$0")/common"
 
 # Add new Gradle modules here, in sync with settings.gradle.kts.
-MODULES=(common db net queue queue-worker rest-server service email chat admin-server public-web college)
+MODULES=(common db net auth queue queue-worker rest-server service email chat admin-server public-web college)
 
 help() {
   local exit_code=0
@@ -24,7 +24,7 @@ task (ktlint + tests) instead of bare `test`, for a full Kotlin verification.
 The pre-commit Kotlin gate invokes this form.
 
 Modules:
-  common db net queue queue-worker rest-server service email chat admin-server public-web college
+  common db net auth queue queue-worker rest-server service email chat admin-server public-web college
 
 Options:
   -t, --tests GLOB   Gradle test filter (requires exactly one module)

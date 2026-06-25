@@ -3,9 +3,7 @@ package ed.unicoach.auth
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
-import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.dao.VerificationTokensDao
 import ed.unicoach.db.models.NewVerificationToken
 import ed.unicoach.db.models.TokenHash
@@ -95,53 +93,6 @@ class EmailVerificationService(
   private fun logAndFail(message: String): Result<Unit> {
     logger.warn(message)
     return Result.failure(IllegalStateException(message))
-  }
-
-  /**
-   * Verifies an email in its own transaction: a compare-and-swap consume of the
-   * token, then [UsersDao.markEmailVerified], then burning sibling tokens. A
-   * zero-row consume is classified via [VerificationTokensDao.findByTokenHash]
-   * into [VerifyEmailResult.InvalidToken] / [VerifyEmailResult.Expired] /
-   * [VerifyEmailResult.AlreadyConsumed].
-   */
-  suspend fun verify(rawToken: String): Result<VerifyEmailResult> =
-    runCatching {
-      database.withConnection { session ->
-        val tokenHash = TokenHash.fromRawToken(rawToken)
-        val consumed = VerificationTokensDao.consume(session, tokenHash)
-        if (consumed.isFailure) {
-          val ex = consumed.exceptionOrNull()
-          if (ex is NotFoundException) {
-            return@withConnection classifyFailedConsume(session, tokenHash)
-          }
-          throw ex ?: RuntimeException("verify-email consume failed")
-        }
-
-        val token = consumed.getOrThrow()
-        val user = UsersDao.markEmailVerified(session, token.userId).getOrThrow()
-        VerificationTokensDao.consumeAllForUser(session, token.userId).getOrThrow()
-        VerifyEmailResult.Success(user)
-      }
-    }
-
-  private fun classifyFailedConsume(
-    session: SqlSession,
-    tokenHash: TokenHash,
-  ): VerifyEmailResult {
-    val found = VerificationTokensDao.findByTokenHash(session, tokenHash)
-    if (found.isFailure) {
-      val ex = found.exceptionOrNull()
-      if (ex is NotFoundException) {
-        return VerifyEmailResult.InvalidToken
-      }
-      throw ex ?: RuntimeException("verify-email token classification failed")
-    }
-    val token = found.getOrThrow()
-    return when {
-      token.consumedAt != null -> VerifyEmailResult.AlreadyConsumed
-      !token.expiresAt.isAfter(Instant.now()) -> VerifyEmailResult.Expired
-      else -> VerifyEmailResult.InvalidToken
-    }
   }
 
   /**

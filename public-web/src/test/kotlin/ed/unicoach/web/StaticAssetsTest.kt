@@ -13,7 +13,7 @@ class StaticAssetsTest {
   @Test
   fun `site css is served from the static asset mount with text css content type`() =
     testApplication {
-      application { publicWebModule() }
+      application { publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL) }
 
       val response = client.get("/site.css")
       assertEquals(HttpStatusCode.OK, response.status)

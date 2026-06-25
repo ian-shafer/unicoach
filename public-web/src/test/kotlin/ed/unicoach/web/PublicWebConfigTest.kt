@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 
 class PublicWebConfigTest {
   @Test
-  fun `parses host and port from the publicWeb server section`() {
+  fun `parses host port and openInApp from the publicWeb section`() {
     val config =
       ConfigFactory.parseString(
         """
@@ -16,6 +16,9 @@ class PublicWebConfigTest {
           server {
             host = "0.0.0.0"
             port = 9090
+          }
+          openInApp {
+            url = "https://unicoach.test/app"
           }
         }
         """.trimIndent(),
@@ -27,6 +30,7 @@ class PublicWebConfigTest {
     val parsed = result.getOrThrow()
     assertEquals("0.0.0.0", parsed.host)
     assertEquals(9090, parsed.port)
+    assertEquals("https://unicoach.test/app", parsed.openInAppUrl)
   }
 
   @Test
@@ -45,6 +49,31 @@ class PublicWebConfigTest {
         publicWeb {
           server {
             host = "127.0.0.1"
+          }
+          openInApp {
+            url = "https://unicoach.test/app"
+          }
+        }
+        """.trimIndent(),
+      )
+
+    val result = PublicWebConfig.from(config)
+
+    assertTrue(result.isFailure)
+    assertTrue(result.exceptionOrNull() is ConfigException.Missing)
+  }
+
+  @Test
+  fun `missing required openInApp url fails fast with ConfigException`() {
+    val config =
+      ConfigFactory.parseString(
+        """
+        publicWeb {
+          server {
+            host = "127.0.0.1"
+            port = 8082
+          }
+          openInApp {
           }
         }
         """.trimIndent(),

@@ -14,7 +14,7 @@ class LegalPagesTest {
   @Test
   fun `terms renders dynamically through the shared layout`() =
     testApplication {
-      application { publicWebModule() }
+      application { publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL) }
 
       val response = client.get("/terms")
       assertEquals(HttpStatusCode.OK, response.status)
@@ -35,7 +35,7 @@ class LegalPagesTest {
   @Test
   fun `privacy renders dynamically through the shared layout`() =
     testApplication {
-      application { publicWebModule() }
+      application { publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL) }
 
       val response = client.get("/privacy")
       assertEquals(HttpStatusCode.OK, response.status)

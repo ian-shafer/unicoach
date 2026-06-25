@@ -14,7 +14,7 @@ class HealthTest {
   @Test
   fun `healthz returns 200 with the ok body and json content type and no auth`() =
     testApplication {
-      application { publicWebModule() }
+      application { publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL) }
 
       val response = client.get("/healthz")
       assertEquals(HttpStatusCode.OK, response.status)
