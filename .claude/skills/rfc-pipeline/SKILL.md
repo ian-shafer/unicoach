@@ -68,6 +68,12 @@ session model) via the `code-reviewer` and `design-reviewer` agent definitions
 in `.claude/agents/`. That single pin — `model:` in those two files — is the one
 place to revisit if the model lineup ever reshuffles.
 
+Each chain builds the shared review context once — the base-to-HEAD diff plus
+each changed file's contents — and injects it into every leaf's prompt. Use the
+context-injected fan-out as the **default** for these reviews; the
+single-inline-agent mode (all lenses in one pass) is an opt-in fast mode only,
+never the default for a real pipeline review.
+
 ## Critical Behaviours
 
 - **Codebase Root Directory**: The orchestrator tracks the absolute path of this
@@ -506,9 +512,13 @@ any result as green.
    state `<codebase-root>`, the scratch sub-path
    `<run-scratch>/phase2/impl-review/iter-<i>/`, the **write-scope** (writes
    nothing tracked; durable output to scratch only), and the subagent rules. The
-   chains it delegates to write **one verdict file per leaf** under `…/leaves/`
-   the instant each finishes — so a stalled aggregator is reconstructed from
-   that directory, never re-run.
+   review chains build the shared review context once (the base-to-HEAD diff
+   plus each changed file) and inject it into every leaf; the leaves write **one
+   verdict file per leaf** under `…/leaves/` the instant each finishes, and a
+   stalled aggregator is reconstructed from that directory, never re-run. **Let
+   the fan-out run to completion; do not kill it mid-flight.** On any partial
+   stall, recover only the missing lenses from the completed `…/leaves/` files
+   (write-once); never re-run the whole fan-out.
 
    b. **On return _or stall/kill_.** Verify write-scope
    (`git status --porcelain` empty). Reconstruct findings from `…/iter-<i>/` —

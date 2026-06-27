@@ -98,10 +98,11 @@ verdict `🔴 REVISION REQUIRED`.
 ### Phase 3. Chain Delegation
 
 You MUST delegate the deep structural and code reviews to the dedicated macro
-chains. Pass the **changed-file set established in Phase 1** to each chain as its
-**Target** — the explicit file set, not a directory, component, or single
-artifact — so the leaf reviewers open exactly the files the isolation check
-audited (a leaf still reads each file whole; the set bounds _which_ files):
+chains. Pass the **changed-file set established in Phase 1** to each chain as
+its **Target** — the explicit file set, not a directory, component, or single
+artifact. Also pass the **`<base>` from Phase 1** as each chain's **Base
+Revision**. Each chain builds the shared review context (the `<base>...HEAD`
+diff plus each file's contents) once and injects it into every leaf:
 
 1. `design-review-chain`
 2. `code-review-chain`
@@ -112,8 +113,9 @@ this review pass, hand each chain its own sub-directory under it — e.g.
 leaf reviewers write one verdict file per rule under `<scratch>/<chain>/leaves/`
 the instant they finish, and the chain compiles `report.md` by reading that
 directory. Ingest the chains' findings from those files. If a chain's compile is
-interrupted, reconstruct its verdict from the `leaves/` directory directly rather
-than re-running the leaves — completed leaf work is never lost or repeated.)_
+interrupted, reconstruct its verdict from the `leaves/` directory directly
+rather than re-running the leaves — completed leaf work is never lost or
+repeated.)_
 
 **RFC Scope Boundary Enforcement:** Before summarizing or incorporating findings
 from these chains, you MUST compare them with the target RFC. If a

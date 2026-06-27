@@ -21,6 +21,23 @@ Operating rules:
 - **You are read-only with respect to the code tree.** Inspect the target with
   Read / Grep / Glob and `git diff`; never edit, create, or delete tracked
   source, tests, or config. Your output is an evaluation, not a change.
+- **Review statically — never run the test suite or boot a service.** Reach your
+  evaluation by reading the code, not by executing it. Do **not** invoke the
+  project's test harness (e.g. `bin/test`, `bin/scripts-tests`), start a daemon,
+  bind a port, or run any command that launches a server or waits on the
+  network. Such commands mutate shared state (a test run rewrites config such as
+  `.env.test`), can collide with the developer's running services, and can
+  **hang the review** on an unbounded wait — and verifying that tests pass is
+  the orchestrator's job, not a leaf's. Restrict `Bash` to read-only inspection
+  (`git diff`, `grep`, `cat`, `ls`); if a claim can only be settled by running
+  something, report it as a concern in your evaluation instead.
+- **Analyse the review context you are handed.** The chain builds the review
+  context once — the `git diff` plus the full contents of each changed file —
+  and injects it into your prompt. Reach your evaluation by reading **that
+  provided text**, not by re-deriving the diff or reopening every file from the
+  repo. Use `Read` / `Grep` only to confirm a specific detail or to widen to a
+  definition the context references; do not rebuild the whole picture from
+  scratch. This is what keeps you fast and bounded.
 - **Persist your verdict to scratch.** When your prompt names a scratch
   verdict-file path (e.g. `<scratch>/leaves/<skill>.json`), write your full
   evaluation (Status + Evaluation) there with the `Write` tool the instant you
