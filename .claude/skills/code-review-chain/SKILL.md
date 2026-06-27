@@ -2,13 +2,15 @@
 name: code-review-chain
 description: >-
   A pre-configured macro skill that runs a comprehensive, adversarial code
-  review of a target. It builds the shared review context once (the diff plus
-  each changed file) and injects it into a bounded fan-out of background
-  `code-review-*` leaf agents — one per micro-skill — then compiles their
-  verdicts into a single report, asserting every discovered lens is accounted
-  for and marking any that did not run. This context-injected fan-out is the
-  default for real reviews; a single inline agent applying all lenses is an
-  opt-in fast mode that under-finds.
+  review of a target. It materializes the shared review context once (the diff
+  plus each changed file) to a scratch file and points a bounded fan-out of
+  background `code-review-*` leaf agents — one per micro-skill — at it (each leaf
+  reads the file), then compiles their verdicts into a single report, asserting
+  every discovered lens is accounted for and marking any that did not run. The
+  leaf fan-out runs in the top-level session (depth-1 leaves), never from a
+  background subagent. This per-lens fan-out is the default for real reviews; a
+  single inline agent applying all lenses is an opt-in fast mode that
+  under-finds.
 ---
 
 # Code Review Chain
@@ -36,9 +38,28 @@ Invocation MUST define the following parameter:
   (e.g. `rfc-impl-review` under the `rfc-pipeline` orchestrator). When present,
   each leaf reviewer persists its verdict there so a stalled aggregation never
   forfeits completed leaf work. When absent, default to a local scratch path.
+- **Review Context File** _(optional)_: Path to a pre-built
+  `<scratch>/review-context.md` (the `<base>...HEAD` diff plus each changed
+  file's contents). When supplied, the chain **skips** building the context
+  (skip-if-present) and points the leaves at this file. When absent, the chain
+  builds the context itself (step 2) and **writes it to
+  `<scratch>/review-context.md`** before fan-out. Either way the leaves `Read`
+  the file rather than receiving the context inline.
 
 If the user does not provide a Target in their prompt, you MUST pause and ask
 them to provide it before continuing.
+
+## Depth-1 Fan-out Invariant (normative)
+
+This leaf-spawning fan-out (steps 3–4) **MUST execute in the top-level
+session**, so each leaf is a **depth-1** child of that session. It **MUST NOT**
+be invoked from inside a background subagent (an `Agent`-tool task): doing so
+makes the leaves **grandchildren** of the top-level session, which the Claude
+Code harness task layer reaps unreliably (a finished leaf can stay `running`
+indefinitely). Run this chain **inline** (via the `Skill` tool) from the session
+that is to be the leaves' direct parent; delegate only non-fan-out work (e.g.
+building the review context) to background agents. This is a workaround for a
+specific harness defect and stays next to the fan-out machinery it constrains.
 
 ## Execution
 
@@ -46,16 +67,41 @@ them to provide it before continuing.
    your execution context (defined in your system prompt or `<skills>` block)
    that match the pattern `code-review-*` (excluding `code-review-chain`
    itself).
-2. **Build the shared review context — once.** Assemble a `<review-context>`
-   text block and hold it for injection in step 3:
-   - The full diff of the change: `git diff <base>...HEAD -- <Target files>`
-     (the `...` merge-base form), where `<base>` is the **Base Revision**
-     (default `main`). If that diff is empty (the implementation is uncommitted
-     in the working tree), use `git diff <base> -- <Target files>`.
-   - The full contents of every changed file (the whole Target set), inlined
-     **whole** and labelled by path — do not digest or excerpt. For a changed
-     file too large to inline, name it in the block and leave it for leaves to
-     `Read` directly; inline every other file whole.
+2. **Materialize the shared review context — once, to a file.** The shared
+   context lives in `<scratch>/review-context.md`, which the leaves `Read`; it
+   is never injected into leaf prompts.
+   - **If a Review Context File was supplied** (skip-if-present): do **not**
+     rebuild it. Verify the named file exists; if it does, use it as
+     `<scratch>/review-context.md` and skip to step 3.
+   - **Otherwise build it and write it to `<scratch>/review-context.md`.**
+     Assemble a `<review-context>` block containing:
+     - The full diff of the change: `git diff <base>...HEAD -- <Target files>`
+       (the `...` merge-base form), where `<base>` is the **Base Revision**
+       (default `main`). If that diff is empty (the implementation is
+       uncommitted in the working tree), use
+       `git diff <base> -- <Target files>`.
+     - The full contents of every changed **non-test** file, inlined **whole**
+       and labelled by path — do not digest or excerpt. **Test files are the
+       exception: do NOT inline their bodies.** A test file's changes are
+       already in the diff above, and its untouched body is usually the bulk of
+       the context while rarely needed by a single lens — so instead **name**
+       each changed test file in a "named — `Read` on demand" list, and a leaf
+       that needs more than the diff `Read`s it from the repo. (A test file is
+       one under a `test/` / `tests/` directory or whose name matches `*Test` /
+       `*Tests` / `*Spec` / `*_test` / `*.test.*` — e.g. `src/test/**` or
+       `*Test.kt`.) Likewise, for any **non-test** file too large to inline,
+       name it for leaves to `Read` directly; inline every other non-test file
+       whole.
+
+     Write that block to `<scratch>/review-context.md` (write-once,
+     skip-if-present), then proceed. Do **not** hold the block in context for
+     injection — the leaves read the file.
+   - **Edge case — context file must exist before fan-out.** A leaf pointed at a
+     missing `review-context.md` cannot review its lens. Confirm
+     `<scratch>/review-context.md` exists (supplied-and-verified, or just
+     written) **before** spawning any leaf; if a supplied file is absent, fall
+     back to building it yourself rather than fanning out against a missing
+     file.
 3. **Spawn Subagents in Bounded Batches**: Launch a background subagent for each
    discovered code-review skill using the **`Agent`** tool, but keep **at most
    10 in flight at once**. Emit up to 10 spawns in one message; then, as each
@@ -70,14 +116,19 @@ them to provide it before continuing.
      `code-review-allowlist Reviewer`)
    - **run_in_background**: `true`
    - **prompt**:
-     `"Apply the [Skill Name] skill to the change described in the
-        review context below and return a detailed verdict. ANALYSE THE PROVIDED
-        CONTEXT for your one lens — do not re-derive the diff or reopen every
-        file from the repo; use Read/Grep only to confirm a specific detail or
-        widen to a referenced definition. Your response must clearly state the
-        Verdict (PASS, FAIL, or N/A) and the detailed Reasoning.<SCRATCH>\n\n===
-        REVIEW CONTEXT (target '[Target]', base '[Base Revision]') ===\n<review-context>"`
-     — where `<SCRATCH>`, when a **Scratch Dir** was supplied, is:
+     `"SKILL: [Skill Name]\n\nInvoke the Skill tool with the skill named in the
+        SKILL: directive above, then apply that one lens to the change described in
+        the shared review context and return a detailed verdict. READ the shared
+        review context from <scratch>/review-context.md (the base-to-HEAD diff
+        plus each changed file's contents, target '[Target]', base
+        '[Base Revision]') and analyse THAT for your one lens — do not re-derive
+        the diff or reopen every file from the repo; use Read/Grep only to
+        confirm a specific detail or widen to a referenced definition. Your
+        response must clearly state the Verdict (PASS, FAIL, or N/A) and the
+        detailed Reasoning.<SCRATCH>"`
+     — where `<scratch>/review-context.md` is the materialized context file from
+     step 2 (the supplied **Review Context File** when one was passed), and
+     `<SCRATCH>`, when a **Scratch Dir** was supplied, is:
      `" The
         instant you finish, write your verdict (Verdict + Reasoning) to
         [Scratch Dir]/leaves/[Skill Name].json — write-once. Do this BEFORE your
@@ -117,10 +168,10 @@ them to provide it before continuing.
    file — forces the Final Verdict to 🔴 REVISION REQUIRED. Never report 🟢
    APPROVED while a lens is unaccounted for.**
 
-> **Modes.** Use the context-injected per-lens fan-out above as the **default
-> for real and final reviews.** A single inline agent applying all lenses at
-> once is an **opt-in fast mode for quick checks only**; it under-finds, so do
-> **not** use it as the default for real reviews.
+> **Modes.** Use the per-lens fan-out above (leaves `Read` the materialized
+> context file) as the **default for real and final reviews.** A single inline
+> agent applying all lenses at once is an **opt-in fast mode for quick checks
+> only**; it under-finds, so do **not** use it as the default for real reviews.
 
 ## Output Format
 

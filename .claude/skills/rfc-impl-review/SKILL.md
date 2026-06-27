@@ -25,6 +25,48 @@ review-specific workflow.
 > vulnerabilities during this review phase. Explicitly IGNORE minor (and some
 > major) performance concerns at this stage. Do not flag them.
 
+## Two stages, split by context-weight
+
+The review is composed of two stages with fixed ownership, so an orchestrator
+can get **both** context isolation **and** depth-1 leaves:
+
+- **Stage A — Scope & Context Prep (delegatable).** Phases 1, 2, 2b
+  (files-modified isolation, scope/feature-creep check, test-completeness +
+  guard-branch exercise) **plus** construction of the shared review-context file
+  `<scratch>/review-context.md` (the `<base>...HEAD` diff plus each changed
+  file's contents, write-once / skip-if-present). Stage A reads every changed
+  file anyway for the scope checks, so it builds the context file with no second
+  read. **Stage A spawns no subagents.** It may therefore be delegated to a
+  depth-1 background agent (e.g. the pipeline's `[rfc-impl-review-prep]` agent),
+  keeping its heavy reads off the orchestrator.
+- **Stage B — Lens Fan-out & Aggregation (top-level-owned).** Phase 3 (the
+  `design-review-chain` and `code-review-chain` leaf fan-outs) plus Phase 4 (the
+  master verdict). Phase 3 spawns leaves, so it **MUST run in the top-level
+  session** (see the Depth-1 Fan-out Invariant below). Stage B is context-light:
+  the leaves `Read` the prebuilt `review-context.md` and write verdicts to
+  scratch, so the session holds only lens names and scratch paths.
+
+Run **standalone** (a developer invokes `/rfc-impl-review` inline at the top
+level), one session runs both stages back-to-back and the leaves are already
+depth-1 — no regression; Stage A simply builds `review-context.md` in its own
+Phase 3 step (no separate prep agent) and Phase 3 passes that file to the
+chains. The split matters only when an orchestrator wants Stage A's context
+isolation **and** depth-1 leaves; the `rfc-pipeline` composes the two stages to
+get both.
+
+### Depth-1 Fan-out Invariant (normative)
+
+The Phase 3 chains (and the `design-review-chain` / `code-review-chain` they
+drive) spawn one leaf reviewer per micro-skill. That fan-out **MUST execute in
+the top-level session**, so each leaf is a **depth-1** child. It **MUST NOT** be
+invoked from inside a background subagent (an `Agent`-tool task), because that
+makes the leaves **grandchildren** of the top-level session, which the Claude
+Code harness task layer reaps unreliably (a finished leaf can stay `running`
+indefinitely). When this review runs under the `rfc-pipeline`, **only Stage A is
+delegated to a background agent; Stage B's fan-out is run inline by the pipeline
+orchestrator** so the leaves stay depth-1. Standalone, both stages run inline at
+depth-0 and the leaves are depth-1 automatically.
+
 ## Execution Workflow
 
 You MUST execute the review by following these exact phases sequentially:
@@ -95,14 +137,35 @@ such a guard is silent on every run where its precondition is absent. Treat any
 guard that was only happy-path-tested as an unverified finding and mark the
 verdict `🔴 REVISION REQUIRED`.
 
-### Phase 3. Chain Delegation
+### Phase 2c. Build the shared review-context file (end of Stage A)
 
+This is the final Stage A step. You have already read every changed file for the
+scope checks above, so materialize the shared review context **once** to
+`<scratch>/review-context.md` (write-once, skip-if-present): the `<base>...HEAD`
+diff (the `...` merge-base form; fall back to `git diff <base>` when the
+implementation is uncommitted) plus the full contents of each changed
+**non-test** file in the Phase 1 set, inlined whole and labelled by path. **Do
+NOT inline test-file bodies** — their changes are already in the diff and their
+bodies are the bulk of the context; instead **name** each changed test file (and
+any non-test file too large to inline) in a "named — `Read` on demand" list for
+leaves to `Read` directly. (A test file is one under a `test/` / `tests/`
+directory or whose name matches `*Test` / `*Tests` / `*Spec` / `*_test` /
+`*.test.*` — e.g. `src/test/**` or `*Test.kt`.) Phase 3 passes this file to each
+chain as its **Review Context File** so the chains skip rebuilding it. When
+Stage A is delegated (the pipeline's `[rfc-impl-review-prep]` agent), this file
+is the prep's durable handoff to the top-level fan-out.
+
+### Phase 3. Chain Delegation (Stage B — top-level-owned fan-out)
+
+This phase spawns leaves and so **MUST run inline in the top-level session** per
+the Depth-1 Fan-out Invariant above — never from inside a background subagent.
 You MUST delegate the deep structural and code reviews to the dedicated macro
 chains. Pass the **changed-file set established in Phase 1** to each chain as
 its **Target** — the explicit file set, not a directory, component, or single
 artifact. Also pass the **`<base>` from Phase 1** as each chain's **Base
-Revision**. Each chain builds the shared review context (the `<base>...HEAD`
-diff plus each file's contents) once and injects it into every leaf:
+Revision**, and pass the **`<scratch>/review-context.md` built in Phase 2c** as
+each chain's **Review Context File** so the chains skip rebuilding the context
+and point their leaves at that file (which each leaf `Read`s):
 
 1. `design-review-chain`
 2. `code-review-chain`
@@ -110,12 +173,12 @@ diff plus each file's contents) once and injects it into every leaf:
 _(Note: When the `rfc-pipeline` orchestrator supplied a run-scratch sub-path for
 this review pass, hand each chain its own sub-directory under it — e.g.
 `<scratch>/design/` and `<scratch>/code/` — as its **Scratch Dir**. Each chain's
-leaf reviewers write one verdict file per rule under `<scratch>/<chain>/leaves/`
-the instant they finish, and the chain compiles `report.md` by reading that
-directory. Ingest the chains' findings from those files. If a chain's compile is
-interrupted, reconstruct its verdict from the `leaves/` directory directly
-rather than re-running the leaves — completed leaf work is never lost or
-repeated.)_
+leaf reviewers `Read` the prebuilt `review-context.md` and write one verdict
+file per rule under `<scratch>/<chain>/leaves/` the instant they finish, and the
+chain compiles `report.md` by reading that directory. Ingest the chains'
+findings from those files. If a chain's compile is interrupted, reconstruct its
+verdict from the `leaves/` directory directly rather than re-running the leaves
+— completed leaf work is never lost or repeated.)_
 
 **RFC Scope Boundary Enforcement:** Before summarizing or incorporating findings
 from these chains, you MUST compare them with the target RFC. If a
