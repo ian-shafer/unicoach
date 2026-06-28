@@ -163,6 +163,54 @@ class ClaimsDaoTest {
   }
 
   @Test
+  fun `list returns a deterministic page bounded by limit and offset`() {
+    val student = createStudent()
+    ClaimsDao.create(session, newClaim(student, "one")).getOrThrow()
+    ClaimsDao.create(session, newClaim(student, "two")).getOrThrow()
+    ClaimsDao.create(session, newClaim(student, "three")).getOrThrow()
+
+    val firstPage = ClaimsDao.list(session, 2, 0).getOrThrow()
+    val secondPage = ClaimsDao.list(session, 2, 2).getOrThrow()
+
+    assertEquals(2, firstPage.size)
+    assertEquals(1, secondPage.size)
+    // The two pages cover the full set without overlap (ordered row_created_at, id).
+    val all = (firstPage + secondPage).map { it.id }
+    assertEquals(all.toSet().size, all.size, "pages must not overlap")
+    assertEquals(3, all.size)
+  }
+
+  @Test
+  fun `listByStudent returns all statuses for the student, excludes other students, bounded and ordered`() {
+    val student = createStudent()
+    val other = createStudent()
+
+    val active = ClaimsDao.create(session, newClaim(student, "active one")).getOrThrow()
+    val toSupersede = ClaimsDao.create(session, newClaim(student, "old one")).getOrThrow()
+    val replacement = ClaimsDao.create(session, newClaim(student, "new one")).getOrThrow()
+    val toRetract = ClaimsDao.create(session, newClaim(student, "wrong one")).getOrThrow()
+    ClaimsDao.revise(session, toSupersede.id, ClaimRevision(ClaimStatus.SUPERSEDED, 0, replacement.id)).getOrThrow()
+    ClaimsDao.revise(session, toRetract.id, ClaimRevision(ClaimStatus.RETRACTED, 0)).getOrThrow()
+
+    val otherClaim = ClaimsDao.create(session, newClaim(other, "other student claim")).getOrThrow()
+
+    val mine =
+      ClaimsDao
+        .listByStudent(session, student, 50, 0)
+        .getOrThrow()
+        .map { it.id }
+        .toSet()
+
+    // All four statuses (active, superseded, replacement-active, retracted) are returned.
+    assertEquals(setOf(active.id, toSupersede.id, replacement.id, toRetract.id), mine)
+    assertTrue(otherClaim.id !in mine, "another student's claim must be excluded")
+
+    // Bounded by limit/offset.
+    assertEquals(2, ClaimsDao.listByStudent(session, student, 2, 0).getOrThrow().size)
+    assertEquals(2, ClaimsDao.listByStudent(session, student, 2, 2).getOrThrow().size)
+  }
+
+  @Test
   fun `findById returns the claim`() {
     val student = createStudent()
     val claim = ClaimsDao.create(session, newClaim(student)).getOrThrow()

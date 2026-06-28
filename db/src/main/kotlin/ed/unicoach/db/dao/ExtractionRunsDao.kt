@@ -18,7 +18,10 @@ import java.util.UUID
  * the caller. The log is insert-only; [watermark] reads the highest applied
  * target for a conversation, the idempotency anchor for incremental extraction.
  */
-object ExtractionRunsDao : Creatable<NewExtractionRun, ExtractionRun> {
+object ExtractionRunsDao :
+  Findable<ExtractionRun, ExtractionRunId>,
+  Listable<ExtractionRun>,
+  Creatable<NewExtractionRun, ExtractionRun> {
   private fun mapRun(rs: ResultSet): ExtractionRun =
     ExtractionRun(
       id = ExtractionRunId(rs.getLong("id")),
@@ -93,6 +96,65 @@ object ExtractionRunsDao : Creatable<NewExtractionRun, ExtractionRun> {
       """.trimIndent(),
       bind = { it.setObject(1, convoId.value) },
       map = { rs -> rs.getLong("watermark") },
+    )
+
+  /** Resolves one run by id; [NotFoundException] when no row matches. Read-only admin surface (RFC 77). */
+  override fun findById(
+    session: SqlSession,
+    id: ExtractionRunId,
+  ): Result<ExtractionRun> =
+    session.queryOne(
+      "SELECT * FROM extraction_runs WHERE id = ?",
+      bind = { it.setLong(1, id.value) },
+      map = ::mapRun,
+    )
+
+  /**
+   * One page of runs across all students, ordered `id` (monotonic with insertion
+   * on the `BIGINT IDENTITY` key) so paging is deterministic. Read-only admin
+   * surface (RFC 77).
+   */
+  override fun list(
+    session: SqlSession,
+    limit: Int,
+    offset: Int,
+  ): Result<List<ExtractionRun>> =
+    session.queryList(
+      """
+      SELECT * FROM extraction_runs
+      ORDER BY id
+      LIMIT ? OFFSET ?
+      """.trimIndent(),
+      bind = { stmt ->
+        stmt.setInt(1, limit)
+        stmt.setInt(2, offset)
+      },
+      map = ::mapRun,
+    )
+
+  /**
+   * One bounded page of a student's runs, ordered `created_at, id` (served by
+   * `extraction_runs_student_idx`). Read-only admin surface (RFC 77).
+   */
+  fun listByStudent(
+    session: SqlSession,
+    studentId: StudentId,
+    limit: Int,
+    offset: Int,
+  ): Result<List<ExtractionRun>> =
+    session.queryList(
+      """
+      SELECT * FROM extraction_runs
+      WHERE student_id = ?
+      ORDER BY created_at, id
+      LIMIT ? OFFSET ?
+      """.trimIndent(),
+      bind = { stmt ->
+        stmt.setObject(1, studentId.value)
+        stmt.setInt(2, limit)
+        stmt.setInt(3, offset)
+      },
+      map = ::mapRun,
     )
 
   private fun mapRunError(e: SQLException): Exception =

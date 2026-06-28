@@ -65,13 +65,17 @@ sibling subpackages and are referenced here only by responsibility.
 - **Side effects**: Installs an application-scope `StatusPages` catch-all that
   renders any uncaught `Throwable` as an HTML service-unavailable page; installs
   the authorization gate; builds the resource registry over the user, student,
-  session, and system-prompt descriptors (`UsersResource`, `StudentsResource`,
-  `SessionsResource`, `SystemPromptsResource`); and registers the liveness,
-  login/logout, and descriptor-driven resource routes into the routing tree.
+  session, system-prompt, claims, observations, and extraction-runs descriptors
+  (`UsersResource`, `StudentsResource`, `SessionsResource`,
+  `SystemPromptsResource`, `ClaimsResource`, `ObservationsResource`,
+  `ExtractionRunsResource`); and registers the liveness, login/logout, and
+  descriptor-driven resource routes into the routing tree. The claims,
+  observations, and extraction-runs descriptors expose the coaching-memory
+  surfaces as list+detail read-only views (no create/edit/delete).
   `UsersResource` is the only descriptor constructed with collaborators: it
   receives both the same hasher instance used for login (for its user-create
   path) and the `emailVerificationService` (for its "send verification email"
-  action's resend path); the other three descriptors are passed as-is.
+  action's resend path); the other descriptors are passed as-is.
 - **Inputs**: All collaborators are pre-constructed by `startServer` and passed
   in; the module performs no config parsing and constructs no IO-bound singleton
   of its own.
@@ -167,3 +171,4 @@ driving the `UsersResource` resend action. It does not depend on `rest-server`,
 - [x] [RFC-63: Admin System Prompts](../../../../../../../rfc/63-admin-system-prompts.md)
 - [x] [RFC-65: Email Verification (Backend)](../../../../../../../rfc/65-email-verification.md)
 - [x] [RFC-76: Admin email-verification actions](../../../../../../../rfc/76-admin-email-verification-actions.md)
+- [x] [RFC-77: Read-only admin views for coaching memory](../../../../../../../rfc/77-admin-coaching-memory-views.md)

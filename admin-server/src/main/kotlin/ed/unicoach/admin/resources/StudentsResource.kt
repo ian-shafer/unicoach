@@ -7,13 +7,23 @@ import ed.unicoach.admin.engine.AdminResource
 import ed.unicoach.admin.engine.EdgePanel
 import ed.unicoach.admin.engine.FieldType
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.ClaimsDao
+import ed.unicoach.db.dao.ExtractionRunsDao
 import ed.unicoach.db.dao.NotFoundException
+import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.UserId
 import java.util.UUID
+
+/**
+ * Cap on each coaching-memory panel nested under the student profile (RFC 77),
+ * mirroring the sessions panel's `limit = 50`. A student with more memory shows
+ * the first page only; full enumeration is via the global `/{slug}` lists.
+ */
+private const val STUDENT_PANEL_LIMIT = 50
 
 /**
  * Maps the admin engine's `includeDeleted` flag to a [SoftDeleteScope] at the DAO
@@ -160,6 +170,14 @@ object StudentsResource : AdminResource<Student, StudentId> {
           },
       )
 
+    // The student's coaching memory (RFC 77): each panel is built by its own
+    // helper, which fetches at most STUDENT_PANEL_LIMIT rows and short-circuits
+    // (getOrElse { return Result.failure(it) }) on a transient DAO fault so the
+    // user page renders the DAO-error page rather than masking the fault.
+    val claimsPanel = buildClaimsPanel(db, student.id).getOrElse { return Result.failure(it) }
+    val observationsPanel = buildObservationsPanel(db, student.id).getOrElse { return Result.failure(it) }
+    val extractionRunsPanel = buildExtractionRunsPanel(db, student.id).getOrElse { return Result.failure(it) }
+
     return Result.success(
       EdgePanel.Embedded(
         label = title,
@@ -172,8 +190,111 @@ object StudentsResource : AdminResource<Student, StudentId> {
         deleted = student.deletedAt != null,
         createFields = editableFields,
         editFields = editableFields,
-        nested = listOf(historyPanel),
+        nested = listOf(historyPanel, claimsPanel, observationsPanel, extractionRunsPanel),
       ),
     )
+  }
+
+  /**
+   * One trailing "Showing first N — see /{slug} for full list" row, appended only
+   * when the fetched page filled to [STUDENT_PANEL_LIMIT] (so more rows may exist).
+   * The remaining cells are blank and the row carries no link; the disclosure text
+   * points at the canonical top-level list for full enumeration (RFC 77).
+   */
+  private fun truncationRow(
+    fetched: Int,
+    columns: Int,
+    listSlug: String,
+  ): EdgePanel.Table.Row? =
+    if (fetched < STUDENT_PANEL_LIMIT) {
+      null
+    } else {
+      EdgePanel.Table.Row(
+        href = null,
+        cells =
+          listOf("Showing first $STUDENT_PANEL_LIMIT — see /$listSlug for full list") +
+            List(columns - 1) { "" },
+      )
+    }
+
+  /** The student's claims panel (first [STUDENT_PANEL_LIMIT]); rows link to `/claim/{id}`. */
+  private suspend fun buildClaimsPanel(
+    db: Database,
+    studentId: StudentId,
+  ): Result<EdgePanel.Table> {
+    val claims =
+      db
+        .withConnection { session -> ClaimsDao.listByStudent(session, studentId, STUDENT_PANEL_LIMIT, 0) }
+        .getOrElse { return Result.failure(it) }
+    val columns = listOf("ID", "Status", "Topic", "Confidence", "Created")
+    val rows =
+      claims.map { c ->
+        EdgePanel.Table.Row(
+          href = "/claim/${c.id.value}",
+          cells =
+            listOf(
+              c.id.value.toString(),
+              c.status.value,
+              c.topic.value,
+              c.confidence.toString(),
+              c.createdAt.toString(),
+            ),
+        )
+      } + listOfNotNull(truncationRow(claims.size, columns.size, "claim"))
+    return Result.success(EdgePanel.Table(label = "Claims", columns = columns, rows = rows))
+  }
+
+  /** The student's observations panel (first [STUDENT_PANEL_LIMIT]); rows link to `/observation/{id}`. */
+  private suspend fun buildObservationsPanel(
+    db: Database,
+    studentId: StudentId,
+  ): Result<EdgePanel.Table> {
+    val observations =
+      db
+        .withConnection { session -> ObservationsDao.listByStudent(session, studentId, STUDENT_PANEL_LIMIT, 0) }
+        .getOrElse { return Result.failure(it) }
+    val columns = listOf("ID", "Convo ID", "Uttered", "Created")
+    val rows =
+      observations.map { o ->
+        EdgePanel.Table.Row(
+          href = "/observation/${o.id.value}",
+          cells =
+            listOf(
+              o.id.value.toString(),
+              o.convoId.value.toString(),
+              o.utteredAt.toString(),
+              o.createdAt.toString(),
+            ),
+        )
+      } + listOfNotNull(truncationRow(observations.size, columns.size, "observation"))
+    return Result.success(EdgePanel.Table(label = "Observations", columns = columns, rows = rows))
+  }
+
+  /** The student's extraction-runs panel (first [STUDENT_PANEL_LIMIT]); rows link to `/extraction-run/{id}`. */
+  private suspend fun buildExtractionRunsPanel(
+    db: Database,
+    studentId: StudentId,
+  ): Result<EdgePanel.Table> {
+    val extractionRuns =
+      db
+        .withConnection { session -> ExtractionRunsDao.listByStudent(session, studentId, STUDENT_PANEL_LIMIT, 0) }
+        .getOrElse { return Result.failure(it) }
+    val columns = listOf("ID", "Outcome", "Model", "Input Tokens", "Output Tokens", "Created")
+    val rows =
+      extractionRuns.map { r ->
+        EdgePanel.Table.Row(
+          href = "/extraction-run/${r.id.value}",
+          cells =
+            listOf(
+              r.id.value.toString(),
+              r.outcome.value,
+              r.modelResolved ?: "",
+              r.inputTokens?.toString() ?: "",
+              r.outputTokens?.toString() ?: "",
+              r.createdAt.toString(),
+            ),
+        )
+      } + listOfNotNull(truncationRow(extractionRuns.size, columns.size, "extraction-run"))
+    return Result.success(EdgePanel.Table(label = "Extraction runs", columns = columns, rows = rows))
   }
 }

@@ -91,6 +91,63 @@ class StudentsResourceTest {
     }
 
   @Test
+  fun `user page renders the three coaching-memory panels each linking to canonical detail URLs`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val claim = AdminTestSupport.seedClaim(student.id)
+      val obs = AdminTestSupport.seedObservation(student.id, convo.id, req.id)
+      val run = AdminTestSupport.seedExtractionRun(student.id, convo.id, req.id)
+
+      val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+
+      assertTrue(body.contains("Claims"), "Claims panel must render")
+      assertTrue(body.contains("Observations"), "Observations panel must render")
+      assertTrue(body.contains("Extraction runs"), "Extraction runs panel must render")
+
+      assertTrue(body.contains("/claim/${claim.id.value}"), "Claim row links to the canonical /claim/{id} path")
+      assertTrue(body.contains("/observation/${obs.id.value}"), "Observation row links to the canonical /observation/{id} path")
+      assertTrue(body.contains("/extraction-run/${run.id.value}"), "Run row links to the canonical /extraction-run/{id} path")
+    }
+
+  @Test
+  fun `a student with no coaching memory renders the three panels empty without error`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      AdminTestSupport.seedStudent(user.id)
+
+      val res = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, res.status, "An empty-memory student page must render, not error")
+      val body = res.bodyAsText()
+      assertTrue(body.contains("Claims"), "Claims panel still renders when empty")
+      assertTrue(body.contains("Observations"), "Observations panel still renders when empty")
+      assertTrue(body.contains("Extraction runs"), "Extraction runs panel still renders when empty")
+    }
+
+  @Test
+  fun `claims panel discloses truncation when the student has more than the panel limit`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      // One more than STUDENT_PANEL_LIMIT (50) so the page fills and a row remains.
+      repeat(51) { AdminTestSupport.seedClaim(student.id) }
+
+      val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(
+        body.contains("Showing first 50 — see /claim for full list"),
+        "Truncated claims panel must disclose the cap and point at the canonical /claim list",
+      )
+    }
+
+  @Test
   fun `user page renders both the users and the embedded students version history`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

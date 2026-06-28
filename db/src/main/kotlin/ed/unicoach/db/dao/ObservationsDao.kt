@@ -16,7 +16,10 @@ import java.util.UUID
  * caller. The log is insert-only; the immutability triggers reject any
  * UPDATE/DELETE.
  */
-object ObservationsDao : Creatable<NewObservation, Observation> {
+object ObservationsDao :
+  Findable<Observation, ObservationId>,
+  Listable<Observation>,
+  Creatable<NewObservation, Observation> {
   private fun mapObservation(rs: ResultSet): Observation =
     Observation(
       id = ObservationId(rs.getLong("id")),
@@ -87,6 +90,65 @@ object ObservationsDao : Creatable<NewObservation, Observation> {
     session.queryList(
       "SELECT * FROM observations WHERE student_id = ? ORDER BY created_at, id",
       bind = { it.setObject(1, studentId.value) },
+      map = ::mapObservation,
+    )
+
+  /** Resolves one observation by id; [NotFoundException] when no row matches. Read-only admin surface (RFC 77). */
+  override fun findById(
+    session: SqlSession,
+    id: ObservationId,
+  ): Result<Observation> =
+    session.queryOne(
+      "SELECT * FROM observations WHERE id = ?",
+      bind = { it.setLong(1, id.value) },
+      map = ::mapObservation,
+    )
+
+  /**
+   * One page of observations across all students, ordered `id` (monotonic with
+   * insertion on the `BIGINT IDENTITY` key) so paging is deterministic. Read-only
+   * admin surface (RFC 77).
+   */
+  override fun list(
+    session: SqlSession,
+    limit: Int,
+    offset: Int,
+  ): Result<List<Observation>> =
+    session.queryList(
+      """
+      SELECT * FROM observations
+      ORDER BY id
+      LIMIT ? OFFSET ?
+      """.trimIndent(),
+      bind = { stmt ->
+        stmt.setInt(1, limit)
+        stmt.setInt(2, offset)
+      },
+      map = ::mapObservation,
+    )
+
+  /**
+   * One bounded page of a student's observations, ordered `created_at, id`
+   * (the unbounded overload above is retained). Read-only admin surface (RFC 77).
+   */
+  fun listByStudent(
+    session: SqlSession,
+    studentId: StudentId,
+    limit: Int,
+    offset: Int,
+  ): Result<List<Observation>> =
+    session.queryList(
+      """
+      SELECT * FROM observations
+      WHERE student_id = ?
+      ORDER BY created_at, id
+      LIMIT ? OFFSET ?
+      """.trimIndent(),
+      bind = { stmt ->
+        stmt.setObject(1, studentId.value)
+        stmt.setInt(2, limit)
+        stmt.setInt(3, offset)
+      },
       map = ::mapObservation,
     )
 

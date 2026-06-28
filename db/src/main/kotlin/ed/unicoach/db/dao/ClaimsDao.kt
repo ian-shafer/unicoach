@@ -24,8 +24,9 @@ import java.util.UUID
  */
 object ClaimsDao :
   Findable<Claim, ClaimId>,
+  Listable<Claim>,
   Creatable<NewClaim, Claim> {
-  private fun mapClaim(rs: ResultSet): Claim =
+  internal fun mapClaim(rs: ResultSet): Claim =
     Claim(
       id = ClaimId(UUID.fromString(rs.getString("id"))),
       createdAt = rs.getInstant("created_at"),
@@ -50,7 +51,7 @@ object ClaimsDao :
    * corruption, surfaced as a [SQLException] (→ [DatabaseException]), never a
    * user-facing failure.
    */
-  private fun <E> parseEnum(
+  internal fun <E> parseEnum(
     value: String,
     fromValue: (String) -> E?,
     column: String,
@@ -85,6 +86,53 @@ object ClaimsDao :
     session.queryOne(
       "SELECT * FROM claims WHERE id = ?",
       bind = { it.setObject(1, id.value) },
+      map = ::mapClaim,
+    )
+
+  /**
+   * One page of claims across all students, ordered `row_created_at, id` so paging
+   * is deterministic. Read-only admin surface (RFC 77).
+   */
+  override fun list(
+    session: SqlSession,
+    limit: Int,
+    offset: Int,
+  ): Result<List<Claim>> =
+    session.queryList(
+      """
+      SELECT * FROM claims
+      ORDER BY row_created_at, id
+      LIMIT ? OFFSET ?
+      """.trimIndent(),
+      bind = { stmt ->
+        stmt.setInt(1, limit)
+        stmt.setInt(2, offset)
+      },
+      map = ::mapClaim,
+    )
+
+  /**
+   * One page of a student's claims in *all* statuses (distinct from the active-only
+   * [listActiveByStudent]), ordered `created_at, id`. Read-only admin surface (RFC 77).
+   */
+  fun listByStudent(
+    session: SqlSession,
+    studentId: StudentId,
+    limit: Int,
+    offset: Int,
+  ): Result<List<Claim>> =
+    session.queryList(
+      """
+      SELECT * FROM claims
+      WHERE student_id = ?
+      ORDER BY created_at, id
+      LIMIT ? OFFSET ?
+      """.trimIndent(),
+      bind = { stmt ->
+        stmt.setObject(1, studentId.value)
+        stmt.setInt(2, limit)
+        stmt.setInt(3, offset)
+      },
       map = ::mapClaim,
     )
 

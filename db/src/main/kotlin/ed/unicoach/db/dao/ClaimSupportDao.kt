@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.Claim
 import ed.unicoach.db.models.ClaimId
 import ed.unicoach.db.models.ClaimSupport
 import ed.unicoach.db.models.NewClaimSupport
@@ -109,6 +110,27 @@ object ClaimSupportDao : Creatable<NewClaimSupport, ClaimSupport> {
       """.trimIndent(),
       bind = { it.setObject(1, claimId.value) },
       map = ::mapObservation,
+    )
+
+  /**
+   * The claims an observation supports — the exact reverse of
+   * [listObservationsForClaim]. Joins `claims` on `claim_support.claim_id`, served
+   * by `claim_support_observation_idx`, ordered `created_at, id`. Read-only admin
+   * surface (RFC 77).
+   */
+  fun listClaimsForObservation(
+    session: SqlSession,
+    observationId: ObservationId,
+  ): Result<List<Claim>> =
+    session.queryList(
+      """
+      SELECT c.* FROM claim_support cs
+      JOIN claims c ON c.id = cs.claim_id
+      WHERE cs.observation_id = ?
+      ORDER BY c.created_at, c.id
+      """.trimIndent(),
+      bind = { it.setLong(1, observationId.value) },
+      map = ClaimsDao::mapClaim,
     )
 
   /** Sentinel marking the idempotent no-op insert (existing row read back via [readExisting]). */

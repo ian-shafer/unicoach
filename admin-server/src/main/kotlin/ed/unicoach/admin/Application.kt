@@ -5,6 +5,9 @@ import ed.unicoach.admin.auth.installAdminGate
 import ed.unicoach.admin.engine.AdminRegistry
 import ed.unicoach.admin.engine.registerAdminRoutes
 import ed.unicoach.admin.render.configureAdminStatusPages
+import ed.unicoach.admin.resources.ClaimsResource
+import ed.unicoach.admin.resources.ExtractionRunsResource
+import ed.unicoach.admin.resources.ObservationsResource
 import ed.unicoach.admin.resources.SessionsResource
 import ed.unicoach.admin.resources.StudentsResource
 import ed.unicoach.admin.resources.SystemPromptsResource
@@ -102,6 +105,9 @@ fun Application.adminModule(
         StudentsResource,
         SessionsResource,
         SystemPromptsResource,
+        ClaimsResource,
+        ObservationsResource,
+        ExtractionRunsResource,
       ),
     )
 

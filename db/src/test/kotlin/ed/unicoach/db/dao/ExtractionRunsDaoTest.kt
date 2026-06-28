@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ExtractionOutcome
+import ed.unicoach.db.models.ExtractionRunId
 import ed.unicoach.db.models.NewExtractionRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
@@ -208,6 +209,93 @@ class ExtractionRunsDaoTest {
           assertEquals(50, rs.getInt("o"))
         }
       }
+  }
+
+  @Test
+  fun `findById returns the run for a known id and NotFound for an unknown id`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val req = appendRequest(convo)
+    val appended = ExtractionRunsDao.append(session, run(convo, student, prompt, req, ExtractionOutcome.APPLIED)).getOrThrow()
+
+    assertEquals(appended.id, ExtractionRunsDao.findById(session, appended.id).getOrThrow().id)
+
+    val miss = ExtractionRunsDao.findById(session, ExtractionRunId(999_999L))
+    assertTrue(miss.exceptionOrNull() is NotFoundException, "got ${miss.exceptionOrNull()}")
+  }
+
+  @Test
+  fun `list pages and orders by id`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val r1 = appendRequest(convo)
+    val r2 = appendRequest(convo)
+    val r3 = appendRequest(convo)
+    val e1 = ExtractionRunsDao.append(session, run(convo, student, prompt, r1, ExtractionOutcome.APPLIED)).getOrThrow()
+    val e2 = ExtractionRunsDao.append(session, run(convo, student, prompt, r2, ExtractionOutcome.APPLIED)).getOrThrow()
+    val e3 = ExtractionRunsDao.append(session, run(convo, student, prompt, r3, ExtractionOutcome.FAILED)).getOrThrow()
+
+    assertEquals(listOf(e1.id, e2.id), ExtractionRunsDao.list(session, 2, 0).getOrThrow().map { it.id })
+    assertEquals(listOf(e3.id), ExtractionRunsDao.list(session, 2, 2).getOrThrow().map { it.id })
+  }
+
+  @Test
+  fun `listByStudent returns the student's runs with token-and-count columns intact, bounded, excluding other students`() {
+    val student = createStudent()
+    val other = createStudent()
+    val convo = createConvo(student)
+    val otherConvo = createConvo(other)
+    val prompt = createSystemPrompt()
+    val r1 = appendRequest(convo)
+    val r2 = appendRequest(convo)
+    val rOther = appendRequest(otherConvo)
+
+    val applied =
+      ExtractionRunsDao
+        .append(
+          session,
+          NewExtractionRun(
+            convoId = convo,
+            studentId = student,
+            throughRequestId = r1,
+            outcome = ExtractionOutcome.APPLIED,
+            systemPromptId = prompt,
+            provider = "log",
+            modelResolved = "claude-sonnet-4-6",
+            observationsWritten = 3,
+            claimsWritten = 2,
+            claimsSuperseded = 1,
+            inputTokens = 100,
+            outputTokens = 50,
+            cacheReadTokens = 10,
+            cacheWriteTokens = 5,
+          ),
+        ).getOrThrow()
+    val failed =
+      ExtractionRunsDao
+        .append(session, run(convo, student, prompt, r2, ExtractionOutcome.FAILED, input = 30, output = 0))
+        .getOrThrow()
+    ExtractionRunsDao
+      .append(session, run(otherConvo, other, prompt, rOther, ExtractionOutcome.APPLIED))
+      .getOrThrow()
+
+    val mine = ExtractionRunsDao.listByStudent(session, student, 50, 0).getOrThrow()
+    assertEquals(listOf(applied.id, failed.id), mine.map { it.id })
+
+    val appliedRow = mine.first { it.id == applied.id }
+    assertEquals(3, appliedRow.observationsWritten)
+    assertEquals(2, appliedRow.claimsWritten)
+    assertEquals(1, appliedRow.claimsSuperseded)
+    assertEquals(100, appliedRow.inputTokens)
+    assertEquals(50, appliedRow.outputTokens)
+    assertEquals(10, appliedRow.cacheReadTokens)
+    assertEquals(5, appliedRow.cacheWriteTokens)
+
+    // Bounded by limit/offset.
+    assertEquals(listOf(applied.id), ExtractionRunsDao.listByStudent(session, student, 1, 0).getOrThrow().map { it.id })
+    assertEquals(listOf(failed.id), ExtractionRunsDao.listByStudent(session, student, 1, 1).getOrThrow().map { it.id })
   }
 
   @Test

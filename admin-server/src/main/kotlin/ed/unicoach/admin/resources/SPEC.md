@@ -8,12 +8,22 @@ descriptors that configure the admin engine for the v1 tables: `users`
 ([StudentsResource.kt](./StudentsResource.kt)), `sessions`
 ([SessionsResource.kt](./SessionsResource.kt)), and the immutable
 `system_prompts` catalog
-([SystemPromptsResource.kt](./SystemPromptsResource.kt)). Each descriptor
+([SystemPromptsResource.kt](./SystemPromptsResource.kt)). It also holds the
+read-only coaching-memory views (RFC 77): `claims`
+([ClaimsResource.kt](./ClaimsResource.kt)), `observations`
+([ObservationsResource.kt](./ObservationsResource.kt)), and `extraction_runs`
+([ExtractionRunsResource.kt](./ExtractionRunsResource.kt)). Each descriptor
 **decides** one table's kind, its allowed operation set, its sensitive columns,
 its relationship edges, and the exact write path each operation takes through
 the typed DAOs. The generic routing, rendering, and paging machinery lives in
 [`../engine`](../engine); this directory only declares _what_ the engine does
 for these tables, never _how_ the engine does it.
+
+The coaching-memory descriptors are list+detail only — all four write handlers
+are `null`, `isDeleted` is always `false`, and the read `scope`/`includeDeleted`
+arguments are ignored (the same posture as `sessions`/`system_prompts`). They
+exist to make the per-student memory and its LLM spend inspectable; they are
+also woven into the student profile as nested panels (see `StudentsResource`).
 
 The shared soft-delete OCC helper [`occSoftDelete`](./OccDelete.kt) lives here
 too: the "load current version, then OCC delete/undelete" sequence expressed
@@ -162,9 +172,17 @@ read-then-write blocks.
 - The `user` detail page MUST declare exactly three edges: an `Embedded`
   `students` panel, a `HasMany` `sessions` table, and a `History` panel for
   `users_versions`. The embedded `students` panel MUST itself nest a `History`
-  panel for `students_versions`. The `users_versions` history table surfaces an
-  `Email Verified` column (each row emits `emailVerifiedAt?.toString()` or empty
-  when null) alongside `Version`/`Email`/`Name`/`Admin`/`Updated`/`Deleted`.
+  panel for `students_versions`, followed by three coaching-memory tables —
+  Claims, Observations, and Extraction runs (RFC 77, see below). The
+  `users_versions` history table surfaces an `Email Verified` column (each row
+  emits `emailVerifiedAt?.toString()` or empty when null) alongside
+  `Version`/`Email`/`Name`/`Admin`/`Updated`/`Deleted`.
+- `ClaimsResource` declares one `HasMany` edge ("Supporting observations",
+  targeting `observation`) and `ObservationsResource` one `HasMany` edge
+  ("Supported claims", targeting `claim`); their resolved panels link across the
+  `claim_support` join. `ExtractionRunsResource` declares no edges. A transient
+  DAO fault while resolving any such panel propagates as a failed `Result`,
+  matching the existing edge-resolution contract.
 - The `HasMany` `sessions` rows MUST link to the canonical `/session/{id}`
   detail path. They MUST NEVER link to a nested `/user/{id}/session/{id}` path.
 - The `session` detail page MUST declare a `Parent` edge back to its owner. When
@@ -270,10 +288,24 @@ read-then-write blocks.
 - **create/update/delete/undelete** — all `null` (mutations are owner-nested).
 - **buildPanel(db, userId)** — assembles the inline embedded panel for a user:
   the student profile (if any), its create/edit forms (the single editable
-  graduation field), and the nested `students_versions` history table. Side
-  effects: DB reads only. Returns a "no profile yet" panel on
-  `NotFoundException`; propagates any other DAO fault as a failed `Result`.
-  Idempotent: yes.
+  graduation field), the nested `students_versions` history table, and — after
+  the history table — three coaching-memory panels (RFC 77): Claims,
+  Observations, and Extraction runs, in that order. Each memory panel is built
+  by a private helper
+  (`buildClaimsPanel`/`buildObservationsPanel`/`buildExtractionRunsPanel`) that
+  fetches at most `STUDENT_PANEL_LIMIT` rows via the matching
+  `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)` and links each row to the
+  canonical top-level detail (`/claim/{id}`, `/observation/{id}`,
+  `/extraction-run/{id}`). When a fetched page fills to `STUDENT_PANEL_LIMIT`,
+  the shared `truncationRow` helper appends one linkless "Showing first 50 — see
+  /{slug} for full list" row pointing at the canonical list. Side effects: DB
+  reads only. Returns a "no profile yet" panel on `NotFoundException`;
+  propagates any other DAO fault (including a fault on any of the three memory
+  loads) as a failed `Result`. Idempotent: yes.
+- **`STUDENT_PANEL_LIMIT`** — package-private constant `50`, the per-panel row
+  cap for the nested coaching-memory tables, mirroring the sessions panel's
+  limit. A student with more memory shows the first page only; full enumeration
+  is via the global `/{slug}` lists.
 
 ### `SessionsResource` (ENTITY, top-level)
 
@@ -317,6 +349,68 @@ ever served, so `body` is never re-editable. No edges.
 - **isDeleted** — always `false`. **edges** — empty; **resolveEdges** — default
   (empty).
 
+### `ClaimsResource` (ENTITY, top-level, read-only — RFC 77)
+
+`slug = "claim"`, `title = "Claim"`, `kind = AdminKind.ENTITY` (the `claims`
+table is revisable in the domain, but the admin exposes no writes). `parseId`
+accepts a UUID into `ClaimId`. List columns (`inList = true`): `id`,
+`studentId`, `status`, `kind`, `topic`, `confidence`, `createdAt`. Detail-only
+(`inList = false`): `origin`, `subject`, `visibility`, `statement` (MULTILINE),
+`supersededById`, `supersededAt`, `retractedAt`, `updatedAt`. `statement` is
+kept out of the list and shown in full on detail (the `system_prompts.body`
+treatment). No column is `sensitive` (redaction is reserved for credential
+material such as `password_hash`/`token_hash`, not content). One `HasMany` edge,
+"Supporting observations".
+
+- **list** — reads via `ClaimsDao.list(session, limit, offset)` inside
+  `db.withConnection` (`scope` ignored). Side effects: DB read. Idempotent: yes.
+- **get** — reads one claim via `ClaimsDao.findById` (`includeDeleted` ignored).
+  Errors: `NotFoundException` (→ 404). Idempotent: yes.
+- **create/update/delete/undelete** — all `null`; the engine registers no
+  create/edit/delete routes and renders no Edit/Delete/New affordance.
+- **isDeleted** — always `false`.
+- **resolveEdges** — one "Supporting observations" panel built from
+  `ClaimSupportDao.listObservationsForClaim`; rows link to `/observation/{id}`.
+  Side effects: DB read. Errors: DAO fault → failed `Result`. Idempotent: yes.
+
+### `ObservationsResource` (LOG, top-level, read-only — RFC 77)
+
+`slug = "observation"`, `title = "Observation"`, `kind = AdminKind.LOG` (the
+`observations` log is insert-only in the domain). `parseId` accepts a numeric id
+via `toLongOrNull` into `ObservationId`. List columns: `id`, `studentId`,
+`convoId`, `utteredAt`, `createdAt`. Detail-only: `sourceRequestId`, `quote`
+(MULTILINE, kept out of the list and shown in full on detail). No `sensitive`
+column. One `HasMany` edge, "Supported claims".
+
+- **list** — reads via `ObservationsDao.list(session, limit, offset)` inside
+  `db.withConnection`. Side effects: DB read. Idempotent: yes.
+- **get** — reads one observation via `ObservationsDao.findById`. Errors:
+  `NotFoundException` (→ 404). Idempotent: yes.
+- **create/update/delete/undelete** — all `null`.
+- **isDeleted** — always `false`.
+- **resolveEdges** — one "Supported claims" panel built from
+  `ClaimSupportDao.listClaimsForObservation`; rows link to `/claim/{id}`. Side
+  effects: DB read. Errors: DAO fault → failed `Result`. Idempotent: yes.
+
+### `ExtractionRunsResource` (LOG, top-level, read-only — RFC 77)
+
+`slug = "extraction-run"`, `title = "Extraction Run"`, `kind = AdminKind.LOG`
+(append-only log of billed extraction LLM calls). `parseId` accepts a numeric id
+via `toLongOrNull` into `ExtractionRunId`. List columns (token and write-count
+columns kept on the list so per-student LLM spend is eyeballable): `id`,
+`studentId`, `outcome`, `modelResolved`, `claimsWritten`, `inputTokens`,
+`outputTokens`, `createdAt`. Detail-only: `convoId`, `throughRequestId`,
+`systemPromptId`, `provider`, `observationsWritten`, `claimsSuperseded`,
+`cacheReadTokens`, `cacheWriteTokens`. No `sensitive` column. No edges.
+
+- **list** — reads via `ExtractionRunsDao.list(session, limit, offset)` inside
+  `db.withConnection`. Side effects: DB read. Idempotent: yes.
+- **get** — reads one run via `ExtractionRunsDao.findById`. Errors:
+  `NotFoundException` (→ 404). Idempotent: yes.
+- **create/update/delete/undelete** — all `null`.
+- **isDeleted** — always `false`. **edges** — empty; **resolveEdges** — default
+  (empty).
+
 ### `occSoftDelete` (shared helper, [OccDelete.kt](./OccDelete.kt))
 
 - **`Database.occSoftDelete(dao, id, deleted)`** — a `suspend` extension over
@@ -336,7 +430,8 @@ ever served, so `body` is never re-editable. No edges.
   directly. `UsersResource` takes two constructor-injected collaborators: an
   `Argon2Hasher` (used by the create path) and an `EmailVerificationService`
   (used by the `send-verification-email` action to resend a verification token).
-  `StudentsResource`, `SessionsResource`, and `SystemPromptsResource` are
+  `StudentsResource`, `SessionsResource`, `SystemPromptsResource`,
+  `ClaimsResource`, `ObservationsResource`, and `ExtractionRunsResource` are
   stateless `object`s. All DB access is via the injected `Database`.
   Module-level config (bind host, cookie, session expiry) lives in
   `admin-server.conf` / `AdminConfig`, outside this directory.
@@ -375,3 +470,16 @@ ever served, so `body` is never re-editable. No edges.
       `UsersDao.markEmailVerified`) and
       `POST /user/{id}/send-verification-email` (loads the active user, then
       `EmailVerificationService.resend`, best-effort delivery).
+- [x] [RFC-77: Admin Coaching-Memory Views](../../../../../../../../rfc/77-admin-coaching-memory-views.md)
+      — Added three read-only descriptors over the coaching-memory tables:
+      `ClaimsResource` (ENTITY, slug `claim`, one "Supporting observations"
+      edge), `ObservationsResource` (LOG, slug `observation`, one "Supported
+      claims" edge), and `ExtractionRunsResource` (LOG, slug `extraction-run`,
+      no edges, token/write-count columns on the list). All three are
+      list+detail only (four write handlers `null`, `isDeleted` always `false`,
+      `scope`/`includeDeleted` ignored), delegating list/get to the typed DAOs
+      inside `db.withConnection`. `StudentsResource.buildPanel` was extended to
+      nest Claims, Observations, and Extraction-runs tables under the student
+      profile (after the version-history table), each capped at the new
+      `STUDENT_PANEL_LIMIT = 50` via `…Dao.listByStudent` with a shared
+      `truncationRow` disclosure pointing at the canonical list.

@@ -200,6 +200,40 @@ class ClaimSupportDaoTest {
   }
 
   @Test
+  fun `listClaimsForObservation returns every claim the observation supports and is the reverse of listObservationsForClaim`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val c1 = ClaimsDao.create(session, newClaim(student)).getOrThrow().id
+    val c2 = ClaimsDao.create(session, newClaim(student)).getOrThrow().id
+    val cOther = ClaimsDao.create(session, newClaim(student)).getOrThrow().id
+
+    val obs = observation(student, convo, "shared")
+    val otherObs = observation(student, convo, "other")
+
+    // obs supports c1 and c2; cOther is linked only to otherObs.
+    ClaimSupportDao.link(session, c1, obs).getOrThrow()
+    ClaimSupportDao.link(session, c2, obs).getOrThrow()
+    ClaimSupportDao.link(session, cOther, otherObs).getOrThrow()
+
+    val claims =
+      ClaimSupportDao
+        .listClaimsForObservation(session, obs)
+        .getOrThrow()
+        .map { it.id }
+        .toSet()
+    assertEquals(setOf(c1, c2), claims)
+    assertTrue(cOther !in claims, "a claim linked only to another observation must be excluded")
+
+    // Exact reverse: each claim's forward lookup includes obs.
+    assertTrue(obs in ClaimSupportDao.listObservationsForClaim(session, c1).getOrThrow().map { it.id })
+    assertTrue(obs in ClaimSupportDao.listObservationsForClaim(session, c2).getOrThrow().map { it.id })
+
+    // An unlinked observation supports no claims.
+    val unlinked = observation(student, convo, "unlinked")
+    assertTrue(ClaimSupportDao.listClaimsForObservation(session, unlinked).getOrThrow().isEmpty())
+  }
+
+  @Test
   fun `UPDATE on claim_support raises P0001`() {
     val student = createStudent()
     val convo = createConvo(student)

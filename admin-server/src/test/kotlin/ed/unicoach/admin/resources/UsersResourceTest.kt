@@ -245,6 +245,23 @@ class UsersResourceTest {
     }
 
   @Test
+  fun `user detail page surfaces the embedded student's coaching-memory panels`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val claim = AdminTestSupport.seedClaim(student.id)
+      val run = AdminTestSupport.seedExtractionRun(student.id, convo.id, req.id)
+
+      val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(body.contains("/claim/${claim.id.value}"), "User page must link to the student's claim")
+      assertTrue(body.contains("/extraction-run/${run.id.value}"), "User page must link to the student's extraction run")
+    }
+
+  @Test
   fun `granting admin via the form is reflected on the next gate evaluation`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

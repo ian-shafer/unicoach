@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.NewObservation
+import ed.unicoach.db.models.ObservationId
 import ed.unicoach.db.models.StudentId
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -177,6 +178,60 @@ class ObservationsDaoTest {
     ObservationsDao.append(session, newObservation(student, convo, r2, "b")).getOrThrow()
 
     assertEquals(2, ObservationsDao.listByStudent(session, student).getOrThrow().size)
+  }
+
+  @Test
+  fun `findById returns the row for a known id and NotFound for an unknown id`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val req = appendRequest(convo)
+    val obs = ObservationsDao.append(session, newObservation(student, convo, req, "found me")).getOrThrow()
+
+    assertEquals(obs.id, ObservationsDao.findById(session, obs.id).getOrThrow().id)
+    assertEquals("found me", ObservationsDao.findById(session, obs.id).getOrThrow().quote)
+
+    val miss = ObservationsDao.findById(session, ObservationId(999_999L))
+    assertTrue(miss.exceptionOrNull() is NotFoundException, "got ${miss.exceptionOrNull()}")
+  }
+
+  @Test
+  fun `list pages and orders by id`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val r1 = appendRequest(convo)
+    val r2 = appendRequest(convo)
+    val r3 = appendRequest(convo)
+    val o1 = ObservationsDao.append(session, newObservation(student, convo, r1, "a")).getOrThrow()
+    val o2 = ObservationsDao.append(session, newObservation(student, convo, r2, "b")).getOrThrow()
+    val o3 = ObservationsDao.append(session, newObservation(student, convo, r3, "c")).getOrThrow()
+
+    assertEquals(listOf(o1.id, o2.id), ObservationsDao.list(session, 2, 0).getOrThrow().map { it.id })
+    assertEquals(listOf(o3.id), ObservationsDao.list(session, 2, 2).getOrThrow().map { it.id })
+  }
+
+  @Test
+  fun `bounded listByStudent returns only that student's rows, bounded and ordered`() {
+    val student = createStudent()
+    val other = createStudent()
+    val convo = createConvo(student)
+    val otherConvo = createConvo(other)
+    val r1 = appendRequest(convo)
+    val r2 = appendRequest(convo)
+    val r3 = appendRequest(convo)
+    val rOther = appendRequest(otherConvo)
+
+    val o1 = ObservationsDao.append(session, newObservation(student, convo, r1, "a")).getOrThrow()
+    val o2 = ObservationsDao.append(session, newObservation(student, convo, r2, "b")).getOrThrow()
+    val o3 = ObservationsDao.append(session, newObservation(student, convo, r3, "c")).getOrThrow()
+    ObservationsDao.append(session, newObservation(other, otherConvo, rOther, "x")).getOrThrow()
+
+    val mine = ObservationsDao.listByStudent(session, student, 50, 0).getOrThrow()
+    assertEquals(listOf(o1.id, o2.id, o3.id), mine.map { it.id })
+    // Bounded by limit/offset.
+    assertEquals(listOf(o1.id, o2.id), ObservationsDao.listByStudent(session, student, 2, 0).getOrThrow().map { it.id })
+    assertEquals(listOf(o3.id), ObservationsDao.listByStudent(session, student, 2, 2).getOrThrow().map { it.id })
+    // The existing unbounded overload still returns all rows.
+    assertEquals(3, ObservationsDao.listByStudent(session, student).getOrThrow().size)
   }
 
   @Test

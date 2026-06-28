@@ -76,12 +76,14 @@ lookups, `rename`, `archive`/`unarchive`, parented `listBy*`, `appendRequest`,
 `updatePhysicalRecord`, `markEmailVerified`, `changeEmail`, the `*ForUpdate`
 lock-reads, `expireZombieSessions`, `*WithActivity`, `listTurns`,
 `findRawByResponseId`, `findByNameAndVersion`,
-`consume`/`findByTokenHash`/`consumeAllForUser`, the RFC-66 reads
-`listByConvoRange`/`listByStudent`/`listActiveByStudent`/
-`listObservationsForClaim`/`watermark`, the `claims` lifecycle write `revise`,
-the idempotent `link`, the `append` aliases, and `AdvisoryLockDao.lockStudent` —
-remain concrete methods on the DAO; `SystemPromptsDao.findById`/`list`/`create`
-are interface-backed via `Findable`/`Listable`/`Creatable`):
+`consume`/`findByTokenHash`/`consumeAllForUser`, the coaching-memory reads
+`listByConvoRange`/`listByStudent` (the unbounded and the bounded
+`limit`/`offset` overloads)/`listActiveByStudent`/
+`listObservationsForClaim`/`listClaimsForObservation`/`watermark`, the `claims`
+lifecycle write `revise`, the idempotent `link`, the `append` aliases, and
+`AdvisoryLockDao.lockStudent` — remain concrete methods on the DAO;
+`SystemPromptsDao.findById`/`list`/`create` are interface-backed via
+`Findable`/`Listable`/`Creatable`):
 
 | DAO                     | Capability interfaces                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -93,10 +95,10 @@ are interface-backed via `Findable`/`Listable`/`Creatable`):
 | `SystemPromptsDao`      | `Findable<SystemPrompt, SystemPromptId>`, `Listable<SystemPrompt>`, `Creatable<NewSystemPrompt, SystemPrompt>` (plain, not the soft-delete variants — `system_prompts` has no `deleted_at`; `findByNameAndVersion` remains concrete)                                                                                                                                                                                                                                |
 | `VerificationTokensDao` | `Creatable<NewVerificationToken, VerificationToken>` (remaining methods — `consume`, `findByTokenHash`, `consumeAllForUser` — are concrete)                                                                                                                                                                                                                                                                                                                         |
 | `CollegesDao`           | NONE — declares no capability interface. Its operations (`upsert`/`upsertProgram` hand-rolled `ON CONFLICT`, the natural-key `findByUnitId`, the dynamic `search`) match no à-la-carte interface, so every method is concrete. The interfaces model student-entity CRUD over a surface id; the upsert key is the federal natural key (`unit_id`; `(college_id, cip_code, credential_level)`), not the surface UUID, and `Creatable.create` has no upsert semantics. |
-| `ObservationsDao`       | `Creatable<NewObservation, Observation>` (append-only log; `append` is an alias of `create`; the range/student reads `listByConvoRange`/`listByStudent` stay concrete)                                                                                                                                                                                                                                                                                              |
-| `ClaimsDao`             | `Findable<Claim, ClaimId>`, `Creatable<NewClaim, Claim>` (the lifecycle write `revise` and the hot read `listActiveByStudent` stay concrete; `claims` has no `version`, so no `Updatable`/`OccDeletable`)                                                                                                                                                                                                                                                           |
-| `ClaimSupportDao`       | `Creatable<NewClaimSupport, ClaimSupport>` (append-only link log; `create` delegates to the idempotent `link`; the read `listObservationsForClaim` stays concrete)                                                                                                                                                                                                                                                                                                  |
-| `ExtractionRunsDao`     | `Creatable<NewExtractionRun, ExtractionRun>` (append-only log; `append` is an alias of `create`; the read `watermark` stays concrete)                                                                                                                                                                                                                                                                                                                               |
+| `ObservationsDao`       | `Findable<Observation, ObservationId>`, `Listable<Observation>`, `Creatable<NewObservation, Observation>` (append-only log; `append` is an alias of `create`; the range read `listByConvoRange`, the unbounded `listByStudent`, and the bounded `listByStudent(…, limit, offset)` overload stay concrete)                                                                                                                                                           |
+| `ClaimsDao`             | `Findable<Claim, ClaimId>`, `Listable<Claim>`, `Creatable<NewClaim, Claim>` (the lifecycle write `revise`, the hot active-only read `listActiveByStudent`, and the all-statuses `listByStudent(…, limit, offset)` stay concrete; `claims` has no `version`, so no `Updatable`/`OccDeletable`)                                                                                                                                                                       |
+| `ClaimSupportDao`       | `Creatable<NewClaimSupport, ClaimSupport>` (append-only link log; `create` delegates to the idempotent `link`; the reads `listObservationsForClaim`/`listClaimsForObservation` stay concrete)                                                                                                                                                                                                                                                                       |
+| `ExtractionRunsDao`     | `Findable<ExtractionRun, ExtractionRunId>`, `Listable<ExtractionRun>`, `Creatable<NewExtractionRun, ExtractionRun>` (append-only log; `append` is an alias of `create`; the reads `watermark` and the bounded `listByStudent` stay concrete)                                                                                                                                                                                                                        |
 | `AdvisoryLockDao`       | NONE — its sole method `lockStudent` is neither a row read nor a write, so no à-la-carte interface fits.                                                                                                                                                                                                                                                                                                                                                            |
 
 `Updatable<EDIT, ROW>` applies only to entities with a dedicated edit-input type
@@ -258,19 +260,23 @@ wrapper (previously inside `SessionsDao`).
   `created_at` as `Instant`, and `quote` as a plain `String`. No validated value
   classes and no corruption path.
 - **`claims`**: `mapClaim` reads `id` as a UUID `ClaimId`, the six enum columns
-  (`origin`, `status`, `kind`, `subject`, `topic`, `visibility`) via the private
-  `parseEnum` (each model's `fromValue`), `statement` as a plain `String`,
-  `confidence` as a plain `Int`, the nullable `superseded_by_id` as a
+  (`origin`, `status`, `kind`, `subject`, `topic`, `visibility`) via the
+  `internal` `parseEnum` (each model's `fromValue`), `statement` as a plain
+  `String`, `confidence` as a plain `Int`, the nullable `superseded_by_id` as a
   `ClaimId?`, and the nullable `superseded_at`/`retracted_at` timestamps.
   `parseEnum` throws a `SQLException` (→ `DatabaseException`, a
   `PermanentError`) when a persisted enum string resolves to null — the DB CHECK
   already guarantees a valid member, so a null signals row corruption, not a
   user-facing failure. Unlike the validated-value mappers it does not raise
-  `CorruptPersistedValueException`.
+  `CorruptPersistedValueException`. Both `mapClaim` and `parseEnum` are
+  `internal` (not private) so `ClaimSupportDao.listClaimsForObservation` reuses
+  `ClaimsDao::mapClaim` for its joined-claims projection.
 - **`claim_support`**: `mapSupport` reads the `(claim_id, observation_id)`
   composite key (UUID + `Long`) and `created_at`. The same file also carries a
   local `mapObservation` (identical shape to `ObservationsDao`'s) for the
-  joined-observation read. No corruption path.
+  `listObservationsForClaim` joined-observation read; its
+  `listClaimsForObservation` reverse read instead reuses `ClaimsDao::mapClaim`.
+  No corruption path.
 - **`extraction_runs`**: `mapRun` reads `id` as a `Long` `ExtractionRunId`,
   `convo_id`/`student_id`/`system_prompt_id` as typed UUIDs,
   `through_request_id` as a `Long` `ConvoRequestId`, `outcome` via the private
@@ -359,8 +365,9 @@ through `mapDatabaseError`):
 - everything else → `mapDatabaseError`. Mirrors `ConvosDao.mapConvoError` /
   `SystemPromptsDao.mapPromptError`.
 
-`ObservationsDao.mapObservationError` (the `create`/`append` write path;
-`listByConvoRange`/`listByStudent` route through `mapDatabaseError`):
+`ObservationsDao.mapObservationError` (the `create`/`append` write path; the
+reads `findById`/`list`/`listByConvoRange`/`listByStudent` route through
+`mapDatabaseError`):
 
 - `23503` (FK) → `NotFoundException` with a message resolved from the violated
   constraint name (`observations_student_id_fkey` → "Owning student not found";
@@ -370,8 +377,9 @@ through `mapDatabaseError`):
 - `23505` / `23514` → `ConstraintViolationException`.
 - everything else → `mapDatabaseError`.
 
-`ClaimsDao.mapClaimError` (the `create` and `revise` write paths; `findById`/
-`listActiveByStudent` route through `mapDatabaseError`):
+`ClaimsDao.mapClaimError` (the `create` and `revise` write paths; the reads
+`findById`/`list`/`listByStudent`/`listActiveByStudent` route through
+`mapDatabaseError`):
 
 - `23503` (FK) → `NotFoundException` (`claims_student_id_fkey` → "Owning student
   not found"; `claims_superseded_by_id_fkey` → "Superseding claim not found";
@@ -381,8 +389,9 @@ through `mapDatabaseError`):
   `claims_retracted_consistency_check`).
 - everything else → `mapDatabaseError`.
 
-`ClaimSupportDao.mapSupportError` (the `link`/`create` write path;
-`listObservationsForClaim`/`readExisting` route through `mapDatabaseError`):
+`ClaimSupportDao.mapSupportError` (the `link`/`create` write path; the reads
+`listObservationsForClaim`/`listClaimsForObservation`/`readExisting` route
+through `mapDatabaseError`):
 
 - `23503` (FK) → `NotFoundException` (`claim_support_claim_id_fkey` → "Claim not
   found"; `claim_support_observation_id_fkey` → "Observation not found";
@@ -391,8 +400,8 @@ through `mapDatabaseError`):
   error.
 - everything else → `mapDatabaseError`.
 
-`ExtractionRunsDao.mapRunError` (the `create`/`append` write path; `watermark`
-routes through `mapDatabaseError`):
+`ExtractionRunsDao.mapRunError` (the `create`/`append` write path; the reads
+`findById`/`list`/`listByStudent`/`watermark` route through `mapDatabaseError`):
 
 - `23503` (FK) → `NotFoundException` (`extraction_runs_convo_id_fkey` → "Convo
   not found"; `extraction_runs_student_id_fkey` → "Owning student not found";
@@ -1091,11 +1100,13 @@ upserts and returns a `Result`; it does not bracket itself in a savepoint.
 
 ### `ObservationsDao` — [`ObservationsDao.kt`](./ObservationsDao.kt)
 
-`object` implementing `Creatable<NewObservation, Observation>` over the
+`object` implementing `Findable<Observation, ObservationId>`/
+`Listable<Observation>`/`Creatable<NewObservation, Observation>` over the
 append-only `observations` log (RFC 66) — verbatim student quotes mined from
 conversation turns. The log is insert-only; DB immutability triggers reject any
-`UPDATE`/`DELETE`, so there is no update/delete/soft-delete surface. The write
-path discriminates SQLSTATE via `mapObservationError`; reads route through
+`UPDATE`/`DELETE`, so there is no update/delete/soft-delete surface. The
+`Findable`/`Listable` reads are a read-only admin surface added by RFC 77. The
+write path discriminates SQLSTATE via `mapObservationError`; reads route through
 `mapDatabaseError`.
 
 #### `create(session, input: NewObservation): Result<Observation>` / `append(session, input): Result<Observation>`
@@ -1107,6 +1118,21 @@ path discriminates SQLSTATE via `mapObservationError`; reads route through
 - **Error Handling**: `NotFoundException` (student/convo/source-request FK) via
   `mapObservationError`; `ConstraintViolationException` on `23505`/`23514`.
 - **Idempotency**: No — every append is a distinct row.
+
+#### `findById(session, id: ObservationId): Result<Observation>`
+
+- **Side Effects**: Read only — `queryOne` by primary key. Read-only admin
+  surface (RFC 77).
+- **Error Handling**: `NotFoundException()` when no row matches.
+- **Idempotency**: Yes.
+
+#### `list(session, limit, offset): Result<List<Observation>>`
+
+- **Side Effects**: Read only — `queryList` paging the full `observations` table
+  ordered `id` (monotonic with insertion on the `BIGINT IDENTITY` key, so paging
+  is deterministic), via `LIMIT ?`/`OFFSET ?`. Read-only admin surface (RFC 77).
+- **Error Handling**: `success(emptyList())` when no rows match.
+- **Idempotency**: Yes.
 
 #### `listByConvoRange(session, convoId, afterRequestId, throughRequestId): Result<List<Observation>>`
 
@@ -1120,7 +1146,15 @@ path discriminates SQLSTATE via `mapObservationError`; reads route through
 #### `listByStudent(session, studentId): Result<List<Observation>>`
 
 - **Side Effects**: Read only — every observation for a student, ordered
-  `created_at, id`.
+  `created_at, id`. The unbounded extraction-path read.
+- **Error Handling**: `success(emptyList())` when none match.
+- **Idempotency**: Yes.
+
+#### `listByStudent(session, studentId, limit, offset): Result<List<Observation>>`
+
+- **Side Effects**: Read only — one bounded page of a student's observations,
+  ordered `created_at, id`. The `limit`/`offset` overload (the unbounded form
+  above is retained); read-only admin surface (RFC 77).
 - **Error Handling**: `success(emptyList())` when none match.
 - **Idempotency**: Yes.
 
@@ -1128,13 +1162,15 @@ path discriminates SQLSTATE via `mapObservationError`; reads route through
 
 ### `ClaimsDao` — [`ClaimsDao.kt`](./ClaimsDao.kt)
 
-`object` implementing `Findable<Claim, ClaimId>`/`Creatable<NewClaim, Claim>`
-over the mutable `claims` entity (RFC 66) — deduplicated statements distilled
-about a student. `claims` has **no `version` column** (RFC 66 disabled
-versioning), so no mutation carries an OCC guard; concurrent same-student passes
-serialize on the per-student advisory lock (`AdvisoryLockDao`), not on OCC. The
-write paths (`create`, `revise`) discriminate SQLSTATE via `mapClaimError`;
-reads route through `mapDatabaseError`.
+`object` implementing `Findable<Claim, ClaimId>`/`Listable<Claim>`/
+`Creatable<NewClaim, Claim>` over the mutable `claims` entity (RFC 66) —
+deduplicated statements distilled about a student. `claims` has **no `version`
+column** (RFC 66 disabled versioning), so no mutation carries an OCC guard;
+concurrent same-student passes serialize on the per-student advisory lock
+(`AdvisoryLockDao`), not on OCC. The `Listable` `list` is a read-only admin
+surface added by RFC 77. The write paths (`create`, `revise`) discriminate
+SQLSTATE via `mapClaimError`; reads route through `mapDatabaseError`. Its
+`mapClaim` and `parseEnum` are `internal` so `ClaimSupportDao` reuses them.
 
 #### `create(session, input: NewClaim): Result<Claim>`
 
@@ -1150,6 +1186,23 @@ reads route through `mapDatabaseError`.
 
 - **Side Effects**: Read only — `queryOne` by primary key.
 - **Error Handling**: `NotFoundException()` when absent.
+- **Idempotency**: Yes.
+
+#### `list(session, limit, offset): Result<List<Claim>>`
+
+- **Side Effects**: Read only — `queryList` paging the full `claims` table
+  ordered `row_created_at, id` (the DB-trigger-maintained insertion timestamp
+  plus the UUID tie-breaker, so paging is deterministic), via `LIMIT ?`/
+  `OFFSET ?`. Read-only admin surface (RFC 77).
+- **Error Handling**: `success(emptyList())` when no rows match.
+- **Idempotency**: Yes.
+
+#### `listByStudent(session, studentId, limit, offset): Result<List<Claim>>`
+
+- **Side Effects**: Read only — one bounded page of a student's claims in
+  **all** statuses (distinct from the active-only `listActiveByStudent`),
+  ordered `created_at, id`. Read-only admin surface (RFC 77).
+- **Error Handling**: `success(emptyList())` when none match.
 - **Idempotency**: Yes.
 
 #### `listActiveByStudent(session, studentId): Result<List<Claim>>`
@@ -1200,7 +1253,18 @@ append-only `claim_support` link log (RFC 66) — the citation edges joining eac
 #### `listObservationsForClaim(session, claimId): Result<List<Observation>>`
 
 - **Side Effects**: Read only — JOINs `claim_support` to `observations`, ordered
-  `o.created_at, o.id`; the "what backs this claim" read.
+  `o.created_at, o.id`; the "what backs this claim" read. Maps via the
+  file-local `mapObservation`.
+- **Error Handling**: `success(emptyList())` when none match.
+- **Idempotency**: Yes.
+
+#### `listClaimsForObservation(session, observationId): Result<List<Claim>>`
+
+- **Side Effects**: Read only — the exact reverse of `listObservationsForClaim`:
+  JOINs `claim_support` to `claims` on `claim_id` (served by
+  `claim_support_observation_idx`), ordered `c.created_at, c.id`; the "which
+  claims this observation supports" read. Maps via the reused
+  `ClaimsDao::mapClaim`. Read-only admin surface (RFC 77).
 - **Error Handling**: `success(emptyList())` when none match.
 - **Idempotency**: Yes.
 
@@ -1208,11 +1272,13 @@ append-only `claim_support` link log (RFC 66) — the citation edges joining eac
 
 ### `ExtractionRunsDao` — [`ExtractionRunsDao.kt`](./ExtractionRunsDao.kt)
 
-`object` implementing `Creatable<NewExtractionRun, ExtractionRun>` over the
+`object` implementing `Findable<ExtractionRun, ExtractionRunId>`/
+`Listable<ExtractionRun>`/`Creatable<NewExtractionRun, ExtractionRun>` over the
 append-only `extraction_runs` log (RFC 66) — one row per extraction pass
 (success or failure), recording the window applied, the resolved model/provider,
-the write counts, and token usage. The log is insert-only. The write path
-discriminates SQLSTATE via `mapRunError`; `watermark` routes through
+the write counts, and token usage. The log is insert-only. The
+`Findable`/`Listable` reads are a read-only admin surface added by RFC 77. The
+write path discriminates SQLSTATE via `mapRunError`; reads route through
 `mapDatabaseError`.
 
 #### `create(session, input: NewExtractionRun): Result<ExtractionRun>` / `append(session, input): Result<ExtractionRun>`
@@ -1226,6 +1292,30 @@ discriminates SQLSTATE via `mapRunError`; `watermark` routes through
   system-prompt FK) via `mapRunError`; `ConstraintViolationException` on
   `23505`/`23514`.
 - **Idempotency**: No — every pass is a distinct row.
+
+#### `findById(session, id: ExtractionRunId): Result<ExtractionRun>`
+
+- **Side Effects**: Read only — `queryOne` by primary key. Read-only admin
+  surface (RFC 77).
+- **Error Handling**: `NotFoundException()` when no row matches.
+- **Idempotency**: Yes.
+
+#### `list(session, limit, offset): Result<List<ExtractionRun>>`
+
+- **Side Effects**: Read only — `queryList` paging the full `extraction_runs`
+  table ordered `id` (monotonic with insertion on the `BIGINT IDENTITY` key, so
+  paging is deterministic), via `LIMIT ?`/`OFFSET ?`. Read-only admin surface
+  (RFC 77).
+- **Error Handling**: `success(emptyList())` when no rows match.
+- **Idempotency**: Yes.
+
+#### `listByStudent(session, studentId, limit, offset): Result<List<ExtractionRun>>`
+
+- **Side Effects**: Read only — one bounded page of a student's runs, ordered
+  `created_at, id` (served by `extraction_runs_student_idx`). Read-only admin
+  surface (RFC 77).
+- **Error Handling**: `success(emptyList())` when none match.
+- **Idempotency**: Yes.
 
 #### `watermark(session, convoId): Result<Long>`
 
@@ -1425,3 +1515,20 @@ rules are in §IV.
       an active row via `mutateReturning`; `mapCreateUpdateError` maps the
       active-email index collision to `DuplicateEmailException`), isolated from
       the `UserEdit`/`update` surface like `markEmailVerified`.
+- [x] [RFC-77: Read-only admin views for coaching memory](../../../../../../../../rfc/77-admin-coaching-memory-views.md)
+      — Added a read-only admin surface over the coaching-memory DAOs by
+      composing the existing `Findable`/`Listable` supertypes
+      ([Dao.kt](./Dao.kt)) — no new capability interface, no new `DaoException`.
+      `ClaimsDao` now declares `Listable<Claim>` and adds `list` (paged
+      `row_created_at, id`) and the all-statuses
+      `listByStudent(…, limit, offset)` (distinct from the active-only
+      `listActiveByStudent`); its `mapClaim`/`parseEnum` were promoted private →
+      `internal`. `ObservationsDao` and `ExtractionRunsDao` adopted `Findable` +
+      `Listable`, adding `findById`, `list` (paged `id` on the `BIGINT IDENTITY`
+      key), and a bounded `listByStudent(…, limit, offset)`
+      (`ExtractionRunsDao`'s served by `extraction_runs_student_idx`;
+      `ObservationsDao` retaining its unbounded `listByStudent` overload).
+      `ClaimSupportDao` added `listClaimsForObservation` — the reverse of
+      `listObservationsForClaim`, joining `claims` and reusing
+      `ClaimsDao::mapClaim` (served by `claim_support_observation_idx`). All new
+      reads route through `mapDatabaseError`.
