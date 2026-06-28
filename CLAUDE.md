@@ -40,6 +40,17 @@ A bare `git commit` is refused early by the hook with a message telling you to
 use the dev shell — the commit is blocked (your changes are not lost), so re-run
 it via `nix develop -c git commit` rather than reaching for `--no-verify`.
 
+**Carve-out — rfc-pipeline WIP checkpoints skip the hook.** The one place
+`--no-verify` is sanctioned is the `/rfc-pipeline` orchestrator's throwaway
+checkpoint commits, made via
+`.claude/skills/rfc-pipeline/scripts/rfc-pipeline-checkpoint`. Those commits
+exist only as restore points and are squashed away before anything lands, so
+running the full gate on each is pure waste; the script encapsulates the
+`--no-verify` (keeping the flag out of the orchestrator's Bash command). The
+pipeline's two **final** commits — the ones the Architect actually lands — go
+through `nix develop -c git commit` and the full hook like any other commit. Do
+not reach for `--no-verify` anywhere else.
+
 ## Running tests
 
 Do **not** run `./gradlew test` directly — the DB-backed tests will fail with

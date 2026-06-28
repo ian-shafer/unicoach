@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rfc-pipeline-squash -s run-scratch
+
+Phase 3: collapse all WIP checkpoints into a clean staging state with
+`git reset --soft <base-sha>` (the recorded base SHA). The working tree and
+index are preserved; only the WIP history is dropped. The Architect then creates
+the two final commits (RFC doc; code + specs) from this state — those run the
+full pre-commit hook.
+
+Options:
+  -s run-scratch   The run-scratch dir holding this run's state (required).
+  -h               Help.
+EOF
+  exit "$exit_code"
+}
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+  s) RUN_SCRATCH="$OPTARG" ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[ -n "$RUN_SCRATCH" ] || help "Missing required -s run-scratch."
+[ "$#" -eq 0 ] || help "rfc-pipeline-squash takes no positional arguments."
+
+pl_load_state "$RUN_SCRATCH"
+
+git -C "$CODEBASE_ROOT" reset --soft "$BASE_SHA" >/dev/null
+log-info "Squashed WIP checkpoints; worktree + index preserved at base [$BASE_SHA]."
+log-info "Create the two final commits now (they run the full pre-commit hook)."

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=2
+  fi
+  cat << 'EOF'
+rfc-pipeline-verify-scope -s run-scratch [-d deny-glob]... [allow-glob ...]
+
+Assert a returned subagent's footprint against its declared write-scope. The
+tree is at a clean checkpoint before every spawn, so `git status --porcelain` on
+the worktree IS the agent's exact footprint. This is the enforced check the
+orchestrator runs instead of trusting an agent's self-report.
+
+Three modes, combinable:
+  - allow-globs given      => every changed path MUST match at least one
+                              (subset enforcement). Example: `rfc/*.md`.
+  - -d deny-glob (repeat)  => NO changed path may match any deny glob.
+                              Example: -d '*/SPEC.md' -d '*/INVARIANTS.md'.
+  - neither given          => the tree MUST be clean (empty footprint).
+
+Globs are bash patterns where `*` also spans `/`, so `*/SPEC.md` matches a
+SPEC.md at any depth.
+
+Exit codes:
+  0  footprint within scope.
+  1  a violation was found (offending paths printed to stderr).
+
+Options:
+  -s run-scratch   The run-scratch dir holding this run's state (required).
+  -d deny-glob     A glob no changed path may match (repeatable).
+  -h               Help.
+EOF
+  exit "$exit_code"
+}
+
+RUN_SCRATCH=""
+DENY_GLOBS=()
+while getopts ":s:d:h" opt; do
+  case "$opt" in
+  s) RUN_SCRATCH="$OPTARG" ;;
+  d) DENY_GLOBS+=("$OPTARG") ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[ -n "$RUN_SCRATCH" ] || help "Missing required -s run-scratch."
+ALLOW_GLOBS=("$@")
+
+pl_load_state "$RUN_SCRATCH"
+
+# `git status --porcelain` columns are 3 chars of status then the path; -z gives
+# NUL-terminated records so paths with spaces survive. `-uall` expands untracked
+# directories to individual files — otherwise a wholly-new dir collapses to
+# `service/` and a denied `service/SPEC.md` inside it would slip the check.
+# Renames (`R  old -> new`) are split so both sides are checked.
+mapfile -d '' -t records < <(git -C "$CODEBASE_ROOT" status --porcelain -z -uall)
+
+changed=()
+for rec in "${records[@]}"; do
+  [ -n "$rec" ] || continue
+  path="${rec:3}"
+  if [[ "$rec" == R* ]] && [[ "$path" == *" -> "* ]]; then
+    changed+=("${path%% -> *}" "${path##* -> }")
+  else
+    changed+=("$path")
+  fi
+done
+
+violations=()
+
+if [ "${#changed[@]}" -eq 0 ]; then
+  if [ "${#ALLOW_GLOBS[@]}" -eq 0 ] && [ "${#DENY_GLOBS[@]}" -eq 0 ]; then
+    log-info "Write-scope OK: tree is clean."
+  else
+    log-info "Write-scope OK: no changed paths."
+  fi
+  exit 0
+fi
+
+# Empty-tree mode: neither allow nor deny given => the tree must be clean.
+if [ "${#ALLOW_GLOBS[@]}" -eq 0 ] && [ "${#DENY_GLOBS[@]}" -eq 0 ]; then
+  printf '[ERROR] Write-scope VIOLATION: expected a clean tree, found:\n' >&2
+  printf '  %s\n' "${changed[@]}" >&2
+  exit 1
+fi
+
+for path in "${changed[@]}"; do
+  # Deny check first: a denied path is a violation regardless of allowlist.
+  for g in "${DENY_GLOBS[@]:-}"; do
+    [ -n "$g" ] || continue
+    # shellcheck disable=SC2053
+    if [[ "$path" == $g ]]; then
+      violations+=("$path (matches denied [$g])")
+      continue 2
+    fi
+  done
+  # Allowlist check: only when an allowlist was provided.
+  if [ "${#ALLOW_GLOBS[@]}" -gt 0 ]; then
+    allowed=0
+    for g in "${ALLOW_GLOBS[@]}"; do
+      # shellcheck disable=SC2053
+      if [[ "$path" == $g ]]; then
+        allowed=1
+        break
+      fi
+    done
+    if [ "$allowed" -eq 0 ]; then
+      violations+=("$path (outside allowlist)")
+    fi
+  fi
+done
+
+if [ "${#violations[@]}" -gt 0 ]; then
+  printf '[ERROR] Write-scope VIOLATION:\n' >&2
+  printf '  %s\n' "${violations[@]}" >&2
+  exit 1
+fi
+
+log-info "Write-scope OK: ${#changed[@]} changed path(s) within scope."

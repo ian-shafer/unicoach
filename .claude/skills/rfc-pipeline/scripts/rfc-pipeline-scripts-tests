@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# Tests for the rfc-pipeline git-plumbing scripts. These exercise the REAL
+# scripts against REAL throwaway git repos under a temp dir — no mocks, no
+# parsing of the scripts' source. Each scenario builds an isolated repo so a
+# failure cannot leak into the developer's checkout.
+#
+# Self-contained: depends on nothing outside the scripts/ directory. Run inside
+# the dev shell for a modern git:
+#   nix develop -c .claude/skills/rfc-pipeline/scripts/rfc-pipeline-scripts-tests
+set -euo pipefail
+
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
+
+# Minimal inline assertion harness (no dependency on the repo's bin/tests-common).
+TOTAL_TESTS=0
+pass_test() {
+  TOTAL_TESTS=$((TOTAL_TESTS + 1))
+  echo -e " \033[0;32m✅ $1\033[0m"
+}
+fail_test() {
+  echo -e " \033[0;31m❌ Fail: $1\033[0m" >&2
+  exit 1
+}
+assert_success() {
+  local msg="$1"
+  shift
+  "$@" || fail_test "$msg"
+  pass_test "$msg"
+}
+assert_failure() {
+  local msg="$1"
+  shift
+  if "$@"; then fail_test "$msg (expected to fail)"; fi
+  pass_test "$msg"
+}
+end_tests() {
+  echo ""
+  echo -e " 🎉 \033[0;32m${TOTAL_TESTS} tests passed successfully.\033[0m"
+}
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT INT TERM
+
+# Create a fresh isolated repo on `main`. Args: any rfc/NN-name.md basenames to
+# pre-commit. Echoes the repo path. Each repo gets a unique mktemp dir — this
+# runs in a command substitution (subshell), so a shared counter would not
+# persist; mktemp guarantees uniqueness without shared state.
+fresh_repo() {
+  local dir
+  dir="$(mktemp -d "$WORK/proj.XXXXXX")"
+  mkdir -p "$dir/rfc"
+  git -C "$dir" init -q -b main
+  git -C "$dir" config user.email test@example.com
+  git -C "$dir" config user.name "Test"
+  # Keep rfc/ present in worktree checkouts (git won't track an empty dir).
+  : > "$dir/rfc/.gitkeep"
+  # Mirror the real repo: .scratch/ is gitignored, so the run state/ledger the
+  # scripts write there never enter a checkpoint commit.
+  echo ".scratch/" > "$dir/.gitignore"
+  local f
+  for f in "$@"; do
+    echo "rfc body" > "$dir/rfc/$f"
+  done
+  echo "seed" > "$dir/README.md"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm "seed"
+  echo "$dir"
+}
+
+# Pull a single KEY's value out of captured `rfc-pipeline-claim` state output.
+state_val() { grep -E "^$2=" <<< "$1" | head -1 | cut -d= -f2-; }
+
+echo "==== rfc-pipeline-claim ===="
+
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+n="$(state_val "$state" RFC_NUM)"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+[ "$n" = "1" ] || fail_test "empty rfc dir should claim n=1, got [$n]"
+pass_test "claim picks n=1 with no prior RFCs"
+[ -d "$root" ] || fail_test "worktree dir [$root] not created"
+pass_test "claim creates the worktree directory"
+assert_success "claim creates pipeline branch" \
+  git -C "$repo" rev-parse --verify pipeline/rfc-1
+[ -f "$scratch/state" ] || fail_test "state file not written under run-scratch"
+pass_test "claim writes the run-scratch state file"
+[ -f "$scratch/checkpoints.log" ] || fail_test "ledger not initialized"
+pass_test "claim initializes an empty ledger"
+[ -d "$scratch/phase2/impl-review" ] || fail_test "scratch layout not scaffolded"
+pass_test "claim scaffolds the run-scratch layout"
+
+repo="$(fresh_repo 03-alpha.md 01-beta.md)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+[ "$(state_val "$state" RFC_NUM)" = "4" ] || fail_test "with rfc/03 committed, expected n=4"
+pass_test "claim picks one past the highest committed RFC"
+
+# A branch claiming a higher number must be honoured even with no committed file.
+repo="$(fresh_repo 02-x.md)"
+git -C "$repo" branch pipeline/rfc-09
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+[ "$(state_val "$state" RFC_NUM)" = "10" ] || fail_test "branch claim ignored; expected n=10"
+pass_test "claim respects a pipeline/rfc-NN branch claim"
+
+# Collision bump: pre-create the branch for the number we'd compute.
+repo="$(fresh_repo)"
+git -C "$repo" branch pipeline/rfc-1
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+[ "$(state_val "$state" RFC_NUM)" = "2" ] || fail_test "expected bump to n=2 on branch collision"
+pass_test "claim bumps past a colliding branch"
+
+echo ""
+echo "==== rfc-pipeline-checkpoint ===="
+
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+before="$(git -C "$root" rev-list --count HEAD)"
+echo "change" > "$root/rfc/draft.md"
+sha="$("$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" review-loop 1)"
+after="$(git -C "$root" rev-list --count HEAD)"
+[ "$after" -eq "$((before + 1))" ] || fail_test "checkpoint did not add a commit"
+pass_test "checkpoint commits the worktree"
+[ "$sha" = "$(git -C "$root" rev-parse HEAD)" ] || fail_test "printed SHA != HEAD"
+pass_test "checkpoint prints the new commit SHA"
+grep -q "$sha" "$scratch/checkpoints.log" || fail_test "checkpoint not appended to ledger"
+pass_test "checkpoint appends to the ledger"
+git -C "$root" log -1 --pretty=%s | grep -q 'pipeline(rfc-1): review-loop \[1\]' ||
+  fail_test "checkpoint message format wrong"
+pass_test "checkpoint uses the pipeline(rfc-n): step [i] message"
+
+# Untracked NEW files must be captured (the `git add -A` vs `-a` gotcha).
+echo "new" > "$root/newfile.txt"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl >/dev/null
+git -C "$root" ls-files --error-unmatch newfile.txt >/dev/null 2>&1 ||
+  fail_test "checkpoint omitted a new untracked file"
+pass_test "checkpoint captures untracked new files (add -A)"
+
+# The run state/ledger live under .scratch/ and must never be committed.
+if git -C "$root" ls-files --error-unmatch .scratch/rfc-1/state >/dev/null 2>&1; then
+  fail_test "checkpoint committed the run state under .scratch/"
+fi
+pass_test "checkpoint never commits .scratch/ (gitignored)"
+
+# No-op checkpoint: clean tree records HEAD without a new commit.
+count_before="$(git -C "$root" rev-list --count HEAD)"
+lines_before="$(wc -l < "$scratch/checkpoints.log")"
+noop_sha="$("$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl-review 1)"
+[ "$(git -C "$root" rev-list --count HEAD)" -eq "$count_before" ] ||
+  fail_test "no-op checkpoint created a commit"
+[ "$noop_sha" = "$(git -C "$root" rev-parse HEAD)" ] || fail_test "no-op SHA != HEAD"
+[ "$(wc -l < "$scratch/checkpoints.log")" -eq "$((lines_before + 1))" ] ||
+  fail_test "no-op checkpoint not recorded in ledger"
+pass_test "no-op checkpoint records HEAD without committing"
+
+echo ""
+echo "==== rfc-pipeline-verify-scope ===="
+
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+
+assert_success "clean tree passes empty-scope check" \
+  "$SCRIPTS/rfc-pipeline-verify-scope" -s "$scratch"
+
+echo "x" > "$root/rfc/10-x.md"
+assert_failure "dirty tree fails empty-scope check" \
+  "$SCRIPTS/rfc-pipeline-verify-scope" -s "$scratch"
+assert_success "change within allowlist passes" \
+  "$SCRIPTS/rfc-pipeline-verify-scope" -s "$scratch" 'rfc/*.md'
+assert_failure "change outside allowlist fails" \
+  "$SCRIPTS/rfc-pipeline-verify-scope" -s "$scratch" 'src/*'
+
+# Deny mode: a SPEC.md write is denied even though other code is allowed.
+git -C "$root" stash -u >/dev/null 2>&1 || true
+git -C "$root" checkout -- . 2>/dev/null || true
+rm -f "$root/rfc/10-x.md"
+mkdir -p "$root/service"
+echo "code" > "$root/service/Foo.kt"
+assert_success "code-only change passes deny check for SPEC/INVARIANTS" \
+  "$SCRIPTS/rfc-pipeline-verify-scope" -s "$scratch" -d '*/SPEC.md' -d '*/INVARIANTS.md'
+echo "spec" > "$root/service/SPEC.md"
+assert_failure "SPEC.md write trips the deny check" \
+  "$SCRIPTS/rfc-pipeline-verify-scope" -s "$scratch" -d '*/SPEC.md' -d '*/INVARIANTS.md'
+
+echo ""
+echo "==== rfc-pipeline-recover ===="
+
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+echo "a" > "$root/rfc/a.md"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" review-loop 1 >/dev/null
+echo "b" > "$root/rfc/b.md"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" review-loop 2 >/dev/null
+echo "scratch survives" > "$scratch/marker.txt"
+"$SCRIPTS/rfc-pipeline-recover" -s "$scratch" review-loop 1 >/dev/null
+[ -f "$root/rfc/a.md" ] || fail_test "recover lost the checkpointed file a.md"
+[ ! -f "$root/rfc/b.md" ] || fail_test "recover did not roll back b.md"
+pass_test "recover resets to a named checkpoint"
+[ -f "$scratch/marker.txt" ] || fail_test "recover clobbered .scratch/ (used -x?)"
+pass_test "recover preserves .scratch/"
+
+echo ""
+echo "==== rfc-pipeline-squash ===="
+
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+base="$(state_val "$state" BASE_SHA)"
+echo "1" > "$root/rfc/one.md"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" review-loop 1 >/dev/null
+echo "2" > "$root/rfc/two.md"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl >/dev/null
+"$SCRIPTS/rfc-pipeline-squash" -s "$scratch"
+[ "$(git -C "$root" rev-parse HEAD)" = "$base" ] || fail_test "squash did not reset HEAD to base"
+pass_test "squash resets HEAD to the base SHA"
+git -C "$root" diff --cached --quiet && fail_test "squash lost the staged changes"
+pass_test "squash preserves the working changes (staged)"
+
+end_tests

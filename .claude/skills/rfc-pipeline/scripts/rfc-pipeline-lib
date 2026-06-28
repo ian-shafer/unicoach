@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# rfc-pipeline-lib — shared helpers for the rfc-pipeline git plumbing scripts.
+#
+# Sourced, never executed. It provides:
+#   - log helpers (inlined; the scripts/ dir is self-contained)
+#   - the run-state file format read/written by the pipeline scripts
+#   - the checkpoint ledger: append, resolve-by-name, resolve-last
+#
+# The run state lives in <run-scratch>/state as KEY=value lines (sourceable),
+# and the ledger in <run-scratch>/checkpoints.log as tab-separated rows:
+#   <sha>\t<step>\t<i>\t<message>
+# Both live under .scratch/ (gitignored), so they never enter a checkpoint and
+# survive a `git clean -fd` recovery reset.
+
+# Logging helpers. These are inlined (not sourced from the repo's bin/) so the
+# scripts/ directory is self-contained — it depends on nothing outside itself.
+log-info() {
+  echo "$@" >&2
+}
+
+fatal() {
+  echo "[FATAL] $*" >&2
+  exit 1
+}
+
+# State file path for a given run-scratch directory.
+pl_state_file() {
+  echo "$1/state"
+}
+
+# Ledger file path for a given run-scratch directory.
+pl_ledger_file() {
+  echo "$1/checkpoints.log"
+}
+
+# Load <run-scratch>/state into the environment. Fails loudly if absent so a
+# caller never silently operates with empty CODEBASE_ROOT / BASE_SHA.
+pl_load_state() {
+  local run_scratch="$1"
+  local state_file
+  state_file="$(pl_state_file "$run_scratch")"
+  if [ ! -f "$state_file" ]; then
+    fatal "Pipeline state not found [$state_file]. Run rfc-pipeline-claim first."
+  fi
+  set -a
+  # shellcheck source=/dev/null
+  source "$state_file"
+  set +a
+  for key in RFC_NUM BASE_SHA CODEBASE_ROOT RUN_SCRATCH ORIGINAL_CHECKOUT PIPELINE_BRANCH; do
+    if [ -z "${!key:-}" ]; then
+      fatal "Pipeline state [$state_file] is missing required key [$key]."
+    fi
+  done
+}
+
+# Append a checkpoint row. Args: <run-scratch> <sha> <step> <i> <message>.
+# A non-loop step passes an empty <i>.
+pl_ledger_append() {
+  local run_scratch="$1" sha="$2" step="$3" i="$4" message="$5"
+  printf '%s\t%s\t%s\t%s\n' "$sha" "$step" "$i" "$message" >> "$(pl_ledger_file "$run_scratch")"
+}
+
+# Echo the SHA of the most recent checkpoint, or fail if the ledger is empty.
+pl_ledger_last() {
+  local ledger
+  ledger="$(pl_ledger_file "$1")"
+  if [ ! -s "$ledger" ]; then
+    fatal "Checkpoint ledger [$ledger] is empty; nothing to resolve."
+  fi
+  tail -n 1 "$ledger" | cut -f1
+}
+
+# Resolve a checkpoint reference to a SHA. Args: <run-scratch> <ref> [<i>].
+# <ref> is either a literal SHA (7-40 hex chars, echoed back) or a step name;
+# with a step name and optional <i>, the LAST matching ledger row wins (counters
+# are monotonic, so the last match is the most recent occurrence).
+pl_ledger_resolve() {
+  local run_scratch="$1" ref="$2" i="${3:-}"
+  if [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]]; then
+    echo "$ref"
+    return 0
+  fi
+  local ledger
+  ledger="$(pl_ledger_file "$run_scratch")"
+  local match
+  if [ -n "$i" ]; then
+    match="$(awk -F'\t' -v s="$ref" -v n="$i" '$2==s && $3==n {sha=$1} END{print sha}' "$ledger")"
+  else
+    match="$(awk -F'\t' -v s="$ref" '$2==s {sha=$1} END{print sha}' "$ledger")"
+  fi
+  if [ -z "$match" ]; then
+    fatal "No checkpoint matching step [$ref]${i:+ [$i]} in ledger [$ledger]."
+  fi
+  echo "$match"
+}

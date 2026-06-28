@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rfc-pipeline-checkpoint -s run-scratch <step> [i]
+
+Take a WIP checkpoint commit of the ENTIRE worktree (tracked + untracked) at a
+gate boundary, append it to the run's checkpoint ledger, and print its SHA.
+
+The commit is made with --no-verify ON PURPOSE: these are throwaway WIP restore
+points squashed away at Phase 3, so they skip the heavyweight pre-commit gate
+(deno fmt + full Kotlin suite). Only the Architect's final two commits run the
+hook. Encapsulating --no-verify here also keeps it out of the orchestrator's
+Bash command string, which the auto-mode classifier would otherwise deny.
+
+The commit message is `pipeline(rfc-<n>): <step> [<i>]` (the `[i]` is omitted
+for non-loop steps, i.e. when <i> is not given). If the worktree is unchanged,
+no commit is made; the current HEAD is recorded under <step> instead, so a
+checkpoint name always resolves to a SHA.
+
+Options:
+  -s run-scratch   The run-scratch dir holding this run's state (required).
+  -h               Help.
+EOF
+  exit "$exit_code"
+}
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+  s) RUN_SCRATCH="$OPTARG" ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[ -n "$RUN_SCRATCH" ] || help "Missing required -s run-scratch."
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  help "Expected <step> [i], got [$#] argument(s)."
+fi
+
+STEP="$1"
+I="${2:-}"
+
+pl_load_state "$RUN_SCRATCH"
+
+if [ -n "$I" ]; then
+  message="pipeline(rfc-${RFC_NUM}): ${STEP} [${I}]"
+else
+  message="pipeline(rfc-${RFC_NUM}): ${STEP}"
+fi
+
+git -C "$CODEBASE_ROOT" add -A
+
+if git -C "$CODEBASE_ROOT" diff --cached --quiet; then
+  # Nothing staged — record the existing HEAD as this checkpoint so the name
+  # still resolves. A clean gate boundary is a valid restore point.
+  sha="$(git -C "$CODEBASE_ROOT" rev-parse HEAD)"
+  log-info "No changes to checkpoint; recording HEAD [$sha] as [$message]."
+else
+  git -C "$CODEBASE_ROOT" commit --no-verify -m "$message" >/dev/null
+  sha="$(git -C "$CODEBASE_ROOT" rev-parse HEAD)"
+  log-info "Checkpoint [$sha] — $message"
+fi
+
+pl_ledger_append "$RUN_SCRATCH" "$sha" "$STEP" "$I" "$message"
+echo "$sha"

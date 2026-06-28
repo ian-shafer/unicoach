@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rfc-pipeline-recover -s run-scratch [step [i] | sha]
+
+Undo a stalled, crashed, or rogue agent by resetting the worktree to a known-good
+checkpoint: `git reset --hard <sha> && git clean -fd`. The `-fd` (never `-x`)
+keeps .scratch/ — and thus the run state, ledger, and capture artifacts —
+intact, so a re-spawn resumes where it stalled.
+
+With no positional argument it resets to the LAST recorded checkpoint. Otherwise
+the target is resolved from the ledger by step name (last matching row, with an
+optional [i]) or taken as a literal SHA.
+
+Options:
+  -s run-scratch   The run-scratch dir holding this run's state (required).
+  -h               Help.
+EOF
+  exit "$exit_code"
+}
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+  s) RUN_SCRATCH="$OPTARG" ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[ -n "$RUN_SCRATCH" ] || help "Missing required -s run-scratch."
+if [ "$#" -gt 2 ]; then
+  help "Expected at most [step [i]] or [sha], got [$#] argument(s)."
+fi
+
+pl_load_state "$RUN_SCRATCH"
+
+if [ "$#" -eq 0 ]; then
+  target_sha="$(pl_ledger_last "$RUN_SCRATCH")"
+else
+  target_sha="$(pl_ledger_resolve "$RUN_SCRATCH" "$@")"
+fi
+
+git -C "$CODEBASE_ROOT" reset --hard "$target_sha" >/dev/null
+git -C "$CODEBASE_ROOT" clean -fd >/dev/null
+log-info "Recovered worktree to [$target_sha]; .scratch/ preserved."
+echo "$target_sha"

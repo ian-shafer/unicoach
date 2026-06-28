@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rfc-pipeline-land -s run-scratch
+
+Phase 3 teardown, run AFTER the Architect has committed the two final commits on
+the pipeline branch. Fast-forwards the base branch onto the pipeline branch,
+removes the worktree, and deletes the now-merged branch — all from the original
+checkout, never from inside the worktree.
+
+`git worktree remove` refuses if the worktree has uncommitted changes; that is a
+safety check, not an obstacle to force past. If the fast-forward is not possible
+(the base advanced), this stops before touching anything so you can open a PR or
+rebase instead.
+
+Options:
+  -s run-scratch   The run-scratch dir holding this run's state (required).
+  -h               Help.
+EOF
+  exit "$exit_code"
+}
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+  s) RUN_SCRATCH="$OPTARG" ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[ -n "$RUN_SCRATCH" ] || help "Missing required -s run-scratch."
+[ "$#" -eq 0 ] || help "rfc-pipeline-land takes no positional arguments."
+
+pl_load_state "$RUN_SCRATCH"
+
+if ! git -C "$CODEBASE_ROOT" diff --quiet HEAD || ! git -C "$CODEBASE_ROOT" diff --cached --quiet; then
+  fatal "Worktree [$CODEBASE_ROOT] has uncommitted changes; commit the final two commits before landing."
+fi
+
+if ! git -C "$ORIGINAL_CHECKOUT" merge --ff-only "$PIPELINE_BRANCH" >/dev/null 2>&1; then
+  fatal "Cannot fast-forward [$BASE_BRANCH] onto [$PIPELINE_BRANCH] — base has advanced. Open a PR or rebase the branch instead; worktree left intact."
+fi
+log-info "Fast-forwarded [$BASE_BRANCH] onto [$PIPELINE_BRANCH]."
+
+git -C "$ORIGINAL_CHECKOUT" worktree remove "$CODEBASE_ROOT"
+log-info "Removed worktree [$CODEBASE_ROOT]."
+
+git -C "$ORIGINAL_CHECKOUT" branch -d "$PIPELINE_BRANCH"
+log-info "Deleted merged branch [$PIPELINE_BRANCH]. Run wound down."

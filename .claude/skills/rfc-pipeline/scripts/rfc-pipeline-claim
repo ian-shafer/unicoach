@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rfc-pipeline-claim [-b base-branch]
+
+Phase 0 of the rfc-pipeline: claim the next free RFC number and lock it in by
+creating this run's dedicated worktree, atomically, before any design work.
+
+Picks <n> as one past the max across THREE claims on a number:
+  - the highest committed rfc/NN-*.md
+  - the highest existing pipeline/rfc-NN branch
+  - the highest existing <repo>-rfc-NN worktree
+then `git worktree add -b pipeline/rfc-<n>`. If that path/branch already exists
+(a number claimed since we computed the max), it bumps <n> and retries.
+
+On success it records the base SHA, scaffolds the run-scratch layout under
+<worktree>/.scratch/rfc-<n>/, writes the run state file, and prints the state
+(KEY=value lines) to stdout for the orchestrator to capture.
+
+Run from the ORIGINAL checkout (not from inside a worktree).
+
+Options:
+  -b base-branch   Branch to fork from and record as base (default: main).
+  -h               Help.
+EOF
+  exit "$exit_code"
+}
+
+BASE_BRANCH="main"
+while getopts ":b:h" opt; do
+  case "$opt" in
+  b) BASE_BRANCH="$OPTARG" ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  help "rfc-pipeline-claim takes no positional arguments."
+fi
+
+ORIGINAL_CHECKOUT="$(git rev-parse --show-toplevel)"
+WORKTREE_PARENT="$(dirname "$ORIGINAL_CHECKOUT")"
+REPO_NAME="$(basename "$ORIGINAL_CHECKOUT")"
+
+git -C "$ORIGINAL_CHECKOUT" rev-parse --verify "$BASE_BRANCH" >/dev/null 2>&1 ||
+  fatal "Base branch [$BASE_BRANCH] does not exist."
+
+# Highest number claimed across the three sources. `|| true` guards the greps so
+# an empty source (no RFCs, no branches) does not abort under `set -e`. `10#`
+# forces base-10 so a zero-padded number like `09` is not misread as octal, and
+# `(( ))` arithmetic sidesteps `[ -gt ]`'s octal parsing entirely.
+max_of() {
+  local highest=0 n
+  while read -r n; do
+    [ -n "$n" ] || continue
+    n=$((10#$n))
+    ((n > highest)) && highest=$n
+  done
+  echo "$highest"
+}
+
+committed_max="$(ls "$ORIGINAL_CHECKOUT/rfc/" 2>/dev/null | grep -oE '^[0-9]+' | max_of || true)"
+branch_max="$(git -C "$ORIGINAL_CHECKOUT" branch --list 'pipeline/rfc-*' --format='%(refname:short)' |
+  grep -oE '[0-9]+$' | max_of || true)"
+worktree_max="$(git -C "$ORIGINAL_CHECKOUT" worktree list --porcelain |
+  grep -oE "${REPO_NAME}-rfc-[0-9]+$" | grep -oE '[0-9]+$' | max_of || true)"
+
+highest="${committed_max:-0}"
+((${branch_max:-0} > highest)) && highest="${branch_max}"
+((${worktree_max:-0} > highest)) && highest="${worktree_max}"
+
+n=$((highest + 1))
+
+# Creating the worktree is what locks in ownership. If the path or branch was
+# taken since we computed the max (a parallel pipeline racing us), bump and
+# retry rather than forcing past an active claim.
+worktree_path=""
+attempts=0
+while :; do
+  worktree_path="$WORKTREE_PARENT/${REPO_NAME}-rfc-${n}"
+  if git -C "$ORIGINAL_CHECKOUT" worktree add -b "pipeline/rfc-${n}" "$worktree_path" "$BASE_BRANCH" 2>/dev/null; then
+    break
+  fi
+  n=$((n + 1))
+  attempts=$((attempts + 1))
+  if [ "$attempts" -ge 50 ]; then
+    fatal "Could not claim a free RFC number after 50 attempts (last tried [$n])."
+  fi
+done
+
+base_sha="$(git -C "$ORIGINAL_CHECKOUT" rev-parse "$BASE_BRANCH")"
+run_scratch="$worktree_path/.scratch/rfc-${n}"
+
+# Scaffold the run-scratch layout (the master-owned capture layer). Directories
+# only — per-artifact files are write-once by the agents that own them.
+mkdir -p \
+  "$run_scratch/phase1/review-loop" \
+  "$run_scratch/phase2/impl" \
+  "$run_scratch/phase2/impl-review" \
+  "$run_scratch/phase2/impl-fix" \
+  "$run_scratch/phase3/spec-sync" \
+  "$run_scratch/phase3/invariants"
+
+state_file="$(pl_state_file "$run_scratch")"
+cat > "$state_file" << EOF
+RFC_NUM=${n}
+BASE_SHA=${base_sha}
+CODEBASE_ROOT=${worktree_path}
+RUN_SCRATCH=${run_scratch}
+ORIGINAL_CHECKOUT=${ORIGINAL_CHECKOUT}
+PIPELINE_BRANCH=pipeline/rfc-${n}
+BASE_BRANCH=${BASE_BRANCH}
+EOF
+
+: > "$(pl_ledger_file "$run_scratch")"
+
+log-info "Claimed RFC [$n]; worktree at [$worktree_path] on [pipeline/rfc-${n}]."
+cat "$state_file"
