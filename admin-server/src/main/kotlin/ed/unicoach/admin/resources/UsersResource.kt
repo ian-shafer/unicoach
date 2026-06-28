@@ -53,7 +53,7 @@ class UsersResource(
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "user"),
+      AdminField("id", "ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "user"),
       AdminField("email", "Email", FieldType.TEXT, editable = true, sensitive = false),
       AdminField("name", "Name", FieldType.TEXT, editable = true, sensitive = false),
       AdminField("displayName", "Display Name", FieldType.TEXT, editable = true, sensitive = false),
@@ -336,7 +336,7 @@ class UsersResource(
         label = "Sessions",
         columns =
           listOf(
-            EdgePanel.Table.Column("ID", refSlug = "session"),
+            EdgePanel.Table.Column("ID", FieldType.UUID, refSlug = "session"),
             EdgePanel.Table.Column("User Agent"),
             EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
             EdgePanel.Table.Column("Expires", FieldType.TIMESTAMP),

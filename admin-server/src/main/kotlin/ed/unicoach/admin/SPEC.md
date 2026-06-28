@@ -111,22 +111,31 @@ sibling subpackages and are referenced here only by responsibility.
   bind/session settings plus the display conventions (`DisplayConfig`), reading
   every key directly under `admin.server` / `admin.session` / `admin.display`
   with no in-code defaults (all defaults live in `admin-server.conf`). The
-  `timezone` key is validated through `ZoneId.of`, so a malformed timezone zone
-  ID fails this call (not at first render).
+  `timezone` key is validated through `ZoneId.of` and `idTailChars` is validated
+  via `require(it > 0)`, so a malformed timezone zone ID or a non-positive tail
+  width fails this call (not at first render).
 - **Side effects**: None.
 - **Error handling**: A missing `admin` section, any missing key under
-  `admin.server` / `admin.session` / `admin.display`, or a malformed timezone
-  yields `Result.failure` carrying the underlying exception; the function does
-  not throw.
+  `admin.server` / `admin.session` / `admin.display`, a malformed timezone, or a
+  non-positive `idTailChars` yields `Result.failure` carrying the underlying
+  exception; the function does not throw.
 - **Idempotency**: Yes — pure function of its input.
 
 ### `DisplayConfig` — [`AdminConfig.kt`](./AdminConfig.kt)
 
-A nested value on `AdminConfig` (RFC 79). Carries the display conventions shared
-by every admin view: `timezone` (`ZoneId`), `idLinkGlyph`, `boolTrueGlyph`,
-`boolFalseGlyph`. Parsed from the `admin.display` HOCON section. The render
-layer converts it to `AdminDisplay` (via `DisplayConfig.toAdminDisplay`) and
-uses it directly; `AdminConfig` is never referenced by the render layer.
+A nested value on `AdminConfig` (RFC 79, RFC 83). Carries the display
+conventions shared by every admin view: `timezone` (`ZoneId`), `idLinkGlyph`,
+`boolTrueGlyph`, `boolFalseGlyph`, `idTailChars` (`Int`), and `copyGlyph`.
+Parsed from the `admin.display` HOCON section. The render layer converts it to
+`AdminDisplay` (via `DisplayConfig.toAdminDisplay`) and uses it directly;
+`AdminConfig` is never referenced by the render layer.
+
+- **`idTailChars`**: the number of trailing characters a compacted UUID id
+  displays (RFC 83). Validated `require(it > 0)` at parse time — a non-positive
+  value fails startup. Default `8`.
+- **`copyGlyph`**: the glyph emitted as the click-to-copy button text beside
+  each compacted UUID id cell (RFC 83). No validation beyond key presence.
+  Default `"⧉"`.
 
 ---
 
@@ -148,6 +157,8 @@ Required keys in `admin-server.conf`, parsed by `AdminConfig.from`:
 | `admin.display.idLinkGlyph`       | String  | Entity-reference link glyph; default `"🔗"`                                  |
 | `admin.display.boolTrueGlyph`     | String  | Boolean true glyph; default `"✓"`                                            |
 | `admin.display.boolFalseGlyph`    | String  | Boolean false glyph; default `"✗"`                                           |
+| `admin.display.idTailChars`       | Int     | Trailing chars kept when compacting a UUID id; must be positive; default `8` |
+| `admin.display.copyGlyph`         | String  | Click-to-copy button glyph beside each compacted UUID id; default `"⧉"`      |
 
 ### Environment Variable Overrides
 
@@ -164,6 +175,8 @@ corresponding key when set in the process environment:
 | `ADMIN_ID_LINK_GLYPH`    | `admin.display.idLinkGlyph`    |
 | `ADMIN_BOOL_TRUE_GLYPH`  | `admin.display.boolTrueGlyph`  |
 | `ADMIN_BOOL_FALSE_GLYPH` | `admin.display.boolFalseGlyph` |
+| `ADMIN_ID_TAIL_CHARS`    | `admin.display.idTailChars`    |
+| `ADMIN_COPY_GLYPH`       | `admin.display.copyGlyph`      |
 
 ### Config Load List
 
@@ -211,3 +224,11 @@ driving the `UsersResource` resend action. It does not depend on `rest-server`,
       in the `AdminRegistry` constructor list, bringing the total to 9
       resources; the registry's entity-support predicate consequently returns
       `true` for the `"convo"` and `"convo-request"` slugs.
+- [x] [RFC-83: Compact display of entity id columns](../../../../../../../rfc/83-admin-compact-id-display.md)
+      — extended `DisplayConfig` with `idTailChars: Int` (trailing chars kept
+      when compacting a UUID id; validated `require(it > 0)` at startup) and
+      `copyGlyph: String` (click-to-copy button glyph). Added the corresponding
+      HOCON keys (`idTailChars = 8`, `copyGlyph = "⧉"`) and environment-variable
+      overrides (`ADMIN_ID_TAIL_CHARS`, `ADMIN_COPY_GLYPH`) to
+      `admin-server.conf`. `AdminConfig.from` parses both inside the existing
+      fail-fast `runCatching` block.

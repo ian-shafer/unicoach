@@ -13,6 +13,7 @@ import io.ktor.server.testing.testApplication
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class StudentsResourceTest {
@@ -112,6 +113,16 @@ class StudentsResourceTest {
       assertTrue(body.contains("/claim/${claim.id.value}"), "Claim row links to the canonical /claim/{id} path")
       assertTrue(body.contains("/observation/${obs.id.value}"), "Observation row links to the canonical /observation/{id} path")
       assertTrue(body.contains("/extraction-run/${run.id.value}"), "Run row links to the canonical /extraction-run/{id} path")
+
+      // The observations panel's "Convo ID" column is FieldType.UUID (RFC 83), so the
+      // convoId compacts via the panel projection path: ellipsis + last 8 chars in a
+      // span carrying the full value, plus a per-cell id-copy button. The raw UUID
+      // must not appear as visible cell text.
+      val convoId = convo.id.value.toString()
+      assertTrue(body.contains("…${convoId.takeLast(8)}"), "Panel Convo ID must compact to ellipsis + tail")
+      assertTrue(body.contains("title=\"$convoId\""), "Compacted Convo ID must carry the full value as a hover title")
+      assertTrue(body.contains("data-full=\"$convoId\""), "Compacted Convo ID must emit an id-copy button carrying the full value")
+      assertFalse(body.contains(">$convoId<"), "The raw convoId must not render as visible panel cell text")
     }
 
   @Test

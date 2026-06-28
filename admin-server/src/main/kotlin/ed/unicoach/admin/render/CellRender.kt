@@ -2,8 +2,10 @@ package ed.unicoach.admin.render
 
 import ed.unicoach.admin.DisplayConfig
 import ed.unicoach.admin.engine.FieldType
+import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
 import kotlinx.html.a
+import kotlinx.html.button
 import kotlinx.html.pre
 import kotlinx.html.span
 import kotlinx.html.title
@@ -27,6 +29,8 @@ data class AdminDisplay(
   val idLinkGlyph: String,
   val boolTrueGlyph: String,
   val boolFalseGlyph: String,
+  val idTailChars: Int,
+  val copyGlyph: String,
   val isSupported: (slug: String) -> Boolean,
 )
 
@@ -42,6 +46,8 @@ fun DisplayConfig.toAdminDisplay(isSupported: (slug: String) -> Boolean): AdminD
     idLinkGlyph = idLinkGlyph,
     boolTrueGlyph = boolTrueGlyph,
     boolFalseGlyph = boolFalseGlyph,
+    idTailChars = idTailChars,
+    copyGlyph = copyGlyph,
     isSupported = isSupported,
   )
 
@@ -69,6 +75,9 @@ private val cellRenderLog = LoggerFactory.getLogger("ed.unicoach.admin.CellRende
  * - [FieldType.JSON]: the value parsed and re-emitted pretty-printed inside a
  *   `<pre>` element. A blank value renders nothing; a value that does not parse
  *   as JSON is logged at WARN and surfaced as raw text (defensive — never throws).
+ * - [FieldType.UUID]: a compacted UUID id (RFC 83) — an ellipsis plus the last
+ *   [AdminDisplay.idTailChars] characters, with the full value carried in a hover
+ *   `title` and a click-to-copy button. A blank value renders nothing.
  * - all other types: the raw text.
  */
 fun FlowContent.renderValue(
@@ -81,6 +90,7 @@ fun FlowContent.renderValue(
     FieldType.TIMESTAMP -> renderTimestampValue(value, display)
     FieldType.BOOL -> renderBoolValue(value, display)
     FieldType.JSON -> renderJsonValue(value)
+    FieldType.UUID -> renderIdValue(value, display)
     FieldType.TEXT, FieldType.MULTILINE, FieldType.INT, FieldType.ENUM -> +value
   }
 }
@@ -100,6 +110,39 @@ private fun FlowContent.renderJsonValue(value: String) {
         return
       }
   pre { +pretty }
+}
+
+/**
+ * The [FieldType.UUID] body (RFC 83): a compacted UUID id rendered as
+ *
+ * 1. a `span` carrying the full UUID as a hover `title`, whose text is `…`
+ *    (U+2026) followed by the last [AdminDisplay.idTailChars] characters when the
+ *    value is longer than that width; otherwise the verbatim value with no
+ *    ellipsis (a value no longer than the tail is shown whole rather than
+ *    prefixed with a misleading ellipsis). The leading prefix is never rendered —
+ *    in a UUIDv7 it is the millisecond timestamp shared by rows created close
+ *    together, so the distinguishing entropy is the tail this keeps.
+ * 2. a minimal copy `button` (`type="button"`, class `id-copy`, `data-full` =
+ *    the full value, text = [AdminDisplay.copyGlyph]) backed by the single
+ *    delegated listener in `Layout.SCRIPT`. `type="button"` keeps it from
+ *    submitting any enclosing form (the embedded-panel field table abuts one).
+ *
+ * The full value stays reachable three ways: the `title`, the `data-full`
+ * attribute, and (when `refSlug` names a supported resource) the trailing glyph
+ * `href` that [renderRefLink] builds from the full value.
+ */
+private fun FlowContent.renderIdValue(
+  value: String,
+  display: AdminDisplay,
+) {
+  span {
+    title = value
+    +if (value.length > display.idTailChars) "…" + value.takeLast(display.idTailChars) else value
+  }
+  button(type = ButtonType.button, classes = "id-copy") {
+    attributes["data-full"] = value
+    +display.copyGlyph
+  }
 }
 
 /**

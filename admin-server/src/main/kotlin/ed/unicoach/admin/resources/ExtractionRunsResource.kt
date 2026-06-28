@@ -30,15 +30,17 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
 
   override val fields =
     listOf(
+      // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "extraction-run"),
-      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
+      AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
       AdminField("outcome", "Outcome", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("modelResolved", "Model", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("claimsWritten", "Claims Written", FieldType.INT, editable = false, sensitive = false),
       AdminField("inputTokens", "Input Tokens", FieldType.INT, editable = false, sensitive = false),
       AdminField("outputTokens", "Output Tokens", FieldType.INT, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
-      AdminField("convoId", "Convo ID", FieldType.TEXT, editable = false, sensitive = false, inList = false, refSlug = "convo"),
+      AdminField("convoId", "Convo ID", FieldType.UUID, editable = false, sensitive = false, inList = false, refSlug = "convo"),
+      // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
       AdminField(
         "throughRequestId",
         "Through Request ID",
@@ -51,7 +53,7 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
       AdminField(
         "systemPromptId",
         "System Prompt ID",
-        FieldType.TEXT,
+        FieldType.UUID,
         editable = false,
         sensitive = false,
         inList = false,

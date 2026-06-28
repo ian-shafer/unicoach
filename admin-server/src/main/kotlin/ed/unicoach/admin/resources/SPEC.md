@@ -88,8 +88,7 @@ read-then-write blocks.
   paths.
 - `UsersResource` MUST expose two `customActions`, both gated by a single shared
   predicate `verificationDisabledReason(row)`: it returns
-  `"Email already
-  verified."` when `emailVerifiedAt != null`,
+  `"Email already verified."` when `emailVerifiedAt != null`,
   `"User is deleted."` when `deletedAt != null`, else `null`. The buttons render
   enabled iff it returns `null` (an active, unverified user). This predicate
   MUST be the single source of truth gating both actions.
@@ -236,13 +235,13 @@ read-then-write blocks.
   restore. Idempotent: no.
 - **resolveEdges** — builds the embedded student panel (via
   `StudentsResource.buildPanel`), a sessions `EdgePanel.Table` (id column:
-  `refSlug = "session"`, created/expires columns: `FieldType.TIMESTAMP`; up to
-  50 rows from `SessionsDao.listByUser`), and a `users_versions`
-  `EdgePanel.Table` whose columns include `Admin` (`FieldType.BOOL`),
-  `Email
-  Verified` (`FieldType.TIMESTAMP`), `Updated`/`Deleted`
-  (`FieldType.TIMESTAMP`) — all rendering through `renderCell`. Side effects: DB
-  reads only. Errors: any DAO fault → failed `Result`. Idempotent: yes.
+  `FieldType.UUID`, `refSlug = "session"`; created/expires columns:
+  `FieldType.TIMESTAMP`; up to 50 rows from `SessionsDao.listByUser`), and a
+  `users_versions` `EdgePanel.Table` whose columns include `Admin`
+  (`FieldType.BOOL`), `Email Verified` (`FieldType.TIMESTAMP`),
+  `Updated`/`Deleted` (`FieldType.TIMESTAMP`) — all rendering through
+  `renderCell`. Side effects: DB reads only. Errors: any DAO fault → failed
+  `Result`. Idempotent: yes.
 - **customActions** — two entries, both gated by the shared
   `verificationDisabledReason` predicate (enabled only for an active, unverified
   user): "Mark email verified" (`verify-email`) and "Send verification email"
@@ -250,6 +249,8 @@ read-then-write blocks.
 - **registerExtraRoutes** — registers the three owner-nested `students` action
   endpoints plus the two email-verification action endpoints (all below) under
   the engine's gated route scope.
+- **fields** — `id` (`FieldType.UUID`, `refSlug = "user"`); other id/FK columns
+  stay `FieldType.TEXT` or `FieldType.TIMESTAMP` as appropriate.
 
 ### `users` email-verification actions (registered by `UsersResource`)
 
@@ -299,6 +300,10 @@ read-then-write blocks.
 - **get** — reads one student including deleted (used by the owner's panel).
   Side effects: DB read. Errors: `NotFoundException`, DB fault. Idempotent: yes.
 - **create/update/delete/undelete** — all `null` (mutations are owner-nested).
+- **fields** — `id` (`FieldType.UUID`, `refSlug = "student"`), `userId`
+  (`FieldType.UUID`, `refSlug = "user"`); other fields stay their existing
+  types. Both UUID fields compact to an ellipsis plus the tail in the embedded
+  panel.
 - **buildPanel(db, userId)** — assembles the inline embedded panel for a user:
   the student profile (if any), its create/edit forms (the single editable
   graduation field), the nested `students_versions` history table, and — after
@@ -308,25 +313,31 @@ read-then-write blocks.
   `fields` list: each non-sensitive field becomes a `LabeledCell` carrying the
   field's `label`, `type`, and `refSlug` alongside the cell value, so the
   embedded field table routes through `renderCell` identically to a top-level
-  detail field. Each panel is built by a private helper
+  detail field — including UUID compaction for `id` and `userId`. Each panel is
+  built by a private helper
   (`buildConversationsPanel`/`buildClaimsPanel`/`buildObservationsPanel`/`buildExtractionRunsPanel`)
   that fetches at most `STUDENT_PANEL_LIMIT` rows via the matching DAO and
-  carries typed `EdgePanel.Table.Column` entries (id columns carry `refSlug`;
-  datetime columns carry `FieldType.TIMESTAMP`) so each cell renders as a
-  formatted date or a glyph-linked id as appropriate. `buildConversationsPanel`
+  carries typed `EdgePanel.Table.Column` entries (UUID id columns set
+  `FieldType.UUID`; BIGINT id columns stay `FieldType.TEXT`; datetime columns
+  carry `FieldType.TIMESTAMP`) so each cell renders as a formatted date, a
+  compacted UUID, or a raw integer as appropriate. `buildConversationsPanel`
   calls
   `ConvosDao.listByStudentWithActivity(session, studentId, ArchiveScope.ALL,
   SoftDeleteScope.ALL, STUDENT_PANEL_LIMIT, 0)`;
-  the coaching-memory panels call
-  `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)`. The Conversations panel
-  columns are: ID (`refSlug = "convo"`), Name, Last Activity (TIMESTAMP),
-  Created (TIMESTAMP), Archived (TIMESTAMP), Deleted (TIMESTAMP). When a fetched
-  page fills to `STUDENT_PANEL_LIMIT`, the shared `truncationRow` helper appends
-  one cells-only "Showing first 50 — see /{slug} for full list" row (no per-row
-  href — RFC 79 removed row-level hrefs). Side effects: DB reads only. Returns a
-  "no profile yet" panel on `NotFoundException`; propagates any other DAO fault
-  (including a fault on any of the four nested panel loads) as a failed
-  `Result`. Idempotent: yes.
+  the coaching-memory panels call `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)`.
+  The Conversations panel columns are: ID (`refSlug = "convo"`), Name, Last
+  Activity (TIMESTAMP), Created (TIMESTAMP), Archived (TIMESTAMP), Deleted
+  (TIMESTAMP) — the panel predates `FieldType.UUID`, so its id renders full-width
+  with a link glyph rather than compacted. The claims panel's id column is
+  `FieldType.UUID`; the observations and extraction-runs panels' id columns are
+  `FieldType.TEXT` (BIGINT). The `convoId` column in the observations panel is
+  `FieldType.UUID` with `refSlug = "convo"`. When a fetched page fills to
+  `STUDENT_PANEL_LIMIT`, the shared `truncationRow` helper appends one cells-only
+  "Showing first 50 — see /{slug} for full list" row (no per-row href — RFC 79
+  removed row-level hrefs). Side effects: DB reads only. Returns a "no profile
+  yet" panel on `NotFoundException`; propagates any other DAO fault (including a
+  fault on any of the four nested panel loads) as a failed `Result`. Idempotent:
+  yes.
 - **`STUDENT_PANEL_LIMIT`** — package-private constant `50`, the per-panel row
   cap for the nested coaching-memory tables, mirroring the sessions panel's
   limit. A student with more memory shows the first page only; full enumeration
@@ -345,16 +356,20 @@ read-then-write blocks.
 - **resolveEdges** — returns a single `Parent` panel: a link to `/user/{userId}`
   when `userId` is non-null, else an "owner absent" panel. Side effects: none
   (no DB read; the foreign key is already on the row). Idempotent: yes.
+- **fields** — `id` (`FieldType.UUID`, `refSlug = "session"`), `userId`
+  (`FieldType.UUID`, `refSlug = "user"`); `tokenHash` (`FieldType.TEXT`,
+  `sensitive = true`); other fields as existing.
 
 ### `SystemPromptsResource` (IMMUTABLE_ENTITY, top-level)
 
 `slug = "system-prompt"`, `title = "System Prompt"`. Fields (declaration order =
-detail-row order): `id` (TEXT, read-only), `name` (TEXT, editable), `version`
-(TEXT, editable), `createdAt` (TIMESTAMP, read-only), `body` (MULTILINE,
-editable, `inList = false`). `body` is `editable = true` so it renders as a
-create-form textarea and in full on detail, but `inList = false` so the up-to-1
-MB body is omitted from the list table; since `update` is null, no edit form is
-ever served, so `body` is never re-editable. No edges.
+detail-row order): `id` (`FieldType.UUID`, `refSlug = "system-prompt"`,
+read-only), `name` (TEXT, editable), `version` (TEXT, editable), `createdAt`
+(TIMESTAMP, read-only), `body` (MULTILINE, editable, `inList = false`). `body`
+is `editable = true` so it renders as a create-form textarea and in full on
+detail, but `inList = false` so the up-to-1 MB body is omitted from the list
+table; since `update` is null, no edit form is ever served, so `body` is never
+re-editable. No edges.
 
 - **list** — reads via `SystemPromptsDao.list(session, limit, offset)` (`scope`
   ignored). Side effects: DB read. Idempotent: yes.
@@ -441,14 +456,21 @@ TIMESTAMP, `inList = false`). Response fields are blank when
 
 `slug = "claim"`, `title = "Claim"`, `kind = AdminKind.ENTITY` (the `claims`
 table is revisable in the domain, but the admin exposes no writes). `parseId`
-accepts a UUID into `ClaimId`. List columns (`inList = true`): `id`,
-`studentId`, `status`, `kind`, `topic`, `confidence`, `createdAt`. Detail-only
-(`inList = false`): `origin`, `subject`, `visibility`, `statement` (MULTILINE),
-`supersededById`, `supersededAt`, `retractedAt`, `updatedAt`. `statement` is
-kept out of the list and shown in full on detail (the `system_prompts.body`
-treatment). No column is `sensitive` (redaction is reserved for credential
-material such as `password_hash`/`token_hash`, not content). One `HasMany` edge,
-"Supporting observations".
+accepts a UUID into `ClaimId`. List columns (`inList = true`): `id`
+(`FieldType.UUID`, `refSlug = "claim"`), `studentId` (`FieldType.UUID`,
+`refSlug = "student"`), `status`, `kind`, `topic`, `confidence`, `createdAt`.
+Detail-only (`inList = false`): `origin`, `subject`, `visibility`, `statement`
+(MULTILINE), `supersededById` (`FieldType.UUID`, `refSlug = "claim"`),
+`supersededAt`, `retractedAt`, `updatedAt`. `statement` is kept out of the list
+and shown in full on detail (the `system_prompts.body` treatment). No column is
+`sensitive` (redaction is reserved for credential material such as
+`password_hash`/`token_hash`, not content). One `HasMany` edge, "Supporting
+observations".
+
+The "Supporting observations" edge panel uses
+`Column("ID", refSlug =
+"observation")` with no `FieldType.UUID` override — the
+observation id is a BIGINT and stays `FieldType.TEXT`.
 
 - **list** — reads via `ClaimsDao.list(session, limit, offset)` inside
   `db.withConnection` (`scope` ignored). Side effects: DB read. Idempotent: yes.
@@ -469,14 +491,20 @@ material such as `password_hash`/`token_hash`, not content). One `HasMany` edge,
 
 `slug = "observation"`, `title = "Observation"`, `kind = AdminKind.LOG` (the
 `observations` log is insert-only in the domain). `parseId` accepts a numeric id
-via `toLongOrNull` into `ObservationId`. List columns: `id`
-(`refSlug =
-"observation"`), `studentId` (`refSlug = "student"`), `convoId`
-(`refSlug =
-"convo"`), `utteredAt` (TIMESTAMP), `createdAt` (TIMESTAMP).
-Detail-only: `sourceRequestId` (`refSlug = "convo-request"`), `quote`
-(MULTILINE, kept out of the list and shown in full on detail). No `sensitive`
-column. One `HasMany` edge, "Supported claims".
+via `toLongOrNull` into `ObservationId`. List columns: `id` (`FieldType.TEXT` —
+BIGINT id, stays TEXT, `refSlug = "observation"`), `studentId`
+(`FieldType.UUID`, `refSlug = "student"`), `convoId` (`FieldType.UUID`,
+`refSlug = "convo"` — UUID value compacts and links to the registered `convo`
+resource), `utteredAt` (TIMESTAMP), `createdAt` (TIMESTAMP). Detail-only:
+`sourceRequestId` (`FieldType.TEXT` — carries a BIGINT `convo_requests.id`,
+`refSlug = "convo-request"`), `quote` (MULTILINE, kept out of the list and shown
+in full on detail). No `sensitive` column. One `HasMany` edge, "Supported
+claims".
+
+The "Supported claims" edge panel uses
+`Column("ID", FieldType.UUID, refSlug =
+"claim")` — the claim id is a UUID and
+compacts in the panel.
 
 - **list** — reads via `ObservationsDao.list(session, limit, offset)` inside
   `db.withConnection`. Side effects: DB read. Idempotent: yes.
@@ -494,15 +522,15 @@ column. One `HasMany` edge, "Supported claims".
 (append-only log of billed extraction LLM calls). `parseId` accepts a numeric id
 via `toLongOrNull` into `ExtractionRunId`. List columns (token and write-count
 columns kept on the list so per-student LLM spend is eyeballable): `id`
-(`refSlug
-= "extraction-run"`), `studentId` (`refSlug = "student"`), `outcome`,
+(`FieldType.TEXT` — BIGINT id, stays TEXT, `refSlug = "extraction-run"`),
+`studentId` (`FieldType.UUID`, `refSlug = "student"`), `outcome`,
 `modelResolved`, `claimsWritten` (INT), `inputTokens` (INT), `outputTokens`
-(INT), `createdAt` (TIMESTAMP). Detail-only: `convoId` (`refSlug = "convo"`),
-`throughRequestId` (`refSlug = "convo-request"`), `systemPromptId`
-(`refSlug =
-"system-prompt"`), `provider`, `observationsWritten` (INT),
-`claimsSuperseded` (INT), `cacheReadTokens` (INT), `cacheWriteTokens` (INT). No
-`sensitive` column. No edges.
+(INT), `createdAt` (TIMESTAMP). Detail-only: `convoId` (`FieldType.UUID`,
+`refSlug = "convo"` — UUID value compacts and links), `throughRequestId`
+(`FieldType.TEXT` — BIGINT `convo_requests.id`, `refSlug = "convo-request"`),
+`systemPromptId` (`FieldType.UUID`, `refSlug = "system-prompt"`), `provider`,
+`observationsWritten` (INT), `claimsSuperseded` (INT), `cacheReadTokens` (INT),
+`cacheWriteTokens` (INT). No `sensitive` column. No edges.
 
 - **list** — reads via `ExtractionRunsDao.list(session, limit, offset)` inside
   `db.withConnection`. Side effects: DB read. Idempotent: yes.
@@ -628,3 +656,24 @@ columns kept on the list so per-student LLM spend is eyeballable): `id`
       Convo (`refSlug = "convo"`) and Source Request
       (`refSlug = "convo-request"`) — so the claim detail shows conversation
       context for each backing observation.
+- [x] [RFC-83: Compact display of entity id columns](../../../../../../../../rfc/83-admin-compact-id-display.md)
+      — Flipped every UUID-valued `AdminField` to `FieldType.UUID` across all
+      seven resource files, leaving BIGINT-carrying columns (`observations.id`,
+      `extraction_runs.id`, `sourceRequestId`, `throughRequestId`) as
+      `FieldType.TEXT`. The complete set: `user.id`, `student.id`,
+      `student.userId`, `session.id`, `session.userId`, `system-prompt.id`,
+      `claim.id`, `claim.studentId`, `claim.supersededById`,
+      `observation.studentId`, `observation.convoId`,
+      `extraction-run.studentId`, `extraction-run.systemPromptId`,
+      `extraction-run.convoId`. `EdgePanel.Table.Column` entries for UUID-valued
+      id columns in edge panels also set `FieldType.UUID` (sessions panel ID
+      column; claims panel ID column in the student coaching-memory view;
+      "Supported claims" panel ID column in `ObservationsResource`); BIGINT id
+      columns in edge panels stay `FieldType.TEXT` (observation and
+      extraction-run ID columns in the student panel; observation ID in
+      `ClaimsResource`'s supporting-observations panel). The `convoId` column in
+      the student observations panel sets `FieldType.UUID` (it also carries
+      `refSlug = "convo"` after the RFC 81 merge, so it compacts and links).
+      `StudentsResource.buildPanel` propagates UUID types into each
+      `EdgePanel.LabeledCell` automatically because it copies `field.type` from
+      the descriptor — no separate edit needed for the embedded student panel.

@@ -133,9 +133,18 @@ when non-null the render layer appends a link glyph to that resource's detail
 page (`/{refSlug}/{value}`), but only when the slug is a registered admin
 resource — an unregistered slug (e.g. `convoId`, `sourceRequestId`) renders the
 value with no glyph. The primary id sets its own slug; foreign-key columns set
-the referenced resource's slug. No new `FieldType` variant: id columns remain
-`TEXT`. `FieldType` names the render/input strategy (`TEXT`, `MULTILINE`, `INT`,
-`BOOL`, `TIMESTAMP`, `JSON`, `ENUM`). Pure data — no behavior or I/O.
+the referenced resource's slug.
+
+`FieldType` names the render/input strategy: `TEXT`, `MULTILINE`, `INT`, `BOOL`,
+`TIMESTAMP`, `JSON`, `ENUM`, and `UUID`. The `UUID` variant (RFC 83) marks a
+column whose string value is a canonical UUID; the render layer compacts it to
+an ellipsis plus its last `idTailChars` characters, with the full value
+reachable via a hover `title` and a click-to-copy button. `UUID` is orthogonal
+to `refSlug`: `refSlug` controls the trailing navigation glyph, `UUID` controls
+value compaction. A column may set one, both, or neither. A `BIGINT` id column
+stays `TEXT` and is never compacted.
+
+Pure data — no behavior or I/O.
 
 ### `AdminEdge` — [`AdminEdge.kt`](./AdminEdge.kt)
 
@@ -189,10 +198,13 @@ the router. Variants:
   is via the primary-id column's own `refSlug` glyph). The constructor validates
   that every row's cell count equals the column count (fail-fast in dev/test).
   Label-only columns stay terse (`Column("Topic")`); id/timestamp/bool columns
-  set `type`/`refSlug` explicitly.
+  set `type`/`refSlug` explicitly. UUID-valued id columns set
+  `type =
+  FieldType.UUID` (RFC 83) so the render layer compacts them; BIGINT
+  id columns stay `FieldType.TEXT`.
 - **`Embedded`** — an owned entity rendered inline: when `present` is false it
   offers a create form; otherwise it shows fields plus edit/delete actions and
-  any `nested` panels. `fields` is now `List<LabeledCell>` (RFC 79) — each cell
+  any `nested` panels. `fields` is `List<LabeledCell>` (RFC 79) — each cell
   carries `label`, `type`, `refSlug`, and `value` — so the embedded field table
   routes through the same `renderCell` as every other cell. Carries the owner
   slug/id so its nested actions POST to owner-nested endpoints.
@@ -334,3 +346,11 @@ this router.
       mismatch guard to `EdgePanel.Table`'s constructor. `AdminRouting.kt` gains
       a `display: AdminDisplay` parameter forwarded to `renderList`/
       `renderDetail`.
+- [x] [RFC-83: Compact display of entity id columns](../../../../../../../../rfc/83-admin-compact-id-display.md)
+      — added `FieldType.UUID` to the `FieldType` enum: marks a column whose
+      value is a canonical UUID, causing the render layer to compact it to an
+      ellipsis plus its last `idTailChars` characters (with a hover `title` and
+      a click-to-copy button). Orthogonal to `refSlug`: both, one, or neither
+      may be set. BIGINT id columns (`observations.id`, `extraction_runs.id`)
+      stay `FieldType.TEXT` and are never compacted. `EdgePanel.Table.Column`
+      entries for UUID-valued id columns now set `type = FieldType.UUID`.

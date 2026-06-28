@@ -17,6 +17,8 @@ class CellRenderTest {
       idLinkGlyph = "🔗",
       boolTrueGlyph = "✓",
       boolFalseGlyph = "✗",
+      idTailChars = 8,
+      copyGlyph = "⧉",
       isSupported = { it == "user" },
     )
 
@@ -162,5 +164,88 @@ class CellRenderTest {
     assertTrue(boolFalse.contains("NO"), "Expected the configured false glyph, got: $boolFalse")
     val link = render { renderRefLink("abc-123", "user", custom) }
     assertTrue(link.contains("LINK"), "Expected the configured link glyph, got: $link")
+  }
+
+  /** A canonical 36-char UUID used across the compaction tests. */
+  private val uuid = "0190a1b2-c3d4-7e5f-8a9b-1c2d3e4f5a6b"
+
+  @Test
+  fun `uuid value renders ellipsis plus the last idTailChars characters`() {
+    val html = render { renderValue(uuid, FieldType.UUID, display) }
+    assertTrue(html.contains("…" + uuid.takeLast(8)), "Expected ellipsis plus the last 8 chars, got: $html")
+    // The visible span body is exactly the ellipsis + tail; the prefix lives only
+    // in the title attribute, never as rendered cell text.
+    assertTrue(
+      html.contains(">…" + uuid.takeLast(8) + "</span>"),
+      "The span body must be exactly the ellipsis plus tail, got: $html",
+    )
+    assertFalse(html.contains(">$uuid<"), "The full value must not be the visible span text, got: $html")
+  }
+
+  @Test
+  fun `uuid value carries the full value in a hover title`() {
+    val html = render { renderValue(uuid, FieldType.UUID, display) }
+    assertTrue(html.contains("title=\"$uuid\""), "Expected the full UUID in a hover title, got: $html")
+  }
+
+  @Test
+  fun `uuid value emits a copy button carrying the full value`() {
+    val html = render { renderValue(uuid, FieldType.UUID, display) }
+    assertTrue(html.contains("class=\"id-copy\""), "Expected an id-copy button, got: $html")
+    assertTrue(html.contains("type=\"button\""), "Expected type=button, got: $html")
+    assertTrue(html.contains("data-full=\"$uuid\""), "Expected the full value in data-full, got: $html")
+  }
+
+  @Test
+  fun `copy button text is the configured copyGlyph`() {
+    val custom = display.copy(copyGlyph = "COPY")
+    val html = render { renderValue(uuid, FieldType.UUID, custom) }
+    assertTrue(html.contains(">COPY</button>"), "Expected the configured copy glyph as button text, got: $html")
+  }
+
+  @Test
+  fun `uuid cell with a supported refSlug still renders the link glyph after the compacted value`() {
+    val html = render { renderCell(uuid, FieldType.UUID, "user", display) }
+    assertTrue(html.contains("…" + uuid.takeLast(8)), "Expected the compacted value, got: $html")
+    assertTrue(html.contains("href=\"/user/$uuid\""), "Expected the glyph link built from the full value, got: $html")
+    assertTrue(html.contains("🔗"), "Expected the link glyph, got: $html")
+  }
+
+  @Test
+  fun `uuid cell with an unsupported refSlug renders no glyph but still compacts and copies`() {
+    val html = render { renderCell(uuid, FieldType.UUID, "convo", display) }
+    assertFalse(html.contains("<a"), "An unsupported slug must produce no link, got: $html")
+    assertTrue(html.contains("…" + uuid.takeLast(8)), "Expected the compacted span, got: $html")
+    assertTrue(html.contains("class=\"id-copy\""), "Expected the copy button, got: $html")
+  }
+
+  @Test
+  fun `blank uuid value renders nothing`() {
+    val html = render { renderValue("", FieldType.UUID, display) }
+    assertEquals("<div></div>", html.trim())
+  }
+
+  @Test
+  fun `uuid value no longer than idTailChars renders whole without an ellipsis`() {
+    val short = "abc123"
+    val html = render { renderValue(short, FieldType.UUID, display) }
+    assertTrue(html.contains(">$short</span>"), "Expected the verbatim value, got: $html")
+    assertFalse(html.contains("…"), "A value no longer than the tail must not be prefixed with an ellipsis, got: $html")
+  }
+
+  @Test
+  fun `bigint id value of FieldType TEXT renders raw with no compaction or copy button`() {
+    val html = render { renderCell("4242", FieldType.TEXT, "user", display) }
+    assertTrue(html.contains("4242"), "Expected the raw value, got: $html")
+    assertTrue(html.contains("🔗"), "Expected the link glyph, got: $html")
+    assertFalse(html.contains("id-copy"), "A TEXT id must emit no copy button, got: $html")
+    assertFalse(html.contains("…"), "A TEXT id must not be compacted, got: $html")
+  }
+
+  @Test
+  fun `idTailChars from the display context controls the tail width`() {
+    val custom = display.copy(idTailChars = 12)
+    val html = render { renderValue(uuid, FieldType.UUID, custom) }
+    assertTrue(html.contains("…" + uuid.takeLast(12)), "Expected the last 12 chars, got: $html")
   }
 }

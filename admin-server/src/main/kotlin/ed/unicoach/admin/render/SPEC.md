@@ -15,11 +15,13 @@ RFC 79 introduced three central rendering helpers in the new
 across all cells: datetime formatting in a configured timezone, boolean glyphs,
 entity-reference id-link glyphs, and blank suppression. RFC 81 extended
 `renderValue` with a `FieldType.JSON` branch that pretty-prints JSON cell values
-inside a `<pre>` element. Every cell (list rows, detail field table, all
-edge-table and embedded-panel cells) routes through the same `renderCell`
-helper. The render context (`AdminDisplay`) is constructed once in `adminModule`
-and threaded into the render functions; the render layer never holds the
-registry directly.
+inside a `<pre>` element. RFC 83 added a `FieldType.UUID` branch (compacting a
+UUID id to an ellipsis plus its last `idTailChars` characters with a
+click-to-copy button) and the admin server's first delegated click-to-copy
+script. Every cell (list rows, detail field table, all edge-table and
+embedded-panel cells) routes through the same `renderCell` helper. The render
+context (`AdminDisplay`) is constructed once in `adminModule` and threaded into
+the render functions; the render layer never holds the registry directly.
 
 ---
 
@@ -35,14 +37,19 @@ concern beyond "calling twice emits the markup twice."
 
 ### `AdminDisplay` — [`CellRender.kt`](./CellRender.kt)
 
-The render-time context for the four display conventions of RFC 79. Constructed
-once in `adminModule` (via `DisplayConfig.toAdminDisplay`) and threaded into the
-render functions; the render layer never holds the registry, only this object.
+The render-time context for the display conventions of RFC 79 and RFC 83.
+Constructed once in `adminModule` (via `DisplayConfig.toAdminDisplay`) and
+threaded into the render functions; the render layer never holds the registry,
+only this object.
 
 - **`zone: ZoneId`** — the timezone all datetimes render in.
 - **`idLinkGlyph: String`** — the entity-reference link glyph (e.g. `🔗`).
 - **`boolTrueGlyph: String`** — the true boolean glyph (e.g. `✓`).
 - **`boolFalseGlyph: String`** — the false boolean glyph (e.g. `✗`).
+- **`idTailChars: Int`** — the number of trailing characters kept when
+  compacting a UUID id (RFC 83). Positive; validated at startup.
+- **`copyGlyph: String`** — the glyph text of the per-UUID-cell click-to-copy
+  button (RFC 83).
 - **`isSupported: (slug: String) -> Boolean`** — `registry.bySlug(it) != null`;
   the render layer uses only this predicate, not the registry itself.
 
@@ -55,8 +62,8 @@ both types) means a new `DisplayConfig` field cannot be silently omitted at the
 
 ### `FlowContent.renderValue(value, type, display)` — [`CellRender.kt`](./CellRender.kt)
 
-Renders the typed value only — no entity link. The single place the datetime and
-boolean display conventions live.
+Renders the typed value only — no entity link. The single place the datetime,
+boolean, and UUID compaction display conventions live.
 
 - **`FieldType.TIMESTAMP`**: the source instant formatted as `MMM d, yyyy`
   (`Locale.ENGLISH`) in `display.zone`, in a `<span>` whose `title` attribute
@@ -64,10 +71,8 @@ boolean display conventions live.
   nothing. A value that does not parse as an `Instant` is logged at WARN and
   rendered as raw text (never throws).
 - **`FieldType.BOOL`**: `"true"` → the configured true glyph in a
-  `<span
-  class="bool-true">`; `"false"` → the configured false glyph in
-  `<span
-  class="bool-false">`. A blank value renders nothing. Any other value
+  `<span class="bool-true">`; `"false"` → the configured false glyph in
+  `<span class="bool-false">`. A blank value renders nothing. Any other value
   surfaces as raw text (rather than being masked as false) so an unexpected
   value is visible. `cells()` always stringifies bools as `"true"`/`"false"`, so
   the raw-text branch is unreachable in practice.
@@ -77,6 +82,16 @@ boolean display conventions live.
   nothing. A value that does not parse as JSON is logged at WARN (logger name
   `ed.unicoach.admin.CellRender`) and rendered as raw text (never throws),
   mirroring the TIMESTAMP fallback.
+- **`FieldType.UUID`** (RFC 83): a compacted UUID id rendered as: (1) a `<span>`
+  carrying the full value as a hover `title`, whose text is `…` (U+2026)
+  followed by `value.takeLast(display.idTailChars)` when
+  `value.length > display.idTailChars`, or the verbatim value otherwise (no
+  misleading ellipsis for short values); (2) a
+  `<button type="button"
+  class="id-copy" data-full="<value>">` carrying
+  `display.copyGlyph` as text. The `type="button"` prevents accidental form
+  submission from an enclosing form. A blank value renders nothing (no span, no
+  button).
 - **All other types**: the raw text verbatim.
 
 ### `FlowContent.renderRefLink(value, refSlug, display)` — [`CellRender.kt`](./CellRender.kt)
@@ -84,7 +99,9 @@ boolean display conventions live.
 Renders the trailing entity-reference link. When `refSlug` is non-null, `value`
 is non-blank, and `display.isSupported(refSlug)` is true: emits a non-breaking
 space text node followed by the configured `idLinkGlyph` as a hyperlink in the
-`id-link` CSS class to `/{refSlug}/{value}`. Otherwise renders nothing. The
+`id-link` CSS class to `/{refSlug}/{value}`. The glyph href uses the full value
+(not the compacted display), so navigation targets the correct entity even for
+UUID columns that render a tail only. Otherwise renders nothing. The
 non-breaking space is a separate text node so the glyph never wraps to its own
 line.
 
@@ -102,10 +119,24 @@ entity, so navigation to a row's detail page is the primary-id column's own
 - **Behavior**: Emits the page `<head>` (title + inline stylesheet) and
   `<body>`. When `nav` is true, emits the sidebar (dashboard link, one link per
   `topLevelResources` entry to `/{slug}`, and a `POST /logout` button), then the
-  `<main>` content. When `nav` is false, emits only the `<main>` content — the
-  standalone form used by login and error pages. The stylesheet includes three
-  RFC-79 classes: `bool-true` (green), `bool-false` (red), and `id-link` (no
-  underline on the glyph link).
+  `<main>` content, then the inline copy script. When `nav` is false, emits only
+  the `<main>` content and the script — the standalone form used by login and
+  error pages gets the script too, as a passive listener it is harmless where no
+  id cell exists.
+- **Inline styles** (`STYLES`): includes RFC-79 classes `bool-true` (green),
+  `bool-false` (red), and `id-link` (no underline); and RFC-83 classes
+  `button.id-copy` (minimal inline control — no border/background, glyph-sized,
+  baseline-aligned) and `button.id-copy.copied` (transient green "copied" state
+  toggled by the script and cleared by `setTimeout`).
+- **Inline script** (`SCRIPT`, RFC 83): a single delegated `click` listener on
+  `document`. A click whose `target.closest('.id-copy')` is non-null writes that
+  element's `data-full` to the clipboard via `navigator.clipboard.writeText` and
+  toggles a transient `copied` class removed by
+  `setTimeout(_, COPY_FEEDBACK_MS)`. Guards on `navigator.clipboard` being
+  present; degrades silently to a no-op on a non-secure origin (hover `title`
+  remains the fallback to the full value). Emitted as the last child of `body`
+  via `script { unsafe { +SCRIPT } }`, mirroring the inline-style pattern. No
+  per-button state, no per-element id.
 - **Inputs**: `topLevelResources` supplies nav link targets/labels; the renderer
   reads only each resource's `slug` and `title`.
 - **Side effects**: HTML emission only.
@@ -119,11 +150,12 @@ entity, so navigation to a row's detail page is the primary-id column's own
   or sensitive are excluded from the columns; the same field set governs the
   header cells and every body cell, so columns and values stay aligned. Every
   cell renders through `renderCell(value, field.type, field.refSlug, display)` —
-  the typed value followed by the ref-link glyph. No cell's value text is
-  wrapped in a hyperlink; the id column's own `refSlug` glyph is the sole
-  navigation link to a row's detail page. A row reported deleted by `isDeleted`
-  is marked with a "deleted" badge (after the first cell's glyph) rather than
-  hidden. A null cell value renders as the empty string.
+  the typed value followed by the ref-link glyph. UUID id columns compact to an
+  ellipsis plus the tail; BIGINT id columns render raw text. No cell's value
+  text is wrapped in a hyperlink; the id column's own `refSlug` glyph is the
+  sole navigation link to a row's detail page. A row reported deleted by
+  `isDeleted` is marked with a "deleted" badge (after the first cell's glyph)
+  rather than hidden. A null cell value renders as the empty string.
 - **Pager**: A "« Previous" link appears only when `offset > 0`, targeting the
   previous offset clamped at zero (`offset - pageSize` floored at 0). A "Next »"
   link appears only when `hasNext` is true, targeting `offset + pageSize`. No
@@ -140,8 +172,7 @@ entity, so navigation to a row's detail page is the primary-id column's own
   `EdgePanel` in the order supplied. A sensitive field's value is shown as a
   fixed redacted placeholder (`••• (redacted)`), never the underlying value.
   Every non-sensitive cell routes through
-  `renderCell(value, field.type,
-  field.refSlug, display)`.
+  `renderCell(value, field.type, field.refSlug, display)`.
 - **Actions**: The "Edit" link appears only when the descriptor exposes an
   `update` handler. The delete action appears only when the descriptor exposes a
   `delete` handler and the row is not deleted; the undelete action appears only
@@ -192,8 +223,9 @@ entity, so navigation to a row's detail page is the primary-id column's own
   checkbox whose checked state reflects the current value `"true"` and whose
   submitted value is `"true"`; `ENUM` a `<select>` populated from the field's
   `enumValues` with the current value pre-selected; `INT` a numeric input; every
-  other type a typed text input. JSON well-formedness is validated before submit
-  by the calling handler, not this layer.
+  other type (including `UUID`, though UUID fields are always `editable = false`
+  and never reach a form) a typed text input. JSON well-formedness is validated
+  before submit by the calling handler, not this layer.
 - **Error handling**: This is the re-render target on a duplicate/constraint
   failure — callers pass the rejected `values` back through to preserve the
   operator's input; the renderer itself raises nothing.
@@ -240,17 +272,19 @@ entity, so navigation to a row's detail page is the primary-id column's own
   `kotlinx.html` documents as HTTP responses. This is the render layer's only
   Ktor coupling, confined to `ErrorPages.kt`; the list/detail/form/layout
   builders are framework-agnostic `kotlinx.html` extensions.
-- **`kotlinx.html`** — the HTML DSL all view builders target.
+- **`kotlinx.html`** — the HTML DSL all view builders target. `button`, `span`,
+  `script`, and `attributes[...]` (for `data-full`) are used by the RFC-83 UUID
+  render path.
 - **`java.time`** — `Instant`, `ZoneId`, `DateTimeFormatter` used by the
   `TIMESTAMP` renderer in `CellRender.kt`. No new library dependency.
 - **`kotlinx.serialization.json`** — `Json`, `JsonElement` used by the `JSON`
   renderer in `CellRender.kt` to parse and pretty-print JSON cell values. Flows
   transitively via `:common`; no new direct dependency in `admin-server`.
 - No environment variables or config keys are read by this directory. Display
-  configuration (timezone, glyphs) lives in `admin-server.conf` /
-  `DisplayConfig` / `AdminConfig`, consumed by the application bootstrap, not
-  here. `AdminDisplay` is the already-parsed and pre-wired context object
-  threaded into render functions.
+  configuration (timezone, glyphs, `idTailChars`, `copyGlyph`) lives in
+  `admin-server.conf` / `DisplayConfig` / `AdminConfig`, consumed by the
+  application bootstrap, not here. `AdminDisplay` is the already-parsed and
+  pre-wired context object threaded into render functions.
 
 ---
 
@@ -278,3 +312,16 @@ entity, so navigation to a row's detail page is the primary-id column's own
       failure logs at WARN and emits raw text (never throws). Added the private
       `PRETTY_JSON = Json { prettyPrint = true }` instance and the private
       `renderJsonValue` helper in `CellRender.kt`.
+- [x] [RFC-83: Compact display of entity id columns](../../../../../../../../rfc/83-admin-compact-id-display.md)
+      — added `AdminDisplay.idTailChars` and `AdminDisplay.copyGlyph`; carried
+      both through `DisplayConfig.toAdminDisplay`. Added `renderIdValue`
+      (private) and the `FieldType.UUID -> renderIdValue(value, display)` branch
+      in `renderValue`: a compacted `<span title="<full>">…<tail></span>` plus a
+      `<button type="button" class="id-copy" data-full="<full>">` carrying the
+      configured `copyGlyph`. Added the `SCRIPT` constant to `Layout.kt` with
+      one delegated `document`-level `click` listener that copies `data-full` to
+      the clipboard and toggles a transient `copied` class; emitted as the last
+      child of `body` via `script { unsafe { +SCRIPT } }` on every page. Added
+      `button.id-copy` and `button.id-copy.copied` CSS rules to `STYLES`.
+      `renderCell` and `renderRefLink` are unchanged — the glyph `href`
+      continues to use the full value, so navigation targets the correct entity.

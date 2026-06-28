@@ -4,16 +4,20 @@ import com.typesafe.config.Config
 import java.time.ZoneId
 
 /**
- * Display conventions shared by every admin view (RFC 79): the timezone all
- * datetimes render in, and the glyphs for id links and booleans. Parsed from the
- * `admin.display` section; [timezone] is validated through [ZoneId.of] so a
- * malformed zone fails fast at startup.
+ * Display conventions shared by every admin view (RFC 79, RFC 83): the timezone
+ * all datetimes render in, the glyphs for id links, booleans, and the copy
+ * button, and the number of trailing characters a compacted UUID id keeps.
+ * Parsed from the `admin.display` section; [timezone] is validated through
+ * [ZoneId.of] and [idTailChars] through `require(it > 0)`, so a malformed zone or
+ * a non-positive tail width fails fast at startup.
  */
 data class DisplayConfig(
   val timezone: ZoneId,
   val idLinkGlyph: String,
   val boolTrueGlyph: String,
   val boolFalseGlyph: String,
+  val idTailChars: Int,
+  val copyGlyph: String,
 )
 
 /**
@@ -54,6 +58,11 @@ data class AdminConfig(
               idLinkGlyph = display.getString("idLinkGlyph"),
               boolTrueGlyph = display.getString("boolTrueGlyph"),
               boolFalseGlyph = display.getString("boolFalseGlyph"),
+              idTailChars =
+                display.getInt("idTailChars").also {
+                  require(it > 0) { "admin.display.idTailChars must be positive, got: [$it]" }
+                },
+              copyGlyph = display.getString("copyGlyph"),
             ),
         )
       }

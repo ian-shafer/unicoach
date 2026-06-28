@@ -70,13 +70,23 @@ class UsersResourceTest {
       // A typed-id leak would produce "/user/UserId(value=...)"; assert the raw UUID segment.
       assertEquals("/user/${target.id.value}", href, "List link must use the raw id, not the value-class toString()")
 
-      // Uniform cell rendering (RFC 79): the id cell renders the raw id as plain
-      // text followed by the ref-link glyph (separated by a non-breaking space) —
-      // the glyph is the sole link to the entity. The value text must NOT be
-      // wrapped in its own <a>.
+      // Uniform cell rendering (RFC 79 + RFC 83): users.id is FieldType.UUID, so
+      // the id cell renders the compacted value (ellipsis + tail in a titled span,
+      // plus a click-to-copy button carrying the full value) followed by the
+      // ref-link glyph. The value text must NOT be wrapped in its own <a>; the full
+      // id stays reachable via the title, the copy button, and the glyph href.
+      val fullId = target.id.value.toString()
       assertTrue(
-        listBody.contains("${target.id.value} <a href=\"/user/${target.id.value}\" class=\"id-link\">🔗</a>"),
-        "The id cell must render plain id text followed by the glyph link",
+        listBody.contains("<span title=\"$fullId\">…${fullId.takeLast(8)}</span>"),
+        "The id cell must render the compacted value in a titled span",
+      )
+      assertTrue(
+        listBody.contains("class=\"id-copy\" data-full=\"$fullId\""),
+        "The id cell must render a copy button carrying the full id",
+      )
+      assertTrue(
+        listBody.contains("<a href=\"/user/$fullId\" class=\"id-link\">🔗</a>"),
+        "The id cell must render the glyph link after the compacted value",
       )
       assertFalse(
         Regex("""<a href="/user/${target.id.value}"(?![^>]*class="id-link")""").containsMatchIn(listBody),

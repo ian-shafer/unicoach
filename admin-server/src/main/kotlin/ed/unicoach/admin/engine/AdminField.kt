@@ -9,6 +9,16 @@ enum class FieldType {
   TIMESTAMP,
   JSON,
   ENUM,
+
+  /**
+   * A canonical UUID string value that renders compacted (RFC 83): an ellipsis
+   * plus its tail, with the full value reachable via a hover `title` and a
+   * click-to-copy button. Orthogonal to [AdminField.refSlug] — `refSlug` controls
+   * the trailing navigation glyph, [UUID] controls value compaction; a column may
+   * set one, both, or neither. A short `BIGINT` id stays [TEXT] and is never
+   * compacted.
+   */
+  UUID,
 }
 
 /**

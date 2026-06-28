@@ -31,9 +31,10 @@ object ObservationsResource : AdminResource<Observation, ObservationId> {
 
   override val fields =
     listOf(
+      // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "observation"),
-      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
-      AdminField("convoId", "Convo ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "convo"),
+      AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
+      AdminField("convoId", "Convo ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "convo"),
       AdminField("utteredAt", "Uttered", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField(
@@ -105,7 +106,7 @@ object ObservationsResource : AdminResource<Observation, ObservationId> {
       label = "Supported claims",
       columns =
         listOf(
-          EdgePanel.Table.Column("ID", refSlug = "claim"),
+          EdgePanel.Table.Column("ID", FieldType.UUID, refSlug = "claim"),
           EdgePanel.Table.Column("Status"),
           EdgePanel.Table.Column("Topic"),
           EdgePanel.Table.Column("Statement"),

@@ -34,7 +34,7 @@ object SystemPromptsResource : AdminResource<SystemPrompt, SystemPromptId> {
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "system-prompt"),
+      AdminField("id", "ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "system-prompt"),
       AdminField("name", "Name", FieldType.TEXT, editable = true, sensitive = false),
       AdminField("version", "Version", FieldType.TEXT, editable = true, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),

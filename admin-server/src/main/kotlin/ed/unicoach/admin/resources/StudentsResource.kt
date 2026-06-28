@@ -49,8 +49,8 @@ object StudentsResource : AdminResource<Student, StudentId> {
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
-      AdminField("userId", "User ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "user"),
+      AdminField("id", "ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
+      AdminField("userId", "User ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "user"),
       AdminField(
         "expectedHighSchoolGraduationDate",
         "Expected HS Graduation",
@@ -270,7 +270,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
         .getOrElse { return Result.failure(it) }
     val columns =
       listOf(
-        EdgePanel.Table.Column("ID", refSlug = "claim"),
+        EdgePanel.Table.Column("ID", FieldType.UUID, refSlug = "claim"),
         EdgePanel.Table.Column("Status"),
         EdgePanel.Table.Column("Topic"),
         EdgePanel.Table.Column("Confidence"),
@@ -303,8 +303,9 @@ object StudentsResource : AdminResource<Student, StudentId> {
         .getOrElse { return Result.failure(it) }
     val columns =
       listOf(
+        // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
         EdgePanel.Table.Column("ID", refSlug = "observation"),
-        EdgePanel.Table.Column("Convo ID", refSlug = "convo"),
+        EdgePanel.Table.Column("Convo ID", FieldType.UUID, refSlug = "convo"),
         EdgePanel.Table.Column("Uttered", FieldType.TIMESTAMP),
         EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
       )
@@ -334,6 +335,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
         .getOrElse { return Result.failure(it) }
     val columns =
       listOf(
+        // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
         EdgePanel.Table.Column("ID", refSlug = "extraction-run"),
         EdgePanel.Table.Column("Outcome"),
         EdgePanel.Table.Column("Model"),

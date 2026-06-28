@@ -14,6 +14,7 @@ import kotlinx.html.head
 import kotlinx.html.li
 import kotlinx.html.main
 import kotlinx.html.nav
+import kotlinx.html.script
 import kotlinx.html.style
 import kotlinx.html.title
 import kotlinx.html.ul
@@ -36,9 +37,37 @@ private const val STYLES = """
   .bool-true { color: #15803d; }
   .bool-false { color: #b91c1c; }
   a.id-link { text-decoration: none; }
+  button.id-copy { margin: 0 0 0 0.25rem; padding: 0; border: none; background: none; color: #627d98; cursor: pointer; font-size: inherit; line-height: 1; vertical-align: baseline; }
+  button.id-copy:hover { color: #1f2933; }
+  button.id-copy.copied { color: #15803d; }
   label { display: block; font-weight: bold; margin-top: 0.5rem; }
   input, textarea, select { width: 320px; padding: 0.3rem; }
   button { margin-top: 0.75rem; padding: 0.4rem 0.8rem; }
+"""
+
+/**
+ * The sole admin-server client-side script (RFC 83): one delegated `click`
+ * listener on `document`. A click whose `target.closest('.id-copy')` is non-null
+ * writes that element's `data-full` to the clipboard and toggles a transient
+ * `copied` class a lone `setTimeout` removes — no per-button state. It guards on
+ * `navigator.clipboard` being present and no-ops where it is absent (the
+ * clipboard API is undefined on a non-secure origin; the hover `title` remains
+ * the fallback to the full value). An inline script is permitted because
+ * admin-server serves no static-asset route and sets no Content-Security-Policy;
+ * if a CSP is ever added this must move to a nonce'd or externally-served script.
+ */
+private const val COPY_FEEDBACK_MS = 1000
+
+private const val SCRIPT = """
+  document.addEventListener('click', function (event) {
+    var btn = event.target.closest('.id-copy');
+    if (!btn) return;
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(btn.getAttribute('data-full')).then(function () {
+      btn.classList.add('copied');
+      setTimeout(function () { btn.classList.remove('copied'); }, $COPY_FEEDBACK_MS);
+    }).catch(function () { /* copy failed (permission denied / document not focused); the hover title remains the fallback */ });
+  });
 """
 
 /**
@@ -71,5 +100,6 @@ fun HTML.adminPage(
       }
     }
     main { content() }
+    script { unsafe { +SCRIPT } }
   }
 }
