@@ -7,8 +7,8 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentEdit
 import ed.unicoach.db.models.StudentId
-import ed.unicoach.db.models.StudentVersion
 import ed.unicoach.db.models.UserId
+import ed.unicoach.db.models.Version
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -18,7 +18,7 @@ object StudentsDao :
   Creatable<NewStudent, Student>,
   Updatable<StudentEdit, Student>,
   OccDeletable<Student, StudentId>,
-  VersionHistory<StudentId, StudentVersion> {
+  VersionHistory<StudentId, Version<Student>> {
   /**
    * Reconstructs the [PartialDate] from the decomposed columns. The DB
    * constraints already guarantee a valid partial date is persisted, so an
@@ -216,26 +216,15 @@ object StudentsDao :
       mapError = ::mapCreateUpdateError,
     )
 
-  private fun mapStudentVersion(rs: ResultSet): StudentVersion =
-    StudentVersion(
-      id = StudentId(UUID.fromString(rs.getString("id"))),
-      userId = UserId(UUID.fromString(rs.getString("user_id"))),
-      expectedHighSchoolGraduationDate = mapGraduationDate(rs),
-      version = rs.getInt("version"),
-      createdAt = rs.getInstant("created_at"),
-      updatedAt = rs.getInstant("updated_at"),
-      deletedAt = rs.getInstantOrNull("deleted_at"),
-    )
-
   /** Admin read surface: a student's full version history, ascending by version. */
   override fun listVersions(
     session: SqlSession,
     id: StudentId,
-  ): Result<List<StudentVersion>> =
+  ): Result<List<Version<Student>>> =
     session.queryList(
       "SELECT * FROM students_versions WHERE id = ? ORDER BY version",
       bind = { it.setObject(1, id.value) },
-      map = ::mapStudentVersion,
+      map = { Version(mapStudent(it)) },
     )
 
   /**

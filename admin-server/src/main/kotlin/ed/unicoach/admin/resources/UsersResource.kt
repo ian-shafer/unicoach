@@ -377,13 +377,13 @@ class UsersResource(
             EdgePanel.Table.Row(
               cells =
                 listOf(
-                  v.version.toString(),
-                  v.email.value,
-                  v.name.value,
-                  v.isAdmin.toString(),
-                  v.emailVerifiedAt?.toString() ?: "",
-                  v.updatedAt.toString(),
-                  v.deletedAt?.toString() ?: "",
+                  v.entity.version.toString(),
+                  v.entity.email.value,
+                  v.entity.name.value,
+                  v.entity.isAdmin.toString(),
+                  v.entity.emailVerifiedAt?.toString() ?: "",
+                  v.entity.updatedAt.toString(),
+                  v.entity.deletedAt?.toString() ?: "",
                 ),
             )
           },

@@ -168,10 +168,10 @@ object StudentsResource : AdminResource<Student, StudentId> {
             EdgePanel.Table.Row(
               cells =
                 listOf(
-                  v.version.toString(),
-                  v.expectedHighSchoolGraduationDate.toIso(),
-                  v.updatedAt.toString(),
-                  v.deletedAt?.toString() ?: "",
+                  v.entity.version.toString(),
+                  v.entity.expectedHighSchoolGraduationDate.toIso(),
+                  v.entity.updatedAt.toString(),
+                  v.entity.deletedAt?.toString() ?: "",
                 ),
             )
           },

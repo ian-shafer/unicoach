@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.db.models.Id
 import ed.unicoach.db.models.Identifiable
 import ed.unicoach.db.models.SoftDeleteScope
+import ed.unicoach.db.models.Versioned
 
 /*
  * Capability interfaces: one interface per operation-capability, composed à la
@@ -99,7 +100,7 @@ interface Destroyable<ID : Id> {
 }
 
 // History
-interface VersionHistory<ID : Id, V> {
+interface VersionHistory<ID : Id, V : Versioned> {
   fun listVersions(
     session: SqlSession,
     id: ID,

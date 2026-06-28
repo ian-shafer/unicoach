@@ -737,3 +737,11 @@ column is `sensitive`. One `History` edge ("Version history").
       column (TEXT → UUID, gaining compaction while preserving its
       `refSlug = "convo"` navigation glyph). No route, render-layer, engine, or
       schema change.
+- [x] [RFC-84: Entity version composition](../../../../../../../../rfc/84-entity-version-composition.md)
+      — Incidental call-site update for the generalized version-snapshot type.
+      The per-entity `UserVersion`/`StudentVersion`/`CollegeVersion` classes
+      were replaced by one generic `Version<E>` composed of the entity, so the
+      three history panels now read each snapshot's fields through `v.entity.*`
+      (`UsersResource.resolveEdges`, `StudentsResource.buildPanel`,
+      `CollegesResource.resolveEdges`). The rendered history columns, cell
+      strings, and row order are unchanged.

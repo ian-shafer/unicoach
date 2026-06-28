@@ -449,7 +449,7 @@ class UsersDaoTest {
         ).getOrThrow()
 
     val v1 = UsersDao.findVersion(session, ssoOnly.id, targetVersion = ssoOnly.version).getOrThrow()
-    assertTrue(v1.passwordHash == null, "Historical SSO-only row must reconstruct with a null passwordHash")
+    assertTrue(v1.entity.passwordHash == null, "Historical SSO-only row must reconstruct with a null passwordHash")
   }
 
   /**
@@ -536,8 +536,8 @@ class UsersDaoTest {
     assertTrue(versions.size >= 2, "Expected at least two history rows, got ${versions.size}")
     val v1 = versions.first { it.version == created.version }
     val v2 = versions.first { it.version == granted.version }
-    assertTrue(!v1.isAdmin, "Historical v1 should reflect isAdmin = false")
-    assertTrue(v2.isAdmin, "Historical v2 should reflect isAdmin = true")
+    assertTrue(!v1.entity.isAdmin, "Historical v1 should reflect isAdmin = false")
+    assertTrue(v2.entity.isAdmin, "Historical v2 should reflect isAdmin = true")
   }
 
   @Test
@@ -579,8 +579,8 @@ class UsersDaoTest {
     val versions = UsersDao.listVersions(session, created.id).getOrThrow()
     val v1 = versions.first { it.version == created.version }
     val v2 = versions.first { it.version == verified.version }
-    assertTrue(v1.emailVerifiedAt == null, "Historical v1 should reflect unverified state")
-    assertTrue(v2.emailVerifiedAt != null, "Historical v2 should carry the verification timestamp")
+    assertTrue(v1.entity.emailVerifiedAt == null, "Historical v1 should reflect unverified state")
+    assertTrue(v2.entity.emailVerifiedAt != null, "Historical v2 should carry the verification timestamp")
   }
 
   @Test
@@ -650,8 +650,8 @@ class UsersDaoTest {
 
     val versions = UsersDao.listVersions(session, created.id).getOrThrow()
     val latest = versions.first { it.version == updated.version }
-    assertTrue(latest.email == newEmail, "History row must carry the new email")
-    assertTrue(latest.emailVerifiedAt == null, "History row must reflect cleared verification")
+    assertTrue(latest.entity.email == newEmail, "History row must carry the new email")
+    assertTrue(latest.entity.emailVerifiedAt == null, "History row must reflect cleared verification")
   }
 
   @Test

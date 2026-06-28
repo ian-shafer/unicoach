@@ -142,14 +142,14 @@ object CollegesResource : AdminResource<College, CollegeId> {
             EdgePanel.Table.Row(
               cells =
                 listOf(
-                  v.version.toString(),
-                  v.name,
-                  v.city,
-                  v.state,
-                  v.control.toString(),
-                  v.admissionRate?.toString() ?: "",
-                  v.netPrice?.toString() ?: "",
-                  v.updatedAt.toString(),
+                  v.entity.version.toString(),
+                  v.entity.name,
+                  v.entity.city,
+                  v.entity.state,
+                  v.entity.control.toString(),
+                  v.entity.admissionRate?.toString() ?: "",
+                  v.entity.netPrice?.toString() ?: "",
+                  v.entity.updatedAt.toString(),
                 ),
             )
           },

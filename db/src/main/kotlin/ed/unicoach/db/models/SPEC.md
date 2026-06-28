@@ -88,10 +88,10 @@ equality.
 ### II-D. Authentication credentials and federated identity
 
 A user's password credential lives directly on the entity as a nullable
-`passwordHash: PasswordHash?` on `User`/`NewUser`/`UserVersion` — a user may
-have no password (a Google-only account). Federated logins are modeled as
-separate `AuthIdentity` rows rather than as a flag on the user. There is no
-`AuthMethod` sealed type and no `SsoProviderId` value class.
+`passwordHash: PasswordHash?` on `User`/`NewUser` — a user may have no password
+(a Google-only account). Federated logins are modeled as separate `AuthIdentity`
+rows rather than as a flag on the user. There is no `AuthMethod` sealed type and
+no `SsoProviderId` value class.
 
 - [`LoginMethod`](./LoginMethod.kt) is an enum recording how a session
   authenticated, persisted as `sessions.login_method`. Its variants are
@@ -131,9 +131,9 @@ DB-generated surface ids of the `colleges`/`college_programs` rows; the federal
 `CollegeProgramId` is defined alongside `CollegeProgram` in
 [`CollegeProgram.kt`](./CollegeProgram.kt) rather than its own file, because
 `college_programs` is bulk-upserted reference data with no standalone id-keyed
-read path. `CollegeId` is now also the id type of `CollegeVersion` snapshot rows
-(RFC 82), as versions are keyed on the same surface UUID as the parent `College`
-row.
+read path. `CollegeId` is the id type reused by `Version<College>` snapshot rows
+(RFC 82, RFC 84), as versions are keyed on the same surface UUID as the parent
+`College` row and accessed through `v.entity.id`.
 
 [`Id.asString`](./Entity.kt) is a derived, total, backing-agnostic string view
 of an identity (e.g. `UUID.toString()`) for logging, serialization, and generic
@@ -171,18 +171,22 @@ against their tables' `row_created_at`).
   email-verification marker, non-null once the user has proven control of the
   address, null while unverified. `Student` carries a validated
   `expectedHighSchoolGraduationDate: PartialDate`.
-- **Version-snapshot rows** — [`UserVersion`](./UserVersion.kt),
-  [`StudentVersion`](./StudentVersion.kt), and
-  [`CollegeVersion`](./CollegeVersion.kt) — implement `Created` and `Versioned`
-  only. They are immutable history rows that mirror the live entity's domain
-  fields as they stood at the captured version. `UserVersion` and
-  `StudentVersion` additionally carry `updatedAt` and `deletedAt` as plain
-  values (not implementing `Updated`/`SoftDeletable`). `CollegeVersion` also
-  carries `updatedAt` as a plain value but omits `deletedAt` because `colleges`
-  has no `deleted_at`; it mirrors the full curated column set of `College`
-  (including all nullable Scorecard fields). `UserVersion` mirrors `User`,
-  including the nullable `passwordHash: PasswordHash?` credential and
-  `emailVerifiedAt: Instant?` (faithful history of the verification marker).
+- **Version-snapshot rows** — [`Version<E>`](./Version.kt) (where
+  `E : Versioned`) — the single composed snapshot type replacing the three
+  former per-entity `*Version` classes (RFC 84). A history row is
+  `Version<User>`, `Version<Student>`, or `Version<College>`. `Version` holds
+  `entity: E` and re-exposes `version: Int` by delegating to `entity.version`,
+  satisfying the `Versioned` marker without a separate field. Because each
+  `*_versions` table is a complete snapshot of the entity's columns — exactly
+  the columns the entity mapper (`mapUser`, `mapStudent`, `mapCollege`) already
+  reads — the entity mapper is reused directly and its result wrapped in
+  `Version`. Callers reach all snapshot fields (including `updatedAt`,
+  `deletedAt`, `passwordHash`, `emailVerifiedAt`,
+  `expectedHighSchoolGraduationDate`, and every Scorecard field) through
+  `v.entity.*`. `Version` implements `Versioned` (via delegation to
+  `entity.version`) but not `Identifiable`, `Created`, `Updated`, or
+  `SoftDeletable` — those capabilities are accessed through `v.entity.*`. `E` is
+  declared `out` because a snapshot is read-only.
 - [`Session`](./Session.kt) — `Created` and `Versioned` only: a versioned,
   immutable row carrying `expiresAt: Instant`, an optional `userId` (null for an
   anonymous/pre-auth session), a nullable `loginMethod: LoginMethod?` recording
@@ -566,3 +570,13 @@ The extraction creation/update inputs (pure data carriers, siblings of the
       `deletedAt` because `colleges` has no `deleted_at`). No change to
       `CollegeProgram`, `NewCollege`, `NewCollegeProgram`, `CollegeQuery`, or
       `CollegeMatch`.
+- [x] [RFC-84: Entity version composition](../../../../../../../../rfc/84-entity-version-composition.md)
+      — Replaced the three per-entity version classes (`UserVersion`,
+      `StudentVersion`, `CollegeVersion`) with a single generic composed type
+      `Version<out E : Versioned>` that holds the entity snapshot. The version
+      number is read from the wrapped entity (`entity.version`) and re-exposed
+      through `Versioned`, so no version-row metadata is stored twice. The
+      per-entity `mapXVersion` DAO mappers were removed; version readers now
+      wrap the existing `mapX` mapper in `Version`. Deleted `UserVersion.kt`,
+      `StudentVersion.kt`, and `CollegeVersion.kt`. Pure structural/DRY refactor
+      — no schema, migration, or write-path change.

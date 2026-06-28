@@ -414,8 +414,8 @@ class StudentsDaoTest {
 
     val versions = StudentsDao.listVersions(session, v1.id).getOrThrow()
     assertEquals(listOf(1, 2, 3), versions.map { it.version })
-    assertEquals("2028", versions[0].expectedHighSchoolGraduationDate.toIso())
-    assertEquals("2029-06", versions[1].expectedHighSchoolGraduationDate.toIso())
-    assertEquals("2030-06-15", versions[2].expectedHighSchoolGraduationDate.toIso())
+    assertEquals("2028", versions[0].entity.expectedHighSchoolGraduationDate.toIso())
+    assertEquals("2029-06", versions[1].entity.expectedHighSchoolGraduationDate.toIso())
+    assertEquals("2030-06-15", versions[2].entity.expectedHighSchoolGraduationDate.toIso())
   }
 }

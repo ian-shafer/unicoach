@@ -10,7 +10,7 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserEdit
 import ed.unicoach.db.models.UserId
-import ed.unicoach.db.models.UserVersion
+import ed.unicoach.db.models.Version
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
@@ -21,7 +21,7 @@ object UsersDao :
   Creatable<NewUser, User>,
   Updatable<UserEdit, User>,
   OccDeletable<User, UserId>,
-  VersionHistory<UserId, UserVersion> {
+  VersionHistory<UserId, Version<User>> {
   private fun mapUser(rs: ResultSet): User {
     val id = UserId(UUID.fromString(rs.getString("id")))
     val version = rs.getInt("version")
@@ -49,32 +49,7 @@ object UsersDao :
     )
   }
 
-  private fun mapUserVersion(rs: ResultSet): UserVersion {
-    val id = UserId(UUID.fromString(rs.getString("id")))
-    val version = rs.getInt("version")
-    val createdAt = rs.getInstant("created_at")
-    val updatedAt = rs.getInstant("updated_at")
-    val deletedAt = rs.getInstantOrNull("deleted_at")
-
-    val email = (EmailAddress.create(rs.getString("email")) as ValidationResult.Valid).value
-    val name = (PersonName.create(rs.getString("name")) as ValidationResult.Valid).value
-    val displayNameStr = rs.getString("display_name")
-    val displayName = displayNameStr?.let { (DisplayName.create(it) as ValidationResult.Valid).value }
-
-    return UserVersion(
-      id = id,
-      version = version,
-      createdAt = createdAt,
-      updatedAt = updatedAt,
-      deletedAt = deletedAt,
-      email = email,
-      name = name,
-      displayName = displayName,
-      passwordHash = readPasswordHash(rs),
-      isAdmin = rs.getBoolean("is_admin"),
-      emailVerifiedAt = rs.getInstantOrNull("email_verified_at"),
-    )
-  }
+  private fun mapUserVersion(rs: ResultSet): Version<User> = Version(mapUser(rs))
 
   /** Reconstructs the nullable password credential directly from `password_hash`. */
   private fun readPasswordHash(rs: ResultSet): PasswordHash? =
@@ -146,7 +121,7 @@ object UsersDao :
     session: SqlSession,
     id: UserId,
     targetVersion: Int,
-  ): Result<UserVersion> =
+  ): Result<Version<User>> =
     session.queryOne(
       "SELECT * FROM users_versions WHERE id = ? AND version = ?",
       bind = {
@@ -334,12 +309,12 @@ object UsersDao :
           session,
           id,
           currentVersion,
-          target.email,
-          target.name,
-          target.displayName,
-          target.passwordHash,
-          target.isAdmin,
-          target.emailVerifiedAt,
+          target.entity.email,
+          target.entity.name,
+          target.entity.displayName,
+          target.entity.passwordHash,
+          target.entity.isAdmin,
+          target.entity.emailVerifiedAt,
         )
       },
       onFailure = { cause ->
@@ -431,7 +406,7 @@ object UsersDao :
   override fun listVersions(
     session: SqlSession,
     id: UserId,
-  ): Result<List<UserVersion>> =
+  ): Result<List<Version<User>>> =
     session.queryList(
       "SELECT * FROM users_versions WHERE id = ? ORDER BY version",
       bind = { it.setObject(1, id.value) },

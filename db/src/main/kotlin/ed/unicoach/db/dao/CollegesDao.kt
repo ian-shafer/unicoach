@@ -6,9 +6,9 @@ import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeProgram
 import ed.unicoach.db.models.CollegeProgramId
 import ed.unicoach.db.models.CollegeQuery
-import ed.unicoach.db.models.CollegeVersion
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeProgram
+import ed.unicoach.db.models.Version
 import org.postgresql.util.PSQLException
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -35,7 +35,7 @@ import java.util.UUID
 object CollegesDao :
   Findable<College, CollegeId>,
   Listable<College>,
-  VersionHistory<CollegeId, CollegeVersion> {
+  VersionHistory<CollegeId, Version<College>> {
   // ---------------------------------------------------------------------------
   // Row mappers
   // ---------------------------------------------------------------------------
@@ -72,35 +72,6 @@ object CollegesDao :
 
   private fun mapCollege(rs: ResultSet): College =
     College(
-      id = CollegeId(UUID.fromString(rs.getString("id"))),
-      version = rs.getInt("version"),
-      unitId = rs.getInt("unit_id"),
-      opeid = rs.getString("opeid"),
-      name = rs.getString("name"),
-      city = rs.getString("city"),
-      state = rs.getString("state"),
-      region = rs.intOrNull("region"),
-      locale = rs.intOrNull("locale"),
-      latitude = rs.doubleOrNull("latitude"),
-      longitude = rs.doubleOrNull("longitude"),
-      control = rs.getInt("control"),
-      undergradEnrollment = rs.intOrNull("undergrad_enrollment"),
-      admissionRate = rs.doubleOrNull("admission_rate"),
-      satAvg = rs.intOrNull("sat_avg"),
-      costAttendance = rs.intOrNull("cost_attendance"),
-      netPrice = rs.intOrNull("net_price"),
-      tuitionInState = rs.intOrNull("tuition_in_state"),
-      tuitionOutState = rs.intOrNull("tuition_out_state"),
-      graduationRate = rs.doubleOrNull("graduation_rate"),
-      medianEarnings = rs.intOrNull("median_earnings"),
-      pctPell = rs.doubleOrNull("pct_pell"),
-      website = rs.getString("website"),
-      createdAt = rs.getInstant("created_at"),
-      updatedAt = rs.getInstant("updated_at"),
-    )
-
-  private fun mapCollegeVersion(rs: ResultSet): CollegeVersion =
-    CollegeVersion(
       id = CollegeId(UUID.fromString(rs.getString("id"))),
       version = rs.getInt("version"),
       unitId = rs.getInt("unit_id"),
@@ -350,11 +321,11 @@ object CollegesDao :
   override fun listVersions(
     session: SqlSession,
     id: CollegeId,
-  ): Result<List<CollegeVersion>> =
+  ): Result<List<Version<College>>> =
     session.queryList(
       "SELECT * FROM colleges_versions WHERE id = ? ORDER BY version",
       bind = { it.setObject(1, id.value) },
-      map = ::mapCollegeVersion,
+      map = { Version(mapCollege(it)) },
     )
 
   fun findByUnitId(

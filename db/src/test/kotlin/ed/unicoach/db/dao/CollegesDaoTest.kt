@@ -401,8 +401,8 @@ class CollegesDaoTest {
     val history = CollegesDao.listVersions(session, college.id).getOrThrow()
     assertEquals(1, history.size)
     assertEquals(1, history.single().version)
-    assertEquals("Original", history.single().name)
-    assertEquals(college.unitId, history.single().unitId)
+    assertEquals("Original", history.single().entity.name)
+    assertEquals(college.unitId, history.single().entity.unitId)
   }
 
   @Test
@@ -415,7 +415,7 @@ class CollegesDaoTest {
 
     val history = CollegesDao.listVersions(session, first.id).getOrThrow()
     assertEquals(listOf(1, 2), history.map { it.version })
-    assertEquals("New Name", history.last().name)
+    assertEquals("New Name", history.last().entity.name)
   }
 
   @Test
