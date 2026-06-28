@@ -8,6 +8,7 @@ import ed.unicoach.db.models.CollegeProgramId
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeProgram
+import org.postgresql.util.PSQLException
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -362,13 +363,18 @@ object CollegesDao {
   /**
    * Maps write-path SQLSTATEs: `23503` (FK — a program referencing an absent
    * college) to [NotFoundException]; `23505`/`23514` (unique/check) to
-   * [ConstraintViolationException]. Everything else routes through the shared
-   * [mapDatabaseError], which classifies transient SQLSTATEs.
+   * [ConstraintViolationException], populated with the violated constraint name
+   * and the server DETAIL line so a caller can bucket by constraint and surface
+   * the failing key without parsing log text. Everything else routes through the
+   * shared [mapDatabaseError], which classifies transient SQLSTATEs.
    */
   private fun mapCollegeError(e: SQLException): Exception =
     when (e.sqlState) {
       "23503" -> NotFoundException("Referenced college not found")
-      "23505", "23514" -> ConstraintViolationException(e)
+      "23505", "23514" -> {
+        val serverError = (e as? PSQLException)?.serverErrorMessage
+        ConstraintViolationException(e, serverError?.constraint, serverError?.detail)
+      }
       else -> mapDatabaseError(e)
     }
 }

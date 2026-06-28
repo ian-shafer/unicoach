@@ -41,8 +41,17 @@ class StudentAlreadyExistsException(
 ) : DaoException(message),
   PermanentError
 
+/**
+ * A write-path CHECK/unique violation. Carries the optional PostgreSQL
+ * diagnostics — the violated [constraint] name and the server [detail] line — so
+ * a caller can bucket the failure by constraint and surface the failing key
+ * without parsing log text. Both are null when the cause is not a
+ * `PSQLException` (the defaults keep existing construction sites unchanged).
+ */
 class ConstraintViolationException(
   cause: Throwable,
+  val constraint: String? = null,
+  val detail: String? = null,
 ) : DaoException("Database constraint violation", cause),
   PermanentError
 

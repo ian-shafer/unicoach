@@ -184,6 +184,15 @@ class CollegesDaoTest {
   }
 
   @Test
+  fun `negative net_price is accepted`() {
+    // Net price is cost of attendance minus average aid, so a heavily-subsidized
+    // institution (e.g. a community college) publishes a negative figure.
+    val result = CollegesDao.upsert(session, newCollege(100650, netPrice = -982))
+    assertTrue(result.isSuccess, "expected negative net_price to be accepted")
+    assertEquals(-982, result.getOrThrow().netPrice)
+  }
+
+  @Test
   fun `state of length not two is rejected`() {
     val result = CollegesDao.upsert(session, newCollege(100700, state = "CAL"))
     assertTrue(result.isFailure)
@@ -191,11 +200,44 @@ class CollegesDaoTest {
   }
 
   @Test
-  fun `cip_code not six digits is rejected`() {
+  fun `cip_code at 2, 4 or 6 digits is accepted`() {
     val collegeId = seed(newCollege(100800))
-    val result = CollegesDao.upsertProgram(session, NewCollegeProgram(collegeId, "2607", "Bad Cip", 3))
-    assertTrue(result.isFailure)
-    assertTrue(result.exceptionOrNull() is ConstraintViolationException)
+    // The three real CIP widths: series, family, detail. The Scorecard
+    // Field-of-Study file carries all three; the 4-digit '0901' is the case
+    // the old six-only CHECK wrongly rejected.
+    for (cip in listOf("09", "0901", "090101")) {
+      val result = CollegesDao.upsertProgram(session, NewCollegeProgram(collegeId, cip, "Comm", 3))
+      assertTrue(result.isSuccess, "expected cip_code [$cip] to be accepted")
+    }
+  }
+
+  @Test
+  fun `cip_code of an impossible width or non-digit is rejected`() {
+    val collegeId = seed(newCollege(100850))
+    // 1/3/5-digit widths cannot be a real CIP (a 3-digit value is most often a
+    // leading zero stripped from a 4-digit code); 7 digits overshoots detail.
+    for (cip in listOf("9", "260", "26070", "2607021", "26x7")) {
+      val result = CollegesDao.upsertProgram(session, NewCollegeProgram(collegeId, cip, "Bad Cip", 3))
+      assertTrue(result.isFailure, "expected cip_code [$cip] to be rejected")
+      assertTrue(result.exceptionOrNull() is ConstraintViolationException)
+    }
+  }
+
+  @Test
+  fun `ConstraintViolationException carries the constraint name and detail`() {
+    // A named CHECK violation (23514) surfaces the constraint that failed and
+    // the server DETAIL line (the "Failing row contains (...)" tuple Postgres
+    // attaches for a CHECK violation), captured verbatim for log drill-down.
+    val checkResult = CollegesDao.upsert(session, newCollege(100870, control = 4))
+    assertTrue(checkResult.isFailure)
+    val checkError = checkResult.exceptionOrNull() as ConstraintViolationException
+    assertEquals("colleges_control_valid_check", checkError.constraint)
+    val detail = checkError.detail
+    assertNotNull(detail)
+    assertTrue(
+      detail.contains("Failing row"),
+      "expected CHECK detail to carry the failing row, got [$detail]",
+    )
   }
 
   // ---------------------------------------------------------------------------

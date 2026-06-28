@@ -629,10 +629,15 @@ the Reference type note above): bulk-upserted, no entity mix-ins.
 - **Rate columns**: `admission_rate`, `graduation_rate`, `pct_pell` are
   `DOUBLE PRECISION` and, when present, `BETWEEN 0 AND 1`.
 - **Coalesced net price**: `net_price` is a single average-net-price column —
-  the loader writes `NPT4_PUB` for public (`control = 1`) else `NPT4_PRIV`.
+  the loader writes `NPT4_PUB` for public (`control = 1`) else `NPT4_PRIV`. Net
+  price carries no non-negative constraint: at heavily-subsidized institutions,
+  aid exceeds cost of attendance and the published figure is legitimately
+  negative. The `colleges_net_price_nonneg_check` originally introduced in
+  migration `0015` was dropped by migration
+  [`0022`](./0022.drop-college-net-price-nonneg-check.sql).
 - **Non-negative integer metrics**: `undergrad_enrollment`, `sat_avg`,
-  `cost_attendance`, `net_price`, `tuition_in_state`, `tuition_out_state`,
-  `median_earnings` are each `>= 0` when present.
+  `cost_attendance`, `tuition_in_state`, `tuition_out_state`, `median_earnings`
+  are each `>= 0` when present. (`net_price` is excluded; see above.)
 - **TEXT bounds**: `name`/`city` NOT NULL, trimmed, non-empty, ≤255; `state` is
   exactly 2 chars (`colleges_state_length_check`, `length(state) = 2`);
   `website`/`opeid` ≤255 when present.
@@ -645,18 +650,22 @@ the Reference type note above): bulk-upserted, no entity mix-ins.
 
 ### `college_programs` — Reference Table
 
-CIP program offerings per institution (full 6-digit CIP granularity), defined in
-the same migration. Enables "offers marine biology" filtering finer than the
-institution-level 2-digit `PCIP` families.
+CIP program offerings per institution, defined in the same migration. Enables
+"offers marine biology" filtering finer than the institution-level 2-digit
+`PCIP` families.
 
 - **Ownership**:
   `college_id UUID NOT NULL REFERENCES colleges(id) ON DELETE
   CASCADE` — a
   college owns many programs; deleting a college removes its programs.
-- **CIP code**: `cip_code TEXT NOT NULL`, a 6-character digit string enforced by
-  `college_programs_cip_code_format_check (cip_code ~ '^[0-9]{6}$')`. Prefix
-  matching at query time (`cip_code LIKE prefix || '%'`) lets a 2/4/6-digit
-  prefix all resolve.
+- **CIP code**: `cip_code TEXT NOT NULL`, enforced by
+  `college_programs_cip_code_format_check`. Originally introduced in `0015` as
+  `^[0-9]{6}$` (exactly 6 digits), this constraint was relaxed by migration
+  [`0021`](./0021.relax-college-programs-cip-format.sql) to `^([0-9]{2}){1,3}$`,
+  admitting 2-digit series (`09`), 4-digit family (`0901`), and 6-digit detail
+  (`090101`) codes — the three widths the Scorecard Field-of-Study file actually
+  uses. 1-, 3-, and 5-digit values are still rejected. Prefix matching at query
+  time (`cip_code LIKE prefix || '%'`) lets a 2/4/6-digit prefix all resolve.
 - **`cip_title`**: NOT NULL, non-empty, ≤255.
 - **`credential_level SMALLINT NOT NULL`**: the Scorecard `CREDLEV`, always
   present in the field-of-study source, `BETWEEN 1 AND 8`. Declared NOT NULL so
@@ -876,3 +885,14 @@ pass fails and retries. Carries none of the entity mix-ins — only `created_at`
       `trigger_03_enforce_{table}_updated_at` triggers; the "Reference" table
       type (logical timestamps only, bulk-upserted on a natural key, no OCC/
       version-history/soft-delete/log guards, physical deletes permitted).
+- [x] [RFC-78: College Scorecard Real-Data Hardening](../../rfc/78-college-scorecard-real-data-hardening.md)
+      — Added two DDL corrections to the reference tables:
+      `0021.relax-college-programs-cip-format.sql` relaxed the
+      `college_programs_cip_code_format_check` from `^[0-9]{6}$` (exactly 6
+      digits) to `^([0-9]{2}){1,3}$` (2, 4, or 6 digit pairs), admitting the
+      full range of CIP granularities the Scorecard Field-of-Study file uses.
+      `0022.drop-college-net-price-nonneg-check.sql` dropped the
+      `colleges_net_price_nonneg_check` constraint — net price is legitimately
+      negative at heavily-subsidized institutions (aid exceeds cost of
+      attendance). The sibling cost/tuition/earnings non-negative constraints
+      are retained.

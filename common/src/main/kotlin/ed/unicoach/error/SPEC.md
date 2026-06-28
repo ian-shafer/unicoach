@@ -6,32 +6,13 @@ This package is the **cross-cutting error abstraction layer** for the entire
 `unicoach` JVM codebase. It defines the global exception hierarchy and marker
 interfaces (traits) used to categorize and handle expected system and domain
 errors within and across module boundaries. It also provides the `FieldError`
-value type for structured per-field validation failures.
+value type for structured per-field validation failures, and the
+`Throwable.errorCategory()` extension function that derives a retryability
+vocabulary string from those same traits.
 
 ---
 
-## II. Invariants
-
-- **INV-1**: The exception hierarchy MUST use marker interfaces
-  (`TransientError`, `PermanentError`) to categorize exceptions, rather than a
-  rigid tree structure.
-- **INV-2**: `TransientError` MUST be applied to retryable errors (e.g.,
-  database locks, connection timeouts).
-- **INV-3**: `PermanentError` MUST be applied to non-retryable errors (e.g.,
-  duplicate unique constraints, target version missing).
-- **INV-4**: Domain exceptions MUST inherit from standard JVM `RuntimeException`
-  and implement the relevant trait interfaces.
-- **INV-5**: `FieldError` MUST remain a plain data class with exactly two
-  non-nullable `String` fields: `field` (the logical field name) and `message`
-  (a human-readable error description).
-- **INV-6**: Exceptions in this package MUST NOT carry HTTP semantics (status
-  codes, headers). HTTP mapping is exclusively the responsibility of the
-  presentation layer.
-- **INV-7**: The `error` package MUST NOT import from any other module.
-
----
-
-## III. Behavioral Contracts
+## II. Behavioral Contracts
 
 ### `ExceptionTraits` — [`ExceptionTraits.kt`](./ExceptionTraits.kt)
 
@@ -55,9 +36,20 @@ value type for structured per-field validation failures.
   - `ed.unicoach.rest.models.ErrorResponse`: serializes `List<FieldError>?` in
     HTTP error responses.
 
+### `ExceptionExtensions` — [`ExceptionExtensions.kt`](./ExceptionExtensions.kt)
+
+- **Purpose**: Provides a single, shared classifier that maps the
+  `TransientError`/`PermanentError` trait to a vocabulary string so log tags and
+  structured error objects use the same labels across modules.
+- **`fun Throwable.errorCategory(): String`**: Returns `"transient"` when the
+  receiver implements `TransientError`, `"permanent"` when it implements
+  `PermanentError`, or `"unknown"` when neither trait is present. The three-way
+  result is the retryability vocabulary shared by the college loader (log
+  tagging) and the college search tool (structured error object).
+
 ---
 
-## IV. Infrastructure & Environment
+## III. Infrastructure & Environment
 
 - **Module**: `common` Gradle module.
 - **Package**: `ed.unicoach.error`.
@@ -67,7 +59,7 @@ value type for structured per-field validation failures.
 
 ---
 
-## V. History
+## IV. History
 
 - [x] [RFC-08: Auth Registration](../../../../../../../rfc/08-auth-registration.md)
       — Defined `FieldError`.
@@ -75,3 +67,8 @@ value type for structured per-field validation failures.
       — Replaced the `AppError` hierarchy with `ExceptionTraits`
       (`TransientError` and `PermanentError`), and exclusively adopted
       `Result<T>` for error bubbling.
+- [x] [RFC-78: College Scorecard Real-Data Hardening](../../../../../../../rfc/78-college-scorecard-real-data-hardening.md)
+      — Added `ExceptionExtensions.kt`: the `Throwable.errorCategory()`
+      extension deriving `"transient"` / `"permanent"` / `"unknown"` from the
+      existing `TransientError`/`PermanentError` traits, shared by the college
+      loader log tagging and the college search tool's structured error object.

@@ -41,11 +41,14 @@ fun main(args: Array<String>) {
         CollegeScorecardLoader(database).load(institutionCsv, fieldsCsv)
       }
     logger.info(
-      "Ingest complete: [colleges={}] [programs={}] [transient_skips={}] [permanent_skips={}]",
+      "Ingest complete: [colleges={}] [programs={}] [transient_skips={}] [permanent_skips={}] " +
+        "[skips_by_reason={}] [fields_coerced_to_null={}]",
       result.collegesLoaded,
       result.programsLoaded,
       result.transientSkips,
       result.permanentSkips,
+      result.skipsByReason,
+      result.fieldsCoercedToNull,
     )
     if (result.transientSkips > 0) {
       logger.warn(

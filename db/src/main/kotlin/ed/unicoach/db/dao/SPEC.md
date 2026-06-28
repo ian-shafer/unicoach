@@ -358,7 +358,12 @@ through `mapDatabaseError`):
   ("Referenced college not found").
 - `23505` (the natural-key UNIQUE) / `23514` (any CHECK — dirty source data such
   as `admission_rate > 1`, `control` outside {1,2,3}, malformed `cip_code`) →
-  `ConstraintViolationException`. NOTE: `23514` here maps to the PERMANENT
+  `ConstraintViolationException`, populated with the violated constraint name
+  (`serverErrorMessage?.constraint`) and the server DETAIL line
+  (`serverErrorMessage?.detail`) extracted from the underlying `PSQLException`
+  (both are null when the driver did not report them). This gives the college
+  loader's `classifyUpsertFailure` a structured constraint name to bucket by
+  rather than requiring log-text parsing. NOTE: `23514` maps to the PERMANENT
   `ConstraintViolationException`, NOT the generic `DatabaseException` that the
   shared `mapDatabaseError` would assign — so a college loader skips a
   CHECK-violating row as a `PermanentError`.
@@ -1532,3 +1537,12 @@ rules are in §IV.
       `listObservationsForClaim`, joining `claims` and reusing
       `ClaimsDao::mapClaim` (served by `claim_support_observation_idx`). All new
       reads route through `mapDatabaseError`.
+- [x] [RFC-78: College Scorecard Real-Data Hardening](../../../../../../../../rfc/78-college-scorecard-real-data-hardening.md)
+      — Extended `ConstraintViolationException` with two optional diagnostic
+      fields: `constraint: String?` (the violated constraint name) and
+      `detail: String?` (the PostgreSQL server DETAIL line). Both default to
+      `null` (keeping existing construction sites unchanged). `CollegesDao`
+      `mapCollegeError` now extracts these from the underlying `PSQLException`'s
+      `serverErrorMessage` on `23505`/`23514`, so the college loader's
+      `classifyUpsertFailure` can bucket failures by constraint name without
+      log-text parsing.

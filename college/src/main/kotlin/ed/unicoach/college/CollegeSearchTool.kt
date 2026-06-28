@@ -4,6 +4,7 @@ import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
+import ed.unicoach.error.errorCategory
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -350,18 +351,11 @@ class CollegeSearchTool(
     buildJsonObject {
       putJsonObject("error") {
         put("kind", "search_failed")
-        put("category", failureCategory(error))
+        put("category", error.errorCategory())
         put("transient", error is TransientError)
         put("detail", error.message ?: error::class.simpleName ?: "search failed")
         error.cause?.message?.let { put("cause", it) }
       }
-    }
-
-  private fun failureCategory(error: Throwable): String =
-    when (error) {
-      is TransientError -> "transient"
-      is PermanentError -> "permanent"
-      else -> "unknown"
     }
 
   companion object {

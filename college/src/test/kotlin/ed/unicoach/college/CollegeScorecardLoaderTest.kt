@@ -1,58 +1,20 @@
 package ed.unicoach.college
 
-import ed.unicoach.common.config.AppConfig
-import ed.unicoach.db.Database
-import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CollegesDao
-import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.ConstraintViolationException
+import ed.unicoach.db.dao.DatabaseException
+import ed.unicoach.db.dao.LockAcquisitionFailureException
 import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.AfterAll
-import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import java.io.File
+import java.sql.SQLException
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
-class CollegeScorecardLoaderTest {
-  companion object {
-    private lateinit var database: Database
-
-    @JvmStatic
-    @BeforeAll
-    fun setupAll() {
-      val config = AppConfig.load("common.conf", "db.conf").getOrThrow()
-      val dbConfig = DatabaseConfig.from(config).getOrThrow()
-      database = Database(dbConfig)
-    }
-
-    @JvmStatic
-    @AfterAll
-    fun teardownAll() {
-      if (::database.isInitialized) database.close()
-    }
-
-    private fun fixture(name: String): File {
-      val url = requireNotNull(this::class.java.classLoader.getResource(name)) { "missing fixture [$name]" }
-      return File(url.toURI())
-    }
-  }
-
-  @BeforeEach
-  fun resetDatabase() =
-    runBlocking {
-      database.withConnection { session ->
-        session.prepareStatement("TRUNCATE TABLE colleges, college_programs CASCADE").use { it.execute() }
-      }
-      Unit
-    }
-
+class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
   private val loader = CollegeScorecardLoader(database)
   private val institutionCsv = fixture("scorecard-institutions-fixture.csv")
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
-
-  private fun <T> withSession(block: (SqlSession) -> T): T = runBlocking { database.withConnection(block) }
 
   @Test
   fun `loads institutions and programs from fixture CSVs`() =
@@ -61,8 +23,9 @@ class CollegeScorecardLoaderTest {
 
       // 5 valid institutions (the 6th row has an empty UNITID and is skipped).
       assertEquals(5, result.collegesLoaded)
-      // 8 program rows, all referencing valid institutions.
-      assertEquals(8, result.programsLoaded)
+      // 9 program rows, all referencing valid institutions; the last is a
+      // 4-digit CIP ('0901') the old six-digit-only CHECK would have rejected.
+      assertEquals(9, result.programsLoaded)
 
       // Public row: net_price coalesced from NPT4_PUB.
       val public = withSession { CollegesDao.findByUnitId(it, 110100).getOrThrow() }
@@ -85,29 +48,35 @@ class CollegeScorecardLoaderTest {
       loader.load(institutionCsv, fieldsCsv)
       val second = loader.load(institutionCsv, fieldsCsv)
       assertEquals(5, second.collegesLoaded)
-      assertEquals(8, second.programsLoaded)
+      assertEquals(9, second.programsLoaded)
 
       val collegeCount = withSession { count(it, "colleges") }
       val programCount = withSession { count(it, "college_programs") }
       assertEquals(5, collegeCount)
-      assertEquals(8, programCount)
+      assertEquals(9, programCount)
     }
 
   @Test
   fun `a row missing required fields is skipped, others load`() =
     runBlocking {
-      loader.load(institutionCsv, fieldsCsv)
+      val result = loader.load(institutionCsv, fieldsCsv)
       // The malformed institution (empty UNITID) never lands.
       val total = withSession { count(it, "colleges") }
       assertEquals(5, total)
+      // The empty-UNITID row is counted, not just logged, and the missing column
+      // is carried in the structured reason.
+      assertEquals(
+        1,
+        result.skipsByReason[CollegeScorecardLoader.SkipReason.MissingRequiredField(listOf("unit_id"))],
+      )
     }
 
   @Test
   fun `a row violating a DB CHECK is skipped and the surrounding good rows still load`() =
     runBlocking {
-      // The middle row has admission_rate = 1.5, which is structurally valid (a
-      // parseable double, so it passes mapInstitution) but violates
-      // colleges_admission_rate_range_check at the DB. Without savepoint-per-row
+      // The middle row has CONTROL=4, an out-of-domain *required* field (CONTROL
+      // is never coerced by mechanism A), so it is rejected by
+      // colleges_control_valid_check at the DB. Without savepoint-per-row
       // isolation the failed statement would abort the transaction and the trailing
       // good row (and the leading one, at commit) would be silently lost.
       val checkViolation = fixture("scorecard-institutions-check-violation-fixture.csv")
@@ -115,10 +84,17 @@ class CollegeScorecardLoaderTest {
 
       val result = loader.load(checkViolation, emptyFields)
 
-      // Only the two good rows are counted; the CHECK-violating row is a permanent skip.
+      // Only the two good rows are counted; the CHECK-violating row is a permanent skip
+      // bucketed by the violated constraint name.
       assertEquals(2, result.collegesLoaded)
       assertEquals(1, result.permanentSkips)
       assertEquals(0, result.transientSkips)
+      assertEquals(
+        1,
+        result.skipsByReason[
+          CollegeScorecardLoader.SkipReason.ConstraintViolation("colleges_control_valid_check"),
+        ],
+      )
 
       // Both good rows survived and are queryable (the bad row did not poison them).
       val leading = withSession { CollegesDao.findByUnitId(it, 700700).getOrThrow() }
@@ -137,6 +113,24 @@ class CollegeScorecardLoaderTest {
     }
 
   @Test
+  fun `an out-of-domain optional field is coerced to null, not rejected`() =
+    runBlocking {
+      // ADM_RATE=1.5 is an out-of-domain *optional* metric (mechanism A): it is
+      // nulled and the institution still loads, rather than dropping the row.
+      val coercion = fixture("scorecard-institutions-coercion-fixture.csv")
+      val emptyFields = fixture("scorecard-fields-empty-fixture.csv")
+
+      val result = loader.load(coercion, emptyFields)
+
+      assertEquals(1, result.collegesLoaded)
+      assertEquals(1, result.fieldsCoercedToNull["admission_rate"])
+
+      val college = withSession { CollegesDao.findByUnitId(it, 600600).getOrThrow() }
+      assertNotNull(college)
+      assertNull(college.admissionRate)
+    }
+
+  @Test
   fun `blank optional fields become null`() =
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
@@ -150,14 +144,32 @@ class CollegeScorecardLoaderTest {
       assertNull(cc.satAvg)
     }
 
-  private fun count(
-    session: SqlSession,
-    table: String,
-  ): Int =
-    session.prepareStatement("SELECT count(*) FROM $table").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  @Test
+  fun `classifyUpsertFailure buckets each failure shape distinctly`() {
+    // Null and an unmappable Throwable both fall to UnknownFailure — never fused
+    // into an unnamed ConstraintViolation.
+    assertEquals(CollegeScorecardLoader.SkipReason.UnknownFailure, loader.classifyUpsertFailure(null))
+    assertEquals(
+      CollegeScorecardLoader.SkipReason.UnknownFailure,
+      loader.classifyUpsertFailure(IllegalStateException("not a DaoException")),
+    )
+    // A retryable fault is Transient.
+    assertEquals(
+      CollegeScorecardLoader.SkipReason.Transient,
+      loader.classifyUpsertFailure(LockAcquisitionFailureException()),
+    )
+    // A named constraint violation keeps its name; an unnamed one carries null.
+    assertEquals(
+      CollegeScorecardLoader.SkipReason.ConstraintViolation("colleges_control_valid_check"),
+      loader.classifyUpsertFailure(
+        ConstraintViolationException(SQLException("boom"), "colleges_control_valid_check"),
+      ),
+    )
+    // A generic permanent DB error is an unkeyed ConstraintViolation, distinct
+    // from UnknownFailure.
+    assertEquals(
+      CollegeScorecardLoader.SkipReason.ConstraintViolation(null),
+      loader.classifyUpsertFailure(DatabaseException(SQLException("boom"))),
+    )
+  }
 }
