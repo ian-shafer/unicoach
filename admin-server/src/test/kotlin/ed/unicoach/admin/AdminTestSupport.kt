@@ -9,6 +9,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimSupportDao
 import ed.unicoach.db.dao.ClaimsDao
+import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.ExtractionRunsDao
 import ed.unicoach.db.dao.ObservationsDao
@@ -22,6 +23,7 @@ import ed.unicoach.db.models.ClaimOrigin
 import ed.unicoach.db.models.ClaimSubject
 import ed.unicoach.db.models.ClaimTopic
 import ed.unicoach.db.models.ClaimVisibility
+import ed.unicoach.db.models.College
 import ed.unicoach.db.models.Convo
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
@@ -29,6 +31,7 @@ import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRun
 import ed.unicoach.db.models.NewClaim
+import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.NewExtractionRun
@@ -97,10 +100,14 @@ object AdminTestSupport {
     adminModule(database, authService, argon2Hasher, emailVerificationService, adminConfig)
   }
 
-  /** Truncate users (cascades to sessions/students) for an isolated test. */
+  /**
+   * Truncate users (cascades to sessions/students) and the college reference
+   * tables (cascades to college_programs and colleges_versions) for an isolated
+   * test.
+   */
   fun resetDatabase() {
     DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "").use { conn ->
-      conn.createStatement().use { it.execute("TRUNCATE TABLE users CASCADE") }
+      conn.createStatement().use { it.execute("TRUNCATE TABLE users, colleges CASCADE") }
     }
   }
 
@@ -130,6 +137,49 @@ object AdminTestSupport {
     runBlocking {
       val date = (PartialDate.parse(gradIso) as ValidationResult.Valid).value
       database.withConnection { session -> StudentsDao.create(session, NewStudent(userId, date)) }.getOrThrow()
+    }
+
+  /** Upserts a colleges row via the DAO (RFC 82); re-upsert with a changed field bumps the version. */
+  fun seedCollege(
+    unitId: Int,
+    name: String = "Test University",
+    city: String = "Townsville",
+    state: String = "CA",
+    control: Int = 1,
+    opeid: String? = "0012$unitId",
+    admissionRate: Double? = 0.5,
+    netPrice: Int? = 20000,
+  ): College =
+    runBlocking {
+      database
+        .withConnection { session ->
+          CollegesDao.upsert(
+            session,
+            NewCollege(
+              unitId = unitId,
+              opeid = opeid,
+              name = name,
+              city = city,
+              state = state,
+              region = 8,
+              locale = 13,
+              latitude = 34.0,
+              longitude = -118.0,
+              control = control,
+              undergradEnrollment = 5000,
+              admissionRate = admissionRate,
+              satAvg = 1200,
+              costAttendance = 40000,
+              netPrice = netPrice,
+              tuitionInState = 12000,
+              tuitionOutState = 30000,
+              graduationRate = 0.7,
+              medianEarnings = 55000,
+              pctPell = 0.4,
+              website = "https://test$unitId.edu",
+            ),
+          )
+        }.getOrThrow()
     }
 
   /** Inserts a system_prompts catalog row directly (immutable; insert-only). */

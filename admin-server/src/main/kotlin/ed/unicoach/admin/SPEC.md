@@ -66,17 +66,17 @@ sibling subpackages and are referenced here only by responsibility.
   renders any uncaught `Throwable` as an HTML service-unavailable page; installs
   the authorization gate; builds the resource registry over the user, student,
   session, system-prompt, claims, observations, extraction-runs, conversation,
-  and conversation-request descriptors (`UsersResource`, `StudentsResource`,
-  `SessionsResource`, `SystemPromptsResource`, `ClaimsResource`,
-  `ObservationsResource`, `ExtractionRunsResource`, `ConvosResource`,
-  `ConvoRequestsResource`); constructs an `AdminDisplay` from
-  `adminConfig.display` and the registry's entity-support predicate (RFC 79:
-  `{ slug -> registry.bySlug(slug) != null }`), then passes it to
-  `registerAdminRoutes` so every cell renders through the uniform `renderCell`
-  helper; and registers the liveness, login/logout, and descriptor-driven
-  resource routes into the routing tree. The claims, observations,
-  extraction-runs, conversation, and conversation-request descriptors expose the
-  coaching-memory surfaces as list+detail read-only views (no
+  conversation-request, and colleges descriptors (`UsersResource`,
+  `StudentsResource`, `SessionsResource`, `SystemPromptsResource`,
+  `ClaimsResource`, `ObservationsResource`, `ExtractionRunsResource`,
+  `ConvosResource`, `ConvoRequestsResource`, `CollegesResource`); constructs an
+  `AdminDisplay` from `adminConfig.display` and the registry's entity-support
+  predicate (RFC 79: `{ slug -> registry.bySlug(slug) != null }`), then passes
+  it to `registerAdminRoutes` so every cell renders through the uniform
+  `renderCell` helper; and registers the liveness, login/logout, and
+  descriptor-driven resource routes into the routing tree. The claims,
+  observations, extraction-runs, conversation, conversation-request, and
+  colleges descriptors expose their surfaces as list+detail read-only views (no
   create/edit/delete). `UsersResource` is the only descriptor constructed with
   collaborators: it receives both the same hasher instance used for login (for
   its user-create path) and the `emailVerificationService` (for its "send
@@ -210,6 +210,10 @@ driving the `UsersResource` resend action. It does not depend on `rest-server`,
 - [x] [RFC-65: Email Verification (Backend)](../../../../../../../rfc/65-email-verification.md)
 - [x] [RFC-76: Admin email-verification actions](../../../../../../../rfc/76-admin-email-verification-actions.md)
 - [x] [RFC-77: Read-only admin views for coaching memory](../../../../../../../rfc/77-admin-coaching-memory-views.md)
+- [x] [RFC-82: Versioned Colleges](../../../../../../../rfc/82-versioned-colleges.md)
+      — `adminModule` now includes `CollegesResource` in the registry. No change
+      to `startServer` or `AdminConfig`; the `colleges` descriptor is a
+      stateless `object` requiring no constructor injection.
 - [x] [RFC-79: Admin display conventions](../../../../../../../rfc/79-admin-display-conventions.md)
       — added `DisplayConfig` to `AdminConfig.kt` (parsed from a new
       `admin.display` HOCON block: `timezone`, `idLinkGlyph`, `boolTrueGlyph`,

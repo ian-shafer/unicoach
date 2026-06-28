@@ -126,12 +126,14 @@ structurally distinct from the `UUID`-backed ids.
 
 [`CollegeId`](./CollegeId.kt) and `CollegeProgramId` also wrap a `UUID` and
 implement `Id`, deriving `asString` from `value.toString()`. They are the
-DB-generated surface ids of the `colleges`/`college_programs` reference rows;
-the federal `UNITID` natural key lives as a plain `Int` field, not a wrapped id.
+DB-generated surface ids of the `colleges`/`college_programs` rows; the federal
+`UNITID` natural key lives as a plain `Int` field, not a wrapped id.
 `CollegeProgramId` is defined alongside `CollegeProgram` in
 [`CollegeProgram.kt`](./CollegeProgram.kt) rather than its own file, because
 `college_programs` is bulk-upserted reference data with no standalone id-keyed
-read path.
+read path. `CollegeId` is now also the id type of `CollegeVersion` snapshot rows
+(RFC 82), as versions are keyed on the same surface UUID as the parent `College`
+row.
 
 [`Id.asString`](./Entity.kt) is a derived, total, backing-agnostic string view
 of an identity (e.g. `UUID.toString()`) for logging, serialization, and generic
@@ -169,14 +171,18 @@ against their tables' `row_created_at`).
   email-verification marker, non-null once the user has proven control of the
   address, null while unverified. `Student` carries a validated
   `expectedHighSchoolGraduationDate: PartialDate`.
-- **Version-snapshot rows** — [`UserVersion`](./UserVersion.kt) and
-  [`StudentVersion`](./StudentVersion.kt) — implement `Created` and `Versioned`
-  only. They are immutable history rows that carry `updatedAt` and `deletedAt`
-  as plain values (the state captured at the instant the version was written)
-  without implementing `Updated`/`SoftDeletable`, and they mirror the live
-  entity's domain fields. `UserVersion` mirrors `User`, including the nullable
-  `passwordHash: PasswordHash?` credential and `emailVerifiedAt: Instant?`
-  (faithful history of the verification marker).
+- **Version-snapshot rows** — [`UserVersion`](./UserVersion.kt),
+  [`StudentVersion`](./StudentVersion.kt), and
+  [`CollegeVersion`](./CollegeVersion.kt) — implement `Created` and `Versioned`
+  only. They are immutable history rows that mirror the live entity's domain
+  fields as they stood at the captured version. `UserVersion` and
+  `StudentVersion` additionally carry `updatedAt` and `deletedAt` as plain
+  values (not implementing `Updated`/`SoftDeletable`). `CollegeVersion` also
+  carries `updatedAt` as a plain value but omits `deletedAt` because `colleges`
+  has no `deleted_at`; it mirrors the full curated column set of `College`
+  (including all nullable Scorecard fields). `UserVersion` mirrors `User`,
+  including the nullable `passwordHash: PasswordHash?` credential and
+  `emailVerifiedAt: Instant?` (faithful history of the verification marker).
 - [`Session`](./Session.kt) — `Created` and `Versioned` only: a versioned,
   immutable row carrying `expiresAt: Instant`, an optional `userId` (null for an
   anonymous/pre-auth session), a nullable `loginMethod: LoginMethod?` recording
@@ -213,19 +219,22 @@ against their tables' `row_created_at`).
   and `Created` only; rows are authored by migration and never mutated. Its
   `version: String` is a catalog version _label_, not an OCC counter, so it does
   not implement `Versioned`.
-- **Reference rows** — [`College`](./College.kt) and
-  [`CollegeProgram`](./CollegeProgram.kt) — implement
-  `Identifiable + Created + Updated` and deliberately omit `Versioned` and
-  `SoftDeletable`: they are bulk-upserted projections of an external snapshot
-  (College Scorecard), carry no per-row provenance or audit obligation, and are
-  re-derivable from the pinned file. `College` mirrors the `colleges` columns
+- **Versioned reference row** — [`College`](./College.kt) — implements
+  `Identifiable + Created + Updated + Versioned` (RFC 82). It is a bulk-upserted
+  projection of College Scorecard data whose `version` is trigger-managed by the
+  ingest upsert (bumped only on a real content change) and whose history is
+  recorded in `colleges_versions`. `College` mirrors the `colleges` columns
   (identity/location/size/selectivity/cost plus the three outcome signals
   `graduationRate`, `medianEarnings`, `pctPell`); its `unitId: Int` is the
   federal natural key as a plain `Int` (the upsert key), not a wrapped id.
-  `CollegeProgram` mirrors `college_programs` (`collegeId`, `cipCode`,
-  `cipTitle`, `credentialLevel`); `credentialLevel` is a non-null `Int` (always
-  present in the field-of-study source). Adding `Versioned`/`SoftDeletable` to
-  either is a schema mismatch — those tables have no `version`/`deleted_at`.
+  `SoftDeletable` is deliberately omitted — `colleges` has no `deleted_at`.
+- **Reference row** — [`CollegeProgram`](./CollegeProgram.kt) — implements
+  `Identifiable + Created + Updated` and deliberately omits `Versioned` and
+  `SoftDeletable`: `college_programs` has no `version`/`deleted_at` (it remains
+  a plain reference table, out of scope for RFC 82 versioning). `CollegeProgram`
+  mirrors `college_programs` (`collegeId`, `cipCode`, `cipTitle`,
+  `credentialLevel`); `credentialLevel` is a non-null `Int` (always present in
+  the field-of-study source).
 
 ### II-H. Read projections and pairings
 
@@ -547,3 +556,13 @@ The extraction creation/update inputs (pure data carriers, siblings of the
       the `CollegeMatch` search projection (curated context columns plus matched
       `programTitles`, only `graduationRate` filterable). No change to any
       existing model type.
+- [x] [RFC-82: Versioned Colleges](../../../../../../../../rfc/82-versioned-colleges.md)
+      — `College` now implements `Versioned` (added `version: Int`; the doc
+      comment updated to describe the trigger-managed versioning and
+      `colleges_versions` history table). Added `CollegeVersion`
+      (`Identifiable<CollegeId> + Created + Versioned`): an immutable snapshot
+      row mirroring the full curated column set of `College` (including all
+      nullable Scorecard fields and `updatedAt` as a plain value, but no
+      `deletedAt` because `colleges` has no `deleted_at`). No change to
+      `CollegeProgram`, `NewCollege`, `NewCollegeProgram`, `CollegeQuery`, or
+      `CollegeMatch`.

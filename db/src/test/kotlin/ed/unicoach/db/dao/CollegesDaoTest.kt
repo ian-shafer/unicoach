@@ -11,7 +11,10 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import java.sql.SQLException
+import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -384,5 +387,120 @@ class CollegesDaoTest {
     for (u in 700..710) seed(newCollege(u, undergradEnrollment = u))
     val matches = CollegesDao.search(session, CollegeQuery(limit = 3)).getOrThrow()
     assertEquals(3, matches.size)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Versioning (RFC 82)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `upsert inserts at version 1 and logs one history row`() {
+    val college = CollegesDao.upsert(session, newCollege(800100, name = "Original")).getOrThrow()
+    assertEquals(1, college.version)
+
+    val history = CollegesDao.listVersions(session, college.id).getOrThrow()
+    assertEquals(1, history.size)
+    assertEquals(1, history.single().version)
+    assertEquals("Original", history.single().name)
+    assertEquals(college.unitId, history.single().unitId)
+  }
+
+  @Test
+  fun `upsert of changed content bumps version and logs a second history row`() {
+    val first = CollegesDao.upsert(session, newCollege(800200, name = "Old Name")).getOrThrow()
+    assertEquals(1, first.version)
+    val second = CollegesDao.upsert(session, newCollege(800200, name = "New Name")).getOrThrow()
+    assertEquals(2, second.version)
+    assertEquals("New Name", second.name)
+
+    val history = CollegesDao.listVersions(session, first.id).getOrThrow()
+    assertEquals(listOf(1, 2), history.map { it.version })
+    assertEquals("New Name", history.last().name)
+  }
+
+  @Test
+  fun `re-upsert of identical content is a no-op`() {
+    val input = newCollege(800300, name = "Steady U")
+    val first = CollegesDao.upsert(session, input).getOrThrow()
+    assertEquals(1, first.version)
+    val second = CollegesDao.upsert(session, input).getOrThrow()
+    assertEquals(1, second.version, "identical re-upsert must not bump version")
+    assertEquals(first.id, second.id)
+    assertEquals(first.updatedAt, second.updatedAt, "no-op must not advance updated_at")
+
+    val history = CollegesDao.listVersions(session, first.id).getOrThrow()
+    assertEquals(1, history.size)
+  }
+
+  @Test
+  fun `upsert preserves id and created_at across a change`() {
+    val first = CollegesDao.upsert(session, newCollege(800400, name = "Before")).getOrThrow()
+    val second = CollegesDao.upsert(session, newCollege(800400, name = "After")).getOrThrow()
+    assertEquals(first.id, second.id)
+    assertEquals(first.createdAt, second.createdAt)
+  }
+
+  @Test
+  fun `findById returns the row, or NotFoundException when absent`() {
+    val seeded = CollegesDao.upsert(session, newCollege(800500)).getOrThrow()
+    assertEquals(seeded.id, CollegesDao.findById(session, seeded.id).getOrThrow().id)
+
+    val missing = CollegesDao.findById(session, CollegeId(UUID.randomUUID()))
+    assertTrue(missing.isFailure)
+    assertTrue(missing.exceptionOrNull() is NotFoundException)
+  }
+
+  @Test
+  fun `list pages name-stable with limit and offset`() {
+    seed(newCollege(800601, name = "Charlie College"))
+    seed(newCollege(800602, name = "Alpha College"))
+    seed(newCollege(800603, name = "Bravo College"))
+    seed(newCollege(800604, name = "Delta College"))
+
+    val page1 = CollegesDao.list(session, limit = 2, offset = 0).getOrThrow()
+    val page2 = CollegesDao.list(session, limit = 2, offset = 2).getOrThrow()
+    assertEquals(listOf("Alpha College", "Bravo College"), page1.map { it.name })
+    assertEquals(listOf("Charlie College", "Delta College"), page2.map { it.name })
+    assertTrue((page1.map { it.id } + page2.map { it.id }).toSet().size == 4, "pages must not overlap")
+  }
+
+  @Test
+  fun `listVersions orders ascending by version`() {
+    val first = CollegesDao.upsert(session, newCollege(800700, name = "v1")).getOrThrow()
+    CollegesDao.upsert(session, newCollege(800700, name = "v2")).getOrThrow()
+    CollegesDao.upsert(session, newCollege(800700, name = "v3")).getOrThrow()
+    CollegesDao.upsert(session, newCollege(800700, name = "v4")).getOrThrow()
+
+    val history = CollegesDao.listVersions(session, first.id).getOrThrow()
+    assertEquals(listOf(1, 2, 3, 4), history.map { it.version })
+  }
+
+  @Test
+  fun `physical delete on colleges is rejected`() {
+    val college = CollegesDao.upsert(session, newCollege(800800)).getOrThrow()
+    assertFailsWith<SQLException> {
+      connection.prepareStatement("DELETE FROM colleges WHERE id = ?").use { stmt ->
+        stmt.setObject(1, college.id.value)
+        stmt.executeUpdate()
+      }
+    }
+  }
+
+  @Test
+  fun `updating id or created_at on colleges is rejected`() {
+    val college = CollegesDao.upsert(session, newCollege(800900)).getOrThrow()
+    assertFailsWith<SQLException> {
+      connection.prepareStatement("UPDATE colleges SET id = ? WHERE id = ?").use { stmt ->
+        stmt.setObject(1, UUID.randomUUID())
+        stmt.setObject(2, college.id.value)
+        stmt.executeUpdate()
+      }
+    }
+    assertFailsWith<SQLException> {
+      connection.prepareStatement("UPDATE colleges SET created_at = NOW() + INTERVAL '1 day' WHERE id = ?").use { stmt ->
+        stmt.setObject(1, college.id.value)
+        stmt.executeUpdate()
+      }
+    }
   }
 }

@@ -6,6 +6,7 @@ import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeProgram
 import ed.unicoach.db.models.CollegeProgramId
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CollegeVersion
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeProgram
 import org.postgresql.util.PSQLException
@@ -22,11 +23,19 @@ import java.util.UUID
  * Stateless `object`, one [SqlSession] per call, transaction boundaries owned by
  * the caller (same shape as [ConvosDao]). The upsert methods are hand-rolled
  * `INSERT ... ON CONFLICT ... DO UPDATE`: no generic upsert helper exists in the
- * codebase, where DAOs use typed `Creatable`/`insertReturning` helpers. The
- * tables carry no version column, so the upserts carry no optimistic-concurrency
- * guard.
+ * codebase, where DAOs use typed `Creatable`/`insertReturning` helpers.
+ *
+ * `colleges` is versioned (RFC 82) via a trigger-managed `version` that the
+ * upsert bumps on a real content change, recording each change in
+ * `colleges_versions`. The bump is not an optimistic-concurrency guard: there is
+ * no client-supplied version; the upsert sets `version = colleges.version + 1`
+ * from the current row inside the statement. `college_programs` remains
+ * unversioned (out of scope), so its upsert carries no version column.
  */
-object CollegesDao {
+object CollegesDao :
+  Findable<College, CollegeId>,
+  Listable<College>,
+  VersionHistory<CollegeId, CollegeVersion> {
   // ---------------------------------------------------------------------------
   // Row mappers
   // ---------------------------------------------------------------------------
@@ -64,6 +73,36 @@ object CollegesDao {
   private fun mapCollege(rs: ResultSet): College =
     College(
       id = CollegeId(UUID.fromString(rs.getString("id"))),
+      version = rs.getInt("version"),
+      unitId = rs.getInt("unit_id"),
+      opeid = rs.getString("opeid"),
+      name = rs.getString("name"),
+      city = rs.getString("city"),
+      state = rs.getString("state"),
+      region = rs.intOrNull("region"),
+      locale = rs.intOrNull("locale"),
+      latitude = rs.doubleOrNull("latitude"),
+      longitude = rs.doubleOrNull("longitude"),
+      control = rs.getInt("control"),
+      undergradEnrollment = rs.intOrNull("undergrad_enrollment"),
+      admissionRate = rs.doubleOrNull("admission_rate"),
+      satAvg = rs.intOrNull("sat_avg"),
+      costAttendance = rs.intOrNull("cost_attendance"),
+      netPrice = rs.intOrNull("net_price"),
+      tuitionInState = rs.intOrNull("tuition_in_state"),
+      tuitionOutState = rs.intOrNull("tuition_out_state"),
+      graduationRate = rs.doubleOrNull("graduation_rate"),
+      medianEarnings = rs.intOrNull("median_earnings"),
+      pctPell = rs.doubleOrNull("pct_pell"),
+      website = rs.getString("website"),
+      createdAt = rs.getInstant("created_at"),
+      updatedAt = rs.getInstant("updated_at"),
+    )
+
+  private fun mapCollegeVersion(rs: ResultSet): CollegeVersion =
+    CollegeVersion(
+      id = CollegeId(UUID.fromString(rs.getString("id"))),
+      version = rs.getInt("version"),
       unitId = rs.getInt("unit_id"),
       opeid = rs.getString("opeid"),
       name = rs.getString("name"),
@@ -132,9 +171,23 @@ object CollegesDao {
   // ---------------------------------------------------------------------------
 
   /**
-   * Upserts a college on its natural key `unit_id`. On conflict every curated
-   * column is overwritten from [input]; `id` and `created_at` are preserved and
-   * the `_03` trigger advances `updated_at`.
+   * Upserts a college on its natural key `unit_id` (RFC 82). On conflict every
+   * curated column is overwritten from [input]; `id` and `created_at` are
+   * preserved and the `_03` trigger advances `updated_at`.
+   *
+   * The version bumps (`version = colleges.version + 1`) and a history row is
+   * logged **only on a real content change** — the `DO UPDATE` carries a `WHERE`
+   * comparing the 21 curated columns as a row-tuple with `IS DISTINCT FROM`, so
+   * re-ingesting an unchanged row neither writes nor bumps. (A whole-row
+   * `colleges IS DISTINCT FROM EXCLUDED` would be unconditionally true —
+   * `EXCLUDED.id`/`version`/`created_at`/`updated_at` all differ — defeating the
+   * no-op skip; the tuple compare fixes that.)
+   *
+   * When the `WHERE` is unsatisfied the `DO UPDATE` performs no write and
+   * `RETURNING` yields zero rows; the `UNION ALL` arm then returns the existing
+   * row. The conflict guarantees the row exists, so exactly one row is always
+   * returned, preserving the one-row contract. The bound `unit_id` parameter
+   * appears twice (INSERT VALUES and the UNION arm).
    */
   fun upsert(
     session: SqlSession,
@@ -142,35 +195,58 @@ object CollegesDao {
   ): Result<College> {
     val sql =
       """
-      INSERT INTO colleges (
-        unit_id, opeid, name, city, state, region, locale, latitude, longitude,
-        control, undergrad_enrollment, admission_rate, sat_avg, cost_attendance,
-        net_price, tuition_in_state, tuition_out_state, graduation_rate,
-        median_earnings, pct_pell, website
+      WITH up AS (
+        INSERT INTO colleges (
+          unit_id, opeid, name, city, state, region, locale, latitude, longitude,
+          control, undergrad_enrollment, admission_rate, sat_avg, cost_attendance,
+          net_price, tuition_in_state, tuition_out_state, graduation_rate,
+          median_earnings, pct_pell, website
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (unit_id) DO UPDATE SET
+          opeid = EXCLUDED.opeid,
+          name = EXCLUDED.name,
+          city = EXCLUDED.city,
+          state = EXCLUDED.state,
+          region = EXCLUDED.region,
+          locale = EXCLUDED.locale,
+          latitude = EXCLUDED.latitude,
+          longitude = EXCLUDED.longitude,
+          control = EXCLUDED.control,
+          undergrad_enrollment = EXCLUDED.undergrad_enrollment,
+          admission_rate = EXCLUDED.admission_rate,
+          sat_avg = EXCLUDED.sat_avg,
+          cost_attendance = EXCLUDED.cost_attendance,
+          net_price = EXCLUDED.net_price,
+          tuition_in_state = EXCLUDED.tuition_in_state,
+          tuition_out_state = EXCLUDED.tuition_out_state,
+          graduation_rate = EXCLUDED.graduation_rate,
+          median_earnings = EXCLUDED.median_earnings,
+          pct_pell = EXCLUDED.pct_pell,
+          website = EXCLUDED.website,
+          version = colleges.version + 1
+        WHERE (
+          colleges.opeid, colleges.name, colleges.city, colleges.state,
+          colleges.region, colleges.locale, colleges.latitude, colleges.longitude,
+          colleges.control, colleges.undergrad_enrollment, colleges.admission_rate,
+          colleges.sat_avg, colleges.cost_attendance, colleges.net_price,
+          colleges.tuition_in_state, colleges.tuition_out_state,
+          colleges.graduation_rate, colleges.median_earnings, colleges.pct_pell,
+          colleges.website, colleges.unit_id
+        ) IS DISTINCT FROM (
+          EXCLUDED.opeid, EXCLUDED.name, EXCLUDED.city, EXCLUDED.state,
+          EXCLUDED.region, EXCLUDED.locale, EXCLUDED.latitude, EXCLUDED.longitude,
+          EXCLUDED.control, EXCLUDED.undergrad_enrollment, EXCLUDED.admission_rate,
+          EXCLUDED.sat_avg, EXCLUDED.cost_attendance, EXCLUDED.net_price,
+          EXCLUDED.tuition_in_state, EXCLUDED.tuition_out_state,
+          EXCLUDED.graduation_rate, EXCLUDED.median_earnings, EXCLUDED.pct_pell,
+          EXCLUDED.website, EXCLUDED.unit_id
+        )
+        RETURNING *
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (unit_id) DO UPDATE SET
-        opeid = EXCLUDED.opeid,
-        name = EXCLUDED.name,
-        city = EXCLUDED.city,
-        state = EXCLUDED.state,
-        region = EXCLUDED.region,
-        locale = EXCLUDED.locale,
-        latitude = EXCLUDED.latitude,
-        longitude = EXCLUDED.longitude,
-        control = EXCLUDED.control,
-        undergrad_enrollment = EXCLUDED.undergrad_enrollment,
-        admission_rate = EXCLUDED.admission_rate,
-        sat_avg = EXCLUDED.sat_avg,
-        cost_attendance = EXCLUDED.cost_attendance,
-        net_price = EXCLUDED.net_price,
-        tuition_in_state = EXCLUDED.tuition_in_state,
-        tuition_out_state = EXCLUDED.tuition_out_state,
-        graduation_rate = EXCLUDED.graduation_rate,
-        median_earnings = EXCLUDED.median_earnings,
-        pct_pell = EXCLUDED.pct_pell,
-        website = EXCLUDED.website
-      RETURNING *
+      SELECT * FROM up
+      UNION ALL
+      SELECT * FROM colleges WHERE unit_id = ? AND NOT EXISTS (SELECT 1 FROM up)
       """.trimIndent()
     return session.mutateReturning(
       sql,
@@ -196,6 +272,7 @@ object CollegesDao {
         stmt.setIntOrNull(19, input.medianEarnings)
         stmt.setDoubleOrNull(20, input.pctPell)
         stmt.setStringOrNull(21, input.website)
+        stmt.setInt(22, input.unitId)
       },
       map = ::mapCollege,
       mapError = ::mapCollegeError,
@@ -235,6 +312,50 @@ object CollegesDao {
   // ---------------------------------------------------------------------------
   // Reads
   // ---------------------------------------------------------------------------
+
+  /** Admin read surface (RFC 82): a single college by surface id, [NotFoundException] on no row. */
+  override fun findById(
+    session: SqlSession,
+    id: CollegeId,
+  ): Result<College> =
+    session.queryOne(
+      "SELECT * FROM colleges WHERE id = ?",
+      bind = { it.setObject(1, id.value) },
+      map = ::mapCollege,
+    )
+
+  /**
+   * Admin read surface (RFC 82): a page of colleges ordered by `name, unit_id`.
+   * `unit_id` is unique, so the order is total/deterministic for count-free paging.
+   */
+  override fun list(
+    session: SqlSession,
+    limit: Int,
+    offset: Int,
+  ): Result<List<College>> =
+    session.queryList(
+      "SELECT * FROM colleges ORDER BY name, unit_id LIMIT ? OFFSET ?",
+      bind = {
+        it.setInt(1, limit)
+        it.setInt(2, offset)
+      },
+      map = ::mapCollege,
+    )
+
+  /**
+   * Admin read surface (RFC 82): a college's full version history, ascending by
+   * version. Unpaged — one college's history is bounded by the number of ingests
+   * that changed that single row.
+   */
+  override fun listVersions(
+    session: SqlSession,
+    id: CollegeId,
+  ): Result<List<CollegeVersion>> =
+    session.queryList(
+      "SELECT * FROM colleges_versions WHERE id = ? ORDER BY version",
+      bind = { it.setObject(1, id.value) },
+      map = ::mapCollegeVersion,
+    )
 
   fun findByUnitId(
     session: SqlSession,

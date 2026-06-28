@@ -3,15 +3,12 @@ package ed.unicoach.db.models
 import java.time.Instant
 
 /**
- * An institution-level row from the `colleges` reference table (RFC 67): a
- * curated subset of College Scorecard data. `unitId` is the federal natural key
- * (UNITID); `id` is the project-convention DB-generated surface UUID. Mutable
- * only via re-ingestion upsert, so it carries logical `createdAt`/`updatedAt`.
- * The row is versioned via a trigger-managed `version` and a `colleges_versions`
- * history table (the upsert bumps `version` only on a real content change), with
- * no soft-delete.
+ * An immutable snapshot of one `colleges_versions` row (RFC 82): the curated
+ * [College] facts as they stood at a given [version], recorded by the ingest
+ * upsert's history trigger. Mirrors [UserVersion]; carries no soft-delete or
+ * physical-clock columns because `colleges` has none.
  */
-data class College(
+data class CollegeVersion(
   override val id: CollegeId,
   override val version: Int,
   val unitId: Int,
@@ -36,8 +33,7 @@ data class College(
   val pctPell: Double?,
   val website: String?,
   override val createdAt: Instant,
-  override val updatedAt: Instant,
+  val updatedAt: Instant,
 ) : Identifiable<CollegeId>,
   Created,
-  Updated,
   Versioned

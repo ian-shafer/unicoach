@@ -4,12 +4,15 @@ import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.DatabaseException
 import ed.unicoach.db.dao.LockAcquisitionFailureException
+import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.models.CollegeId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import java.sql.SQLException
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
   private val loader = CollegeScorecardLoader(database)
@@ -54,6 +57,57 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       val programCount = withSession { count(it, "college_programs") }
       assertEquals(5, collegeCount)
       assertEquals(9, programCount)
+
+      // RFC 82: the second identical load is a no-op per college — no version
+      // bump, no extra history row. Every college stays at version 1 and
+      // colleges_versions holds exactly one row per college.
+      val versions = withSession { listVersions(it) }
+      assertTrue(versions.all { v -> v == 1 }, "every college must stay at version 1, got $versions")
+      assertEquals(5, withSession { count(it, "colleges_versions") })
+    }
+
+  @Test
+  fun `re-ingesting a changed institution bumps version and logs history`() =
+    runBlocking {
+      loader.load(institutionCsv, fieldsCsv)
+      // The changed file renames institution 110100; every other unit_id is byte-identical.
+      val changedCsv = fixture("scorecard-institutions-changed-fixture.csv")
+      loader.load(changedCsv, fieldsCsv)
+
+      val changed = withSession { CollegesDao.findByUnitId(it, 110100).getOrThrow() }
+      assertNotNull(changed)
+      assertEquals(2, changed.version)
+      assertEquals("Coastal State University (Renamed)", changed.name)
+      assertEquals(2, withSession { countHistory(it, changed.id) })
+
+      // An untouched institution stays at version 1 with a single history row.
+      val untouched = withSession { CollegesDao.findByUnitId(it, 220200).getOrThrow() }
+      assertNotNull(untouched)
+      assertEquals(1, untouched.version)
+      assertEquals(1, withSession { countHistory(it, untouched.id) })
+    }
+
+  /** Every college's current `version`, for the all-version-1 idempotency assertion. */
+  private fun listVersions(session: SqlSession): List<Int> =
+    session.prepareStatement("SELECT version FROM colleges").use { stmt ->
+      stmt.executeQuery().use { rs ->
+        val out = mutableListOf<Int>()
+        while (rs.next()) out.add(rs.getInt(1))
+        out
+      }
+    }
+
+  /** Count of `colleges_versions` rows for one college id. */
+  private fun countHistory(
+    session: SqlSession,
+    id: CollegeId,
+  ): Int =
+    session.prepareStatement("SELECT count(*) FROM colleges_versions WHERE id = ?").use { stmt ->
+      stmt.setObject(1, id.value)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getInt(1)
+      }
     }
 
   @Test

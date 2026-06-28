@@ -78,10 +78,58 @@ subsections.
 
 #### `prevent_immutable_updates()`
 
-- **Trigger type**: `BEFORE UPDATE`. Expects columns `id`, `created_at`,
-  `row_created_at`.
-- **Side effects**: Raises `ERRCODE P0001` if an UPDATE changes any of those
-  columns; all other columns remain mutable. **Idempotency**: N/A.
+- **Trigger type**: `BEFORE UPDATE`. Expects columns `id`, `created_at`.
+- **Side effects**: Raises `ERRCODE P0001` if an UPDATE changes either of those
+  columns; all other columns remain mutable. Note: as of migration
+  [`0023`](./0023.version-colleges.sql) this function was redefined (via
+  `CREATE OR REPLACE`) to guard **only** `id` and `created_at`, dropping the
+  prior `row_created_at` arm so the function is attachable to tables (such as
+  `colleges`) that have no physical-clock columns. The `row_created_at`
+  immutability is now enforced separately by
+  `prevent_physical_timestamp_update()` on the five tables that carry the
+  column. **Idempotency**: N/A.
+
+#### `prevent_delete()`
+
+Defined in [`0023`](./0023.version-colleges.sql) (not `0000`) via
+`CREATE OR REPLACE`.
+
+- **Trigger type**: `BEFORE DELETE`. Always raises `ERRCODE P0001` ("Deletions
+  are blocked on this table."), enforcing no-delete semantics on versioned
+  mutable entities that are neither soft-deletable nor append-only logs.
+  Distinct from `prevent_physical_delete()` (which names a soft-delete context)
+  and from `prevent_log_delete()` (which names the append-only log retention
+  context). First attached to `colleges`. **Idempotency**: N/A.
+
+#### `prevent_physical_timestamp_update()`
+
+Defined in [`0023`](./0023.version-colleges.sql) (not `0000`) via
+`CREATE OR REPLACE`. Carries the `row_created_at` immutability guarantee that
+was removed from `prevent_immutable_updates()` in that same migration.
+
+- **Trigger type**: `BEFORE UPDATE`. Expects column `row_created_at`.
+- **Side effects**: Raises `ERRCODE P0001` ("The row_created_at field is
+  immutable.") if an UPDATE changes `row_created_at`; all other columns pass
+  through. Attached as `trigger_00b_prevent_physical_timestamp_update` to the
+  five tables that have the column: `users`, `sessions`, `students`, `convos`,
+  `claims`. **Idempotency**: N/A.
+
+#### `log_college_version()`
+
+Defined in [`0023`](./0023.version-colleges.sql) via `CREATE OR REPLACE`.
+
+- **Trigger type**: `AFTER INSERT OR UPDATE` on `colleges`.
+- **Side effects**: Inserts one `colleges_versions` row per triggering
+  statement, copying every curated domain column plus `version`, `created_at`,
+  `updated_at`. Adding a `colleges` domain column requires updating this
+  function (and the `colleges_versions` column set) to copy it, or history
+  silently drops it. The `DO UPDATE … WHERE <content changed>` clause in the
+  upsert suppresses the UPDATE when nothing changed; PostgreSQL does not fire an
+  AFTER row trigger for a suppressed update, so `log_college_version()` never
+  runs on a no-op re-ingest.
+- **Error handling**: Failure raises a PostgreSQL exception; the parent
+  transaction rolls back. **Idempotency**: No — a duplicate `(id, version)`
+  violates the version table's primary key.
 
 #### `prevent_log_update()` / `prevent_log_delete()`
 
@@ -209,15 +257,26 @@ A **credential** table stores only the hash of a secret whose plaintext lives
 outside the database (the cookie/email link). It carries neither the entity
 mix-ins nor the log guards (`sessions`, `verification_tokens`).
 
-A **reference** table (`colleges`, `college_programs`) holds externally-sourced
-federal data (College Scorecard), mutated only by re-ingestion upsert on a
-natural key, never by the application request flow. It carries only logical
+A **reference** table (`college_programs`) holds externally-sourced federal data
+(College Scorecard), mutated only by re-ingestion upsert on a natural key, never
+by the application request flow. It carries only logical
 `created_at`/`updated_at` (no physical/logical split, so no `row_created_at`/
 `row_updated_at`) advanced by the plain `update_colleges_timestamp()` trigger,
-and none of the four mix-ins: no OCC `version`/version history (the pinned
-snapshot is the archive — history is not a guarantee), no soft-delete
+and none of the four mix-ins: no OCC `version`/version history, no soft-delete
 (`deleted_at`), and no append-only log guards (rows are updated in place by
 upsert). Physical deletes are permitted (no `prevent_physical_delete()`).
+
+A **versioned reference** table (`colleges`) is the reference-table subtype that
+adds the OCC versioning and version history mix-ins. `colleges` is mutated only
+by re-ingestion upsert on its `unit_id` natural key; the upsert bumps `version`
+and records a `colleges_versions` row only on a real content change (21 curated
+columns compared with `IS DISTINCT FROM`). It carries only logical
+`created_at`/`updated_at` (no physical-clock split), no soft-delete, and no
+append-only log guards. Physical deletes are blocked by `prevent_delete()` (not
+`prevent_physical_delete()`, which names the soft-delete context) to preserve
+history integrity, and the FK from `colleges_versions` is `ON DELETE RESTRICT`.
+`college_programs` is out of scope for versioning — it remains a plain reference
+table.
 
 #### Table Summary
 
@@ -238,7 +297,8 @@ upsert). Physical deletes are permitted (no `prevent_physical_delete()`).
 | `convo_responses_raw`  | Log              | —               | —              | —               | —               |
 | `system_prompts`       | Immutable Entity | —               | —              | —               | —               |
 | `email_sends`          | Log              | —               | —              | —               | —               |
-| `colleges`             | Reference        | ❌              | ❌             | ❌              | ❌              |
+| `colleges`             | Versioned Ref    | ❌              | ✅             | ✅              | ❌              |
+| `colleges_versions`    | Support          | —               | —              | —               | —               |
 | `college_programs`     | Reference        | ❌              | ❌             | ❌              | ❌              |
 | `observations`         | Log              | —               | —              | —               | —               |
 | `claims`               | Entity           | ✅              | ❌             | ❌              | ❌              |
@@ -606,11 +666,12 @@ logged here (retry is the queue's domain, `job_attempts`).
   (e.g. log-only); deliberately not constrained by CHECK or enum (open-ended
   adapter set), unlike the closed allowlist on `convo_requests`.
 
-### `colleges` — Reference Table
+### `colleges` — Versioned Reference Table
 
 Curated institution-level College Scorecard data (RFC 67), defined in
-[`0015.create-colleges.sql`](./0015.create-colleges.sql). A reference table (see
-the Reference type note above): bulk-upserted, no entity mix-ins.
+[`0015.create-colleges.sql`](./0015.create-colleges.sql). A versioned reference
+table (see the Versioned Reference type note above): bulk-upserted on a natural
+key, carrying OCC versioning and version history but no soft-delete.
 
 - **Surface id + natural key**:
   `id UUID NOT NULL PRIMARY KEY DEFAULT
@@ -618,6 +679,35 @@ the Reference type note above): bulk-upserted, no entity mix-ins.
   DB-generated surface id; `unit_id INTEGER NOT NULL` is the federal `UNITID`
   natural key and the upsert target, with a SEPARATE
   `colleges_unit_id_unique_idx` (UNIQUE) — the PK is not the upsert key.
+- **OCC versioning**: `version INTEGER NOT NULL DEFAULT 1`, added by migration
+  [`0023`](./0023.version-colleges.sql). Enforced by `enforce_versioning()`
+  (`trigger_01_enforce_colleges_versioning`). The upsert sets
+  `version = colleges.version + 1` from the current row inside the statement (no
+  client-supplied version); `enforce_versioning()` validates the resulting
+  `OLD.version + 1` value.
+- **Version history**: `colleges_versions` records every committed change. Its
+  PK is `(id, version)`; the FK `REFERENCES colleges(id) ON DELETE RESTRICT`
+  prevents the parent row from being physically deleted while history rows cite
+  it. `log_college_version()` writes one `colleges_versions` row per triggering
+  INSERT or UPDATE statement (`trigger_04_log_college_version`, AFTER).
+- **No-op upsert skip**: the
+  `ON CONFLICT DO UPDATE … WHERE (21 curated
+  columns) IS DISTINCT FROM EXCLUDED`
+  clause suppresses the UPDATE when the content is unchanged; PostgreSQL does
+  not fire an AFTER row trigger for a suppressed update, so
+  `log_college_version()` never runs on a no-op re-ingest. The backfill in
+  migration `0023` pre-seeded one v1 history row per existing college before the
+  log trigger was attached.
+- **Delete guard**: `trigger_00_prevent_colleges_delete` fires
+  `prevent_delete()` on every `DELETE`, raising `P0001`. Physical deletes are
+  blocked (unlike the prior Reference behavior) because the `colleges_versions`
+  FK is `ON DELETE RESTRICT` — the history rows would orphan under a physical
+  delete.
+- **Immutability guard**: `trigger_00a_prevent_colleges_immutable_updates` fires
+  the narrowed `prevent_immutable_updates()` (guards `id` + `created_at` only;
+  no `row_created_at` because `colleges` has none). No
+  `trigger_00b_prevent_physical_timestamp_update` is attached (no
+  `row_created_at` column to guard).
 - **Logical timestamps only**: `created_at` + `updated_at`
   (`TIMESTAMPTZ NOT NULL DEFAULT NOW()`); `updated_at` is advanced on upsert by
   the `trigger_03_enforce_colleges_updated_at` `BEFORE UPDATE` trigger
@@ -645,8 +735,10 @@ the Reference type note above): bulk-upserted, no entity mix-ins.
   `colleges_undergrad_enrollment_idx`, `colleges_admission_rate_idx`,
   `colleges_net_price_idx`, `colleges_graduation_rate_idx` back the
   `CollegesDao.search` range/equality filters.
-- **Physical deletes permitted**: no `prevent_physical_delete()` trigger;
-  `college_programs` cascades on a parent delete.
+- **No physical deletes**: `trigger_00_prevent_colleges_delete` blocks all
+  `DELETE` statements (see above). `college_programs` carries
+  `ON DELETE CASCADE` from `colleges`, but the cascade is inert as long as the
+  parent `colleges` row is delete-blocked.
 
 ### `college_programs` — Reference Table
 
@@ -885,6 +977,25 @@ pass fails and retries. Carries none of the entity mix-ins — only `created_at`
       `trigger_03_enforce_{table}_updated_at` triggers; the "Reference" table
       type (logical timestamps only, bulk-upserted on a natural key, no OCC/
       version-history/soft-delete/log guards, physical deletes permitted).
+- [x] [RFC-82: Versioned Colleges](../../rfc/82-versioned-colleges.md) —
+      Migration `0023.version-colleges.sql` introduces four new or redefined
+      shared trigger functions: `prevent_delete()` (generic `BEFORE DELETE`
+      guard for versioned mutable entities without soft-delete),
+      `log_college_version()` (AFTER history writer for `colleges`),
+      `prevent_physical_timestamp_update()` (carries the `row_created_at`
+      immutability guarantee removed from `prevent_immutable_updates()`), and a
+      redefined `prevent_immutable_updates()` that guards `id` + `created_at`
+      only (dropping `row_created_at` so it is attachable to `colleges`). Added
+      `colleges.version INTEGER NOT NULL DEFAULT 1` and the `colleges_versions`
+      history table (PK `(id, version)`, FK `ON DELETE RESTRICT`). Three
+      triggers added to `colleges`: delete-guard (`trigger_00`), immutable-guard
+      (`trigger_00a`), versioning enforcement (`trigger_01`), and the AFTER
+      history logger (`trigger_04`). Added
+      `trigger_00b_prevent_physical_timestamp_update` to the five tables that
+      have `row_created_at` (`users`, `sessions`, `students`, `convos`,
+      `claims`). Backfilled one v1 history row per existing college before
+      attaching the log trigger. `colleges` is now a Versioned Reference table;
+      `college_programs` remains a plain Reference table (out of scope).
 - [x] [RFC-78: College Scorecard Real-Data Hardening](../../rfc/78-college-scorecard-real-data-hardening.md)
       — Added two DDL corrections to the reference tables:
       `0021.relax-college-programs-cip-format.sql` relaxed the

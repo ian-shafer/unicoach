@@ -12,21 +12,25 @@ descriptors that configure the admin engine for the v1 tables: `users`
 read-only coaching-memory views (RFC 77): `claims`
 ([ClaimsResource.kt](./ClaimsResource.kt)), `observations`
 ([ObservationsResource.kt](./ObservationsResource.kt)), and `extraction_runs`
-([ExtractionRunsResource.kt](./ExtractionRunsResource.kt)), and the read-only
+([ExtractionRunsResource.kt](./ExtractionRunsResource.kt)), the read-only
 conversation views (RFC 81): `convos` ([ConvosResource.kt](./ConvosResource.kt))
-and `convo_requests` ([ConvoRequestsResource.kt](./ConvoRequestsResource.kt)).
-Each descriptor **decides** one table's kind, its allowed operation set, its
-sensitive columns, its relationship edges, and the exact write path each
-operation takes through the typed DAOs. The generic routing, rendering, and
-paging machinery lives in [`../engine`](../engine); this directory only declares
-_what_ the engine does for these tables, never _how_ the engine does it.
+and `convo_requests` ([ConvoRequestsResource.kt](./ConvoRequestsResource.kt)),
+and the read-only colleges view (RFC 82): `colleges`
+([CollegesResource.kt](./CollegesResource.kt)). Each descriptor **decides** one
+table's kind, its allowed operation set, its sensitive columns, its relationship
+edges, and the exact write path each operation takes through the typed DAOs. The
+generic routing, rendering, and paging machinery lives in
+[`../engine`](../engine); this directory only declares _what_ the engine does
+for these tables, never _how_ the engine does it.
 
-The coaching-memory and conversation descriptors are list+detail only — all four
-write handlers are `null`, `isDeleted` is always `false`, and the read
-`scope`/`includeDeleted` arguments are ignored (the same posture as
-`sessions`/`system_prompts`). They exist to make the per-student memory, LLM
-spend, and conversation history inspectable; they are also woven into the
-student profile as nested panels (see `StudentsResource`).
+The coaching-memory, conversation, and colleges descriptors are list+detail only
+— all four write handlers are `null`, `isDeleted` is always `false`, and the
+read `scope`/`includeDeleted` arguments are ignored (the same posture as
+`sessions`/`system_prompts`). The coaching-memory and conversation descriptors
+exist to make the per-student memory, LLM spend, and conversation history
+inspectable; they are also woven into the student profile as nested panels (see
+`StudentsResource`). The colleges descriptor exposes College Scorecard data and
+its change history for browsing.
 
 The shared soft-delete OCC helper [`occSoftDelete`](./OccDelete.kt) lives here
 too: the "load current version, then OCC delete/undelete" sequence expressed
@@ -324,20 +328,20 @@ read-then-write blocks.
   calls
   `ConvosDao.listByStudentWithActivity(session, studentId, ArchiveScope.ALL,
   SoftDeleteScope.ALL, STUDENT_PANEL_LIMIT, 0)`;
-  the coaching-memory panels call `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)`.
-  The Conversations panel columns are: ID (`refSlug = "convo"`), Name, Last
-  Activity (TIMESTAMP), Created (TIMESTAMP), Archived (TIMESTAMP), Deleted
-  (TIMESTAMP) — the panel predates `FieldType.UUID`, so its id renders full-width
-  with a link glyph rather than compacted. The claims panel's id column is
-  `FieldType.UUID`; the observations and extraction-runs panels' id columns are
-  `FieldType.TEXT` (BIGINT). The `convoId` column in the observations panel is
-  `FieldType.UUID` with `refSlug = "convo"`. When a fetched page fills to
-  `STUDENT_PANEL_LIMIT`, the shared `truncationRow` helper appends one cells-only
-  "Showing first 50 — see /{slug} for full list" row (no per-row href — RFC 79
-  removed row-level hrefs). Side effects: DB reads only. Returns a "no profile
-  yet" panel on `NotFoundException`; propagates any other DAO fault (including a
-  fault on any of the four nested panel loads) as a failed `Result`. Idempotent:
-  yes.
+  the coaching-memory panels call
+  `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)`. The Conversations panel
+  columns are: ID (`refSlug = "convo"`), Name, Last Activity (TIMESTAMP),
+  Created (TIMESTAMP), Archived (TIMESTAMP), Deleted (TIMESTAMP) — the panel
+  predates `FieldType.UUID`, so its id renders full-width with a link glyph
+  rather than compacted. The claims panel's id column is `FieldType.UUID`; the
+  observations and extraction-runs panels' id columns are `FieldType.TEXT`
+  (BIGINT). The `convoId` column in the observations panel is `FieldType.UUID`
+  with `refSlug = "convo"`. When a fetched page fills to `STUDENT_PANEL_LIMIT`,
+  the shared `truncationRow` helper appends one cells-only "Showing first 50 —
+  see /{slug} for full list" row (no per-row href — RFC 79 removed row-level
+  hrefs). Side effects: DB reads only. Returns a "no profile yet" panel on
+  `NotFoundException`; propagates any other DAO fault (including a fault on any
+  of the four nested panel loads) as a failed `Result`. Idempotent: yes.
 - **`STUDENT_PANEL_LIMIT`** — package-private constant `50`, the per-panel row
   cap for the nested coaching-memory tables, mirroring the sessions panel's
   limit. A student with more memory shows the first page only; full enumeration
@@ -540,6 +544,39 @@ columns kept on the list so per-student LLM spend is eyeballable): `id`
 - **isDeleted** — always `false`. **edges** — empty; **resolveEdges** — default
   (empty).
 
+### `CollegesResource` (ENTITY, top-level, read-only — RFC 82)
+
+`slug = "college"`, `title = "College"`, `kind = AdminKind.ENTITY` (the
+`colleges` table is a versioned mutable entity). `parseId` accepts a UUID into
+`CollegeId`. The table carries no `deleted_at`, so `isDeleted` is always `false`
+and `scope`/`includeDeleted` are ignored.
+
+List columns (`inList = true`): `name`, `city`, `state`, `control`,
+`admissionRate`, `netPrice`. All fields are `editable = false`. Detail-only
+(`inList = false`): `id`, `version`, `unitId`, `opeid`, `region`, `locale`,
+`latitude`, `longitude`, `undergradEnrollment`, `satAvg`, `costAttendance`,
+`tuitionInState`, `tuitionOutState`, `graduationRate`, `medianEarnings`,
+`pctPell`, `website`, `createdAt`, `updatedAt`. The three decimal-ratio fields
+(`admissionRate`, `graduationRate`, `pctPell`) are declared `FieldType.TEXT`
+rather than `FieldType.INT` to preserve the fractional value (0.0–1.0). No
+column is `sensitive`. One `History` edge ("Version history").
+
+- **list** — reads via `CollegesDao.list(session, limit, offset)` inside
+  `db.withConnection` (`scope` ignored). Ordered `name, unit_id`. Side effects:
+  DB read. Idempotent: yes.
+- **get** — reads one college via `CollegesDao.findById(session, id)` inside
+  `db.withConnection` (`includeDeleted` ignored). Errors: `NotFoundException` (→
+  404). Idempotent: yes.
+- **create/update/delete/undelete** — all `null`; the engine registers no
+  create/edit/delete routes and renders no Edit/Delete/New affordance.
+- **isDeleted** — always `false`.
+- **resolveEdges** — one "Version history" `EdgePanel.Table` built from
+  `CollegesDao.listVersions(session, row.id)`. Columns: `Version` (INT), `Name`,
+  `City`, `State`, `Control` (INT), `Admission Rate`, `Net Price` (INT),
+  `Updated` (TIMESTAMP). Rows are rendered newest-last (ascending version order
+  from `listVersions`). Side effects: DB read. Errors: DAO fault → failed
+  `Result`. Idempotent: yes.
+
 ### `occSoftDelete` (shared helper, [OccDelete.kt](./OccDelete.kt))
 
 - **`Database.occSoftDelete(dao, id, deleted)`** — a `suspend` extension over
@@ -613,6 +650,19 @@ columns kept on the list so per-student LLM spend is eyeballable): `id`
       profile (after the version-history table), each capped at the new
       `STUDENT_PANEL_LIMIT = 50` via `…Dao.listByStudent` with a shared
       `truncationRow` disclosure pointing at the canonical list.
+- [x] [RFC-82: Versioned Colleges](../../../../../../../../rfc/82-versioned-colleges.md)
+      — Added `CollegesResource` (ENTITY, `slug = "college"`, read-only: all
+      four write handlers `null`, `isDeleted` always `false`,
+      `scope`/`includeDeleted` ignored). Fields: all 25 curated columns from
+      `College`; the three 0.0–1.0 decimal-ratio fields (`admissionRate`,
+      `graduationRate`, `pctPell`) declared `FieldType.TEXT`. List shows
+      `name`/`city`/`state`/`control`/ `admissionRate`/`netPrice`; the remaining
+      fields are detail-only. One `AdminEdge.History` edge ("Version history")
+      resolved via `CollegesDao.listVersions`, rendered as an `EdgePanel.Table`
+      with columns
+      `Version`/`Name`/`City`/`State`/`Control`/`Admission Rate`/`Net Price`/
+      `Updated`. The descriptor is a stateless `object` with no injected
+      collaborators; `college_programs` is not surfaced as an edge.
 - [x] [RFC-79: Admin display conventions](../../../../../../../../rfc/79-admin-display-conventions.md)
       — Set `refSlug` on every id and foreign-key `AdminField` across all
       descriptors (per-resource assignments: `user.id`→`user`,
