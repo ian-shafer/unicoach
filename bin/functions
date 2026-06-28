@@ -87,6 +87,14 @@ validate_duration() {
   return 1
 }
 
+# Returns 0 if $1 is a valid TCP port (an integer in 1..65535), non-zero
+# otherwise. The single owner of the port-range rule, so check-port, daemon-up,
+# daemon-check, daemon-http-check, and find-free-port validate identically.
+validate_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
 transform_duration_to_postgres() {
   local input="$1"
   validate_duration "$input" || return 1

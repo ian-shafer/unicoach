@@ -41,6 +41,6 @@ if [ ! -x "$BINARY" ]; then
   fatal "rest-server binary not found at [$BINARY]. Run 'bin/build-rest-server' first."
 fi
 
-"$PROJECT_ROOT/bin/daemon-up" rest-server -- "$BINARY"
+"$PROJECT_ROOT/bin/daemon-up" --port "${PORT:-8080}" rest-server -- "$BINARY"
 
 "$PROJECT_ROOT/bin/rest-server-wait-for-health"

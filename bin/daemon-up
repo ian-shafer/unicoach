@@ -18,26 +18,43 @@ Uses bin/file-lock to serialize concurrent invocations. A second concurrent
 "up" call exits 0 immediately. The service is NOT re-spawned if the existing
 PID is still alive.
 
+When --port is supplied, a pre-launch preflight runs once we conclude we are
+not already running: if 127.0.0.1:<port> is already bound (by any process,
+including a daemon from another worktree), the boot is refused rather than
+spawning a doomed process. When --port is absent the preflight is skipped.
+
 Arguments:
   service-name: Logical service identifier (e.g. postgres, rest-server).
   --:           Argument separator. Everything after this is the command to run.
   command...:   The native command to execute in the background.
 
 Options:
-  -h, --help: Help
+  -h, --help:        Help
+  -p, --port <port>: TCP port the daemon binds; preflighted before spawn.
+
+Exit codes:
+  0: Service started, or already running (idempotent), or a concurrent up won.
+  1: Lock acquisition failed, or a usage error.
+  3: Port collision — <port> is already bound; the service was NOT spawned.
 EOF
   exit "$exit_code"
 }
 
 SERVICE_NAME=""
+PORT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
   -h|--help) help ;;
+  -p|--port) PORT="${2:-}"; [ -n "$PORT" ] || help "--port requires a value"; shift 2 ;;
   -*) fatal "Unknown option: $1" ;;
   *) break ;;
   esac
 done
+
+if [ -n "$PORT" ] && ! validate_port "$PORT"; then
+  help "Invalid --port value [$PORT]. Expected an integer in 1..65535."
+fi
 
 if [ "$#" -lt 1 ]; then
   help "Missing required <service-name> argument."
@@ -84,6 +101,16 @@ if [ -f "$PID_FILE" ]; then
   fi
   # Stale PID file — process is gone; clean it up before re-launching.
   rm -f "$PID_FILE"
+fi
+
+# Port preflight: we have concluded we are not running (our PID file is absent
+# or stale). If --port was supplied and the port is already bound — by a foreign
+# process, another worktree's daemon, or our own orphaned-alive process whose
+# PID file we lost — refuse rather than spawn a doomed JVM that will die with a
+# BindException while we write a dead PID and report false success. The trap
+# removes the lock directory on this exit.
+if [ -n "$PORT" ] && "$PROJECT_ROOT/bin/check-port" "$PORT"; then
+  fatal -s 3 "Cannot start [$SERVICE_NAME]: port [127.0.0.1:$PORT] is already held by another process."
 fi
 
 mkdir -p "$PROJECT_ROOT/var/run"

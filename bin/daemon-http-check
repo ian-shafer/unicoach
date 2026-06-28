@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=3
+  fi
+  cat << 'EOF'
+daemon-http-check <service-label> <port> <health-url>
+
+Resolves a port-bound daemon to one of three operational states, owning the
+curl->check-port health tri-state in one place. It is daemon-aware where
+check-port is occupant-agnostic: it composes curl (HTTP health) with check-port
+(TCP liveness), delegating the /dev/tcp probe to check-port so the
+bin/INVARIANTS.md port-liveness rule lives in one place.
+
+Resolution order:
+  curl -sf <health-url> succeeds          -> 0 (healthy)
+  else check-port <port> reports in-use   -> 2 (bound but not responding)
+  else                                    -> 1 (not running)
+
+Arguments:
+  service-label: The identifier named in the diagnostic.
+  port:          The TCP port for the check-port fallback.
+  health-url:    The full URL curl probes (caller owns the /healthz path).
+
+Exit codes:
+  0: Healthy (HTTP 200).
+  1: Not running (curl failed, port free).
+  2: Port held by another process or an unhealthy instance (curl failed, port in use).
+  3: Invalid arguments (wrong count, or a non-numeric/out-of-range port). Kept
+     distinct from the 2 conflict state so a malformed invocation is never read
+     as a conflict (check-port reuses 2 for invalid args, so it is unavailable
+     here).
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) help "Unknown option: $1" ;;
+  esac
+done
+
+if [ "$#" -ne 3 ]; then
+  help "Expected exactly three arguments: <service-label> <port> <health-url>."
+fi
+
+SERVICE_LABEL="$1"
+PORT="$2"
+HEALTH_URL="$3"
+
+if ! validate_port "$PORT"; then
+  help "Invalid <port> [$PORT]. Expected an integer in 1..65535."
+fi
+
+# Bound every probe. A wedged listener that accepts the TCP connection but never
+# sends an HTTP response would otherwise make `curl` block forever — and the
+# `wait-for` loop driving the *-wait-for-health scripts only re-checks its own
+# deadline *between* probes, so one unbounded probe defeats that timeout
+# entirely. --connect-timeout and --max-time cap a single probe well under the
+# 4s ceiling, so the health probe can never hang.
+HEALTH_CONNECT_TIMEOUT=2
+HEALTH_MAX_TIME=3
+
+if curl -sf --connect-timeout "$HEALTH_CONNECT_TIMEOUT" --max-time "$HEALTH_MAX_TIME" "$HEALTH_URL" > /dev/null; then
+  log-info "[$SERVICE_LABEL] is running"
+elif "$PROJECT_ROOT/bin/check-port" "$PORT" 2>/dev/null; then
+  log-info "[$SERVICE_LABEL] port [$PORT] is bound but not responding as [$SERVICE_LABEL] (held by another process or an unhealthy instance)"
+  exit 2
+else
+  log-info "[$SERVICE_LABEL] is NOT running"
+  exit 1
+fi

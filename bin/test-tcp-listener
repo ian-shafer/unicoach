@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Test-only TCP listener that occupies 127.0.0.1:<port> to simulate a foreign
+occupant of a port for bin/scripts-tests. Bash cannot listen() (its /dev/tcp is
+connect-only), and the Nix dev shell ships no nc/socat, so python3 — already a
+dev-shell tool — provides the socket.
+
+Modes:
+  close (default): accept each connection and immediately close it — a fast,
+    empty reply, exactly as a non-HTTP listener would give. Keeps curl and
+    /dev/tcp probes instant (the foreign-occupant / cross-worktree case).
+  hold: accept each connection and hold it open, never replying — the "wedged
+    server" case (a daemon blocked mid-/healthz). An unbounded curl against this
+    blocks forever, so it proves a health probe's timeout is real.
+
+The socket is bound before the process is otherwise ready; the caller polls
+bin/check-port until the port reports in-use rather than racing this process.
+"""
+import socket
+import sys
+
+# Accept-queue depth. Sized for test parallelism, not production load.
+_BACKLOG = 16
+
+
+def main() -> None:
+    if not 2 <= len(sys.argv) <= 3:
+        sys.exit("usage: test-tcp-listener <port> [close|hold]")
+    port = int(sys.argv[1])
+    mode = sys.argv[2] if len(sys.argv) == 3 else "close"
+    if mode not in ("close", "hold"):
+        sys.exit(f"unknown mode [{mode}]; expected close or hold")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
+    sock.listen(_BACKLOG)
+
+    # In hold mode, keep accepted connections referenced so the kernel does not
+    # close them; in close mode, drain the accept queue immediately.
+    held = []
+    while True:
+        try:
+            conn, _ = sock.accept()
+        except OSError:
+            break
+        if mode == "hold":
+            held.append(conn)
+        else:
+            conn.close()
+
+
+if __name__ == "__main__":
+    main()

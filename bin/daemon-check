@@ -8,27 +8,44 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-daemon-check <service-name>
+daemon-check [options] <service-name>
 
 Exits 0 if the service is running (PID file exists and process is alive).
 Exits 1 if the service is stopped (no PID file or process is dead).
+
+When --port is supplied and our recorded process is absent/dead while the port
+is held by another process, exits 2 (conflict). Without --port the result is
+only 0 or 1, exactly as before.
 
 Arguments:
   service-name: Logical service identifier (e.g. postgres, rest-server).
 
 Options:
-  -h, --help: Help
+  -h, --help:        Help
+  -p, --port <port>: TCP port the service binds; enables the conflict tri-state.
+
+Exit codes:
+  0: Running (our PID is alive).
+  1: Stopped (no PID file, empty PID file, or our process is dead).
+  2: Conflict — our PID is absent/dead but <port> is held by another process.
 EOF
   exit "$exit_code"
 }
 
+PORT=""
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
   -h|--help) help ;;
+  -p|--port) PORT="${2:-}"; [ -n "$PORT" ] || help "--port requires a value"; shift 2 ;;
   -*) fatal "Unknown option: $1" ;;
   *) break ;;
   esac
 done
+
+if [ -n "$PORT" ] && ! validate_port "$PORT"; then
+  help "Invalid --port value [$PORT]. Expected an integer in 1..65535."
+fi
 
 if [ "$#" -ne 1 ]; then
   help "Missing required <service-name> argument."
@@ -39,16 +56,39 @@ shift
 
 PID_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.pid"
 
+# Decide running/stopped from our own tracking file first. Only once we conclude
+# we are not running do we consult the port (when --port is given) to distinguish
+# a plain "stopped" from a "conflict" — the port is held by some other process.
+stopped() {
+  if [ -z "$PORT" ]; then
+    exit 1
+  fi
+  local port_status=0
+  "$PROJECT_ROOT/bin/check-port" "$PORT" || port_status=$?
+  case "$port_status" in
+  0)
+    log-info "Service [$SERVICE_NAME] is stopped, but port [127.0.0.1:$PORT] is held by another process."
+    exit 2
+    ;;
+  1)
+    exit 1
+    ;;
+  *)
+    fatal "check-port rejected port [$PORT] (exit [$port_status]) while checking [$SERVICE_NAME]."
+    ;;
+  esac
+}
+
 if [ ! -f "$PID_FILE" ]; then
   log-info "Service [$SERVICE_NAME] is stopped (no PID file)."
-  exit 1
+  stopped
 fi
 
 existing_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
 
 if [ -z "$existing_pid" ]; then
   log-info "Service [$SERVICE_NAME] PID file is empty."
-  exit 1
+  stopped
 fi
 
 if "$PROJECT_ROOT/bin/check-pid" "$existing_pid" 2>/dev/null; then
@@ -56,5 +96,5 @@ if "$PROJECT_ROOT/bin/check-pid" "$existing_pid" 2>/dev/null; then
   exit 0
 else
   log-info "Service [$SERVICE_NAME] process (PID $existing_pid) is dead."
-  exit 1
+  stopped
 fi

@@ -9,8 +9,10 @@ deploy (system Xcode), and infrastructure & deploy. Every shell script sources
 the system-Xcode iOS scripts (`build-ios`, `install-ios`, `release-ios`,
 `ios-scripts-tests`) and the dev-shell predicate (`is-nix`), which source only
 `bin/functions` because `bin/common` requires the Nix dev shell they must run
-outside of (see [`INVARIANTS.md`](./INVARIANTS.md)). The single non-shell
-script, `bin/compile-skills.py`, is exempt from the shell-script invariants (see
+outside of (see [`INVARIANTS.md`](./INVARIANTS.md)). Two non-shell scripts —
+`bin/compile-skills.py` and the test-only `bin/test-tcp-listener` (a Python
+foreign-listener helper for the scripts harness, see Test Scripts) — are
+`python3` files exempt from the shell-script invariants (see
 [`INVARIANTS.md`](./INVARIANTS.md)).
 
 ---
@@ -34,6 +36,7 @@ sources `bin/common`:
 | `read-file-or-die`               | `read-file-or-die <file> [<code>]`      | stdout          | Cats file or calls `fatal -s <code>`.                                                                                                                                                       |
 | `parse-duration-to-seconds`      | `parse-duration-to-seconds <dur>`       | stdout          | Converts `30s`/`5m`/`2h`/`1d` → integer seconds; bare integers treated as seconds.                                                                                                          |
 | `validate_duration`              | `validate_duration <dur>`               | exit 0/1        | Accepts only `[0-9]+[smhd]` (unit suffix required).                                                                                                                                         |
+| `validate_port`                  | `validate_port <port>`                  | exit 0/1        | Returns `0` iff `<port>` is an integer in `1..65535`. Single owner of the port-range rule; used by `check-port`, `daemon-up`, `daemon-check`, `daemon-http-check`, and `find-free-port`.    |
 | `transform_duration_to_postgres` | `transform_duration_to_postgres <dur>`  | stdout          | Converts `5m` → `"5 minutes"` for SQL `INTERVAL` literals. Calls `validate_duration` internally.                                                                                            |
 | `require_dangerous_confirmation` | `require_dangerous_confirmation <desc>` | exit 0/1        | Interactive prompt; returns `0` on confirmation, `1` on EOF (empty line exits `0` via `exit 0`). Callers bypass this entirely by checking `--yes-i-really-want-to-do-this` before invoking. |
 
@@ -80,18 +83,105 @@ Exits `0` if the given PID is running, `1` otherwise.
 
 ---
 
+### Port Liveness: `check-port`
+
+`check-port <port>` passively probes whether `127.0.0.1:<port>` has a listener:
+a single pure-bash `exec 3<>/dev/tcp/127.0.0.1/<port>` connect, immediately
+closed — occupant-agnostic, with no `nc`/`curl`/`lsof` dependency. The loopback
+connect accepts or refuses instantly, so no timeout wrapper is needed.
+
+Exit codes:
+
+- **Exit 0**: port is in use (connect succeeded).
+- **Exit 1**: port is free (the loopback connect was refused).
+- **Exit 2**: invalid argument (missing, non-numeric, or out-of-range port).
+
+`0`=in-use deliberately inverts `check-pid`'s `0`=alive, so each primitive's
+success exit answers its own question (`is the port taken?` vs
+`is the PID
+alive?`) and the natural `if`-true branch reads correctly at every
+call site.
+
+---
+
+### Daemon HTTP Health: `daemon-http-check`
+
+`daemon-http-check <service-label> <port> <health-url>` is a daemon-aware HTTP
+health probe that composes `curl -sf` (HTTP health) with `check-port` (TCP
+liveness), owning the curl→`check-port` tri-state in one place; it delegates the
+`/dev/tcp` probe to `check-port` so the port-liveness rule lives in one
+location. Resolution order: `curl` succeeds ⇒ healthy; else `check-port` reports
+the port in-use ⇒ conflict (the port is bound but not responding as
+`<service-label>` — held by another process or an unhealthy instance); else ⇒
+not running.
+
+The `curl` probe is time-bounded (`--connect-timeout 2` / `--max-time 3`, well
+under the ~4s health-wait ceiling), so a wedged accept-but-never-reply listener
+cannot hang the probe — this is what makes the `*-wait-for-health` poll timeouts
+real, since `wait-for` only re-checks its deadline between probes.
+
+Exit codes:
+
+- **Exit 0**: healthy (HTTP 200).
+- **Exit 1**: not running (`curl` failed, port free).
+- **Exit 2**: port held by another process or an unhealthy instance (`curl`
+  failed, port in use).
+- **Exit 3**: invalid arguments (wrong count, or a non-numeric/out-of-range
+  port). Kept distinct from the `2` conflict state so a malformed invocation is
+  never read as a conflict. (`check-port` reuses `2` for invalid args, so it is
+  unavailable here.)
+
+---
+
+### Free-Port Discovery: `find-free-port` (test-only)
+
+`find-free-port [base]` prints the first TCP port at or above `<base>` (default
+`18000`) that `check-port` reports free, then exits `0`; it scans upward to
+`65535`. A test-only helper for callers that need an arbitrary free port instead
+of hardcoding one (the scripts harness's listener ports and its hermetic
+`PORT`). The port is free only at the instant of printing — a caller that later
+fails to bind treats the port as taken rather than retrying inside the helper.
+Exits `1` if no port is free at or above `<base>`, or on an invalid `<base>`;
+rejects more than one positional argument.
+
+---
+
 ### Daemon Lifecycle
 
 - **`daemon-up`**: Idempotent. Starts the daemon and writes the PID file. If the
   daemon is already running, does nothing. Only checks PID for liveness —
-  callers MUST invoke `<service>-wait-for-health` separately.
+  callers MUST invoke `<service>-wait-for-health` separately. Takes an optional
+  `-p`/`--port` (validated via `validate_port`). When `--port` is set, after the
+  PID-liveness idempotency short-circuit and stale-PID cleanup, a pre-launch
+  preflight refuses to spawn if `127.0.0.1:<port>` is already bound — by any
+  process, including a daemon from another worktree or an orphaned own-process
+  whose PID file was lost — exiting with a distinct code `3` (`fatal -s 3`)
+  without writing a PID or reaching health-wait. The idempotency short-circuit
+  runs before the port check, so a live own-instance is still recognized as
+  ours. When `--port` is absent (the portless queue-worker) the preflight is
+  skipped and behavior is unchanged.
 - **`daemon-down`**: Idempotent. Sends `SIGTERM` with a grace period; escalates
   to `SIGKILL` if the process does not exit. Removes the PID file on completion.
   No-op if already stopped.
-- **`daemon-check`**: Exits `0` if the daemon is running according to the PID,
-  `1` otherwise.
+- **`daemon-check`**: Tri-state. Exits `0` if the daemon is running according to
+  the PID. Takes an optional `-p`/`--port`: when given and the PID is
+  absent/dead, exits `2` if the port is in-use (conflict — our PID is gone but
+  the port is held by another process), else `1` (stopped). Without `--port` the
+  result is only `0`/`1`, exactly as before, so existing callers (e.g.
+  `queue-worker-check`) that treat any non-zero as "not running" are unaffected.
 - **`daemon-bounce`**: Idempotent. Stops the daemon if running, then starts it.
-- **`daemon-status`**: Prints the status of all known services.
+- **`daemon-status`**: Prints the status of all known services, data-driven. An
+  ordered `SERVICES` list (`postgres`, `rest-server`, `queue-worker`) fixes
+  print order; an associative name→port map carries the port of each port-bound
+  service (only `rest-server`, at `${PORT:-8080}`), with a service's absence
+  from the map as the portless sentinel. `postgres` keeps its own
+  `postmaster.pid` branch (it cannot route through `daemon-check`); every other
+  service routes through one generic path that calls `daemon-check` (with
+  `--port` when mapped) and maps the exit code to
+  `running`/`stopped`/`conflict`/`unknown`. The status line now carries
+  `conflict` (and `unknown`) as additional states. A future port-bound service
+  gains conflict detection by registering its port — no new branch.
+  `queue-worker`, being portless, never yields `conflict`.
 
 ---
 
@@ -129,13 +219,13 @@ is defined by the logic in each script.
 
 Current daemons: `rest-server`, `queue-worker`, `admin-server`, `public-web`.
 
-| Script                  | Behavior                                                                                                                                                          |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists.                          |
-| `<svc>-down`            | Delegates to `daemon-down`.                                                                                                                                       |
-| `<svc>-bounce`          | Runs `<svc>-down` then `<svc>-up` (e.g. `rest-server`, `queue-worker`, `admin-server`, `public-web`).                                                             |
-| `<svc>-check`           | Runs the service's health check — an HTTP `GET /healthz` probe (`rest-server`, `admin-server`, `public-web`) or PID liveness via `daemon-check` (`queue-worker`). |
-| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                                                  |
+| Script                  | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists. The port-bound wrappers pass `--port`: `rest-server-up` `${PORT:-8080}`, `admin-server-up` `${ADMIN_SERVER_PORT:-8081}`, `public-web-up` `${PUBLIC_WEB_PORT:-8082}`; `queue-worker-up` is portless and unchanged. The default-guarded form is load-bearing under `bin/common`'s `set -u` (`ADMIN_SERVER_PORT`/`PUBLIC_WEB_PORT` are absent from `.env`/`.env.test`). |
+| `<svc>-down`            | Delegates to `daemon-down`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `<svc>-bounce`          | Runs `<svc>-down` then `<svc>-up` (e.g. `rest-server`, `queue-worker`, `admin-server`, `public-web`).                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `<svc>-check`           | `rest-server-check`, `admin-server-check`, `public-web-check` are thin wrappers that `exec daemon-http-check <label> <port> http://localhost:<port>/healthz`, inheriting its `0`/`1`/`2` tri-state (`2` = port held by another process not responding as `<service>`). `queue-worker-check` stays PID liveness via `daemon-check`.                                                                                                                                                                            |
+| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 `admin-server-check` and `admin-server-wait-for-health` probe `GET /healthz` on
 `ADMIN_SERVER_PORT` (default `8081`) — a dedicated port variable, distinct from
@@ -143,10 +233,12 @@ the rest-server's `PORT`, because the admin server runs as a separate process
 alongside the rest-server.
 
 `public-web-check` and `public-web-wait-for-health` probe `GET /healthz` on
-`PUBLIC_WEB_PORT` (default `8082`) via `curl -sf` — a dedicated port variable,
-distinct from `PORT` and `ADMIN_SERVER_PORT`, because the public-web server runs
-as its own separate process. `public-web-up` fatals if the `installDist` binary
-at `public-web/build/install/public-web/bin/public-web` is absent (directing to
+`PUBLIC_WEB_PORT` (default `8082`) — a dedicated port variable, distinct from
+`PORT` and `ADMIN_SERVER_PORT`, because the public-web server runs as its own
+separate process. `public-web-check` routes through `daemon-http-check` (not a
+direct `curl -sf`), inheriting its `0`/`1`/`2` tri-state. `public-web-up` fatals
+if the `installDist` binary at
+`public-web/build/install/public-web/bin/public-web` is absent (directing to
 `bin/build-public-web`), starts the daemon via `daemon-up`, then blocks on
 `public-web-wait-for-health` (a `wait-for` poll of `public-web-check`, default
 timeout `4s`). `public-web-bounce` runs `public-web-down` then `public-web-up`.
@@ -410,8 +502,11 @@ DB and port). Five lifecycle-ownership models exist:
   They MUST NOT touch the shared cluster.
 - **Self-contained daemon harnesses** (`scripts-tests`) MUST register an
   EXIT/INT/TERM trap to tear down the daemons they started (`rest-server`,
-  `queue-worker`). They use the shared cluster (`postgres-up`) but MUST NOT stop
-  it.
+  `queue-worker`) and the foreign listeners they spawn. They use the shared
+  cluster (`postgres-up`) but MUST NOT stop it. `scripts-tests` picks a hermetic
+  `PORT` from `find-free-port` before sourcing the env, so the `rest-server` it
+  boots binds a free port rather than a fixed one (see the `bin/scripts-tests`
+  suite entry).
 - **Shared-cluster reset harnesses** (`db-users-tests`, `q-scripts-tests`) MUST
   reach a clean state via `db-bootstrap` + `db-reset` against the per-worktree
   database, MUST NOT stop or wipe the shared cluster, and MUST NOT register a
@@ -521,7 +616,17 @@ DB and port). Five lifecycle-ownership models exist:
   body rejected by the application-scope `RequestBodyLimit`) is accepted as a
   valid `negative_data_rejection` via the committed root `schemathesis.toml`,
   passed to Schemathesis with `--config-file`.
-- **`bin/scripts-tests`**: Tests scripts in `bin/`.
+- **`bin/scripts-tests`**: Tests scripts in `bin/`. It sources `bin/functions`
+  early (so `fatal` is available) and exports a free `PORT` from
+  `find-free-port` **before** sourcing `.env.test`/`common`; a `find-free-port`
+  failure routes through `fatal` rather than falling back to a hardcoded port.
+  The booted `rest-server` therefore binds a free port, making the suite
+  hermetic with respect to ports across worktrees. It also exercises the RFC 73
+  port machinery (`check-port`, `daemon-up --port`, the
+  `daemon-check`/`daemon-status` conflict tri-state, the thin `*-check`
+  wrappers, `daemon-http-check`'s bounded probe), binding `test-tcp-listener`
+  foreign listeners on `find-free-port` ports and reaping them in its teardown
+  trap.
 - **`bin/db-scripts-tests`**: Tests `db-run`, `db-query`, `db-write`, `db-repl`,
   `db-bootstrap`, `db-create`, `db-migrate`, `db-status`, `db-drop` against its
   OWN private throwaway cluster (private data dir + PID-derived port), never the
@@ -543,6 +648,12 @@ DB and port). Five lifecycle-ownership models exist:
 - **`bin/ios-scripts-tests`**: Tests `is-nix`, `build-ios`, `install-ios`, and
   `release-ios` with shimmed `xcodebuild`/`xcrun` and fixture env files. Runs no
   real build and needs no hardware, Postgres, or Nix dev shell.
+- **`bin/test-tcp-listener`** (test-only `python3` helper): binds
+  `127.0.0.1:<port>` as a foreign listener whose PID is recorded in none of the
+  PID files, simulating a cross-worktree port occupant for `scripts-tests`.
+  Takes a mode: `close` (accept and immediately close) or `hold` (accept and
+  never reply — the wedged-server case that proves `daemon-http-check`'s bounded
+  probe does not hang).
 
 ---
 
@@ -599,10 +710,15 @@ place.
   `$ENV_FILE` via `set -a` and defaults to `localhost`. On the deploy instance
   it carries the RDS address, selecting the cluster host for `postgres-check`
   and, via libpq, `db-run`/`psql`. `PORT` sets the per-env service port
-  (`.env`=8080, `.env.test`=8081, `.env.fuzz`=8082); each env file derives the
-  daemon bind variable `SERVER_PORT=$PORT`. `test-fuzz` reads `$PORT` for its
-  port guard, boot, registration, and fuzz target. `ADMIN_SERVER_PORT` (default
-  `8081`) is the admin daemon's bind port, read by
+  (`.env`=8080, `.env.test` default/fallback 8081 but overridable,
+  `.env.fuzz`=8082); each env file derives the daemon bind variable
+  `SERVER_PORT=$PORT`. `.env.test` defines `PORT="${PORT:-8081}"`: a
+  harness-supplied `PORT` wins, and `8081` survives only as a fallback for
+  tooling that sources `.env.test` without first picking a port (e.g. the Kotlin
+  `bin/test` harness). `bin/scripts-tests` supplies a free `PORT` from
+  `find-free-port`, so its booted `rest-server` binds a free port. `test-fuzz`
+  reads `$PORT` for its port guard, boot, registration, and fuzz target.
+  `ADMIN_SERVER_PORT` (default `8081`) is the admin daemon's bind port, read by
   `admin-server-check`/`admin-server-wait-for-health`, and is independent of
   `PORT`. `PUBLIC_WEB_PORT` (default `8082`) is the public-web daemon's bind
   port, read by `public-web-check`/`public-web-wait-for-health`, and is likewise
@@ -678,3 +794,12 @@ place.
       the documented statuses (not `403 email_not_verified`) on gated
       `students/*` routes; the `version` bump satisfies the `users` versioning
       trigger.
+- [x] [RFC-73: Daemon Port-Collision Preflight](../rfc/73-daemon-port-collision-preflight.md)
+      — added the `check-port`/`daemon-http-check`/`find-free-port` primitives
+      and the shared `validate_port` helper; gave `daemon-up` an optional
+      `--port` with a pre-launch `fatal -s 3` preflight that refuses to spawn
+      onto a bound port; added a `conflict` tri-state to `daemon-check`
+      (`--port`) and a data-driven, port-aware `daemon-status`; turned the HTTP
+      `*-check` scripts into thin `daemon-http-check` wrappers; and made
+      `bin/scripts-tests` bind a hermetic `PORT` from `find-free-port` (with
+      `.env.test` `PORT="${PORT:-8081}"` keeping `8081` only as a fallback).

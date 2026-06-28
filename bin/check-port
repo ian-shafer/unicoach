@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=2
+  fi
+  cat << 'EOF'
+check-port <port>
+
+Passively probes whether 127.0.0.1:<port> has a listener. Performs a single
+exec 3<>/dev/tcp/127.0.0.1/<port> connect and immediately closes the
+descriptor — occupant-agnostic, dependency-free, no nc/curl/lsof.
+
+Note: 0=in-use deliberately inverts check-pid's 0=alive. Each primitive's
+success exit answers its own question (is the port taken? vs is the PID
+alive?), so the natural `if`-true branch reads correctly at every call site.
+
+Arguments:
+  port: The TCP port to probe on 127.0.0.1.
+
+Exit codes:
+  0: Port is in use (connect succeeded).
+  1: Port is free (the loopback connect was refused).
+  2: Invalid argument (missing, non-numeric, or out-of-range port).
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) help "Unknown option: $1" ;;
+  esac
+done
+
+if [ "$#" -ne 1 ]; then
+  help "Missing required <port> argument."
+fi
+
+PORT="$1"
+shift
+
+if ! validate_port "$PORT"; then
+  help "Invalid <port> [$PORT]. Expected an integer in 1..65535."
+fi
+
+# A loopback connect accepts or refuses instantly, so no timeout wrapper is
+# needed. A successful connect means a listener is bound; a refused connect
+# (non-zero) means the port is free. The connect runs in a subshell whose stderr
+# is discarded: bash prints its own "connect: Connection refused" diagnostic for
+# a failed /dev/tcp redirection from the shell, which `2>/dev/null` on the bare
+# `exec` does not suppress; the subshell contains it so a free-port probe is
+# silent. The descriptor is local to the subshell and closes on its exit.
+if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+  exit 0
+else
+  exit 1
+fi

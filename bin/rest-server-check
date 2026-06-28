@@ -13,6 +13,11 @@ rest-server-check [options]
 Exits 0 if the rest-server is healthy (GET /healthz returns HTTP 200).
 Exits non-zero if the server is not reachable or returns an error.
 
+Exit codes:
+  0: Healthy (HTTP 200).
+  1: Not running (port free, nothing listening).
+  2: The port is held by another process not responding as rest-server.
+
 Options:
   -h, --help: Help
 EOF
@@ -27,9 +32,4 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
-if curl -sf "http://localhost:${PORT:-8080}/healthz" > /dev/null; then
-  log-info "rest-server is running"
-else
-  log-info "rest-server is NOT running"
-  exit 1
-fi
+exec "$PROJECT_ROOT/bin/daemon-http-check" rest-server "${PORT:-8080}" "http://localhost:${PORT:-8080}/healthz"

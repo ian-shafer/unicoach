@@ -41,6 +41,6 @@ if [ ! -x "$BINARY" ]; then
   fatal "public-web binary not found at [$BINARY]. Run 'bin/build-public-web' first."
 fi
 
-"$PROJECT_ROOT/bin/daemon-up" public-web -- "$BINARY"
+"$PROJECT_ROOT/bin/daemon-up" --port "${PUBLIC_WEB_PORT:-8082}" public-web -- "$BINARY"
 
 "$PROJECT_ROOT/bin/public-web-wait-for-health"

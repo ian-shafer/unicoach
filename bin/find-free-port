@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+find-free-port [base]
+
+Prints the first TCP port at or above <base> (default 18000) that bin/check-port
+reports free, then exits 0. Scans upward to 65535. For callers that need an
+arbitrary free port (e.g. tests binding a listener) instead of hardcoding one.
+
+Note: the port is free at the instant of printing; a caller that binds it should
+treat a later bind failure as the port having been taken, not retry here.
+
+Exit codes:
+  0: A free port was found and printed.
+  1: No free port at or above <base>, or an invalid <base>.
+
+Options:
+  -h, --help: Help
+EOF
+  exit "$exit_code"
+}
+
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+  -h|--help) help ;;
+  -*) help "Unknown option: $1" ;;
+  esac
+done
+
+if [ "$#" -gt 1 ]; then
+  help "Too many arguments: expected at most one <base>, got [$#]."
+fi
+
+BASE="${1:-18000}"
+if ! validate_port "$BASE"; then
+  help "Invalid <base> [$BASE]. Expected an integer in 1..65535."
+fi
+
+port="$BASE"
+while [ "$port" -le 65535 ]; do
+  # check-port exits 0 = in use, 1 = free; the first non-in-use port is ours.
+  if ! "$PROJECT_ROOT/bin/check-port" "$port" >/dev/null 2>&1; then
+    echo "$port"
+    exit 0
+  fi
+  port=$((port + 1))
+done
+
+fatal "No free TCP port found at or above [$BASE]."

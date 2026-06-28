@@ -1,11 +1,58 @@
 #!/usr/bin/env bash
 export ENV_FILE="$(dirname "$0")/../.env.test"
+# Make fatal/log-* available before the PORT guard. `functions` only defines
+# functions — it sources no `.env` — so it does not disturb the bootstrap
+# ordering (`common`/`.env.test` is still sourced afterward and re-defines these
+# idempotently). PORT must still be picked before `common` so .env.test's
+# PORT="${PORT:-8081}" and its SERVER_PORT=$PORT alias both resolve to it, and
+# every service this suite boots (rest-server) binds a port that cannot collide
+# with a developer's daemons running across worktrees. Tests never hardcode a
+# port; only .env (prod/dev) does.
+source "$(dirname "$0")/functions"
+export PORT="$("$(dirname "$0")/find-free-port")"
+# This runs before `common` activates `set -euo pipefail`, so a find-free-port
+# failure would otherwise leave PORT="" and .env.test's `${PORT:-8081}` would
+# silently fall back to the collision-prone 8081. Guard it explicitly via fatal.
+if [ -z "$PORT" ]; then
+  fatal "find-free-port returned no free port; refusing to fall back to a hardcoded port."
+fi
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 
+# Bounded-poll knobs, named once (50 x 0.1s = ~5s ceiling).
+PORT_POLL_ATTEMPTS=50
+PORT_POLL_INTERVAL=0.1
+# Outer guard for the bounded-probe regression test: comfortably above
+# daemon-http-check's HEALTH_CONNECT_TIMEOUT(2) + HEALTH_MAX_TIME(3); a hang
+# would trip this and surface as exit 124 instead of wedging the suite.
+BOUNDED_PROBE_GUARD_SECS=8
+
+# Poll until <port> is free (check-port reports not-in-use), bounded. Returns 0
+# once free, 1 on timeout. Replaces the inline `for i in {1..50}` free-polls.
+wait_for_port_free() {
+  local port="$1" i
+  for ((i = 0; i < PORT_POLL_ATTEMPTS; i++)); do
+    bin/check-port "$port" >/dev/null 2>&1 || return 0
+    sleep "$PORT_POLL_INTERVAL"
+  done
+  return 1
+}
+
+# Every foreign listener this harness spawns records its PID here so the EXIT
+# trap can reap any that a test forgot or that a mid-run abort skipped — a leaked
+# listen socket would block a later run's curl / probe on the same port.
+FOREIGN_LISTENER_PIDS=()
+
+reap_foreign_listeners() {
+  local pid
+  for pid in "${FOREIGN_LISTENER_PIDS[@]:-}"; do
+    [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
+  done
+}
+
 # Tear down only the daemons this harness starts. The PostgreSQL cluster is
 # shared across worktrees (see SPEC.md §II Shared Cluster) — never stop it.
-trap 'bin/rest-server-down >/dev/null 2>&1 || true; bin/queue-worker-down >/dev/null 2>&1 || true' EXIT INT TERM
+trap 'bin/rest-server-down >/dev/null 2>&1 || true; bin/queue-worker-down >/dev/null 2>&1 || true; bin/daemon-down idem-test >/dev/null 2>&1 || true; bin/daemon-down collision-test >/dev/null 2>&1 || true; reap_foreign_listeners' EXIT INT TERM
 
 echo "Harness up"
 echo ""
@@ -45,6 +92,48 @@ pass_test "File lock recovered stale lock"
 
 rm -rf "$TEST_LOCK" || true
 rm -rf "${TEST_LOCK}.stale."* || true
+
+# Foreign-listener helpers. Each spawns bin/test-tcp-listener (a real, lintable
+# python3 file — bash cannot listen(), and the dev shell ships no nc/socat) to
+# occupy 127.0.0.1:<port> with a PID NOT recorded in any var/run/*.pid file: the
+# cross-worktree / foreign-occupant case. _spawn_test_listener sets the global
+# FOREIGN_LISTENER_PID (NOT echoed — a $(...) subshell would lose the PID from
+# the EXIT-trap tracking array) and blocks until the port is actually bound, so
+# the probe never races. Pair each with stop_foreign_listener to bracket the
+# assertion.
+FOREIGN_LISTENER_PID=""
+
+_spawn_test_listener() {
+  local port="$1" mode="$2"
+  "$PROJECT_ROOT/bin/test-tcp-listener" "$port" "$mode" >/dev/null 2>&1 &
+  local listener_pid=$!
+  FOREIGN_LISTENER_PIDS+=("$listener_pid")
+  local i
+  for ((i = 0; i < PORT_POLL_ATTEMPTS; i++)); do
+    if bin/check-port "$port" >/dev/null 2>&1; then
+      FOREIGN_LISTENER_PID="$listener_pid"
+      return 0
+    fi
+    sleep "$PORT_POLL_INTERVAL"
+  done
+  kill -9 "$listener_pid" 2>/dev/null || true
+  FOREIGN_LISTENER_PID=""
+  return 1
+}
+
+# accept + immediately close: a fast empty reply, as a non-HTTP occupant gives.
+start_foreign_listener() { _spawn_test_listener "$1" close; }
+
+# accept + hold open, never replying: the "wedged server" case. An unbounded
+# curl against this blocks forever, so it proves daemon-http-check's bounded
+# probe gives up instead of hanging.
+start_stalled_listener() { _spawn_test_listener "$1" hold; }
+
+stop_foreign_listener() {
+  local listener_pid="$1"
+  [ -n "$listener_pid" ] && kill -9 "$listener_pid" 2>/dev/null || true
+  wait "$listener_pid" 2>/dev/null || true
+}
 
 # Ensures postgres is up and the test database exists before starting any JVM daemon.
 ensure_postgres_for_jvm() {
@@ -158,6 +247,13 @@ echo "==== Testing daemon-status ===="
 if ! bin/daemon-status -h >/dev/null; then echo "Fail: daemon-status -h did not exit 0"; exit 1; fi
 pass_test "daemon-status help flag returned 0"
 
+# daemon-status now threads $PORT into the rest-server check, so the stopped
+# assertion only holds when that port is actually free. Confirm it defensively
+# (mirrors the foreign-listener teardown discipline) before asserting stopped.
+if ! wait_for_port_free "${PORT:-8080}"; then
+  echo "Fail: precondition — rest-server port ${PORT:-8080} must be free for the stopped assertion"
+  exit 1
+fi
 daemon_status_out="$(bin/daemon-status)"
 if ! echo "$daemon_status_out" | grep "rest-server" | grep "stopped" >/dev/null; then
   echo "Fail: daemon-status did not report rest-server as stopped"
@@ -165,6 +261,20 @@ if ! echo "$daemon_status_out" | grep "rest-server" | grep "stopped" >/dev/null;
   exit 1
 fi
 pass_test "daemon-status output accuracy"
+
+# daemon-status conflict tri-state: a foreign listener on rest-server's port
+# while its PID file is absent ⇒ a printed "conflict" line, not "stopped".
+start_foreign_listener "${PORT:-8080}" || { echo "Fail: could not bind foreign listener on ${PORT:-8080}"; exit 1; }
+ds_listener="$FOREIGN_LISTENER_PID"
+daemon_status_conflict="$(bin/daemon-status)"
+if ! echo "$daemon_status_conflict" | grep "rest-server" | grep "conflict" >/dev/null; then
+  echo "Fail: daemon-status did not report rest-server as conflict when its port is foreign-held"
+  echo "$daemon_status_conflict"
+  stop_foreign_listener "$ds_listener"
+  exit 1
+fi
+stop_foreign_listener "$ds_listener"
+pass_test "daemon-status reports conflict when rest-server port is foreign-held"
 
 echo ""
 echo "==== Testing check-pid ===="
@@ -270,5 +380,189 @@ test_deploy_bundle_includes_migration_path() {
   return 0
 }
 assert_success "deploy bundle includes the full migration-path script set" test_deploy_bundle_includes_migration_path
+
+# Three distinct free test ports, found at run time via bin/find-free-port (which
+# uses check-port). Starting the scan at 18000 keeps them well above the harness
+# PORT=8081 so a foreign listener here never collides with a real rest-server. If
+# none is free, find-free-port fails and the suite aborts rather than guessing.
+PORT_FREE="$(bin/find-free-port 18000)"
+PORT_IDEM="$(bin/find-free-port $((PORT_FREE + 1)))"
+PORT_HTTP="$(bin/find-free-port $((PORT_IDEM + 1)))"
+
+echo ""
+echo "==== Testing check-port ===="
+# check-port: free
+if bin/check-port "$PORT_FREE" >/dev/null 2>&1; then echo "Fail: check-port did not exit 1 for a free port"; exit 1; fi
+pass_test "check-port exits 1 when port is free"
+
+# check-port: in use, then free again after kill
+start_foreign_listener "$PORT_FREE" || { echo "Fail: could not bind foreign listener on $PORT_FREE"; exit 1; }
+cp_listener="$FOREIGN_LISTENER_PID"
+if ! bin/check-port "$PORT_FREE" >/dev/null 2>&1; then echo "Fail: check-port did not exit 0 for a bound port"; stop_foreign_listener "$cp_listener"; exit 1; fi
+pass_test "check-port exits 0 when port is in use"
+stop_foreign_listener "$cp_listener"
+# Wait for the kernel to release the socket, bounded.
+if ! wait_for_port_free "$PORT_FREE"; then echo "Fail: check-port did not exit 1 after listener killed"; exit 1; fi
+pass_test "check-port exits 1 again after listener is killed"
+
+# check-port: invalid args
+cp_status=0; bin/check-port >/dev/null 2>&1 || cp_status=$?
+if [ "$cp_status" -ne 2 ]; then echo "Fail: check-port (no arg) did not exit 2 (got $cp_status)"; exit 1; fi
+cp_status=0; bin/check-port notaport >/dev/null 2>&1 || cp_status=$?
+if [ "$cp_status" -ne 2 ]; then echo "Fail: check-port notaport did not exit 2 (got $cp_status)"; exit 1; fi
+pass_test "check-port exits 2 on missing / non-numeric argument"
+
+echo ""
+echo "==== Testing daemon-up port preflight ===="
+# Cross-process collision regression (the reported bug; also covers the
+# PID-file-lost / orphaned-alive edge case — indistinguishable from here).
+rm -f "$PROJECT_ROOT/var/run/collision-test.pid"
+rm -rf "$PROJECT_ROOT/var/run/collision-test.daemon.lock"
+start_foreign_listener "$PORT_FREE" || { echo "Fail: could not bind foreign listener on $PORT_FREE"; exit 1; }
+coll_listener="$FOREIGN_LISTENER_PID"
+up_status=0
+# Unique sentinel arg so this daemon command cannot be confused with the
+# other `sleep 60` daemons elsewhere in the suite.
+bin/daemon-up --port "$PORT_FREE" collision-test -- sleep 987654 >/dev/null 2>&1 || up_status=$?
+if [ "$up_status" -ne 3 ]; then echo "Fail: daemon-up on a held port did not exit 3 (got $up_status)"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+if [ -f "$PROJECT_ROOT/var/run/collision-test.pid" ]; then echo "Fail: daemon-up wrote a PID file despite the collision"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+if [ -d "$PROJECT_ROOT/var/run/collision-test.daemon.lock" ]; then echo "Fail: daemon-up left the lock directory after a collision"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+if pgrep -f 'sleep 987654' >/dev/null 2>&1; then echo "Fail: daemon-up spawned a child despite the collision"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
+# Defensive reap: if a future regression DID spawn, do not leak it.
+pkill -f 'sleep 987654' 2>/dev/null || true
+stop_foreign_listener "$coll_listener"
+pass_test "daemon-up fatals (exit 3) on cross-process port collision without spawning or writing a PID"
+
+# Idempotency preserved with --port (free port).
+rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
+rm -rf "$PROJECT_ROOT/var/run/idem-test.daemon.lock"
+bin/daemon-up --port "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1
+if [ ! -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up did not write a PID on a free port"; exit 1; fi
+idem_first="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
+if ! bin/check-pid "$idem_first" >/dev/null 2>&1; then echo "Fail: idem-test PID is not alive after up"; exit 1; fi
+bin/daemon-up --port "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1
+idem_second="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
+if [ "$idem_first" != "$idem_second" ]; then echo "Fail: idempotent up spawned a duplicate (PIDs $idem_first vs $idem_second)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+pass_test "daemon-up --port idempotent: second up reuses the same live PID"
+
+# Concurrent-up exit-0 contract with --port: two racers, exactly one process.
+bin/daemon-down idem-test >/dev/null 2>&1 || true
+rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
+rm -rf "$PROJECT_ROOT/var/run/idem-test.daemon.lock"
+bin/daemon-up --port "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1 & cu1=$!
+bin/daemon-up --port "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1 & cu2=$!
+cu1_status=0; wait $cu1 || cu1_status=$?
+cu2_status=0; wait $cu2 || cu2_status=$?
+if [ "$cu1_status" -ne 0 ] || [ "$cu2_status" -ne 0 ]; then echo "Fail: concurrent --port up did not both exit 0 ($cu1_status / $cu2_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+conc_pid="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
+if ! bin/check-pid "$conc_pid" >/dev/null 2>&1; then echo "Fail: concurrent --port up did not leave a live process"; exit 1; fi
+pass_test "daemon-up --port concurrent up: both exit 0, exactly one process"
+
+echo ""
+echo "==== Testing daemon-check tri-state ===="
+# Running (our PID is alive) ⇒ 0.
+dc_status=0; bin/daemon-check --port "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 0 ]; then echo "Fail: daemon-check on a running service did not exit 0 (got $dc_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+pass_test "daemon-check --port exits 0 when our PID is alive"
+
+bin/daemon-down idem-test >/dev/null 2>&1 || true
+rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
+# Stopped + port free ⇒ 1.
+if bin/check-port "$PORT_IDEM" >/dev/null 2>&1; then echo "Fail: precondition — $PORT_IDEM must be free after down"; exit 1; fi
+dc_status=0; bin/daemon-check --port "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check stopped+free did not exit 1 (got $dc_status)"; exit 1; fi
+pass_test "daemon-check --port exits 1 when stopped and port is free"
+
+# Stopped + foreign listener ⇒ 2.
+start_foreign_listener "$PORT_IDEM" || { echo "Fail: could not bind foreign listener on $PORT_IDEM"; exit 1; }
+dc_listener="$FOREIGN_LISTENER_PID"
+dc_status=0; bin/daemon-check --port "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 2 ]; then echo "Fail: daemon-check stopped+held did not exit 2 (got $dc_status)"; stop_foreign_listener "$dc_listener"; exit 1; fi
+pass_test "daemon-check --port exits 2 (conflict) when stopped and port is foreign-held"
+
+# --port-less backward compatibility: stopped+held ⇒ still 1, never 2.
+dc_status=0; bin/daemon-check idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check without --port did not exit 1 on a held port (got $dc_status)"; stop_foreign_listener "$dc_listener"; exit 1; fi
+pass_test "daemon-check without --port exits 1 even when port is held (backward compatible)"
+stop_foreign_listener "$dc_listener"
+
+echo ""
+echo "==== Testing --port intake validation (no silent portless degrade) ===="
+# An empty --port value must be a usage error, never a silent fall-through to the
+# unsafe portless path. daemon-check and daemon-up both reject it at the parse site.
+dc_status=0; bin/daemon-check --port "" idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check --port '' did not reject empty value (got $dc_status)"; exit 1; fi
+pass_test "daemon-check rejects an empty --port value"
+
+du_status=0; bin/daemon-up --port "" idem-test -- sleep 60 >/dev/null 2>&1 || du_status=$?
+if [ "$du_status" -ne 1 ]; then echo "Fail: daemon-up --port '' did not reject empty value (got $du_status)"; exit 1; fi
+if [ -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up --port '' wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+pass_test "daemon-up rejects an empty --port value without spawning"
+
+# A non-numeric / out-of-range --port must be rejected before any port check, in
+# daemon-check too (matching daemon-up's existing validation).
+dc_status=0; bin/daemon-check --port notaport idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check --port notaport did not reject non-numeric value (got $dc_status)"; exit 1; fi
+dc_status=0; bin/daemon-check --port 99999 idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check --port 99999 did not reject out-of-range value (got $dc_status)"; exit 1; fi
+pass_test "daemon-check rejects a non-numeric / out-of-range --port value"
+
+echo ""
+echo "==== Testing daemon-http-check ===="
+# Not running: nothing bound, curl fails, port free ⇒ exit 1.
+dh_status=0; bin/daemon-http-check svc "$PORT_HTTP" "http://localhost:$PORT_HTTP/healthz" >/dev/null 2>&1 || dh_status=$?
+if [ "$dh_status" -ne 1 ]; then echo "Fail: daemon-http-check on a free port did not exit 1 (got $dh_status)"; exit 1; fi
+pass_test "daemon-http-check exits 1 when nothing is bound (not running)"
+
+# Port held / unhealthy: a raw foreign listener ⇒ curl -sf fails, port in use ⇒ exit 2.
+start_foreign_listener "$PORT_HTTP" || { echo "Fail: could not bind foreign listener on $PORT_HTTP"; exit 1; }
+dh_listener="$FOREIGN_LISTENER_PID"
+dh_status=0; dh_out="$(bin/daemon-http-check svc "$PORT_HTTP" "http://localhost:$PORT_HTTP/healthz" 2>&1)" || dh_status=$?
+if [ "$dh_status" -ne 2 ]; then echo "Fail: daemon-http-check with a foreign-held port did not exit 2 (got $dh_status)"; stop_foreign_listener "$dh_listener"; exit 1; fi
+if ! echo "$dh_out" | grep -qF "bound but not responding as [svc]"; then echo "Fail: daemon-http-check did not log the 'bound but not responding as [svc]' message"; echo "$dh_out"; stop_foreign_listener "$dh_listener"; exit 1; fi
+pass_test "daemon-http-check exits 2 and reports 'bound but not responding as [svc]' when foreign-held"
+stop_foreign_listener "$dh_listener"
+
+# Invalid args: too few arguments, and a non-numeric port ⇒ exit 3 (distinct from 2).
+dh_status=0; bin/daemon-http-check svc >/dev/null 2>&1 || dh_status=$?
+if [ "$dh_status" -ne 3 ]; then echo "Fail: daemon-http-check with too few args did not exit 3 (got $dh_status)"; exit 1; fi
+dh_status=0; bin/daemon-http-check svc notaport http://localhost/healthz >/dev/null 2>&1 || dh_status=$?
+if [ "$dh_status" -ne 3 ]; then echo "Fail: daemon-http-check with a non-numeric port did not exit 3 (got $dh_status)"; exit 1; fi
+pass_test "daemon-http-check exits 3 on invalid args (distinct from the 2 conflict state)"
+
+# Bounded probe (regression): a listener that accepts but never replies must NOT
+# hang the probe. Without curl's --max-time the probe blocks forever; `timeout`
+# guards the whole call so a regression FAILS loudly (exit 124) instead of
+# wedging the suite. The bounded probe gives up (~3s) and check-port then reports
+# the port in use ⇒ exit 2, well within the timeout guard.
+start_stalled_listener "$PORT_HTTP" || { echo "Fail: could not bind stalled listener on $PORT_HTTP"; exit 1; }
+dh_listener="$FOREIGN_LISTENER_PID"
+dh_status=0; timeout "$BOUNDED_PROBE_GUARD_SECS" bin/daemon-http-check svc "$PORT_HTTP" "http://localhost:$PORT_HTTP/healthz" >/dev/null 2>&1 || dh_status=$?
+stop_foreign_listener "$dh_listener"
+if [ "$dh_status" -eq 124 ]; then echo "Fail: daemon-http-check hung on an accept-but-never-reply listener (probe is not bounded)"; exit 1; fi
+if [ "$dh_status" -ne 2 ]; then echo "Fail: daemon-http-check on a stalled listener did not exit 2 (got $dh_status)"; exit 1; fi
+pass_test "daemon-http-check returns (exit 2) within the bound against an accept-but-never-reply listener"
+
+echo ""
+echo "==== Testing rest-server-check failure-path hardening ===="
+# Precondition: rest-server is down (PID file absent).
+bin/rest-server-down >/dev/null 2>&1 || true
+if [ -f "$PROJECT_ROOT/var/run/rest-server.pid" ]; then echo "Fail: precondition — rest-server PID file must be absent"; exit 1; fi
+REST_PORT="${PORT:-8080}"
+# Nothing on the port ⇒ exit 1.
+if ! wait_for_port_free "$REST_PORT"; then echo "Fail: precondition — rest-server port $REST_PORT must be free"; exit 1; fi
+rc_status=0; bin/rest-server-check >/dev/null 2>&1 || rc_status=$?
+if [ "$rc_status" -ne 1 ]; then echo "Fail: rest-server-check with a free port did not exit 1 (got $rc_status)"; exit 1; fi
+pass_test "rest-server-check exits 1 when its port is free and the daemon is down"
+
+# Foreign listener on its port ⇒ exit 2 with the held-by-another-process message.
+start_foreign_listener "$REST_PORT" || { echo "Fail: could not bind foreign listener on $REST_PORT"; exit 1; }
+rc_listener="$FOREIGN_LISTENER_PID"
+rc_status=0; rc_out="$(bin/rest-server-check 2>&1)" || rc_status=$?
+if [ "$rc_status" -ne 2 ]; then echo "Fail: rest-server-check with a foreign-held port did not exit 2 (got $rc_status)"; stop_foreign_listener "$rc_listener"; exit 1; fi
+if ! echo "$rc_out" | grep -qF "bound but not responding as [rest-server]"; then echo "Fail: rest-server-check did not log the truthful 'bound but not responding' message"; echo "$rc_out"; stop_foreign_listener "$rc_listener"; exit 1; fi
+if ! echo "$rc_out" | grep -q "held by another process or an unhealthy instance"; then echo "Fail: rest-server-check did not log the 'held by another process or an unhealthy instance' qualifier"; echo "$rc_out"; stop_foreign_listener "$rc_listener"; exit 1; fi
+pass_test "rest-server-check exits 2 and reports the port is bound but not responding when foreign-held"
+stop_foreign_listener "$rc_listener"
 
 end_tests

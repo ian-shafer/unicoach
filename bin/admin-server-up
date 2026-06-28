@@ -41,6 +41,6 @@ if [ ! -x "$BINARY" ]; then
   fatal "admin-server binary not found at [$BINARY]. Run 'bin/build-admin-server' first."
 fi
 
-"$PROJECT_ROOT/bin/daemon-up" admin-server -- "$BINARY"
+"$PROJECT_ROOT/bin/daemon-up" --port "${ADMIN_SERVER_PORT:-8081}" admin-server -- "$BINARY"
 
 "$PROJECT_ROOT/bin/admin-server-wait-for-health"

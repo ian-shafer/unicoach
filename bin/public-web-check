@@ -13,6 +13,11 @@ public-web-check [options]
 Exits 0 if the public-web server is healthy (GET /healthz returns HTTP 200).
 Exits non-zero if the server is not reachable or returns an error.
 
+Exit codes:
+  0: Healthy (HTTP 200).
+  1: Not running (port free, nothing listening).
+  2: The port is held by another process not responding as public-web.
+
 Options:
   -h, --help: Help
 EOF
@@ -27,9 +32,4 @@ while [[ "${1:-}" == -* ]]; do
   esac
 done
 
-if curl -sf "http://localhost:${PUBLIC_WEB_PORT:-8082}/healthz" > /dev/null; then
-  log-info "public-web is running"
-else
-  log-info "public-web is NOT running"
-  exit 1
-fi
+exec "$PROJECT_ROOT/bin/daemon-http-check" public-web "${PUBLIC_WEB_PORT:-8082}" "http://localhost:${PUBLIC_WEB_PORT:-8082}/healthz"

@@ -13,8 +13,11 @@ daemon-status
 Prints each known service name alongside its running/stopped state, one per
 line. Exits 0 regardless of individual service states.
 
+For the port-bound rest-server, a third "conflict" state is reported when its
+PID file is absent/dead but its port is held by another process.
+
 Format:
-  <service-name>    running|stopped
+  <service-name>    running|stopped|conflict|unknown
 
 Options:
   -h, --help: Help
@@ -33,21 +36,50 @@ if [ "$#" -gt 0 ]; then
   help "daemon-status does not accept positional arguments: $*"
 fi
 
+# Ordered list fixes iteration/print order; the associative map carries the port
+# of each port-bound service. A service absent from SERVICE_PORTS is portless —
+# key presence/absence is the portless sentinel, with no delimiter packed into
+# the service token. A future port-bound service gains conflict detection by
+# registering its port here, with no new code branch (bash 5.x — the dev shell
+# interpreter).
 SERVICES=(postgres rest-server queue-worker)
+declare -A SERVICE_PORTS
+SERVICE_PORTS[rest-server]="${PORT:-8080}"
 
 # Resolve postgres data directory for postmaster.pid check.
 PG_DATA_DIR="${POSTGRES_DATA_DIR:-}"
 
 for service in "${SERVICES[@]}"; do
   if [ "$service" = "postgres" ]; then
+    # postgres keeps its own named branch — its postmaster.pid probe cannot route
+    # through daemon-check.
     pg_pid="$(head -1 "$PG_DATA_DIR/postmaster.pid" 2>/dev/null || true)"
-    is_running() { [ -n "$pg_pid" ] && kill -0 "$pg_pid" 2>/dev/null; }
+    if [ -n "$pg_pid" ] && kill -0 "$pg_pid" 2>/dev/null; then
+      state="running"
+    else
+      state="stopped"
+    fi
   else
-    is_running() { "$PROJECT_ROOT/bin/daemon-check" "$service" > /dev/null 2>&1; }
+    # Every other service routes through one generic path: pass --port only when
+    # the service has a map entry, then map the exit code through a single case.
+    # A portless service never yields 2 (daemon-check returns only 0/1 without
+    # --port), so the conflict arm is unreached for queue-worker.
+    port="${SERVICE_PORTS[$service]:-}"
+    check_status=0
+    if [ -n "$port" ]; then
+      "$PROJECT_ROOT/bin/daemon-check" --port "$port" "$service" > /dev/null 2>&1 || check_status=$?
+    else
+      "$PROJECT_ROOT/bin/daemon-check" "$service" > /dev/null 2>&1 || check_status=$?
+    fi
+    case "$check_status" in
+    0) state="running" ;;
+    1) state="stopped" ;;
+    2) state="conflict" ;;
+    *)
+      log-warning "unexpected daemon-check exit [$check_status] for [$service]"
+      state="unknown"
+      ;;
+    esac
   fi
-  if is_running; then
-    echo "$(printf '%-20s' "$service")running"
-  else
-    echo "$(printf '%-20s' "$service")stopped"
-  fi
+  echo "$(printf '%-20s' "$service")$state"
 done
