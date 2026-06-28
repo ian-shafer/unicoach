@@ -4,9 +4,12 @@ import ed.unicoach.admin.engine.AdminEdge
 import ed.unicoach.admin.engine.AdminField
 import ed.unicoach.admin.engine.AdminKind
 import ed.unicoach.admin.engine.AdminResource
+import ed.unicoach.admin.engine.CustomAction
 import ed.unicoach.admin.engine.EdgePanel
 import ed.unicoach.admin.engine.FieldType
 import ed.unicoach.admin.render.respondDaoError
+import ed.unicoach.auth.EmailVerificationService
+import ed.unicoach.auth.ResendResult
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
@@ -41,6 +44,7 @@ import java.util.UUID
  */
 class UsersResource(
   private val argon2Hasher: Argon2Hasher,
+  private val emailVerificationService: EmailVerificationService,
 ) : AdminResource<User, UserId> {
   override val slug = "user"
   override val title = "User"
@@ -55,6 +59,7 @@ class UsersResource(
       AdminField("displayName", "Display Name", FieldType.TEXT, editable = true, sensitive = false),
       AdminField("passwordHash", "Password Hash", FieldType.TEXT, editable = false, sensitive = true),
       AdminField("isAdmin", "Admin", FieldType.BOOL, editable = true, sensitive = false),
+      AdminField("emailVerifiedAt", "Email Verified", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("version", "Version", FieldType.INT, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("updatedAt", "Updated", FieldType.TIMESTAMP, editable = false, sensitive = false),
@@ -88,6 +93,7 @@ class UsersResource(
       "name" to row.name.value,
       "displayName" to (row.displayName?.value ?: ""),
       "isAdmin" to row.isAdmin.toString(),
+      "emailVerifiedAt" to (row.emailVerifiedAt?.toString() ?: ""),
       "version" to row.version.toString(),
       "createdAt" to row.createdAt.toString(),
       "updatedAt" to row.updatedAt.toString(),
@@ -116,6 +122,25 @@ class UsersResource(
 
   override val undelete: (suspend (Database, UserId) -> Result<Unit>) =
     { db, id -> db.occSoftDelete(UsersDao, id, deleted = false) }
+
+  /**
+   * Shared disabledReason for both verification actions: enabled only for an
+   * active, unverified user. Single source of truth — the button renders enabled
+   * iff this returns null. Any future `User` lifecycle flag that should gate the
+   * verification actions must be evaluated here.
+   */
+  private fun verificationDisabledReason(row: User): String? =
+    when {
+      row.emailVerifiedAt != null -> "Email already verified."
+      row.deletedAt != null -> "User is deleted."
+      else -> null
+    }
+
+  override val customActions =
+    listOf(
+      CustomAction<User>("Mark email verified", "verify-email", ::verificationDisabledReason),
+      CustomAction<User>("Send verification email", "send-verification-email", ::verificationDisabledReason),
+    )
 
   private suspend fun createUser(
     db: Database,
@@ -261,6 +286,39 @@ class UsersResource(
           onFailure = { call.respondDaoError(it) },
         )
     }
+
+    scope.post("/$slug/{id}/verify-email") {
+      val userId = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondRedirect("/$slug")
+      db.withConnection { session -> UsersDao.markEmailVerified(session, userId) }.fold(
+        onSuccess = { call.respondRedirect("/$slug/${userId.value}") },
+        onFailure = { call.respondDaoError(it) },
+      )
+    }
+
+    scope.post("/$slug/{id}/send-verification-email") {
+      val userId = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondRedirect("/$slug")
+      // Load with SoftDeleteScope.ACTIVE so a soft-deleted user yields
+      // NotFoundException -> 404 (a forged POST is rejected, not a silent resend).
+      // The fold is nested rather than flattened because `resend` is a suspend
+      // call that opens its own connection and cannot run inside the non-suspend
+      // lambda of Result.mapCatching.
+      db
+        .withConnection { session -> UsersDao.findById(session, userId, SoftDeleteScope.ACTIVE) }
+        .fold(
+          onSuccess = { user ->
+            emailVerificationService.resend(user).fold(
+              onSuccess = { result ->
+                when (result) {
+                  is ResendResult.Sent -> call.respondRedirect("/$slug/${userId.value}")
+                  is ResendResult.AlreadyVerified -> call.respondRedirect("/$slug/${userId.value}")
+                }
+              },
+              onFailure = { call.respondDaoError(it) },
+            )
+          },
+          onFailure = { call.respondDaoError(it) },
+        )
+    }
   }
 
   override suspend fun resolveEdges(
@@ -299,7 +357,7 @@ class UsersResource(
     val historyPanel =
       EdgePanel.Table(
         label = "Version history",
-        columns = listOf("Version", "Email", "Name", "Admin", "Updated", "Deleted"),
+        columns = listOf("Version", "Email", "Name", "Admin", "Email Verified", "Updated", "Deleted"),
         rows =
           versions.map { v ->
             EdgePanel.Table.Row(
@@ -310,6 +368,7 @@ class UsersResource(
                   v.email.value,
                   v.name.value,
                   v.isAdmin.toString(),
+                  v.emailVerifiedAt?.toString() ?: "",
                   v.updatedAt.toString(),
                   v.deletedAt?.toString() ?: "",
                 ),

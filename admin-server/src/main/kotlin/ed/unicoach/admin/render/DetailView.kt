@@ -71,16 +71,39 @@ fun <ROW, ID> MAIN.renderDetail(
     }
   }
 
+  // Descriptor-declared custom actions render after the Edit/Delete/Undelete
+  // block above and before the edge panels below (the page's action region).
+  resource.customActions.forEach { action ->
+    actionButton(
+      action = "/${resource.slug}/$idPath/${action.pathSuffix}",
+      label = action.label,
+      disabledReason = action.disabledReason(row),
+    )
+  }
+
   edges.forEach { panel -> renderEdgePanel(panel) }
 }
 
-/** A single-button POST form, used for delete/undelete and nested actions. */
+/**
+ * A single-button POST form, used for delete/undelete, nested actions, and
+ * descriptor-declared custom actions. When [disabledReason] is null the submit
+ * button is enabled; when non-null the button carries the HTML `disabled`
+ * attribute and a `title` set to the reason. Single source of truth: enabled iff
+ * [disabledReason] is null.
+ */
 fun FlowContent.actionButton(
   action: String,
   label: String,
+  disabledReason: String? = null,
 ) {
   form(action = action, method = FormMethod.post) {
-    button(type = ButtonType.submit) { +label }
+    button(type = ButtonType.submit) {
+      if (disabledReason != null) {
+        attributes["disabled"] = "disabled"
+        attributes["title"] = disabledReason
+      }
+      +label
+    }
   }
 }
 

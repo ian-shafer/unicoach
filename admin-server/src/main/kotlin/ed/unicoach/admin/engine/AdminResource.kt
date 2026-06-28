@@ -70,6 +70,14 @@ interface AdminResource<ROW, ID> {
   val createExtraInputs: List<AdminField>
     get() = emptyList()
 
+  /**
+   * Per-row action buttons declared by this resource and rendered by the engine
+   * after the Edit/Delete/Undelete block. Each entry's [CustomAction.pathSuffix]
+   * must have a matching route registered in [registerExtraRoutes]. Default: none.
+   */
+  val customActions: List<CustomAction<ROW>>
+    get() = emptyList()
+
   val create: (suspend (db: Database, form: Map<String, String>) -> Result<ID>)?
   val update: (suspend (db: Database, id: ID, form: Map<String, String>) -> Result<Unit>)?
   val delete: (suspend (db: Database, id: ID) -> Result<Unit>)?

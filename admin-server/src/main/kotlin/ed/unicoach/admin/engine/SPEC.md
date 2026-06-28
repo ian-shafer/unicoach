@@ -18,6 +18,8 @@ backed by the existing DAOs.
   `FieldType` render/input strategy.
 - [`AdminEdge.kt`](./AdminEdge.kt) — declared relationships (`Parent`,
   `HasMany`, `History`, `Embedded`).
+- [`CustomAction.kt`](./CustomAction.kt) — a descriptor-declared per-row POST
+  button the engine renders alongside the derived Edit/Delete/Undelete actions.
 - [`EdgePanel.kt`](./EdgePanel.kt) — the type-erased, render-ready payload an
   edge resolves to.
 - [`AdminRegistry.kt`](./AdminRegistry.kt) — slug-keyed lookup over all
@@ -34,8 +36,15 @@ backed by the existing DAOs.
 The per-table descriptor. `ROW` is the domain model, `ID` its typed id.
 
 - **Declaration members** (`slug`, `title`, `kind`, `topLevel`, `fields`,
-  `edges`, `createExtraInputs`): pure data read by the router and renderers; no
-  I/O.
+  `edges`, `createExtraInputs`, `customActions`): pure data read by the router
+  and renderers; no I/O.
+- **`customActions`**: declarative list of per-row POST buttons (see
+  [`CustomAction`](./CustomAction.kt)) the engine renders on the detail page
+  after the Edit/Delete/Undelete block; default empty, so existing descriptors
+  are unaffected. Pure data — the engine renders the button and evaluates each
+  entry's `disabledReason` against the row, but never inspects `pathSuffix` or
+  owns the action's route. Registering the matching route for each entry's
+  `pathSuffix` is the descriptor's own responsibility via `registerExtraRoutes`.
 - **`rowId`, `cells`, `isDeleted`, `parseId`, `idToPath`**: pure projections
   over a row or id; no I/O. `cells` produces the `field name -> rendered string`
   map used for both list/detail tables and pre-filling the edit form. `idToPath`
@@ -140,6 +149,23 @@ never a nested path:
 
 Pure declarative data; no behavior or I/O.
 
+### `CustomAction<ROW>` — [`CustomAction.kt`](./CustomAction.kt)
+
+A descriptor-declared per-row POST button rendered by the engine on the detail
+page, alongside the descriptor-derived Edit/Delete/Undelete actions. It carries
+a `label` (button text), a `pathSuffix` (appended to `/{slug}/{idPath}` to form
+the POST target), and a `disabledReason` predicate over the row.
+
+- **`disabledReason(row)`** is the single source of truth for the button's
+  enabled state: `null` renders the button enabled; a non-null string renders it
+  disabled and supplies its hover title explaining why.
+- The engine renders the button and evaluates `disabledReason`, but never
+  inspects `pathSuffix` — the descriptor registers the matching route itself in
+  `registerExtraRoutes`. An entry whose `pathSuffix` has no registered route
+  yields a POST to a non-existent endpoint; the engine does not detect this.
+
+Pure declarative data; no behavior or I/O.
+
 ### `EdgePanel` — [`EdgePanel.kt`](./EdgePanel.kt)
 
 The type-erased, render-ready output of edge resolution. Resolving inside the
@@ -182,7 +208,10 @@ driven purely from the registry and each descriptor's declared capabilities;
 there is no per-table branch. Only `topLevel` resources receive the dashboard
 nav entry and the generic route set; a non-top-level resource is neither listed
 nor reachable through a generated route. `registerExtraRoutes` is invoked for
-every resource (top-level or not), in the same scope as the generic routes.
+every resource (top-level or not), in the same scope as the generic routes. No
+generic route backs a descriptor's `customActions`: each custom action's POST
+target is registered by the descriptor through `registerExtraRoutes`, not by
+this router.
 
 - **Routes registered** (per top-level resource, conditionally):
 
@@ -262,3 +291,11 @@ every resource (top-level or not), in the same scope as the generic routes.
       — reformatted the update route's `ConcurrentModificationException` branch
       in [`AdminRouting.kt`](./AdminRouting.kt) to a block body; no behavioral
       change to the engine.
+- [x] [RFC-76: Admin email-verification actions](../../../../../../../../rfc/76-admin-email-verification-actions.md)
+      — added [`CustomAction.kt`](./CustomAction.kt) and the
+      `AdminResource.customActions` member (default empty): descriptor-declared
+      per-row POST buttons the engine renders after the Edit/Delete/Undelete
+      block, with `disabledReason` as the single source of truth for enabled
+      state. The engine never inspects `pathSuffix`; route registration stays
+      with the descriptor's `registerExtraRoutes`. `AdminRouting.kt` is
+      unchanged — no generic custom-action route.

@@ -66,7 +66,7 @@ object AdminTestSupport {
   val authService = AuthService(database, argon2Hasher, TokenGenerator(), emailVerificationService, StubGoogleTokenVerifier())
 
   fun Application.installTestAdminModule() {
-    adminModule(database, authService, argon2Hasher, adminConfig)
+    adminModule(database, authService, argon2Hasher, emailVerificationService, adminConfig)
   }
 
   /** Truncate users (cascades to sessions/students) for an isolated test. */

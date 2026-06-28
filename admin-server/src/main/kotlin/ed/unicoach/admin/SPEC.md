@@ -30,12 +30,17 @@ sibling subpackages and are referenced here only by responsibility.
   and email-verification service; constructs `AuthService`; binds and starts the
   Netty listener; subscribes an `ApplicationStopped` hook that closes the
   database.
-- **Email wiring (inert here)**: Builds an `EmailService` and an
-  `EmailVerificationService` solely to satisfy the `AuthService` constructor,
-  which requires an `EmailVerificationService`. The admin gate only
-  authenticates via `AuthService`; it never registers users or sends
-  verification mail, so the configured (log) email provider is never exercised
-  in the admin process.
+- **Email wiring (live collaborator of `UsersResource`)**: Builds one
+  `EmailService` and one `EmailVerificationService` and passes the latter into
+  both `AuthService` (which requires it) and `adminModule` (which threads it
+  into `UsersResource`). The `EmailVerificationService` is exercised in the
+  admin process: the `UsersResource` "send verification email" action calls
+  `resend`, which — for an active, unverified user — burns outstanding
+  verification tokens, issues a fresh one (a DB write), and best-effort sends
+  the verification email through the configured (log) provider. The admin gate
+  itself still only authenticates via `AuthService` and never registers users;
+  the `StubGoogleTokenVerifier` (RFC 64) remains inert because the admin gate
+  never exercises the Google login path.
 - **Error handling**: Any config parse failure (`DatabaseConfig.from`,
   `AdminConfig.from`, `EmailConfig.from`, `EmailVerificationConfig.from`, or
   provider construction) propagates as an uncaught exception via `getOrThrow()`,
@@ -52,7 +57,7 @@ sibling subpackages and are referenced here only by responsibility.
   `startServer(wait = true)` and never returns under normal operation.
 - **Side effects**: As `startServer`.
 
-### `Application.adminModule(database, authService, argon2Hasher, adminConfig)` — [`Application.kt`](./Application.kt)
+### `Application.adminModule(database, authService, argon2Hasher, emailVerificationService, adminConfig)` — [`Application.kt`](./Application.kt)
 
 - **Behavior**: Assembles the application module from pre-constructed
   collaborators. Installs the gate before any descriptor-driven resource routes,
@@ -62,10 +67,11 @@ sibling subpackages and are referenced here only by responsibility.
   the authorization gate; builds the resource registry over the user, student,
   session, and system-prompt descriptors (`UsersResource`, `StudentsResource`,
   `SessionsResource`, `SystemPromptsResource`); and registers the liveness,
-  login/logout, and descriptor-driven resource routes into the routing tree. The
-  same hasher instance used for login is threaded to the resource engine's
-  user-create path (only `UsersResource` is constructed with the hasher; the
-  other three descriptors are passed as-is).
+  login/logout, and descriptor-driven resource routes into the routing tree.
+  `UsersResource` is the only descriptor constructed with collaborators: it
+  receives both the same hasher instance used for login (for its user-create
+  path) and the `emailVerificationService` (for its "send verification email"
+  action's resend path); the other three descriptors are passed as-is.
 - **Inputs**: All collaborators are pre-constructed by `startServer` and passed
   in; the module performs no config parsing and constructs no IO-bound singleton
   of its own.
@@ -134,17 +140,18 @@ corresponding key when set in the process environment:
 
 `AppConfig.load("common.conf", "db.conf", "admin-server.conf", "service.conf", "email.conf")`
 — the admin process loads these five resources. `service.conf` and `email.conf`
-back the `EmailService` / `EmailVerificationService` that `AuthService`
-requires; the admin process does not load `rest-server.conf`. The `admin` bind
-and cookie settings are sourced solely from `admin-server.conf` via
-`AdminConfig`.
+back the `EmailService` / `EmailVerificationService` that `AuthService` requires
+and that `UsersResource` exercises via its "send verification email" action; the
+admin process does not load `rest-server.conf`. The `admin` bind and cookie
+settings are sourced solely from `admin-server.conf` via `AdminConfig`.
 
 ### Module Dependencies
 
-`admin-server` depends on `common`, `db`, `service` (the auth service and
-password hasher), and `email` (the email service and provider factory, wired
-inert in the admin context). It does not depend on `rest-server`, `queue`, or
-`chat`.
+`admin-server` depends on `common`, `db`, `service` (the auth service, password
+hasher, and email-verification service), and `email` (the email service and
+provider factory). The email-verification service is a live collaborator here,
+driving the `UsersResource` resend action. It does not depend on `rest-server`,
+`queue`, or `chat`.
 
 ### Runtime Dependencies
 
@@ -159,3 +166,4 @@ inert in the admin context). It does not depend on `rest-server`, `queue`, or
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../../../../../../../rfc/60-admin-website.md)
 - [x] [RFC-63: Admin System Prompts](../../../../../../../rfc/63-admin-system-prompts.md)
 - [x] [RFC-65: Email Verification (Backend)](../../../../../../../rfc/65-email-verification.md)
+- [x] [RFC-76: Admin email-verification actions](../../../../../../../rfc/76-admin-email-verification-actions.md)

@@ -1,6 +1,9 @@
 package ed.unicoach.admin.resources
 
 import ed.unicoach.admin.AdminTestSupport
+import ed.unicoach.db.dao.UsersDao
+import ed.unicoach.db.models.SoftDeleteScope
+import ed.unicoach.db.models.UserId
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -275,6 +278,202 @@ class UsersResourceTest {
         HttpStatusCode.OK,
         client().get("/user") { header(HttpHeaders.Cookie, plainCookie) }.status,
       )
+    }
+
+  @Test
+  fun `unverified active user shows both verification actions enabled`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Unverified User")
+
+      val detail = client().get("/user/${target.id.value}") { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, detail.status)
+      val body = detail.bodyAsText()
+      assertTrue(body.contains("Mark email verified"), "Detail must offer the mark-verified action")
+      assertTrue(body.contains("Send verification email"), "Detail must offer the send-verification action")
+      assertFalse(body.contains("disabled"), "Both action buttons must render enabled")
+      assertFalse(body.contains("Email already verified."), "No already-verified title for an unverified user")
+    }
+
+  @Test
+  fun `mark-verified stamps the column and flips the buttons to disabled`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "To Verify")
+
+      val verify =
+        client().submitForm(url = "/user/${target.id.value}/verify-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.Found, verify.status)
+      assertEquals("/user/${target.id.value}", verify.headers[HttpHeaders.Location])
+
+      val detail = client().get("/user/${target.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      // The "Email Verified" row now carries a non-empty timestamp.
+      assertTrue(
+        Regex("""Email Verified</th>\s*<td>\S+""").containsMatchIn(detail),
+        "Email Verified row must show a non-empty timestamp",
+      )
+      assertTrue(detail.contains("disabled"), "Both buttons must render disabled once verified")
+      assertTrue(detail.contains("Email already verified."), "Disabled buttons carry the already-verified title")
+
+      // The version-history panel carries the new "Email Verified" column, and the
+      // post-verification history row shows the stamped timestamp (audit trail).
+      assertTrue(
+        detail.contains("<th>Email Verified</th>"),
+        "Version history panel must include the Email Verified column",
+      )
+      val reloaded = findUser(target.id)
+      assertTrue(reloaded.emailVerifiedAt != null, "emailVerifiedAt must be stamped in the DB")
+      assertTrue(
+        detail.contains(reloaded.emailVerifiedAt.toString()),
+        "Version history row must show the verification timestamp",
+      )
+    }
+
+  @Test
+  fun `mark-verified is idempotent and bumps the version exactly once`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Idempotent Verify")
+
+      val first =
+        client().submitForm(url = "/user/${target.id.value}/verify-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.Found, first.status)
+      val second =
+        client().submitForm(url = "/user/${target.id.value}/verify-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.Found, second.status)
+
+      val reloaded = findUser(target.id)
+      assertEquals(target.version + 1, reloaded.version, "Version must bump exactly once across two verify POSTs")
+    }
+
+  @Test
+  fun `already-verified user renders disabled buttons with the title`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Pre Verified")
+      runBlocking {
+        AdminTestSupport.database
+          .withConnection { session -> UsersDao.markEmailVerified(session, target.id) }
+          .getOrThrow()
+      }
+
+      val detail = client().get("/user/${target.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(detail.contains("disabled"), "Verified user's buttons must render disabled")
+      assertTrue(detail.contains("Email already verified."), "Disabled buttons carry the already-verified title")
+    }
+
+  @Test
+  fun `soft-deleted user renders disabled verification buttons with the deleted title`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Deleted For Verify")
+
+      client().submitForm(url = "/user/${target.id.value}/delete", formParameters = parameters {}) {
+        header(HttpHeaders.Cookie, cookie)
+      }
+
+      val detail = client().get("/user/${target.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(detail.contains("disabled"), "Soft-deleted user's buttons must render disabled")
+      assertTrue(detail.contains("User is deleted."), "Disabled buttons carry the deleted title")
+    }
+
+  @Test
+  fun `send-verification-email issues an unconsumed token`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Send Token")
+
+      val sent =
+        client().submitForm(url = "/user/${target.id.value}/send-verification-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.Found, sent.status)
+      assertEquals("/user/${target.id.value}", sent.headers[HttpHeaders.Location])
+      assertEquals(1, unconsumedTokenCount(target.id), "A fresh unconsumed verification token must exist")
+    }
+
+  @Test
+  fun `send-verification-email on a verified user is a no-op success`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Verified No Token")
+      runBlocking {
+        AdminTestSupport.database
+          .withConnection { session -> UsersDao.markEmailVerified(session, target.id) }
+          .getOrThrow()
+      }
+
+      val sent =
+        client().submitForm(url = "/user/${target.id.value}/send-verification-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.Found, sent.status)
+      assertEquals(0, unconsumedTokenCount(target.id), "An already-verified user gets no token (resend short-circuits)")
+    }
+
+  @Test
+  fun `forged verification POSTs on a soft-deleted user return 404`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Deleted Forged")
+
+      client().submitForm(url = "/user/${target.id.value}/delete", formParameters = parameters {}) {
+        header(HttpHeaders.Cookie, cookie)
+      }
+
+      val verify =
+        client().submitForm(url = "/user/${target.id.value}/verify-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.NotFound, verify.status, "verify-email on a soft-deleted user must 404")
+
+      val send =
+        client().submitForm(url = "/user/${target.id.value}/send-verification-email", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.NotFound, send.status, "send-verification-email on a soft-deleted user must 404")
+    }
+}
+
+/** Reloads a user (including soft-deleted) directly from the test DB. */
+private fun findUser(id: UserId) =
+  runBlocking {
+    AdminTestSupport.database
+      .withConnection { session -> UsersDao.findById(session, id, SoftDeleteScope.ALL) }
+      .getOrThrow()
+  }
+
+/** Counts unconsumed verification_tokens rows for a user via a direct test-DB query. */
+private fun unconsumedTokenCount(id: UserId): Int {
+  val dbConfig =
+    ed.unicoach.db.DatabaseConfig
+      .from(AdminTestSupport.config)
+      .getOrThrow()
+  val sql = "SELECT COUNT(*) FROM verification_tokens WHERE user_id = ? AND consumed_at IS NULL"
+  return java.sql.DriverManager
+    .getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
+    .use { conn ->
+      conn.prepareStatement(sql).use { stmt ->
+        stmt.setObject(1, id.value)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getInt(1)
+        }
+      }
     }
 }
 

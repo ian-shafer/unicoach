@@ -66,7 +66,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       environment.monitor.subscribe(ApplicationStopped) {
         database.close()
       }
-      adminModule(database, authService, argon2Hasher, adminConfig)
+      adminModule(database, authService, argon2Hasher, emailVerificationService, adminConfig)
     }
 
   server.start(wait = false)
@@ -88,6 +88,7 @@ fun Application.adminModule(
   database: Database,
   authService: AuthService,
   argon2Hasher: Argon2Hasher,
+  emailVerificationService: EmailVerificationService,
   adminConfig: AdminConfig,
 ) {
   configureAdminStatusPages()
@@ -97,7 +98,7 @@ fun Application.adminModule(
   val registry =
     AdminRegistry(
       listOf(
-        UsersResource(argon2Hasher),
+        UsersResource(argon2Hasher, emailVerificationService),
         StudentsResource,
         SessionsResource,
         SystemPromptsResource,

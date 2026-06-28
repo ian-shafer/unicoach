@@ -58,14 +58,20 @@ concern beyond "calling twice emits the markup twice."
 
 - **Behavior**: Emits the heading (with a "deleted" badge when `isDeleted` is
   true), the full field table, the permitted edit/delete/undelete actions, then
-  one panel per resolved `EdgePanel` in the order supplied. A sensitive field's
-  value is shown as a fixed redacted placeholder (`••• (redacted)`), never the
-  underlying value.
+  the descriptor's custom-action buttons, then one panel per resolved
+  `EdgePanel` in the order supplied. A sensitive field's value is shown as a
+  fixed redacted placeholder (`••• (redacted)`), never the underlying value.
 - **Actions**: The "Edit" link appears only when the descriptor exposes an
   `update` handler. The delete action appears only when the descriptor exposes a
   `delete` handler and the row is not deleted; the undelete action appears only
   when the descriptor exposes an `undelete` handler and the row is deleted — the
   two are mutually exclusive for a given row state.
+- **Custom actions**: After the Edit/Delete/Undelete block and before the edge
+  panels, one `actionButton` is emitted per `resource.customActions` entry,
+  posting to `/{slug}/{id}/{action.pathSuffix}`. Each button is rendered
+  enabled-or-disabled per `action.disabledReason(row)`: a null reason yields an
+  enabled button, a non-null reason a disabled button whose `title` carries the
+  reason.
 - **Edge panels**: Each `EdgePanel` variant has a fixed presentation. A
   `ParentLink` renders its summary as a hyperlink to `panel.href`; a
   `ParentAbsent` renders a fixed "(none)" note; a `Table` renders its columns
@@ -80,10 +86,14 @@ concern beyond "calling twice emits the markup twice."
   by the resource; this function performs no edge resolution and no DAO calls.
 - **Side effects**: HTML emission only.
 
-### `FlowContent.actionButton(action, label)` — [`DetailView.kt`](./DetailView.kt)
+### `FlowContent.actionButton(action, label, disabledReason)` — [`DetailView.kt`](./DetailView.kt)
 
 - **Behavior**: Emits a single-button `POST` form to `action`. Used for
-  delete/undelete and embedded-panel nested actions.
+  delete/undelete, embedded-panel nested actions, and descriptor-declared custom
+  actions. The button is enabled iff `disabledReason` is null: when
+  `disabledReason` is non-null the button carries the HTML `disabled` attribute
+  and a `title` set to the reason string; when null the button is enabled and
+  carries neither attribute. `disabledReason` defaults to null.
 - **Side effects**: HTML emission only.
 
 ### `FlowContent.renderForm(action, editableFields, values, version, submitLabel, extra)` — [`FormView.kt`](./FormView.kt)
@@ -161,3 +171,4 @@ concern beyond "calling twice emits the markup twice."
 
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../../../../../../../../rfc/60-admin-website.md)
 - [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
+- [x] [RFC-76: Admin email-verification actions](../../../../../../../../rfc/76-admin-email-verification-actions.md)

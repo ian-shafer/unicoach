@@ -65,6 +65,31 @@ read-then-write blocks.
   owner detail), not detail pages, so the engine's one-detail-URL-per-entity
   rule is preserved.
 
+### `users` email-verification actions
+
+- `users.email_verified_at` MUST surface as a read-only `emailVerifiedAt` field
+  ("Email Verified", `FieldType.TIMESTAMP`, `editable = false`,
+  `sensitive = false`) — it appears in detail/list cells but NEVER in
+  `createExtraInputs` or the edit form, so the generic `UserEdit` update path
+  cannot touch it. It is written only by dedicated verification/change-email DAO
+  paths.
+- `UsersResource` MUST expose two `customActions`, both gated by a single shared
+  predicate `verificationDisabledReason(row)`: it returns
+  `"Email already
+  verified."` when `emailVerifiedAt != null`,
+  `"User is deleted."` when `deletedAt != null`, else `null`. The buttons render
+  enabled iff it returns `null` (an active, unverified user). This predicate
+  MUST be the single source of truth gating both actions.
+  - **Mark email verified** (`verify-email`) → `POST /user/{id}/verify-email`.
+  - **Send verification email** (`send-verification-email`) →
+    `POST /user/{id}/send-verification-email`.
+- Both routes MUST parse the id (redirecting to `/user` on a bad id) and run
+  under the engine's gated route scope. `verify-email` MUST delegate to
+  `UsersDao.markEmailVerified`; `send-verification-email` MUST load the user at
+  `SoftDeleteScope.ACTIVE` (so a soft-deleted user yields `NotFoundException` →
+  404, rejecting a forged POST) and then call `EmailVerificationService.resend`.
+  These paths MUST NEVER construct SQL or bypass the typed DAO/service.
+
 ### Sensitive columns
 
 - `users.password_hash` and `sessions.token_hash` MUST be declared
@@ -137,7 +162,9 @@ read-then-write blocks.
 - The `user` detail page MUST declare exactly three edges: an `Embedded`
   `students` panel, a `HasMany` `sessions` table, and a `History` panel for
   `users_versions`. The embedded `students` panel MUST itself nest a `History`
-  panel for `students_versions`.
+  panel for `students_versions`. The `users_versions` history table surfaces an
+  `Email Verified` column (each row emits `emailVerifiedAt?.toString()` or empty
+  when null) alongside `Version`/`Email`/`Name`/`Admin`/`Updated`/`Deleted`.
 - The `HasMany` `sessions` rows MUST link to the canonical `/session/{id}`
   detail path. They MUST NEVER link to a nested `/user/{id}/session/{id}` path.
 - The `session` detail page MUST declare a `Parent` edge back to its owner. When
@@ -182,10 +209,43 @@ read-then-write blocks.
   restore. Idempotent: no.
 - **resolveEdges** — builds the embedded student panel, a sessions table (via
   the per-user sessions list DAO), and a `users_versions` history table (via the
-  user-versions DAO). Side effects: DB reads only. Errors: any DAO fault →
-  failed `Result`. Idempotent: yes.
+  user-versions DAO) whose columns include `Email Verified` (emitting each
+  version's `emailVerifiedAt?.toString()` or empty). Side effects: DB reads
+  only. Errors: any DAO fault → failed `Result`. Idempotent: yes.
+- **customActions** — two entries, both gated by the shared
+  `verificationDisabledReason` predicate (enabled only for an active, unverified
+  user): "Mark email verified" (`verify-email`) and "Send verification email"
+  (`send-verification-email`).
 - **registerExtraRoutes** — registers the three owner-nested `students` action
-  endpoints (below) under the engine's gated route scope.
+  endpoints plus the two email-verification action endpoints (all below) under
+  the engine's gated route scope.
+
+### `users` email-verification actions (registered by `UsersResource`)
+
+- **`POST /user/{id}/verify-email`** — parses the id (bad id → redirect to
+  `/user`), then `UsersDao.markEmailVerified(session, id)` on a `withConnection`
+  session. Side effects: a versioned conditional update stamping
+  `email_verified_at = NOW()` and bumping `version` while it is still NULL on an
+  active row. On an already-verified active user the DAO returns the row
+  unchanged (no second version bump) — **idempotent**. Errors:
+  `NotFoundException` → 404 only when the user is absent or soft-deleted
+  (`deleted_at IS NULL` guard); other DAO fault → rendered DAO-error page. On
+  success: redirect to `/user/{id}`.
+- **`POST /user/{id}/send-verification-email`** — parses the id (bad id →
+  redirect to `/user`), loads the user via
+  `UsersDao.findById(session, id, SoftDeleteScope.ACTIVE)` (a soft-deleted user
+  yields `NotFoundException` → 404), then calls
+  `EmailVerificationService.resend(user)`. `resend` returns `ResendResult.Sent`
+  or `ResendResult.AlreadyVerified` — both are `Result.success` and redirect to
+  `/user/{id}`; a DB fault during token issuance → rendered DAO-error page. The
+  outer/inner `fold` is nested (not flattened via `mapCatching`) because
+  `resend` is a `suspend` call that opens its own connection. Side effects: an
+  already-verified user is a no-op; otherwise outstanding verification tokens
+  are consumed and a fresh one issued in `resend`'s own transaction, then the
+  email is sent best-effort post-commit. Delivery is best-effort: a send failure
+  is swallowed/logged upstream, so a successful action reports that a token was
+  issued, not that mail was delivered. Idempotent: no (a fresh token is issued
+  each call for an unverified user).
 
 ### Owner-nested `students` actions (registered by `UsersResource`)
 
@@ -273,12 +333,13 @@ ever served, so `body` is never re-editable. No edges.
 ## IV. Infrastructure & Environment
 
 - No descriptor in this directory reads environment variables or config keys
-  directly. The `users` create path depends on an `Argon2Hasher` supplied by
-  constructor injection into `UsersResource`; `StudentsResource`,
-  `SessionsResource`, and `SystemPromptsResource` are stateless `object`s. All
-  DB access is via the injected `Database`. Module-level config (bind host,
-  cookie, session expiry) lives in `admin-server.conf` / `AdminConfig`, outside
-  this directory.
+  directly. `UsersResource` takes two constructor-injected collaborators: an
+  `Argon2Hasher` (used by the create path) and an `EmailVerificationService`
+  (used by the `send-verification-email` action to resend a verification token).
+  `StudentsResource`, `SessionsResource`, and `SystemPromptsResource` are
+  stateless `object`s. All DB access is via the injected `Database`.
+  Module-level config (bind host, cookie, session expiry) lives in
+  `admin-server.conf` / `AdminConfig`, outside this directory.
 
 ## V. History
 
@@ -305,3 +366,12 @@ ever served, so `body` is never re-editable. No edges.
       now hashes the password into a `PasswordHash` and sets
       `NewUser.passwordHash` directly instead of wrapping it in
       `AuthMethod.Password`.
+- [x] [RFC-76: Admin Email-Verification Actions](../../../../../../../../rfc/76-admin-email-verification-actions.md)
+      — Added a read-only `emailVerifiedAt` field/cell (and an `Email Verified`
+      column on the `users_versions` history panel), injected an
+      `EmailVerificationService` into `UsersResource`, and added two
+      `customActions` gated by the shared `verificationDisabledReason` predicate
+      (active, unverified user only): `POST /user/{id}/verify-email` (idempotent
+      `UsersDao.markEmailVerified`) and
+      `POST /user/{id}/send-verification-email` (loads the active user, then
+      `EmailVerificationService.resend`, best-effort delivery).
