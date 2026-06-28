@@ -92,6 +92,24 @@ class StudentsResourceTest {
     }
 
   @Test
+  fun `Conversations panel compacts the convo ID column`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      // No observation or extraction run: the convo id appears compacted in exactly one
+      // place — the Conversations panel — so the assertion is unambiguous.
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val convoId = convo.id.value.toString()
+
+      val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+
+      assertTrue(body.contains("Conversations"), "Conversations panel must render")
+      AdminTestSupport.assertCompactUuid(body, convoId, "/convo/$convoId")
+    }
+
+  @Test
   fun `user page renders the three coaching-memory panels each linking to canonical detail URLs`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

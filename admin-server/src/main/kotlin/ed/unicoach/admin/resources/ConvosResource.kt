@@ -40,8 +40,8 @@ object ConvosResource : AdminResource<ConvoWithActivity, ConvoId> {
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "convo"),
-      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
+      AdminField("id", "ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "convo"),
+      AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
       AdminField("name", "Name", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("lastActivityAt", "Last Activity", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
@@ -115,6 +115,7 @@ object ConvosResource : AdminResource<ConvoWithActivity, ConvoId> {
   private fun turnsPanel(turns: List<ConvoTurn>): EdgePanel.Table {
     val columns =
       listOf(
+        // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
         EdgePanel.Table.Column("Request", refSlug = "convo-request"),
         EdgePanel.Table.Column("Sent", FieldType.TIMESTAMP),
         EdgePanel.Table.Column("Model"),

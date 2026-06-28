@@ -56,6 +56,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import java.sql.DriverManager
 import java.time.Instant
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Shared scaffolding for admin-server tests: a real test-DB-backed Database,
@@ -367,4 +369,27 @@ object AdminTestSupport {
   fun cookieHeader(token: String): String = "${adminConfig.cookieName}=$token"
 
   fun uniqueEmail(): String = "admin-test-${java.util.UUID.randomUUID()}@example.com"
+
+  /**
+   * Asserts that [body] renders [value] as a compacted `FieldType.UUID` cell: the
+   * visible text is an ellipsis plus the last [AdminDisplay.idTailChars]
+   * characters, the full value stays reachable through the span
+   * `title` and the copy button's `data-full`, and the raw UUID never appears as
+   * visible cell text (`>$value<`). When [refPath] is non-null, the cell's `refSlug`
+   * navigation glyph href must also be present.
+   */
+  fun assertCompactUuid(
+    body: String,
+    value: String,
+    refPath: String? = null,
+  ) {
+    val tail = adminConfig.display.idTailChars
+    assertTrue(body.contains("…${value.takeLast(tail)}"), "[$value] must compact to ellipsis + tail")
+    assertTrue(body.contains("title=\"$value\""), "[$value] must carry the full value as a hover title")
+    assertTrue(body.contains("data-full=\"$value\""), "[$value] must emit an id-copy button carrying the full value")
+    if (refPath != null) {
+      assertTrue(body.contains(refPath), "[$value] must keep its refSlug href [$refPath]")
+    }
+    assertFalse(body.contains(">$value<"), "The raw UUID [$value] must not render as visible cell text")
+  }
 }

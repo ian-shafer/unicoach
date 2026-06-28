@@ -330,18 +330,19 @@ read-then-write blocks.
   SoftDeleteScope.ALL, STUDENT_PANEL_LIMIT, 0)`;
   the coaching-memory panels call
   `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)`. The Conversations panel
-  columns are: ID (`refSlug = "convo"`), Name, Last Activity (TIMESTAMP),
-  Created (TIMESTAMP), Archived (TIMESTAMP), Deleted (TIMESTAMP) — the panel
-  predates `FieldType.UUID`, so its id renders full-width with a link glyph
-  rather than compacted. The claims panel's id column is `FieldType.UUID`; the
-  observations and extraction-runs panels' id columns are `FieldType.TEXT`
-  (BIGINT). The `convoId` column in the observations panel is `FieldType.UUID`
-  with `refSlug = "convo"`. When a fetched page fills to `STUDENT_PANEL_LIMIT`,
-  the shared `truncationRow` helper appends one cells-only "Showing first 50 —
-  see /{slug} for full list" row (no per-row href — RFC 79 removed row-level
-  hrefs). Side effects: DB reads only. Returns a "no profile yet" panel on
-  `NotFoundException`; propagates any other DAO fault (including a fault on any
-  of the four nested panel loads) as a failed `Result`. Idempotent: yes.
+  columns are: ID (`FieldType.UUID`, `refSlug = "convo"`), Name, Last Activity
+  (TIMESTAMP), Created (TIMESTAMP), Archived (TIMESTAMP), Deleted (TIMESTAMP) —
+  the id compacts to an ellipsis plus the last `idTailChars` characters with a
+  `/convo/{id}` navigation glyph. The claims panel's id column is
+  `FieldType.UUID`; the observations and extraction-runs panels' id columns are
+  `FieldType.TEXT` (BIGINT). The `convoId` column in the observations panel is
+  `FieldType.UUID` with `refSlug = "convo"`. When a fetched page fills to
+  `STUDENT_PANEL_LIMIT`, the shared `truncationRow` helper appends one
+  cells-only "Showing first 50 — see /{slug} for full list" row (no per-row href
+  — RFC 79 removed row-level hrefs). Side effects: DB reads only. Returns a "no
+  profile yet" panel on `NotFoundException`; propagates any other DAO fault
+  (including a fault on any of the four nested panel loads) as a failed
+  `Result`. Idempotent: yes.
 - **`STUDENT_PANEL_LIMIT`** — package-private constant `50`, the per-panel row
   cap for the nested coaching-memory tables, mirroring the sessions panel's
   limit. A student with more memory shows the first page only; full enumeration
@@ -398,7 +399,7 @@ re-editable. No edges.
 `slug = "convo"`, `title = "Conversations"`, `kind = AdminKind.ENTITY`. ROW type
 is `ConvoWithActivity` (the convo row plus derived `lastActivityAt`). `parseId`
 accepts a UUID into `ConvoId`. Fields (declaration order = detail-row order):
-`id` (TEXT, `refSlug = "convo"`), `studentId` (TEXT, `refSlug = "student"`),
+`id` (UUID, `refSlug = "convo"`), `studentId` (UUID, `refSlug = "student"`),
 `name` (TEXT), `lastActivityAt` (TIMESTAMP), `createdAt` (TIMESTAMP),
 `updatedAt` (TIMESTAMP, `inList = false`), `archivedAt` (TIMESTAMP), `deletedAt`
 (TIMESTAMP). No field is `sensitive`. One `HasMany` edge, "Turns" (targeting
@@ -431,20 +432,19 @@ is `ConvoTurn` (the request paired with its optional 1:1 response). `parseId`
 accepts a numeric id via `toLongOrNull()` into `ConvoRequestId`. No edges.
 
 Fields (list columns marked `inList = true` by default; `inList = false` for
-detail-only): `id` (TEXT, `refSlug = "convo-request"`), `convoId` (TEXT,
-`refSlug
-= "convo"`), `createdAt` ("Sent", TIMESTAMP), `provider` (TEXT),
-`modelRequested` (TEXT), `systemPromptId` (TEXT, `inList = false`,
-`refSlug = "system-prompt"`), `requestParams` (JSON, `inList = false`),
-`content` (JSON, `inList = false`), `responseStopReason` (TEXT),
-`responseModelResolved` (TEXT, `inList = false`), `responseInputTokens` (INT),
-`responseOutputTokens` (INT), `responseCacheReadTokens` (INT, `inList = false`),
-`responseCacheWriteTokens` (INT, `inList = false`), `responseLatencyMs` (INT,
-`inList = false`), `responseProviderRequestId` (TEXT, `inList = false`),
-`responseContent` (JSON, `inList = false`), `responseCreatedAt` ("Replied",
-TIMESTAMP, `inList = false`). Response fields are blank when
-`row.response == null`; nullable sub-fields on a present response also blank via
-`?.toString() ?: ""`. No `sensitive` column.
+detail-only): `id` (TEXT, `refSlug = "convo-request"` — BIGINT primary key,
+intentionally stays `FieldType.TEXT`), `convoId` (UUID, `refSlug = "convo"`),
+`createdAt` ("Sent", TIMESTAMP), `provider` (TEXT), `modelRequested` (TEXT),
+`systemPromptId` (UUID, `inList = false`, `refSlug = "system-prompt"`),
+`requestParams` (JSON, `inList = false`), `content` (JSON, `inList = false`),
+`responseStopReason` (TEXT), `responseModelResolved` (TEXT, `inList = false`),
+`responseInputTokens` (INT), `responseOutputTokens` (INT),
+`responseCacheReadTokens` (INT, `inList = false`), `responseCacheWriteTokens`
+(INT, `inList = false`), `responseLatencyMs` (INT, `inList = false`),
+`responseProviderRequestId` (TEXT, `inList = false`), `responseContent` (JSON,
+`inList = false`), `responseCreatedAt` ("Replied", TIMESTAMP, `inList = false`).
+Response fields are blank when `row.response == null`; nullable sub-fields on a
+present response also blank via `?.toString() ?: ""`. No `sensitive` column.
 
 - **list** — reads via `ConvosDao.listTurns(session, scope, limit, offset)` (the
   global overload, not per-convo) inside `db.withConnection`. Side effects: DB
@@ -727,3 +727,13 @@ column is `sensitive`. One `History` edge ("Version history").
       `StudentsResource.buildPanel` propagates UUID types into each
       `EdgePanel.LabeledCell` automatically because it copies `field.type` from
       the descriptor — no separate edit needed for the embedded student panel.
+- [x] [RFC-85: Compact id display in the admin conversation views](../../../../../../../../rfc/85-admin-conversation-compact-id-display.md)
+      — Flipped the UUID-valued id columns in the three conversation views that
+      predated `FieldType.UUID`: `ConvosResource.id` and
+      `ConvosResource.studentId` (TEXT → UUID); `ConvoRequestsResource.convoId`
+      and `ConvoRequestsResource.systemPromptId` (TEXT → UUID, leaving `id` as
+      `FieldType.TEXT` — it is the BIGINT `convo_requests.id` primary key);
+      `StudentsResource.buildConversationsPanel` Conversations panel `"ID"`
+      column (TEXT → UUID, gaining compaction while preserving its
+      `refSlug = "convo"` navigation glyph). No route, render-layer, engine, or
+      schema change.

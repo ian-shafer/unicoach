@@ -68,6 +68,24 @@ class ConvosResourceTest {
     }
 
   @Test
+  fun `GET convo id compacts the id and studentId UUID fields`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val seeded = seedConvoWithTurn("Compact convo ${UUID.randomUUID()}")
+
+      val detail = client().get("/convo/${seeded.convoId}") { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, detail.status)
+      val body = detail.bodyAsText()
+
+      // id (refSlug "convo") and studentId (refSlug "student") are now FieldType.UUID:
+      // each compacts to ellipsis + last 8 chars while keeping the full value reachable
+      // and its navigation glyph intact.
+      AdminTestSupport.assertCompactUuid(body, seeded.convoId, "/convo/${seeded.convoId}")
+      AdminTestSupport.assertCompactUuid(body, seeded.studentId, "/student/${seeded.studentId}")
+    }
+
+  @Test
   fun `GET convo id renders fields and turns panel`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

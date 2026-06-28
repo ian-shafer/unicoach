@@ -34,15 +34,17 @@ object ConvoRequestsResource : AdminResource<ConvoTurn, ConvoRequestId> {
 
   override val fields =
     listOf(
+      // `convo_requests.id` is the BIGINT GENERATED ALWAYS AS IDENTITY primary key (not a UUID),
+      // so it stays FieldType.TEXT and renders raw rather than compacting like the UUID siblings.
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "convo-request"),
-      AdminField("convoId", "Convo", FieldType.TEXT, editable = false, sensitive = false, refSlug = "convo"),
+      AdminField("convoId", "Convo", FieldType.UUID, editable = false, sensitive = false, refSlug = "convo"),
       AdminField("createdAt", "Sent", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("provider", "Provider", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("modelRequested", "Model Requested", FieldType.TEXT, editable = false, sensitive = false),
       AdminField(
         "systemPromptId",
         "System Prompt",
-        FieldType.TEXT,
+        FieldType.UUID,
         editable = false,
         sensitive = false,
         inList = false,

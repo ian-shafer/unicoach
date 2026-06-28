@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ConvoRequestsResourceTest {
@@ -146,6 +147,34 @@ class ConvoRequestsResourceTest {
       val body = client().get("/convo-request/${turn.requestId}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
       assertTrue(body.contains("/convo/${turn.convoId}"), "convoId must link to /convo/{id}")
       assertTrue(body.contains("/system-prompt/"), "systemPromptId must link to /system-prompt/{id}")
+    }
+
+  @Test
+  fun `GET convo-request id compacts convoId and systemPromptId but leaves the BIGINT id raw`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val convoId = req.convoId.value.toString()
+      val systemPromptId = req.systemPromptId.value.toString()
+      val requestId = req.id.value.toString()
+
+      val detail = client().get("/convo-request/$requestId") { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, detail.status)
+      val body = detail.bodyAsText()
+
+      // convoId (refSlug "convo") and systemPromptId (refSlug "system-prompt") are now
+      // FieldType.UUID: each compacts and keeps its navigation href.
+      AdminTestSupport.assertCompactUuid(body, convoId, "/convo/$convoId")
+      AdminTestSupport.assertCompactUuid(body, systemPromptId, "/system-prompt/$systemPromptId")
+
+      // The BIGINT primary key stays FieldType.TEXT: rendered raw with no copy button.
+      // This is the regression guard that the BIGINT column was not flipped to UUID.
+      assertTrue(body.contains(requestId), "The BIGINT request id must render raw")
+      assertFalse(body.contains("data-full=\"$requestId\""), "The BIGINT TEXT id must not emit a copy button")
     }
 
   @Test

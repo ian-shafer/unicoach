@@ -234,7 +234,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
         }.getOrElse { return Result.failure(it) }
     val columns =
       listOf(
-        EdgePanel.Table.Column("ID", refSlug = "convo"),
+        EdgePanel.Table.Column("ID", FieldType.UUID, refSlug = "convo"),
         EdgePanel.Table.Column("Name"),
         EdgePanel.Table.Column("Last Activity", FieldType.TIMESTAMP),
         EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
