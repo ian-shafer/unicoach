@@ -76,14 +76,8 @@ class UsersResourceTest {
       // ref-link glyph. The value text must NOT be wrapped in its own <a>; the full
       // id stays reachable via the title, the copy button, and the glyph href.
       val fullId = target.id.value.toString()
-      assertTrue(
-        listBody.contains("<span title=\"$fullId\">…${fullId.takeLast(8)}</span>"),
-        "The id cell must render the compacted value in a titled span",
-      )
-      assertTrue(
-        listBody.contains("class=\"id-copy\" data-full=\"$fullId\""),
-        "The id cell must render a copy button carrying the full id",
-      )
+      // users.id carries a refSlug, so the compacted cell also exposes the glyph href.
+      AdminTestSupport.assertCompactUuid(listBody, fullId, "/user/$fullId")
       assertTrue(
         listBody.contains("<a href=\"/user/$fullId\" class=\"id-link\">🔗</a>"),
         "The id cell must render the glyph link after the compacted value",
