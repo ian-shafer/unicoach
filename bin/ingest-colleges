@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 ingest-colleges <institution.csv> <fields.csv>
 
@@ -21,20 +16,20 @@ Run inside the nix dev shell (the JVM lives there):
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -ne 2 ]; then
-  help "ingest-colleges requires exactly two arguments: <institution.csv> <fields.csv>"
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges requires exactly two arguments: <institution.csv> <fields.csv>"
 fi
 
 # Absolutize the CSV paths: the :college:run task executes with the module
@@ -46,4 +41,4 @@ FIELDS_CSV="$(realpath "$2")" || fatal "fields CSV not found: [$2]"
 # Gradle word-splits the --args value on whitespace using its own shell-like
 # parser, so each CSV path is single-quoted to survive a path containing spaces:
 # each path then arrives at IngestApplication as exactly one argument.
-exec "$PROJECT_ROOT/gradlew" :college:run --args="'$INSTITUTION_CSV' '$FIELDS_CSV'"
+"$PROJECT_ROOT/gradlew" :college:run --args="'$INSTITUTION_CSV' '$FIELDS_CSV'"

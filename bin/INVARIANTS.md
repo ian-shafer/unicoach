@@ -46,6 +46,29 @@ non-zero exit code per reason, documented in its `help()`.
 **Why:** A calling script distinguishes _why_ a dependency failed only by the
 code. Collapsing all failures to `1` makes that branch impossible.
 
+### Usage errors use the reserved 10–29 exit-code band
+
+**Rule:** A usage error (the caller invoked the script wrongly) MUST exit with
+the band code for its category, leaving 1–9 for operational/runtime outcomes:
+`10` unknown option, `11` option missing its value, `20` unexpected argument,
+`21` missing required argument, `22` invalid argument value, `23`
+mutually-exclusive options. The codes are the named constants
+`EXIT_UNKNOWN_OPTION`, `EXIT_OPTION_REQUIRES_VALUE`, `EXIT_UNEXPECTED_ARG`,
+`EXIT_MISSING_REQUIRED_ARG`, `EXIT_INVALID_ARG_VALUE`, `EXIT_EXCLUSIVE_OPTIONS`,
+defined in `bin/functions` and overridable from `.env` (for every script that
+sources `bin/common`; `is-nix`, functions-only, uses the defaults). An
+operational/runtime outcome MUST NOT use a 10–29 code. `bin/functions`' own
+internal `fatal -s` parse guard is exempt (a library primitive, not a CLI
+surface).
+
+**Why:** A caller distinguishes "you typed it wrong" from "the system said no"
+only by the code. Reusing `1` for a usage error collapses it into operational
+failures — a stray argument to `postgres-check` reads as "postgres down", to
+`is-nix` as "not in the dev shell" — silently, since both are consumed in `if`
+guards with stderr suppressed. A reserved band keeps the two classes disjoint;
+the converse — an operational outcome in 10–29 — is equally forbidden, which is
+why `file-lock`'s matching-op fast-fail uses the operational code `3`.
+
 ### Port-liveness probe via pure-bash `/dev/tcp`
 
 **Rule:** A script determining whether a TCP port is served MUST probe with
@@ -55,6 +78,74 @@ probe for this.
 **Why:** `nc -z` reports bound ports as closed on BSD/macOS (false negative),
 and a `curl` probe misses a non-HTTP listener. The `/dev/tcp` connect is
 occupant-agnostic, dependency-free, and refuses instantly on a closed port.
+
+### `exec <command>` and `"$@"`/`"$*"` child-forwarding are forbidden
+
+**Rule:** A script MUST NOT replace its process with `exec <command>`, and MUST
+NOT pass `"$@"`, `"$*"`, `"${@}"`, or unquoted `$@`/`$*` as the argument vector
+of an invoked command. A script delegates by invoking the target as an ordinary
+child with explicit arguments it chose: fixed literals, parsed `getopts`
+options, or a named array assembled from the script's OWN parsed options and
+literals — never a verbatim `("$@")` capture of the caller's argv handed onward
+as a child's argument vector. (Interpolating `"$*"` into a single diagnostic
+_string_ — e.g. `fatal -s "$EXIT_UNEXPECTED_ARG" "… : $*"` — is not forwarding;
+the command receives one argument it named. A script's own positional args used
+for its own logic — e.g. `q-status`'s `types=("$@")`, a filter list it consumes
+itself — are likewise not a child-forward.) The only exceptions, permitted by
+name:
+
+- **TCP-liveness redirection** — `exec 3<>/dev/tcp/127.0.0.1/$PORT` (no command
+  word; opens a probe descriptor, does not replace the process) in `check-port`
+  and `test-fuzz`, mandated by the port-liveness rule above. _[standing]_
+- **Variadic diagnostic primitives** — `bin/functions`' `log-info` /
+  `log-warning` / `log-error` (`echo "$@"`) and `fatal` (`echo "[FATAL] $*"`),
+  which join the script's own message onto stderr, never to a delegated program.
+- **Irreducible caller-command capture** — `daemon-up`, `daemon-bounce`,
+  `wait-for`, `tests-common`, `ios-scripts-tests`: the script executes, polls,
+  or asserts an arbitrary caller-supplied _command_ it cannot name, so its
+  `"$@"` is that command, not a delegated program's options.
+  `ios-scripts-tests`' `run_*` helpers forward an arbitrary caller-supplied
+  command/args to the iOS-build SUT (`build-ios`, `install-ios`, `release-ios`,
+  `is-nix`), the same harness-forwards-to-SUT shape as `tests-common`. (Its
+  `for a in "$@"; do echo "$a"; done` lines are bodies of the generated
+  `xcodebuild`/`xcrun` test stubs written via heredoc — generated stub source
+  whose `$@` resolves when the stub runs, not `ios-scripts-tests`' own argv
+  forward.)
+- **Thin third-party-CLI fronts** — `infra-apply`, `infra-plan`, `infra-init`,
+  `infra-output`, `infra-bootstrap`: each `exec tofu -chdir=… "$@"`, a
+  single-target front contributing only `-chdir` and forwarding the caller's
+  `tofu` arguments opaquely. A wrapper over an in-repo sibling owns that
+  sibling's grammar and MUST name the arguments instead; this exception is for a
+  third-party CLI whose grammar is not ours to re-encode.
+
+**Why:** `exec` and an opaque `"$@"` make a script an unbounded conduit, so its
+real behaviour is whatever the caller and the underlying tool negotiate, not
+what the script documents. Naming every argument keeps behaviour bounded by the
+declared interface and rejects the rest, which is the only way a wrapper can
+carry a contract distinct from the tool it fronts. The exceptions are the cases
+where the forwarded tokens are not a bounded delegation at all (the redirection;
+the message primitives) or _are_ the script's irreducible purpose (running a
+caller's command; fronting a third-party CLI) — each enumerated so the boundary
+is explicit, not discovered by `grep`.
+
+### Operational scripts reject unexpected arguments
+
+**Rule:** An operational `bin/` script MUST reject any argument outside its
+declared grammar — a positional beyond the count it consumes, or an unknown
+option — with a non-zero exit from the usage-error band (rule above), never
+silently ignore it. A script that takes no positional MUST error on the first
+one; a script that takes a fixed count MUST error on a surplus one. This binds
+the operational CLIs (lifecycle, db, queue, build, health), not the test
+harnesses (`*-tests`, `tests-common`, `ios-scripts-tests`) or the
+`bin/functions` / `bin/common` libraries. Scripts whose grammar is an open-ended
+caller command or list — `daemon-up`, `daemon-bounce`, `wait-for`, `db-run`'s
+trailing SQL, `q-status`'s filter list — have no "surplus" to reject and are
+exempt.
+
+**Why:** A silently-ignored argument means the script did something other than
+what the caller wrote, with no signal. Rejecting it turns a typo or a stale flag
+(e.g. a former `psql` passthrough) into an immediate, diagnosable failure
+instead of a wrong-but-green run.
 
 ### Daemon `-up` boots a pre-built binary or fatals
 
@@ -108,3 +199,4 @@ cannot run until one admin exists to bootstrap it.
 - [x] [RFC-55: Cluster-Lifecycle-Agnostic DB Scripts](../rfc/55-cluster-lifecycle-agnostic-db-scripts.md)
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../rfc/60-admin-website.md)
 - [x] [RFC-61: Public Web Module (Dynamic HTML via Shared Layout)](../rfc/61-static-marketing-site.md)
+- [x] [RFC-80: bin/ exec and argument-passthrough discipline](../rfc/80-bin-exec-passthrough-discipline.md)

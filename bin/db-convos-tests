@@ -28,7 +28,7 @@ run_test_sql_ta() {
     echo "BEGIN;"
     cat
     echo "ROLLBACK;"
-  ) | bin/db-run rw -tA 2>&1
+  ) | bin/db-run -r rw 2>&1
 }
 
 # --- fixture --------------------------------------------------------------
@@ -45,12 +45,12 @@ echo "INSERT INTO users (email, name, password_hash)
   | bin/db-run rw >/dev/null
 
 USER_ID=$(echo "SELECT id FROM users WHERE email = 'convos-fixture@example.com';" \
-  | bin/db-query -tA | grep -E '^[0-9a-f-]{36}$')
+  | bin/db-query -r | grep -E '^[0-9a-f-]{36}$')
 
 STUDENT_ID=$(
   echo "INSERT INTO students (user_id, expected_high_school_graduation_year)
         VALUES ('$USER_ID', 2030)
-        RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9a-f-]{36}$'
+        RETURNING id;" | bin/db-run -r rw | grep -E '^[0-9a-f-]{36}$'
 )
 
 if [ -z "$STUDENT_ID" ]; then
@@ -62,7 +62,7 @@ pass_test "fixture user + student created (student_id=$STUDENT_ID)"
 # a real convo_id. Likewise a committed request/response for response/raw cases.
 CONVO_ID=$(
   echo "INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Fixture convo') RETURNING id;" \
-    | bin/db-run rw -tA | grep -E '^[0-9a-f-]{36}$'
+    | bin/db-run -r rw | grep -E '^[0-9a-f-]{36}$'
 )
 if [ -z "$CONVO_ID" ]; then
   fail_test "fixture: could not create convo row"
@@ -78,7 +78,7 @@ pass_test "fixture convo created (convo_id=$CONVO_ID)"
 SYSTEM_PROMPT_ID=$(
   echo "INSERT INTO system_prompts (name, version, body)
         VALUES ('convos-fixture-prompt', 'v1', 'You are a helpful coach.')
-        RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9a-f-]{36}$'
+        RETURNING id;" | bin/db-run -r rw | grep -E '^[0-9a-f-]{36}$'
 )
 if [ -z "$SYSTEM_PROMPT_ID" ]; then
   fail_test "fixture: could not create system_prompts row"
@@ -88,7 +88,7 @@ pass_test "fixture system_prompt created (system_prompt_id=$SYSTEM_PROMPT_ID)"
 REQUEST_ID=$(
   echo "INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
         VALUES ('$CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{\"text\":\"hi\"}'::jsonb)
-        RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9]+$'
+        RETURNING id;" | bin/db-run -r rw | grep -E '^[0-9]+$'
 )
 if [ -z "$REQUEST_ID" ]; then
   fail_test "fixture: could not create convo_requests row"
@@ -98,7 +98,7 @@ pass_test "fixture convo_request created (request_id=$REQUEST_ID)"
 RESPONSE_ID=$(
   echo "INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
         VALUES ($REQUEST_ID, '$CONVO_ID', '{\"text\":\"hello\"}'::jsonb, 'claude-opus-4-8', 'end_turn')
-        RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9]+$'
+        RETURNING id;" | bin/db-run -r rw | grep -E '^[0-9]+$'
 )
 if [ -z "$RESPONSE_ID" ]; then
   fail_test "fixture: could not create convo_responses row"
@@ -112,17 +112,17 @@ pass_test "fixture convo_response created (response_id=$RESPONSE_ID)"
 # the survival check cannot share one psql invocation.
 CASCADE_CONVO_ID=$(
   echo "INSERT INTO convos (student_id, name) VALUES ('$STUDENT_ID', 'Cascade convo') RETURNING id;" \
-    | bin/db-run rw -tA | grep -E '^[0-9a-f-]{36}$'
+    | bin/db-run -r rw | grep -E '^[0-9a-f-]{36}$'
 )
 CASCADE_REQUEST_ID=$(
   echo "INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
         VALUES ('$CASCADE_CONVO_ID', 'anthropic', 'claude-opus-4-8', '$SYSTEM_PROMPT_ID', '{}'::jsonb)
-        RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9]+$'
+        RETURNING id;" | bin/db-run -r rw | grep -E '^[0-9]+$'
 )
 CASCADE_RESPONSE_ID=$(
   echo "INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
         VALUES ($CASCADE_REQUEST_ID, '$CASCADE_CONVO_ID', '{}'::jsonb, 'claude-opus-4-8', 'end_turn')
-        RETURNING id;" | bin/db-run rw -tA | grep -E '^[0-9]+$'
+        RETURNING id;" | bin/db-run -r rw | grep -E '^[0-9]+$'
 )
 echo "INSERT INTO convo_responses_raw (response_id, payload) VALUES ($CASCADE_RESPONSE_ID, '{}'::jsonb);" \
   | bin/db-run rw >/dev/null
@@ -958,14 +958,14 @@ echo "==== Function existence ===="
 
 test_prevent_log_update_exists() {
   local out
-  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_log_update';" | bin/db-query -tA 2>&1)
+  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_log_update';" | bin/db-query -r 2>&1)
   echo "$out" | grep -q '^1$' || { echo "output was: $out"; return 1; }
 }
 assert_success "function: prevent_log_update() exists after migration" test_prevent_log_update_exists
 
 test_prevent_log_delete_exists() {
   local out
-  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_log_delete';" | bin/db-query -tA 2>&1)
+  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_log_delete';" | bin/db-query -r 2>&1)
   echo "$out" | grep -q '^1$' || { echo "output was: $out"; return 1; }
 }
 assert_success "function: prevent_log_delete() exists after migration" test_prevent_log_delete_exists
@@ -993,7 +993,7 @@ EOF
            (SELECT count(*) FROM convo_requests WHERE id = $CASCADE_REQUEST_ID)::text || '|' ||
            (SELECT count(*) FROM convo_responses WHERE id = $CASCADE_RESPONSE_ID)::text || '|' ||
            (SELECT count(*) FROM convo_responses_raw WHERE response_id = $CASCADE_RESPONSE_ID)::text;" \
-    | bin/db-query -tA 2>&1)
+    | bin/db-query -r 2>&1)
   echo "$survive_out" | grep -q '^1|1|1|1$' || { echo "output was: $survive_out"; return 1; }
 }
 assert_success "cascade: physical DELETE FROM convos rejected, subtree intact (inert)" test_cascade_inert_on_convos_delete

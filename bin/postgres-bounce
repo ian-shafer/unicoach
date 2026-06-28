@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
 
-"$PROJECT_ROOT/bin/postgres-down" "$@"
-exec "$PROJECT_ROOT/bin/postgres-up"
+[ "$#" -gt 0 ] && fatal -s "$EXIT_UNEXPECTED_ARG" "postgres-bounce accepts no arguments: $*"
+
+"$PROJECT_ROOT/bin/postgres-down"
+"$PROJECT_ROOT/bin/postgres-up"

@@ -12,8 +12,8 @@ EOF
 while getopts ":h" opt; do
   case "$opt" in
   h) help; exit 0 ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))

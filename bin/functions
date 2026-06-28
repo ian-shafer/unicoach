@@ -1,3 +1,14 @@
+# Usage-error exit-code band (10-29), reserved for "the caller invoked the
+# script wrongly" and kept clear of the 1-9 range used for operational/runtime
+# outcomes. Each is assigned only if unset, so an .env entry sourced after this
+# file overrides it (bin/common sources functions first, then .env).
+: "${EXIT_UNKNOWN_OPTION:=10}"          # getopts '?'  -- an option the script does not define
+: "${EXIT_OPTION_REQUIRES_VALUE:=11}"   # getopts ':'  -- a defined option given without its value
+: "${EXIT_UNEXPECTED_ARG:=20}"          # a positional beyond the declared grammar (surplus / stray)
+: "${EXIT_MISSING_REQUIRED_ARG:=21}"    # a required positional absent
+: "${EXIT_INVALID_ARG_VALUE:=22}"       # a present value that is malformed (bad port, bad mode)
+: "${EXIT_EXCLUSIVE_OPTIONS:=23}"       # two options that cannot combine (e.g. -r with -x)
+
 log-info() {
   echo "$@" >&2
 }

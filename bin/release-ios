@@ -15,11 +15,6 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_ROOT/bin/functions"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 release-ios [-n] [target]
 
@@ -57,7 +52,7 @@ ios-app/env/appstore.env.example to fill it in.
 Options:
   -h           Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 UPLOAD=1
@@ -65,8 +60,8 @@ while getopts ":hn" opt; do
   case "$opt" in
   h) help ;;
   n) UPLOAD=0 ;;
-  \?) help "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
@@ -82,7 +77,7 @@ fi
 
 ENV_NAME="${1:-prod}"
 if [ "$#" -gt 1 ]; then
-  help "release-ios accepts at most one positional argument (target): $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "release-ios accepts at most one positional argument (target): $*"
 fi
 
 # ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
@@ -249,7 +244,7 @@ if [ "$UPLOAD" -eq 1 ]; then
 else
   log-info "Exporting signed App Store .ipa to [$EXPORT_DIR] (-n)..."
 fi
-exec xcodebuild \
+xcodebuild \
   -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportPath "$EXPORT_DIR" \

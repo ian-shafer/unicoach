@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 daemon-check [options] <service-name>
 
@@ -29,21 +24,22 @@ Exit codes:
   1: Stopped (no PID file, empty PID file, or our process is dead).
   2: Conflict — our PID is absent/dead but <port> is held by another process.
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 PORT=""
 PORT_SET=false
 
 # getopts parses only the leading options and halts at the first non-option
-# (<service-name>). The two error arms route to different sinks (preserved
-# verbatim): a missing -p value -> help, an unknown option -> fatal.
+# (<service-name>). Both error arms route to fatal -s with their band code: an
+# unknown option -> EXIT_UNKNOWN_OPTION, a missing -p value ->
+# EXIT_OPTION_REQUIRES_VALUE.
 while getopts ":hp:" opt; do
   case "$opt" in
   h) help ;;
   p) PORT="$OPTARG"; PORT_SET=true ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
@@ -51,11 +47,11 @@ shift $((OPTIND-1))
 # An explicit -p with an empty value is a usage error (never a silent portless
 # degrade); -p must carry a valid 1..65535 port.
 if [ "$PORT_SET" = true ] && ! validate_port "$PORT"; then
-  help "Invalid -p value [$PORT]. Expected an integer in 1..65535."
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid -p value [$PORT]. Expected an integer in 1..65535."
 fi
 
 if [ "$#" -ne 1 ]; then
-  help "Missing required <service-name> argument."
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Missing required <service-name> argument."
 fi
 
 SERVICE_NAME="$1"

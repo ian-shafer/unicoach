@@ -32,6 +32,18 @@ assert_failure() {
   pass_test "$msg"
 }
 
+assert_exit_code() {
+  local expected="$1"
+  local msg="$2"
+  shift 2
+  local actual=0
+  "$@" >/dev/null 2>&1 || actual=$?
+  if [ "$actual" -ne "$expected" ]; then
+    fail_test "$msg (expected exit $expected, got $actual)"
+  fi
+  pass_test "$msg"
+}
+
 end_tests() {
   echo ""
   echo -e " 🎉 \033[0;32m${TOTAL_TESTS} tests passed successfully.\033[0m"

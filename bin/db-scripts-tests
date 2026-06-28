@@ -100,6 +100,53 @@ test_psql_stderr_output() {
   echo "$out" | grep "relation \"non_existent_table\" does not exist" >/dev/null
 }
 
+# -r is the raw (tuples-only, unaligned) shape former -tA callers depend on: a
+# single-value query returns the bare value with no header/footer/padding.
+test_db_query_raw_is_bare_value() {
+  local out
+  out=$(bin/db-query -r "SELECT 1;")
+  [ "$out" = "1" ]
+}
+
+# -x is the expanded record view (reproducing q-inspect's -x -P border=0): the
+# column label is present and there is no aligned-header / border-rule output.
+test_db_query_expanded_is_record_view() {
+  local out
+  out=$(bin/db-query -x "SELECT 1 AS only_col;")
+  echo "$out" | grep -q "only_col" || return 1
+  # bordered/aligned output would draw a header separator rule of dashes; -P
+  # border=0 removes it, so a run of '---' must be absent.
+  if echo "$out" | grep -q -- "---"; then return 1; fi
+  return 0
+}
+
+# The former opaque passthrough flag is now an unknown option: it exits 10 and
+# produces no query output. This is the control assertion proving the interface
+# is bounded — it would have silently reached psql before this RFC.
+test_db_query_tA_rejected() {
+  local out
+  out=$(bin/db-query -tA "SELECT 1;" 2>/dev/null)
+  local status=$?
+  [ "$status" -eq "$EXIT_UNKNOWN_OPTION" ] && [ -z "$out" ]
+}
+
+# A residual psql-style flag after the mode is a post-mode positional beginning
+# with '-', rejected as an unexpected argument (20), never forwarded.
+test_db_run_residual_flag_rejected() {
+  local status=0
+  bin/db-run rw "SELECT 1;" --bogus >/dev/null 2>&1 || status=$?
+  [ "$status" -eq "$EXIT_UNEXPECTED_ARG" ]
+}
+
+# Reordered options (-r before the mode) plus a stdin-piped write round-trip:
+# write via db-run rw, then read it back raw.
+test_db_run_reorder_roundtrip() {
+  bin/db-run rw "INSERT INTO db_scripts_test (id, val) VALUES (5, 'reorder');" >/dev/null
+  local out
+  out=$(bin/db-run -r ro "SELECT val FROM db_scripts_test WHERE id = 5;")
+  [ "$out" = "reorder" ]
+}
+
 echo "==== Testing Core Execution & Queries ===="
 
 assert_success "db-run ro blocks mutation" test_db_run_ro_blocks_mutation
@@ -111,6 +158,24 @@ assert_success "db-write via positional" test_db_write_via_positional
 assert_success "db-repl interactive shell" test_db_repl_interactive_shell
 assert_success "psql error propagation" test_psql_error_propagation
 assert_success "psql stderr output" test_psql_stderr_output
+
+echo "==== Testing Bounded db Interface ===="
+
+assert_success "db-query -r is raw" test_db_query_raw_is_bare_value
+assert_success "db-query -x is expanded" test_db_query_expanded_is_record_view
+assert_success "db-query -tA is rejected with code 10" test_db_query_tA_rejected
+assert_success "db-run residual flag is rejected with code 20" test_db_run_residual_flag_rejected
+assert_success "db-run -r reorder round-trip" test_db_run_reorder_roundtrip
+
+# Band-code mapping: every category pinned to its exact code (10, 11, 20, 21, 22, 23).
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "db-run (no mode) exits 21" bin/db-run
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-run bogus mode exits 22" bin/db-run bogus
+assert_exit_code "$EXIT_EXCLUSIVE_OPTIONS" "db-run -r -x ro exits 23" bin/db-run -r -x ro
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "db-run -z ro exits 10" bin/db-run -z ro
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "db-run -d (no value) exits 11" bin/db-run -d
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-query rw extra exits 20" bin/db-query rw extra
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-repl rejects an unexpected argument" bin/db-repl stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-drop rejects a stray positional" bin/db-drop stray
 
 echo "==== Testing Error Handling Validation ===="
 
@@ -276,7 +341,7 @@ test_db_migrate_forward() {
     return 1
   fi
 
-  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
+  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -r)
   if [ "$applied_count" != "2" ]; then
     fail_test "schema_migrations did not track completions. Expected 2, got: '$applied_count'"
     teardown_migration_test
@@ -300,7 +365,7 @@ test_db_migrate_idempotent() {
     return 1
   fi
 
-  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
+  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -r)
   if [ "$applied_count" != "2" ]; then
     fail_test "schema counts broke during idempotent migrate"
     teardown_migration_test
@@ -331,7 +396,7 @@ test_db_migrate_transaction_rollback() {
     return 1
   fi
 
-  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
+  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -r)
   if [ "$applied_count" != "0" ]; then
     fail_test "schema_migrations erroneously tracked failed transaction"
     teardown_migration_test
@@ -364,7 +429,7 @@ test_db_migrate_halts_on_error() {
     return 1
   fi
 
-  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -tA)
+  applied_count=$(echo "SELECT count(*) FROM schema_migrations;" | bin/db-query -r)
   if [ "$applied_count" != "2" ]; then
     fail_test "schema_migrations erroneously tracked failed migration"
     teardown_migration_test

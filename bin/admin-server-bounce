@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
 
+[ "$#" -gt 0 ] && fatal -s "$EXIT_UNEXPECTED_ARG" "admin-server-bounce accepts no arguments: $*"
+
 "$PROJECT_ROOT/bin/admin-server-down"
-exec "$PROJECT_ROOT/bin/admin-server-up"
+"$PROJECT_ROOT/bin/admin-server-up"

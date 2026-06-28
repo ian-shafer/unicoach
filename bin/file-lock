@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 file-lock [options] <lock-dir> <max-lock-duration>
 
@@ -14,8 +9,14 @@ Options:
   -h: Help
   -o OP        Operation name written to <lock-dir>/op
   -t TIMEOUT   Wait up to this duration to acquire the lock
+
+Exit codes:
+  0: Lock acquired.
+  1: Lock held by another, non-matching operation.
+  2: Lock metadata could not be read.
+  3: Lock already held by a matching operation (-o matches the current holder).
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 OP=""
@@ -26,14 +27,14 @@ while getopts ":ho:t:" opt; do
   h) help ;;
   o) OP="$OPTARG" ;;
   t) TIMEOUT="$OPTARG" ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -ne 2 ]; then
-  help "Invalid number of arguments. Expected 2 (<lock-dir> and <max-lock-duration>), but received $#."
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Invalid number of arguments. Expected 2 (<lock-dir> and <max-lock-duration>), but received $#."
 fi
 
 LOCK_DIR="$1"
@@ -41,7 +42,7 @@ MAX_DURATION_STR="$2"
 
 MAX_DURATION=$(parse-duration-to-seconds "$MAX_DURATION_STR" || echo "")
 if [ -z "$MAX_DURATION" ]; then
-  help "Invalid max-lock-duration format [$MAX_DURATION_STR]. Expected a number optionally followed by s, m, h, or d."
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid max-lock-duration format [$MAX_DURATION_STR]. Expected a number optionally followed by s, m, h, or d."
 fi
 
 if [ -n "$TIMEOUT" ]; then
@@ -49,7 +50,7 @@ if [ -n "$TIMEOUT" ]; then
   if [ -r "$LOCK_DIR/op" ]; then
   CURRENT_OP=$(read-file-or-die "$LOCK_DIR/op" 2)
   if [ -n "$OP" ] && [ "$CURRENT_OP" = "$OP" ]; then
-      exit 10
+      exit 3
   fi
   fi
   # Delegate to wait-for. The omission of -t ensures the delegated process only tries once
@@ -58,7 +59,8 @@ if [ -n "$TIMEOUT" ]; then
   ARGS+=("-o" "$OP")
   fi
   ARGS+=("$LOCK_DIR" "$MAX_DURATION_STR")
-  exec "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "${ARGS[@]}"
+  "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "${ARGS[@]}"
+  exit "$?"
 fi
 
 NOW=$(date +%s)
@@ -89,7 +91,7 @@ while true; do
   if [ -r "$LOCK_DIR/op" ]; then
   CURRENT_OP=$(read-file-or-die "$LOCK_DIR/op" 2)
   if [ -n "$OP" ] && [ "$CURRENT_OP" = "$OP" ]; then
-      exit 10
+      exit 3
   fi
   fi
 

@@ -15,7 +15,7 @@ add_job() {
   local max_attempts="${3:-3}"
   # -tA prints the RETURNING uuid followed by psql's "INSERT 0 1" command tag;
   # extract just the UUID so the caller gets a clean id regardless of that tag.
-  bin/db-run rw "INSERT INTO jobs (job_type, payload, status, max_attempts, scheduled_at) VALUES ('$type', '{}', '$status', $max_attempts, NOW()) RETURNING id;" -tA | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1
+  bin/db-run -r rw "INSERT INTO jobs (job_type, payload, status, max_attempts, scheduled_at) VALUES ('$type', '{}', '$status', $max_attempts, NOW()) RETURNING id;" | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1
 }
 
 add_attempt() {
@@ -61,7 +61,7 @@ test_q_truncate_with_flag() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   local j1=$(add_job "test.job" "SCHEDULED")
   bin/q-truncate -y >/dev/null
-  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -r)
   if [ "$remaining" != "0" ]; then return 1; fi
   return 0
 }
@@ -70,7 +70,7 @@ test_q_truncate_interactive_success() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   local j1=$(add_job "test.job" "SCHEDULED")
   echo "Yes, I really want to do this" | bin/q-truncate >/dev/null
-  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -r)
   if [ "$remaining" != "0" ]; then return 1; fi
   return 0
 }
@@ -79,7 +79,7 @@ test_q_truncate_interactive_empty_exit() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   local j1=$(add_job "test.job" "SCHEDULED")
   (echo "" | bin/q-truncate >/dev/null)
-  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -r)
   if [ "$remaining" != "1" ]; then return 1; fi
   return 0
 }
@@ -88,7 +88,7 @@ test_q_truncate_interactive_retry() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   local j1=$(add_job "test.job" "SCHEDULED")
   echo -e "no\nyes i really want to do this" | bin/q-truncate >/dev/null
-  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
+  local remaining=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -r)
   if [ "$remaining" != "0" ]; then return 1; fi
   return 0
 }
@@ -98,8 +98,8 @@ test_q_truncate_specific_types() {
   add_job "type.a" "SCHEDULED" >/dev/null
   add_job "type.b" "SCHEDULED" >/dev/null
   bin/q-truncate type.a -y >/dev/null
-  local remainingA=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.a';" | bin/db-query -tA)
-  local remainingB=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.b';" | bin/db-query -tA)
+  local remainingA=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.a';" | bin/db-query -r)
+  local remainingB=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.b';" | bin/db-query -r)
   if [ "$remainingA" != "0" ]; then return 1; fi
   if [ "$remainingB" != "1" ]; then return 1; fi
   return 0
@@ -111,8 +111,8 @@ test_q_truncate_flag_before_type() {
   add_job "type.a" "SCHEDULED" >/dev/null
   add_job "type.b" "SCHEDULED" >/dev/null
   bin/q-truncate -y type.a >/dev/null
-  local remainingA=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.a';" | bin/db-query -tA)
-  local remainingB=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.b';" | bin/db-query -tA)
+  local remainingA=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.a';" | bin/db-query -r)
+  local remainingB=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'type.b';" | bin/db-query -r)
   if [ "$remainingA" != "0" ]; then return 1; fi
   if [ "$remainingB" != "1" ]; then return 1; fi
   return 0
@@ -123,7 +123,7 @@ test_q_truncate_cascades_attempts() {
   local j=$(add_job "type.a" "SCHEDULED")
   add_attempt "$j" 1 "RETRIABLE_FAILURE"
   bin/q-truncate -y >/dev/null
-  local atts=$(echo "SELECT count(*) FROM job_attempts;" | bin/db-query -tA)
+  local atts=$(echo "SELECT count(*) FROM job_attempts;" | bin/db-query -r)
   if [ "$atts" != "0" ]; then return 1; fi
   return 0
 }
@@ -131,7 +131,7 @@ test_q_truncate_cascades_attempts() {
 test_q_enqueue_immediate() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   bin/q-enqueue "test.imm" '{"a": 1}' >/dev/null
-  local count=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'test.imm' AND status = 'SCHEDULED';" | bin/db-query -tA)
+  local count=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'test.imm' AND status = 'SCHEDULED';" | bin/db-query -r)
   if [ "$count" != "1" ]; then return 1; fi
   return 0
 }
@@ -139,7 +139,7 @@ test_q_enqueue_immediate() {
 test_q_enqueue_with_delay() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   bin/q-enqueue "test.delay" '{"a": 1}' -d 10m >/dev/null
-  local future=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'test.delay' AND scheduled_at > NOW() + INTERVAL '9 minutes';" | bin/db-query -tA)
+  local future=$(echo "SELECT count(*) FROM jobs WHERE job_type = 'test.delay' AND scheduled_at > NOW() + INTERVAL '9 minutes';" | bin/db-query -r)
   if [ "$future" != "1" ]; then return 1; fi
   return 0
 }
@@ -147,7 +147,7 @@ test_q_enqueue_with_delay() {
 test_q_enqueue_with_max_attempts() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   bin/q-enqueue "test.max" '{"a": 1}' -m 10 >/dev/null
-  local max=$(echo "SELECT max_attempts FROM jobs WHERE job_type = 'test.max';" | bin/db-query -tA)
+  local max=$(echo "SELECT max_attempts FROM jobs WHERE job_type = 'test.max';" | bin/db-query -r)
   if [ "$max" != "10" ]; then return 1; fi
   return 0
 }
@@ -157,8 +157,8 @@ test_q_delete_job_success() {
   local j=$(add_job "type.a" "SCHEDULED")
   add_attempt "$j" 1 "RETRIABLE_FAILURE"
   bin/q-delete-job "$j" >/dev/null
-  local jobs=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -tA)
-  local atts=$(echo "SELECT count(*) FROM job_attempts;" | bin/db-query -tA)
+  local jobs=$(echo "SELECT count(*) FROM jobs;" | bin/db-query -r)
+  local atts=$(echo "SELECT count(*) FROM job_attempts;" | bin/db-query -r)
   if [ "$jobs" != "0" ]; then return 1; fi
   if [ "$atts" != "0" ]; then return 1; fi
   return 0
@@ -197,7 +197,7 @@ test_q_retry_resets_dead_lettered() {
   bin/db-run rw "TRUNCATE jobs CASCADE;"
   local j=$(add_job "type.a" "DEAD_LETTERED")
   bin/q-retry "$j" >/dev/null
-  local status=$(echo "SELECT status FROM jobs WHERE id = '$j';" | bin/db-query -tA)
+  local status=$(echo "SELECT status FROM jobs WHERE id = '$j';" | bin/db-query -r)
   if [ "$status" != "SCHEDULED" ]; then return 1; fi
   return 0
 }
@@ -214,7 +214,7 @@ test_q_retry_preserves_attempt_history() {
   local j=$(add_job "type.a" "DEAD_LETTERED")
   add_attempt "$j" 1 "PERMANENT_FAILURE"
   bin/q-retry "$j" >/dev/null
-  local count=$(echo "SELECT count(*) FROM job_attempts WHERE job_id = '$j';" | bin/db-query -tA)
+  local count=$(echo "SELECT count(*) FROM job_attempts WHERE job_id = '$j';" | bin/db-query -r)
   if [ "$count" != "1" ]; then return 1; fi
   return 0
 }

@@ -3,11 +3,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 dev-bootstrap [options]
 
@@ -25,20 +20,20 @@ This starts a zsh session with all project tools on PATH. Your existing
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) help "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -ne 0 ]; then
-  help "Error: dev-bootstrap accepts no positional arguments."
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: dev-bootstrap accepts no positional arguments."
 fi
 
 if ! command -v nix >/dev/null 2>&1; then
@@ -66,7 +61,7 @@ cat > "$HOOK_DIR/pre-commit" << 'HOOK'
 # hook never drifts from bin/pre-commit. bin/pre-commit runs bin/test-fuzz when
 # api-specs/openapi.yaml is staged. Commit from inside `nix develop` so the
 # toolchain is on PATH.
-exec "$(git rev-parse --show-toplevel)/bin/pre-commit"
+"$(git rev-parse --show-toplevel)/bin/pre-commit"
 HOOK
 chmod +x "$HOOK_DIR/pre-commit"
 log-info "Installed git pre-commit hook at [$HOOK_DIR/pre-commit]."

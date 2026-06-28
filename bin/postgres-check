@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 postgres-check [options]
 
@@ -16,17 +11,21 @@ POSTGRES_PORT. Exits 1 if it is not reachable or not ready.
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
+
+if [ "$#" -gt 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "postgres-check accepts no arguments: $*"
+fi
 
 if pg_isready -q -h "${PGHOST:-localhost}" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; then
   log-info "postgres is running"

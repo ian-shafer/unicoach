@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 daemon-status
 
@@ -22,20 +17,20 @@ Format:
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) help "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
-  help "daemon-status does not accept positional arguments: $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "daemon-status does not accept positional arguments: $*"
 fi
 
 # Ordered list fixes iteration/print order; the associative map carries the port

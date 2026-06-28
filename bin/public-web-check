@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 public-web-check [options]
 
@@ -21,16 +16,20 @@ Exit codes:
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
-exec "$PROJECT_ROOT/bin/daemon-http-check" public-web "${PUBLIC_WEB_PORT:-8082}" "http://localhost:${PUBLIC_WEB_PORT:-8082}/healthz"
+if [ "$#" -gt 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "public-web-check accepts no arguments: $*"
+fi
+
+"$PROJECT_ROOT/bin/daemon-http-check" public-web "${PUBLIC_WEB_PORT:-8082}" "http://localhost:${PUBLIC_WEB_PORT:-8082}/healthz"

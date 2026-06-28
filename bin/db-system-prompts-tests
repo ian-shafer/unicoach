@@ -34,7 +34,7 @@ run_test_sql_ta() {
     echo "BEGIN;"
     cat
     echo "ROLLBACK;"
-  ) | bin/db-run rw -tA 2>&1
+  ) | bin/db-run -r rw 2>&1
 }
 
 # ==========================================================================
@@ -282,7 +282,7 @@ test_system_prompts_coach_seed_present() {
   out=$(echo "
     SELECT count(*)::text || '|' || bool_and(length(trim(body)) > 0)::text
     FROM system_prompts
-    WHERE name = 'coach' AND version = 'v1';" | bin/db-query -tA 2>&1)
+    WHERE name = 'coach' AND version = 'v1';" | bin/db-query -r 2>&1)
   echo "$out" | grep -q '^1|true$' || { echo "output was: $out"; return 1; }
 }
 assert_success "system_prompts: coach/v1 seed row present with non-empty body" test_system_prompts_coach_seed_present
@@ -293,14 +293,14 @@ echo "==== Function existence ===="
 
 test_prevent_immutable_entity_update_exists() {
   local out
-  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_immutable_entity_update';" | bin/db-query -tA 2>&1)
+  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_immutable_entity_update';" | bin/db-query -r 2>&1)
   echo "$out" | grep -q '^1$' || { echo "output was: $out"; return 1; }
 }
 assert_success "function: prevent_immutable_entity_update() exists after migration" test_prevent_immutable_entity_update_exists
 
 test_prevent_immutable_entity_delete_exists() {
   local out
-  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_immutable_entity_delete';" | bin/db-query -tA 2>&1)
+  out=$(echo "SELECT count(*) FROM pg_proc WHERE proname = 'prevent_immutable_entity_delete';" | bin/db-query -r 2>&1)
   echo "$out" | grep -q '^1$' || { echo "output was: $out"; return 1; }
 }
 assert_success "function: prevent_immutable_entity_delete() exists after migration" test_prevent_immutable_entity_delete_exists

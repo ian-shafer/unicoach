@@ -26,13 +26,14 @@ foreign-listener helper for the scripts harness, see Test Scripts) — are
 > **Option parsing.** Every option-bearing script parses with bash `getopts`
 > over a **leading-colon optstring** (e.g. `getopts ":hp:"`), so getopts is
 > silent and the script owns its own diagnostics: a `\?` (unknown option) arm
-> and a `:` (missing required argument) arm each route to the script's `help` or
-> `fatal`. Options are **short-only** — there are no GNU-style long spellings;
-> every long form was collapsed to its short flag (`-h` help, `-p` port, `-q`
-> quiet, `-l` launch, `-n` no-upload, `-f` format/force, `-m` max-attempts, `-d`
-> delay, `-s` status-code, `-y` confirm-dangerous, `-t` test-filter/timeout,
-> `-o` operation). Scripts that intermix options with positionals (`bin/test`,
-> `q-truncate`) wrap getopts in an outer loop that resets `OPTIND=1` each round.
+> and a `:` (missing required argument) arm each route to `fatal -s` with the
+> appropriate usage-error band code (10 or 11). Options are **short-only** —
+> there are no GNU-style long spellings; every long form was collapsed to its
+> short flag (`-h` help, `-p` port, `-q` quiet, `-l` launch, `-n` no-upload,
+> `-f` format/force, `-m` max-attempts, `-d` delay, `-s` status-code, `-y`
+> confirm-dangerous, `-t` test-filter/timeout, `-o` operation). Scripts that
+> intermix options with positionals (`bin/test`, `q-truncate`) wrap getopts in
+> an outer loop that resets `OPTIND=1` each round.
 
 ### Shared Library
 
@@ -43,6 +44,7 @@ sources `bin/common`:
 | -------------------------------- | --------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `log-info`                       | `log-info <msg…>`                       | stderr          | No prefix.                                                                                                                                                                               |
 | `log-warning`                    | `log-warning <msg…>`                    | stderr          | Prefixes `[WARNING]`.                                                                                                                                                                    |
+| `log-error`                      | `log-error <msg…>`                      | stderr          | Prefixes `[ERROR]`.                                                                                                                                                                      |
 | `fatal`                          | `fatal [-s <n>] <msg…>`                 | stderr; exits   | Prefixes `[FATAL]`; exits with `<n>` (default `1`). Parses `-s` via `getopts`; an unknown option to `fatal` itself prints `[FATAL]` and exits `1`.                                       |
 | `read-file-or-die`               | `read-file-or-die <file> [<code>]`      | stdout          | Cats file or calls `fatal -s <code>`.                                                                                                                                                    |
 | `parse-duration-to-seconds`      | `parse-duration-to-seconds <dur>`       | stdout          | Converts `30s`/`5m`/`2h`/`1d` → integer seconds; bare integers treated as seconds.                                                                                                       |
@@ -51,12 +53,32 @@ sources `bin/common`:
 | `transform_duration_to_postgres` | `transform_duration_to_postgres <dur>`  | stdout          | Converts `5m` → `"5 minutes"` for SQL `INTERVAL` literals. Calls `validate_duration` internally.                                                                                         |
 | `require_dangerous_confirmation` | `require_dangerous_confirmation <desc>` | exit 0/1        | Interactive prompt; returns `0` on confirmation, `1` on EOF (empty line exits `0` via `exit 0`). Callers bypass this entirely by checking the `-y` flag before invoking.                 |
 
+`bin/functions` also defines the **usage-error exit-code band** (10–29) as
+assign-if-unset constants, available to every script that sources `bin/common`
+(and to `is-nix`, which sources only `bin/functions`):
+
+| Constant                     | Value | Category                                               |
+| ---------------------------- | ----- | ------------------------------------------------------ |
+| `EXIT_UNKNOWN_OPTION`        | `10`  | `getopts '?'` — option the script does not define      |
+| `EXIT_OPTION_REQUIRES_VALUE` | `11`  | `getopts ':'` — defined option given without its value |
+| `EXIT_UNEXPECTED_ARG`        | `20`  | positional beyond the declared grammar                 |
+| `EXIT_MISSING_REQUIRED_ARG`  | `21`  | required positional absent                             |
+| `EXIT_INVALID_ARG_VALUE`     | `22`  | present value that is malformed (bad port, bad mode)   |
+| `EXIT_EXCLUSIVE_OPTIONS`     | `23`  | two options that cannot combine (e.g. `-r` with `-x`)  |
+
+Each is assigned with `: "${VAR:=N}"` so an `.env` entry sourced after
+`bin/functions` can override it; operational/runtime outcomes use 1–9 and are
+never reassigned to 10–29. Usage errors across every operational script route
+through `fatal -s "$EXIT_<category>" "<message>"` rather than the `help()`
+banner. `bin/functions`' own `fatal` internal parse guard exits `1`, not a band
+code — it is a library-primitive error, not a CLI surface.
+
 ---
 
 ### Dangerous Operations
 
-Scripts that destroy data (`db-drop`, `q-truncate`) MUST gate execution behind
-`require_dangerous_confirmation` **unless** the caller passes `-y`.
+Scripts that destroy data (`db-drop`, `q-truncate`) gate execution behind
+`require_dangerous_confirmation` unless the caller passes `-y`.
 
 ---
 
@@ -68,14 +90,15 @@ acquire a lock that automatically expires after `<max-duration>`. An optional
 readers to identify the holder. Without `-t`, the script fails immediately if
 the lock is held; with `-t <dur>`, it polls via `wait-for` until the lock is
 acquired or the timeout expires. Stale locks are broken automatically. Callers
-MUST release the lock via a trap registered **after** successful acquisition.
+register a trap after successful acquisition to release the lock on exit.
 
 Exit codes:
 
 - **Exit 0**: lock acquired.
 - **Exit 1**: lock held by a conflicting operation; timed out.
-- **Exit 10**: lock already held by the **same** operation — caller MUST treat
-  this as a success and exit `0` without retrying.
+- **Exit 2**: lock metadata could not be read.
+- **Exit 3**: lock already held by the **same** operation — same-operation
+  callers treat this as a success and exit `0` without retrying.
 
 ---
 
@@ -103,7 +126,8 @@ Exit codes:
 
 - **Exit 0**: port is in use (connect succeeded).
 - **Exit 1**: port is free (the loopback connect was refused).
-- **Exit 2**: invalid argument (missing, non-numeric, or out-of-range port).
+- **Exit 21** (`EXIT_MISSING_REQUIRED_ARG`): port argument absent.
+- **Exit 22** (`EXIT_INVALID_ARG_VALUE`): port is non-numeric or out of range.
 
 `0`=in-use deliberately inverts `check-pid`'s `0`=alive, so each primitive's
 success exit answers its own question (`is the port taken?` vs
@@ -137,8 +161,7 @@ Exit codes:
   failed, port in use).
 - **Exit 3**: invalid arguments (wrong count, or a non-numeric/out-of-range
   port). Kept distinct from the `2` conflict state so a malformed invocation is
-  never read as a conflict. (`check-port` reuses `2` for invalid args, so it is
-  unavailable here.)
+  not read as a conflict.
 
 ---
 
@@ -158,10 +181,10 @@ rejects more than one positional argument.
 ### Daemon Lifecycle
 
 - **`daemon-up`**: Idempotent. Starts the daemon and writes the PID file. If the
-  daemon is already running, does nothing. Only checks PID for liveness —
-  callers MUST invoke `<service>-wait-for-health` separately. Takes an optional
-  `-p` port (validated via `validate_port`). When `-p` is set, after the
-  PID-liveness idempotency short-circuit and stale-PID cleanup, a pre-launch
+  daemon is already running, does nothing. Only checks PID for liveness; callers
+  invoke `<service>-wait-for-health` separately for health confirmation. Takes
+  an optional `-p` port (validated via `validate_port`). When `-p` is set, after
+  the PID-liveness idempotency short-circuit and stale-PID cleanup, a pre-launch
   preflight refuses to spawn if `127.0.0.1:<port>` is already bound — by any
   process, including a daemon from another worktree or an orphaned own-process
   whose PID file was lost — exiting with a distinct code `3` (`fatal -s 3`)
@@ -222,7 +245,7 @@ server.
 ### Daemons
 
 Individual daemons use the Daemon Lifecycle scripts (§II) and follow the naming
-convention `<service>-{up,down,bounce,check}`. A daemon MAY additionally provide
+convention `<service>-{up,down,bounce,check}`. Some daemons additionally provide
 `<service>-wait-for-health`, which blocks until the daemon is healthy. "Healthy"
 is defined by the logic in each script.
 
@@ -233,7 +256,7 @@ Current daemons: `rest-server`, `queue-worker`, `admin-server`, `public-web`.
 | `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists. The port-bound wrappers pass `-p`: `rest-server-up` `${PORT:-8080}`, `admin-server-up` `${ADMIN_SERVER_PORT:-8081}`, `public-web-up` `${PUBLIC_WEB_PORT:-8082}`; `queue-worker-up` is portless and unchanged. The default-guarded form is load-bearing under `bin/common`'s `set -u` (`ADMIN_SERVER_PORT`/`PUBLIC_WEB_PORT` are absent from `.env`/`.env.test`). |
 | `<svc>-down`            | Delegates to `daemon-down`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `<svc>-bounce`          | Runs `<svc>-down` then `<svc>-up` (e.g. `rest-server`, `queue-worker`, `admin-server`, `public-web`).                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `<svc>-check`           | `rest-server-check`, `admin-server-check`, `public-web-check` are thin wrappers that `exec daemon-http-check <label> <port> http://localhost:<port>/healthz`, inheriting its `0`/`1`/`2` tri-state (`2` = port held by another process not responding as `<service>`). `queue-worker-check` stays PID liveness via `daemon-check`.                                                                                                                                                                        |
+| `<svc>-check`           | `rest-server-check`, `admin-server-check`, `public-web-check` are thin wrappers that invoke `daemon-http-check <label> <port> http://localhost:<port>/healthz` as an ordinary child, inheriting its `0`/`1`/`2` tri-state (`2` = port held by another process not responding as `<service>`). `queue-worker-check` stays PID liveness via `daemon-check`.                                                                                                                                                 |
 | `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 `admin-server-check` and `admin-server-wait-for-health` probe `GET /healthz` on
@@ -263,7 +286,7 @@ timeout `4s`). `public-web-bounce` runs `public-web-down` then `public-web-up`.
 `public-web` depends only on `:common`, so its build position is unconstrained;
 it is appended last. Fast-fails on the first module failure.
 
-Each `bin/build-<module>` script runs exactly one `./gradlew` task via `exec`:
+Each `bin/build-<module>` script runs exactly one `./gradlew` task:
 `:module:assemble` for libraries, `:module:installDist` for daemons.
 
 A new Gradle module gets a `bin/build-<module>` script only when `bin/build`
@@ -273,6 +296,15 @@ module:
 
 1. Create `bin/build-<module>` following the existing template.
 2. Insert it at the correct position in the ordered sequence inside `bin/build`.
+
+**`bin/ingest-colleges <institution.csv> <fields.csv>`**: Loads a version-pinned
+College Scorecard CSV pair into the `colleges` and `college_programs` reference
+tables via the `:college` Gradle ingester. Upserts on the natural keys, so
+re-running re-applies the same snapshot without duplicates; malformed rows are
+logged and skipped. Absolutizes both CSV paths via `realpath` (the
+`:college:run` task executes from the module directory). Side-effecting and
+idempotent for any given snapshot pair. Runs in the Nix dev shell (the JVM lives
+there).
 
 ---
 
@@ -291,8 +323,8 @@ before env resolution so the guard message wins over a missing-env error.
   `log-info` unless `-q`. `-v` additionally lists package names parsed from the
   exported `nativeBuildInputs` (suppressed by `-q`). No side effects.
 - **`build-ios [target]`**: Builds — and for device targets signs — the
-  `UnicoachiOS` app via `exec xcodebuild`. `target` defaults to `local`; sources
-  the target file `ios-app/env/<target>.env` for `UNICOACH_DESTINATION`
+  `UnicoachiOS` app via `xcodebuild`. `target` defaults to `local`; sources the
+  target file `ios-app/env/<target>.env` for `UNICOACH_DESTINATION`
   (`UNICOACH_CONFIGURATION` optional, default `Debug`). (Help text and usage say
   "target"; the internal `ENV_*` variable names are retained.) The repo `.env`
   is sourced **unconditionally** on every path — it is the single source of
@@ -347,10 +379,10 @@ before env resolution so the guard message wins over a missing-env error.
   `com.unicoachapp.UnicoachiOS`.
 - **`release-ios [-n] [target]`**: Archives the `UnicoachiOS` app for App Store
   distribution and, by default, uploads it to App Store Connect for TestFlight
-  via `exec xcodebuild -exportArchive`. Architect-invoked, side-effecting, and
-  NOT idempotent — each upload consumes a unique build number. `target` defaults
-  to `prod` (not `local`). Like `build-ios` it runs under system Xcode (shares
-  the `is-nix -q` guard), sources only `bin/functions`, resolves the backend URL
+  via `xcodebuild -exportArchive`. Architect-invoked, side-effecting, and NOT
+  idempotent — each upload consumes a unique build number. `target` defaults to
+  `prod` (not `local`). Like `build-ios` it runs under system Xcode (shares the
+  `is-nix -q` guard), sources only `bin/functions`, resolves the backend URL
   **honor-if-set, else derive** (identical rules), and reads
   `UNICOACH_CLIENT_KEY` from the repo `.env`. It differs deliberately:
   - **Release-only, signed.** The configuration is forced to `Release` (the
@@ -407,11 +439,27 @@ before env resolution so the guard message wins over a missing-env error.
 - **`db-status`**: Reports the applied/pending state of all migration scripts.
   Auto-provisions the database via `db-create` if needed (assumes `db-bootstrap`
   already created the cluster and role).
-- **`db-run`**: Execution primitive. `ro` mode enforces read-only transactions;
-  exits `2` if postgres is unreachable.
-- **`db-query`**, **`db-write`**: Thin wrappers over `db-run ro` and
-  `db-run rw`.
-- **`db-repl`**: Opens a `psql` session connected to the application database.
+- **`db-run [-d <db>] [-r | -x] <ro|rw> [sql]`**: Execution primitive. `ro` mode
+  enforces `default_transaction_read_only=on`; `rw` issues unguarded writes.
+  Named output options: `-r` → `psql -t -A` (tuples-only, unaligned), `-x` →
+  `psql -x -P border=0` (expanded). `-r` and `-x` are mutually exclusive (exit
+  `EXIT_EXCLUSIVE_OPTIONS=23`). All other `psql` flags are rejected — the
+  passthrough surface no longer exists. A residual flag after the mode
+  positional (e.g. `-tA` placed after the mode) exits `EXIT_UNEXPECTED_ARG=20`.
+  Exit codes: `2` if Postgres is unreachable (prints coordinates
+  `[host=${PGHOST:-localhost} port=${PGPORT:-5432}]`); usage errors in the 10–29
+  band; psql's own status on the success path.
+- **`db-query [-d <db>] [-r | -x] [sql]`**: Thin front over `db-run ro`. Accepts
+  `-r`/`-x` (forwarded as a named flag array), optional `-d` database override,
+  and at most one `sql` positional; does not accept `-r`/`-x` together. Exits
+  `EXIT_UNEXPECTED_ARG=20` on a surplus positional.
+- **`db-write [-d <db>] [sql]`**: Thin front over `db-run rw`. Does not accept
+  `-r`/`-x` (writes produce command tags, not result grids). At most one `sql`
+  positional.
+- **`db-repl [-h]`**: Opens an interactive `psql` session connected to
+  `POSTGRES_DB` as `POSTGRES_USER`. Accepts no positional arguments; exits
+  `EXIT_UNEXPECTED_ARG=20` on surplus. Exits `2` if Postgres is offline (same
+  coordinate diagnostic as `db-run`).
 - **`db-drop`**: Drops a single database
   (`DROP DATABASE IF EXISTS … WITH
   FORCE`). Idempotent. Leaves the cluster and
@@ -503,33 +551,33 @@ Harnesses that make assertions source `bin/tests-common` for assertion helpers.
 `bin/test-fuzz` instead points `ENV_FILE` at `.env.fuzz` (its own dedicated fuzz
 DB and port). Five lifecycle-ownership models exist:
 
-- **Private-cluster harnesses** (`db-scripts-tests`) MUST provision their OWN
+- **Private-cluster harnesses** (`db-scripts-tests`) provision their own
   throwaway cluster (private `POSTGRES_DATA_DIR` + PID-derived `POSTGRES_PORT`),
   exercise cluster lifecycle freely, and tear it down via an EXIT/INT/TERM trap.
-  They MUST NOT touch the shared cluster.
-- **Self-contained daemon harnesses** (`scripts-tests`) MUST register an
+  They do not touch the shared cluster.
+- **Self-contained daemon harnesses** (`scripts-tests`) register an
   EXIT/INT/TERM trap to tear down the daemons they started (`rest-server`,
   `queue-worker`) and the foreign listeners they spawn. They use the shared
-  cluster (`postgres-up`) but MUST NOT stop it. `scripts-tests` picks a hermetic
+  cluster (`postgres-up`) but do not stop it. `scripts-tests` picks a hermetic
   `PORT` from `find-free-port` before sourcing the env, so the `rest-server` it
   boots binds a free port rather than a fixed one (see the `bin/scripts-tests`
   suite entry).
-- **Shared-cluster reset harnesses** (`db-users-tests`, `q-scripts-tests`) MUST
-  reach a clean state via `db-bootstrap` + `db-reset` against the per-worktree
-  database, MUST NOT stop or wipe the shared cluster, and MUST NOT register a
+- **Shared-cluster reset harnesses** (`db-users-tests`, `q-scripts-tests`) reach
+  a clean state via `db-bootstrap` + `db-reset` against the per-worktree
+  database; they do not stop or wipe the shared cluster, and do not register a
   cluster teardown trap.
 - **No-lifecycle harnesses** (`db-convos-tests`, `db-system-prompts-tests`, and
-  their aggregator `db-tests`) MUST own no Postgres lifecycle — no
+  their aggregator `db-tests`) own no Postgres lifecycle — no
   `postgres-up`/`postgres-down`, no `db-reset`/`db-migrate`, no cluster wipe —
-  and MUST NOT register a teardown trap. They MUST assume a live,
-  already-migrated database supplied by the caller.
-- **Dedicated-DB daemon harness** (`test-fuzz`) MUST bind `ENV_FILE` to
-  `.env.fuzz` (its own per-worktree fuzz DB + port 8082), reach a clean state
-  via `postgres-up` + `db-reset` against that dedicated DB, build and boot a
-  fresh rest-server, register a user, mark it email-verified via a direct `psql`
+  and register no teardown trap. They assume a live, already-migrated database
+  supplied by the caller.
+- **Dedicated-DB daemon harness** (`test-fuzz`) binds `ENV_FILE` to `.env.fuzz`
+  (its own per-worktree fuzz DB + port 8082), reaches a clean state via
+  `postgres-up` + `db-reset` against that dedicated DB, builds and boots a fresh
+  rest-server, registers a user, marks it email-verified via a direct `psql`
   write (so the email-verification gate does not `403` the authenticated fuzz
-  traffic), and register an EXIT/INT/TERM trap that tears down ONLY the daemon
-  it started. It uses the shared cluster but MUST NOT stop or wipe it.
+  traffic), and registers an EXIT/INT/TERM trap that tears down only the daemon
+  it started. It uses the shared cluster but does not stop or wipe it.
 - **No-Postgres harnesses** (`ios-scripts-tests`) own no Postgres lifecycle and
   source neither `bin/common` nor any cluster script. They shim
   `xcodebuild`/`xcrun` onto `PATH` (recording argv to a temp file) and redirect
@@ -541,13 +589,14 @@ DB and port). Five lifecycle-ownership models exist:
 
 #### `bin/tests-common` — Assertion API
 
-| Function         | Signature                     | Behavior                                                                                         |
-| ---------------- | ----------------------------- | ------------------------------------------------------------------------------------------------ |
-| `pass_test`      | `pass_test <msg>`             | Increments `TOTAL_TESTS`; prints green `✅ <msg>` to stdout.                                     |
-| `fail_test`      | `fail_test <msg>`             | Prints red `❌ Fail: <msg>` to **stderr**; **exits `1` immediately**. No further assertions run. |
-| `assert_success` | `assert_success <msg> <cmd…>` | Runs `<cmd>`; calls `fail_test` if it exits non-zero, otherwise calls `pass_test`.               |
-| `assert_failure` | `assert_failure <msg> <cmd…>` | Runs `<cmd>`; calls `fail_test` if it exits **zero**, otherwise calls `pass_test`.               |
-| `end_tests`      | `end_tests`                   | Prints total count summary. **Does not exit.** Must be the final statement in every test script. |
+| Function           | Signature                              | Behavior                                                                                                                             |
+| ------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `pass_test`        | `pass_test <msg>`                      | Increments `TOTAL_TESTS`; prints green `✅ <msg>` to stdout.                                                                         |
+| `fail_test`        | `fail_test <msg>`                      | Prints red `❌ Fail: <msg>` to **stderr**; **exits `1` immediately**. No further assertions run.                                     |
+| `assert_success`   | `assert_success <msg> <cmd…>`          | Runs `<cmd>`; calls `fail_test` if it exits non-zero, otherwise calls `pass_test`.                                                   |
+| `assert_failure`   | `assert_failure <msg> <cmd…>`          | Runs `<cmd>`; calls `fail_test` if it exits **zero**, otherwise calls `pass_test`.                                                   |
+| `assert_exit_code` | `assert_exit_code <code> <msg> <cmd…>` | Runs `<cmd>` (suppressing stdout/stderr), captures its exit code, calls `fail_test` if it does not equal `<code>`, else `pass_test`. |
+| `end_tests`        | `end_tests`                            | Prints total count summary. **Does not exit.** Must be the final statement in every test script.                                     |
 
 > `fail_test` exits immediately — subsequent assertions in the same script are
 > skipped. Test functions that need early returns before calling `fail_test`
@@ -558,8 +607,8 @@ DB and port). Five lifecycle-ownership models exist:
 - **`bin/test`**: Test orchestrator owning a closed, validated CLI. It parses
   its own options and never forwards raw arguments to `gradlew` (no `--`
   passthrough). Positional arguments are friendly module names
-  (`common db net queue queue-worker rest-server service email chat admin-server
-  public-web`
+  (`common db net auth queue queue-worker rest-server service email chat
+  admin-server public-web college`
   — a hardcoded set kept in sync with `settings.gradle.kts` by hand), each
   mapped to an explicit `:<module>:<task>` task; repeats are de-duplicated. The
   per-module `<task>` is `test` by default, or `check` when the optional leading
@@ -567,27 +616,26 @@ DB and port). Five lifecycle-ownership models exist:
   runs ktlint plus tests for a full Kotlin verification over the same Postgres
   lifecycle, and is the form the `bin/pre-commit` Kotlin gate invokes. `check`
   is a keyword, not a module and not an option. Unknown modules and unknown
-  options are rejected, never forwarded. **Core invariant:** `bin/test` always
-  emits at least one `:<module>:<task>` task — naming no module runs every
-  module — so the flags-only/zero-task argv that made `gradlew` print a false
-  "BUILD SUCCESSFUL" over zero tests is structurally impossible. Mapped options
-  (`-t GLOB` — requires exactly one module — `-f` force, `-v` verbose, `-c`
-  continue) follow the task list in fixed order. Options and positionals may be
-  intermixed in any order: getopts is wrapped in an outer loop that consumes one
-  non-option per round (resetting `OPTIND=1`). Argument validation completes
-  **before** any side effect, so an invalid invocation (unknown module/option,
-  `-t` without exactly one module) fails without resetting the test database.
-  Exit codes: usage errors exit `2` (the `help()` error branch, a sanctioned
-  deviation per [`INVARIANTS.md`](./INVARIANTS.md)); a test run that executed
-  but did not all pass propagates `gradlew`'s `1` unchanged through `exec`;
-  success and `-h` exit `0`; downstream lifecycle failures propagate their own
-  codes via `set -e`. After validation, under `set -e`, runs in order:
-  `postgres-up` → `db-reset` → `db-tests` → `exec gradlew` with the constructed
-  task list. The `db-tests` step runs sequentially (never backgrounded), after
-  migration and before the terminal `exec`; a non-zero shell-harness exit aborts
-  the run before Gradle ever starts. Postgres is left up so the Gradle suite
-  observes the same migrated database. To filter to a single test, use the
-  module + filter form `bin/test <module> -t "<glob>"` (e.g.
+  options are rejected, never forwarded. `bin/test` always emits at least one
+  `:<module>:<task>` task — naming no module runs every module — so the
+  flags-only/zero-task argv that made `gradlew` print a false "BUILD SUCCESSFUL"
+  over zero tests is structurally impossible. Mapped options (`-t GLOB` —
+  requires exactly one module — `-f` force, `-v` verbose, `-c` continue) follow
+  the task list in fixed order. Options and positionals may be intermixed in any
+  order: getopts is wrapped in an outer loop that consumes one non-option per
+  round (resetting `OPTIND=1`). Argument validation completes **before** any
+  side effect, so an invalid invocation (unknown module/option, `-t` without
+  exactly one module) fails without resetting the test database. Exit codes:
+  usage errors exit `2` (the `help()` error branch); a test run that executed
+  but did not all pass propagates `gradlew`'s `1` unchanged; success and `-h`
+  exit `0`; downstream lifecycle failures propagate their own codes via
+  `set -e`. After validation, under `set -e`, runs in order: `postgres-up` →
+  `db-reset` → `db-tests` → `gradlew` with the constructed task list. The
+  `db-tests` step runs sequentially (never backgrounded), after migration and
+  before the terminal gradlew call; a non-zero shell-harness exit aborts the run
+  before Gradle ever starts. Postgres is left up so the Gradle suite observes
+  the same migrated database. To filter to a single test, use the module +
+  filter form `bin/test <module> -t "<glob>"` (e.g.
   `bin/test queue -t "*JobsDaoTest"`); the old bare-FQN positional shape
   (`bin/test ed.unicoach.queue.JobsDaoTest`) is dropped.
 - **`bin/test-fuzz`**: Authenticated contract-referee fuzzer. Boots a
@@ -686,7 +734,7 @@ place.
   `python3`, `deno`, `ktlint`, `git`).
 - **System Xcode (iOS scripts)**: `build-ios`, `install-ios`, `release-ios`, and
   `is-nix` require the **system** Xcode toolchain (`xcodebuild`,
-  `xcrun devicectl`), NOT the flake, and MUST run outside `nix develop`.
+  `xcrun devicectl`), not the flake; these scripts run outside `nix develop`.
   `build-ios` reads `UNICOACH_CLIENT_KEY` (and, on the derive path,
   `APP_DOMAIN`/`SERVER_PORT`) from the repo `.env` and
   `UNICOACH_DESTINATION`/`UNICOACH_CONFIGURATION` (optionally an explicit
@@ -711,7 +759,7 @@ place.
   `export ENV_FILE=".../.env.test"` before sourcing `common`; `db-tests`
   defaults to `.env.test` but honors a caller-supplied `ENV_FILE`; `test-fuzz`
   sets `export ENV_FILE=".../.env.fuzz"`.
-- **Required env**: `POSTGRES_PORT` MUST be set (no in-code default);
+- **Required env**: `POSTGRES_PORT` is required (no in-code default);
   `bin/common` exports it as `PGPORT` for all libpq clients. `DB_SCHEMA_DIR` is
   optional; `bin/common` exports it, defaulting to `$PROJECT_ROOT/db/schema`.
   `PGHOST` is optional and is NOT exported by `bin/common`; it flows from
@@ -794,6 +842,10 @@ place.
       backfilled `admin-server-bounce` (`admin-server-down` then
       `admin-server-up`); wired `public-web` into `bin/test` `MODULES` and
       `build-public-web` last into `bin/build`.
+- [x] [RFC-67: College Knowledge](../rfc/67-college-knowledge.md) — added
+      `bin/ingest-colleges`, a CLI that loads College Scorecard CSV pairs into
+      the `colleges`/`college_programs` tables via the `:college` Gradle
+      ingester; added `college` to `bin/test`'s `MODULES`.
 - [x] [RFC-69: Email Verification Gate](../rfc/69-email-verification-gate.md) —
       `bin/test-fuzz` marks its provisioned fuzz user email-verified via a
       direct `psql`
@@ -825,3 +877,17 @@ place.
       `--database`→`-d`, and `file-lock`'s `--operation`/`--timeout`→`-o`/`-t`).
       Exit-code contracts, command grammars, and validation are otherwise
       unchanged.
+- [x] [RFC-80: bin/ exec and argument-passthrough discipline](../rfc/80-bin-exec-passthrough-discipline.md)
+      — removed terminal `exec <command>` from all operational scripts (build
+      wrappers, `test`, iOS scripts, `*-check` fronts, `*-bounce` tails,
+      `file-lock`, `dev-bootstrap`'s generated hook); the `infra-*`
+      `exec tofu
+      … "$@"` fronts remain as the only enumerated `exec`
+      exception; replaced the opaque psql passthrough in
+      `db-run`/`db-query`/`db-write`/`db-repl` with a bounded grammar (`-r`/`-x`
+      named output modes; all other flags rejected); dropped `"$@"` forwarding
+      from the `*-server-down` wrappers; added the usage-error exit-code band
+      (10–29) as six constants in `bin/functions`; made every operational script
+      reject unexpected arguments (exit `EXIT_UNEXPECTED_ARG=20`); recoded
+      `file-lock`'s matching-op fast-fail from `10` to `3`; added
+      `assert_exit_code` to `bin/tests-common`.

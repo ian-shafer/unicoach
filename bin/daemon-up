@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 daemon-up [options] <service-name> -- <command...>
 
@@ -37,7 +32,7 @@ Exit codes:
   1: Lock acquisition failed, or a usage error.
   3: Port collision — <port> is already bound; the service was NOT spawned.
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 SERVICE_NAME=""
@@ -46,15 +41,15 @@ PORT_SET=false
 
 # getopts parses only the LEADING options and halts at the first non-option
 # (<service-name>), which always precedes the mandatory --, so it never consumes
-# the -- separator or the verbatim command. The two error arms route to
-# different sinks (preserved verbatim): a missing -p value -> help, an unknown
-# option -> fatal.
+# the -- separator or the verbatim command. Both error arms route to fatal -s
+# with their band code: an unknown option -> EXIT_UNKNOWN_OPTION, a missing -p
+# value -> EXIT_OPTION_REQUIRES_VALUE.
 while getopts ":hp:" opt; do
   case "$opt" in
   h) help ;;
   p) PORT="$OPTARG"; PORT_SET=true ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
@@ -62,23 +57,23 @@ shift $((OPTIND-1))
 # An explicit -p with an empty value is a usage error (never a silent portless
 # degrade); -p must carry a valid 1..65535 port.
 if [ "$PORT_SET" = true ] && ! validate_port "$PORT"; then
-  help "Invalid -p value [$PORT]. Expected an integer in 1..65535."
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid -p value [$PORT]. Expected an integer in 1..65535."
 fi
 
 if [ "$#" -lt 1 ]; then
-  help "Missing required <service-name> argument."
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Missing required <service-name> argument."
 fi
 SERVICE_NAME="$1"
 shift
 
 # Consume the mandatory -- separator
 if [ "${1:-}" != "--" ]; then
-  help "Expected '--' separator after <service-name>, got: ${1:-}"
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Expected '--' separator after <service-name>, got: ${1:-}"
 fi
 shift
 
 if [ "$#" -lt 1 ]; then
-  help "Missing required <command...> after '--'."
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Missing required <command...> after '--'."
 fi
 
 COMMAND=("$@")
@@ -90,7 +85,7 @@ LOCK_DIR="$PROJECT_ROOT/var/run/${SERVICE_NAME}.daemon.lock"
 LOCK_STATUS=0
 "$PROJECT_ROOT/bin/file-lock" -o up -t 16 "$LOCK_DIR" 60 || LOCK_STATUS=$?
 
-if [ "$LOCK_STATUS" -eq 10 ]; then
+if [ "$LOCK_STATUS" -eq 3 ]; then
   log-info "Another up instance is actively establishing [$SERVICE_NAME]. Exiting gracefully."
   exit 0
 fi

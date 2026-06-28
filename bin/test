@@ -7,11 +7,6 @@ source "$(dirname "$0")/common"
 MODULES=(common db net auth queue queue-worker rest-server service email chat admin-server public-web college)
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=2
-  fi
   cat << 'EOF'
 test [options] [check] [module ...]
 
@@ -33,7 +28,7 @@ Options:
   -c        Run all selected test tasks, report every failure
   -h        Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 # Returns 0 if $1 is a member of MODULES.
@@ -66,8 +61,8 @@ while [ "$#" -gt 0 ]; do
     f) FORCE=true ;;
     v) VERBOSE=true ;;
     c) CONTINUE=true ;;
-    \?) help "unknown option [-$OPTARG]" ;;
-    :)  help "--tests requires a GLOB" ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+    :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" -- "--tests requires a GLOB" ;;
     esac
   done
   shift $((OPTIND-1))
@@ -81,7 +76,7 @@ while [ "$#" -gt 0 ]; do
           SELECTED+=("$1")
         fi
       else
-        help "unknown module [$1]"
+        fatal -s "$EXIT_INVALID_ARG_VALUE" "unknown module [$1]"
       fi
       ;;
     esac
@@ -91,7 +86,7 @@ done
 
 # --tests filters a single test task; it is meaningless across multiple tasks.
 if [ "$HAS_TESTS" = true ] && [ "${#SELECTED[@]}" -ne 1 ]; then
-  help "--tests requires exactly one module"
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" -- "--tests requires exactly one module"
 fi
 
 # Core invariant: emit at least one :module:<task> task (test, or check when the
@@ -120,4 +115,4 @@ done
 # aborts the run; Postgres stays up so the subsequent Gradle suite sees the same DB.
 "$PROJECT_ROOT/bin/db-tests"
 
-exec "$PROJECT_ROOT/gradlew" "${GRADLE_ARGS[@]}"
+"$PROJECT_ROOT/gradlew" "${GRADLE_ARGS[@]}"

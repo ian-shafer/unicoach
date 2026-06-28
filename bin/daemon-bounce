@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 daemon-bounce [options] <service-name> -- <command...>
 
@@ -21,20 +16,20 @@ Arguments:
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -lt 1 ]; then
-  help "Missing required <service-name> argument."
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Missing required <service-name> argument."
 fi
 
 SERVICE_NAME="$1"
@@ -42,7 +37,7 @@ shift
 
 # Consume the mandatory -- separator
 if [ "${1:-}" != "--" ]; then
-  help "Expected '--' separator after <service-name>, got: ${1:-}"
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Expected '--' separator after <service-name>, got: ${1:-}"
 fi
 # Keep -- in place; daemon-up expects it
 COMMAND_WITH_SEP=("$@")

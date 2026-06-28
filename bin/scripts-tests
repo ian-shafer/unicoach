@@ -69,7 +69,7 @@ if [ ! -d "$TEST_LOCK" ]; then echo "Fail: Failed to create lock"; exit 1; fi
 pass_test "File lock created successfully"
 
 bin/file-lock -o op-a "$TEST_LOCK" 60 || STATUS=$?
-if [ "${STATUS:-0}" -ne 10 ]; then echo "Fail: Failed to fast-fail on matching op"; exit 1; fi
+if [ "${STATUS:-0}" -ne 3 ]; then echo "Fail: Failed to fast-fail on matching op"; exit 1; fi
 pass_test "File lock fast-failed on matching op"
 
 rm -rf "$TEST_LOCK" || true
@@ -405,12 +405,14 @@ stop_foreign_listener "$cp_listener"
 if ! wait_for_port_free "$PORT_FREE"; then echo "Fail: check-port did not exit 1 after listener killed"; exit 1; fi
 pass_test "check-port exits 1 again after listener is killed"
 
-# check-port: invalid args
+# check-port: usage errors now route to the reserved band — a missing <port> is
+# EXIT_MISSING_REQUIRED_ARG (21), a non-numeric one EXIT_INVALID_ARG_VALUE (22) —
+# disjoint from the operational 0 (in use) / 1 (free) the probe returns.
 cp_status=0; bin/check-port >/dev/null 2>&1 || cp_status=$?
-if [ "$cp_status" -ne 2 ]; then echo "Fail: check-port (no arg) did not exit 2 (got $cp_status)"; exit 1; fi
+if [ "$cp_status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then echo "Fail: check-port (no arg) did not exit $EXIT_MISSING_REQUIRED_ARG (got $cp_status)"; exit 1; fi
 cp_status=0; bin/check-port notaport >/dev/null 2>&1 || cp_status=$?
-if [ "$cp_status" -ne 2 ]; then echo "Fail: check-port notaport did not exit 2 (got $cp_status)"; exit 1; fi
-pass_test "check-port exits 2 on missing / non-numeric argument"
+if [ "$cp_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: check-port notaport did not exit $EXIT_INVALID_ARG_VALUE (got $cp_status)"; exit 1; fi
+pass_test "check-port rejects missing / non-numeric <port> with band codes (21 / 22)"
 
 echo ""
 echo "==== Testing daemon-up port preflight ===="
@@ -490,21 +492,24 @@ echo ""
 echo "==== Testing -p intake validation (no silent portless degrade) ===="
 # An empty -p value must be a usage error, never a silent fall-through to the
 # unsafe portless path. daemon-check and daemon-up both reject it at the parse site.
+# A malformed -p value is a usage error in the reserved band:
+# EXIT_INVALID_ARG_VALUE (22), never a silent fall-through to the unsafe portless
+# path. daemon-check and daemon-up both reject it at the parse site.
 dc_status=0; bin/daemon-check -p "" idem-test >/dev/null 2>&1 || dc_status=$?
-if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check -p '' did not reject empty value (got $dc_status)"; exit 1; fi
+if [ "$dc_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: daemon-check -p '' did not reject empty value with $EXIT_INVALID_ARG_VALUE (got $dc_status)"; exit 1; fi
 pass_test "daemon-check rejects an empty -p value"
 
 du_status=0; bin/daemon-up -p "" idem-test -- sleep 60 >/dev/null 2>&1 || du_status=$?
-if [ "$du_status" -ne 1 ]; then echo "Fail: daemon-up -p '' did not reject empty value (got $du_status)"; exit 1; fi
+if [ "$du_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: daemon-up -p '' did not reject empty value with $EXIT_INVALID_ARG_VALUE (got $du_status)"; exit 1; fi
 if [ -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up -p '' wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
 pass_test "daemon-up rejects an empty -p value without spawning"
 
 # A non-numeric / out-of-range -p must be rejected before any port check, in
 # daemon-check too (matching daemon-up's existing validation).
 dc_status=0; bin/daemon-check -p notaport idem-test >/dev/null 2>&1 || dc_status=$?
-if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check -p notaport did not reject non-numeric value (got $dc_status)"; exit 1; fi
+if [ "$dc_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: daemon-check -p notaport did not reject non-numeric value with $EXIT_INVALID_ARG_VALUE (got $dc_status)"; exit 1; fi
 dc_status=0; bin/daemon-check -p 99999 idem-test >/dev/null 2>&1 || dc_status=$?
-if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check -p 99999 did not reject out-of-range value (got $dc_status)"; exit 1; fi
+if [ "$dc_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: daemon-check -p 99999 did not reject out-of-range value with $EXIT_INVALID_ARG_VALUE (got $dc_status)"; exit 1; fi
 pass_test "daemon-check rejects a non-numeric / out-of-range -p value"
 
 echo ""
@@ -523,12 +528,14 @@ if ! echo "$dh_out" | grep -qF "bound but not responding as [svc]"; then echo "F
 pass_test "daemon-http-check exits 2 and reports 'bound but not responding as [svc]' when foreign-held"
 stop_foreign_listener "$dh_listener"
 
-# Invalid args: too few arguments, and a non-numeric port ⇒ exit 3 (distinct from 2).
+# Usage errors route to the reserved band, disjoint from the 0/1/2 operational
+# tri-state: too few arguments is EXIT_MISSING_REQUIRED_ARG (21), a non-numeric
+# port is EXIT_INVALID_ARG_VALUE (22).
 dh_status=0; bin/daemon-http-check svc >/dev/null 2>&1 || dh_status=$?
-if [ "$dh_status" -ne 3 ]; then echo "Fail: daemon-http-check with too few args did not exit 3 (got $dh_status)"; exit 1; fi
+if [ "$dh_status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then echo "Fail: daemon-http-check with too few args did not exit $EXIT_MISSING_REQUIRED_ARG (got $dh_status)"; exit 1; fi
 dh_status=0; bin/daemon-http-check svc notaport http://localhost/healthz >/dev/null 2>&1 || dh_status=$?
-if [ "$dh_status" -ne 3 ]; then echo "Fail: daemon-http-check with a non-numeric port did not exit 3 (got $dh_status)"; exit 1; fi
-pass_test "daemon-http-check exits 3 on invalid args (distinct from the 2 conflict state)"
+if [ "$dh_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: daemon-http-check with a non-numeric port did not exit $EXIT_INVALID_ARG_VALUE (got $dh_status)"; exit 1; fi
+pass_test "daemon-http-check rejects invalid args with band codes (21 / 22), disjoint from the 2 conflict state"
 
 # Bounded probe (regression): a listener that accepts but never replies must NOT
 # hang the probe. Without curl's --max-time the probe blocks forever; `timeout`
@@ -674,5 +681,31 @@ assert_failure "find-free-port 18000 19000 (too many args) is rejected" bin/find
 #     the confirmation prompt non-interactively.
 test_db_reset_drops() { bin/db-reset >/dev/null 2>&1; }
 assert_success "db-reset drops/recreates non-interactively (relays db-drop -y)" test_db_reset_drops
+
+# 13. Unexpected-argument rejection across the guard set. Each guard fires before
+#     any real work, so no live cluster/daemon is needed: the stray argument is
+#     rejected with EXIT_UNEXPECTED_ARG (20) up front. postgres-bounce now rejects
+#     a stray argument before running either child (down then up) — the direct
+#     inversion of the former ignore-and-exit-0 behaviour. The *-check probe and
+#     is-nix cases assert 20 is distinct from their operational 1/2 (down) and
+#     0/1 (dev-shell) codes, which they return through stderr-suppressed `if`
+#     guards where a reused 1 would read silently as "down" / "not in the shell".
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "postgres-bounce rejects an unexpected argument" bin/postgres-bounce stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "rest-server-down rejects an unexpected argument" bin/rest-server-down stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "rest-server-check rejects an unexpected argument" bin/rest-server-check stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "postgres-wait-for-health rejects an unexpected argument" bin/postgres-wait-for-health stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "postgres-check rejects an unexpected argument" bin/postgres-check stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "is-nix rejects an unexpected argument" bin/is-nix stray
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "rest-server-check rejects an unknown option" bin/rest-server-check -z
+
+# 14. Grammar guards on the exactly-one and required-pair scripts. Each guard
+#     fires after getopts but before any kill/db work, so no live process or
+#     cluster is needed: too-many positionals map to EXIT_UNEXPECTED_ARG (20) and
+#     a missing required positional maps to EXIT_MISSING_REQUIRED_ARG (21).
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "check-pid with zero args exits 21" bin/check-pid
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "check-pid with two args exits 20" bin/check-pid 1 2
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "q-enqueue with one arg exits 21" bin/q-enqueue only-job-type
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "q-enqueue with a residual positional exits 20" bin/q-enqueue job '{}' stray
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "q-enqueue with a malformed -d delay exits 22" bin/q-enqueue job '{}' -d not-a-duration
 
 end_tests

@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 wait-for [-p duration] <timeout> <command...>
 
@@ -18,7 +13,7 @@ Options:
   -h: Help
   -p duration  Time to sleep between polling attempts. Supports standard sleep formats (e.g., 1, 1s, 2m, 1h, 1d). Defaults to 1s.
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 PERIOD="1s"
@@ -27,20 +22,20 @@ while getopts ":hp:" opt; do
   case "$opt" in
   h) help ;;
   p) PERIOD="$OPTARG" ;;
-  \?) help "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -lt 2 ]; then
-  help "Error: missing parameters."
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Error: missing parameters."
 fi
 
 TIMEOUT_STR="$1"
 TIMEOUT_SECONDS=$(parse-duration-to-seconds "$TIMEOUT_STR" || echo "")
 if [ -z "$TIMEOUT_SECONDS" ]; then
-  help "Invalid timeout format [$TIMEOUT_STR]. Expected a number optionally followed by s, m, h, or d (e.g., 30, 30s, 2m)."
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid timeout format [$TIMEOUT_STR]. Expected a number optionally followed by s, m, h, or d (e.g., 30, 30s, 2m)."
 fi
 shift
 COMMAND=("$@")

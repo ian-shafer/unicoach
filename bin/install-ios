@@ -10,11 +10,6 @@ source "$PROJECT_ROOT/bin/functions"
 BUNDLE_ID="com.unicoachapp.UnicoachiOS"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 install-ios [-l] [target]
 
@@ -34,7 +29,7 @@ than one device is connected.
 Options:
   -h           Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 LAUNCH=0
@@ -42,8 +37,8 @@ while getopts ":hl" opt; do
   case "$opt" in
   h) help ;;
   l) LAUNCH=1 ;;
-  \?) help "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
@@ -58,7 +53,7 @@ fi
 
 ENV_NAME="${1:-local}"
 if [ "$#" -gt 1 ]; then
-  help "install-ios accepts at most one positional argument (target): $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "install-ios accepts at most one positional argument (target): $*"
 fi
 
 # ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it

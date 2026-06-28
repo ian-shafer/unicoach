@@ -35,7 +35,7 @@ drop_role_test_user() {
 role_test_user_can_login() {
   local out
   out=$(printf "SELECT rolcanlogin FROM pg_roles WHERE rolname = '%s';" "$ROLE_TEST_USER" \
-    | bin/db-query -d "${POSTGRES_ADMIN_DB:-postgres}" -tA 2>&1)
+    | bin/db-query -d "${POSTGRES_ADMIN_DB:-postgres}" -r 2>&1)
   [ "$out" = "t" ] || { echo "rolcanlogin output was: $out"; return 1; }
 }
 
@@ -59,13 +59,13 @@ echo "==== Testing Users Table Initialization ===="
 
 test_users_table_exists() {
   local out
-  out=$(echo "SELECT count(*) FROM users;" | bin/db-query -tA 2>&1) || { echo "output was: $out"; return 1; }
+  out=$(echo "SELECT count(*) FROM users;" | bin/db-query -r 2>&1) || { echo "output was: $out"; return 1; }
 }
 assert_success "users table created" test_users_table_exists
 
 test_users_versions_table_exists() {
   local out
-  out=$(echo "SELECT count(*) FROM users_versions;" | bin/db-query -tA 2>&1) || { echo "output was: $out"; return 1; }
+  out=$(echo "SELECT count(*) FROM users_versions;" | bin/db-query -r 2>&1) || { echo "output was: $out"; return 1; }
 }
 assert_success "users_versions table created" test_users_versions_table_exists
 
@@ -88,7 +88,7 @@ run_test_sql_ta() {
     echo "BEGIN;"
     cat
     echo "ROLLBACK;"
-  ) | bin/db-run rw -tA 2>&1
+  ) | bin/db-run -r rw 2>&1
 }
 
 test_duplicate_email() {
@@ -254,7 +254,7 @@ test_timestamp_trigger() {
   sleep 1
   bin/db-write "UPDATE users SET name = 'Test2', version = 2 WHERE email = 'ts@example.com';"
   local out
-  out=$(echo "SELECT (created_at = updated_at)::text || '|' || (created_at = row_updated_at)::text FROM users WHERE email = 'ts@example.com';" | bin/db-query -tA)
+  out=$(echo "SELECT (created_at = updated_at)::text || '|' || (created_at = row_updated_at)::text FROM users WHERE email = 'ts@example.com';" | bin/db-query -r)
   
   if [ "$out" = "false|false" ]; then return 0; else echo "out was $out"; return 1; fi
 }
@@ -270,7 +270,7 @@ test_timestamp_bypass() {
     echo "SET LOCAL unicoach.bypass_logical_timestamp = 'true';"
     echo "UPDATE users SET name = 'Test2', version = 2 WHERE email = 'ts_bypass@example.com';"
     echo "SELECT (created_at = updated_at)::text || '|' || (created_at = row_updated_at)::text FROM users WHERE email = 'ts_bypass@example.com';"
-  ) | bin/db-run rw -tA | grep -E '^(true|false)\|(true|false)$' )
+  ) | bin/db-run -r rw | grep -E '^(true|false)\|(true|false)$' )
   
   if [ "$out" = "true|false" ]; then return 0; else echo "out was $out"; return 1; fi
 }

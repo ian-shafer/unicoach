@@ -2,50 +2,54 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
-db-query [sql] [options]
+db-query [-d <db>] [-r | -x] [sql]
 
 Arguments:
-  sql: Optional SQL statement
+  sql: Optional SQL statement; when omitted, psql reads stdin
 
 Options:
   -d <db>: Override the target database
+  -r:      Raw output      -> psql -t -A
+  -x:      Expanded output -> psql -x -P border=0
   -h:      Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 DB_FLAGS=()
+OUTPUT_FLAGS=()
+RAW=
+EXPANDED=
 
-# Parse only the leading -d/-h options. The first unrecognized option (e.g. a
-# psql flag such as -tA or -x) ends option parsing and begins the verbatim
-# passthrough to db-run, exactly as the prior `*) break` did. On that unknown
-# option, leave OPTIND pointing at it so it survives the shift below: getopts
-# already points there mid-cluster (-tA), but advances past a standalone
-# single-letter unknown (-x), so step OPTIND back in that case.
-while getopts ":d:h" opt; do
+while getopts ":d:rxh" opt; do
   case "$opt" in
   d) DB_FLAGS=("-d" "$OPTARG") ;;
+  r) RAW=1 ;;
+  x) EXPANDED=1 ;;
   h) help ;;
-  \?)
-    if [ "$OPTIND" -gt 1 ]; then
-      eval "prevarg=\${$((OPTIND-1))}"
-      [ "$prevarg" = "-$OPTARG" ] && OPTIND=$((OPTIND-1))
-    fi
-    break
-    ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
-if [ ${#DB_FLAGS[@]} -eq 0 ]; then
-  exec "$PROJECT_ROOT/bin/db-run" ro "$@"
-else
-  exec "$PROJECT_ROOT/bin/db-run" "${DB_FLAGS[@]}" ro "$@"
+if [ -n "$RAW" ] && [ -n "$EXPANDED" ]; then
+  fatal -s "$EXIT_EXCLUSIVE_OPTIONS" "options -r and -x are mutually exclusive"
 fi
+if [ -n "$RAW" ]; then
+  OUTPUT_FLAGS=("-r")
+elif [ -n "$EXPANDED" ]; then
+  OUTPUT_FLAGS=("-x")
+fi
+
+if [ "$#" -gt 1 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-query accepts at most one SQL argument; received: $*"
+fi
+
+SQL_ARG=()
+if [ "$#" -eq 1 ]; then
+  SQL_ARG=("$1")
+fi
+
+"$PROJECT_ROOT/bin/db-run" "${DB_FLAGS[@]}" "${OUTPUT_FLAGS[@]}" ro "${SQL_ARG[@]}"

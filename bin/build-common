@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 build-common [options]
 
@@ -15,20 +10,20 @@ Assembles the :common module via Gradle.
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
-  help "build-common does not accept positional arguments: $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "build-common does not accept positional arguments: $*"
 fi
 
-exec "$PROJECT_ROOT/gradlew" :common:assemble
+"$PROJECT_ROOT/gradlew" :common:assemble

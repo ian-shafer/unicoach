@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 db-create [options]
 
@@ -25,25 +20,25 @@ migrated database).
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
-  help "db-create does not accept positional arguments: $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-create does not accept positional arguments: $*"
 fi
 
 # ── 1. Create application database if it does not exist ────────────────────────
 if ! echo "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'" \
-    | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -tA \
+    | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -r \
     | grep -q 1; then
   log-info "Creating database [$POSTGRES_DB]..."
   printf "CREATE DATABASE \"%s\";" "$POSTGRES_DB" \

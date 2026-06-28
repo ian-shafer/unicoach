@@ -1,49 +1,39 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
+
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
-db-write [sql] [options]
+db-write [-d <db>] [sql]
 
 Arguments:
-  sql: Optional SQL statement
+  sql: Optional SQL statement; when omitted, psql reads stdin
 
 Options:
   -d <db>: Override the target database
   -h:      Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 DB_FLAGS=()
 
-# Parse only the leading -d/-h options; the first unrecognized option (a psql
-# passthrough flag such as -tA or -x) ends parsing and begins the verbatim
-# passthrough to db-run, exactly as the prior `*) break` did. Keep OPTIND on that
-# unknown option so it survives the shift (getopts already points there
-# mid-cluster, but advances past a standalone single-letter unknown).
 while getopts ":d:h" opt; do
   case "$opt" in
   d) DB_FLAGS=("-d" "$OPTARG") ;;
   h) help ;;
-  \?)
-    if [ "$OPTIND" -gt 1 ]; then
-      eval "prevarg=\${$((OPTIND-1))}"
-      [ "$prevarg" = "-$OPTARG" ] && OPTIND=$((OPTIND-1))
-    fi
-    break
-    ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
-if [ ${#DB_FLAGS[@]} -eq 0 ]; then
-  exec "$PROJECT_ROOT/bin/db-run" rw "$@"
-else
-  exec "$PROJECT_ROOT/bin/db-run" "${DB_FLAGS[@]}" rw "$@"
+if [ "$#" -gt 1 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-write accepts at most one SQL argument; received: $*"
 fi
+
+SQL_ARG=()
+if [ "$#" -eq 1 ]; then
+  SQL_ARG=("$1")
+fi
+
+"$PROJECT_ROOT/bin/db-run" "${DB_FLAGS[@]}" rw "${SQL_ARG[@]}"

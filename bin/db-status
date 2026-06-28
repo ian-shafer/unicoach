@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 db-status [options]
 
@@ -18,7 +13,7 @@ Options:
   -f <type>: Format output. Valid values: applied-only, unapplied-only.
   -h:        Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 format=""
@@ -27,14 +22,14 @@ while getopts ":f:h" opt; do
   case "$opt" in
   f) format="$OPTARG" ;;
   h) help ;;
-  \?) help "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
-  help "db-status does not accept positional arguments: $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-status does not accept positional arguments: $*"
 fi
 
 VALID_FORMATS=("applied-only" "unapplied-only")
@@ -47,7 +42,7 @@ if [[ -n "$format" ]]; then
     fi
   done
   if ! $valid; then
-    help "Invalid format type: $format. Must be one of: ${VALID_FORMATS[*]}."
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid format type: $format. Must be one of: ${VALID_FORMATS[*]}."
   fi
 fi
 
@@ -56,7 +51,7 @@ fi
 
 [ -d "$DB_SCHEMA_DIR" ] || fatal "Schema directory not found: $DB_SCHEMA_DIR"
 
-applied_raw=$(echo "SELECT filename FROM schema_migrations ORDER BY version_id ASC;" | "$PROJECT_ROOT/bin/db-query" -tA)
+applied_raw=$(echo "SELECT filename FROM schema_migrations ORDER BY version_id ASC;" | "$PROJECT_ROOT/bin/db-query" -r)
 
 for file in "$DB_SCHEMA_DIR"/*.sql; do
   # Handles the case where zero schema files exist, which evaluates the loop variable to the literal glob string

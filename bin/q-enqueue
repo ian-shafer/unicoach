@@ -21,8 +21,7 @@ if [ "${1:-}" = "-h" ]; then
 fi
 
 if [ $# -lt 2 ]; then
-  help
-  exit 1
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "q-enqueue requires <job-type> and <payload-json>"
 fi
 
 job_type=$1
@@ -36,19 +35,19 @@ while getopts ":m:d:" opt; do
   case "$opt" in
     m) max_attempts="$OPTARG" ;;
     d) delay="$OPTARG" ;;
-    \?) fatal "Unknown option [-$OPTARG]" ;;
-    :)  fatal "option -$OPTARG requires an argument" ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "Unknown option [-$OPTARG]" ;;
+    :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
-  fatal "Unknown option [$1]"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "q-enqueue: unexpected argument [$1]"
 fi
 
 sql_scheduled_at="NOW()"
 if [ -n "$delay" ]; then
-  interval=$(transform_duration_to_postgres "$delay") || fatal "Invalid delay duration: [$delay]"
+  interval=$(transform_duration_to_postgres "$delay") || fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid delay duration: [$delay]"
   sql_scheduled_at="NOW() + INTERVAL '$interval'"
 fi
 

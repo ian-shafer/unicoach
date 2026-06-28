@@ -8,11 +8,6 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_ROOT/bin/functions"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 build-ios [target]
 
@@ -44,14 +39,14 @@ for UNICOACH_DEVELOPMENT_TEAM (required) and UNICOACH_DEVICE (optional).
 Options:
   -h           Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) help "unknown option [-$OPTARG]" ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
@@ -67,7 +62,7 @@ fi
 
 ENV_NAME="${1:-local}"
 if [ "$#" -gt 1 ]; then
-  help "build-ios accepts at most one positional argument (target): $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "build-ios accepts at most one positional argument (target): $*"
 fi
 
 # ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
@@ -153,7 +148,7 @@ fi
 
 log-info "Building UnicoachiOS [env=$ENV_NAME] [configuration=$UNICOACH_CONFIGURATION] [destination=$UNICOACH_DESTINATION] [backend=$UNICOACH_BACKEND_URL]..."
 
-exec xcodebuild \
+xcodebuild \
   -project "$PROJECT_ROOT/ios-app/UnicoachiOS.xcodeproj" \
   -scheme UnicoachiOS \
   -configuration "$UNICOACH_CONFIGURATION" \

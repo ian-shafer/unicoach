@@ -2,11 +2,6 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
 check-pid <pid>
 
@@ -18,20 +13,23 @@ Arguments:
 Options:
   -h: Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 while getopts ":h" opt; do
   case "$opt" in
   h) help ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
-if [ "$#" -ne 1 ]; then
-  help "Missing required <pid> argument."
+if [ "$#" -lt 1 ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Missing required <pid> argument."
+fi
+if [ "$#" -gt 1 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "check-pid accepts exactly one <pid>; received: $*"
 fi
 
 PID="$1"

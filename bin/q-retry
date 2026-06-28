@@ -13,20 +13,22 @@ EOF
 while getopts ":h" opt; do
   case "$opt" in
   h) help; exit 0 ;;
-  \?) fatal "unknown option [-$OPTARG]" ;;
-  :)  fatal "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
-if [ $# != 1 ]; then
-  help
-  exit 1
+if [ "$#" -lt 1 ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "q-retry requires a <job-id> argument"
+fi
+if [ "$#" -gt 1 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "q-retry accepts exactly one <job-id>; received: $*"
 fi
 
 job_id="$1"
 
-status=$(echo "SELECT status FROM jobs WHERE id = '$job_id';" | "$PROJECT_ROOT/bin/db-query" -tA) || exit 2
+status=$(echo "SELECT status FROM jobs WHERE id = '$job_id';" | "$PROJECT_ROOT/bin/db-query" -r) || exit 2
 
 if [ -z "$status" ]; then
   fatal "Job [$job_id] not found"

@@ -25,8 +25,8 @@ while [ "$#" -gt 0 ]; do
     case "$opt" in
     h) help; exit 0 ;;
     y) skip_prompt=true ;;
-    \?) fatal "Unknown option [-$OPTARG]" ;;
-    :)  fatal "option -$OPTARG requires an argument" ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "Unknown option [-$OPTARG]" ;;
+    :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
     esac
   done
   shift $((OPTIND-1))

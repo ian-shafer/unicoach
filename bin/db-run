@@ -2,80 +2,89 @@
 source "$(dirname "$0")/common"
 
 help() {
-  local exit_code=0
-  if [ "$#" -gt 0 ]; then
-    log-info "$1"
-    exit_code=1
-  fi
   cat << 'EOF'
-db-run <ro|rw> [sql] [options]
+db-run [-d <db>] [-r | -x] <ro|rw> [sql]
 
 Arguments:
-  ro|rw: Access mode
-  sql: Optional SQL statement
+  ro|rw: Access mode (required); ro sets default_transaction_read_only=on
+  sql:   Optional SQL statement; when omitted, psql reads stdin
 
 Options:
   -d <db>: Override the target database
+  -r:      Raw output      -> psql -t -A   (tuples-only, unaligned)
+  -x:      Expanded output -> psql -x -P border=0
   -h:      Help
 EOF
-  exit "$exit_code"
+  exit 0
 }
 
 TARGET_DB="$POSTGRES_DB"
+RAW=
+EXPANDED=
 
-# Parse only the leading -d/-h options; getopts stops at the first non-option
-# (the mandatory <ro|rw> mode). The first unrecognized option ends parsing and
-# begins the verbatim passthrough, exactly as the prior `*) break` did. Keep
-# OPTIND on that unknown option so it survives the shift (getopts already points
-# there mid-cluster, but advances past a standalone single-letter unknown).
-while getopts ":d:h" opt; do
+# Parse only the leading options; getopts stops at the first non-option (the
+# mandatory <ro|rw> mode). Every option is named: an unrecognized one is rejected
+# (it no longer begins a verbatim psql passthrough), and -r/-x are mutually
+# exclusive output modes.
+while getopts ":d:rxh" opt; do
   case "$opt" in
   d) TARGET_DB="$OPTARG" ;;
+  r) RAW=1 ;;
+  x) EXPANDED=1 ;;
   h) help ;;
-  \?)
-    if [ "$OPTIND" -gt 1 ]; then
-      eval "prevarg=\${$((OPTIND-1))}"
-      [ "$prevarg" = "-$OPTARG" ] && OPTIND=$((OPTIND-1))
-    fi
-    break
-    ;;
-  :)  help "option -$OPTARG requires an argument" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
 
-# Suppress health check failure logs to keep operational output clean
-if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null 2>&1; then
-  log-info "PostgreSQL is offline"
-  exit 2
+if [ -n "$RAW" ] && [ -n "$EXPANDED" ]; then
+  fatal -s "$EXIT_EXCLUSIVE_OPTIONS" "options -r and -x are mutually exclusive"
 fi
 
 MODE="${1:-}"
 if [ -z "$MODE" ]; then
-  help "Usage: db-run <ro|rw> [sql]"
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "db-run requires a mode (ro|rw)"
 fi
 shift
 
 if [ "$MODE" != "ro" ] && [ "$MODE" != "rw" ]; then
-  fatal "Invalid mode [$MODE]. Must be 'ro' or 'rw'."
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid mode [$MODE]. Must be 'ro' or 'rw'."
 fi
 
-if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
-  query="$1"
-  shift
-  PSQL_OPTS=()
-  if [ "$MODE" = "ro" ]; then
-    PSQL_OPTS+=("-v" "ON_ERROR_STOP=1" "-U" "$POSTGRES_USER" "-d" "$TARGET_DB")
-    exec env PGOPTIONS="-c default_transaction_read_only=on" \
-      psql "${PSQL_OPTS[@]}" -c "$query" "$@"
-  else
-    exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" -c "$query" "$@"
-  fi
+# After the mode, at most one positional SQL statement is accepted. A residual
+# psql-style flag (a positional beginning with '-') or a second positional is an
+# unexpected argument, not a passthrough.
+if [ "$#" -gt 0 ] && [[ "$1" == -* ]]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "unexpected argument after mode [$1]"
+fi
+if [ "$#" -gt 1 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-run accepts at most one SQL argument after the mode; received: $*"
+fi
+
+# Suppress health check failure logs to keep operational output clean
+if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null 2>&1; then
+  log-info "PostgreSQL is offline [host=${PGHOST:-localhost} port=${PGPORT:-5432}]"
+  exit 2
+fi
+
+OUTPUT_OPTS=()
+if [ -n "$RAW" ]; then
+  OUTPUT_OPTS=("-t" "-A")
+elif [ -n "$EXPANDED" ]; then
+  OUTPUT_OPTS=("-x" "-P" "border=0")
+fi
+
+QUERY_OPTS=()
+if [ "$#" -gt 0 ]; then
+  QUERY_OPTS=("-c" "$1")
+fi
+
+if [ "$MODE" = "ro" ]; then
+  env PGOPTIONS="-c default_transaction_read_only=on" \
+    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" \
+    "${OUTPUT_OPTS[@]}" "${QUERY_OPTS[@]}"
 else
-  if [ "$MODE" = "ro" ]; then
-    exec env PGOPTIONS="-c default_transaction_read_only=on" \
-      psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" "$@"
-  else
-    exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" "$@"
-  fi
+  psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$TARGET_DB" \
+    "${OUTPUT_OPTS[@]}" "${QUERY_OPTS[@]}"
 fi
