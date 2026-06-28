@@ -45,15 +45,20 @@
             pkgs.awscli2
           ];
 
+          # Diagnostic banner goes to stderr, not stdout, so that
+          # `$(nix develop -c <script>)` captures the script's stdout cleanly
+          # (e.g. the rfc-pipeline scripts print a SHA / run state to stdout).
           shellHook = ''
-            echo ""
-            echo "🛠  unicoach dev environment active"
-            echo "   java:     $(java -version 2>&1 | head -1)"
-            echo "   postgres: $(psql --version)"
-            echo "   python:   $(python3 --version)"
-            echo "   deno:     $(deno --version | head -1)"
-            echo "   ktlint:   $(ktlint --version)"
-            echo ""
+            {
+              echo ""
+              echo "🛠  unicoach dev environment active"
+              echo "   java:     $(java -version 2>&1 | head -1)"
+              echo "   postgres: $(psql --version)"
+              echo "   python:   $(python3 --version)"
+              echo "   deno:     $(deno --version | head -1)"
+              echo "   ktlint:   $(ktlint --version)"
+              echo ""
+            } >&2
           '';
         };
       });
