@@ -2,6 +2,7 @@ package ed.unicoach.admin.render
 
 import ed.unicoach.admin.engine.AdminResource
 import ed.unicoach.admin.engine.EdgePanel
+import ed.unicoach.admin.engine.FieldType
 import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
 import kotlinx.html.FormMethod
@@ -29,6 +30,7 @@ fun <ROW, ID> MAIN.renderDetail(
   resource: AdminResource<ROW, ID>,
   row: ROW,
   edges: List<EdgePanel>,
+  display: AdminDisplay,
 ) {
   val id = resource.rowId(row)
   val idPath = resource.idToPath(id)
@@ -51,7 +53,7 @@ fun <ROW, ID> MAIN.renderDetail(
           if (field.sensitive) {
             +"••• (redacted)"
           } else {
-            +(cells[field.name] ?: "")
+            renderCell(cells[field.name] ?: "", field.type, field.refSlug, display)
           }
         }
       }
@@ -81,7 +83,7 @@ fun <ROW, ID> MAIN.renderDetail(
     )
   }
 
-  edges.forEach { panel -> renderEdgePanel(panel) }
+  edges.forEach { panel -> renderEdgePanel(panel, display) }
 }
 
 /**
@@ -107,7 +109,10 @@ fun FlowContent.actionButton(
   }
 }
 
-private fun FlowContent.renderEdgePanel(panel: EdgePanel) {
+private fun FlowContent.renderEdgePanel(
+  panel: EdgePanel,
+  display: AdminDisplay,
+) {
   div("panel") {
     h2 { +panel.label }
     when (panel) {
@@ -122,32 +127,32 @@ private fun FlowContent.renderEdgePanel(panel: EdgePanel) {
       }
 
       is EdgePanel.Table -> {
-        renderTablePanel(panel)
+        renderTablePanel(panel, display)
       }
 
       is EdgePanel.Embedded -> {
-        renderEmbeddedPanel(panel)
+        renderEmbeddedPanel(panel, display)
       }
     }
   }
 }
 
-private fun FlowContent.renderTablePanel(panel: EdgePanel.Table) {
+private fun FlowContent.renderTablePanel(
+  panel: EdgePanel.Table,
+  display: AdminDisplay,
+) {
   if (panel.rows.isEmpty()) {
     p { +"(none)" }
     return
   }
   table {
-    tr { panel.columns.forEach { th { +it } } }
+    tr { panel.columns.forEach { th { +it.label } } }
     panel.rows.forEach { row ->
       tr {
         row.cells.forEachIndexed { index, cell ->
+          val column = panel.columns.getOrNull(index)
           td {
-            if (index == 0 && row.href != null) {
-              a(href = row.href) { +cell }
-            } else {
-              +cell
-            }
+            renderCell(cell, column?.type ?: FieldType.TEXT, column?.refSlug, display)
           }
         }
       }
@@ -155,7 +160,10 @@ private fun FlowContent.renderTablePanel(panel: EdgePanel.Table) {
   }
 }
 
-private fun FlowContent.renderEmbeddedPanel(panel: EdgePanel.Embedded) {
+private fun FlowContent.renderEmbeddedPanel(
+  panel: EdgePanel.Embedded,
+  display: AdminDisplay,
+) {
   if (!panel.present) {
     p { +"No ${panel.label} yet." }
     renderForm(
@@ -171,10 +179,10 @@ private fun FlowContent.renderEmbeddedPanel(panel: EdgePanel.Embedded) {
     p("deleted") { +"(soft-deleted)" }
   }
   table {
-    panel.fields.forEach { (label, value) ->
+    panel.fields.forEach { cell ->
       tr {
-        th { +label }
-        td { +value }
+        th { +cell.label }
+        td { renderCell(cell.value, cell.type, cell.refSlug, display) }
       }
     }
   }
@@ -193,10 +201,16 @@ private fun FlowContent.renderEmbeddedPanel(panel: EdgePanel.Embedded) {
       h3 { +nested.label }
       when (nested) {
         is EdgePanel.Table -> {
-          renderTablePanel(nested)
+          renderTablePanel(nested, display)
         }
 
-        else -> {}
+        // Only a Table is supported as a nested panel today; the remaining
+        // subtypes are named (not an `else`) so adding an EdgePanel variant is a
+        // compile error here rather than a silent drop.
+        is EdgePanel.ParentLink,
+        is EdgePanel.ParentAbsent,
+        is EdgePanel.Embedded,
+        -> {}
       }
     }
   }

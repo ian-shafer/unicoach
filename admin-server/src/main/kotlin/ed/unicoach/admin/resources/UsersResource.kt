@@ -53,7 +53,7 @@ class UsersResource(
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "user"),
       AdminField("email", "Email", FieldType.TEXT, editable = true, sensitive = false),
       AdminField("name", "Name", FieldType.TEXT, editable = true, sensitive = false),
       AdminField("displayName", "Display Name", FieldType.TEXT, editable = true, sensitive = false),
@@ -334,11 +334,16 @@ class UsersResource(
     val sessionsPanel =
       EdgePanel.Table(
         label = "Sessions",
-        columns = listOf("ID", "User Agent", "Created", "Expires"),
+        columns =
+          listOf(
+            EdgePanel.Table.Column("ID", refSlug = "session"),
+            EdgePanel.Table.Column("User Agent"),
+            EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
+            EdgePanel.Table.Column("Expires", FieldType.TIMESTAMP),
+          ),
         rows =
           sessions.map { s ->
             EdgePanel.Table.Row(
-              href = "/session/${s.id.value}",
               cells =
                 listOf(
                   s.id.value.toString(),
@@ -357,11 +362,19 @@ class UsersResource(
     val historyPanel =
       EdgePanel.Table(
         label = "Version history",
-        columns = listOf("Version", "Email", "Name", "Admin", "Email Verified", "Updated", "Deleted"),
+        columns =
+          listOf(
+            EdgePanel.Table.Column("Version"),
+            EdgePanel.Table.Column("Email"),
+            EdgePanel.Table.Column("Name"),
+            EdgePanel.Table.Column("Admin", FieldType.BOOL),
+            EdgePanel.Table.Column("Email Verified", FieldType.TIMESTAMP),
+            EdgePanel.Table.Column("Updated", FieldType.TIMESTAMP),
+            EdgePanel.Table.Column("Deleted", FieldType.TIMESTAMP),
+          ),
         rows =
           versions.map { v ->
             EdgePanel.Table.Row(
-              href = null,
               cells =
                 listOf(
                   v.version.toString(),

@@ -47,8 +47,8 @@ object StudentsResource : AdminResource<Student, StudentId> {
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("userId", "User ID", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
+      AdminField("userId", "User ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "user"),
       AdminField(
         "expectedHighSchoolGraduationDate",
         "Expected HS Graduation",
@@ -154,11 +154,16 @@ object StudentsResource : AdminResource<Student, StudentId> {
     val historyPanel =
       EdgePanel.Table(
         label = "Version history",
-        columns = listOf("Version", "Graduation", "Updated", "Deleted"),
+        columns =
+          listOf(
+            EdgePanel.Table.Column("Version"),
+            EdgePanel.Table.Column("Graduation"),
+            EdgePanel.Table.Column("Updated", FieldType.TIMESTAMP),
+            EdgePanel.Table.Column("Deleted", FieldType.TIMESTAMP),
+          ),
         rows =
           versions.map { v ->
             EdgePanel.Table.Row(
-              href = null,
               cells =
                 listOf(
                   v.version.toString(),
@@ -184,7 +189,15 @@ object StudentsResource : AdminResource<Student, StudentId> {
         ownerSlug = "user",
         ownerId = userId.value.toString(),
         present = true,
-        fields = fields.filterNot { it.sensitive }.map { it.label to (cells[it.name] ?: "") },
+        fields =
+          fields.filterNot { it.sensitive }.map { field ->
+            EdgePanel.LabeledCell(
+              label = field.label,
+              type = field.type,
+              refSlug = field.refSlug,
+              value = cells[field.name] ?: "",
+            )
+          },
         editValues = cells,
         version = student.version,
         deleted = student.deletedAt != null,
@@ -210,7 +223,6 @@ object StudentsResource : AdminResource<Student, StudentId> {
       null
     } else {
       EdgePanel.Table.Row(
-        href = null,
         cells =
           listOf("Showing first $STUDENT_PANEL_LIMIT — see /$listSlug for full list") +
             List(columns - 1) { "" },
@@ -226,11 +238,17 @@ object StudentsResource : AdminResource<Student, StudentId> {
       db
         .withConnection { session -> ClaimsDao.listByStudent(session, studentId, STUDENT_PANEL_LIMIT, 0) }
         .getOrElse { return Result.failure(it) }
-    val columns = listOf("ID", "Status", "Topic", "Confidence", "Created")
+    val columns =
+      listOf(
+        EdgePanel.Table.Column("ID", refSlug = "claim"),
+        EdgePanel.Table.Column("Status"),
+        EdgePanel.Table.Column("Topic"),
+        EdgePanel.Table.Column("Confidence"),
+        EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
+      )
     val rows =
       claims.map { c ->
         EdgePanel.Table.Row(
-          href = "/claim/${c.id.value}",
           cells =
             listOf(
               c.id.value.toString(),
@@ -253,11 +271,16 @@ object StudentsResource : AdminResource<Student, StudentId> {
       db
         .withConnection { session -> ObservationsDao.listByStudent(session, studentId, STUDENT_PANEL_LIMIT, 0) }
         .getOrElse { return Result.failure(it) }
-    val columns = listOf("ID", "Convo ID", "Uttered", "Created")
+    val columns =
+      listOf(
+        EdgePanel.Table.Column("ID", refSlug = "observation"),
+        EdgePanel.Table.Column("Convo ID"),
+        EdgePanel.Table.Column("Uttered", FieldType.TIMESTAMP),
+        EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
+      )
     val rows =
       observations.map { o ->
         EdgePanel.Table.Row(
-          href = "/observation/${o.id.value}",
           cells =
             listOf(
               o.id.value.toString(),
@@ -279,11 +302,18 @@ object StudentsResource : AdminResource<Student, StudentId> {
       db
         .withConnection { session -> ExtractionRunsDao.listByStudent(session, studentId, STUDENT_PANEL_LIMIT, 0) }
         .getOrElse { return Result.failure(it) }
-    val columns = listOf("ID", "Outcome", "Model", "Input Tokens", "Output Tokens", "Created")
+    val columns =
+      listOf(
+        EdgePanel.Table.Column("ID", refSlug = "extraction-run"),
+        EdgePanel.Table.Column("Outcome"),
+        EdgePanel.Table.Column("Model"),
+        EdgePanel.Table.Column("Input Tokens"),
+        EdgePanel.Table.Column("Output Tokens"),
+        EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
+      )
     val rows =
       extractionRuns.map { r ->
         EdgePanel.Table.Row(
-          href = "/extraction-run/${r.id.value}",
           cells =
             listOf(
               r.id.value.toString(),

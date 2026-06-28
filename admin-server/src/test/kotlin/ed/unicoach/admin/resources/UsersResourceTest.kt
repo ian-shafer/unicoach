@@ -64,10 +64,24 @@ class UsersResourceTest {
       // 1. Render the list, extract the ACTUAL href of the user row link, follow it.
       val list = client().get("/user") { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.OK, list.status)
-      val href = firstUserDetailHref(list.bodyAsText())
+      val listBody = list.bodyAsText()
+      val href = firstUserDetailHref(listBody)
 
       // A typed-id leak would produce "/user/UserId(value=...)"; assert the raw UUID segment.
       assertEquals("/user/${target.id.value}", href, "List link must use the raw id, not the value-class toString()")
+
+      // Uniform cell rendering (RFC 79): the id cell renders the raw id as plain
+      // text followed by the ref-link glyph (separated by a non-breaking space) —
+      // the glyph is the sole link to the entity. The value text must NOT be
+      // wrapped in its own <a>.
+      assertTrue(
+        listBody.contains("${target.id.value} <a href=\"/user/${target.id.value}\" class=\"id-link\">🔗</a>"),
+        "The id cell must render plain id text followed by the glyph link",
+      )
+      assertFalse(
+        Regex("""<a href="/user/${target.id.value}"(?![^>]*class="id-link")""").containsMatchIn(listBody),
+        "No <a> may wrap the id value text; navigation is the glyph alone",
+      )
 
       val detail = client().get(href) { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.OK, detail.status, "Following the rendered list link must reach the detail page, not 404")
@@ -259,6 +273,76 @@ class UsersResourceTest {
       val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
       assertTrue(body.contains("/claim/${claim.id.value}"), "User page must link to the student's claim")
       assertTrue(body.contains("/extraction-run/${run.id.value}"), "User page must link to the student's extraction run")
+    }
+
+  @Test
+  fun `user detail renders isAdmin as a bool glyph and the id row carries a link glyph`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Glyph User", isAdmin = true)
+
+      val detail = client().get("/user/${target.id.value}") { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, detail.status)
+      val body = detail.bodyAsText()
+
+      // isAdmin renders as the configured true glyph in bool-true, never the literal "true".
+      assertTrue(body.contains("bool-true"), "Admin row must render the bool-true glyph")
+      assertFalse(
+        Regex("""Admin</th>\s*<td>\s*true""").containsMatchIn(body),
+        "isAdmin must not render the literal 'true'",
+      )
+
+      // The id field row carries a link glyph hyperlinking to its own detail page.
+      assertTrue(
+        body.contains("href=\"/user/${target.id.value}\""),
+        "The id field row must link to the user's own detail page via the glyph",
+      )
+      assertTrue(body.contains("🔗"), "The id field row must carry the link glyph")
+    }
+
+  @Test
+  fun `a blank ref cell renders the value with no glyph link`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      // An anonymous session (null userId) yields a blank "User ID" cell whose field
+      // carries refSlug = "user". On the session detail page that blank ref cell must
+      // render no glyph link (blank value -> renderRefLink emits nothing), exercising
+      // the blank-ref-value path on a real rendered row.
+      val sessionId =
+        runBlocking {
+          AdminTestSupport.database
+            .withConnection { s ->
+              ed.unicoach.db.dao.SessionsDao
+                .create(
+                  s,
+                  ed.unicoach.db.models.NewSession(
+                    userId = null,
+                    tokenHash =
+                      ed.unicoach.db.models.TokenHash
+                        .fromRawToken(
+                          java.util.UUID
+                            .randomUUID()
+                            .toString(),
+                        ),
+                    userAgent = "test",
+                    initialIp = "127.0.0.1",
+                    metadata = null,
+                    expiration = java.time.Duration.ofSeconds(3600),
+                  ),
+                )
+            }.getOrThrow()
+            .id.value
+            .toString()
+        }
+
+      val body = client().get("/session/$sessionId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      // The blank User ID cell must not produce a /user/ glyph link.
+      assertFalse(
+        Regex("""User ID</th>\s*<td>[^<]*<a""").containsMatchIn(body),
+        "A blank ref cell must render no glyph link",
+      )
     }
 
   @Test

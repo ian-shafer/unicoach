@@ -21,6 +21,10 @@ enum class FieldType {
  *   large for a list cell); detail and form rendering are unaffected. Orthogonal
  *   to [sensitive], which also removes a field from forms and detail.
  * @property enumValues the allowed values when [type] is [FieldType.ENUM].
+ * @property refSlug when non-null, marks this column as an entity reference whose
+ *   value links to that resource's detail page (RFC 79). The primary id sets its
+ *   own slug; a foreign-key column sets the referenced slug. A slug not registered
+ *   as an admin resource renders the value with no link.
  */
 data class AdminField(
   val name: String,
@@ -30,4 +34,5 @@ data class AdminField(
   val sensitive: Boolean,
   val inList: Boolean = true,
   val enumValues: List<String> = emptyList(),
+  val refSlug: String? = null,
 )

@@ -23,16 +23,40 @@ sealed interface EdgePanel {
   ) : EdgePanel
 
   /**
-   * A table of child rows. Each row carries its canonical detail href and the
-   * ordered cell values under [columns].
+   * A table of child rows. Each row carries its ordered cell values; each
+   * [Column] carries the type and ref-slug so the same `renderCell` governs an
+   * edge cell as a detail field cell (RFC 79) — the value as plain text followed
+   * by the ref-link glyph, with navigation to a child's detail page being the
+   * primary-id column's own refSlug glyph. Cells stay raw, positional strings.
    */
   data class Table(
     override val label: String,
-    val columns: List<String>,
+    val columns: List<Column>,
     val rows: List<Row>,
   ) : EdgePanel {
+    init {
+      // Cells are positional against `columns`, so a row/column count mismatch
+      // would silently mis-render (a surplus cell as plain text, a missing cell
+      // dropped). Fail fast at construction so the bug surfaces in dev/test.
+      rows.forEachIndexed { index, row ->
+        require(row.cells.size == columns.size) {
+          "EdgePanel.Table '$label' row $index has ${row.cells.size} cells but ${columns.size} columns"
+        }
+      }
+    }
+
+    /**
+     * A typed edge-table column. [type] and [refSlug] default to plain text so a
+     * label-only column stays terse (`Column("Topic")`); id/timestamp/bool columns
+     * set them explicitly.
+     */
+    data class Column(
+      val label: String,
+      val type: FieldType = FieldType.TEXT,
+      val refSlug: String? = null,
+    )
+
     data class Row(
-      val href: String?,
       val cells: List<String>,
     )
   }
@@ -47,7 +71,7 @@ sealed interface EdgePanel {
     val ownerSlug: String,
     val ownerId: String,
     val present: Boolean,
-    val fields: List<Pair<String, String>>,
+    val fields: List<LabeledCell>,
     val editValues: Map<String, String>,
     val version: Int?,
     val deleted: Boolean,
@@ -55,4 +79,15 @@ sealed interface EdgePanel {
     val editFields: List<AdminField>,
     val nested: List<EdgePanel>,
   ) : EdgePanel
+
+  /**
+   * A typed label/value pair for an [Embedded] panel's field table, carrying the
+   * type and ref-slug so it routes through the same `renderCell` (RFC 79).
+   */
+  data class LabeledCell(
+    val label: String,
+    val type: FieldType,
+    val refSlug: String?,
+    val value: String,
+  )
 }

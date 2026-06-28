@@ -87,6 +87,22 @@ class SessionsResourceTest {
     }
 
   @Test
+  fun `a session userId cell carries a glyph link to the owning user in list and detail`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val (userId, sessionId) = seedUserWithSession()
+
+      val list = client().get("/session") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(list.contains("/user/$userId"), "List User ID cell must link to the owning user")
+      assertTrue(list.contains("🔗"), "List User ID cell must carry the link glyph")
+
+      val detail = client().get("/session/$sessionId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(detail.contains("/user/$userId"), "Detail User ID cell must link to the owning user")
+      assertTrue(detail.contains("🔗"), "Detail User ID cell must carry the link glyph")
+    }
+
+  @Test
   fun `a users session has-many row links to the canonical session detail path`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

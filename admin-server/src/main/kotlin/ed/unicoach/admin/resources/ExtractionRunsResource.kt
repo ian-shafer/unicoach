@@ -30,8 +30,8 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "extraction-run"),
+      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
       AdminField("outcome", "Outcome", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("modelResolved", "Model", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("claimsWritten", "Claims Written", FieldType.INT, editable = false, sensitive = false),
@@ -40,7 +40,15 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("convoId", "Convo ID", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("throughRequestId", "Through Request ID", FieldType.TEXT, editable = false, sensitive = false, inList = false),
-      AdminField("systemPromptId", "System Prompt ID", FieldType.TEXT, editable = false, sensitive = false, inList = false),
+      AdminField(
+        "systemPromptId",
+        "System Prompt ID",
+        FieldType.TEXT,
+        editable = false,
+        sensitive = false,
+        inList = false,
+        refSlug = "system-prompt",
+      ),
       AdminField("provider", "Provider", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("observationsWritten", "Observations Written", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("claimsSuperseded", "Claims Superseded", FieldType.INT, editable = false, sensitive = false, inList = false),

@@ -33,6 +33,9 @@ private const val STYLES = """
   .deleted { color: #b91c1c; }
   .deleted-badge { background: #b91c1c; color: #fff; padding: 0 0.3rem; border-radius: 3px; font-size: 0.8rem; }
   .pager a { margin-right: 1rem; }
+  .bool-true { color: #15803d; }
+  .bool-false { color: #b91c1c; }
+  a.id-link { text-decoration: none; }
   label { display: block; font-weight: bold; margin-top: 0.5rem; }
   input, textarea, select { width: 320px; padding: 0.3rem; }
   button { margin-top: 0.75rem; padding: 0.4rem 0.8rem; }

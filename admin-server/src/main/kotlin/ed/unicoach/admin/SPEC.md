@@ -68,14 +68,18 @@ sibling subpackages and are referenced here only by responsibility.
   session, system-prompt, claims, observations, and extraction-runs descriptors
   (`UsersResource`, `StudentsResource`, `SessionsResource`,
   `SystemPromptsResource`, `ClaimsResource`, `ObservationsResource`,
-  `ExtractionRunsResource`); and registers the liveness, login/logout, and
-  descriptor-driven resource routes into the routing tree. The claims,
-  observations, and extraction-runs descriptors expose the coaching-memory
-  surfaces as list+detail read-only views (no create/edit/delete).
-  `UsersResource` is the only descriptor constructed with collaborators: it
-  receives both the same hasher instance used for login (for its user-create
-  path) and the `emailVerificationService` (for its "send verification email"
-  action's resend path); the other descriptors are passed as-is.
+  `ExtractionRunsResource`); constructs an `AdminDisplay` from
+  `adminConfig.display` and the registry's entity-support predicate (RFC 79:
+  `{ slug -> registry.bySlug(slug) != null }`), then passes it to
+  `registerAdminRoutes` so every cell renders through the uniform `renderCell`
+  helper; and registers the liveness, login/logout, and descriptor-driven
+  resource routes into the routing tree. The claims, observations, and
+  extraction-runs descriptors expose the coaching-memory surfaces as list+detail
+  read-only views (no create/edit/delete). `UsersResource` is the only
+  descriptor constructed with collaborators: it receives both the same hasher
+  instance used for login (for its user-create path) and the
+  `emailVerificationService` (for its "send verification email" action's resend
+  path); the other descriptors are passed as-is.
 - **Inputs**: All collaborators are pre-constructed by `startServer` and passed
   in; the module performs no config parsing and constructs no IO-bound singleton
   of its own.
@@ -102,14 +106,25 @@ sibling subpackages and are referenced here only by responsibility.
 ### `AdminConfig.from(config: Config): Result<AdminConfig>` — [`AdminConfig.kt`](./AdminConfig.kt)
 
 - **Behavior**: Pure parse of an already-loaded `Config` into the typed admin
-  bind/session settings, reading every key directly under `admin.server` /
-  `admin.session` with no in-code default (the loopback `host` default lives in
-  `admin-server.conf`, not this function).
+  bind/session settings plus the display conventions (`DisplayConfig`), reading
+  every key directly under `admin.server` / `admin.session` / `admin.display`
+  with no in-code defaults (all defaults live in `admin-server.conf`). The
+  `timezone` key is validated through `ZoneId.of`, so a malformed timezone zone
+  ID fails this call (not at first render).
 - **Side effects**: None.
-- **Error handling**: A missing `admin` section or any missing key under
-  `admin.server` / `admin.session` yields `Result.failure` carrying the
-  underlying exception; the function does not throw.
+- **Error handling**: A missing `admin` section, any missing key under
+  `admin.server` / `admin.session` / `admin.display`, or a malformed timezone
+  yields `Result.failure` carrying the underlying exception; the function does
+  not throw.
 - **Idempotency**: Yes — pure function of its input.
+
+### `DisplayConfig` — [`AdminConfig.kt`](./AdminConfig.kt)
+
+A nested value on `AdminConfig` (RFC 79). Carries the display conventions shared
+by every admin view: `timezone` (`ZoneId`), `idLinkGlyph`, `boolTrueGlyph`,
+`boolFalseGlyph`. Parsed from the `admin.display` HOCON section. The render
+layer converts it to `AdminDisplay` (via `DisplayConfig.toAdminDisplay`) and
+uses it directly; `AdminConfig` is never referenced by the render layer.
 
 ---
 
@@ -119,26 +134,34 @@ sibling subpackages and are referenced here only by responsibility.
 
 Required keys in `admin-server.conf`, parsed by `AdminConfig.from`:
 
-| Key                               | Type    | Description                                         |
-| --------------------------------- | ------- | --------------------------------------------------- |
-| `admin.server.host`               | String  | Netty bind host; defaults to loopback (`127.0.0.1`) |
-| `admin.server.port`               | Int     | Netty bind port                                     |
-| `admin.session.cookieName`        | String  | Admin session cookie name                           |
-| `admin.session.cookieDomain`      | String  | Cookie domain attribute (empty ⇒ host-only cookie)  |
-| `admin.session.cookieSecure`      | Boolean | `Secure` cookie flag                                |
-| `admin.session.expirationSeconds` | Long    | Admin session TTL, in seconds                       |
+| Key                               | Type    | Description                                                                  |
+| --------------------------------- | ------- | ---------------------------------------------------------------------------- |
+| `admin.server.host`               | String  | Netty bind host; defaults to loopback (`127.0.0.1`)                          |
+| `admin.server.port`               | Int     | Netty bind port                                                              |
+| `admin.session.cookieName`        | String  | Admin session cookie name                                                    |
+| `admin.session.cookieDomain`      | String  | Cookie domain attribute (empty ⇒ host-only cookie)                           |
+| `admin.session.cookieSecure`      | Boolean | `Secure` cookie flag                                                         |
+| `admin.session.expirationSeconds` | Long    | Admin session TTL, in seconds                                                |
+| `admin.display.timezone`          | String  | Timezone for all datetime cells (validated via `ZoneId.of`); default `"UTC"` |
+| `admin.display.idLinkGlyph`       | String  | Entity-reference link glyph; default `"🔗"`                                  |
+| `admin.display.boolTrueGlyph`     | String  | Boolean true glyph; default `"✓"`                                            |
+| `admin.display.boolFalseGlyph`    | String  | Boolean false glyph; default `"✗"`                                           |
 
 ### Environment Variable Overrides
 
 `admin-server.conf` binds these HOCON substitutions; each overrides the
 corresponding key when set in the process environment:
 
-| Variable              | Overrides                    |
-| --------------------- | ---------------------------- |
-| `ADMIN_SERVER_HOST`   | `admin.server.host`          |
-| `ADMIN_SERVER_PORT`   | `admin.server.port`          |
-| `ADMIN_COOKIE_DOMAIN` | `admin.session.cookieDomain` |
-| `ADMIN_COOKIE_SECURE` | `admin.session.cookieSecure` |
+| Variable                 | Overrides                      |
+| ------------------------ | ------------------------------ |
+| `ADMIN_SERVER_HOST`      | `admin.server.host`            |
+| `ADMIN_SERVER_PORT`      | `admin.server.port`            |
+| `ADMIN_COOKIE_DOMAIN`    | `admin.session.cookieDomain`   |
+| `ADMIN_COOKIE_SECURE`    | `admin.session.cookieSecure`   |
+| `ADMIN_DISPLAY_TIMEZONE` | `admin.display.timezone`       |
+| `ADMIN_ID_LINK_GLYPH`    | `admin.display.idLinkGlyph`    |
+| `ADMIN_BOOL_TRUE_GLYPH`  | `admin.display.boolTrueGlyph`  |
+| `ADMIN_BOOL_FALSE_GLYPH` | `admin.display.boolFalseGlyph` |
 
 ### Config Load List
 
@@ -172,3 +195,12 @@ driving the `UsersResource` resend action. It does not depend on `rest-server`,
 - [x] [RFC-65: Email Verification (Backend)](../../../../../../../rfc/65-email-verification.md)
 - [x] [RFC-76: Admin email-verification actions](../../../../../../../rfc/76-admin-email-verification-actions.md)
 - [x] [RFC-77: Read-only admin views for coaching memory](../../../../../../../rfc/77-admin-coaching-memory-views.md)
+- [x] [RFC-79: Admin display conventions](../../../../../../../rfc/79-admin-display-conventions.md)
+      — added `DisplayConfig` to `AdminConfig.kt` (parsed from a new
+      `admin.display` HOCON block: `timezone`, `idLinkGlyph`, `boolTrueGlyph`,
+      `boolFalseGlyph`; timezone validated via `ZoneId.of` at startup); added
+      four new environment-variable overrides (`ADMIN_DISPLAY_TIMEZONE`,
+      `ADMIN_ID_LINK_GLYPH`, `ADMIN_BOOL_TRUE_GLYPH`, `ADMIN_BOOL_FALSE_GLYPH`);
+      `adminModule` now builds an `AdminDisplay` from the parsed display config
+      and the registry's entity-support predicate and passes it to
+      `registerAdminRoutes`.

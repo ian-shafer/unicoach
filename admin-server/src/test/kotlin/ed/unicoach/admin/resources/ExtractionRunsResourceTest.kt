@@ -74,6 +74,22 @@ class ExtractionRunsResourceTest {
     }
 
   @Test
+  fun `the convoId cell on detail renders with no link because the slug is unsupported`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val runId = seedRun()
+
+      val body = client().get("/extraction-run/$runId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(body.contains("Convo ID"), "Detail must render the Convo ID row")
+      // convoId has no admin resource: its cell must produce no glyph link.
+      assertFalse(
+        Regex("""Convo ID</th>\s*<td>[^<]*<a""").containsMatchIn(body),
+        "An unsupported-slug ref cell must render no glyph link",
+      )
+    }
+
+  @Test
   fun `read-only - no write routes resolve and no edit or delete affordance renders`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

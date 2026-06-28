@@ -10,6 +10,15 @@ one panel per edge), field-typed create/edit forms, and standalone HTML error
 pages. It is the view layer only — it holds no domain logic, reads no database,
 and mutates no state.
 
+RFC 79 introduced three central rendering helpers in the new
+[`CellRender.kt`](./CellRender.kt) that make four display conventions uniform
+across all cells: datetime formatting in a configured timezone, boolean glyphs,
+entity-reference id-link glyphs, and blank suppression. Every cell (list rows,
+detail field table, all edge-table and embedded-panel cells) routes through the
+same `renderCell` helper. The render context (`AdminDisplay`) is constructed
+once in `adminModule` and threaded into the render functions; the render layer
+never holds the registry directly.
+
 ---
 
 ## II. Behavioral Contracts
@@ -22,30 +31,91 @@ pre-fetched row data passed by the engine and produces markup without mutating
 the descriptor, the row data, or any caller state. They carry no idempotency
 concern beyond "calling twice emits the markup twice."
 
+### `AdminDisplay` — [`CellRender.kt`](./CellRender.kt)
+
+The render-time context for the four display conventions of RFC 79. Constructed
+once in `adminModule` (via `DisplayConfig.toAdminDisplay`) and threaded into the
+render functions; the render layer never holds the registry, only this object.
+
+- **`zone: ZoneId`** — the timezone all datetimes render in.
+- **`idLinkGlyph: String`** — the entity-reference link glyph (e.g. `🔗`).
+- **`boolTrueGlyph: String`** — the true boolean glyph (e.g. `✓`).
+- **`boolFalseGlyph: String`** — the false boolean glyph (e.g. `✗`).
+- **`isSupported: (slug: String) -> Boolean`** — `registry.bySlug(it) != null`;
+  the render layer uses only this predicate, not the registry itself.
+
+### `DisplayConfig.toAdminDisplay(isSupported)` — [`CellRender.kt`](./CellRender.kt)
+
+Converts the parsed `DisplayConfig` into an `AdminDisplay` by field-by-field
+copy plus the `isSupported` predicate. Centralising the conversion here (next to
+both types) means a new `DisplayConfig` field cannot be silently omitted at the
+`adminModule` wiring site.
+
+### `FlowContent.renderValue(value, type, display)` — [`CellRender.kt`](./CellRender.kt)
+
+Renders the typed value only — no entity link. The single place the datetime and
+boolean display conventions live.
+
+- **`FieldType.TIMESTAMP`**: the source instant formatted as `MMM d, yyyy`
+  (`Locale.ENGLISH`) in `display.zone`, in a `<span>` whose `title` attribute
+  carries the verbatim source ISO string for hover. A blank value renders
+  nothing. A value that does not parse as an `Instant` is logged at WARN and
+  rendered as raw text (never throws).
+- **`FieldType.BOOL`**: `"true"` → the configured true glyph in a
+  `<span
+  class="bool-true">`; `"false"` → the configured false glyph in
+  `<span
+  class="bool-false">`. A blank value renders nothing. Any other value
+  surfaces as raw text (rather than being masked as false) so an unexpected
+  value is visible. `cells()` always stringifies bools as `"true"`/`"false"`, so
+  the raw-text branch is unreachable in practice.
+- **All other types**: the raw text verbatim.
+
+### `FlowContent.renderRefLink(value, refSlug, display)` — [`CellRender.kt`](./CellRender.kt)
+
+Renders the trailing entity-reference link. When `refSlug` is non-null, `value`
+is non-blank, and `display.isSupported(refSlug)` is true: emits a non-breaking
+space text node followed by the configured `idLinkGlyph` as a hyperlink in the
+`id-link` CSS class to `/{refSlug}/{value}`. Otherwise renders nothing. The
+non-breaking space is a separate text node so the glyph never wraps to its own
+line.
+
+### `FlowContent.renderCell(value, type, refSlug, display)` — [`CellRender.kt`](./CellRender.kt)
+
+The composite cell helper: `renderValue` then `renderRefLink`. Every cell in the
+admin website (list rows, detail field table, all edge-table cells, and embedded
+panel field cells) routes through this function uniformly (RFC 79). No cell
+wraps its value text in a hyperlink; the trailing glyph is the sole link to the
+entity, so navigation to a row's detail page is the primary-id column's own
+`refSlug` glyph.
+
 ### `HTML.adminPage(pageTitle, nav, topLevelResources, content)` — [`Layout.kt`](./Layout.kt)
 
 - **Behavior**: Emits the page `<head>` (title + inline stylesheet) and
   `<body>`. When `nav` is true, emits the sidebar (dashboard link, one link per
   `topLevelResources` entry to `/{slug}`, and a `POST /logout` button), then the
   `<main>` content. When `nav` is false, emits only the `<main>` content — the
-  standalone form used by login and error pages.
+  standalone form used by login and error pages. The stylesheet includes three
+  RFC-79 classes: `bool-true` (green), `bool-false` (red), and `id-link` (no
+  underline on the glyph link).
 - **Inputs**: `topLevelResources` supplies nav link targets/labels; the renderer
   reads only each resource's `slug` and `title`.
 - **Side effects**: HTML emission only.
 
-### `MAIN.renderList(resource, rows, offset, pageSize, hasNext)` — [`ListView.kt`](./ListView.kt)
+### `MAIN.renderList(resource, rows, offset, pageSize, hasNext, display)` — [`ListView.kt`](./ListView.kt)
 
 - **Behavior**: Emits the title, an optional "+ New" link when the descriptor
   exposes a `create` handler, a table whose columns are the descriptor's fields
   that are both list-visible (`inList`) and non-sensitive, one row per element
   of `rows`, and a prev/next pager. Fields flagged off-list (`inList == false`)
   or sensitive are excluded from the columns; the same field set governs the
-  header cells and every body cell, so columns and values stay aligned. Only the
-  first cell of each row is rendered as the canonical `/{slug}/{id}` detail link
-  (derived from the descriptor's `slug` and `idToPath`); the remaining cells
-  render as plain text. A row reported deleted by `isDeleted` is marked with a
-  "deleted" badge rather than hidden. A null cell value renders as the empty
-  string.
+  header cells and every body cell, so columns and values stay aligned. Every
+  cell renders through `renderCell(value, field.type, field.refSlug, display)` —
+  the typed value followed by the ref-link glyph. No cell's value text is
+  wrapped in a hyperlink; the id column's own `refSlug` glyph is the sole
+  navigation link to a row's detail page. A row reported deleted by `isDeleted`
+  is marked with a "deleted" badge (after the first cell's glyph) rather than
+  hidden. A null cell value renders as the empty string.
 - **Pager**: A "« Previous" link appears only when `offset > 0`, targeting the
   previous offset clamped at zero (`offset - pageSize` floored at 0). A "Next »"
   link appears only when `hasNext` is true, targeting `offset + pageSize`. No
@@ -54,13 +124,16 @@ concern beyond "calling twice emits the markup twice."
   `limit + 1` probe row; `hasNext` reports whether that probe row existed.
 - **Side effects**: HTML emission only.
 
-### `MAIN.renderDetail(resource, row, edges)` — [`DetailView.kt`](./DetailView.kt)
+### `MAIN.renderDetail(resource, row, edges, display)` — [`DetailView.kt`](./DetailView.kt)
 
 - **Behavior**: Emits the heading (with a "deleted" badge when `isDeleted` is
   true), the full field table, the permitted edit/delete/undelete actions, then
   the descriptor's custom-action buttons, then one panel per resolved
   `EdgePanel` in the order supplied. A sensitive field's value is shown as a
   fixed redacted placeholder (`••• (redacted)`), never the underlying value.
+  Every non-sensitive cell routes through
+  `renderCell(value, field.type,
+  field.refSlug, display)`.
 - **Actions**: The "Edit" link appears only when the descriptor exposes an
   `update` handler. The delete action appears only when the descriptor exposes a
   `delete` handler and the row is not deleted; the undelete action appears only
@@ -69,19 +142,18 @@ concern beyond "calling twice emits the markup twice."
 - **Custom actions**: After the Edit/Delete/Undelete block and before the edge
   panels, one `actionButton` is emitted per `resource.customActions` entry,
   posting to `/{slug}/{id}/{action.pathSuffix}`. Each button is rendered
-  enabled-or-disabled per `action.disabledReason(row)`: a null reason yields an
-  enabled button, a non-null reason a disabled button whose `title` carries the
-  reason.
+  enabled-or-disabled per `action.disabledReason(row)`.
 - **Edge panels**: Each `EdgePanel` variant has a fixed presentation. A
   `ParentLink` renders its summary as a hyperlink to `panel.href`; a
-  `ParentAbsent` renders a fixed "(none)" note; a `Table` renders its columns
-  and rows (an empty table collapses to a "(none)" note, with only the first
-  cell of each row linked when `row.href` is set); an `Embedded` renders an
-  inline create form when the owned entity is absent, otherwise its field table
-  plus an inline edit form, a delete action, and any nested table panels.
-  Embedded and nested mutations post to the owner-nested action paths built from
-  the `Embedded` panel's `ownerSlug`/`ownerId` (e.g.
-  `/{ownerSlug}/{ownerId}/student/update`), not a standalone entity URL.
+  `ParentAbsent` renders a fixed "(none)" note; a `Table` renders its typed
+  columns and rows through `renderTablePanel` (every cell routes through
+  `renderCell` using the column's `type` and `refSlug`; an empty table collapses
+  to a "(none)" note); an `Embedded` renders an inline create form when the
+  owned entity is absent, otherwise its `LabeledCell` field table (each cell
+  through `renderCell` using the cell's `type` and `refSlug`) plus an inline
+  edit form, a delete action, and any nested table panels. Embedded and nested
+  mutations post to the owner-nested action paths built from the `Embedded`
+  panel's `ownerSlug`/`ownerId`.
 - **Inputs**: `edges` is the already-resolved, render-ready panel list produced
   by the resource; this function performs no edge resolution and no DAO calls.
 - **Side effects**: HTML emission only.
@@ -161,9 +233,13 @@ concern beyond "calling twice emits the markup twice."
   Ktor coupling, confined to `ErrorPages.kt`; the list/detail/form/layout
   builders are framework-agnostic `kotlinx.html` extensions.
 - **`kotlinx.html`** — the HTML DSL all view builders target.
-- No environment variables or config keys are read by this directory. Bind host,
-  cookie, and session settings live in `admin-server.conf` / `AdminConfig`,
-  consumed by the application and auth layers, not here.
+- **`java.time`** — `Instant`, `ZoneId`, `DateTimeFormatter` used by the
+  `TIMESTAMP` renderer in `CellRender.kt`. No new library dependency.
+- No environment variables or config keys are read by this directory. Display
+  configuration (timezone, glyphs) lives in `admin-server.conf` /
+  `DisplayConfig` / `AdminConfig`, consumed by the application bootstrap, not
+  here. `AdminDisplay` is the already-parsed and pre-wired context object
+  threaded into render functions.
 
 ---
 
@@ -172,3 +248,15 @@ concern beyond "calling twice emits the markup twice."
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../../../../../../../../rfc/60-admin-website.md)
 - [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
 - [x] [RFC-76: Admin email-verification actions](../../../../../../../../rfc/76-admin-email-verification-actions.md)
+- [x] [RFC-79: Admin display conventions](../../../../../../../../rfc/79-admin-display-conventions.md)
+      — added [`CellRender.kt`](./CellRender.kt) with `AdminDisplay`,
+      `DisplayConfig.toAdminDisplay`, and the three central helpers
+      `renderValue` / `renderRefLink` / `renderCell`; added `bool-true`,
+      `bool-false`, and `id-link` CSS classes to `Layout.kt`; rewrote
+      `ListView.kt` to accept `display` and route every cell through
+      `renderCell`; rewrote `DetailView.kt` to accept `display` and route the
+      detail field table, edge-table cells (`renderTablePanel`), and embedded
+      field cells (`renderEmbeddedPanel`) through `renderCell`.
+      `EdgePanel.Table` rows no longer carry an `href`; navigation is via the
+      primary-id column's `refSlug` glyph. `EdgePanel.Embedded.fields` is now
+      `List<LabeledCell>`.

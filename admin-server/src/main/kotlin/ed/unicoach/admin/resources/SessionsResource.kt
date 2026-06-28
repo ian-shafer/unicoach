@@ -27,8 +27,8 @@ object SessionsResource : AdminResource<Session, SessionId> {
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("userId", "User ID", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "session"),
+      AdminField("userId", "User ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "user"),
       AdminField("tokenHash", "Token Hash", FieldType.TEXT, editable = false, sensitive = true),
       AdminField("userAgent", "User Agent", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("initialIp", "Initial IP", FieldType.TEXT, editable = false, sensitive = false),

@@ -5,6 +5,7 @@ import ed.unicoach.admin.auth.installAdminGate
 import ed.unicoach.admin.engine.AdminRegistry
 import ed.unicoach.admin.engine.registerAdminRoutes
 import ed.unicoach.admin.render.configureAdminStatusPages
+import ed.unicoach.admin.render.toAdminDisplay
 import ed.unicoach.admin.resources.ClaimsResource
 import ed.unicoach.admin.resources.ExtractionRunsResource
 import ed.unicoach.admin.resources.ObservationsResource
@@ -111,9 +112,12 @@ fun Application.adminModule(
       ),
     )
 
+  val display =
+    adminConfig.display.toAdminDisplay { slug -> registry.bySlug(slug) != null }
+
   routing {
     healthRoute()
     adminAuthRoutes(authService, adminConfig)
-    registerAdminRoutes(registry, database)
+    registerAdminRoutes(registry, database, display)
   }
 }

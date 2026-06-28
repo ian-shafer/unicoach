@@ -115,6 +115,36 @@ class StudentsResourceTest {
     }
 
   @Test
+  fun `coaching-memory and embedded panels apply the display conventions`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val claim = AdminTestSupport.seedClaim(student.id)
+
+      val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+
+      // The Claims edge-panel id cell carries a glyph link to the canonical claim.
+      assertTrue(body.contains("/claim/${claim.id.value}"), "Claim id cell must link to canonical detail")
+      assertTrue(body.contains("🔗"), "Claim id cell must carry the link glyph")
+
+      // The claim's Created cell renders as a formatted date carrying the source ISO title.
+      val claimCreatedIso = claim.createdAt.toString()
+      assertTrue(body.contains("title=\"$claimCreatedIso\""), "Created cell must carry the source ISO as a hover title")
+
+      // The embedded student panel's Created field (a TIMESTAMP LabeledCell) renders
+      // as a formatted date with the source ISO title, exercising the embedded path.
+      val studentCreatedIso = student.createdAt.toString()
+      assertTrue(
+        body.contains("title=\"$studentCreatedIso\""),
+        "Embedded student timestamp field must render as a formatted date with the source ISO title",
+      )
+    }
+
+  @Test
   fun `a student with no coaching memory renders the three panels empty without error`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

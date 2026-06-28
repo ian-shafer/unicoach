@@ -34,8 +34,8 @@ object ClaimsResource : AdminResource<Claim, ClaimId> {
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "claim"),
+      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
       AdminField("status", "Status", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("kind", "Kind", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("topic", "Topic", FieldType.TEXT, editable = false, sensitive = false),
@@ -45,7 +45,7 @@ object ClaimsResource : AdminResource<Claim, ClaimId> {
       AdminField("subject", "Subject", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("visibility", "Visibility", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("statement", "Statement", FieldType.MULTILINE, editable = false, sensitive = false, inList = false),
-      AdminField("supersededById", "Superseded By", FieldType.TEXT, editable = false, sensitive = false, inList = false),
+      AdminField("supersededById", "Superseded By", FieldType.TEXT, editable = false, sensitive = false, inList = false, refSlug = "claim"),
       AdminField("supersededAt", "Superseded", FieldType.TIMESTAMP, editable = false, sensitive = false, inList = false),
       AdminField("retractedAt", "Retracted", FieldType.TIMESTAMP, editable = false, sensitive = false, inList = false),
       AdminField("updatedAt", "Updated", FieldType.TIMESTAMP, editable = false, sensitive = false, inList = false),
@@ -114,11 +114,15 @@ object ClaimsResource : AdminResource<Claim, ClaimId> {
   private fun supportingObservationsPanel(observations: List<Observation>): EdgePanel.Table =
     EdgePanel.Table(
       label = "Supporting observations",
-      columns = listOf("ID", "Uttered", "Quote"),
+      columns =
+        listOf(
+          EdgePanel.Table.Column("ID", refSlug = "observation"),
+          EdgePanel.Table.Column("Uttered", FieldType.TIMESTAMP),
+          EdgePanel.Table.Column("Quote"),
+        ),
       rows =
         observations.map { o ->
           EdgePanel.Table.Row(
-            href = "/observation/${o.id.value}",
             cells = listOf(o.id.value.toString(), o.utteredAt.toString(), o.quote),
           )
         },

@@ -1,5 +1,6 @@
 package ed.unicoach.admin.engine
 
+import ed.unicoach.admin.render.AdminDisplay
 import ed.unicoach.admin.render.adminPage
 import ed.unicoach.admin.render.renderDetail
 import ed.unicoach.admin.render.renderForm
@@ -33,6 +34,7 @@ private const val PAGE_SIZE = 50
 fun Route.registerAdminRoutes(
   registry: AdminRegistry,
   database: Database,
+  display: AdminDisplay,
 ) {
   get("/") {
     call.respondHtml {
@@ -49,7 +51,7 @@ fun Route.registerAdminRoutes(
   }
 
   registry.topLevel.forEach { resource ->
-    registerResourceRoutes(resource, registry, database)
+    registerResourceRoutes(resource, registry, database, display)
   }
 
   // Owner-nested action endpoints (e.g. embedded student under user) register
@@ -61,6 +63,7 @@ private fun <ROW, ID> Route.registerResourceRoutes(
   resource: AdminResource<ROW, ID>,
   registry: AdminRegistry,
   database: Database,
+  display: AdminDisplay,
 ) {
   val slug = resource.slug
 
@@ -73,7 +76,7 @@ private fun <ROW, ID> Route.registerResourceRoutes(
         val rows = if (hasNext) fetched.dropLast(1) else fetched
         call.respondHtml {
           adminPage(resource.title, topLevelResources = registry.topLevel) {
-            renderList(resource, rows, offset, PAGE_SIZE, hasNext)
+            renderList(resource, rows, offset, PAGE_SIZE, hasNext, display)
           }
         }
       },
@@ -205,7 +208,7 @@ private fun <ROW, ID> Route.registerResourceRoutes(
           onSuccess = { edges ->
             call.respondHtml {
               adminPage(resource.title, topLevelResources = registry.topLevel) {
-                renderDetail(resource, row, edges)
+                renderDetail(resource, row, edges, display)
               }
             }
           },

@@ -183,8 +183,9 @@ read-then-write blocks.
   `claim_support` join. `ExtractionRunsResource` declares no edges. A transient
   DAO fault while resolving any such panel propagates as a failed `Result`,
   matching the existing edge-resolution contract.
-- The `HasMany` `sessions` rows MUST link to the canonical `/session/{id}`
-  detail path. They MUST NEVER link to a nested `/user/{id}/session/{id}` path.
+- The `HasMany` `sessions` rows MUST navigate to the canonical `/session/{id}`
+  detail path via the id column's `refSlug = "session"` glyph (RFC 79). They
+  MUST NEVER link to a nested `/user/{id}/session/{id}` path.
 - The `session` detail page MUST declare a `Parent` edge back to its owner. When
   `Session.userId` is non-null it MUST render a link to `/user/{userId}`; when
   null it MUST render an "owner absent" panel rather than a broken link.
@@ -225,11 +226,15 @@ read-then-write blocks.
 - **undelete** — delegates to `db.occSoftDelete(UsersDao, id, deleted = false)`,
   which reads the current version then restores. Side effects: one versioned
   restore. Idempotent: no.
-- **resolveEdges** — builds the embedded student panel, a sessions table (via
-  the per-user sessions list DAO), and a `users_versions` history table (via the
-  user-versions DAO) whose columns include `Email Verified` (emitting each
-  version's `emailVerifiedAt?.toString()` or empty). Side effects: DB reads
-  only. Errors: any DAO fault → failed `Result`. Idempotent: yes.
+- **resolveEdges** — builds the embedded student panel (via
+  `StudentsResource.buildPanel`), a sessions `EdgePanel.Table` (id column:
+  `refSlug = "session"`, created/expires columns: `FieldType.TIMESTAMP`; up to
+  50 rows from `SessionsDao.listByUser`), and a `users_versions`
+  `EdgePanel.Table` whose columns include `Admin` (`FieldType.BOOL`),
+  `Email
+  Verified` (`FieldType.TIMESTAMP`), `Updated`/`Deleted`
+  (`FieldType.TIMESTAMP`) — all rendering through `renderCell`. Side effects: DB
+  reads only. Errors: any DAO fault → failed `Result`. Idempotent: yes.
 - **customActions** — two entries, both gated by the shared
   `verificationDisabledReason` predicate (enabled only for an active, unverified
   user): "Mark email verified" (`verify-email`) and "Send verification email"
@@ -290,18 +295,24 @@ read-then-write blocks.
   the student profile (if any), its create/edit forms (the single editable
   graduation field), the nested `students_versions` history table, and — after
   the history table — three coaching-memory panels (RFC 77): Claims,
-  Observations, and Extraction runs, in that order. Each memory panel is built
-  by a private helper
+  Observations, and Extraction runs, in that order. When a profile is present,
+  `fields` is a `List<LabeledCell>` (RFC 79) built from the descriptor's
+  `fields` list: each non-sensitive field becomes a `LabeledCell` carrying the
+  field's `label`, `type`, and `refSlug` alongside the cell value, so the
+  embedded field table routes through `renderCell` identically to a top-level
+  detail field. Each memory panel is built by a private helper
   (`buildClaimsPanel`/`buildObservationsPanel`/`buildExtractionRunsPanel`) that
   fetches at most `STUDENT_PANEL_LIMIT` rows via the matching
-  `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)` and links each row to the
-  canonical top-level detail (`/claim/{id}`, `/observation/{id}`,
-  `/extraction-run/{id}`). When a fetched page fills to `STUDENT_PANEL_LIMIT`,
-  the shared `truncationRow` helper appends one linkless "Showing first 50 — see
-  /{slug} for full list" row pointing at the canonical list. Side effects: DB
-  reads only. Returns a "no profile yet" panel on `NotFoundException`;
-  propagates any other DAO fault (including a fault on any of the three memory
-  loads) as a failed `Result`. Idempotent: yes.
+  `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)` and carries typed
+  `EdgePanel.Table.Column` entries (id columns carry `refSlug`; datetime columns
+  carry `FieldType.TIMESTAMP`) so each cell renders as a formatted date or a
+  glyph-linked id as appropriate. When a fetched page fills to
+  `STUDENT_PANEL_LIMIT`, the shared `truncationRow` helper appends one
+  cells-only "Showing first 50 — see /{slug} for full list" row (no per-row href
+  — RFC 79 removed row-level hrefs). Side effects: DB reads only. Returns a "no
+  profile yet" panel on `NotFoundException`; propagates any other DAO fault
+  (including a fault on any of the three memory loads) as a failed `Result`.
+  Idempotent: yes.
 - **`STUDENT_PANEL_LIMIT`** — package-private constant `50`, the per-panel row
   cap for the nested coaching-memory tables, mirroring the sessions panel's
   limit. A student with more memory shows the first page only; full enumeration
@@ -483,3 +494,25 @@ columns kept on the list so per-student LLM spend is eyeballable): `id`,
       profile (after the version-history table), each capped at the new
       `STUDENT_PANEL_LIMIT = 50` via `…Dao.listByStudent` with a shared
       `truncationRow` disclosure pointing at the canonical list.
+- [x] [RFC-79: Admin display conventions](../../../../../../../../rfc/79-admin-display-conventions.md)
+      — Set `refSlug` on every id and foreign-key `AdminField` across all
+      descriptors (per-resource assignments: `user.id`→`user`,
+      `student.id`→`student`, `student.userId`→`user`, `session.id`→`session`,
+      `session.userId`→`user`, `observation.id`→`observation`,
+      `observation.studentId`→`student`, `claim.id`→`claim`,
+      `claim.studentId`→`student`, `claim.supersededById`→`claim`,
+      `extraction-run.id`→`extraction-run`,
+      `extraction-run.studentId`→`student`,
+      `extraction-run.systemPromptId`→`system-prompt`; columns whose target has
+      no admin resource — `convoId`, `sourceRequestId`, `throughRequestId` —
+      carry no `refSlug` and render with no glyph). Converted all
+      `EdgePanel.Table` column lists from `List<String>` to `List<Column>`
+      carrying `type`/`refSlug`; removed the per-row `href` field from rows
+      (navigation is now via the primary-id column's `refSlug` glyph). Converted
+      `EdgePanel.Embedded.fields` in `StudentsResource.buildPanel` from
+      `List<Pair<String, String>>` to `List<LabeledCell>` (using each field's
+      `type` and `refSlug` from the descriptor). The coaching-memory panel
+      builders (`buildClaimsPanel`, `buildObservationsPanel`,
+      `buildExtractionRunsPanel`) set `refSlug` on their id columns and
+      `FieldType.TIMESTAMP` on their created/uttered-at columns so those cells
+      render as formatted dates with hover titles in the student panel.

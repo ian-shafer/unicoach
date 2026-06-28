@@ -127,9 +127,15 @@ omits it from every form (create and edit), independent of `editable`. `inList`
 the field from the list table while detail and form rendering remain unaffected
 — used to keep an oversized value (e.g. a large prompt body) out of a list cell.
 It is orthogonal to `sensitive`, which removes the field from forms and detail
-as well. `enumValues` is consulted only when `type == FieldType.ENUM`.
-`FieldType` names the render/input strategy (`TEXT`, `MULTILINE`, `INT`, `BOOL`,
-`TIMESTAMP`, `JSON`, `ENUM`). Pure data — no behavior or I/O.
+as well. `enumValues` is consulted only when `type == FieldType.ENUM`. `refSlug`
+(nullable, default `null`) marks the column as an entity reference (RFC 79):
+when non-null the render layer appends a link glyph to that resource's detail
+page (`/{refSlug}/{value}`), but only when the slug is a registered admin
+resource — an unregistered slug (e.g. `convoId`, `sourceRequestId`) renders the
+value with no glyph. The primary id sets its own slug; foreign-key columns set
+the referenced resource's slug. No new `FieldType` variant: id columns remain
+`TEXT`. `FieldType` names the render/input strategy (`TEXT`, `MULTILINE`, `INT`,
+`BOOL`, `TIMESTAMP`, `JSON`, `ENUM`). Pure data — no behavior or I/O.
 
 ### `AdminEdge` — [`AdminEdge.kt`](./AdminEdge.kt)
 
@@ -176,14 +182,27 @@ the router. Variants:
 - **`ParentLink`** — a canonical detail `href` plus a one-line summary.
 - **`ParentAbsent`** — a null parent rendered as an absence note (e.g. an
   anonymous session).
-- **`Table`** — child rows, each carrying its canonical detail `href` (nullable)
-  and ordered `cells` under named `columns`.
+- **`Table`** — child rows with typed column metadata (RFC 79). Each `Column`
+  carries `label`, `type` (default `FieldType.TEXT`), and `refSlug` (default
+  `null`), so the same `renderCell` governs an edge cell as a detail field cell.
+  Each `Row` carries only ordered `cells: List<String>` (no `href` — navigation
+  is via the primary-id column's own `refSlug` glyph). The constructor validates
+  that every row's cell count equals the column count (fail-fast in dev/test).
+  Label-only columns stay terse (`Column("Topic")`); id/timestamp/bool columns
+  set `type`/`refSlug` explicitly.
 - **`Embedded`** — an owned entity rendered inline: when `present` is false it
   offers a create form; otherwise it shows fields plus edit/delete actions and
-  any `nested` panels (e.g. the embedded entity's own version history). Carries
-  the owner slug/id so its nested actions POST to owner-nested endpoints.
+  any `nested` panels. `fields` is now `List<LabeledCell>` (RFC 79) — each cell
+  carries `label`, `type`, `refSlug`, and `value` — so the embedded field table
+  routes through the same `renderCell` as every other cell. Carries the owner
+  slug/id so its nested actions POST to owner-nested endpoints.
+- **`LabeledCell`** — a typed label/value pair for an `Embedded` panel's field
+  table: `label`, `type`, `refSlug`, `value`. Pure data; no behavior or I/O.
 
-Pure data carrier — no behavior or I/O.
+Pure data carrier — no behavior or I/O. `Table.Row.href` does not exist (RFC 79
+removed it): the row-level link that was previously optional per-row is replaced
+by per-column `refSlug` glyphs so that every supported id column links
+uniformly, not just the first cell.
 
 ### `AdminRegistry` — [`AdminRegistry.kt`](./AdminRegistry.kt)
 
@@ -200,11 +219,13 @@ resource list.
   share a slug, the later one in the construction list wins and the earlier is
   shadowed. There is no duplicate-slug detection at construction.
 
-### `Route.registerAdminRoutes(registry, database)` — [`AdminRouting.kt`](./AdminRouting.kt)
+### `Route.registerAdminRoutes(registry, database, display)` — [`AdminRouting.kt`](./AdminRouting.kt)
 
 Registers the dashboard, the generic per-resource routes for every top-level
-resource, and each resource's owner-nested extra routes. Route registration is
-driven purely from the registry and each descriptor's declared capabilities;
+resource, and each resource's owner-nested extra routes. The `display` parameter
+(an `AdminDisplay`) is forwarded to `renderList` and `renderDetail` so every
+cell routes through the uniform `renderCell` helper (RFC 79). Route registration
+is driven purely from the registry and each descriptor's declared capabilities;
 there is no per-table branch. Only `topLevel` resources receive the dashboard
 nav entry and the generic route set; a non-top-level resource is neither listed
 nor reachable through a generated route. `registerExtraRoutes` is invoked for
@@ -218,7 +239,7 @@ this router.
   | Route                        | Condition          | Effect                                                               |
   | ---------------------------- | ------------------ | -------------------------------------------------------------------- |
   | `GET /`                      | always             | Dashboard: nav of top-level sections                                 |
-  | `GET /{slug}`                | `topLevel`         | List page (table of `cells`; rows link to detail)                    |
+  | `GET /{slug}`                | `topLevel`         | List page (table of `cells`; navigation via `refSlug` id-link glyph) |
   | `GET /{slug}/new`            | `create != null`   | Create form (`fields` + `createExtraInputs`)                         |
   | `POST /{slug}`               | `create != null`   | Create → redirect to new row's canonical detail                      |
   | `GET /{slug}/{id}`           | always             | Detail page (field table + resolved edge panels)                     |
@@ -299,3 +320,17 @@ this router.
       state. The engine never inspects `pathSuffix`; route registration stays
       with the descriptor's `registerExtraRoutes`. `AdminRouting.kt` is
       unchanged — no generic custom-action route.
+- [x] [RFC-79: Admin display conventions](../../../../../../../../rfc/79-admin-display-conventions.md)
+      — added `AdminField.refSlug` (nullable, default `null`): marks a column as
+      an entity reference whose value the render layer links to that resource's
+      detail page. Converted `EdgePanel.Table.columns` from `List<String>` to
+      `List<Column>` (carrying `label`, `type`, `refSlug`) and
+      `EdgePanel.Table.Row` from carrying an optional `href` plus cells to
+      cells-only (navigation is now via the primary-id column's `refSlug`
+      glyph). Added `EdgePanel.LabeledCell` (`label`, `type`, `refSlug`,
+      `value`) and converted `EdgePanel.Embedded.fields` from
+      `List<Pair<String, String>>` to `List<LabeledCell>` so embedded field
+      tables route through the same `renderCell`. Added the row/column count
+      mismatch guard to `EdgePanel.Table`'s constructor. `AdminRouting.kt` gains
+      a `display: AdminDisplay` parameter forwarded to `renderList`/
+      `renderDetail`.

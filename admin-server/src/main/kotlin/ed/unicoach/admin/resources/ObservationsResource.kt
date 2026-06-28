@@ -31,8 +31,8 @@ object ObservationsResource : AdminResource<Observation, ObservationId> {
 
   override val fields =
     listOf(
-      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "observation"),
+      AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
       AdminField("convoId", "Convo ID", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("utteredAt", "Uttered", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
@@ -95,11 +95,16 @@ object ObservationsResource : AdminResource<Observation, ObservationId> {
   private fun supportedClaimsPanel(claims: List<Claim>): EdgePanel.Table =
     EdgePanel.Table(
       label = "Supported claims",
-      columns = listOf("ID", "Status", "Topic", "Statement"),
+      columns =
+        listOf(
+          EdgePanel.Table.Column("ID", refSlug = "claim"),
+          EdgePanel.Table.Column("Status"),
+          EdgePanel.Table.Column("Topic"),
+          EdgePanel.Table.Column("Statement"),
+        ),
       rows =
         claims.map { c ->
           EdgePanel.Table.Row(
-            href = "/claim/${c.id.value}",
             cells = listOf(c.id.value.toString(), c.status.value, c.topic.value, c.statement),
           )
         },
