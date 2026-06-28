@@ -23,17 +23,19 @@ It does not apply migrations — run db-migrate for that (or db-reset for a clea
 migrated database).
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
   help "db-create does not accept positional arguments: $*"

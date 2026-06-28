@@ -19,34 +19,44 @@ foreign-listener helper for the scripts harness, see Test Scripts) — are
 
 ## II. Behavioral Contracts
 
-> Per-script argument details are intentionally omitted — run `<script> --help`
-> or read the source. This section covers only non-obvious invariants and
+> Per-script argument details are intentionally omitted — run `<script> -h` or
+> read the source. This section covers only non-obvious invariants and
 > cross-script relationships.
+>
+> **Option parsing.** Every option-bearing script parses with bash `getopts`
+> over a **leading-colon optstring** (e.g. `getopts ":hp:"`), so getopts is
+> silent and the script owns its own diagnostics: a `\?` (unknown option) arm
+> and a `:` (missing required argument) arm each route to the script's `help` or
+> `fatal`. Options are **short-only** — there are no GNU-style long spellings;
+> every long form was collapsed to its short flag (`-h` help, `-p` port, `-q`
+> quiet, `-l` launch, `-n` no-upload, `-f` format/force, `-m` max-attempts, `-d`
+> delay, `-s` status-code, `-y` confirm-dangerous, `-t` test-filter/timeout,
+> `-o` operation). Scripts that intermix options with positionals (`bin/test`,
+> `q-truncate`) wrap getopts in an outer loop that resets `OPTIND=1` each round.
 
 ### Shared Library
 
 `bin/functions` exports the following public API, available in every script that
 sources `bin/common`:
 
-| Function                         | Signature                               | Output / Return | Notes                                                                                                                                                                                       |
-| -------------------------------- | --------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `log-info`                       | `log-info <msg…>`                       | stderr          | No prefix.                                                                                                                                                                                  |
-| `log-warning`                    | `log-warning <msg…>`                    | stderr          | Prefixes `[WARNING]`.                                                                                                                                                                       |
-| `fatal`                          | `fatal [-s \|--status-code <n>] <msg…>` | stderr; exits   | Prefixes `[FATAL]`; exits with `<n>` (default `1`).                                                                                                                                         |
-| `read-file-or-die`               | `read-file-or-die <file> [<code>]`      | stdout          | Cats file or calls `fatal -s <code>`.                                                                                                                                                       |
-| `parse-duration-to-seconds`      | `parse-duration-to-seconds <dur>`       | stdout          | Converts `30s`/`5m`/`2h`/`1d` → integer seconds; bare integers treated as seconds.                                                                                                          |
-| `validate_duration`              | `validate_duration <dur>`               | exit 0/1        | Accepts only `[0-9]+[smhd]` (unit suffix required).                                                                                                                                         |
-| `validate_port`                  | `validate_port <port>`                  | exit 0/1        | Returns `0` iff `<port>` is an integer in `1..65535`. Single owner of the port-range rule; used by `check-port`, `daemon-up`, `daemon-check`, `daemon-http-check`, and `find-free-port`.    |
-| `transform_duration_to_postgres` | `transform_duration_to_postgres <dur>`  | stdout          | Converts `5m` → `"5 minutes"` for SQL `INTERVAL` literals. Calls `validate_duration` internally.                                                                                            |
-| `require_dangerous_confirmation` | `require_dangerous_confirmation <desc>` | exit 0/1        | Interactive prompt; returns `0` on confirmation, `1` on EOF (empty line exits `0` via `exit 0`). Callers bypass this entirely by checking `--yes-i-really-want-to-do-this` before invoking. |
+| Function                         | Signature                               | Output / Return | Notes                                                                                                                                                                                    |
+| -------------------------------- | --------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `log-info`                       | `log-info <msg…>`                       | stderr          | No prefix.                                                                                                                                                                               |
+| `log-warning`                    | `log-warning <msg…>`                    | stderr          | Prefixes `[WARNING]`.                                                                                                                                                                    |
+| `fatal`                          | `fatal [-s <n>] <msg…>`                 | stderr; exits   | Prefixes `[FATAL]`; exits with `<n>` (default `1`). Parses `-s` via `getopts`; an unknown option to `fatal` itself prints `[FATAL]` and exits `1`.                                       |
+| `read-file-or-die`               | `read-file-or-die <file> [<code>]`      | stdout          | Cats file or calls `fatal -s <code>`.                                                                                                                                                    |
+| `parse-duration-to-seconds`      | `parse-duration-to-seconds <dur>`       | stdout          | Converts `30s`/`5m`/`2h`/`1d` → integer seconds; bare integers treated as seconds.                                                                                                       |
+| `validate_duration`              | `validate_duration <dur>`               | exit 0/1        | Accepts only `[0-9]+[smhd]` (unit suffix required).                                                                                                                                      |
+| `validate_port`                  | `validate_port <port>`                  | exit 0/1        | Returns `0` iff `<port>` is an integer in `1..65535`. Single owner of the port-range rule; used by `check-port`, `daemon-up`, `daemon-check`, `daemon-http-check`, and `find-free-port`. |
+| `transform_duration_to_postgres` | `transform_duration_to_postgres <dur>`  | stdout          | Converts `5m` → `"5 minutes"` for SQL `INTERVAL` literals. Calls `validate_duration` internally.                                                                                         |
+| `require_dangerous_confirmation` | `require_dangerous_confirmation <desc>` | exit 0/1        | Interactive prompt; returns `0` on confirmation, `1` on EOF (empty line exits `0` via `exit 0`). Callers bypass this entirely by checking the `-y` flag before invoking.                 |
 
 ---
 
 ### Dangerous Operations
 
 Scripts that destroy data (`db-drop`, `q-truncate`) MUST gate execution behind
-`require_dangerous_confirmation` **unless** the caller passes
-`--yes-i-really-want-to-do-this`.
+`require_dangerous_confirmation` **unless** the caller passes `-y`.
 
 ---
 
@@ -54,12 +64,11 @@ Scripts that destroy data (`db-drop`, `q-truncate`) MUST gate execution behind
 
 Directory-based file lock. Scripts use `file-lock <lock-dir> <max-duration>` to
 acquire a lock that automatically expires after `<max-duration>`. An optional
-`--operation <OP>` writes the operation name into the lock directory, allowing
-other lock readers to identify the holder. Without `--timeout`, the script fails
-immediately if the lock is held; with `--timeout <dur>`, it polls via `wait-for`
-until the lock is acquired or the timeout expires. Stale locks are broken
-automatically. Callers MUST release the lock via a trap registered **after**
-successful acquisition.
+`-o <OP>` writes the operation name into the lock directory, allowing other lock
+readers to identify the holder. Without `-t`, the script fails immediately if
+the lock is held; with `-t <dur>`, it polls via `wait-for` until the lock is
+acquired or the timeout expires. Stale locks are broken automatically. Callers
+MUST release the lock via a trap registered **after** successful acquisition.
 
 Exit codes:
 
@@ -151,24 +160,24 @@ rejects more than one positional argument.
 - **`daemon-up`**: Idempotent. Starts the daemon and writes the PID file. If the
   daemon is already running, does nothing. Only checks PID for liveness —
   callers MUST invoke `<service>-wait-for-health` separately. Takes an optional
-  `-p`/`--port` (validated via `validate_port`). When `--port` is set, after the
+  `-p` port (validated via `validate_port`). When `-p` is set, after the
   PID-liveness idempotency short-circuit and stale-PID cleanup, a pre-launch
   preflight refuses to spawn if `127.0.0.1:<port>` is already bound — by any
   process, including a daemon from another worktree or an orphaned own-process
   whose PID file was lost — exiting with a distinct code `3` (`fatal -s 3`)
   without writing a PID or reaching health-wait. The idempotency short-circuit
   runs before the port check, so a live own-instance is still recognized as
-  ours. When `--port` is absent (the portless queue-worker) the preflight is
-  skipped and behavior is unchanged.
+  ours. When `-p` is absent (the portless queue-worker) the preflight is skipped
+  and behavior is unchanged.
 - **`daemon-down`**: Idempotent. Sends `SIGTERM` with a grace period; escalates
   to `SIGKILL` if the process does not exit. Removes the PID file on completion.
   No-op if already stopped.
 - **`daemon-check`**: Tri-state. Exits `0` if the daemon is running according to
-  the PID. Takes an optional `-p`/`--port`: when given and the PID is
-  absent/dead, exits `2` if the port is in-use (conflict — our PID is gone but
-  the port is held by another process), else `1` (stopped). Without `--port` the
-  result is only `0`/`1`, exactly as before, so existing callers (e.g.
-  `queue-worker-check`) that treat any non-zero as "not running" are unaffected.
+  the PID. Takes an optional `-p` port: when given and the PID is absent/dead,
+  exits `2` if the port is in-use (conflict — our PID is gone but the port is
+  held by another process), else `1` (stopped). Without `-p` the result is only
+  `0`/`1`, exactly as before, so existing callers (e.g. `queue-worker-check`)
+  that treat any non-zero as "not running" are unaffected.
 - **`daemon-bounce`**: Idempotent. Stops the daemon if running, then starts it.
 - **`daemon-status`**: Prints the status of all known services, data-driven. An
   ordered `SERVICES` list (`postgres`, `rest-server`, `queue-worker`) fixes
@@ -176,8 +185,8 @@ rejects more than one positional argument.
   service (only `rest-server`, at `${PORT:-8080}`), with a service's absence
   from the map as the portless sentinel. `postgres` keeps its own
   `postmaster.pid` branch (it cannot route through `daemon-check`); every other
-  service routes through one generic path that calls `daemon-check` (with
-  `--port` when mapped) and maps the exit code to
+  service routes through one generic path that calls `daemon-check` (with `-p`
+  when mapped) and maps the exit code to
   `running`/`stopped`/`conflict`/`unknown`. The status line now carries
   `conflict` (and `unknown`) as additional states. A future port-bound service
   gains conflict detection by registering its port — no new branch.
@@ -219,13 +228,13 @@ is defined by the logic in each script.
 
 Current daemons: `rest-server`, `queue-worker`, `admin-server`, `public-web`.
 
-| Script                  | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists. The port-bound wrappers pass `--port`: `rest-server-up` `${PORT:-8080}`, `admin-server-up` `${ADMIN_SERVER_PORT:-8081}`, `public-web-up` `${PUBLIC_WEB_PORT:-8082}`; `queue-worker-up` is portless and unchanged. The default-guarded form is load-bearing under `bin/common`'s `set -u` (`ADMIN_SERVER_PORT`/`PUBLIC_WEB_PORT` are absent from `.env`/`.env.test`). |
-| `<svc>-down`            | Delegates to `daemon-down`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `<svc>-bounce`          | Runs `<svc>-down` then `<svc>-up` (e.g. `rest-server`, `queue-worker`, `admin-server`, `public-web`).                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `<svc>-check`           | `rest-server-check`, `admin-server-check`, `public-web-check` are thin wrappers that `exec daemon-http-check <label> <port> http://localhost:<port>/healthz`, inheriting its `0`/`1`/`2` tri-state (`2` = port held by another process not responding as `<service>`). `queue-worker-check` stays PID liveness via `daemon-check`.                                                                                                                                                                            |
-| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Script                  | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<svc>-up`              | Fatals if the `installDist` binary is absent. Never invokes Gradle. Delegates to `daemon-up`, then `<svc>-wait-for-health` if it exists. The port-bound wrappers pass `-p`: `rest-server-up` `${PORT:-8080}`, `admin-server-up` `${ADMIN_SERVER_PORT:-8081}`, `public-web-up` `${PUBLIC_WEB_PORT:-8082}`; `queue-worker-up` is portless and unchanged. The default-guarded form is load-bearing under `bin/common`'s `set -u` (`ADMIN_SERVER_PORT`/`PUBLIC_WEB_PORT` are absent from `.env`/`.env.test`). |
+| `<svc>-down`            | Delegates to `daemon-down`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `<svc>-bounce`          | Runs `<svc>-down` then `<svc>-up` (e.g. `rest-server`, `queue-worker`, `admin-server`, `public-web`).                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `<svc>-check`           | `rest-server-check`, `admin-server-check`, `public-web-check` are thin wrappers that `exec daemon-http-check <label> <port> http://localhost:<port>/healthz`, inheriting its `0`/`1`/`2` tri-state (`2` = port held by another process not responding as `<service>`). `queue-worker-check` stays PID liveness via `daemon-check`.                                                                                                                                                                        |
+| `<svc>-wait-for-health` | Optional. Blocks until the service-specific health check passes.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 `admin-server-check` and `admin-server-wait-for-health` probe `GET /healthz` on
 `ADMIN_SERVER_PORT` (default `8081`) — a dedicated port variable, distinct from
@@ -273,15 +282,14 @@ module:
 the **system** Xcode toolchain, never the Nix dev shell. Inside `nix develop`,
 `xcrun` is shadowed by a stub and `DEVELOPER_DIR`/`SDKROOT` point into the Nix
 store, so a build there silently targets the wrong toolchain. `build-ios`,
-`install-ios`, and `release-ios` therefore call `is-nix --quiet` immediately
-after option parsing and `fatal` before invoking any tool if it returns `0` —
-placed before env resolution so the guard message wins over a missing-env error.
+`install-ios`, and `release-ios` therefore call `is-nix -q` immediately after
+option parsing and `fatal` before invoking any tool if it returns `0` — placed
+before env resolution so the guard message wins over a missing-env error.
 
 - **`is-nix`**: Predicate. Exit `0` if inside the dev shell (`IN_NIX_SHELL`
   non-empty), `1` otherwise. Prints `nix enabled` / `nix NOT enabled` via
-  `log-info` unless `-q`/`--quiet`. `-v`/`--verbose` additionally lists package
-  names parsed from the exported `nativeBuildInputs` (suppressed by `-q`). No
-  side effects.
+  `log-info` unless `-q`. `-v` additionally lists package names parsed from the
+  exported `nativeBuildInputs` (suppressed by `-q`). No side effects.
 - **`build-ios [target]`**: Builds — and for device targets signs — the
   `UnicoachiOS` app via `exec xcodebuild`. `target` defaults to `local`; sources
   the target file `ios-app/env/<target>.env` for `UNICOACH_DESTINATION`
@@ -324,28 +332,27 @@ placed before env resolution so the guard message wins over a missing-env error.
   per-target secret-overlay seam — gitignored and intended to override after the
   target file/`.env`/`signing.env` — but it is **not implemented**: no code
   sources it today.
-- **`install-ios [--launch] [target]`**: Installs the most recent device build
-  to a physical iPhone via `xcrun devicectl device install app` (replaces any
-  prior install in place — idempotent). `target` defaults to `local`;
-  device-only, so a simulator target is rejected (use `prod` over
-  `prod-simulator`). Resolves the `.app` under
+- **`install-ios [-l] [target]`**: Installs the most recent device build to a
+  physical iPhone via `xcrun devicectl device install app` (replaces any prior
+  install in place — idempotent). `target` defaults to `local`; device-only, so
+  a simulator target is rejected (use `prod` over `prod-simulator`). Resolves
+  the `.app` under
   `ios-app/build/DerivedData/Build/Products/<config>-iphoneos/`, failing fast if
   absent (directs to `build-ios`). Always requires `ios-app/env/signing.env`
   (the home of `UNICOACH_DEVICE`) and fatals if it is absent, even when
   auto-detecting. Device id comes from `UNICOACH_DEVICE` when set, otherwise
   single-device auto-detect via `xcrun devicectl list devices` — fatals on zero
-  or multiple devices. `--launch` additionally runs
+  or multiple devices. `-l` additionally runs
   `xcrun devicectl device process launch` for bundle id
   `com.unicoachapp.UnicoachiOS`.
-- **`release-ios [--no-upload] [target]`**: Archives the `UnicoachiOS` app for
-  App Store distribution and, by default, uploads it to App Store Connect for
-  TestFlight via `exec xcodebuild -exportArchive`. Architect-invoked,
-  side-effecting, and NOT idempotent — each upload consumes a unique build
-  number. `target` defaults to `prod` (not `local`). Like `build-ios` it runs
-  under system Xcode (shares the `is-nix --quiet` guard), sources only
-  `bin/functions`, resolves the backend URL **honor-if-set, else derive**
-  (identical rules), and reads `UNICOACH_CLIENT_KEY` from the repo `.env`. It
-  differs deliberately:
+- **`release-ios [-n] [target]`**: Archives the `UnicoachiOS` app for App Store
+  distribution and, by default, uploads it to App Store Connect for TestFlight
+  via `exec xcodebuild -exportArchive`. Architect-invoked, side-effecting, and
+  NOT idempotent — each upload consumes a unique build number. `target` defaults
+  to `prod` (not `local`). Like `build-ios` it runs under system Xcode (shares
+  the `is-nix -q` guard), sources only `bin/functions`, resolves the backend URL
+  **honor-if-set, else derive** (identical rules), and reads
+  `UNICOACH_CLIENT_KEY` from the repo `.env`. It differs deliberately:
   - **Release-only, signed.** The configuration is forced to `Release` (the
     target's `UNICOACH_CONFIGURATION` is ignored) and a simulator target is
     rejected. `ios-app/env/signing.env` and `UNICOACH_DEVELOPMENT_TEAM` are
@@ -360,8 +367,8 @@ placed before env resolution so the guard message wins over a missing-env error.
     App Store Connect API key forwarded as `-authenticationKey*` flags, read
     from `ios-app/env/appstore.env` (gitignored secret bucket:
     `UNICOACH_ASC_KEY_ID`, `UNICOACH_ASC_ISSUER_ID`, `UNICOACH_ASC_KEY_PATH`).
-    `--no-upload` stops after exporting a signed `.ipa` under
-    `ios-app/build/export/` and requires no credentials.
+    `-n` stops after exporting a signed `.ipa` under `ios-app/build/export/` and
+    requires no credentials.
 
   Resolves upload credentials **before** the expensive archive (fail-fast).
   Fatals before invoking `xcodebuild` on: dev shell, missing target file,
@@ -408,8 +415,7 @@ placed before env resolution so the guard message wins over a missing-env error.
 - **`db-drop`**: Drops a single database
   (`DROP DATABASE IF EXISTS … WITH
   FORCE`). Idempotent. Leaves the cluster and
-  data directory intact. Gated by `require_dangerous_confirmation` unless
-  `--yes-i-really-want-to-do-this`.
+  data directory intact. Gated by `require_dangerous_confirmation` unless `-y`.
 
 ---
 
@@ -435,8 +441,9 @@ resource logic. All source `bin/common`, so a valid `$ENV_FILE` with
 `POSTGRES_PORT` set is required even to run a pure-`tofu` action.
 
 - **`infra-init`**, **`infra-plan`**, **`infra-apply`**, **`infra-output`**:
-  thin `exec tofu -chdir="$PROJECT_ROOT/infra" <verb> "$@"` wrappers. Extra args
-  (and `-h`/`--help`) pass through to `tofu`.
+  thin `exec tofu -chdir="$PROJECT_ROOT/infra" <verb> "$@"` wrappers. They parse
+  no options of their own; all args (including any help flag `tofu` understands)
+  pass straight through to `tofu`.
 - **`infra-bootstrap`**: `exec tofu -chdir="$PROJECT_ROOT/infra/bootstrap" "$@"`
   — fronts the one-time state-backend setup. Run once as `infra-bootstrap init`
   then `infra-bootstrap apply`. The subcommand and extra args pass through.
@@ -480,9 +487,9 @@ Scripts to inspect and mutate the application work queue. All delegate to
   additionally runs `bin/test-fuzz` against the REST contract — sequentially,
   after the concurrent checks pass — and fails the commit on contract drift.
   `bin/dev-bootstrap` installs the git `pre-commit` hook that invokes this
-  script. It refuses to run outside the Nix dev shell (`is-nix --quiet`),
-  failing fast with an actionable message instead of deep in the gate on a
-  missing `deno`/JVM/Postgres — the inverse of the iOS scripts' `is-nix` guard.
+  script. It refuses to run outside the Nix dev shell (`is-nix -q`), failing
+  fast with an actionable message instead of deep in the gate on a missing
+  `deno`/JVM/Postgres — the inverse of the iOS scripts' `is-nix` guard.
 
 ---
 
@@ -564,23 +571,24 @@ DB and port). Five lifecycle-ownership models exist:
   emits at least one `:<module>:<task>` task — naming no module runs every
   module — so the flags-only/zero-task argv that made `gradlew` print a false
   "BUILD SUCCESSFUL" over zero tests is structurally impossible. Mapped options
-  (`--tests GLOB` — requires exactly one module — `--force`, `--verbose`,
-  `--continue`; see `--help` for spellings) follow the task list in fixed order.
-  Argument validation completes **before** any side effect, so an invalid
-  invocation (unknown module/option, `--tests` without exactly one module) fails
-  without resetting the test database. Exit codes: usage errors exit `2` (the
-  `help()` error branch, a sanctioned deviation per
-  [`INVARIANTS.md`](./INVARIANTS.md)); a test run that executed but did not all
-  pass propagates `gradlew`'s `1` unchanged through `exec`; success and `--help`
-  exit `0`; downstream lifecycle failures propagate their own codes via
-  `set -e`. After validation, under `set -e`, runs in order: `postgres-up` →
-  `db-reset` → `db-tests` → `exec gradlew` with the constructed task list. The
-  `db-tests` step runs sequentially (never backgrounded), after migration and
-  before the terminal `exec`; a non-zero shell-harness exit aborts the run
-  before Gradle ever starts. Postgres is left up so the Gradle suite observes
-  the same migrated database. To filter to a single test, use the module +
-  filter form `bin/test <module> --tests "<glob>"` (e.g.
-  `bin/test queue --tests "*JobsDaoTest"`); the old bare-FQN positional shape
+  (`-t GLOB` — requires exactly one module — `-f` force, `-v` verbose, `-c`
+  continue) follow the task list in fixed order. Options and positionals may be
+  intermixed in any order: getopts is wrapped in an outer loop that consumes one
+  non-option per round (resetting `OPTIND=1`). Argument validation completes
+  **before** any side effect, so an invalid invocation (unknown module/option,
+  `-t` without exactly one module) fails without resetting the test database.
+  Exit codes: usage errors exit `2` (the `help()` error branch, a sanctioned
+  deviation per [`INVARIANTS.md`](./INVARIANTS.md)); a test run that executed
+  but did not all pass propagates `gradlew`'s `1` unchanged through `exec`;
+  success and `-h` exit `0`; downstream lifecycle failures propagate their own
+  codes via `set -e`. After validation, under `set -e`, runs in order:
+  `postgres-up` → `db-reset` → `db-tests` → `exec gradlew` with the constructed
+  task list. The `db-tests` step runs sequentially (never backgrounded), after
+  migration and before the terminal `exec`; a non-zero shell-harness exit aborts
+  the run before Gradle ever starts. Postgres is left up so the Gradle suite
+  observes the same migrated database. To filter to a single test, use the
+  module + filter form `bin/test <module> -t "<glob>"` (e.g.
+  `bin/test queue -t "*JobsDaoTest"`); the old bare-FQN positional shape
   (`bin/test ed.unicoach.queue.JobsDaoTest`) is dropped.
 - **`bin/test-fuzz`**: Authenticated contract-referee fuzzer. Boots a
   freshly-built rest-server on its own fuzz DB/port (`.env.fuzz`) and runs
@@ -622,7 +630,7 @@ DB and port). Five lifecycle-ownership models exist:
   failure routes through `fatal` rather than falling back to a hardcoded port.
   The booted `rest-server` therefore binds a free port, making the suite
   hermetic with respect to ports across worktrees. It also exercises the RFC 73
-  port machinery (`check-port`, `daemon-up --port`, the
+  port machinery (`check-port`, `daemon-up -p`, the
   `daemon-check`/`daemon-status` conflict tri-state, the thin `*-check`
   wrappers, `daemon-http-check`'s bounded probe), binding `test-tcp-listener`
   foreign listeners on `find-free-port` ports and reaping them in its teardown
@@ -796,10 +804,24 @@ place.
       trigger.
 - [x] [RFC-73: Daemon Port-Collision Preflight](../rfc/73-daemon-port-collision-preflight.md)
       — added the `check-port`/`daemon-http-check`/`find-free-port` primitives
-      and the shared `validate_port` helper; gave `daemon-up` an optional
-      `--port` with a pre-launch `fatal -s 3` preflight that refuses to spawn
-      onto a bound port; added a `conflict` tri-state to `daemon-check`
-      (`--port`) and a data-driven, port-aware `daemon-status`; turned the HTTP
-      `*-check` scripts into thin `daemon-http-check` wrappers; and made
-      `bin/scripts-tests` bind a hermetic `PORT` from `find-free-port` (with
-      `.env.test` `PORT="${PORT:-8081}"` keeping `8081` only as a fallback).
+      and the shared `validate_port` helper; gave `daemon-up` an optional `-p`
+      with a pre-launch `fatal -s 3` preflight that refuses to spawn onto a
+      bound port; added a `conflict` tri-state to `daemon-check` (`-p`) and a
+      data-driven, port-aware `daemon-status`; turned the HTTP `*-check` scripts
+      into thin `daemon-http-check` wrappers; and made `bin/scripts-tests` bind
+      a hermetic `PORT` from `find-free-port` (with `.env.test`
+      `PORT="${PORT:-8081}"` keeping `8081` only as a fallback). (Option
+      spelling: `-p`, post-RFC-74.)
+- [x] [RFC-74: Standardize `bin/` Option Parsing on `getopts` (Short-Only)](../rfc/74-getopts-option-parsing.md)
+      — migrated every hand-rolled `while`/`case` option parser to bash
+      `getopts` over a leading-colon optstring (silent getopts; each script owns
+      its `\?`/`:` diagnostics) and dropped all GNU-style long options,
+      collapsing every long spelling to its short flag (`--help`→`-h`,
+      `--port`→`-p`, `--quiet`→`-q`, `--launch`→`-l`, `--no-upload`→`-n`,
+      `--format`→`-f`, `--status-code`→`-s`,
+      `--yes-i-really-want-to-do-this`→`-y`; per-script forms such as
+      `bin/test`'s filter `--tests`→`-t`, `q-enqueue`'s `--max-attempts`→`-m`
+      and `--delay`→`-d`, the `db-run`/`db-query`/`db-write` database override
+      `--database`→`-d`, and `file-lock`'s `--operation`/`--timeout`→`-o`/`-t`).
+      Exit-code contracts, command grammars, and validation are otherwise
+      unchanged.

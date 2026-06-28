@@ -17,18 +17,19 @@ The queue-worker has no network port to probe. Process liveness (via the PID
 file written by daemon-up) is the best available health signal.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 TIMEOUT=4s
 log-info "Waiting for queue-worker health check..."

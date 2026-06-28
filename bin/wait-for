@@ -8,28 +8,30 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-wait-for [-p|--period duration] <timeout> <command...>
+wait-for [-p duration] <timeout> <command...>
 
 Arguments:
   <timeout>              Timeout limit indicating maximum wait time (e.g. 30, 30s, 2m, 1h, 1d).
   <command...>           Command to execute sequentially until success (0 exit status).
 
 Options:
-  -h, --help: Help
-  -p, --period duration  Time to sleep between polling attempts. Supports standard sleep formats (e.g., 1, 1s, 2m, 1h, 1d). Defaults to 1s.
+  -h: Help
+  -p duration  Time to sleep between polling attempts. Supports standard sleep formats (e.g., 1, 1s, 2m, 1h, 1d). Defaults to 1s.
 EOF
   exit "$exit_code"
 }
 
 PERIOD="1s"
 
-while [[ "${1:-}" == -* ]]; do
-  case "${1:-}" in
-    -h|--help) help ;;
-    -p|--period) PERIOD="${2:-}"; shift 2 ;;
-    *) help "Unknown option: ${1:-}" ;;
+while getopts ":hp:" opt; do
+  case "$opt" in
+  h) help ;;
+  p) PERIOD="$OPTARG" ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -lt 2 ]; then
   help "Error: missing parameters."

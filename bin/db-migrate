@@ -14,17 +14,19 @@ Executes all pending database migrations in strict lexicographical order.
 Halts immediately upon any query execution failure.
 
 Options:
-  -h, --help:    Help
+  -h:    Help
 EOF
   exit "$exit_code"
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
   help "db-migrate does not accept positional arguments: $*"

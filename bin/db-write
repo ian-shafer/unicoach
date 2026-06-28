@@ -13,27 +13,34 @@ Arguments:
   sql: Optional SQL statement
 
 Options:
-  -d, --database <db>: Override the target database
-  -h, --help: Help
+  -d <db>: Override the target database
+  -h:      Help
 EOF
   exit "$exit_code"
 }
 
 DB_FLAGS=()
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -d|--database)
-    if [ -z "${2:-}" ]; then
-      help "Option --database requires an argument."
+# Parse only the leading -d/-h options; the first unrecognized option (a psql
+# passthrough flag such as -tA or -x) ends parsing and begins the verbatim
+# passthrough to db-run, exactly as the prior `*) break` did. Keep OPTIND on that
+# unknown option so it survives the shift (getopts already points there
+# mid-cluster, but advances past a standalone single-letter unknown).
+while getopts ":d:h" opt; do
+  case "$opt" in
+  d) DB_FLAGS=("-d" "$OPTARG") ;;
+  h) help ;;
+  \?)
+    if [ "$OPTIND" -gt 1 ]; then
+      eval "prevarg=\${$((OPTIND-1))}"
+      [ "$prevarg" = "-$OPTARG" ] && OPTIND=$((OPTIND-1))
     fi
-    DB_FLAGS=("-d" "$2")
-    shift 2
+    break
     ;;
-  -h|--help) help ;;
-  *) break ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ ${#DB_FLAGS[@]} -eq 0 ]; then
   exec "$PROJECT_ROOT/bin/db-run" rw "$@"

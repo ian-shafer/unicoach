@@ -9,10 +9,14 @@ Deletes a single job and its attempt history by UUID.
 EOF
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  help
-  exit 0
-fi
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help; exit 0 ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
 
 if [ $# != 1 ]; then
   help

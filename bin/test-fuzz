@@ -48,19 +48,19 @@ Exit codes:
   Non-zero (Schemathesis status): contract drift was reported.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "${1:-}" in
-  -h|--help) help ;;
-  *)
-      help "Unknown option: ${1:-}"
-      ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
   help "test-fuzz does not accept positional arguments: $*"

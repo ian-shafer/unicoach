@@ -14,18 +14,19 @@ Exits 0 if PostgreSQL is accepting connections at PGHOST (default localhost) on
 POSTGRES_PORT. Exits 1 if it is not reachable or not ready.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if pg_isready -q -h "${PGHOST:-localhost}" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; then
   log-info "postgres is running"

@@ -20,17 +20,19 @@ Format:
   <service-name>    running|stopped|conflict|unknown
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "${1:-}" in
-  -h|--help) help ;;
-  *) help "Unknown option: ${1:-}" ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
   help "daemon-status does not accept positional arguments: $*"
@@ -60,14 +62,14 @@ for service in "${SERVICES[@]}"; do
       state="stopped"
     fi
   else
-    # Every other service routes through one generic path: pass --port only when
+    # Every other service routes through one generic path: pass -p only when
     # the service has a map entry, then map the exit code through a single case.
     # A portless service never yields 2 (daemon-check returns only 0/1 without
-    # --port), so the conflict arm is unreached for queue-worker.
+    # -p), so the conflict arm is unreached for queue-worker.
     port="${SERVICE_PORTS[$service]:-}"
     check_status=0
     if [ -n "$port" ]; then
-      "$PROJECT_ROOT/bin/daemon-check" --port "$port" "$service" > /dev/null 2>&1 || check_status=$?
+      "$PROJECT_ROOT/bin/daemon-check" -p "$port" "$service" > /dev/null 2>&1 || check_status=$?
     else
       "$PROJECT_ROOT/bin/daemon-check" "$service" > /dev/null 2>&1 || check_status=$?
     fi

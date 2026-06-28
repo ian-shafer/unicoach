@@ -503,7 +503,7 @@ test_install_with_device_set() {
   log_has "--device" || return 1
   log_has "$udid" || return 1
   log_has "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app" || return 1
-  # No --launch passed, so no process-launch invocation recorded.
+  # No -l passed, so no process-launch invocation recorded.
   if grep -Fxq "launch" "$ARGV_LOG" && grep -Fxq "com.unicoachapp.UnicoachiOS" "$ARGV_LOG"; then
     return 1
   fi
@@ -514,7 +514,7 @@ test_install_with_launch() {
   local udid="DEADBEEF-0000111122223333"
   write_signing_env_with_device "$udid"
   stage_built_app
-  run_install --launch device >/dev/null 2>&1 || return 1
+  run_install -l device >/dev/null 2>&1 || return 1
   log_has "install" || return 1
   log_has "process" || return 1
   log_has "launch" || return 1
@@ -570,13 +570,13 @@ test_release_absent_signing() {
   log_no_tool "xcodebuild"
 }
 
-# --no-upload: archives Release for a generic device, signs, injects the build
+# -n (no-upload): archives Release for a generic device, signs, injects the build
 # number and honored backend URL, exports a local .ipa, and needs NO appstore.env
 # and NO upload auth flags.
 test_release_no_upload_archives_and_exports() {
   write_signing_env
-  rm -f "$ENV_DIR/appstore.env"   # not required on the --no-upload path
-  run_release --no-upload explicit-device >/dev/null 2>&1 || return 1
+  rm -f "$ENV_DIR/appstore.env"   # not required on the -n path
+  run_release -n explicit-device >/dev/null 2>&1 || return 1
   log_has "archive" || return 1
   log_has "-exportArchive" || return 1
   log_has "-configuration" || return 1
@@ -689,7 +689,7 @@ assert_success "install-ios: no built .app fails, directs to build-ios" test_ins
 assert_success "install-ios: simulator env rejected (device-only)" test_install_simulator_env_rejected
 assert_success "install-ios: device env with absent signing.env fails, names signing.env" test_install_device_absent_signing
 assert_success "install-ios: UNICOACH_DEVICE drives devicectl install with app path" test_install_with_device_set
-assert_success "install-ios: --launch records process launch of the bundle id" test_install_with_launch
+assert_success "install-ios: -l records process launch of the bundle id" test_install_with_launch
 assert_success "install-ios: ambiguous (two) devices with no UNICOACH_DEVICE fails" test_install_ambiguous_device
 
 # release-ios
@@ -697,7 +697,7 @@ assert_success "release-ios: dev-shell guard fires, no xcodebuild line" test_rel
 assert_success "release-ios: missing env file fails, names the missing file" test_release_missing_env_file
 assert_success "release-ios: simulator target rejected (device-only)" test_release_simulator_rejected
 assert_success "release-ios: absent signing.env fails, names signing.env" test_release_absent_signing
-assert_success "release-ios: --no-upload archives Release + exports, no API key needed" test_release_no_upload_archives_and_exports
+assert_success "release-ios: -n archives Release + exports, no API key needed" test_release_no_upload_archives_and_exports
 assert_success "release-ios: upload path requires appstore.env, fails fast" test_release_upload_requires_appstore
 assert_success "release-ios: upload forwards ASC API key flags + upload destination" test_release_upload_forwards_api_key
 assert_success "release-ios: missing .p8 at UNICOACH_ASC_KEY_PATH fails fast" test_release_upload_missing_key_file

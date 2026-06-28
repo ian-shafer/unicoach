@@ -333,12 +333,12 @@ test_require_dangerous_confirmation_empty() {
 assert_success "require_dangerous_confirmation empty" test_require_dangerous_confirmation_empty
 
 # Validates the caller-side flag bypass pattern used by q-truncate and db-drop:
-# when --yes-i-really-want-to-do-this is present, the prompt is never invoked.
+# when -y is present, the prompt is never invoked.
 test_require_dangerous_confirmation_flag() {
   skip_prompt=false
-  for arg in --yes-i-really-want-to-do-this; do
+  for arg in -y; do
     case "$arg" in
-      --yes-i-really-want-to-do-this) skip_prompt=true ;;
+      -y) skip_prompt=true ;;
     esac
   done
   if [ "$skip_prompt" = false ]; then
@@ -423,7 +423,7 @@ coll_listener="$FOREIGN_LISTENER_PID"
 up_status=0
 # Unique sentinel arg so this daemon command cannot be confused with the
 # other `sleep 60` daemons elsewhere in the suite.
-bin/daemon-up --port "$PORT_FREE" collision-test -- sleep 987654 >/dev/null 2>&1 || up_status=$?
+bin/daemon-up -p "$PORT_FREE" collision-test -- sleep 987654 >/dev/null 2>&1 || up_status=$?
 if [ "$up_status" -ne 3 ]; then echo "Fail: daemon-up on a held port did not exit 3 (got $up_status)"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
 if [ -f "$PROJECT_ROOT/var/run/collision-test.pid" ]; then echo "Fail: daemon-up wrote a PID file despite the collision"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
 if [ -d "$PROJECT_ROOT/var/run/collision-test.daemon.lock" ]; then echo "Fail: daemon-up left the lock directory after a collision"; pkill -f 'sleep 987654' 2>/dev/null; stop_foreign_listener "$coll_listener"; exit 1; fi
@@ -433,79 +433,79 @@ pkill -f 'sleep 987654' 2>/dev/null || true
 stop_foreign_listener "$coll_listener"
 pass_test "daemon-up fatals (exit 3) on cross-process port collision without spawning or writing a PID"
 
-# Idempotency preserved with --port (free port).
+# Idempotency preserved with -p (free port).
 rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
 rm -rf "$PROJECT_ROOT/var/run/idem-test.daemon.lock"
-bin/daemon-up --port "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1
+bin/daemon-up -p "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1
 if [ ! -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up did not write a PID on a free port"; exit 1; fi
 idem_first="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
 if ! bin/check-pid "$idem_first" >/dev/null 2>&1; then echo "Fail: idem-test PID is not alive after up"; exit 1; fi
-bin/daemon-up --port "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1
+bin/daemon-up -p "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1
 idem_second="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
 if [ "$idem_first" != "$idem_second" ]; then echo "Fail: idempotent up spawned a duplicate (PIDs $idem_first vs $idem_second)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
-pass_test "daemon-up --port idempotent: second up reuses the same live PID"
+pass_test "daemon-up -p idempotent: second up reuses the same live PID"
 
-# Concurrent-up exit-0 contract with --port: two racers, exactly one process.
+# Concurrent-up exit-0 contract with -p: two racers, exactly one process.
 bin/daemon-down idem-test >/dev/null 2>&1 || true
 rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
 rm -rf "$PROJECT_ROOT/var/run/idem-test.daemon.lock"
-bin/daemon-up --port "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1 & cu1=$!
-bin/daemon-up --port "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1 & cu2=$!
+bin/daemon-up -p "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1 & cu1=$!
+bin/daemon-up -p "$PORT_IDEM" idem-test -- sleep 60 >/dev/null 2>&1 & cu2=$!
 cu1_status=0; wait $cu1 || cu1_status=$?
 cu2_status=0; wait $cu2 || cu2_status=$?
-if [ "$cu1_status" -ne 0 ] || [ "$cu2_status" -ne 0 ]; then echo "Fail: concurrent --port up did not both exit 0 ($cu1_status / $cu2_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+if [ "$cu1_status" -ne 0 ] || [ "$cu2_status" -ne 0 ]; then echo "Fail: concurrent -p up did not both exit 0 ($cu1_status / $cu2_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
 conc_pid="$(cat "$PROJECT_ROOT/var/run/idem-test.pid")"
-if ! bin/check-pid "$conc_pid" >/dev/null 2>&1; then echo "Fail: concurrent --port up did not leave a live process"; exit 1; fi
-pass_test "daemon-up --port concurrent up: both exit 0, exactly one process"
+if ! bin/check-pid "$conc_pid" >/dev/null 2>&1; then echo "Fail: concurrent -p up did not leave a live process"; exit 1; fi
+pass_test "daemon-up -p concurrent up: both exit 0, exactly one process"
 
 echo ""
 echo "==== Testing daemon-check tri-state ===="
 # Running (our PID is alive) ⇒ 0.
-dc_status=0; bin/daemon-check --port "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
+dc_status=0; bin/daemon-check -p "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
 if [ "$dc_status" -ne 0 ]; then echo "Fail: daemon-check on a running service did not exit 0 (got $dc_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
-pass_test "daemon-check --port exits 0 when our PID is alive"
+pass_test "daemon-check -p exits 0 when our PID is alive"
 
 bin/daemon-down idem-test >/dev/null 2>&1 || true
 rm -f "$PROJECT_ROOT/var/run/idem-test.pid"
 # Stopped + port free ⇒ 1.
 if bin/check-port "$PORT_IDEM" >/dev/null 2>&1; then echo "Fail: precondition — $PORT_IDEM must be free after down"; exit 1; fi
-dc_status=0; bin/daemon-check --port "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
+dc_status=0; bin/daemon-check -p "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
 if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check stopped+free did not exit 1 (got $dc_status)"; exit 1; fi
-pass_test "daemon-check --port exits 1 when stopped and port is free"
+pass_test "daemon-check -p exits 1 when stopped and port is free"
 
 # Stopped + foreign listener ⇒ 2.
 start_foreign_listener "$PORT_IDEM" || { echo "Fail: could not bind foreign listener on $PORT_IDEM"; exit 1; }
 dc_listener="$FOREIGN_LISTENER_PID"
-dc_status=0; bin/daemon-check --port "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
+dc_status=0; bin/daemon-check -p "$PORT_IDEM" idem-test >/dev/null 2>&1 || dc_status=$?
 if [ "$dc_status" -ne 2 ]; then echo "Fail: daemon-check stopped+held did not exit 2 (got $dc_status)"; stop_foreign_listener "$dc_listener"; exit 1; fi
-pass_test "daemon-check --port exits 2 (conflict) when stopped and port is foreign-held"
+pass_test "daemon-check -p exits 2 (conflict) when stopped and port is foreign-held"
 
-# --port-less backward compatibility: stopped+held ⇒ still 1, never 2.
+# -p-less backward compatibility: stopped+held ⇒ still 1, never 2.
 dc_status=0; bin/daemon-check idem-test >/dev/null 2>&1 || dc_status=$?
-if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check without --port did not exit 1 on a held port (got $dc_status)"; stop_foreign_listener "$dc_listener"; exit 1; fi
-pass_test "daemon-check without --port exits 1 even when port is held (backward compatible)"
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check without -p did not exit 1 on a held port (got $dc_status)"; stop_foreign_listener "$dc_listener"; exit 1; fi
+pass_test "daemon-check without -p exits 1 even when port is held (backward compatible)"
 stop_foreign_listener "$dc_listener"
 
 echo ""
-echo "==== Testing --port intake validation (no silent portless degrade) ===="
-# An empty --port value must be a usage error, never a silent fall-through to the
+echo "==== Testing -p intake validation (no silent portless degrade) ===="
+# An empty -p value must be a usage error, never a silent fall-through to the
 # unsafe portless path. daemon-check and daemon-up both reject it at the parse site.
-dc_status=0; bin/daemon-check --port "" idem-test >/dev/null 2>&1 || dc_status=$?
-if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check --port '' did not reject empty value (got $dc_status)"; exit 1; fi
-pass_test "daemon-check rejects an empty --port value"
+dc_status=0; bin/daemon-check -p "" idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check -p '' did not reject empty value (got $dc_status)"; exit 1; fi
+pass_test "daemon-check rejects an empty -p value"
 
-du_status=0; bin/daemon-up --port "" idem-test -- sleep 60 >/dev/null 2>&1 || du_status=$?
-if [ "$du_status" -ne 1 ]; then echo "Fail: daemon-up --port '' did not reject empty value (got $du_status)"; exit 1; fi
-if [ -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up --port '' wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
-pass_test "daemon-up rejects an empty --port value without spawning"
+du_status=0; bin/daemon-up -p "" idem-test -- sleep 60 >/dev/null 2>&1 || du_status=$?
+if [ "$du_status" -ne 1 ]; then echo "Fail: daemon-up -p '' did not reject empty value (got $du_status)"; exit 1; fi
+if [ -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up -p '' wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+pass_test "daemon-up rejects an empty -p value without spawning"
 
-# A non-numeric / out-of-range --port must be rejected before any port check, in
+# A non-numeric / out-of-range -p must be rejected before any port check, in
 # daemon-check too (matching daemon-up's existing validation).
-dc_status=0; bin/daemon-check --port notaport idem-test >/dev/null 2>&1 || dc_status=$?
-if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check --port notaport did not reject non-numeric value (got $dc_status)"; exit 1; fi
-dc_status=0; bin/daemon-check --port 99999 idem-test >/dev/null 2>&1 || dc_status=$?
-if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check --port 99999 did not reject out-of-range value (got $dc_status)"; exit 1; fi
-pass_test "daemon-check rejects a non-numeric / out-of-range --port value"
+dc_status=0; bin/daemon-check -p notaport idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check -p notaport did not reject non-numeric value (got $dc_status)"; exit 1; fi
+dc_status=0; bin/daemon-check -p 99999 idem-test >/dev/null 2>&1 || dc_status=$?
+if [ "$dc_status" -ne 1 ]; then echo "Fail: daemon-check -p 99999 did not reject out-of-range value (got $dc_status)"; exit 1; fi
+pass_test "daemon-check rejects a non-numeric / out-of-range -p value"
 
 echo ""
 echo "==== Testing daemon-http-check ===="
@@ -564,5 +564,115 @@ if ! echo "$rc_out" | grep -qF "bound but not responding as [rest-server]"; then
 if ! echo "$rc_out" | grep -q "held by another process or an unhealthy instance"; then echo "Fail: rest-server-check did not log the 'held by another process or an unhealthy instance' qualifier"; echo "$rc_out"; stop_foreign_listener "$rc_listener"; exit 1; fi
 pass_test "rest-server-check exits 2 and reports the port is bound but not responding when foreign-held"
 stop_foreign_listener "$rc_listener"
+
+echo ""
+echo "==== Testing option parsing ===="
+
+# 1. Unknown option rejected, exit code preserved.
+assert_failure "check-pid -x is rejected" bin/check-pid -x
+assert_failure "daemon-down -x svc is rejected" bin/daemon-down -x svc
+# db-status -x confirms the *) break tightening: an unknown leading option is now
+# rejected, not treated as a positional.
+assert_failure "db-status -x is rejected (no silent positional fall-through)" bin/db-status -x
+
+# 2. Missing option-argument rejected.
+assert_failure "daemon-down -t (no value) is rejected" bin/daemon-down -t
+assert_failure "file-lock -o (no value) is rejected" bin/file-lock -o
+assert_failure "wait-for -p (no value) is rejected" bin/wait-for -p
+
+# 3. Value option accepted: db-status -f parses (existing format behavior). With
+#    no schema dir change the command still runs; a parse failure would exit
+#    non-zero before any DB work.
+test_db_status_f_parses() {
+  bin/db-status -f applied-only >/dev/null 2>&1
+  # exit status reflects the db-status run, not a parse error; any non-2 (usage)
+  # outcome means the -f value was accepted. Treat both 0 and a DB error as
+  # "parsed". A usage error from a bad parse would have printed the help banner.
+  local rc=$?
+  [ "$rc" -ne 2 ]
+}
+assert_success "db-status -f value option is accepted (parses)" test_db_status_f_parses
+
+# 4. Clustering and the -q guard. is-nix -qv is accepted (exits per dev-shell
+#    predicate, not a parse error). is-nix -q is the exact form bin/pre-commit's
+#    nix-guard uses; inside the dev shell it exits 0.
+test_is_nix_qv_no_parse_error() {
+  bin/is-nix -qv >/dev/null 2>&1
+  # 0 = in nix shell, 1 = not; both are valid predicate outcomes. A parse error
+  # would route through fatal (also exit 1) but print a [FATAL] message — assert
+  # the absence of that message instead.
+  ! bin/is-nix -qv 2>&1 | grep -q '\[FATAL\]'
+}
+assert_success "is-nix -qv clusters without a parse error" test_is_nix_qv_no_parse_error
+test_is_nix_q_in_shell() {
+  # This harness runs inside the dev shell, so the nix guard must succeed (exit 0)
+  # — the exact predicate bin/pre-commit relies on.
+  bin/is-nix -q
+}
+assert_success "is-nix -q exits 0 inside the dev shell (pre-commit nix-guard)" test_is_nix_q_in_shell
+
+# 5. -h exits 0.
+assert_success "file-lock -h exits 0" bin/file-lock -h
+assert_success "wait-for -h exits 0" bin/wait-for -h
+
+# 6. fatal option parsing (the harness already sources bin/functions).
+test_fatal_status_code() { ( fatal -s 7 "x" ); [ "$?" -eq 7 ]; }
+assert_success "fatal -s 7 exits 7" test_fatal_status_code
+test_fatal_default_code() { ( fatal "x" ); [ "$?" -eq 1 ]; }
+assert_success "fatal with no -s exits 1" test_fatal_default_code
+test_fatal_message_survives_shift() {
+  local out rc
+  out="$( (fatal -s 7 "a b c") 2>&1 )"; rc=$?
+  [ "$rc" -eq 7 ] && echo "$out" | grep -qF "a b c"
+}
+assert_success "fatal -s 7 'a b c' exits 7 and prints the full message" test_fatal_message_survives_shift
+
+# 7. daemon-up -- passthrough still boots a flag-carrying command. The command
+#    after -- (bash -c '...') carries its own options; getopts must not consume
+#    -- or those flags.
+test_daemon_up_passthrough() {
+  bin/daemon-down passthru-test >/dev/null 2>&1 || true
+  bin/daemon-up passthru-test -- bash -c 'sleep 60' >/dev/null 2>&1 || return 1
+  local pid
+  pid="$(cat "$PROJECT_ROOT/var/run/passthru-test.pid" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  bin/check-pid "$pid" >/dev/null 2>&1 || return 1
+  bin/daemon-down passthru-test >/dev/null 2>&1
+  return 0
+}
+assert_success "daemon-up -- passthrough boots a flag-carrying command (getopts keeps --)" test_daemon_up_passthrough
+
+# 8. bin/test option/positional permutation. Real invocations, each driven to a
+#    deterministic terminal outcome by the parser's pre-Gradle validation, so no
+#    Gradle task runs and the suite never recursively re-invokes itself.
+assert_failure "bin/test bogus-module is rejected (unknown module)" bin/test bogus-module
+assert_failure "bin/test -z is rejected (unknown option)" bin/test -z
+test_bin_test_permutation_trailing() {
+  local out
+  out="$( (bin/test rest-server -t 'ed.unicoach.X' queue-worker) 2>&1 )"
+  echo "$out" | grep -qF "requires exactly one module"
+}
+assert_success "bin/test permutation: trailing -t is parsed (two modules => --tests error)" test_bin_test_permutation_trailing
+test_bin_test_permutation_leading() {
+  local out
+  out="$( (bin/test -t 'ed.unicoach.X' rest-server queue-worker) 2>&1 )"
+  echo "$out" | grep -qF "requires exactly one module"
+}
+assert_success "bin/test permutation: option-first yields the identical error (position-independent)" test_bin_test_permutation_leading
+
+# 9. -p daemon scripts: missing value and unknown option.
+assert_failure "daemon-check -p (missing value) is rejected" bin/daemon-check -p
+assert_failure "daemon-up -p (missing value) is rejected" bin/daemon-up -p
+assert_failure "daemon-check -x svc is rejected" bin/daemon-check -x svc
+
+# 10. find-free-port.
+assert_success "find-free-port -h exits 0" bin/find-free-port -h
+assert_failure "find-free-port -x is rejected" bin/find-free-port -x
+assert_failure "find-free-port 18000 19000 (too many args) is rejected" bin/find-free-port 18000 19000
+
+# 12. db-reset still drops after the db-drop -y collapse: the relayed -y bypasses
+#     the confirmation prompt non-interactively.
+test_db_reset_drops() { bin/db-reset >/dev/null 2>&1; }
+assert_success "db-reset drops/recreates non-interactively (relays db-drop -y)" test_db_reset_drops
 
 end_tests

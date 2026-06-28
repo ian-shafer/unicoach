@@ -19,18 +19,19 @@ Arguments:
   command...:   The native command to execute in the background.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -lt 1 ]; then
   help "Missing required <service-name> argument."

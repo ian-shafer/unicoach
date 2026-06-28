@@ -19,18 +19,19 @@ cluster (e.g. RDS) where initdb is impossible. It connects as the master role
 (POSTGRES_USER) against the admin database (POSTGRES_ADMIN_DB, default postgres).
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
   help "db-create-role does not accept positional arguments: $*"

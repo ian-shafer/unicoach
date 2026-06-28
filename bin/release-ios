@@ -8,7 +8,7 @@
 # a signed App Store .ipa, and — by default — uploads it to App Store Connect
 # for TestFlight, authenticating with an App Store Connect API key passed
 # straight to xcodebuild (no Apple-ID password, no keychain prompt). Pass
-# --no-upload to stop after producing the .ipa.
+# -n to stop after producing the .ipa.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +21,7 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-release-ios [--no-upload] [target]
+release-ios [-n] [target]
 
 Archives UnicoachiOS for App Store distribution and uploads it to App Store
 Connect for TestFlight. Runs under system Xcode, not the Nix dev shell.
@@ -32,7 +32,7 @@ Connect for TestFlight. Runs under system Xcode, not the Nix dev shell.
                and signed for distribution, so the target's UNICOACH_CONFIGURATION
                is ignored and a simulator target is rejected. The checked-in
                `prod` target points at https://api.unicoachapp.com.
-  --no-upload  Archive and export a signed App Store .ipa under ios-app/build/,
+  -n           Archive and export a signed App Store .ipa under ios-app/build/,
                then stop — do not upload. No App Store Connect API key required.
 
 Three things are resolved before archiving (all fail fast):
@@ -55,26 +55,28 @@ Connect → Users and Access → Integrations → App Store Connect API). Copy
 ios-app/env/appstore.env.example to fill it in.
 
 Options:
-  -h, --help   Help
+  -h           Help
 EOF
   exit "$exit_code"
 }
 
 UPLOAD=1
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  --no-upload) UPLOAD=0; shift ;;
-  -*) help "Unknown option: $1" ;;
+while getopts ":hn" opt; do
+  case "$opt" in
+  h) help ;;
+  n) UPLOAD=0 ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 # Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
 # xcrun is shadowed by a stub and DEVELOPER_DIR/SDKROOT point into the Nix store,
 # so the archive would silently target the wrong toolchain. Detection lives in
 # bin/is-nix; the refusal is here. Placed before any env/signing/tool logic so
 # this message wins even when an env file is also missing.
-if "$PROJECT_ROOT/bin/is-nix" --quiet; then
+if "$PROJECT_ROOT/bin/is-nix" -q; then
   fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/release-ios prod), not via 'nix develop -c'."
 fi
 
@@ -167,7 +169,7 @@ EXPORT_AUTH_ARGS=()
 if [ "$UPLOAD" -eq 1 ]; then
   APPSTORE_ENV="$ENV_DIR/appstore.env"
   if [ ! -f "$APPSTORE_ENV" ]; then
-    fatal "Upload requires App Store Connect API credentials, but [$APPSTORE_ENV] is missing. Copy ios-app/env/appstore.env.example to ios-app/env/appstore.env and fill it in, or pass --no-upload to only produce the .ipa."
+    fatal "Upload requires App Store Connect API credentials, but [$APPSTORE_ENV] is missing. Copy ios-app/env/appstore.env.example to ios-app/env/appstore.env and fill it in, or pass -n to only produce the .ipa."
   fi
   set -a
   # shellcheck source=/dev/null
@@ -245,7 +247,7 @@ EOF
 if [ "$UPLOAD" -eq 1 ]; then
   log-info "Uploading archive to App Store Connect for TestFlight [build=$BUILD_NUMBER]..."
 else
-  log-info "Exporting signed App Store .ipa to [$EXPORT_DIR] (--no-upload)..."
+  log-info "Exporting signed App Store .ipa to [$EXPORT_DIR] (-n)..."
 fi
 exec xcodebuild \
   -exportArchive \

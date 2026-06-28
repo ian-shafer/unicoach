@@ -19,17 +19,18 @@ Exit codes:
   2: The port is held by another process not responding as rest-server.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 exec "$PROJECT_ROOT/bin/daemon-http-check" rest-server "${PORT:-8080}" "http://localhost:${PORT:-8080}/healthz"

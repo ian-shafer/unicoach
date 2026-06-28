@@ -19,8 +19,8 @@ Arguments:
   service-name: Logical service identifier (e.g. postgres, rest-server).
 
 Options:
-  -h, --help: Help
-  -t, --lock-timeout TIMEOUT  Duration to wait for lock acquisition (default 16s).
+  -h: Help
+  -t TIMEOUT  Duration to wait for lock acquisition (default 16s).
 EOF
   exit "$exit_code"
 }
@@ -28,14 +28,15 @@ EOF
 LOCK_TIMEOUT="16"
 SERVICE_NAME=""
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -t|--lock-timeout) LOCK_TIMEOUT="${2:-}"; shift 2 ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":ht:" opt; do
+  case "$opt" in
+  h) help ;;
+  t) LOCK_TIMEOUT="$OPTARG" ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -ne 1 ]; then
   help "Missing required <service-name> argument."

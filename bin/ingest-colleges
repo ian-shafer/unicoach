@@ -19,18 +19,19 @@ Run inside the nix dev shell (the JVM lives there):
   nix develop -c bin/ingest-colleges <institution.csv> <fields.csv>
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -ne 2 ]; then
   help "ingest-colleges requires exactly two arguments: <institution.csv> <fields.csv>"

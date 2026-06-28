@@ -9,12 +9,14 @@ Displays job counts grouped by status. If job types are provided, filters to tho
 EOF
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-    -h|--help) help; exit 0 ;;
-    *) fatal "Unknown option [$1]" ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help; exit 0 ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 types=("$@")
 query="SELECT job_type AS \"Job Type\",

@@ -27,11 +27,11 @@ Modules:
   common db net auth queue queue-worker rest-server service email chat admin-server public-web college
 
 Options:
-  -t, --tests GLOB   Gradle test filter (requires exactly one module)
-  -f, --force        Force re-run, bypass the build cache (--rerun-tasks)
-  -v, --verbose      Verbose Gradle output (--info)
-  -c, --continue     Run all selected test tasks, report every failure
-  -h, --help         Help
+  -t GLOB   Gradle test filter (requires exactly one module)
+  -f        Force re-run, bypass the build cache (--rerun-tasks)
+  -v        Verbose Gradle output (--info)
+  -c        Run all selected test tasks, report every failure
+  -h        Help
 EOF
   exit "$exit_code"
 }
@@ -53,32 +53,40 @@ FORCE=false
 VERBOSE=false
 CONTINUE=false
 
+# Options and positionals (the `check` keyword and module names) may be
+# intermixed in any order. getopts alone stops at the first non-option, so wrap
+# it in an outer loop that consumes one non-option per round, resetting OPTIND=1
+# before each inner getopts run (OPTIND is not auto-reset within one shell).
 while [ "$#" -gt 0 ]; do
-  case "$1" in
-  -h|--help) help ;;
-  -t|--tests)
-    [ "$#" -ge 2 ] || help "--tests requires a GLOB"
-    TESTS_GLOB="$2"
-    HAS_TESTS=true
-    shift 2
-    ;;
-  -f|--force) FORCE=true; shift ;;
-  -v|--verbose) VERBOSE=true; shift ;;
-  -c|--continue) CONTINUE=true; shift ;;
-  check) TASK="check"; shift ;;
-  -*) help "unknown option [$1]" ;;
-  *)
-    if is-module "$1"; then
-      # De-duplicate repeated modules.
-      if ! printf '%s\n' "${SELECTED[@]}" | grep -qxF "$1"; then
-        SELECTED+=("$1")
+  OPTIND=1
+  while getopts ":ht:fvc" opt; do
+    case "$opt" in
+    h) help ;;
+    t) TESTS_GLOB="$OPTARG"; HAS_TESTS=true ;;
+    f) FORCE=true ;;
+    v) VERBOSE=true ;;
+    c) CONTINUE=true ;;
+    \?) help "unknown option [-$OPTARG]" ;;
+    :)  help "--tests requires a GLOB" ;;
+    esac
+  done
+  shift $((OPTIND-1))
+  if [ "$#" -gt 0 ]; then
+    case "$1" in
+    check) TASK="check" ;;
+    *)
+      if is-module "$1"; then
+        # De-duplicate repeated modules.
+        if ! printf '%s\n' "${SELECTED[@]}" | grep -qxF "$1"; then
+          SELECTED+=("$1")
+        fi
+      else
+        help "unknown module [$1]"
       fi
-    else
-      help "unknown module [$1]"
-    fi
+      ;;
+    esac
     shift
-    ;;
-  esac
+  fi
 done
 
 # --tests filters a single test task; it is meaningless across multiple tasks.

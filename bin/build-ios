@@ -42,24 +42,26 @@ otherwise it is a device build, which additionally sources ios-app/env/signing.e
 for UNICOACH_DEVELOPMENT_TEAM (required) and UNICOACH_DEVICE (optional).
 
 Options:
-  -h, --help   Help
+  -h           Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) help "Unknown option: $1" ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 # Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
 # xcrun is shadowed by a stub and DEVELOPER_DIR/SDKROOT point into the Nix store,
 # so the build would silently target the wrong toolchain. Detection lives in
 # bin/is-nix; the refusal is here. Placed before any env/signing/tool logic so
 # this message wins even when an env file is also missing.
-if "$PROJECT_ROOT/bin/is-nix" --quiet; then
+if "$PROJECT_ROOT/bin/is-nix" -q; then
   fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/build-ios local), not via 'nix develop -c'."
 fi
 

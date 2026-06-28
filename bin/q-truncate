@@ -9,19 +9,31 @@ Deletes all jobs (and their attempts via CASCADE) for the specified job types.
 If no types are given, deletes all jobs.
 
 Options:
-  --yes-i-really-want-to-do-this: Bypass safety prompt
+  -y: Bypass safety prompt
 EOF
 }
 
 skip_prompt=false
 types=()
-for arg in "$@"; do
-  case "$arg" in
-    -h|--help) help; exit 0 ;;
-    --yes-i-really-want-to-do-this) skip_prompt=true ;;
-    -*) fatal "Unknown option [$arg]" ;;
-    *) types+=("$arg") ;;
-  esac
+# Options (-y/-h) and positional job-types may be intermixed in any order.
+# getopts alone stops at the first non-option, so wrap it in an outer loop that
+# consumes one non-option (a job-type) per round, resetting OPTIND=1 before each
+# inner getopts run (OPTIND is not auto-reset within one shell).
+while [ "$#" -gt 0 ]; do
+  OPTIND=1
+  while getopts ":hy" opt; do
+    case "$opt" in
+    h) help; exit 0 ;;
+    y) skip_prompt=true ;;
+    \?) fatal "Unknown option [-$OPTARG]" ;;
+    :)  fatal "option -$OPTARG requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND-1))
+  if [ "$#" -gt 0 ]; then
+    types+=("$1")
+    shift
+  fi
 done
 
 if [ ${#types[@]} -eq 0 ]; then

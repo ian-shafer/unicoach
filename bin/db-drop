@@ -15,20 +15,26 @@ Idempotent. The postgres cluster and its data directory are left intact;
 only the single database named by POSTGRES_DB is removed.
 
 Options:
-  --yes-i-really-want-to-do-this: Disable confirmation prompt
-  -h, --help: Help
+  -y: Disable confirmation prompt
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
 skip_prompt=false
-for arg in "$@"; do
-  case "$arg" in
-    -h|--help) help ;;
-    --yes-i-really-want-to-do-this) skip_prompt=true ;;
-    *) fatal "db-drop does not accept positional arguments: [$arg]" ;;
+while getopts ":hy" opt; do
+  case "$opt" in
+    h) help ;;
+    y) skip_prompt=true ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
+
+if [ "$#" -gt 0 ]; then
+  fatal "db-drop does not accept positional arguments: [$1]"
+fi
 
 if [ "$skip_prompt" = false ]; then
   require_dangerous_confirmation "drop the application database and all its data"

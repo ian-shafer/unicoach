@@ -23,19 +23,19 @@ This starts a zsh session with all project tools on PATH. Your existing
 .zshrc and oh-my-zsh configuration will load normally.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  *)
-      help "Unknown option: $1"
-      ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -ne 0 ]; then
   help "Error: dev-bootstrap accepts no positional arguments."

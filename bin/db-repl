@@ -11,17 +11,19 @@ help() {
 db-repl [options]
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 # Suppress health check failure logs to keep the interactive startup display clean
 if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null 2>&1; then

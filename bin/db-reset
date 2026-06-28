@@ -19,23 +19,25 @@ role work, so it assumes db-bootstrap was already run once by hand. Performs:
   3. db-migrate — apply all pending migrations
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
   help "db-reset does not accept positional arguments: $*"
 fi
 
-"$PROJECT_ROOT/bin/db-drop" --yes-i-really-want-to-do-this
+"$PROJECT_ROOT/bin/db-drop" -y
 "$PROJECT_ROOT/bin/db-create"
 "$PROJECT_ROOT/bin/db-migrate"
 

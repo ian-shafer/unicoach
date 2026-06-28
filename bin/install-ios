@@ -16,7 +16,7 @@ help() {
     exit_code=1
   fi
   cat << 'EOF'
-install-ios [--launch] [target]
+install-ios [-l] [target]
 
 Installs the most recent device build of UnicoachiOS to a physical iPhone via
 xcrun devicectl. Run bin/build-ios <target> first. Runs under system Xcode, not
@@ -25,32 +25,34 @@ the Nix dev shell. Physical device only — a simulator target is rejected (so t
 
   target     Target name (default: local). Sources ios-app/env/<target>.env to
              locate the built .app under ios-app/build/DerivedData.
-  --launch   After install, also launch the app on the device (fire-and-forget).
+  -l         After install, also launch the app on the device (fire-and-forget).
 
 Device selection: UNICOACH_DEVICE (from ios-app/env/signing.env) when set;
 otherwise the single connected device is auto-detected, failing if zero or more
 than one device is connected.
 
 Options:
-  -h, --help   Help
+  -h           Help
 EOF
   exit "$exit_code"
 }
 
 LAUNCH=0
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  --launch) LAUNCH=1; shift ;;
-  -*) help "Unknown option: $1" ;;
+while getopts ":hl" opt; do
+  case "$opt" in
+  h) help ;;
+  l) LAUNCH=1 ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 # Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
 # xcrun is shadowed by a stub with no devicectl. Detection lives in bin/is-nix;
 # the refusal is here. Placed before any env/tool logic so this message wins
 # even when an env file is also missing.
-if "$PROJECT_ROOT/bin/is-nix" --quiet; then
+if "$PROJECT_ROOT/bin/is-nix" -q; then
   fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/install-ios local), not via 'nix develop -c'."
 fi
 

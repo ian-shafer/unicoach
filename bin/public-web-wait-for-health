@@ -15,18 +15,19 @@ returns HTTP 200 or the timeout elapses. Exits 0 on success, non-zero
 on timeout.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 TIMEOUT=4s
 log-info "Waiting for public-web health check on port ${PUBLIC_WEB_PORT:-8082}..."

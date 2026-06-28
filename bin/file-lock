@@ -11,9 +11,9 @@ help() {
 file-lock [options] <lock-dir> <max-lock-duration>
 
 Options:
-  -h, --help: Help
-  -o, --operation OP        Operation name written to <lock-dir>/op
-  -t, --timeout TIMEOUT     Wait up to this duration to acquire the lock
+  -h: Help
+  -o OP        Operation name written to <lock-dir>/op
+  -t TIMEOUT   Wait up to this duration to acquire the lock
 EOF
   exit "$exit_code"
 }
@@ -21,14 +21,16 @@ EOF
 OP=""
 TIMEOUT=""
 
-while [[ "${1:-}" == -* ]]; do
-  case "${1:-}" in
-  -h|--help) help ;;
-  -o|--operation) OP="${2:-}"; shift 2 ;;
-  -t|--timeout) TIMEOUT="${2:-}"; shift 2 ;;
-  *) fatal "Unknown option: ${1:-}" ;;
+while getopts ":ho:t:" opt; do
+  case "$opt" in
+  h) help ;;
+  o) OP="$OPTARG" ;;
+  t) TIMEOUT="$OPTARG" ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -ne 2 ]; then
   help "Invalid number of arguments. Expected 2 (<lock-dir> and <max-lock-duration>), but received $#."

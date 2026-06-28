@@ -13,16 +13,16 @@ daemon-check [options] <service-name>
 Exits 0 if the service is running (PID file exists and process is alive).
 Exits 1 if the service is stopped (no PID file or process is dead).
 
-When --port is supplied and our recorded process is absent/dead while the port
-is held by another process, exits 2 (conflict). Without --port the result is
+When -p is supplied and our recorded process is absent/dead while the port
+is held by another process, exits 2 (conflict). Without -p the result is
 only 0 or 1, exactly as before.
 
 Arguments:
   service-name: Logical service identifier (e.g. postgres, rest-server).
 
 Options:
-  -h, --help:        Help
-  -p, --port <port>: TCP port the service binds; enables the conflict tri-state.
+  -h:        Help
+  -p <port>: TCP port the service binds; enables the conflict tri-state.
 
 Exit codes:
   0: Running (our PID is alive).
@@ -33,18 +33,25 @@ EOF
 }
 
 PORT=""
+PORT_SET=false
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -p|--port) PORT="${2:-}"; [ -n "$PORT" ] || help "--port requires a value"; shift 2 ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+# getopts parses only the leading options and halts at the first non-option
+# (<service-name>). The two error arms route to different sinks (preserved
+# verbatim): a missing -p value -> help, an unknown option -> fatal.
+while getopts ":hp:" opt; do
+  case "$opt" in
+  h) help ;;
+  p) PORT="$OPTARG"; PORT_SET=true ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
-if [ -n "$PORT" ] && ! validate_port "$PORT"; then
-  help "Invalid --port value [$PORT]. Expected an integer in 1..65535."
+# An explicit -p with an empty value is a usage error (never a silent portless
+# degrade); -p must carry a valid 1..65535 port.
+if [ "$PORT_SET" = true ] && ! validate_port "$PORT"; then
+  help "Invalid -p value [$PORT]. Expected an integer in 1..65535."
 fi
 
 if [ "$#" -ne 1 ]; then
@@ -57,7 +64,7 @@ shift
 PID_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.pid"
 
 # Decide running/stopped from our own tracking file first. Only once we conclude
-# we are not running do we consult the port (when --port is given) to distinguish
+# we are not running do we consult the port (when -p is given) to distinguish
 # a plain "stopped" from a "conflict" — the port is held by some other process.
 stopped() {
   if [ -z "$PORT" ]; then

@@ -18,18 +18,19 @@ this script. If the binary is absent, this script exits non-zero immediately
 without invoking Gradle.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  -*) fatal "Unknown option: $1" ;;
-  *) break ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal "unknown option [-$OPTARG]" ;;
+  :)  fatal "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
   help "public-web-up does not accept positional arguments: $*"
@@ -41,6 +42,6 @@ if [ ! -x "$BINARY" ]; then
   fatal "public-web binary not found at [$BINARY]. Run 'bin/build-public-web' first."
 fi
 
-"$PROJECT_ROOT/bin/daemon-up" --port "${PUBLIC_WEB_PORT:-8082}" public-web -- "$BINARY"
+"$PROJECT_ROOT/bin/daemon-up" -p "${PUBLIC_WEB_PORT:-8082}" public-web -- "$BINARY"
 
 "$PROJECT_ROOT/bin/public-web-wait-for-health"

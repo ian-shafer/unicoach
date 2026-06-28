@@ -162,7 +162,7 @@ test_db_lifecycle_wipes_data() {
   fi
 
   # Drop the database
-  bin/db-drop --yes-i-really-want-to-do-this
+  bin/db-drop -y
 
   # Ensure the dropped database is gone / data destroyed
   if bin/db-query "SELECT * FROM lifecycle_test;" 2>/dev/null; then
@@ -182,7 +182,7 @@ test_db_lifecycle_wipes_data() {
 test_db_lifecycle_wipes_data
 
 test_db_provisioning_idempotent() {
-  bin/db-drop --yes-i-really-want-to-do-this
+  bin/db-drop -y
   bin/db-create
 
   # Re-running bootstrap and create must both exit 0 with no errors.
@@ -199,7 +199,7 @@ test_db_provisioning_idempotent() {
 test_db_provisioning_idempotent
 
 test_db_status_formats() {
-  bin/db-drop --yes-i-really-want-to-do-this
+  bin/db-drop -y
   bin/db-create
 
   export DB_SCHEMA_DIR="/tmp/test_migrations_status_$$"
@@ -212,17 +212,17 @@ test_db_status_formats() {
   # Creates another schema file
   echo "CREATE TABLE s2 (id INT);" > "$DB_SCHEMA_DIR/0002.s2.sql"
 
-  # Test that --format applied-only only outputs a single, correct line
-  applied_out=$(bin/db-status --format applied-only)
+  # Test that -f applied-only only outputs a single, correct line
+  applied_out=$(bin/db-status -f applied-only)
   if [ "$applied_out" != "0001.s1.sql" ]; then
-    fail_test "db-status --format applied-only did not output expected single line. Got: $applied_out"
+    fail_test "db-status -f applied-only did not output expected single line. Got: $applied_out"
     return 1
   fi
 
-  # Test that --format unapplied-only only outputs a single, correct line
-  unapplied_out=$(bin/db-status --format unapplied-only)
+  # Test that -f unapplied-only only outputs a single, correct line
+  unapplied_out=$(bin/db-status -f unapplied-only)
   if [ "$unapplied_out" != "0002.s2.sql" ]; then
-    fail_test "db-status --format unapplied-only did not output expected single line. Got: $unapplied_out"
+    fail_test "db-status -f unapplied-only did not output expected single line. Got: $unapplied_out"
     return 1
   fi
 
@@ -234,7 +234,7 @@ test_db_status_formats
 
 echo "==== Testing Migration Engine ===="
 setup_migration_test() {
-  bin/db-drop --yes-i-really-want-to-do-this >/dev/null 2>&1 || true
+  bin/db-drop -y >/dev/null 2>&1 || true
   bin/db-create
   export DB_SCHEMA_DIR="/tmp/test_migrations_$$"
   mkdir -p "$DB_SCHEMA_DIR"

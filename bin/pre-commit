@@ -15,19 +15,19 @@ Native validation script to execute tests and ktlint check before committing.
 Runs Gradle check (Kotlin) and deno fmt --check (Markdown) concurrently.
 
 Options:
-  -h, --help: Help
+  -h: Help
 EOF
   exit "$exit_code"
 }
 
-while [[ "${1:-}" == -* ]]; do
-  case "$1" in
-  -h|--help) help ;;
-  *)
-      help "Unknown option: $1"
-      ;;
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :)  help "option -$OPTARG requires an argument" ;;
   esac
 done
+shift $((OPTIND-1))
 
 if [ "$#" -ne 0 ]; then
   help "Error: pre-commit accepts no positional arguments."
@@ -38,7 +38,7 @@ fi
 # "deno: command not found" / "Unable to locate a Java Runtime". This is the
 # is-nix guard the iOS scripts use, in the opposite direction: they refuse inside
 # the dev shell, pre-commit refuses outside it.
-if ! "$PROJECT_ROOT/bin/is-nix" --quiet; then
+if ! "$PROJECT_ROOT/bin/is-nix" -q; then
   fatal "pre-commit must run inside the Nix dev shell. Commit via 'nix develop -c git commit ...' or from a 'nix develop' shell."
 fi
 
