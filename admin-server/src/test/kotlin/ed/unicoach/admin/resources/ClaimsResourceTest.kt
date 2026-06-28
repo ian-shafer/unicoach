@@ -134,4 +134,24 @@ class ClaimsResourceTest {
         "The supporting-observation row must link to the canonical /observation/{id} path",
       )
     }
+
+  @Test
+  fun `supporting-observations panel shows Convo and Source Request columns linking to convo and convo-request`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val claim = AdminTestSupport.seedClaim(student.id)
+      val obs = AdminTestSupport.seedObservation(student.id, convo.id, req.id)
+      AdminTestSupport.seedClaimSupport(claim.id, obs.id)
+
+      val detail = client().get("/claim/${claim.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(detail.contains("Source Request"), "The panel must add a Source Request column")
+      assertTrue(detail.contains("/convo/${convo.id.value}"), "The Convo cell must link to /convo/{id}")
+      assertTrue(detail.contains("/convo-request/${req.id.value}"), "The Source Request cell must link to /convo-request/{id}")
+    }
 }

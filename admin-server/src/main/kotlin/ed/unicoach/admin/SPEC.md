@@ -65,21 +65,23 @@ sibling subpackages and are referenced here only by responsibility.
 - **Side effects**: Installs an application-scope `StatusPages` catch-all that
   renders any uncaught `Throwable` as an HTML service-unavailable page; installs
   the authorization gate; builds the resource registry over the user, student,
-  session, system-prompt, claims, observations, and extraction-runs descriptors
-  (`UsersResource`, `StudentsResource`, `SessionsResource`,
-  `SystemPromptsResource`, `ClaimsResource`, `ObservationsResource`,
-  `ExtractionRunsResource`); constructs an `AdminDisplay` from
+  session, system-prompt, claims, observations, extraction-runs, conversation,
+  and conversation-request descriptors (`UsersResource`, `StudentsResource`,
+  `SessionsResource`, `SystemPromptsResource`, `ClaimsResource`,
+  `ObservationsResource`, `ExtractionRunsResource`, `ConvosResource`,
+  `ConvoRequestsResource`); constructs an `AdminDisplay` from
   `adminConfig.display` and the registry's entity-support predicate (RFC 79:
   `{ slug -> registry.bySlug(slug) != null }`), then passes it to
   `registerAdminRoutes` so every cell renders through the uniform `renderCell`
   helper; and registers the liveness, login/logout, and descriptor-driven
-  resource routes into the routing tree. The claims, observations, and
-  extraction-runs descriptors expose the coaching-memory surfaces as list+detail
-  read-only views (no create/edit/delete). `UsersResource` is the only
-  descriptor constructed with collaborators: it receives both the same hasher
-  instance used for login (for its user-create path) and the
-  `emailVerificationService` (for its "send verification email" action's resend
-  path); the other descriptors are passed as-is.
+  resource routes into the routing tree. The claims, observations,
+  extraction-runs, conversation, and conversation-request descriptors expose the
+  coaching-memory surfaces as list+detail read-only views (no
+  create/edit/delete). `UsersResource` is the only descriptor constructed with
+  collaborators: it receives both the same hasher instance used for login (for
+  its user-create path) and the `emailVerificationService` (for its "send
+  verification email" action's resend path); the other descriptors are passed
+  as-is.
 - **Inputs**: All collaborators are pre-constructed by `startServer` and passed
   in; the module performs no config parsing and constructs no IO-bound singleton
   of its own.
@@ -204,3 +206,8 @@ driving the `UsersResource` resend action. It does not depend on `rest-server`,
       `adminModule` now builds an `AdminDisplay` from the parsed display config
       and the registry's entity-support predicate and passes it to
       `registerAdminRoutes`.
+- [x] [RFC-81: Admin conversation views](../../../../../../../rfc/81-admin-conversation-views.md)
+      — `adminModule` now registers `ConvosResource` and `ConvoRequestsResource`
+      in the `AdminRegistry` constructor list, bringing the total to 9
+      resources; the registry's entity-support predicate consequently returns
+      `true` for the `"convo"` and `"convo-request"` slugs.

@@ -110,20 +110,35 @@ object ClaimsResource : AdminResource<Claim, ClaimId> {
     return Result.success(listOf(supportingObservationsPanel(observations)))
   }
 
-  /** Pure builder: the "Supporting observations" panel; rows link to `/observation/{id}`. */
+  /**
+   * Pure builder: the "Supporting observations" panel. The observation is the
+   * only bridge from a claim to a conversation, so the `Convo` / `Source Request`
+   * links ride on the observations already shown (the generalized
+   * claim→conversation path). Rows link to `/observation/{id}`, with the
+   * conversation cells linking to `/convo/{id}` and `/convo-request/{id}`.
+   */
   private fun supportingObservationsPanel(observations: List<Observation>): EdgePanel.Table =
     EdgePanel.Table(
       label = "Supporting observations",
       columns =
         listOf(
           EdgePanel.Table.Column("ID", refSlug = "observation"),
+          EdgePanel.Table.Column("Convo", refSlug = "convo"),
+          EdgePanel.Table.Column("Source Request", refSlug = "convo-request"),
           EdgePanel.Table.Column("Uttered", FieldType.TIMESTAMP),
           EdgePanel.Table.Column("Quote"),
         ),
       rows =
         observations.map { o ->
           EdgePanel.Table.Row(
-            cells = listOf(o.id.value.toString(), o.utteredAt.toString(), o.quote),
+            cells =
+              listOf(
+                o.id.value.toString(),
+                o.convoId.value.toString(),
+                o.sourceRequestId.value.toString(),
+                o.utteredAt.toString(),
+                o.quote,
+              ),
           )
         },
     )

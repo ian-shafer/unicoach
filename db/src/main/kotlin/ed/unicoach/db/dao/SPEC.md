@@ -74,11 +74,11 @@ Declared capability sets per DAO (operations not covered by an interface — tok
 lookups, `rename`, `archive`/`unarchive`, parented `listBy*`, `appendRequest`,
 `remintToken`, `findByEmail`, `findVersion`, `revertToVersion`,
 `updatePhysicalRecord`, `markEmailVerified`, `changeEmail`, the `*ForUpdate`
-lock-reads, `expireZombieSessions`, `*WithActivity`, `listTurns`,
-`findRawByResponseId`, `findByNameAndVersion`,
-`consume`/`findByTokenHash`/`consumeAllForUser`, the coaching-memory reads
-`listByConvoRange`/`listByStudent` (the unbounded and the bounded
-`limit`/`offset` overloads)/`listActiveByStudent`/
+lock-reads, `expireZombieSessions`, `*WithActivity`, `listWithActivity`,
+`listTurns` (both overloads), `findTurnByRequestId`, `findRawByResponseId`,
+`findByNameAndVersion`, `consume`/`findByTokenHash`/`consumeAllForUser`, the
+coaching-memory reads `listByConvoRange`/`listByStudent` (the unbounded and the
+bounded `limit`/`offset` overloads)/`listActiveByStudent`/
 `listObservationsForClaim`/`listClaimsForObservation`/`watermark`, the `claims`
 lifecycle write `revise`, the idempotent `link`, the `append` aliases, and
 `AdvisoryLockDao.lockStudent` — remain concrete methods on the DAO;
@@ -875,13 +875,16 @@ the mutable-entity reads/writes and the append-only log append/read.
   never-archived row succeeds. (`archived_at` is a lifecycle axis independent of
   soft-delete.)
 
-#### `listByStudentWithActivity(session, studentId, archive = UNARCHIVED, scope = ACTIVE): Result<List<ConvoWithActivity>>`
+#### `listByStudentWithActivity(session, studentId, archive = UNARCHIVED, scope = ACTIVE, limit: Int? = null, offset: Int = 0): Result<List<ConvoWithActivity>>`
 
 - **Side Effects**: Read only — single `LEFT JOIN convo_requests` grouped by
   convo, deriving `lastActivityAt = MAX(convo_requests.created_at)` (null with
   no turns, including failed/orphan turns). Filters `c.deleted_at` by `scope`
   and `c.archived_at` by `archive` (`archivePredicate`). Orders by activity
-  `DESC NULLS LAST`, then `created_at DESC`, then `id`.
+  `DESC NULLS LAST`, then `created_at DESC`, then `id`. `limit = null` preserves
+  the existing unbounded behaviour for coaching callers; a non-null bound
+  (requires `limit > 0`) activates `LIMIT ? OFFSET ?` pagination. `offset`
+  defaults to `0` and must be `>= 0`.
 - **Error Handling**: `success(emptyList())` when none match.
 - **Idempotency**: Yes.
 
@@ -890,6 +893,17 @@ the mutable-entity reads/writes and the append-only log append/read.
 - **Side Effects**: Read only — same `LEFT JOIN`/`MAX` derivation, scoped on
   `c.deleted_at`.
 - **Error Handling**: `NotFoundException` when no row matches the scope.
+- **Idempotency**: Yes.
+
+#### `listWithActivity(session, scope, limit, offset): Result<List<ConvoWithActivity>>`
+
+- **Side Effects**: Read only — global, paginated convo list for the admin
+  `/convo` list page. Single `LEFT JOIN convo_requests` grouped by convo,
+  deriving `lastActivityAt = MAX(convo_requests.created_at)`. `scope` filters
+  `c.deleted_at`; all archive states are returned (archived rows are visible to
+  admin). Ordered `c.created_at DESC, c.id` (deterministic by creation time, not
+  by activity). `limit` must be `> 0`; `offset` must be `>= 0`.
+- **Error Handling**: `success(emptyList())` when none match.
 - **Idempotency**: Yes.
 
 #### `appendRequest(session, request: NewConvoRequest): Result<ConvoRequest>`
@@ -915,15 +929,43 @@ the mutable-entity reads/writes and the append-only log append/read.
   or a content/model/token CHECK (via `mapConvoError`).
 - **Idempotency**: No — the `request_id` UNIQUE rejects a second response.
 
-#### `listTurns(session, convoId, scope = ACTIVE): Result<List<ConvoTurn>>`
+#### `listTurns(session, convoId, scope = ACTIVE, limit: Int? = null, offset: Int = 0): Result<List<ConvoTurn>>`
 
-- **Side Effects**: Read only — `queryList` LEFT-JOINing `convo_requests` to
-  `convo_responses`, scoping on the owning convo's `c.deleted_at` by `scope`
-  (turns of a soft-deleted convo are hidden under `ACTIVE`); ordered
-  `r.created_at, r.id`. `ConvoTurn.response` is `null` when the request has no
-  response row yet.
+- **Side Effects**: Read only — per-convo turn list. `queryList` using the
+  shared `turnSelect` projection (all `convo_requests` columns aliased `req_*`,
+  all LEFT-JOINed `convo_responses` columns aliased `resp_*`), scoping on the
+  owning convo's `c.deleted_at` by `scope` (turns of a soft-deleted convo are
+  hidden under `ACTIVE`); ordered `r.created_at, r.id`. `ConvoTurn.response` is
+  `null` when the request has no response row yet. `limit = null` preserves the
+  existing unbounded behaviour for coaching callers (transcript reads); a
+  non-null bound activates `LIMIT ? OFFSET ?` pagination. `offset` defaults to
+  `0` and must be `>= 0`.
 - **Error Handling**: `mapDatabaseError` on failure. The verbatim raw payload is
   excluded — fetch on demand via `findRawByResponseId`.
+- **Idempotency**: Yes.
+
+#### `listTurns(session, scope, limit, offset): Result<List<ConvoTurn>>`
+
+- **Side Effects**: Read only — global, paginated turn firehose for the admin
+  `/convo-request` list page. A distinct overload from the per-convo
+  `listTurns(session, convoId, ...)` (no `convoId` parameter). Uses the shared
+  `turnSelect` projection; LEFT JOIN to `convo_responses` is 1:1 per request.
+  `scope` filters the owning convo's `c.deleted_at`. Ordered `r.id DESC` (the
+  `BIGINT IDENTITY` PK is monotonic with insertion, so most-recent-first
+  descends the PK index with no sort over a non-indexed column). `limit` must be
+  `> 0`; `offset` must be `>= 0`.
+- **Error Handling**: `success(emptyList())` when none match; `mapDatabaseError`
+  on failure.
+- **Idempotency**: Yes.
+
+#### `findTurnByRequestId(session, requestId, scope): Result<ConvoTurn>`
+
+- **Side Effects**: Read only — one turn by request id, for the admin
+  `/convo-request/{id}` detail page. Uses `turnSelect` with
+  `WHERE r.id = ? AND <scope predicate>`. `ConvoTurn.response` is `null` when no
+  response has been appended yet.
+- **Error Handling**: `NotFoundException` when no `convo_requests` row matches
+  `requestId`, or when the owning convo is excluded by `scope`.
 - **Idempotency**: Yes.
 
 #### `findRawByResponseId(session, responseId): Result<ConvoResponseRaw>`
@@ -1546,3 +1588,20 @@ rules are in §IV.
       `serverErrorMessage` on `23505`/`23514`, so the college loader's
       `classifyUpsertFailure` can bucket failures by constraint name without
       log-text parsing.
+- [x] [RFC-81: Admin Conversation Views](../../../../../../../../rfc/81-admin-conversation-views.md)
+      — Added three new read methods to `ConvosDao` for the admin conversation
+      surfaces. `listWithActivity(session, scope, limit, offset)` is a global
+      paginated convo list with derived `lastActivityAt` for the admin `/convo`
+      list page, ordered `c.created_at DESC, c.id`, returning all archive
+      states. A new `listTurns(session, scope, limit, offset)` overload (no
+      `convoId` parameter, distinct from the existing per-convo overload) is a
+      global paginated turn firehose for the admin `/convo-request` list page,
+      ordered `r.id DESC` on the monotonic `BIGINT IDENTITY` PK.
+      `findTurnByRequestId(session, requestId, scope)` returns one turn by
+      request id for the admin `/convo-request/{id}` detail page, raising
+      `NotFoundException` when the request is absent or the owning convo is
+      excluded by scope. The shared `turnSelect` private val was extracted as
+      the common SQL projection reused by all three turn-read methods. The
+      existing per-convo `listTurns` and `listByStudentWithActivity` gained two
+      trailing defaulted parameters (`limit: Int? = null`, `offset: Int = 0`) to
+      support optional pagination without breaking coaching-path callers.

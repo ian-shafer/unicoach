@@ -13,11 +13,13 @@ and mutates no state.
 RFC 79 introduced three central rendering helpers in the new
 [`CellRender.kt`](./CellRender.kt) that make four display conventions uniform
 across all cells: datetime formatting in a configured timezone, boolean glyphs,
-entity-reference id-link glyphs, and blank suppression. Every cell (list rows,
-detail field table, all edge-table and embedded-panel cells) routes through the
-same `renderCell` helper. The render context (`AdminDisplay`) is constructed
-once in `adminModule` and threaded into the render functions; the render layer
-never holds the registry directly.
+entity-reference id-link glyphs, and blank suppression. RFC 81 extended
+`renderValue` with a `FieldType.JSON` branch that pretty-prints JSON cell values
+inside a `<pre>` element. Every cell (list rows, detail field table, all
+edge-table and embedded-panel cells) routes through the same `renderCell`
+helper. The render context (`AdminDisplay`) is constructed once in `adminModule`
+and threaded into the render functions; the render layer never holds the
+registry directly.
 
 ---
 
@@ -69,6 +71,12 @@ boolean display conventions live.
   surfaces as raw text (rather than being masked as false) so an unexpected
   value is visible. `cells()` always stringifies bools as `"true"`/`"false"`, so
   the raw-text branch is unreachable in practice.
+- **`FieldType.JSON`**: the cell string is parsed as a JSON element and
+  re-emitted pretty-printed inside a `<pre>` element (via a private
+  `PRETTY_JSON = Json { prettyPrint = true }` instance). A blank value renders
+  nothing. A value that does not parse as JSON is logged at WARN (logger name
+  `ed.unicoach.admin.CellRender`) and rendered as raw text (never throws),
+  mirroring the TIMESTAMP fallback.
 - **All other types**: the raw text verbatim.
 
 ### `FlowContent.renderRefLink(value, refSlug, display)` — [`CellRender.kt`](./CellRender.kt)
@@ -235,6 +243,9 @@ entity, so navigation to a row's detail page is the primary-id column's own
 - **`kotlinx.html`** — the HTML DSL all view builders target.
 - **`java.time`** — `Instant`, `ZoneId`, `DateTimeFormatter` used by the
   `TIMESTAMP` renderer in `CellRender.kt`. No new library dependency.
+- **`kotlinx.serialization.json`** — `Json`, `JsonElement` used by the `JSON`
+  renderer in `CellRender.kt` to parse and pretty-print JSON cell values. Flows
+  transitively via `:common`; no new direct dependency in `admin-server`.
 - No environment variables or config keys are read by this directory. Display
   configuration (timezone, glyphs) lives in `admin-server.conf` /
   `DisplayConfig` / `AdminConfig`, consumed by the application bootstrap, not
@@ -260,3 +271,10 @@ entity, so navigation to a row's detail page is the primary-id column's own
       `EdgePanel.Table` rows no longer carry an `href`; navigation is via the
       primary-id column's `refSlug` glyph. `EdgePanel.Embedded.fields` is now
       `List<LabeledCell>`.
+- [x] [RFC-81: Admin conversation views](../../../../../../../../rfc/81-admin-conversation-views.md)
+      — added `FieldType.JSON` branch to `renderValue` in
+      [`CellRender.kt`](./CellRender.kt): parses the cell string as a JSON
+      element and re-emits it pretty-printed inside a `<pre>` element; on parse
+      failure logs at WARN and emits raw text (never throws). Added the private
+      `PRETTY_JSON = Json { prettyPrint = true }` instance and the private
+      `renderJsonValue` helper in `CellRender.kt`.

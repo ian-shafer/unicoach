@@ -38,8 +38,16 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
       AdminField("inputTokens", "Input Tokens", FieldType.INT, editable = false, sensitive = false),
       AdminField("outputTokens", "Output Tokens", FieldType.INT, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
-      AdminField("convoId", "Convo ID", FieldType.TEXT, editable = false, sensitive = false, inList = false),
-      AdminField("throughRequestId", "Through Request ID", FieldType.TEXT, editable = false, sensitive = false, inList = false),
+      AdminField("convoId", "Convo ID", FieldType.TEXT, editable = false, sensitive = false, inList = false, refSlug = "convo"),
+      AdminField(
+        "throughRequestId",
+        "Through Request ID",
+        FieldType.TEXT,
+        editable = false,
+        sensitive = false,
+        inList = false,
+        refSlug = "convo-request",
+      ),
       AdminField(
         "systemPromptId",
         "System Prompt ID",

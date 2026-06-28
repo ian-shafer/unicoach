@@ -111,6 +111,48 @@ class CellRenderTest {
   }
 
   @Test
+  fun `JSON value renders pretty-printed inside pre`() {
+    val html = render { renderValue("""{"a":1,"b":2}""", FieldType.JSON, display) }
+    assertTrue(html.contains("<pre>"), "Expected a <pre> element, got: $html")
+    // kotlinx.html escapes the JSON quotes (&quot;); assert on the unescaped key text and value.
+    assertTrue(html.contains("a") && html.contains(": 1"), "Expected the pretty-printed JSON keys/values, got: $html")
+    assertTrue(html.contains("\n"), "Expected pretty-print newlines, got: $html")
+  }
+
+  @Test
+  fun `JSON array renders pretty-printed inside pre`() {
+    val html = render { renderValue("""[1,2,3]""", FieldType.JSON, display) }
+    assertTrue(html.contains("<pre>"), "Expected a <pre> element for a top-level array, got: $html")
+    assertTrue(html.contains("\n"), "Expected pretty-print newlines, got: $html")
+  }
+
+  @Test
+  fun `JSON primitive renders pretty-printed inside pre`() {
+    val html = render { renderValue("\"hello\"", FieldType.JSON, display) }
+    assertTrue(html.contains("<pre>"), "Expected a <pre> element for a top-level primitive, got: $html")
+    assertTrue(html.contains("hello"), "Expected the primitive value, got: $html")
+  }
+
+  @Test
+  fun `JSON blank value renders nothing`() {
+    val html = render { renderValue("", FieldType.JSON, display) }
+    assertEquals("<div></div>", html.trim())
+  }
+
+  @Test
+  fun `unparseable JSON renders raw text and does not throw`() {
+    val html = render { renderValue("not json {", FieldType.JSON, display) }
+    assertTrue(html.contains("not json {"), "Expected the raw text fallback, got: $html")
+    assertFalse(html.contains("<pre>"), "Unparseable JSON must not emit a <pre>, got: $html")
+  }
+
+  @Test
+  fun `JSON field renders no ref link`() {
+    val html = render { renderCell("""{"a":1}""", FieldType.JSON, null, display) }
+    assertFalse(html.contains("<a"), "A JSON cell with no refSlug must emit no link glyph, got: $html")
+  }
+
+  @Test
   fun `configured idLinkGlyph and bool glyphs are honored`() {
     val custom =
       display.copy(idLinkGlyph = "LINK", boolTrueGlyph = "YES", boolFalseGlyph = "NO")

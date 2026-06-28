@@ -74,19 +74,24 @@ class ExtractionRunsResourceTest {
     }
 
   @Test
-  fun `the convoId cell on detail renders with no link because the slug is unsupported`() =
+  fun `the convoId cell on detail links to the now-registered convo resource`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
-      val runId = seedRun()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val runId =
+        AdminTestSupport
+          .seedExtractionRun(student.id, convo.id, req.id)
+          .id.value
+          .toString()
 
       val body = client().get("/extraction-run/$runId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
       assertTrue(body.contains("Convo ID"), "Detail must render the Convo ID row")
-      // convoId has no admin resource: its cell must produce no glyph link.
-      assertFalse(
-        Regex("""Convo ID</th>\s*<td>[^<]*<a""").containsMatchIn(body),
-        "An unsupported-slug ref cell must render no glyph link",
-      )
+      // convoId now has an admin resource (RFC 81): its cell carries a glyph link to /convo.
+      assertTrue(body.contains("/convo/${convo.id.value}"), "The Convo ID cell must link to /convo/{id}")
     }
 
   @Test
@@ -125,5 +130,25 @@ class ExtractionRunsResourceTest {
       val res = client().get("/extraction-run")
       assertEquals(HttpStatusCode.Found, res.status)
       assertEquals("/login", res.headers[HttpHeaders.Location])
+    }
+
+  @Test
+  fun `detail links convoId to convo and throughRequestId to convo-request`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val runId =
+        AdminTestSupport
+          .seedExtractionRun(student.id, convo.id, req.id)
+          .id.value
+          .toString()
+
+      val body = client().get("/extraction-run/$runId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(body.contains("/convo/${convo.id.value}"), "convoId must link to /convo/{id}")
+      assertTrue(body.contains("/convo-request/${req.id.value}"), "throughRequestId must link to /convo-request/{id}")
     }
 }

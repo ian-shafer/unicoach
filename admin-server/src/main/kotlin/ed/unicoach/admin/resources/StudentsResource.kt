@@ -8,10 +8,12 @@ import ed.unicoach.admin.engine.EdgePanel
 import ed.unicoach.admin.engine.FieldType
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ClaimsDao
+import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.ExtractionRunsDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.StudentsDao
+import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
@@ -179,6 +181,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
     // helper, which fetches at most STUDENT_PANEL_LIMIT rows and short-circuits
     // (getOrElse { return Result.failure(it) }) on a transient DAO fault so the
     // user page renders the DAO-error page rather than masking the fault.
+    val conversationsPanel = buildConversationsPanel(db, student.id).getOrElse { return Result.failure(it) }
     val claimsPanel = buildClaimsPanel(db, student.id).getOrElse { return Result.failure(it) }
     val observationsPanel = buildObservationsPanel(db, student.id).getOrElse { return Result.failure(it) }
     val extractionRunsPanel = buildExtractionRunsPanel(db, student.id).getOrElse { return Result.failure(it) }
@@ -203,31 +206,58 @@ object StudentsResource : AdminResource<Student, StudentId> {
         deleted = student.deletedAt != null,
         createFields = editableFields,
         editFields = editableFields,
-        nested = listOf(historyPanel, claimsPanel, observationsPanel, extractionRunsPanel),
+        nested = listOf(historyPanel, conversationsPanel, claimsPanel, observationsPanel, extractionRunsPanel),
       ),
     )
   }
 
   /**
-   * One trailing "Showing first N — see /{slug} for full list" row, appended only
-   * when the fetched page filled to [STUDENT_PANEL_LIMIT] (so more rows may exist).
-   * The remaining cells are blank and the row carries no link; the disclosure text
-   * points at the canonical top-level list for full enumeration (RFC 77).
+   * The student's conversations panel (first [STUDENT_PANEL_LIMIT]); rows link to
+   * `/convo/{id}` (RFC 81). Admin reads pass [ArchiveScope.ALL] /
+   * [SoftDeleteScope.ALL] so archived and deleted convos are visible.
    */
-  private fun truncationRow(
-    fetched: Int,
-    columns: Int,
-    listSlug: String,
-  ): EdgePanel.Table.Row? =
-    if (fetched < STUDENT_PANEL_LIMIT) {
-      null
-    } else {
-      EdgePanel.Table.Row(
-        cells =
-          listOf("Showing first $STUDENT_PANEL_LIMIT — see /$listSlug for full list") +
-            List(columns - 1) { "" },
+  private suspend fun buildConversationsPanel(
+    db: Database,
+    studentId: StudentId,
+  ): Result<EdgePanel.Table> {
+    val convos =
+      db
+        .withConnection { session ->
+          ConvosDao.listByStudentWithActivity(
+            session,
+            studentId,
+            ArchiveScope.ALL,
+            SoftDeleteScope.ALL,
+            STUDENT_PANEL_LIMIT,
+            0,
+          )
+        }.getOrElse { return Result.failure(it) }
+    val columns =
+      listOf(
+        EdgePanel.Table.Column("ID", refSlug = "convo"),
+        EdgePanel.Table.Column("Name"),
+        EdgePanel.Table.Column("Last Activity", FieldType.TIMESTAMP),
+        EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
+        EdgePanel.Table.Column("Archived", FieldType.TIMESTAMP),
+        EdgePanel.Table.Column("Deleted", FieldType.TIMESTAMP),
       )
-    }
+    val rows =
+      convos.map { c ->
+        EdgePanel.Table.Row(
+          cells =
+            listOf(
+              c.convo.id.value
+                .toString(),
+              c.convo.name.value,
+              c.lastActivityAt?.toString() ?: "",
+              c.convo.createdAt.toString(),
+              c.convo.archivedAt?.toString() ?: "",
+              c.convo.deletedAt?.toString() ?: "",
+            ),
+        )
+      } + listOfNotNull(truncationRow(convos.size, STUDENT_PANEL_LIMIT, columns.size, "convo"))
+    return Result.success(EdgePanel.Table(label = "Conversations", columns = columns, rows = rows))
+  }
 
   /** The student's claims panel (first [STUDENT_PANEL_LIMIT]); rows link to `/claim/{id}`. */
   private suspend fun buildClaimsPanel(
@@ -258,7 +288,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
               c.createdAt.toString(),
             ),
         )
-      } + listOfNotNull(truncationRow(claims.size, columns.size, "claim"))
+      } + listOfNotNull(truncationRow(claims.size, STUDENT_PANEL_LIMIT, columns.size, "claim"))
     return Result.success(EdgePanel.Table(label = "Claims", columns = columns, rows = rows))
   }
 
@@ -274,7 +304,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
     val columns =
       listOf(
         EdgePanel.Table.Column("ID", refSlug = "observation"),
-        EdgePanel.Table.Column("Convo ID"),
+        EdgePanel.Table.Column("Convo ID", refSlug = "convo"),
         EdgePanel.Table.Column("Uttered", FieldType.TIMESTAMP),
         EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
       )
@@ -289,7 +319,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
               o.createdAt.toString(),
             ),
         )
-      } + listOfNotNull(truncationRow(observations.size, columns.size, "observation"))
+      } + listOfNotNull(truncationRow(observations.size, STUDENT_PANEL_LIMIT, columns.size, "observation"))
     return Result.success(EdgePanel.Table(label = "Observations", columns = columns, rows = rows))
   }
 
@@ -324,7 +354,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
               r.createdAt.toString(),
             ),
         )
-      } + listOfNotNull(truncationRow(extractionRuns.size, columns.size, "extraction-run"))
+      } + listOfNotNull(truncationRow(extractionRuns.size, STUDENT_PANEL_LIMIT, columns.size, "extraction-run"))
     return Result.success(EdgePanel.Table(label = "Extraction runs", columns = columns, rows = rows))
   }
 }

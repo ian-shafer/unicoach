@@ -7,6 +7,8 @@ import ed.unicoach.admin.engine.registerAdminRoutes
 import ed.unicoach.admin.render.configureAdminStatusPages
 import ed.unicoach.admin.render.toAdminDisplay
 import ed.unicoach.admin.resources.ClaimsResource
+import ed.unicoach.admin.resources.ConvoRequestsResource
+import ed.unicoach.admin.resources.ConvosResource
 import ed.unicoach.admin.resources.ExtractionRunsResource
 import ed.unicoach.admin.resources.ObservationsResource
 import ed.unicoach.admin.resources.SessionsResource
@@ -109,6 +111,8 @@ fun Application.adminModule(
         ClaimsResource,
         ObservationsResource,
         ExtractionRunsResource,
+        ConvosResource,
+        ConvoRequestsResource,
       ),
     )
 

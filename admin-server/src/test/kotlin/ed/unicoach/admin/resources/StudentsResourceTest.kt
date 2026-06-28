@@ -161,6 +161,52 @@ class StudentsResourceTest {
     }
 
   @Test
+  fun `student detail shows a Conversations panel whose rows link to convo`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id, "Student panel convo")
+
+      val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(body.contains("Conversations"), "The Conversations panel must render")
+      assertTrue(body.contains("/convo/${convo.id.value}"), "A conversation row must link to /convo/{id}")
+    }
+
+  @Test
+  fun `Conversations panel shows a truncation row past the limit`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      // One more than STUDENT_PANEL_LIMIT (50) so the page fills and a row remains.
+      repeat(51) { AdminTestSupport.seedConvo(student.id, "c$it") }
+
+      val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(
+        body.contains("Showing first 50 — see /convo for full list"),
+        "Truncated conversations panel must disclose the cap and point at the canonical /convo list",
+      )
+    }
+
+  @Test
+  fun `observations panel Convo ID column links to convo`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      AdminTestSupport.seedObservation(student.id, convo.id, req.id)
+
+      val body = client().get("/user/${user.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(body.contains("/convo/${convo.id.value}"), "The observations panel Convo ID cell must link to /convo/{id}")
+    }
+
+  @Test
   fun `claims panel discloses truncation when the student has more than the panel limit`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

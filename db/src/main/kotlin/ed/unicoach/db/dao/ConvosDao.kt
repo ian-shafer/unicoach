@@ -306,7 +306,15 @@ object ConvosDao :
     studentId: StudentId,
     archive: ArchiveScope = ArchiveScope.UNARCHIVED,
     scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
+    limit: Int? = null,
+    offset: Int = 0,
   ): Result<List<ConvoWithActivity>> {
+    // limit = null preserves the existing unbounded behaviour for coaching
+    // callers; the admin student panel passes a bound. The LIMIT/OFFSET clause is
+    // a fixed SQL fragment (no caller-supplied identifiers) with bound values.
+    if (limit != null) require(limit > 0) { "limit must be positive, got $limit" }
+    require(offset >= 0) { "offset must be non-negative, got $offset" }
+    val pageClause = if (limit == null) "" else "LIMIT ? OFFSET ?"
     val sql =
       """
       SELECT c.*, MAX(r.created_at) AS last_activity_at
@@ -317,10 +325,51 @@ object ConvosDao :
         AND ${archivePredicate(archive, "c.archived_at")}
       GROUP BY c.id
       ORDER BY MAX(r.created_at) DESC NULLS LAST, c.created_at DESC, c.id
+      $pageClause
       """.trimIndent()
     return session.queryList(
       sql,
-      bind = { it.setObject(1, studentId.value) },
+      bind = {
+        it.setObject(1, studentId.value)
+        if (limit != null) {
+          it.setInt(2, limit)
+          it.setInt(3, offset)
+        }
+      },
+      map = ::mapConvoWithActivity,
+    )
+  }
+
+  /**
+   * Global, paginated convo list with each row's derived `lastActivityAt`, for
+   * the admin `/convo` list page. Ordered `c.created_at DESC, c.id`. [scope]
+   * filters `deleted_at`; all archive states are returned (admin sees archived
+   * rows).
+   */
+  fun listWithActivity(
+    session: SqlSession,
+    scope: SoftDeleteScope,
+    limit: Int,
+    offset: Int,
+  ): Result<List<ConvoWithActivity>> {
+    require(limit > 0) { "limit must be positive, got $limit" }
+    require(offset >= 0) { "offset must be non-negative, got $offset" }
+    val sql =
+      """
+      SELECT c.*, MAX(r.created_at) AS last_activity_at
+      FROM convos c
+      LEFT JOIN convo_requests r ON r.convo_id = c.id
+      WHERE ${scope.predicate("c.deleted_at")}
+      GROUP BY c.id
+      ORDER BY c.created_at DESC, c.id
+      LIMIT ? OFFSET ?
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = {
+        it.setInt(1, limit)
+        it.setInt(2, offset)
+      },
       map = ::mapConvoWithActivity,
     )
   }
@@ -461,44 +510,124 @@ object ConvosDao :
   // Logs — read
   // ---------------------------------------------------------------------------
 
+  /**
+   * The shared turn projection: every `convo_requests` column aliased `req_*`
+   * and every LEFT-JOINed `convo_responses` column aliased `resp_*`, so [mapTurn]
+   * reads both halves from one row. Reused by the per-convo and global turn reads.
+   */
+  private val turnSelect =
+    """
+    SELECT
+      r.id   AS req_id,
+      r.convo_id AS req_convo_id,
+      r.created_at AS req_created_at,
+      r.provider AS req_provider,
+      r.model_requested AS req_model_requested,
+      r.system_prompt_id AS req_system_prompt_id,
+      r.request_params AS req_request_params,
+      r.content AS req_content,
+      resp.id AS resp_id,
+      resp.request_id AS resp_request_id,
+      resp.convo_id AS resp_convo_id,
+      resp.content AS resp_content,
+      resp.model_resolved AS resp_model_resolved,
+      resp.stop_reason AS resp_stop_reason,
+      resp.input_tokens AS resp_input_tokens,
+      resp.output_tokens AS resp_output_tokens,
+      resp.cache_read_tokens AS resp_cache_read_tokens,
+      resp.cache_write_tokens AS resp_cache_write_tokens,
+      resp.provider_request_id AS resp_provider_request_id,
+      resp.latency_ms AS resp_latency_ms,
+      resp.created_at AS resp_created_at
+    FROM convo_requests r
+    JOIN convos c ON c.id = r.convo_id
+    LEFT JOIN convo_responses resp ON resp.request_id = r.id
+    """.trimIndent()
+
   fun listTurns(
     session: SqlSession,
     convoId: ConvoId,
     scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
+    limit: Int? = null,
+    offset: Int = 0,
   ): Result<List<ConvoTurn>> {
+    // limit = null preserves the existing unbounded behaviour for callers that
+    // need every turn (e.g. the coaching transcript); the admin convo-detail
+    // panel passes a bound. The LIMIT/OFFSET clause is a fixed SQL fragment (no
+    // caller-supplied identifiers) with bound values.
+    if (limit != null) require(limit > 0) { "limit must be positive, got $limit" }
+    require(offset >= 0) { "offset must be non-negative, got $offset" }
+    val pageClause = if (limit == null) "" else "LIMIT ? OFFSET ?"
     val sql =
       """
-      SELECT
-        r.id   AS req_id,
-        r.convo_id AS req_convo_id,
-        r.created_at AS req_created_at,
-        r.provider AS req_provider,
-        r.model_requested AS req_model_requested,
-        r.system_prompt_id AS req_system_prompt_id,
-        r.request_params AS req_request_params,
-        r.content AS req_content,
-        resp.id AS resp_id,
-        resp.request_id AS resp_request_id,
-        resp.convo_id AS resp_convo_id,
-        resp.content AS resp_content,
-        resp.model_resolved AS resp_model_resolved,
-        resp.stop_reason AS resp_stop_reason,
-        resp.input_tokens AS resp_input_tokens,
-        resp.output_tokens AS resp_output_tokens,
-        resp.cache_read_tokens AS resp_cache_read_tokens,
-        resp.cache_write_tokens AS resp_cache_write_tokens,
-        resp.provider_request_id AS resp_provider_request_id,
-        resp.latency_ms AS resp_latency_ms,
-        resp.created_at AS resp_created_at
-      FROM convo_requests r
-      JOIN convos c ON c.id = r.convo_id
-      LEFT JOIN convo_responses resp ON resp.request_id = r.id
+      $turnSelect
       WHERE r.convo_id = ? AND ${scope.predicate("c.deleted_at")}
       ORDER BY r.created_at, r.id
+      $pageClause
       """.trimIndent()
     return session.queryList(
       sql,
-      bind = { it.setObject(1, convoId.value) },
+      bind = {
+        it.setObject(1, convoId.value)
+        if (limit != null) {
+          it.setInt(2, limit)
+          it.setInt(3, offset)
+        }
+      },
+      map = ::mapTurn,
+    )
+  }
+
+  /**
+   * Global, paginated turn firehose for the admin `/convo-request` list page. One
+   * row per request, LEFT JOINed to its 1:1 response. Ordered `r.id DESC` (the
+   * BIGINT IDENTITY PK is monotonic with insertion, so most-recent first comes
+   * off the PK index with no sort over a non-indexed column). [scope] filters the
+   * owning convo's `deleted_at`.
+   */
+  fun listTurns(
+    session: SqlSession,
+    scope: SoftDeleteScope,
+    limit: Int,
+    offset: Int,
+  ): Result<List<ConvoTurn>> {
+    require(limit > 0) { "limit must be positive, got $limit" }
+    require(offset >= 0) { "offset must be non-negative, got $offset" }
+    val sql =
+      """
+      $turnSelect
+      WHERE ${scope.predicate("c.deleted_at")}
+      ORDER BY r.id DESC
+      LIMIT ? OFFSET ?
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = {
+        it.setInt(1, limit)
+        it.setInt(2, offset)
+      },
+      map = ::mapTurn,
+    )
+  }
+
+  /**
+   * One turn by request id, for the admin `/convo-request/{id}` detail page: the
+   * request plus its paired response (null when none). [NotFoundException] when no
+   * request matches, or when the owning convo is excluded by [scope].
+   */
+  fun findTurnByRequestId(
+    session: SqlSession,
+    requestId: ConvoRequestId,
+    scope: SoftDeleteScope,
+  ): Result<ConvoTurn> {
+    val sql =
+      """
+      $turnSelect
+      WHERE r.id = ? AND ${scope.predicate("c.deleted_at")}
+      """.trimIndent()
+    return session.queryOne(
+      sql,
+      bind = { it.setLong(1, requestId.value) },
       map = ::mapTurn,
     )
   }

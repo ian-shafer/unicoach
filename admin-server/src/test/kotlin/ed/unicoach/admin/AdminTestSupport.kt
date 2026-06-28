@@ -180,6 +180,47 @@ object AdminTestSupport {
         }.getOrThrow()
     }
 
+  /**
+   * Appends a convo_response paired to a request (RFC 81 turn detail). A null
+   * [content] with `stopReason = "error"` and null token counts is the
+   * transport-error turn; a non-null [content] writes a raw sibling row.
+   */
+  fun seedConvoResponse(
+    requestId: ed.unicoach.db.models.ConvoRequestId,
+    convoId: ConvoId,
+    content: kotlinx.serialization.json.JsonElement? = JsonArray(emptyList()),
+    stopReason: String = "end_turn",
+    modelResolved: String? = "claude-opus-4-8",
+    inputTokens: Int? = 100,
+    outputTokens: Int? = 50,
+    cacheReadTokens: Int? = 0,
+    cacheWriteTokens: Int? = 0,
+    providerRequestId: String? = "req_test",
+    latencyMs: Int? = 123,
+  ): ed.unicoach.db.models.ConvoResponse =
+    runBlocking {
+      database
+        .withConnection { session ->
+          ConvosDao.appendResponse(
+            session,
+            ed.unicoach.db.models.NewConvoResponse(
+              requestId = requestId,
+              convoId = convoId,
+              content = content,
+              modelResolved = modelResolved,
+              stopReason = stopReason,
+              inputTokens = inputTokens,
+              outputTokens = outputTokens,
+              cacheReadTokens = cacheReadTokens,
+              cacheWriteTokens = cacheWriteTokens,
+              providerRequestId = providerRequestId,
+              latencyMs = latencyMs,
+            ),
+            rawPayload = content,
+          )
+        }.getOrThrow()
+    }
+
   /** Appends an observation row via the DAO. */
   fun seedObservation(
     studentId: StudentId,

@@ -25,6 +25,7 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -572,6 +573,66 @@ class ConvosDaoTest {
   }
 
   @Test
+  fun `listTurns per-convo limit caps rows and offset pages`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val r1 = appendRequestFor(convo.id)
+    val r2 = appendRequestFor(convo.id)
+    val r3 = appendRequestFor(convo.id)
+
+    val firstPage = ConvosDao.listTurns(session, convo.id, SoftDeleteScope.ALL, limit = 2, offset = 0).getOrThrow()
+    assertEquals(listOf(r1.id, r2.id), firstPage.map { it.request.id })
+
+    val secondPage = ConvosDao.listTurns(session, convo.id, SoftDeleteScope.ALL, limit = 2, offset = 2).getOrThrow()
+    assertEquals(listOf(r3.id), secondPage.map { it.request.id })
+  }
+
+  @Test
+  fun `listTurns per-convo default no limit returns all turns`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    repeat(3) { appendRequestFor(convo.id) }
+    assertEquals(3, ConvosDao.listTurns(session, convo.id, SoftDeleteScope.ALL).getOrThrow().size)
+  }
+
+  @Test
+  fun `listTurns per-convo rejects a non-positive limit`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    assertFailsWith<IllegalArgumentException> {
+      ConvosDao.listTurns(session, convo.id, SoftDeleteScope.ALL, limit = 0, offset = 0)
+    }
+    assertFailsWith<IllegalArgumentException> {
+      ConvosDao.listTurns(session, convo.id, SoftDeleteScope.ALL, limit = -1, offset = 0)
+    }
+  }
+
+  @Test
+  fun `listWithActivity rejects a non-positive limit`() {
+    assertFailsWith<IllegalArgumentException> {
+      ConvosDao.listWithActivity(session, SoftDeleteScope.ALL, limit = 0, offset = 0)
+    }
+    assertFailsWith<IllegalArgumentException> {
+      ConvosDao.listWithActivity(session, SoftDeleteScope.ALL, limit = -1, offset = 0)
+    }
+  }
+
+  @Test
+  fun `listTurns global rejects a non-positive limit`() {
+    assertFailsWith<IllegalArgumentException> {
+      ConvosDao.listTurns(session, SoftDeleteScope.ALL, limit = 0, offset = 0)
+    }
+  }
+
+  @Test
+  fun `listByStudentWithActivity rejects a non-positive limit when bounded`() {
+    val student = createStudent()
+    assertFailsWith<IllegalArgumentException> {
+      ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL, SoftDeleteScope.ALL, limit = 0, offset = 0)
+    }
+  }
+
+  @Test
   fun `findRawByResponseId returns the stored payload`() {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
@@ -755,5 +816,203 @@ class ConvosDaoTest {
     assertTrue(ConvosDao.findByIdWithActivity(session, ConvoId(UUID.randomUUID())).exceptionOrNull() is NotFoundException)
     ConvosDao.delete(session, convo.id).getOrThrow()
     assertTrue(ConvosDao.findByIdWithActivity(session, convo.id).exceptionOrNull() is NotFoundException)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Global activity/turn reads (RFC 81 admin views)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `listWithActivity returns convos across students ordered by created_at desc`() {
+    val studentA = createStudent()
+    val studentB = createStudent()
+    val first = ConvosDao.create(session, newConvo(studentA, "first")).getOrThrow()
+    val second = ConvosDao.create(session, newConvo(studentB, "second")).getOrThrow()
+    val third = ConvosDao.create(session, newConvo(studentA, "third")).getOrThrow()
+
+    val rows = ConvosDao.listWithActivity(session, SoftDeleteScope.ALL, 50, 0).getOrThrow()
+    assertEquals(listOf(third.id, second.id, first.id), rows.map { it.convo.id })
+  }
+
+  @Test
+  fun `listWithActivity paginates by limit and offset`() {
+    val student = createStudent()
+    val a = ConvosDao.create(session, newConvo(student, "a")).getOrThrow()
+    val b = ConvosDao.create(session, newConvo(student, "b")).getOrThrow()
+    val c = ConvosDao.create(session, newConvo(student, "c")).getOrThrow()
+
+    val firstPage = ConvosDao.listWithActivity(session, SoftDeleteScope.ALL, 2, 0).getOrThrow()
+    assertEquals(listOf(c.id, b.id), firstPage.map { it.convo.id })
+
+    val secondPage = ConvosDao.listWithActivity(session, SoftDeleteScope.ALL, 2, 2).getOrThrow()
+    assertEquals(listOf(a.id), secondPage.map { it.convo.id })
+  }
+
+  @Test
+  fun `listWithActivity scope ALL includes deleted, ACTIVE excludes`() {
+    val student = createStudent()
+    val active = ConvosDao.create(session, newConvo(student, "active")).getOrThrow()
+    val deleted = ConvosDao.create(session, newConvo(student, "deleted")).getOrThrow()
+    ConvosDao.delete(session, deleted.id).getOrThrow()
+
+    val all = ConvosDao.listWithActivity(session, SoftDeleteScope.ALL, 50, 0).getOrThrow()
+    assertEquals(setOf(active.id, deleted.id), all.map { it.convo.id }.toSet())
+
+    val activeOnly = ConvosDao.listWithActivity(session, SoftDeleteScope.ACTIVE, 50, 0).getOrThrow()
+    assertEquals(listOf(active.id), activeOnly.map { it.convo.id })
+  }
+
+  @Test
+  fun `listWithActivity includes archived convos`() {
+    val student = createStudent()
+    val active = ConvosDao.create(session, newConvo(student, "active")).getOrThrow()
+    val archived = ConvosDao.create(session, newConvo(student, "archived")).getOrThrow()
+    ConvosDao.archive(session, archived.id).getOrThrow()
+
+    val rows = ConvosDao.listWithActivity(session, SoftDeleteScope.ALL, 50, 0).getOrThrow()
+    assertEquals(setOf(active.id, archived.id), rows.map { it.convo.id }.toSet())
+  }
+
+  @Test
+  fun `listWithActivity derives lastActivityAt`() {
+    val student = createStudent()
+    val withTurns = ConvosDao.create(session, newConvo(student, "withTurns")).getOrThrow()
+    val noTurns = ConvosDao.create(session, newConvo(student, "noTurns")).getOrThrow()
+    appendRequestAt(withTurns.id, "2024-01-01T00:00:00Z")
+    appendRequestAt(withTurns.id, "2024-02-01T00:00:00Z")
+
+    val rows = ConvosDao.listWithActivity(session, SoftDeleteScope.ALL, 50, 0).getOrThrow()
+    assertEquals(java.time.Instant.parse("2024-02-01T00:00:00Z"), rows.first { it.convo.id == withTurns.id }.lastActivityAt)
+    assertNull(rows.first { it.convo.id == noTurns.id }.lastActivityAt)
+  }
+
+  @Test
+  fun `listTurns global returns turns across convos ordered by id desc`() {
+    val student = createStudent()
+    val convoA = ConvosDao.create(session, newConvo(student, "a")).getOrThrow()
+    val convoB = ConvosDao.create(session, newConvo(student, "b")).getOrThrow()
+    val r1 = appendRequestFor(convoA.id)
+    val r2 = appendRequestFor(convoB.id)
+    val r3 = appendRequestFor(convoA.id)
+
+    val turns = ConvosDao.listTurns(session, SoftDeleteScope.ALL, 50, 0).getOrThrow()
+    assertEquals(listOf(r3.id, r2.id, r1.id), turns.map { it.request.id })
+  }
+
+  @Test
+  fun `listTurns global paginates by limit and offset`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val r1 = appendRequestFor(convo.id)
+    val r2 = appendRequestFor(convo.id)
+    val r3 = appendRequestFor(convo.id)
+
+    val firstPage = ConvosDao.listTurns(session, SoftDeleteScope.ALL, 2, 0).getOrThrow()
+    assertEquals(listOf(r3.id, r2.id), firstPage.map { it.request.id })
+
+    val secondPage = ConvosDao.listTurns(session, SoftDeleteScope.ALL, 2, 2).getOrThrow()
+    assertEquals(listOf(r1.id), secondPage.map { it.request.id })
+  }
+
+  @Test
+  fun `listTurns global includes turns with no response`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val request = appendRequestFor(convo.id)
+
+    val turns = ConvosDao.listTurns(session, SoftDeleteScope.ALL, 50, 0).getOrThrow()
+    val turn = turns.first { it.request.id == request.id }
+    assertNull(turn.response)
+  }
+
+  @Test
+  fun `listTurns global scope filters deleted convos`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val request = appendRequestFor(convo.id)
+    ConvosDao.delete(session, convo.id).getOrThrow()
+
+    assertTrue(ConvosDao.listTurns(session, SoftDeleteScope.ACTIVE, 50, 0).getOrThrow().none { it.request.id == request.id })
+    assertTrue(ConvosDao.listTurns(session, SoftDeleteScope.ALL, 50, 0).getOrThrow().any { it.request.id == request.id })
+  }
+
+  @Test
+  fun `findTurnByRequestId returns request and paired response`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val request = appendRequestFor(convo.id)
+    ConvosDao.appendResponse(session, successResponse(request.id, convo.id), rawPayload = null).getOrThrow()
+
+    val turn = ConvosDao.findTurnByRequestId(session, request.id, SoftDeleteScope.ALL).getOrThrow()
+    assertEquals(request.id, turn.request.id)
+    assertNotNull(turn.response)
+    assertEquals("end_turn", turn.response.stopReason)
+  }
+
+  @Test
+  fun `findTurnByRequestId returns null response when none exists`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val request = appendRequestFor(convo.id)
+
+    val turn = ConvosDao.findTurnByRequestId(session, request.id, SoftDeleteScope.ALL).getOrThrow()
+    assertEquals(request.id, turn.request.id)
+    assertNull(turn.response)
+  }
+
+  @Test
+  fun `findTurnByRequestId NotFound for missing request id`() {
+    val result =
+      ConvosDao.findTurnByRequestId(
+        session,
+        ed.unicoach.db.models
+          .ConvoRequestId(999999),
+        SoftDeleteScope.ALL,
+      )
+    assertTrue(result.exceptionOrNull() is NotFoundException, "got $result")
+  }
+
+  @Test
+  fun `findTurnByRequestId NotFound when owning convo excluded by scope`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val request = appendRequestFor(convo.id)
+    ConvosDao.delete(session, convo.id).getOrThrow()
+
+    assertTrue(
+      ConvosDao.findTurnByRequestId(session, request.id, SoftDeleteScope.ACTIVE).exceptionOrNull() is NotFoundException,
+    )
+    assertEquals(
+      request.id,
+      ConvosDao
+        .findTurnByRequestId(session, request.id, SoftDeleteScope.ALL)
+        .getOrThrow()
+        .request.id,
+    )
+  }
+
+  @Test
+  fun `listByStudentWithActivity limit caps rows and offset pages`() {
+    val student = createStudent()
+    val a = ConvosDao.create(session, newConvo(student, "a")).getOrThrow()
+    val b = ConvosDao.create(session, newConvo(student, "b")).getOrThrow()
+    val c = ConvosDao.create(session, newConvo(student, "c")).getOrThrow()
+    // No turns: ordering falls to created_at DESC (NULLS LAST activity tiebreak),
+    // so newest convo first.
+    val firstPage =
+      ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL, SoftDeleteScope.ALL, limit = 2, offset = 0).getOrThrow()
+    assertEquals(listOf(c.id, b.id), firstPage.map { it.convo.id })
+
+    val secondPage =
+      ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL, SoftDeleteScope.ALL, limit = 2, offset = 2).getOrThrow()
+    assertEquals(listOf(a.id), secondPage.map { it.convo.id })
+  }
+
+  @Test
+  fun `listByStudentWithActivity default no limit returns all`() {
+    val student = createStudent()
+    repeat(3) { ConvosDao.create(session, newConvo(student, "c$it")).getOrThrow() }
+    val rows = ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL, SoftDeleteScope.ALL).getOrThrow()
+    assertEquals(3, rows.size)
   }
 }

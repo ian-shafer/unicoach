@@ -4,8 +4,10 @@ import ed.unicoach.admin.DisplayConfig
 import ed.unicoach.admin.engine.FieldType
 import kotlinx.html.FlowContent
 import kotlinx.html.a
+import kotlinx.html.pre
 import kotlinx.html.span
 import kotlinx.html.title
+import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.time.ZoneId
@@ -46,6 +48,9 @@ fun DisplayConfig.toAdminDisplay(isSupported: (slug: String) -> Boolean): AdminD
 /** `MMM d, yyyy` in [Locale.ENGLISH] — e.g. `Jan 3, 2026`. */
 private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.ENGLISH)
 
+/** Pretty-printer for [FieldType.JSON] cells: re-emits a stored payload with indentation. */
+private val PRETTY_JSON = Json { prettyPrint = true }
+
 private val cellRenderLog = LoggerFactory.getLogger("ed.unicoach.admin.CellRender")
 
 /**
@@ -61,6 +66,9 @@ private val cellRenderLog = LoggerFactory.getLogger("ed.unicoach.admin.CellRende
  *   A blank value renders nothing. (`cells()` always stringifies bools as
  *   `"true"`/`"false"`.) Any other value is surfaced as raw text rather than
  *   masked as false, so an unexpected value is visible.
+ * - [FieldType.JSON]: the value parsed and re-emitted pretty-printed inside a
+ *   `<pre>` element. A blank value renders nothing; a value that does not parse
+ *   as JSON is logged at WARN and surfaced as raw text (defensive — never throws).
  * - all other types: the raw text.
  */
 fun FlowContent.renderValue(
@@ -72,8 +80,26 @@ fun FlowContent.renderValue(
   when (type) {
     FieldType.TIMESTAMP -> renderTimestampValue(value, display)
     FieldType.BOOL -> renderBoolValue(value, display)
-    FieldType.TEXT, FieldType.MULTILINE, FieldType.INT, FieldType.JSON, FieldType.ENUM -> +value
+    FieldType.JSON -> renderJsonValue(value)
+    FieldType.TEXT, FieldType.MULTILINE, FieldType.INT, FieldType.ENUM -> +value
   }
+}
+
+/**
+ * The [FieldType.JSON] body: the cell string parsed and re-emitted
+ * pretty-printed inside a `<pre>` element. A value that does not parse as JSON is
+ * logged at WARN and surfaced as raw text (defensive — never throws), mirroring
+ * the [renderTimestampValue] fallback.
+ */
+private fun FlowContent.renderJsonValue(value: String) {
+  val pretty =
+    runCatching { PRETTY_JSON.encodeToString(Json.parseToJsonElement(value)) }
+      .getOrElse { error ->
+        cellRenderLog.warn("Unparseable JSON value rendered as raw text: [{}]", value, error)
+        +value
+        return
+      }
+  pre { +pretty }
 }
 
 /**

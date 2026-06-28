@@ -114,6 +114,23 @@ class ObservationsResourceTest {
     }
 
   @Test
+  fun `observation detail links convoId to convo and sourceRequestId to convo-request`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val obs = AdminTestSupport.seedObservation(student.id, convo.id, req.id)
+
+      val detail = client().get("/observation/${obs.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(detail.contains("/convo/${convo.id.value}"), "convoId must link to /convo/{id}")
+      assertTrue(detail.contains("/convo-request/${req.id.value}"), "sourceRequestId must link to /convo-request/{id}")
+    }
+
+  @Test
   fun `detail renders a Supported claims panel linking to the claim detail`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

@@ -12,18 +12,21 @@ descriptors that configure the admin engine for the v1 tables: `users`
 read-only coaching-memory views (RFC 77): `claims`
 ([ClaimsResource.kt](./ClaimsResource.kt)), `observations`
 ([ObservationsResource.kt](./ObservationsResource.kt)), and `extraction_runs`
-([ExtractionRunsResource.kt](./ExtractionRunsResource.kt)). Each descriptor
-**decides** one table's kind, its allowed operation set, its sensitive columns,
-its relationship edges, and the exact write path each operation takes through
-the typed DAOs. The generic routing, rendering, and paging machinery lives in
-[`../engine`](../engine); this directory only declares _what_ the engine does
-for these tables, never _how_ the engine does it.
+([ExtractionRunsResource.kt](./ExtractionRunsResource.kt)), and the read-only
+conversation views (RFC 81): `convos` ([ConvosResource.kt](./ConvosResource.kt))
+and `convo_requests` ([ConvoRequestsResource.kt](./ConvoRequestsResource.kt)).
+Each descriptor **decides** one table's kind, its allowed operation set, its
+sensitive columns, its relationship edges, and the exact write path each
+operation takes through the typed DAOs. The generic routing, rendering, and
+paging machinery lives in [`../engine`](../engine); this directory only declares
+_what_ the engine does for these tables, never _how_ the engine does it.
 
-The coaching-memory descriptors are list+detail only — all four write handlers
-are `null`, `isDeleted` is always `false`, and the read `scope`/`includeDeleted`
-arguments are ignored (the same posture as `sessions`/`system_prompts`). They
-exist to make the per-student memory and its LLM spend inspectable; they are
-also woven into the student profile as nested panels (see `StudentsResource`).
+The coaching-memory and conversation descriptors are list+detail only — all four
+write handlers are `null`, `isDeleted` is always `false`, and the read
+`scope`/`includeDeleted` arguments are ignored (the same posture as
+`sessions`/`system_prompts`). They exist to make the per-student memory, LLM
+spend, and conversation history inspectable; they are also woven into the
+student profile as nested panels (see `StudentsResource`).
 
 The shared soft-delete OCC helper [`occSoftDelete`](./OccDelete.kt) lives here
 too: the "load current version, then OCC delete/undelete" sequence expressed
@@ -172,15 +175,20 @@ read-then-write blocks.
 - The `user` detail page MUST declare exactly three edges: an `Embedded`
   `students` panel, a `HasMany` `sessions` table, and a `History` panel for
   `users_versions`. The embedded `students` panel MUST itself nest a `History`
-  panel for `students_versions`, followed by three coaching-memory tables —
-  Claims, Observations, and Extraction runs (RFC 77, see below). The
-  `users_versions` history table surfaces an `Email Verified` column (each row
-  emits `emailVerifiedAt?.toString()` or empty when null) alongside
+  panel for `students_versions`, followed by four panels — Conversations (RFC
+  81), Claims, Observations, and Extraction runs (RFC 77, see below), in that
+  order. The `users_versions` history table surfaces an `Email Verified` column
+  (each row emits `emailVerifiedAt?.toString()` or empty when null) alongside
   `Version`/`Email`/`Name`/`Admin`/`Updated`/`Deleted`.
 - `ClaimsResource` declares one `HasMany` edge ("Supporting observations",
   targeting `observation`) and `ObservationsResource` one `HasMany` edge
   ("Supported claims", targeting `claim`); their resolved panels link across the
-  `claim_support` join. `ExtractionRunsResource` declares no edges. A transient
+  `claim_support` join. The "Supporting observations" panel carries five
+  columns: ID (`refSlug = "observation"`), Convo (`refSlug = "convo"`), Source
+  Request (`refSlug = "convo-request"`), Uttered (TIMESTAMP), Quote — added in
+  RFC 81 so the claim detail shows the conversation context for each backing
+  observation. `ExtractionRunsResource` declares no edges. `ConvosResource`
+  declares one `HasMany` edge ("Turns", targeting `convo-request`). A transient
   DAO fault while resolving any such panel propagates as a failed `Result`,
   matching the existing edge-resolution contract.
 - The `HasMany` `sessions` rows MUST navigate to the canonical `/session/{id}`
@@ -294,25 +302,31 @@ read-then-write blocks.
 - **buildPanel(db, userId)** — assembles the inline embedded panel for a user:
   the student profile (if any), its create/edit forms (the single editable
   graduation field), the nested `students_versions` history table, and — after
-  the history table — three coaching-memory panels (RFC 77): Claims,
-  Observations, and Extraction runs, in that order. When a profile is present,
+  the history table — four nested panels in order: Conversations (RFC 81),
+  Claims, Observations, and Extraction runs (RFC 77). When a profile is present,
   `fields` is a `List<LabeledCell>` (RFC 79) built from the descriptor's
   `fields` list: each non-sensitive field becomes a `LabeledCell` carrying the
   field's `label`, `type`, and `refSlug` alongside the cell value, so the
   embedded field table routes through `renderCell` identically to a top-level
-  detail field. Each memory panel is built by a private helper
-  (`buildClaimsPanel`/`buildObservationsPanel`/`buildExtractionRunsPanel`) that
-  fetches at most `STUDENT_PANEL_LIMIT` rows via the matching
-  `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)` and carries typed
-  `EdgePanel.Table.Column` entries (id columns carry `refSlug`; datetime columns
-  carry `FieldType.TIMESTAMP`) so each cell renders as a formatted date or a
-  glyph-linked id as appropriate. When a fetched page fills to
-  `STUDENT_PANEL_LIMIT`, the shared `truncationRow` helper appends one
-  cells-only "Showing first 50 — see /{slug} for full list" row (no per-row href
-  — RFC 79 removed row-level hrefs). Side effects: DB reads only. Returns a "no
-  profile yet" panel on `NotFoundException`; propagates any other DAO fault
-  (including a fault on any of the three memory loads) as a failed `Result`.
-  Idempotent: yes.
+  detail field. Each panel is built by a private helper
+  (`buildConversationsPanel`/`buildClaimsPanel`/`buildObservationsPanel`/`buildExtractionRunsPanel`)
+  that fetches at most `STUDENT_PANEL_LIMIT` rows via the matching DAO and
+  carries typed `EdgePanel.Table.Column` entries (id columns carry `refSlug`;
+  datetime columns carry `FieldType.TIMESTAMP`) so each cell renders as a
+  formatted date or a glyph-linked id as appropriate. `buildConversationsPanel`
+  calls
+  `ConvosDao.listByStudentWithActivity(session, studentId, ArchiveScope.ALL,
+  SoftDeleteScope.ALL, STUDENT_PANEL_LIMIT, 0)`;
+  the coaching-memory panels call
+  `…Dao.listByStudent(id, STUDENT_PANEL_LIMIT, 0)`. The Conversations panel
+  columns are: ID (`refSlug = "convo"`), Name, Last Activity (TIMESTAMP),
+  Created (TIMESTAMP), Archived (TIMESTAMP), Deleted (TIMESTAMP). When a fetched
+  page fills to `STUDENT_PANEL_LIMIT`, the shared `truncationRow` helper appends
+  one cells-only "Showing first 50 — see /{slug} for full list" row (no per-row
+  href — RFC 79 removed row-level hrefs). Side effects: DB reads only. Returns a
+  "no profile yet" panel on `NotFoundException`; propagates any other DAO fault
+  (including a fault on any of the four nested panel loads) as a failed
+  `Result`. Idempotent: yes.
 - **`STUDENT_PANEL_LIMIT`** — package-private constant `50`, the per-panel row
   cap for the nested coaching-memory tables, mirroring the sessions panel's
   limit. A student with more memory shows the first page only; full enumeration
@@ -360,6 +374,69 @@ ever served, so `body` is never re-editable. No edges.
 - **isDeleted** — always `false`. **edges** — empty; **resolveEdges** — default
   (empty).
 
+### `ConvosResource` (ENTITY, top-level, read-only — RFC 81)
+
+`slug = "convo"`, `title = "Conversations"`, `kind = AdminKind.ENTITY`. ROW type
+is `ConvoWithActivity` (the convo row plus derived `lastActivityAt`). `parseId`
+accepts a UUID into `ConvoId`. Fields (declaration order = detail-row order):
+`id` (TEXT, `refSlug = "convo"`), `studentId` (TEXT, `refSlug = "student"`),
+`name` (TEXT), `lastActivityAt` (TIMESTAMP), `createdAt` (TIMESTAMP),
+`updatedAt` (TIMESTAMP, `inList = false`), `archivedAt` (TIMESTAMP), `deletedAt`
+(TIMESTAMP). No field is `sensitive`. One `HasMany` edge, "Turns" (targeting
+`convo-request`).
+
+- **list** — reads via
+  `ConvosDao.listWithActivity(session, scope, limit, offset)` inside
+  `db.withConnection`. Side effects: DB read. Idempotent: yes.
+- **get** — reads one convo via
+  `ConvosDao.findByIdWithActivity(session, id,
+  SoftDeleteScope.ALL)` (always
+  includes deleted). Side effects: DB read. Errors: `NotFoundException` (→ 404).
+  Idempotent: yes.
+- **create/update/delete/undelete** — all `null`; the engine registers no
+  create/edit/delete routes.
+- **isDeleted** — `row.convo.deletedAt != null`.
+- **resolveEdges** — one "Turns" panel built from
+  `ConvosDao.listTurns(session,
+  row.convo.id, SoftDeleteScope.ALL, TURNS_PANEL_LIMIT, 0)`
+  (capped at `TURNS_PANEL_LIMIT = 50`). Columns: Request
+  (`refSlug = "convo-request"`), Sent (TIMESTAMP), Model, Stop Reason, In (INT),
+  Out (INT). A trailing truncation row is appended when the page fills to the
+  cap. Response cells are blank when `turn.response == null`. Side effects: DB
+  read. Errors: DAO fault → failed `Result`. Idempotent: yes.
+
+### `ConvoRequestsResource` (LOG, top-level, read-only — RFC 81)
+
+`slug = "convo-request"`, `title = "Requests"`, `kind = AdminKind.LOG`. ROW type
+is `ConvoTurn` (the request paired with its optional 1:1 response). `parseId`
+accepts a numeric id via `toLongOrNull()` into `ConvoRequestId`. No edges.
+
+Fields (list columns marked `inList = true` by default; `inList = false` for
+detail-only): `id` (TEXT, `refSlug = "convo-request"`), `convoId` (TEXT,
+`refSlug
+= "convo"`), `createdAt` ("Sent", TIMESTAMP), `provider` (TEXT),
+`modelRequested` (TEXT), `systemPromptId` (TEXT, `inList = false`,
+`refSlug = "system-prompt"`), `requestParams` (JSON, `inList = false`),
+`content` (JSON, `inList = false`), `responseStopReason` (TEXT),
+`responseModelResolved` (TEXT, `inList = false`), `responseInputTokens` (INT),
+`responseOutputTokens` (INT), `responseCacheReadTokens` (INT, `inList = false`),
+`responseCacheWriteTokens` (INT, `inList = false`), `responseLatencyMs` (INT,
+`inList = false`), `responseProviderRequestId` (TEXT, `inList = false`),
+`responseContent` (JSON, `inList = false`), `responseCreatedAt` ("Replied",
+TIMESTAMP, `inList = false`). Response fields are blank when
+`row.response == null`; nullable sub-fields on a present response also blank via
+`?.toString() ?: ""`. No `sensitive` column.
+
+- **list** — reads via `ConvosDao.listTurns(session, scope, limit, offset)` (the
+  global overload, not per-convo) inside `db.withConnection`. Side effects: DB
+  read. Idempotent: yes.
+- **get** — reads one turn via
+  `ConvosDao.findTurnByRequestId(session, id,
+  SoftDeleteScope.ALL)`. Side
+  effects: DB read. Errors: `NotFoundException` (→ 404). Idempotent: yes.
+- **create/update/delete/undelete** — all `null`.
+- **isDeleted** — always `false`.
+
 ### `ClaimsResource` (ENTITY, top-level, read-only — RFC 77)
 
 `slug = "claim"`, `title = "Claim"`, `kind = AdminKind.ENTITY` (the `claims`
@@ -381,15 +458,23 @@ material such as `password_hash`/`token_hash`, not content). One `HasMany` edge,
   create/edit/delete routes and renders no Edit/Delete/New affordance.
 - **isDeleted** — always `false`.
 - **resolveEdges** — one "Supporting observations" panel built from
-  `ClaimSupportDao.listObservationsForClaim`; rows link to `/observation/{id}`.
-  Side effects: DB read. Errors: DAO fault → failed `Result`. Idempotent: yes.
+  `ClaimSupportDao.listObservationsForClaim`; columns are ID
+  (`refSlug =
+  "observation"`), Convo (`refSlug = "convo"`), Source Request
+  (`refSlug =
+  "convo-request"`), Uttered (TIMESTAMP), Quote. Side effects: DB
+  read. Errors: DAO fault → failed `Result`. Idempotent: yes.
 
 ### `ObservationsResource` (LOG, top-level, read-only — RFC 77)
 
 `slug = "observation"`, `title = "Observation"`, `kind = AdminKind.LOG` (the
 `observations` log is insert-only in the domain). `parseId` accepts a numeric id
-via `toLongOrNull` into `ObservationId`. List columns: `id`, `studentId`,
-`convoId`, `utteredAt`, `createdAt`. Detail-only: `sourceRequestId`, `quote`
+via `toLongOrNull` into `ObservationId`. List columns: `id`
+(`refSlug =
+"observation"`), `studentId` (`refSlug = "student"`), `convoId`
+(`refSlug =
+"convo"`), `utteredAt` (TIMESTAMP), `createdAt` (TIMESTAMP).
+Detail-only: `sourceRequestId` (`refSlug = "convo-request"`), `quote`
 (MULTILINE, kept out of the list and shown in full on detail). No `sensitive`
 column. One `HasMany` edge, "Supported claims".
 
@@ -408,11 +493,16 @@ column. One `HasMany` edge, "Supported claims".
 `slug = "extraction-run"`, `title = "Extraction Run"`, `kind = AdminKind.LOG`
 (append-only log of billed extraction LLM calls). `parseId` accepts a numeric id
 via `toLongOrNull` into `ExtractionRunId`. List columns (token and write-count
-columns kept on the list so per-student LLM spend is eyeballable): `id`,
-`studentId`, `outcome`, `modelResolved`, `claimsWritten`, `inputTokens`,
-`outputTokens`, `createdAt`. Detail-only: `convoId`, `throughRequestId`,
-`systemPromptId`, `provider`, `observationsWritten`, `claimsSuperseded`,
-`cacheReadTokens`, `cacheWriteTokens`. No `sensitive` column. No edges.
+columns kept on the list so per-student LLM spend is eyeballable): `id`
+(`refSlug
+= "extraction-run"`), `studentId` (`refSlug = "student"`), `outcome`,
+`modelResolved`, `claimsWritten` (INT), `inputTokens` (INT), `outputTokens`
+(INT), `createdAt` (TIMESTAMP). Detail-only: `convoId` (`refSlug = "convo"`),
+`throughRequestId` (`refSlug = "convo-request"`), `systemPromptId`
+(`refSlug =
+"system-prompt"`), `provider`, `observationsWritten` (INT),
+`claimsSuperseded` (INT), `cacheReadTokens` (INT), `cacheWriteTokens` (INT). No
+`sensitive` column. No edges.
 
 - **list** — reads via `ExtractionRunsDao.list(session, limit, offset)` inside
   `db.withConnection`. Side effects: DB read. Idempotent: yes.
@@ -442,10 +532,11 @@ columns kept on the list so per-student LLM spend is eyeballable): `id`,
   `Argon2Hasher` (used by the create path) and an `EmailVerificationService`
   (used by the `send-verification-email` action to resend a verification token).
   `StudentsResource`, `SessionsResource`, `SystemPromptsResource`,
-  `ClaimsResource`, `ObservationsResource`, and `ExtractionRunsResource` are
-  stateless `object`s. All DB access is via the injected `Database`.
-  Module-level config (bind host, cookie, session expiry) lives in
-  `admin-server.conf` / `AdminConfig`, outside this directory.
+  `ClaimsResource`, `ObservationsResource`, `ExtractionRunsResource`,
+  `ConvosResource`, and `ConvoRequestsResource` are stateless `object`s. All DB
+  access is via the injected `Database`. Module-level config (bind host, cookie,
+  session expiry) lives in `admin-server.conf` / `AdminConfig`, outside this
+  directory.
 
 ## V. History
 
@@ -503,16 +594,37 @@ columns kept on the list so per-student LLM spend is eyeballable): `id`,
       `claim.studentId`→`student`, `claim.supersededById`→`claim`,
       `extraction-run.id`→`extraction-run`,
       `extraction-run.studentId`→`student`,
-      `extraction-run.systemPromptId`→`system-prompt`; columns whose target has
-      no admin resource — `convoId`, `sourceRequestId`, `throughRequestId` —
-      carry no `refSlug` and render with no glyph). Converted all
-      `EdgePanel.Table` column lists from `List<String>` to `List<Column>`
-      carrying `type`/`refSlug`; removed the per-row `href` field from rows
-      (navigation is now via the primary-id column's `refSlug` glyph). Converted
-      `EdgePanel.Embedded.fields` in `StudentsResource.buildPanel` from
-      `List<Pair<String, String>>` to `List<LabeledCell>` (using each field's
-      `type` and `refSlug` from the descriptor). The coaching-memory panel
-      builders (`buildClaimsPanel`, `buildObservationsPanel`,
+      `extraction-run.systemPromptId`→`system-prompt`; columns whose target had
+      no admin resource at that point — `convoId`, `sourceRequestId`,
+      `throughRequestId` — carried no `refSlug` and rendered with no glyph).
+      Converted all `EdgePanel.Table` column lists from `List<String>` to
+      `List<Column>` carrying `type`/`refSlug`; removed the per-row `href` field
+      from rows (navigation is now via the primary-id column's `refSlug` glyph).
+      Converted `EdgePanel.Embedded.fields` in `StudentsResource.buildPanel`
+      from `List<Pair<String, String>>` to `List<LabeledCell>` (using each
+      field's `type` and `refSlug` from the descriptor). The coaching-memory
+      panel builders (`buildClaimsPanel`, `buildObservationsPanel`,
       `buildExtractionRunsPanel`) set `refSlug` on their id columns and
       `FieldType.TIMESTAMP` on their created/uttered-at columns so those cells
       render as formatted dates with hover titles in the student panel.
+- [x] [RFC-81: Admin conversation views](../../../../../../../../rfc/81-admin-conversation-views.md)
+      — Added two read-only descriptors: `ConvosResource` (ENTITY, slug `convo`,
+      ROW = `ConvoWithActivity`, one "Turns" `HasMany` edge targeting
+      `convo-request`, capped at `TURNS_PANEL_LIMIT = 50`) and
+      `ConvoRequestsResource` (LOG, slug `convo-request`, ROW = `ConvoTurn`, no
+      edges, 18 fields covering request fields plus flattened optional response
+      sub-fields, three JSON-typed fields). Both are list+detail only (four
+      write handlers `null`, `isDeleted` always `false`).
+      `StudentsResource.buildPanel` was extended to prepend a Conversations
+      panel (before Claims/Observations/ Extraction-runs) built by
+      `buildConversationsPanel` via
+      `ConvosDao.listByStudentWithActivity(…, ArchiveScope.ALL, SoftDeleteScope.ALL,
+      STUDENT_PANEL_LIMIT, 0)`.
+      `ObservationsResource.convoId` gained `refSlug = "convo"` and
+      `sourceRequestId` gained `refSlug = "convo-request"`.
+      `ExtractionRunsResource.convoId` gained `refSlug = "convo"` and
+      `throughRequestId` gained `refSlug = "convo-request"`. The "Supporting
+      observations" panel in `ClaimsResource.resolveEdges` gained two columns —
+      Convo (`refSlug = "convo"`) and Source Request
+      (`refSlug = "convo-request"`) — so the claim detail shows conversation
+      context for each backing observation.

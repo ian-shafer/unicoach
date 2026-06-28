@@ -33,10 +33,18 @@ object ObservationsResource : AdminResource<Observation, ObservationId> {
     listOf(
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "observation"),
       AdminField("studentId", "Student ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "student"),
-      AdminField("convoId", "Convo ID", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("convoId", "Convo ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "convo"),
       AdminField("utteredAt", "Uttered", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
-      AdminField("sourceRequestId", "Source Request ID", FieldType.TEXT, editable = false, sensitive = false, inList = false),
+      AdminField(
+        "sourceRequestId",
+        "Source Request ID",
+        FieldType.TEXT,
+        editable = false,
+        sensitive = false,
+        inList = false,
+        refSlug = "convo-request",
+      ),
       AdminField("quote", "Quote", FieldType.MULTILINE, editable = false, sensitive = false, inList = false),
     )
 
