@@ -61,12 +61,17 @@ adversarial, so **run it on a capable session model.** The review
 _orchestrators_ — the Phase 1 `/rfc-review-loop` (RFC design review) and
 **every** `/rfc-impl-review` / `/rfc-impl-review-loop` pass in Phase 2 — are
 **not** pinned; they inherit that session model and so never go stale as models
-change. The **only** model pinned anywhere in this pipeline is the **leaf**
-reviewers: the code-review and design-review chains fan out to many small
-parallel agents, and those are held to a mid tier (cheaper than the expected
-session model) via the `code-reviewer` and `design-reviewer` agent definitions
-in `.claude/agents/`. That single pin — `model:` in those two files — is the one
-place to revisit if the model lineup ever reshuffles.
+change. The model pins in this pipeline are confined to **non-adversarial** work
+where the mid tier is cheaper without costing correctness reasoning: (1) the
+**leaf** reviewers — the code-review and design-review chains fan out to many
+small parallel agents, held to a mid tier via the `code-reviewer` and
+`design-reviewer` agent definitions in `.claude/agents/`; and (2) the **Phase 3
+spec/invariants agents** (`spec-sync-loop`, `invariants-writer`), pinned to
+`sonnet` at their spawn because SPEC synthesis and invariant distillation are
+descriptive/filtering work — and the invariants still pass an inline human gate.
+These pins — `model:` in those two agent files, plus `model: sonnet` on the two
+Phase 3 spawns — are the places to revisit if the model lineup ever reshuffles.
+The adversarial review orchestrators above stay on the session model on purpose.
 
 The shared review context — the base-to-HEAD diff plus each changed file's
 contents — is materialized **once to `<scratch>/review-context.md`** (by the
@@ -759,6 +764,10 @@ Do NOT ask the Architect to copy-paste prompts and do NOT use `/spec-editor`.
 SPEC.md is LLM-managed. Spawn a background agent with the **`Agent`** tool:
 
 - **subagent_type**: `general-purpose`
+- **model**: `sonnet` — SPEC sync is descriptive synthesis, not adversarial
+  correctness reasoning, so it runs on the mid tier (like the review-chain
+  leaves) rather than the session model. A deliberate cost/latency pin; see
+  **Review-agent model policy**.
 - **description**: `[spec-sync-loop] rfc/<n> <rfc-name>`
 - **run_in_background**: `true`
 - **prompt**: instruct it to run `/spec-sync-loop` (3 iterations) on **each**
@@ -785,6 +794,10 @@ transparency line, then spawn. On return **_or stall/kill_, verify write-scope**
 Spawn a background agent with the **`Agent`** tool:
 
 - **subagent_type**: `general-purpose`
+- **model**: `sonnet` — invariants drafting is filtered distillation feeding a
+  human gate, not correctness reasoning, so the mid tier suffices; the Architect
+  still reviews every proposed invariant inline. See **Review-agent model
+  policy**.
 - **description**: `[invariants-writer] rfc/<n> <rfc-name>`
 - **run_in_background**: `true`
 - **prompt**: instruct it to run `/invariants-writer` on **each** touched
