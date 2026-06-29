@@ -34,9 +34,14 @@ Three things are resolved before archiving (all fail fast):
   - Backend URL: honor-if-set, else derived — identical to bin/build-ios. The
     `prod` target sets UNICOACH_DEPLOY, so the URL derives from .env.prod as
     https://api.$APP_DOMAIN (today https://api.uni.coach).
-  - Signing: ios-app/env/signing.env supplies UNICOACH_DEVELOPMENT_TEAM, and
-    Xcode automatic signing creates/refreshes an App Store distribution profile
-    (-allowProvisioningUpdates).
+  - Signing: ios-app/env/signing.env supplies UNICOACH_DEVELOPMENT_TEAM. By
+    default the export uses Xcode automatic signing (-allowProvisioningUpdates),
+    which asks Apple for a cloud-managed distribution certificate — something App
+    Store Connect API keys cannot access. If signing.env also sets
+    UNICOACH_PROVISIONING_PROFILE (the NAME of a pre-created, locally installed
+    App Store profile), the export instead signs MANUALLY with the local Apple
+    Distribution certificate and that profile: no cloud-cert call, so it works
+    with an upload-only API key.
   - Build number: a UNIQUE CFBundleVersion App Store Connect has not seen, taken
     from UNICOACH_BUILD_NUMBER if set, else derived from the HEAD commit count
     (git rev-list --count HEAD). It is injected as CURRENT_PROJECT_VERSION, which
@@ -233,6 +238,33 @@ if [ "$UPLOAD" -eq 1 ]; then
 else
   EXPORT_DESTINATION="export"
 fi
+
+# Bundle identifier, needed to key the manual provisioningProfiles map. Must match
+# the project's PRODUCT_BUNDLE_IDENTIFIER (the same value bin/install-ios uses).
+BUNDLE_ID="coach.uni.UnicoachiOS"
+
+# Export signing style. Automatic (the default) asks Apple to vend a cloud-managed
+# distribution certificate, which App Store Connect API keys cannot access (403).
+# When UNICOACH_PROVISIONING_PROFILE (signing.env) names a pre-created, locally
+# installed App Store profile, export signs MANUALLY with the local Apple
+# Distribution cert and that profile — no cloud call.
+if [ -n "${UNICOACH_PROVISIONING_PROFILE:-}" ]; then
+  log-info "Export signing: manual (profile [$UNICOACH_PROVISIONING_PROFILE] + local Apple Distribution cert)."
+  SIGNING_PLIST="	<key>signingStyle</key>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>$BUNDLE_ID</key>
+		<string>$UNICOACH_PROVISIONING_PROFILE</string>
+	</dict>"
+else
+  log-info "Export signing: automatic (cloud-managed; needs API-key cloud-cert access)."
+  SIGNING_PLIST="	<key>signingStyle</key>
+	<string>automatic</string>"
+fi
+
 cat > "$EXPORT_OPTIONS" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -244,8 +276,7 @@ cat > "$EXPORT_OPTIONS" << EOF
 	<string>$UNICOACH_DEVELOPMENT_TEAM</string>
 	<key>destination</key>
 	<string>$EXPORT_DESTINATION</string>
-	<key>signingStyle</key>
-	<string>automatic</string>
+$SIGNING_PLIST
 	<key>manageAppVersionAndBuildNumber</key>
 	<false/>
 	<key>uploadSymbols</key>

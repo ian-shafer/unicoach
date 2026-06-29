@@ -135,6 +135,14 @@ UNICOACH_DEVELOPMENT_TEAM=$FIXTURE_TEAM
 UNICOACH_DEVICE=$1
 EOF
 }
+write_signing_env_with_profile() {
+  # The value is quoted because real profile names contain spaces and signing.env
+  # is sourced (set -a; source) — an unquoted space would break parsing.
+  cat > "$ENV_DIR/signing.env" <<EOF
+UNICOACH_DEVELOPMENT_TEAM=$FIXTURE_TEAM
+UNICOACH_PROVISIONING_PROFILE="$1"
+EOF
+}
 
 # Stage a Debug-iphoneos UnicoachiOS.app so install-ios finds a built app.
 stage_built_app() {
@@ -744,6 +752,34 @@ test_release_deploy_derives_https() {
   return 0
 }
 
+# Manual export signing: when signing.env names a provisioning profile, the
+# generated ExportOptions selects manual signing with the local Apple Distribution
+# cert + that profile (no cloud-managed cert path), keyed by the app bundle id.
+test_release_manual_signing_with_profile() {
+  write_dotenv "uni.coach"
+  write_signing_env_with_profile "Unicoach App Store"
+  rm -f "$ENV_DIR/appstore.env"
+  run_release -n explicit-device >/dev/null 2>&1 || return 1
+  export_option_has "<string>manual</string>" || return 1
+  export_option_has "<key>provisioningProfiles</key>" || return 1
+  export_option_has "coach.uni.UnicoachiOS" || return 1
+  export_option_has "Unicoach App Store" || return 1
+  export_option_has "<string>Apple Distribution</string>" || return 1
+  return 0
+}
+
+# Default (no profile named): export stays automatic, with no provisioningProfiles
+# block.
+test_release_automatic_signing_default() {
+  write_dotenv "uni.coach"
+  write_signing_env
+  rm -f "$ENV_DIR/appstore.env"
+  run_release -n explicit-device >/dev/null 2>&1 || return 1
+  export_option_has "<string>automatic</string>" || return 1
+  if export_option_has "<key>provisioningProfiles</key>"; then return 1; fi
+  return 0
+}
+
 # Note: run_install/run_build wrappers reset the argv log; export the
 # DEVICECTL_LIST_OUTPUT / IN_NIX through the env of the wrapper call above.
 
@@ -801,5 +837,7 @@ assert_success "release-ios: missing .p8 at UNICOACH_ASC_KEY_PATH fails fast" te
 assert_success "release-ios: forces Release even when target sets Debug" test_release_forces_release_config
 assert_success "release-ios: derives build number from HEAD commit count" test_release_derives_build_number_from_git
 assert_success "release-ios: deploy target derives https://api.\$APP_DOMAIN from .env.prod" test_release_deploy_derives_https
+assert_success "release-ios: manual signing when a provisioning profile is named" test_release_manual_signing_with_profile
+assert_success "release-ios: automatic signing by default (no profile)" test_release_automatic_signing_default
 
 end_tests
