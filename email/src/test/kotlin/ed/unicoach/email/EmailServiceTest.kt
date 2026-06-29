@@ -73,7 +73,7 @@ class EmailServiceTest {
     }
   }
 
-  private fun config(defaultFrom: String = "noreply@unicoach.app") =
+  private fun config(defaultFrom: String = "noreply@uni.coach") =
     EmailConfig
       .from(
         com.typesafe.config.ConfigFactory
@@ -202,7 +202,7 @@ class EmailServiceTest {
 
       val captured = provider.captured
       assertNotNull(captured)
-      assertEquals("noreply@unicoach.app", captured.from.value)
+      assertEquals("noreply@uni.coach", captured.from.value)
       assertEquals("to@example.com", captured.to.value)
       assertEquals("Subject line", captured.subject.value)
       assertEquals("Body text", captured.body.value)

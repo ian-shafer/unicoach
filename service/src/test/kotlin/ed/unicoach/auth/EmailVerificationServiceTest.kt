@@ -92,7 +92,7 @@ class EmailVerificationServiceTest {
       .from(
         ConfigFactory.parseString(
           """
-          email.defaultFrom = "noreply@unicoach.app"
+          email.defaultFrom = "noreply@uni.coach"
           email.provider = "log"
           email.ses.region = "us-east-1"
           """.trimIndent(),
@@ -101,7 +101,7 @@ class EmailVerificationServiceTest {
 
   private fun config(
     ttl: Duration = Duration.ofHours(24),
-    base: String = "https://unicoach.app/verify-email",
+    base: String = "https://uni.coach/verify-email",
   ): EmailVerificationConfig =
     EmailVerificationConfig
       .from(
@@ -196,7 +196,7 @@ class EmailVerificationServiceTest {
   fun `sendVerificationEmail builds the link and a provider rejection fails without throwing`() =
     runTest {
       val provider = RecordingProvider(ProviderResult.Rejected("nope"))
-      val svc = service(provider = provider, cfg = config(base = "https://unicoach.app/verify-email"))
+      val svc = service(provider = provider, cfg = config(base = "https://uni.coach/verify-email"))
       val to = (EmailAddress.create("link@example.com") as ValidationResult.Valid).value
 
       val result = svc.sendVerificationEmail(to, "tok-123")
@@ -205,7 +205,7 @@ class EmailVerificationServiceTest {
         provider.captured
           ?.body
           ?.value
-          ?.contains("https://unicoach.app/verify-email?token=tok-123") == true,
+          ?.contains("https://uni.coach/verify-email?token=tok-123") == true,
         "Body must carry the verify link",
       )
     }

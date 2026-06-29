@@ -12,7 +12,7 @@ protocol AuthClientProtocol: Sendable {
 
 class AuthClient: AuthClientProtocol, @unchecked Sendable {
     private let apiClient: APIClient
-    private let logger = Logger(subsystem: "com.unicoachapp.UnicoachiOS", category: "AuthClient")
+    private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AuthClient")
 
     init(apiClient: APIClient = APIClient()) {
         self.apiClient = apiClient

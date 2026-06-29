@@ -217,8 +217,8 @@ the `APIClient` contract.
   `resendVerification` are idempotent server-side. `changeEmail` is not
   idempotent (each call re-targets the address and re-sends a verification
   mail).
-- **Logging**: Emits `os.Logger` (subsystem `com.unicoachapp.UnicoachiOS`,
-  category `AuthClient`) debug messages on request start.
+- **Logging**: Emits `os.Logger` (subsystem `coach.uni.UnicoachiOS`, category
+  `AuthClient`) debug messages on request start.
 
 ---
 
@@ -1004,7 +1004,7 @@ custom `CodingKeys`.
 
 ## III. Infrastructure & Environment
 
-- **Bundle ID**: `com.unicoachapp.UnicoachiOS` (defined in
+- **Bundle ID**: `coach.uni.UnicoachiOS` (defined in
   [`Info.plist`](./Info.plist)).
 - **Bundle name (`CFBundleName`)**: `Unicoach` (no `CFBundleDisplayName` is
   set).

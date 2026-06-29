@@ -5,7 +5,7 @@ output "alb_dns_name" {
 
 output "app_url" {
   description = "Public HTTPS URL the API is served at."
-  value       = "https://${var.api_domain}"
+  value       = "https://${local.api_domain}"
 }
 
 output "rds_endpoint" {

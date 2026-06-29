@@ -54,11 +54,17 @@ after the target file and the repo `.env` are sourced:
   or the environment), it is forwarded to `xcodebuild` **verbatim** — no
   derivation, no validation. A checked-in target's URL is reviewed at commit
   time, so it is not re-parsed (a bare-IP host inside an explicit URL is not
-  separately rejected). This is how the `prod` targets carry the
-  externally-terminated HTTPS deployment URL `https://api.unicoachapp.com`
-  (HTTPS, TLS terminated at the ALB, no explicit port) — a shape the derived
-  `http://host:port` form cannot express.
-- **Derive:** if `UNICOACH_BACKEND_URL` is empty, the build composes
+  separately rejected). The honor path exists for an externally-terminated HTTPS
+  deployment URL — a shape the derived `http://host:port` form cannot express —
+  though the checked-in `prod` targets reach the deployment by the deploy-derive
+  path below, not by setting an explicit URL.
+- **Derive (deploy):** if `UNICOACH_BACKEND_URL` is empty and the target sets
+  `UNICOACH_DEPLOY`, the build sources `.env.prod` (the single source of the
+  prod domain) and composes `UNICOACH_BACKEND_URL = https://api.$APP_DOMAIN` —
+  HTTPS, TLS terminated at the ALB, `api.` subdomain, no explicit port (today
+  `https://api.uni.coach`).
+- **Derive (local):** if `UNICOACH_BACKEND_URL` is empty and `UNICOACH_DEPLOY`
+  is unset, the build composes
   `UNICOACH_BACKEND_URL = http://$APP_DOMAIN:${SERVER_PORT:-8080}` from the repo
   `.env` (the same single source the server reads). `APP_DOMAIN` defaults to
   `localhost`; a bare-IP literal is rejected (an invalid cookie `Domain`). This
@@ -195,8 +201,10 @@ against the team's portal.
 ## Deploy targets: `prod` / `prod-simulator`
 
 Two checked-in deploy targets build against the live AWS deployment at
-`https://api.unicoachapp.com`. Both set `UNICOACH_BACKEND_URL` explicitly, so
-`bin/build-ios` honors that URL verbatim (no derivation), and both omit
+`https://api.uni.coach`. Neither restates the backend URL: both set
+`UNICOACH_DEPLOY=1`, so `bin/build-ios` sources `.env.prod` and derives
+`UNICOACH_BACKEND_URL=https://api.$APP_DOMAIN` (HTTPS, TLS terminated at the
+ALB, no port). The prod domain is set once in `.env.prod`. Both omit
 `UNICOACH_CONFIGURATION` (inheriting `Debug`):
 
 - **`prod`** — device target (`UNICOACH_DESTINATION="generic/platform=iOS"`).
@@ -219,27 +227,29 @@ Two checked-in deploy targets build against the live AWS deployment at
   `bin/install-ios prod-simulator` is rejected by the device-only guard
   (`UNICOACH_DESTINATION` contains `Simulator`); installs are device-only.
 
-The deployed app reaches `https://api.unicoachapp.com` over HTTPS under the
-existing `NSAllowsArbitraryLoads: true` ATS exception (which permits, not
-requires, plain HTTP) — no transport-security change.
+The deployed app reaches `https://api.uni.coach` over HTTPS under the existing
+`NSAllowsArbitraryLoads: true` ATS exception (which permits, not requires, plain
+HTTP) — no transport-security change.
 
 ### The deployment seeds `APP_DOMAIN` so the session persists
 
 For a `prod`/`prod-simulator` build to keep a session across a relaunch, the
-server's `Set-Cookie` `Domain` must match the host the app calls. The server
+server's `Set-Cookie` `Domain` must cover the host the app calls. The server
 derives `session.cookieDomain` from `APP_DOMAIN` (`rest-server.conf`), so the
-deployment seeds it: `infra/ssm.tf` sets `APP_DOMAIN = var.api_domain` as a
-non-secret SSM `String` parameter, which `render-env` flattens into
+deployment seeds it: `infra/ssm.tf` sets `APP_DOMAIN = var.app_domain` (the
+apex) as a non-secret SSM `String` parameter, which `render-env` flattens into
 `/etc/unicoach/env` (the server unit's `EnvironmentFile`), resolving
-`cookieDomain` to `api.unicoachapp.com`. The session cookie is already marked
-`Secure` (`SESSION_COOKIE_SECURE = "true"`), correct for HTTPS.
+`cookieDomain` to the apex `uni.coach`. Because the cookie `Domain` is the apex,
+it spans the `api.uni.coach` host the app calls. The session cookie is already
+marked `Secure` (`SESSION_COOKIE_SECURE = "true"`), correct for HTTPS.
 
-`var.api_domain` (default `api.unicoachapp.com`) is the single deployment-side
-declaration of the host; the `prod` app targets independently declare the same
-host in their `UNICOACH_BACKEND_URL`. The two are coupled by **value**, not by a
-shared file (one is HCL, one is bash). There is no automated cross-file drift
-guard: a mismatch surfaces immediately as a session that does not persist on the
-prod target, so keep the two host values in sync by hand if either changes.
+There is a single domain knob — `APP_DOMAIN` in `.env.prod` (the Route53 apex).
+Infra reads it as `TF_VAR_app_domain` (so `var.app_domain` feeds both the SSM
+`APP_DOMAIN` and the derived `api.$app_domain`), and `bin/build-ios` sources the
+same `.env.prod` to derive the app's
+`UNICOACH_BACKEND_URL=https://api.$APP_DOMAIN`. Both the server's cookie
+`Domain` and the app's backend host therefore come from that one value and
+cannot drift; change the domain once in `.env.prod`.
 
 ## Distributing via TestFlight: `bin/release-ios`
 
@@ -286,7 +296,7 @@ against the live backend) and differs in three deliberate ways:
 
 1. **Create the app record.** In
    [App Store Connect](https://appstoreconnect.apple.com) → My Apps → **+** →
-   New App, for bundle id `com.unicoachapp.UnicoachiOS` (it must exist as an
+   New App, for bundle id `coach.uni.UnicoachiOS` (it must exist as an
    Identifier in the Developer portal; the first signed archive creates it via
    `-allowProvisioningUpdates` if absent).
 2. **Mint an App Store Connect API key.** Users and Access → Integrations → App
@@ -310,9 +320,9 @@ against the live backend) and differs in three deliberate ways:
    `ITSAppUsesNonExemptEncryption = false` in `Info.plist` (the app uses only
    standard HTTPS).
 
-The build targets the live `https://api.unicoachapp.com` deployment under the
-existing `NSAllowsArbitraryLoads` ATS exception — no transport-security change,
-same as the `prod` device build.
+The build targets the live `https://api.uni.coach` deployment under the existing
+`NSAllowsArbitraryLoads` ATS exception — no transport-security change, same as
+the `prod` device build.
 
 ## Troubleshooting
 

@@ -31,7 +31,7 @@ class EmailProviderFactoryTest {
         .from(
           ConfigFactory.parseString(
             """
-            email.defaultFrom = "noreply@unicoach.app"
+            email.defaultFrom = "noreply@uni.coach"
             email.provider = "ses"
             email.ses.region = "us-east-1"
             email.ses.accessKeyId = "AKIA-only"
@@ -57,7 +57,7 @@ class EmailProviderFactoryTest {
       .from(
         ConfigFactory.parseString(
           """
-          email.defaultFrom = "noreply@unicoach.app"
+          email.defaultFrom = "noreply@uni.coach"
           email.provider = "$provider"
           email.ses.region = "us-east-1"
           """.trimIndent(),

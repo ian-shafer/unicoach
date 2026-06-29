@@ -311,8 +311,7 @@ See [EmailSubject.kt](./EmailSubject.kt), [EmailBody.kt](./EmailBody.kt).
 - **Package**: `ed.unicoach.email`.
 - **Configuration**: `email/src/main/resources/email.conf` defines, each with a
   packaged default and an optional `${?ENV}` override applied at load time:
-  - `email.defaultFrom` (`"noreply@unicoach.app"`, override
-    `EMAIL_DEFAULT_FROM`);
+  - `email.defaultFrom` (`"noreply@uni.coach"`, override `EMAIL_DEFAULT_FROM`);
   - `email.provider` (`"log"`; values `"log" | "ses"`, override
     `EMAIL_PROVIDER`);
   - `email.ses.region` (`"us-east-1"`, override `EMAIL_SES_REGION`);

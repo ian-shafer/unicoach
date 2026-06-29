@@ -334,15 +334,19 @@ before env resolution so the guard message wins over a missing-env error.
   backend URL is **honor-if-set, else derive**:
   - **HONOR**: if the target file (or environment) set a non-empty
     `UNICOACH_BACKEND_URL`, it is forwarded to `xcodebuild` verbatim — no
-    derivation and no bare-IP check. This carries externally-terminated HTTPS
-    deployment URLs (e.g. `https://api.unicoachapp.com`) that the derived
-    `http://host:port` form cannot express.
-  - **DERIVE** (fallback when unset): bakes
-    `UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}` from the repo
-    `.env` (the single host source the server also reads); `APP_DOMAIN` defaults
-    to `localhost`. A bare-IP `APP_DOMAIN` is rejected here (invalid cookie
-    `Domain`, RFC 6265) — this check runs **only** on the derive path, so a
-    stale bare-IP `.env` cannot break a build that honors an explicit URL.
+    derivation and no bare-IP check. This carries an externally-terminated HTTPS
+    deployment URL that the derived `http://host:port` form cannot express.
+  - **DERIVE (deploy)**: a target that sets `UNICOACH_DEPLOY` sources
+    `.env.prod` (the single source of the prod domain) and bakes
+    `UNICOACH_BACKEND_URL=https://api.$APP_DOMAIN` — HTTPS, TLS terminated at
+    the ALB, `api.` subdomain, no port.
+  - **DERIVE (local)**: otherwise the repo `.env` supplies `APP_DOMAIN` and
+    bakes `UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}` (the
+    single host source the server also reads); `APP_DOMAIN` defaults to
+    `localhost`. A bare-IP `APP_DOMAIN` is rejected on either derive path
+    (invalid cookie `Domain`, RFC 6265) — this check runs **only** on the derive
+    paths, so a stale bare-IP `.env` cannot break a build that honors an
+    explicit URL.
 
   A simulator build (destination contains `Simulator`) skips signing; a device
   build additionally sources `ios-app/env/signing.env` for
@@ -353,12 +357,15 @@ before env resolution so the guard message wins over a missing-env error.
   `signing.env`/team, or (derive path only) a bare-IP `APP_DOMAIN`.
 
   **Checked-in deploy targets.** `prod` (device) and `prod-simulator`
-  (simulator) both set `UNICOACH_BACKEND_URL=https://api.unicoachapp.com`
-  explicitly, exercising the honor path. They carry no client key and are not
-  secret, so they are shareable and committed. `.gitignore` ignores
-  `ios-app/env/*.env` with explicit allowlist exceptions for `*.env.example`,
-  `simulator.env`, `prod.env`, and `prod-simulator.env`; any other
-  `<target>.env` (e.g. a contributor's `local.env`) stays untracked.
+  (simulator) both set `UNICOACH_DEPLOY=1` (not an explicit
+  `UNICOACH_BACKEND_URL`), so `bin/build-ios` sources `.env.prod` and derives
+  `UNICOACH_BACKEND_URL=https://api.$APP_DOMAIN` (today `https://api.uni.coach`)
+  — the prod domain lives once in `.env.prod` and is never restated in the
+  target file. They carry no client key and are not secret, so they are
+  shareable and committed. `.gitignore` ignores `ios-app/env/*.env` with
+  explicit allowlist exceptions for `*.env.example`, `simulator.env`,
+  `prod.env`, and `prod-simulator.env`; any other `<target>.env` (e.g. a
+  contributor's `local.env`) stays untracked.
 
   **Reserved secret seam.** `ios-app/env/<target>.local.env` is a documented
   per-target secret-overlay seam — gitignored and intended to override after the
@@ -375,8 +382,7 @@ before env resolution so the guard message wins over a missing-env error.
   auto-detecting. Device id comes from `UNICOACH_DEVICE` when set, otherwise
   single-device auto-detect via `xcrun devicectl list devices` — fatals on zero
   or multiple devices. `-l` additionally runs
-  `xcrun devicectl device process launch` for bundle id
-  `com.unicoachapp.UnicoachiOS`.
+  `xcrun devicectl device process launch` for bundle id `coach.uni.UnicoachiOS`.
 - **`release-ios [-n] [target]`**: Archives the `UnicoachiOS` app for App Store
   distribution and, by default, uploads it to App Store Connect for TestFlight
   via `xcodebuild -exportArchive`. Architect-invoked, side-effecting, and NOT

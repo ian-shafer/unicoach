@@ -66,7 +66,7 @@ class EmailSendsDaoTest {
   private fun sentSend() =
     NewEmailSend(
       recipient = address("to@example.com"),
-      sender = address("noreply@unicoach.app"),
+      sender = address("noreply@uni.coach"),
       subject = subject("Welcome"),
       body = body("Hello there"),
       status = EmailSendStatus.SENT,
@@ -78,7 +78,7 @@ class EmailSendsDaoTest {
   private fun rejectedSend() =
     NewEmailSend(
       recipient = address("to@example.com"),
-      sender = address("noreply@unicoach.app"),
+      sender = address("noreply@uni.coach"),
       subject = subject("Welcome"),
       body = body("Hello there"),
       status = EmailSendStatus.REJECTED,
@@ -99,7 +99,7 @@ class EmailSendsDaoTest {
       stmt.executeQuery().use { rs ->
         assertTrue(rs.next())
         assertEquals("to@example.com", rs.getString("recipient_email"))
-        assertEquals("noreply@unicoach.app", rs.getString("sender_email"))
+        assertEquals("noreply@uni.coach", rs.getString("sender_email"))
         assertEquals("Welcome", rs.getString("subject"))
         assertEquals("Hello there", rs.getString("body"))
         assertEquals("SENT", rs.getString("status"))
@@ -132,7 +132,7 @@ class EmailSendsDaoTest {
         stmt.execute(
           """
           INSERT INTO email_sends (recipient_email, sender_email, subject, body, status, provider)
-          VALUES ('to@example.com', 'noreply@unicoach.app', 's', 'b', 'PENDING', 'log')
+          VALUES ('to@example.com', 'noreply@uni.coach', 's', 'b', 'PENDING', 'log')
           """.trimIndent(),
         )
       }
@@ -168,7 +168,7 @@ class EmailSendsDaoTest {
         stmt.execute(
           """
           INSERT INTO email_sends (recipient_email, sender_email, subject, status, provider)
-          VALUES ('to@example.com', 'noreply@unicoach.app', 's', 'SENT', 'log')
+          VALUES ('to@example.com', 'noreply@uni.coach', 's', 'SENT', 'log')
           """.trimIndent(),
         )
       }
@@ -187,7 +187,7 @@ class EmailSendsDaoTest {
       try {
         session.prepareStatement(sql).use { stmt ->
           stmt.setString(1, "to@example.com")
-          stmt.setString(2, "noreply@unicoach.app")
+          stmt.setString(2, "noreply@uni.coach")
           stmt.setString(3, "s")
           stmt.setString(4, "b")
           stmt.setString(5, "PENDING") // out-of-domain status -> CHECK violation

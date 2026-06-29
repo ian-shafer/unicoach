@@ -137,7 +137,7 @@ class SesEmailProviderTest {
 
       provider.send(
         OutboundEmail(
-          from = address("from@unicoach.app"),
+          from = address("from@uni.coach"),
           to = address("to@example.com"),
           subject = subject("Sübject"),
           body = body("Bödy"),
@@ -145,7 +145,7 @@ class SesEmailProviderTest {
       )
 
       val request = requireNotNull(captured)
-      assertEquals("from@unicoach.app", request.fromEmailAddress)
+      assertEquals("from@uni.coach", request.fromEmailAddress)
       assertEquals(listOf("to@example.com"), request.destination?.toAddresses)
       val message = requireNotNull(request.content?.simple)
       assertEquals("Sübject", message.subject?.data)
@@ -168,7 +168,7 @@ class SesEmailProviderTest {
 
   private fun outbound(): OutboundEmail =
     OutboundEmail(
-      from = address("from@unicoach.app"),
+      from = address("from@uni.coach"),
       to = address("to@example.com"),
       subject = subject("Hello"),
       body = body("World"),

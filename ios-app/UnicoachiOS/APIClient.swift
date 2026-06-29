@@ -16,7 +16,7 @@ final class APIClient: @unchecked Sendable {
     /// because a per-request `timeoutInterval` cannot reliably extend a
     /// session-level value, and streaming needs the longer idle timeout.
     let streamSession: URLSession
-    private let logger = Logger(subsystem: "com.unicoachapp.UnicoachiOS", category: "APIClient")
+    private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "APIClient")
 
     /// Decoder configured for the server's ISO-8601 `Instant` timestamps (Jackson
     /// `JavaTimeModule`): strings with variable-precision fractional seconds and a

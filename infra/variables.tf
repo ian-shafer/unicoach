@@ -4,16 +4,14 @@ variable "region" {
   default     = "us-east-1"
 }
 
-variable "api_domain" {
-  description = "Fully-qualified hostname the API is served at; ACM cert subject and ALIAS record."
+variable "app_domain" {
+  description = "The deploy apex/zone (e.g. uni.coach); the single domain knob. The Route53 hosted zone is this name and the API is served at api.<app_domain> (see locals.tf). Has no default: bin/infra-plan / bin/infra-apply supply it as TF_VAR_app_domain from .env.prod, keeping the domain set in exactly one place."
   type        = string
-  default     = "api.unicoachapp.com"
 }
 
-variable "hosted_zone_name" {
-  description = "Parent Route53 hosted zone (registered out-of-band); referenced as a data source, never created."
+variable "google_client_ids" {
+  description = "Accepted Google OAuth client IDs (comma-separated token audiences) the backend verifies ID tokens against (auth.google.clientIds). No default: bin/infra-plan / bin/infra-apply supply it as TF_VAR_google_client_ids from .env.prod."
   type        = string
-  default     = "unicoachapp.com"
 }
 
 variable "instance_type" {

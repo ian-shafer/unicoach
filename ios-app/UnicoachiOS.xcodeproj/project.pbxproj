@@ -500,7 +500,7 @@
 				INFOPLIST_FILE = UnicoachiOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = com.unicoachapp.UnicoachiOS;
+				PRODUCT_BUNDLE_IDENTIFIER = coach.uni.UnicoachiOS;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -520,7 +520,7 @@
 				DEVELOPMENT_TEAM = "-";
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.unicoachapp.UnicoachiOSTests;
+				PRODUCT_BUNDLE_IDENTIFIER = coach.uni.UnicoachiOSTests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/UnicoachiOS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/UnicoachiOS";
@@ -589,7 +589,7 @@
 				DEVELOPMENT_TEAM = "-";
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.unicoachapp.UnicoachiOSTests;
+				PRODUCT_BUNDLE_IDENTIFIER = coach.uni.UnicoachiOSTests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/UnicoachiOS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/UnicoachiOS";
@@ -607,7 +607,7 @@
 				INFOPLIST_FILE = UnicoachiOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = com.unicoachapp.UnicoachiOS;
+				PRODUCT_BUNDLE_IDENTIFIER = coach.uni.UnicoachiOS;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";

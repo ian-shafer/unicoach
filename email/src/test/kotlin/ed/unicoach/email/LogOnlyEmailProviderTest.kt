@@ -20,7 +20,7 @@ class LogOnlyEmailProviderTest {
       val provider = LogOnlyEmailProvider()
       val outbound =
         OutboundEmail(
-          from = address("from@unicoach.app"),
+          from = address("from@uni.coach"),
           to = address("to@example.com"),
           subject = subject("Hello"),
           body = body("World"),

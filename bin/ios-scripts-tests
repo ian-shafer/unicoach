@@ -74,19 +74,19 @@ EOF
 # on a device destination (requires signing.env).
 cat > "$ENV_DIR/explicit-simulator.env" <<'EOF'
 UNICOACH_DESTINATION="generic/platform=iOS Simulator"
-UNICOACH_BACKEND_URL="https://api.unicoachapp.com"
+UNICOACH_BACKEND_URL="https://api.uni.coach"
 EOF
 
 cat > "$ENV_DIR/explicit-device.env" <<'EOF'
 UNICOACH_DESTINATION="generic/platform=iOS"
-UNICOACH_BACKEND_URL="https://api.unicoachapp.com"
+UNICOACH_BACKEND_URL="https://api.uni.coach"
 EOF
 
 # A target whose explicit URL carries a trailing-slash path and no port, to
 # prove byte-for-byte passthrough of an arbitrary URL shape.
 cat > "$ENV_DIR/explicit-trailing-slash.env" <<'EOF'
 UNICOACH_DESTINATION="generic/platform=iOS Simulator"
-UNICOACH_BACKEND_URL="https://api.unicoachapp.com/"
+UNICOACH_BACKEND_URL="https://api.uni.coach/"
 EOF
 
 # A device target that ALSO sets UNICOACH_CONFIGURATION=Debug, to prove
@@ -94,7 +94,21 @@ EOF
 cat > "$ENV_DIR/debug-config-device.env" <<'EOF'
 UNICOACH_DESTINATION="generic/platform=iOS"
 UNICOACH_CONFIGURATION="Debug"
-UNICOACH_BACKEND_URL="https://api.unicoachapp.com"
+UNICOACH_BACKEND_URL="https://api.uni.coach"
+EOF
+
+# Deploy targets: UNICOACH_DEPLOY=1 and NO explicit UNICOACH_BACKEND_URL, so
+# bin/build-ios DERIVES https://api.$APP_DOMAIN from the dotenv (the committed
+# prod / prod-simulator targets work this way). The dotenv is the per-test
+# UNICOACH_DOTENV fixture, so write_dotenv "<apex>" drives the derivation.
+cat > "$ENV_DIR/deploy-simulator.env" <<'EOF'
+UNICOACH_DESTINATION="generic/platform=iOS Simulator"
+UNICOACH_DEPLOY=1
+EOF
+
+cat > "$ENV_DIR/deploy-device.env" <<'EOF'
+UNICOACH_DESTINATION="generic/platform=iOS"
+UNICOACH_DEPLOY=1
 EOF
 
 # Write the repo-.env fixture that bin/build-ios sources (via UNICOACH_DOTENV).
@@ -379,7 +393,7 @@ test_build_honors_explicit_backend_url() {
   rm -f "$ENV_DIR/signing.env"
   run_build explicit-simulator >/dev/null 2>&1 || return 1
   # Explicit HTTPS URL (no port) forwarded verbatim.
-  log_has "UNICOACH_BACKEND_URL=https://api.unicoachapp.com" || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
   # The derived http://host:port form was NOT used.
   log_lacks "UNICOACH_BACKEND_URL=http://mymac.example.ts.net:8080" || return 1
   return 0
@@ -391,7 +405,7 @@ test_build_honors_explicit_url_passthrough_fidelity() {
   write_dotenv "mymac.example.ts.net"
   rm -f "$ENV_DIR/signing.env"
   run_build explicit-trailing-slash >/dev/null 2>&1 || return 1
-  log_has "UNICOACH_BACKEND_URL=https://api.unicoachapp.com/" || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach/" || return 1
   return 0
 }
 
@@ -401,7 +415,7 @@ test_build_explicit_url_skips_bare_ip_check() {
   write_dotenv "192.168.1.42"
   rm -f "$ENV_DIR/signing.env"
   run_build explicit-simulator >/dev/null 2>&1 || return 1
-  log_has "UNICOACH_BACKEND_URL=https://api.unicoachapp.com" || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
   return 0
 }
 
@@ -411,7 +425,7 @@ test_build_explicit_url_device_forwards_signing() {
   write_dotenv "mymac.example.ts.net"
   write_signing_env
   run_build explicit-device >/dev/null 2>&1 || return 1
-  log_has "UNICOACH_BACKEND_URL=https://api.unicoachapp.com" || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
   log_has "DEVELOPMENT_TEAM=$FIXTURE_TEAM" || return 1
   log_has "CODE_SIGN_STYLE=Automatic" || return 1
   log_has "-allowProvisioningUpdates" || return 1
@@ -426,36 +440,100 @@ test_build_derives_when_url_unset() {
   run_build simulator >/dev/null 2>&1 || return 1
   # device.env / simulator.env set no UNICOACH_BACKEND_URL, so derivation runs.
   log_has "UNICOACH_BACKEND_URL=http://mymac.example.ts.net:8080" || return 1
-  log_lacks "UNICOACH_BACKEND_URL=https://api.unicoachapp.com" || return 1
+  log_lacks "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
   return 0
 }
 
 # The committed deploy targets (the REAL ios-app/env/prod*.env, not fixtures)
-# are well-formed: each carries the explicit HTTPS deploy URL, prod is a device
-# destination and prod-simulator a simulator destination, and neither sets a
-# client key.
+# are well-formed: each sets UNICOACH_DEPLOY (so the backend URL DERIVES from
+# .env.prod) and does NOT hardcode UNICOACH_BACKEND_URL; prod is a device
+# destination and prod-simulator a simulator destination; neither sets a client
+# key. The api host must live in exactly one place (.env.prod), never restated
+# in a target file.
 test_prod_targets_committed_and_wellformed() {
   local prod="$PROJECT_ROOT/ios-app/env/prod.env"
   local prod_sim="$PROJECT_ROOT/ios-app/env/prod-simulator.env"
   [ -f "$prod" ] || return 1
   [ -f "$prod_sim" ] || return 1
 
-  local url dest key
+  local deploy url dest key
+  deploy="$(set -a; source "$prod"; set +a; printf '%s' "${UNICOACH_DEPLOY:-}")"
+  [ -n "$deploy" ] || return 1
   url="$(set -a; source "$prod"; set +a; printf '%s' "${UNICOACH_BACKEND_URL:-}")"
-  [ "$url" = "https://api.unicoachapp.com" ] || return 1
+  [ -z "$url" ] || return 1
   dest="$(set -a; source "$prod"; set +a; printf '%s' "${UNICOACH_DESTINATION:-}")"
   case "$dest" in *Simulator*) return 1 ;; esac
   key="$(set -a; source "$prod"; set +a; printf '%s' "${UNICOACH_CLIENT_KEY:-}")"
   [ -z "$key" ] || return 1
 
+  deploy="$(set -a; source "$prod_sim"; set +a; printf '%s' "${UNICOACH_DEPLOY:-}")"
+  [ -n "$deploy" ] || return 1
   url="$(set -a; source "$prod_sim"; set +a; printf '%s' "${UNICOACH_BACKEND_URL:-}")"
-  [ "$url" = "https://api.unicoachapp.com" ] || return 1
+  [ -z "$url" ] || return 1
   dest="$(set -a; source "$prod_sim"; set +a; printf '%s' "${UNICOACH_DESTINATION:-}")"
   case "$dest" in *Simulator*) ;; *) return 1 ;; esac
   key="$(set -a; source "$prod_sim"; set +a; printf '%s' "${UNICOACH_CLIENT_KEY:-}")"
   [ -z "$key" ] || return 1
 
   return 0
+}
+
+# .env.prod is the single source of the prod domain: it defines a non-empty,
+# non-bare-IP APP_DOMAIN apex from which every consumer derives.
+test_env_prod_is_single_domain_source() {
+  local envprod="$PROJECT_ROOT/.env.prod"
+  [ -f "$envprod" ] || return 1
+  local domain
+  domain="$(set -a; source "$envprod"; set +a; printf '%s' "${APP_DOMAIN:-}")"
+  [ -n "$domain" ] || return 1
+  # Apex must be a DNS name, not a bare IPv4/IPv6 literal (invalid cookie Domain).
+  if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$domain" == *:* ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# Deploy derivation (simulator): UNICOACH_DEPLOY with no explicit URL bakes
+# https://api.$APP_DOMAIN — HTTPS, api. subdomain, no port — from the dotenv.
+test_build_deploy_derives_https() {
+  write_dotenv "uni.coach"
+  rm -f "$ENV_DIR/signing.env"
+  run_build deploy-simulator >/dev/null 2>&1 || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
+  # The local http://host:port form was NOT used.
+  log_lacks "UNICOACH_BACKEND_URL=http://uni.coach:8080" || return 1
+  return 0
+}
+
+# Deploy derivation (device): same HTTPS derivation, and signing is still
+# forwarded for a device destination.
+test_build_deploy_derives_https_device() {
+  write_dotenv "uni.coach"
+  write_signing_env
+  run_build deploy-device >/dev/null 2>&1 || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
+  log_has "DEVELOPMENT_TEAM=$FIXTURE_TEAM" || return 1
+  return 0
+}
+
+# The deploy derivation tracks APP_DOMAIN: a different apex yields a different
+# api host, proving the domain is not hardcoded in the deploy path.
+test_build_deploy_tracks_app_domain() {
+  write_dotenv "example.test"
+  rm -f "$ENV_DIR/signing.env"
+  run_build deploy-simulator >/dev/null 2>&1 || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.example.test" || return 1
+  return 0
+}
+
+# The deploy path still rejects a bare-IP apex (an invalid cookie Domain).
+test_build_deploy_bare_ip_rejected() {
+  write_dotenv "10.0.0.5"
+  rm -f "$ENV_DIR/signing.env"
+  local out
+  if out="$(run_build deploy-simulator 2>&1)"; then return 1; fi
+  echo "$out" | grep -qi "DNS hostname" || return 1
+  log_no_tool "xcodebuild"
 }
 
 # The gitignore allowlist tracks the committed prod targets while a control
@@ -504,7 +582,7 @@ test_install_with_device_set() {
   log_has "$udid" || return 1
   log_has "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app" || return 1
   # No -l passed, so no process-launch invocation recorded.
-  if grep -Fxq "launch" "$ARGV_LOG" && grep -Fxq "com.unicoachapp.UnicoachiOS" "$ARGV_LOG"; then
+  if grep -Fxq "launch" "$ARGV_LOG" && grep -Fxq "coach.uni.UnicoachiOS" "$ARGV_LOG"; then
     return 1
   fi
   return 0
@@ -518,7 +596,7 @@ test_install_with_launch() {
   log_has "install" || return 1
   log_has "process" || return 1
   log_has "launch" || return 1
-  log_has "com.unicoachapp.UnicoachiOS" || return 1
+  log_has "coach.uni.UnicoachiOS" || return 1
   return 0
 }
 
@@ -585,7 +663,7 @@ test_release_no_upload_archives_and_exports() {
   log_has "DEVELOPMENT_TEAM=$FIXTURE_TEAM" || return 1
   log_has "CODE_SIGN_STYLE=Automatic" || return 1
   log_has "-allowProvisioningUpdates" || return 1
-  log_has "UNICOACH_BACKEND_URL=https://api.unicoachapp.com" || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
   log_has "CURRENT_PROJECT_VERSION=7" || return 1
   # No upload auth, and the export options select local export.
   log_lacks "-authenticationKeyID" || return 1
@@ -652,6 +730,20 @@ test_release_derives_build_number_from_git() {
   grep -Eq "^CURRENT_PROJECT_VERSION=[0-9]+$" "$ARGV_LOG"
 }
 
+# A DEPLOY target (UNICOACH_DEPLOY, no explicit URL — the real prod target) makes
+# release-ios derive https://api.$APP_DOMAIN from .env.prod, exactly like
+# build-ios. Regression guard: release-ios must NOT fall back to the localhost
+# derive path for a deploy target.
+test_release_deploy_derives_https() {
+  write_dotenv "uni.coach"
+  write_signing_env
+  rm -f "$ENV_DIR/appstore.env"   # -n path needs no upload auth
+  run_release -n deploy-device >/dev/null 2>&1 || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
+  log_lacks "UNICOACH_BACKEND_URL=http://localhost:8080" || return 1
+  return 0
+}
+
 # Note: run_install/run_build wrappers reset the argv log; export the
 # DEVICECTL_LIST_OUTPUT / IN_NIX through the env of the wrapper call above.
 
@@ -681,7 +773,12 @@ assert_success "build-ios: explicit URL forwarded byte-for-byte (trailing slash,
 assert_success "build-ios: explicit URL skips the derive-only bare-IP check" test_build_explicit_url_skips_bare_ip_check
 assert_success "build-ios: explicit URL on device path honored + forwards signing" test_build_explicit_url_device_forwards_signing
 assert_success "build-ios: unset UNICOACH_BACKEND_URL takes the derive path" test_build_derives_when_url_unset
-assert_success "build-ios: committed prod targets are well-formed" test_prod_targets_committed_and_wellformed
+assert_success "build-ios: committed prod targets derive (deploy flag, no hardcoded URL)" test_prod_targets_committed_and_wellformed
+assert_success "build-ios: .env.prod is the single domain source (non-empty apex)" test_env_prod_is_single_domain_source
+assert_success "build-ios: deploy target derives https://api.\$APP_DOMAIN (simulator)" test_build_deploy_derives_https
+assert_success "build-ios: deploy target derives https + forwards signing (device)" test_build_deploy_derives_https_device
+assert_success "build-ios: deploy derivation tracks APP_DOMAIN apex" test_build_deploy_tracks_app_domain
+assert_success "build-ios: deploy path rejects a bare-IP apex" test_build_deploy_bare_ip_rejected
 assert_success "build-ios: prod targets tracked, throwaway target ignored" test_prod_targets_not_gitignored
 
 # install-ios
@@ -703,5 +800,6 @@ assert_success "release-ios: upload forwards ASC API key flags + upload destinat
 assert_success "release-ios: missing .p8 at UNICOACH_ASC_KEY_PATH fails fast" test_release_upload_missing_key_file
 assert_success "release-ios: forces Release even when target sets Debug" test_release_forces_release_config
 assert_success "release-ios: derives build number from HEAD commit count" test_release_derives_build_number_from_git
+assert_success "release-ios: deploy target derives https://api.\$APP_DOMAIN from .env.prod" test_release_deploy_derives_https
 
 end_tests

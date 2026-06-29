@@ -24,7 +24,7 @@ class OnboardingViewModel: ObservableObject {
 
     private let studentClient: StudentClientProtocol
     private let onComplete: () -> Void
-    private let logger = Logger(subsystem: "com.unicoachapp.UnicoachiOS", category: "OnboardingViewModel")
+    private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "OnboardingViewModel")
 
     init(studentClient: StudentClientProtocol, onComplete: @escaping () -> Void, year: Int) {
         self.studentClient = studentClient

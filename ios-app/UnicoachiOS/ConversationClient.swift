@@ -17,7 +17,7 @@ protocol ConversationClientProtocol: Sendable {
 /// does not construct `URLRequest`s, own a `URLSession`, or configure transport.
 final class ConversationClient: ConversationClientProtocol, @unchecked Sendable {
     private let apiClient: APIClient
-    private let logger = Logger(subsystem: "com.unicoachapp.UnicoachiOS", category: "ConversationClient")
+    private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "ConversationClient")
 
     init(apiClient: APIClient = APIClient()) {
         self.apiClient = apiClient

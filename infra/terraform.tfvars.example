@@ -1,9 +1,15 @@
 # Copy to terraform.tfvars (gitignored) and adjust as needed. Every value below
-# is the variables.tf default; uncomment a line only to override it.
-
+# except app_domain is the variables.tf default; uncomment a line only to
+# override it.
+#
+# app_domain and google_client_ids have NO default: bin/infra-plan /
+# bin/infra-apply supply them as TF_VAR_* from .env.prod (APP_DOMAIN,
+# GOOGLE_CLIENT_IDS), keeping each value set in exactly one place. Set them there,
+# not here. Uncomment below only to override that single source for a one-off raw
+# `tofu` run.
+# app_domain        = "uni.coach"
+# google_client_ids = "<ios-client-id>.apps.googleusercontent.com"
 # region            = "us-east-1"
-# api_domain        = "api.unicoachapp.com"
-# hosted_zone_name  = "unicoachapp.com"
 # instance_type     = "t4g.small"
 # db_instance_class = "db.t4g.micro"
 # db_engine_version = "18"

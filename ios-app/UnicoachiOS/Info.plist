@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.unicoachapp.UnicoachiOS</string>
+	<string>coach.uni.UnicoachiOS</string>
 	<key>UnicoachBackendURL</key>
 	<string>$(UNICOACH_BACKEND_URL)</string>
 	<key>UnicoachClientKey</key>

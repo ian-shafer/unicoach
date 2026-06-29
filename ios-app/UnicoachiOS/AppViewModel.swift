@@ -8,7 +8,7 @@ class AppViewModel: ObservableObject {
     let studentClient: StudentClientProtocol
     let conversationClient: ConversationClientProtocol
     let cookieStorage: CookieStorageProtocol
-    private let logger = Logger(subsystem: "com.unicoachapp.UnicoachiOS", category: "AppViewModel")
+    private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AppViewModel")
 
     init(
         apiClient: APIClient = APIClient(),

@@ -4,9 +4,9 @@
 # Two SecureString sources:
 #   - OpenTofu-owned (PGPASSWORD = the generated RDS master password): value
 #     managed here.
-#   - Out-of-band (DATABASE_PASSWORD, JWT_SECRET, CHAT_ANTHROPIC_API_KEY): created
-#     with a placeholder and ignore_changes on value, so the operator seeds the
-#     real secret with the AWS CLI and OpenTofu never reverts it.
+#   - Out-of-band (DATABASE_PASSWORD, CHAT_ANTHROPIC_API_KEY): created with a
+#     placeholder and ignore_changes on value, so the operator seeds the real
+#     secret with the AWS CLI and OpenTofu never reverts it.
 
 locals {
   ssm_prefix = "/unicoach/prod"
@@ -22,15 +22,19 @@ locals {
     SERVER_HOST           = "0.0.0.0"
     SERVER_PORT           = "8080"
     SESSION_COOKIE_SECURE = "true"
-    APP_DOMAIN            = var.api_domain
-    JWT_ISSUER            = "https://${var.api_domain}/"
-    CHAT_PROVIDER         = "anthropic"
+    # The session cookie spans the whole zone (apex + api subdomain), so it is
+    # the apex app_domain, not the api host. Email links derive from the same
+    # single knob.
+    APP_DOMAIN                         = var.app_domain
+    EMAIL_DEFAULT_FROM                 = "noreply@${var.app_domain}"
+    EMAIL_VERIFICATION_VERIFY_URL_BASE = "https://${var.app_domain}/verify-email"
+    CHAT_PROVIDER                      = "anthropic"
+    GOOGLE_CLIENT_IDS                  = var.google_client_ids
   }
 
   # SecureString secrets the operator seeds out-of-band.
   ssm_out_of_band_secrets = [
     "DATABASE_PASSWORD",
-    "JWT_SECRET",
     "CHAT_ANTHROPIC_API_KEY",
   ]
 }

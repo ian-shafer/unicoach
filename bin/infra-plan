@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Thin wrapper over `tofu -chdir=infra plan`. Carries no resource logic — the HCL
-# under infra/ is the sole source of resource definitions. Extra args pass through.
+# under infra/ is the sole source of resource definitions. The deploy domain is
+# the single knob in .env.prod (APP_DOMAIN); it is exported here as
+# TF_VAR_app_domain so the HCL never restates it. Extra args pass through.
 source "$(dirname "$0")/common"
+
+set -a
+# shellcheck source=/dev/null
+source "$PROJECT_ROOT/.env.prod"
+set +a
+export TF_VAR_app_domain="$APP_DOMAIN"
+export TF_VAR_google_client_ids="$GOOGLE_CLIENT_IDS"
 
 exec tofu -chdir="$PROJECT_ROOT/infra" plan "$@"

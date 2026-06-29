@@ -190,11 +190,11 @@ assume an active `nix develop` shell and a configured AWS session
 
 ### 0. Domain gate (prerequisite)
 
-The API is served at `api.unicoachapp.com`. Its parent zone, `unicoachapp.com`,
-must already be registered through Route53 Domains (its hosted zone is
-auto-created). OpenTofu references that zone by data source; if registration is
-incomplete, `bin/infra-apply` fails closed at the TLS/DNS resources with no
-partial state.
+The API is served at `api.uni.coach`. Its parent zone, `uni.coach` (the
+`APP_DOMAIN` apex, set once in `.env.prod`), must already be registered through
+Route53 Domains (its hosted zone is auto-created). OpenTofu references that zone
+by data source; if registration is incomplete, `bin/infra-apply` fails closed at
+the TLS/DNS resources with no partial state.
 
 ### 1. Provision infrastructure
 
@@ -221,8 +221,6 @@ secret. Seed the real values once with the AWS CLI:
 ```sh
 aws ssm put-parameter --overwrite --type SecureString \
   --name /unicoach/prod/DATABASE_PASSWORD       --value '<app-role-password>'
-aws ssm put-parameter --overwrite --type SecureString \
-  --name /unicoach/prod/JWT_SECRET              --value '<jwt-signing-secret>'
 aws ssm put-parameter --overwrite --type SecureString \
   --name /unicoach/prod/CHAT_ANTHROPIC_API_KEY  --value '<anthropic-api-key>'
 ```
@@ -304,8 +302,6 @@ Copy `.env.template` to `.env`. Key variables:
 | `PGHOST`            | libpq host (all psql/pg_isready calls)                 | `localhost`                   |
 | `DATABASE_USER`     | Application role                                       | `unicoach`                    |
 | `DATABASE_PASSWORD` | Application role password                              | `password`                    |
-| `JWT_SECRET`        | Token signing secret                                   | —                             |
-| `JWT_ISSUER`        | Token issuer URI                                       | —                             |
 
 `POSTGRES_PORT` is **required** and must be set in the env file — scripts and
 the JVM crash hard if it is missing rather than silently defaulting.

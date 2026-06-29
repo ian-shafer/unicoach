@@ -7,7 +7,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_ROOT/bin/functions"
 
-BUNDLE_ID="com.unicoachapp.UnicoachiOS"
+BUNDLE_ID="coach.uni.UnicoachiOS"
 
 help() {
   cat << 'EOF'

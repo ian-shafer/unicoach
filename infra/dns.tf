@@ -2,12 +2,12 @@
 # referenced by data source rather than created (a managed zone would conflict).
 # If registration is incomplete this resolves nothing and dns.tf fails closed.
 data "aws_route53_zone" "main" {
-  name         = var.hosted_zone_name
+  name         = local.hosted_zone_name
   private_zone = false
 }
 
 resource "aws_acm_certificate" "api" {
-  domain_name       = var.api_domain
+  domain_name       = local.api_domain
   validation_method = "DNS"
 
   lifecycle {
@@ -39,10 +39,10 @@ resource "aws_acm_certificate_validation" "api" {
   validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
 }
 
-# ALIAS api.unicoachapp.com -> the ALB.
+# ALIAS api.<app_domain> -> the ALB.
 resource "aws_route53_record" "api" {
   zone_id = data.aws_route53_zone.main.zone_id
-  name    = var.api_domain
+  name    = local.api_domain
   type    = "A"
 
   alias {
