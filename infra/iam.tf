@@ -45,7 +45,8 @@ data "aws_iam_policy_document" "instance" {
   }
 
   # SES send for transactional email (email.provider = "ses" in prod). The sender
-  # identity itself is verified out-of-band; this only grants the send action.
+  # identity and its DKIM/MAIL FROM DNS are codified in ses.tf; this only grants
+  # the send action.
   statement {
     sid       = "SendEmail"
     actions   = ["ses:SendEmail", "ses:SendRawEmail"]
