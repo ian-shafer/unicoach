@@ -2,7 +2,12 @@
 # instance pulls it via SSM Run Command. Versioned, encrypted, lifecycle-expired.
 
 resource "aws_s3_bucket" "artifacts" {
-  bucket = "unicoach-artifacts-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.name_prefix}-artifacts-${data.aws_caller_identity.current.account_id}"
+
+  # Build artifacts are disposable. force_destroy lets tofu empty and replace the
+  # bucket: a name_prefix rename forces replacement, which a versioned, non-empty
+  # bucket otherwise blocks until every object version is manually deleted.
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_versioning" "artifacts" {

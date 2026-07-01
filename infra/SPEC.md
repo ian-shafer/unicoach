@@ -2,9 +2,12 @@
 
 ## I. Overview
 
-**Domain:** the single-environment, code-defined AWS deployment of the
+**Domain:** the multi-environment, code-defined AWS deployment of the
 `rest-server` and `queue-worker` JVM processes against managed PostgreSQL,
-reachable by the iOS client over TLS.
+reachable by the iOS client over TLS. Each environment (e.g. `prod`, `staging`)
+is a fully isolated stack — separate resource names, SSM prefix, state key, and
+hosted zone — instantiated by authoring a single `.env.<env>` file and running
+`bin/infra-apply`.
 
 This directory is the **sole source of resource definitions**. It holds three
 distinct concerns, all covered by this one spec:
@@ -50,9 +53,11 @@ where `files/deploy-on-instance.sh` defines the on-host half of a deploy.
 - All administration and deployment MUST flow through **AWS Systems Manager**
   (Session Manager + Run Command). The host MUST NOT be reachable by SSH.
 - The instance IAM role MUST be least-privilege: SSM managed core, parameter
-  read scoped to `arn:…:parameter/unicoach/prod/*`, `kms:Decrypt` on the SSM
-  key, and read-only access to the artifacts bucket. It MUST NOT grant write to
-  SSM parameters or broad S3 access.
+  read scoped to the env's SSM prefix (`arn:…:parameter/unicoach/<env>` and
+  `…/unicoach/<env>/*`), `kms:Decrypt` on the SSM key, `ses:SendEmail` /
+  `ses:SendRawEmail` for transactional email, and read-only access to the
+  artifacts bucket. It MUST NOT grant write to SSM parameters or broad S3
+  access.
 
 ### DNS & TLS
 
@@ -104,14 +109,16 @@ where `files/deploy-on-instance.sh` defines the on-host half of a deploy.
 
 ## III. Behavioral Contracts
 
-### The `/unicoach/prod/` SSM prefix — the OpenTofu ↔ host seam
+### The per-env SSM prefix — the OpenTofu ↔ host seam
 
-`ssm.tf` writes every runtime key under this prefix; `files/render-env.sh`
-fetches the **whole** prefix (with decryption, recursive) and flattens it to
-`/etc/unicoach/env` as `KEY=VALUE` (leaf name after the prefix). That single
-file is consumed two ways: as the `systemd` `EnvironmentFile` for both units,
-and as `ENV_FILE` sourced by `bin/common` during migrations. The contract is the
-**ownership split**, not the literal key list:
+`locals.tf` owns the SSM prefix (`/unicoach/<env>`, derived from
+`var.environment`); `ssm.tf` writes every runtime key under it.
+`files/render-env.sh` fetches the **whole** prefix (with decryption, recursive)
+and flattens it to `/etc/unicoach/env` as `KEY=VALUE` (leaf name after the
+prefix). That single file is consumed two ways: as the `systemd`
+`EnvironmentFile` for both units, and as `ENV_FILE` sourced by `bin/common`
+during migrations. The contract is the **ownership split**, not the literal key
+list:
 
 | Class                                         | Owner                              | Reverted by apply?        |
 | --------------------------------------------- | ---------------------------------- | ------------------------- |
@@ -119,12 +126,56 @@ and as `ENV_FILE` sourced by `bin/common` during migrations. The contract is the
 | `PGPASSWORD` SecureString                     | OpenTofu (generated RDS master pw) | Yes                       |
 | `DATABASE_PASSWORD`, `CHAT_ANTHROPIC_API_KEY` | Operator (out-of-band)             | **No** (`ignore_changes`) |
 
+`SSM_PREFIX` is written to the host by cloud-init (from the OpenTofu-templated
+per-env value) and has **no default**: `render-env` exits fatally if it is unset
+or if the fetched prefix is empty. It additionally refuses to render if any
+out-of-band secret still holds the `PLACEHOLDER_SEED_OUT_OF_BAND` value,
+preventing a host from booting with an unseeded credential.
+
 - **Side effects:** `render-env` and `deploy-on-instance` call the AWS CLI
   (`ssm get-parameters-by-path`, `s3 cp`) on the host; they read SSM and S3,
   write only local files under `/opt/unicoach` and `/etc/unicoach`.
 - **Idempotency:** `render-env` is fully idempotent (rewrites the env file).
   `deploy-on-instance` creates a fresh timestamped release dir per run; the
   symlink swap is atomic (`ln -sfn`).
+
+### Renaming a stack (`name_prefix` migration)
+
+Every resource name and tag derives from `local.name_prefix` (`unicoach-<env>`),
+so changing `var.environment` — or otherwise moving `name_prefix` — re-plans the
+whole stack. A `tofu plan` for such a rename (the shape of the one-time prod
+`unicoach` → `unicoach-prod` recreate) splits the resources into two classes,
+not a uniform recreate:
+
+- **Rename in place** (attribute/tag update, resource retained): the VPC, the
+  four subnets, the internet gateway, both route tables, the RDS instance, the
+  EC2 instance, and the Route53 API alias record. These carry the identity only
+  as a mutable handle — the `Name` **tag** for the VPC, subnets, internet
+  gateway, and route tables; an attribute the AWS API mutates in place for the
+  rest. RDS renames via `ModifyDBInstance` (new `identifier`, and it
+  re-associates the freshly-named DB subnet group). The EC2 instance updates its
+  `Name` tag and its `iam_instance_profile` / `vpc_security_group_ids`
+  references. The API record retargets its ALIAS to the replacement ALB's new
+  DNS name.
+- **Replace** (destroy + create): the ALB and its two listeners, the target
+  group and its attachment, the three security groups and their six rules, the
+  IAM role / inline policy / managed-policy attachment / instance profile, the
+  S3 artifacts bucket and its four sub-configurations (versioning, encryption,
+  public-access block, lifecycle), and the DB subnet group. Each of these keys
+  `name_prefix` into an argument the AWS API treats as immutable (`aws_lb.name`,
+  `aws_lb_target_group.name`, `aws_security_group.name`, `aws_iam_role.name` /
+  `aws_iam_role_policy.name` / `aws_iam_instance_profile.name`,
+  `aws_s3_bucket.bucket`, `aws_db_subnet_group.name`), so a changed name forces
+  replacement; the dependent listeners, security-group rules, target-group
+  attachment, managed-policy attachment, and bucket sub-configs replace as a
+  knock-on. For the concrete prod rename that split is 24 resources replaced and
+  11 renamed in place.
+
+Because the SSM prefix and state key key off `var.environment` — not
+`name_prefix` — an env keeping the same `environment` id across a rename keeps
+its state and its operator-seeded SecureStrings; only the AWS resources above
+move. `bin/deploy` then re-creates the app DB role and migrates the (empty)
+database against the renamed RDS instance.
 
 ### Health & ingress
 
@@ -137,9 +188,9 @@ and as `ENV_FILE` sourced by `bin/common` during migrations. The contract is the
 
 - **Hosted zone unresolved** (registration incomplete) → the zone data source
   resolves nothing and `dns.tf` apply **fails closed**; no partial TLS state.
-- **Unseeded secret still at placeholder** → the JVM fails fast on startup
-  config validation, or the DB connection is rejected; surfaced in the journal
-  via SSM, never silently degraded.
+- **Unseeded secret still at placeholder** → `render-env` exits fatally before
+  writing `/etc/unicoach/env`, so the JVM never starts with a bogus credential;
+  the failure surfaces in the SSM Run Command output.
 - **Absent `PGPASSWORD`** (RDS rejects libpq trust auth) → migrations fail
   before the symlink swap, leaving the prior release serving.
 
@@ -149,10 +200,29 @@ and as `ENV_FILE` sourced by `bin/common` during migrations. The contract is the
   `allowUnfree` into the Nix flake). `required_version >= 1.6`; providers
   `hashicorp/aws ~> 5.0` and `hashicorp/random ~> 3.6`. All `tofu` invocations
   run inside the Nix dev shell (`opentofu`, `awscli2` provided there).
-- **Backend:** S3 bucket `unicoach-tofu-state`, key
-  `unicoach/prod/terraform.tfstate`, `us-east-1`, encrypted, `use_lockfile`.
-  Created by `bootstrap/` (local state).
+- **Environment parameterization:** `var.environment` (required, no default) is
+  the single identity token. `locals.tf` owns `name_prefix` (`unicoach-<env>`),
+  `ssm_prefix` (`/unicoach/<env>`), `api_domain` (`api.<app_domain>`), and
+  `hosted_zone_name` (coalesced from `var.hosted_zone_name` or
+  `var.app_domain`). All resource names, tags, IAM scope, and SSM paths derive
+  from these locals. The RDS `db_name` and master `username` remain literal
+  (`unicoach` / `unicoach_admin`) — Postgres identifiers disallow hyphens, and
+  each env has its own isolated RDS instance.
+- **Backend:** S3 bucket `unicoach-tofu-state`, `us-east-1`, encrypted,
+  `use_lockfile`. The state key (`unicoach/<env>/terraform.tfstate`) is a
+  partial backend — supplied at `tofu init` time by `bin/infra-*` via
+  `-backend-config="key=…"` so each environment's state is disjoint and no env
+  is a silent default. Created by `bootstrap/` (local state).
 - **Region:** `us-east-1` default (variable).
+- **Account:** each cloud env targets its own AWS account, named by
+  `AWS_ACCOUNT_ID` in that env's `.env.<env>`. The operator entry points
+  `bin/infra-plan`, `bin/infra-apply`, and `bin/deploy` assert the active
+  credentials resolve to the selected env's account
+  (`aws sts
+  get-caller-identity`) before any `tofu`/`aws` action, so a stray
+  ambient AWS profile fails fast rather than targeting the wrong account. (These
+  scripts pin no profile; the guard turns a wrong ambient profile into a loud
+  failure instead of a silent misfire.)
 - **Compute:** Amazon Linux 2023 ARM (Graviton) AMI via `most_recent` data
   source; SSM agent preinstalled. cloud-init installs Amazon Corretto 21 and the
   PostgreSQL client, creates the `unicoach` system user (no login shell) and the
@@ -167,3 +237,4 @@ and as `ENV_FILE` sourced by `bin/common` during migrations. The contract is the
 
 - [x] [RFC-050: Deploy the Backend REST API to AWS](../rfc/50-deploy-rest-api-aws.md)
 - [x] [RFC-059: Named iOS build targets](../rfc/59-ios-build-targets.md)
+- [x] [RFC-087: Multi-environment config and deploy](../rfc/87-multi-environment-config-and-deploy.md)

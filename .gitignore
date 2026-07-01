@@ -27,6 +27,7 @@ ios-app/env/*.env
 # Remote state lives in S3 (infra/backend.tf); the bootstrap config and any
 # accidental local state must never be committed.
 .terraform/
+.terraform-*/
 *.tfstate
 *.tfstate.*
 *.tfplan

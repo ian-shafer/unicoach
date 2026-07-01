@@ -51,7 +51,11 @@ class GoogleAuthConfigTest {
         )
     val parsed = GoogleAuthConfig.from(config).getOrThrow()
 
-    assertEquals("google", parsed.provider)
+    // Committed config is development-only: the packaged default is the offline
+    // `stub` verifier, not live `google`. This assertion is the regression guard
+    // ensuring a regressed `google` default fails the suite rather than silently
+    // dropping prod to a non-overridden bypass.
+    assertEquals("stub", parsed.provider)
     assertEquals(listOf("accounts.google.com", "https://accounts.google.com"), parsed.issuers)
     assertEquals("https://www.googleapis.com/oauth2/v3/certs", parsed.jwksUri)
     assertEquals(Duration.ofSeconds(60), parsed.clockSkew)

@@ -25,7 +25,7 @@ class EmailConfigTest {
   fun `email conf is on the classpath and merges with the packaged default`() {
     val config = AppConfig.load("common.conf", "db.conf", "email.conf").getOrThrow()
     val emailConfig = EmailConfig.from(config).getOrThrow()
-    assertEquals("noreply@uni.coach", emailConfig.defaultFrom)
+    assertEquals("noreply@localhost", emailConfig.defaultFrom)
     assertEquals("log", emailConfig.provider)
     assertEquals("us-east-1", emailConfig.ses.region)
     assertNull(emailConfig.ses.accessKeyId)

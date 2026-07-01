@@ -39,6 +39,6 @@ resource "aws_instance" "app" {
   })
 
   tags = {
-    Name = "unicoach"
+    Name = local.name_prefix
   }
 }

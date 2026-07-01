@@ -1,9 +1,9 @@
 resource "aws_db_subnet_group" "main" {
-  name       = "unicoach"
+  name       = local.name_prefix
   subnet_ids = aws_subnet.private[*].id
 
   tags = {
-    Name = "unicoach"
+    Name = local.name_prefix
   }
 }
 
@@ -16,11 +16,15 @@ resource "random_password" "db_master" {
 }
 
 resource "aws_db_instance" "main" {
-  identifier     = "unicoach"
+  identifier     = local.name_prefix
   engine         = "postgres"
   engine_version = var.db_engine_version
   instance_class = var.db_instance_class
 
+  # db_name and the master username stay LITERAL (not name_prefix): Postgres
+  # identifiers disallow the hyphen in unicoach-<env>, and they must match the
+  # deploy-invariant POSTGRES_DB/POSTGRES_USER literals ssm.tf keeps. Each env has
+  # its own isolated RDS, so a shared db_name/username never collide.
   db_name  = "unicoach"
   username = "unicoach_admin"
   password = random_password.db_master.result
@@ -38,6 +42,6 @@ resource "aws_db_instance" "main" {
   apply_immediately   = true
 
   tags = {
-    Name = "unicoach"
+    Name = local.name_prefix
   }
 }

@@ -13,7 +13,7 @@ data "aws_iam_policy_document" "ec2_assume" {
 }
 
 resource "aws_iam_role" "instance" {
-  name               = "unicoach-instance"
+  name               = "${local.name_prefix}-instance"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
 
@@ -23,18 +23,18 @@ resource "aws_iam_role_policy_attachment" "ssm_core" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# Scoped read of the runtime config/secrets under /unicoach/prod/ and decrypt of
-# the SSM KMS key, plus read of the deploy-artifacts bucket.
+# Scoped read of the runtime config/secrets under the env's SSM prefix and decrypt
+# of the SSM KMS key, plus read of the deploy-artifacts bucket and SES send.
 data "aws_iam_policy_document" "instance" {
   statement {
-    sid     = "ReadProdParameters"
+    sid     = "ReadEnvParameters"
     actions = ["ssm:GetParametersByPath", "ssm:GetParameters", "ssm:GetParameter"]
-    # GetParametersByPath authorizes against the path node itself (…/unicoach/prod),
-    # while GetParameter(s) authorize against each child (…/unicoach/prod/*). Both
-    # ARNs are required: the wildcard alone denies the recursive path fetch.
+    # GetParametersByPath authorizes against the path node itself (the ssm_prefix),
+    # while GetParameter(s) authorize against each child (ssm_prefix/*). Both ARNs
+    # are required: the wildcard alone denies the recursive path fetch.
     resources = [
-      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/unicoach/prod",
-      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/unicoach/prod/*",
+      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}",
+      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*",
     ]
   }
 
@@ -42,6 +42,14 @@ data "aws_iam_policy_document" "instance" {
     sid       = "DecryptSsmSecrets"
     actions   = ["kms:Decrypt"]
     resources = [data.aws_kms_key.ssm.arn]
+  }
+
+  # SES send for transactional email (email.provider = "ses" in prod). The sender
+  # identity itself is verified out-of-band; this only grants the send action.
+  statement {
+    sid       = "SendEmail"
+    actions   = ["ses:SendEmail", "ses:SendRawEmail"]
+    resources = ["*"]
   }
 
   statement {
@@ -55,13 +63,13 @@ data "aws_iam_policy_document" "instance" {
 }
 
 resource "aws_iam_role_policy" "instance" {
-  name   = "unicoach-instance"
+  name   = "${local.name_prefix}-instance"
   role   = aws_iam_role.instance.id
   policy = data.aws_iam_policy_document.instance.json
 }
 
 resource "aws_iam_instance_profile" "instance" {
-  name = "unicoach-instance"
+  name = "${local.name_prefix}-instance"
   role = aws_iam_role.instance.name
 }
 

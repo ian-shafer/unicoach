@@ -1,9 +1,12 @@
 package ed.unicoach.rest.auth
 
+import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigFactory
+import com.typesafe.config.ConfigResolveOptions
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class SessionConfigTest {
@@ -58,10 +61,16 @@ class SessionConfigTest {
 
   @Test
   fun `derives cookieDomain from APP_DOMAIN substitution in rest-server conf`() {
+    // cookieDomain and server.port now both pull from required ${VAR} substitutions
+    // (no HOCON default); both must be supplied for the packaged conf to resolve.
     val config =
       ConfigFactory
-        .parseString("APP_DOMAIN = cookie.example.test")
-        .withFallback(ConfigFactory.parseResources("rest-server.conf"))
+        .parseString(
+          """
+          APP_DOMAIN = cookie.example.test
+          SERVER_PORT = 8080
+          """.trimIndent(),
+        ).withFallback(ConfigFactory.parseResources("rest-server.conf"))
         .resolve()
 
     val result = SessionConfig.from(config)
@@ -70,11 +79,18 @@ class SessionConfigTest {
   }
 
   @Test
-  fun `cookieDomain defaults to localhost when APP_DOMAIN is unset`() {
-    val config = ConfigFactory.parseResources("rest-server.conf").resolve()
-
-    val result = SessionConfig.from(config)
-    assertTrue(result.isSuccess)
-    assertEquals("localhost", result.getOrThrow().cookieDomain)
+  fun `cookieDomain is required from APP_DOMAIN with no HOCON default`() {
+    // The literal "localhost" default was removed: cookieDomain = ${APP_DOMAIN} is
+    // a required substitution. Resolving the packaged conf without APP_DOMAIN (and
+    // without system-env fallback) leaves it unresolved and resolution fails.
+    assertFailsWith<ConfigException.UnresolvedSubstitution> {
+      ConfigFactory
+        .parseResources("rest-server.conf")
+        .resolve(
+          ConfigResolveOptions
+            .defaults()
+            .setUseSystemEnvironment(false),
+        )
+    }
   }
 }

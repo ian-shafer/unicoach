@@ -103,6 +103,57 @@ validate_port() {
   [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
 }
 
+# Echoes the dotenv file path for a cloud-env selector (UNICOACH_ENV): `local`
+# maps to .env (the base, no delta), every other value to .env.<env>. Empty arg
+# is a missing-required-arg usage error; a named-but-absent file is fatal. The
+# single owner of the env-file naming rule shared by bin/infra-*/bin/deploy.
+# Depends only on PROJECT_ROOT (set by bin/common) and fatal (this file).
+unicoach_env_file() {
+  local env="$1"
+  if [ -z "$env" ]; then
+    fatal -s "$EXIT_MISSING_REQUIRED_ARG" "environment required (e.g. prod); pass it as the first argument"
+  fi
+
+  local path
+  if [ "$env" = "local" ]; then
+    path="$PROJECT_ROOT/.env"
+  else
+    path="$PROJECT_ROOT/.env.$env"
+  fi
+
+  if [ ! -f "$path" ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "environment file not found for [$env]: [$path]"
+  fi
+
+  echo "$path"
+}
+
+# Fatals naming the first of VAR… that is unset or empty. Used after sourcing a
+# selected .env.<env> to assert the cloud-deploy inputs are all present before
+# any tofu/aws call. Depends only on fatal (this file).
+require_env_vars() {
+  local var
+  for var in "$@"; do
+    if [ -z "${!var:-}" ]; then
+      fatal -s "$EXIT_INVALID_ARG_VALUE" "required environment variable [$var] is unset or empty"
+    fi
+  done
+}
+
+# Fatals unless the effective APP_DOMAIN is a real cloud domain. require_env_vars
+# alone cannot catch a cloud .env.<env> that omits APP_DOMAIN, because the base
+# .env layered underneath always supplies APP_DOMAIN=localhost (the local-only
+# default) — so the var is never empty. Every bin/infra-* run targets a cloud env,
+# where `localhost` is never valid; this asserts the delta overrode it. Takes the
+# env name for the message. Depends only on fatal (this file).
+require_cloud_domain() {
+  local env="$1"
+  if [ -z "${APP_DOMAIN:-}" ] || [ "$APP_DOMAIN" = "localhost" ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" \
+      "cloud environment [$env] has APP_DOMAIN=[${APP_DOMAIN:-<unset>}]; its .env.$env must set APP_DOMAIN to a real domain (not localhost)"
+  fi
+}
+
 transform_duration_to_postgres() {
   local input="$1"
   validate_duration "$input" || return 1
@@ -115,4 +166,34 @@ transform_duration_to_postgres() {
     d) echo "$value days" ;;
     *) return 1 ;;
   esac
+}
+
+# Returns 0 iff $1 is a syntactically valid AWS account id (exactly 12 digits),
+# non-zero otherwise. The single owner of the account-id-format rule, mirroring
+# validate_port. Pure: no network, no AWS call.
+validate_aws_account_id() {
+  local account_id="$1"
+  [[ "$account_id" =~ ^[0-9]{12}$ ]]
+}
+
+# Fail-fast deploy guard: assert the AWS account the active credentials resolve
+# to matches the one this deployment expects, before any tofu/aws action can
+# target it. $1 is the expected 12-digit account id (AWS_ACCOUNT_ID from the
+# deploy env file, .env.prod). Fatals — naming expected vs actual — when the
+# expected id is missing/malformed, when the live identity cannot be resolved, or
+# when the two differ, so a stray ambient AWS profile can never silently deploy
+# to the wrong account. Resolves the live identity via `aws sts
+# get-caller-identity`.
+assert_aws_account() {
+  local expected="$1"
+  if ! validate_aws_account_id "$expected"; then
+    fatal "AWS_ACCOUNT_ID must be the target account's 12-digit id; got [$expected]. Set it in .env.prod."
+  fi
+  local actual
+  if ! actual="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"; then
+    fatal "Could not resolve the active AWS account ('aws sts get-caller-identity' failed). Is an AWS session active?"
+  fi
+  if [ "$actual" != "$expected" ]; then
+    fatal "Wrong AWS account: active credentials target [$actual] but this deploy expects [$expected]. Fix AWS_PROFILE / your credentials before retrying."
+  fi
 }

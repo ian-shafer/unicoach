@@ -4,14 +4,34 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 source "$PROJECT_ROOT/bin/functions"
 
-# Globally ingest any local developer environment overwriting defaults
-ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
-if [ ! -f "$ENV_FILE" ]; then
-  fatal "Environment file not found [$ENV_FILE]."
-fi
+# Layered dotenv: .env is the base (committed dev config); $ENV_FILE, when set to
+# a delta file (.env.test/.env.fuzz/.env.<env>), is sourced AFTER it and carries
+# only the keys whose values differ from .env. Every other key inherits from the
+# base, so shared values (and the now-required ${APP_DOMAIN}/${SERVER_PORT}) live
+# once in .env. A caller that leaves ENV_FILE unset gets just the base.
+BASE_ENV_FILE="$PROJECT_ROOT/.env"
+ENV_FILE="${ENV_FILE:-$BASE_ENV_FILE}"
 
 set -a
-source "$ENV_FILE"
+# .env is the committed dev base. A deploy host has no .env (config is the
+# SSM-rendered ENV_FILE, per the cloud read-channel), so the base is optional
+# when an explicit ENV_FILE override selects a different file; otherwise it is
+# required.
+if [ -f "$BASE_ENV_FILE" ]; then
+  source "$BASE_ENV_FILE"
+elif [ "$ENV_FILE" = "$BASE_ENV_FILE" ]; then
+  set +a
+  fatal "Environment file not found [$BASE_ENV_FILE]."
+fi
+
+# Layer the delta file when ENV_FILE selects one other than the base itself.
+if [ "$ENV_FILE" != "$BASE_ENV_FILE" ]; then
+  if [ ! -f "$ENV_FILE" ]; then
+    set +a
+    fatal "Environment file not found [$ENV_FILE]."
+  fi
+  source "$ENV_FILE"
+fi
 set +a
 
 # POSTGRES_PORT is required (set in ENV_FILE). Under `set -u` an unset value aborts

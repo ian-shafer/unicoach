@@ -3,32 +3,32 @@
 # the instance's public IP does not widen its exposure.
 
 resource "aws_security_group" "alb" {
-  name        = "unicoach-alb"
+  name        = "${local.name_prefix}-alb"
   description = "ALB: public HTTPS/HTTP in, app traffic out to ec2."
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "unicoach-alb"
+    Name = "${local.name_prefix}-alb"
   }
 }
 
 resource "aws_security_group" "ec2" {
-  name        = "unicoach-ec2"
+  name        = "${local.name_prefix}-ec2"
   description = "App instance: 8080 from alb only; all egress (Anthropic, SES, SSM)."
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "unicoach-ec2"
+    Name = "${local.name_prefix}-ec2"
   }
 }
 
 resource "aws_security_group" "rds" {
-  name        = "unicoach-rds"
+  name        = "${local.name_prefix}-rds"
   description = "RDS: 5432 from ec2 only; no egress."
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "unicoach-rds"
+    Name = "${local.name_prefix}-rds"
   }
 }
 

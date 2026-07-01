@@ -9,11 +9,12 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-deploy [options]
+deploy <env> [options]
 
-Builds, bundles, uploads, and triggers an on-instance deploy via SSM Run Command.
-Requires an active AWS session and a completed `bin/infra-apply` (reads the
-artifacts bucket and instance id from OpenTofu outputs).
+Builds, bundles, uploads, and triggers an on-instance deploy via SSM Run Command
+for one environment (<env>, e.g. prod). Requires an active AWS session and a
+completed `bin/infra-apply <env>` (reads the artifacts bucket and instance id
+from that env's OpenTofu outputs).
 
 Options:
   -h: Help
@@ -30,13 +31,38 @@ while getopts ":h" opt; do
 done
 shift $((OPTIND-1))
 
+UNICOACH_ENV="${1:-}"
+if [ -n "$UNICOACH_ENV" ]; then
+  shift
+fi
 if [ "$#" -gt 0 ]; then
-  fatal -s "$EXIT_UNEXPECTED_ARG" "deploy does not accept positional arguments: $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "deploy accepts only an environment argument: $*"
 fi
 
+# Select and validate the environment, then point this run's tofu output reads at
+# its disjoint state (TF_DATA_DIR) and supply the partial backend's state key.
+# `unicoach_env_file` fatals on a missing/absent env before any AWS or build work.
+ENV_FILE="$(unicoach_env_file "$UNICOACH_ENV")"
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+require_env_vars ENVIRONMENT
+
+# Fail-fast: refuse to ship to the wrong AWS account. deploy sources the selected
+# env's delta above; assert the active credentials resolve to the account it
+# declares (its AWS_ACCOUNT_ID) before any tofu output read, build, upload, or SSM
+# call, so a stray ambient AWS profile fails loudly instead of shipping a release
+# to the wrong account.
+assert_aws_account "${AWS_ACCOUNT_ID:-}"
+
+export TF_DATA_DIR="$PROJECT_ROOT/infra/.terraform-$UNICOACH_ENV"
+tofu -chdir="$PROJECT_ROOT/infra" init \
+  -backend-config="key=unicoach/$UNICOACH_ENV/terraform.tfstate"
+
 # Region for the S3 upload and SSM call. Override with AWS_REGION (or the standard
-# AWS_DEFAULT_REGION); defaults to the infra region default.
-AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+# AWS_DEFAULT_REGION); the .env.<env> REGION if set, else the infra region default.
+AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-${REGION:-us-east-1}}}"
 
 # ── 1. Build both distributions ───────────────────────────────────────────────
 "$PROJECT_ROOT/bin/build"

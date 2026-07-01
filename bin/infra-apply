@@ -1,15 +1,42 @@
 #!/usr/bin/env bash
-# Thin wrapper over `tofu -chdir=infra apply`. Carries no resource logic — the HCL
-# under infra/ is the sole source of resource definitions. The deploy domain is
-# the single knob in .env.prod (APP_DOMAIN); it is exported here as
-# TF_VAR_app_domain so the HCL never restates it. Extra args pass through.
+# Thin wrapper over `tofu -chdir=infra apply` for one environment. Carries no
+# resource logic — the HCL under infra/ is the sole source of resource
+# definitions. The first positional is the cloud-env selector (UNICOACH_ENV, e.g.
+# `prod`); it selects .env.<env> (the single source of that env's non-secrets),
+# the per-env state dir (TF_DATA_DIR), and the TF_VAR_* inputs the HCL reads.
+# Remaining args pass through to `tofu apply`.
 source "$(dirname "$0")/common"
 
+UNICOACH_ENV="${1:-}"
+shift || true
+
+ENV_FILE="$(unicoach_env_file "$UNICOACH_ENV")"
 set -a
 # shellcheck source=/dev/null
-source "$PROJECT_ROOT/.env.prod"
+source "$ENV_FILE"
 set +a
+
+require_env_vars ENVIRONMENT APP_DOMAIN GOOGLE_CLIENT_IDS
+require_cloud_domain "$UNICOACH_ENV"
+
+# Fail-fast: refuse to run tofu against the wrong AWS account. A stray ambient
+# profile can otherwise silently target the wrong account; assert the active
+# credentials resolve to the account this env declares (the sourced .env.<env>'s
+# AWS_ACCOUNT_ID) first.
+assert_aws_account "${AWS_ACCOUNT_ID:-}"
+
+export TF_VAR_environment="$ENVIRONMENT"
 export TF_VAR_app_domain="$APP_DOMAIN"
 export TF_VAR_google_client_ids="$GOOGLE_CLIENT_IDS"
+[ -n "${HOSTED_ZONE_NAME:-}" ] && export TF_VAR_hosted_zone_name="$HOSTED_ZONE_NAME"
+[ -n "${REGION:-}" ] && export TF_VAR_region="$REGION"
+
+export TF_DATA_DIR="$PROJECT_ROOT/infra/.terraform-$UNICOACH_ENV"
+
+# The S3 backend is partial (infra/backend.tf has no `key`): init supplies the
+# per-env state key, so each env's state is disjoint and prod is never the silent
+# default. TF_DATA_DIR keeps the local working dir per-env too.
+tofu -chdir="$PROJECT_ROOT/infra" init \
+  -backend-config="key=unicoach/$UNICOACH_ENV/terraform.tfstate"
 
 exec tofu -chdir="$PROJECT_ROOT/infra" apply "$@"

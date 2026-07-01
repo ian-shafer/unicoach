@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
-# Thin wrapper over `tofu -chdir=infra init`. Carries no resource logic — the HCL
-# under infra/ is the sole source of resource definitions. Extra args pass through.
+# Thin wrapper over `tofu -chdir=infra init` for one environment. Carries no
+# resource logic — the HCL under infra/ is the sole source of resource
+# definitions. The first positional is the cloud-env selector (UNICOACH_ENV); it
+# selects the per-env state dir (TF_DATA_DIR) and supplies the partial backend's
+# now-required state key (-backend-config), so init targets the selected env's
+# state and prod is never the silent default. Remaining args pass through.
 source "$(dirname "$0")/common"
 
-exec tofu -chdir="$PROJECT_ROOT/infra" init "$@"
+UNICOACH_ENV="${1:-}"
+shift || true
+
+# Validate the env exists (resolves .env.<env>); init itself needs no TF_VAR_*.
+unicoach_env_file "$UNICOACH_ENV" >/dev/null
+
+export TF_DATA_DIR="$PROJECT_ROOT/infra/.terraform-$UNICOACH_ENV"
+
+exec tofu -chdir="$PROJECT_ROOT/infra" init \
+  -backend-config="key=unicoach/$UNICOACH_ENV/terraform.tfstate" "$@"

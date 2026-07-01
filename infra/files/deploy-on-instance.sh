@@ -38,7 +38,8 @@ chown -R unicoach:unicoach "$RELEASE_DIR"
 /opt/unicoach/bin/render-env
 
 # ── 3. Run migrations against RDS (before the symlink swap) ────────────────────
-# bin/common does `set -a; source "$ENV_FILE"`, so the rendered env satisfies it.
+# bin/common layers dotenv: the host has no base .env, so ENV_FILE (the
+# SSM-rendered /etc/unicoach/env) is sourced as the delta and satisfies it.
 # The master-role psql steps require PGPASSWORD (RDS rejects libpq trust auth);
 # an absent PGPASSWORD fails here, before the symlink swap.
 (

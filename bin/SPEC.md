@@ -40,18 +40,23 @@ foreign-listener helper for the scripts harness, see Test Scripts) — are
 `bin/functions` exports the following public API, available in every script that
 sources `bin/common`:
 
-| Function                         | Signature                               | Output / Return | Notes                                                                                                                                                                                    |
-| -------------------------------- | --------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `log-info`                       | `log-info <msg…>`                       | stderr          | No prefix.                                                                                                                                                                               |
-| `log-warning`                    | `log-warning <msg…>`                    | stderr          | Prefixes `[WARNING]`.                                                                                                                                                                    |
-| `log-error`                      | `log-error <msg…>`                      | stderr          | Prefixes `[ERROR]`.                                                                                                                                                                      |
-| `fatal`                          | `fatal [-s <n>] <msg…>`                 | stderr; exits   | Prefixes `[FATAL]`; exits with `<n>` (default `1`). Parses `-s` via `getopts`; an unknown option to `fatal` itself prints `[FATAL]` and exits `1`.                                       |
-| `read-file-or-die`               | `read-file-or-die <file> [<code>]`      | stdout          | Cats file or calls `fatal -s <code>`.                                                                                                                                                    |
-| `parse-duration-to-seconds`      | `parse-duration-to-seconds <dur>`       | stdout          | Converts `30s`/`5m`/`2h`/`1d` → integer seconds; bare integers treated as seconds.                                                                                                       |
-| `validate_duration`              | `validate_duration <dur>`               | exit 0/1        | Accepts only `[0-9]+[smhd]` (unit suffix required).                                                                                                                                      |
-| `validate_port`                  | `validate_port <port>`                  | exit 0/1        | Returns `0` iff `<port>` is an integer in `1..65535`. Single owner of the port-range rule; used by `check-port`, `daemon-up`, `daemon-check`, `daemon-http-check`, and `find-free-port`. |
-| `transform_duration_to_postgres` | `transform_duration_to_postgres <dur>`  | stdout          | Converts `5m` → `"5 minutes"` for SQL `INTERVAL` literals. Calls `validate_duration` internally.                                                                                         |
-| `require_dangerous_confirmation` | `require_dangerous_confirmation <desc>` | exit 0/1        | Interactive prompt; returns `0` on confirmation, `1` on EOF (empty line exits `0` via `exit 0`). Callers bypass this entirely by checking the `-y` flag before invoking.                 |
+| Function                         | Signature                               | Output / Return  | Notes                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------- | --------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `log-info`                       | `log-info <msg…>`                       | stderr           | No prefix.                                                                                                                                                                                                                                                                                                                                                 |
+| `log-warning`                    | `log-warning <msg…>`                    | stderr           | Prefixes `[WARNING]`.                                                                                                                                                                                                                                                                                                                                      |
+| `log-error`                      | `log-error <msg…>`                      | stderr           | Prefixes `[ERROR]`.                                                                                                                                                                                                                                                                                                                                        |
+| `fatal`                          | `fatal [-s <n>] <msg…>`                 | stderr; exits    | Prefixes `[FATAL]`; exits with `<n>` (default `1`). Parses `-s` via `getopts`; an unknown option to `fatal` itself prints `[FATAL]` and exits `1`.                                                                                                                                                                                                         |
+| `read-file-or-die`               | `read-file-or-die <file> [<code>]`      | stdout           | Cats file or calls `fatal -s <code>`.                                                                                                                                                                                                                                                                                                                      |
+| `parse-duration-to-seconds`      | `parse-duration-to-seconds <dur>`       | stdout           | Converts `30s`/`5m`/`2h`/`1d` → integer seconds; bare integers treated as seconds.                                                                                                                                                                                                                                                                         |
+| `validate_duration`              | `validate_duration <dur>`               | exit 0/1         | Accepts only `[0-9]+[smhd]` (unit suffix required).                                                                                                                                                                                                                                                                                                        |
+| `validate_port`                  | `validate_port <port>`                  | exit 0/1         | Returns `0` iff `<port>` is an integer in `1..65535`. Single owner of the port-range rule; used by `check-port`, `daemon-up`, `daemon-check`, `daemon-http-check`, and `find-free-port`.                                                                                                                                                                   |
+| `transform_duration_to_postgres` | `transform_duration_to_postgres <dur>`  | stdout           | Converts `5m` → `"5 minutes"` for SQL `INTERVAL` literals. Calls `validate_duration` internally.                                                                                                                                                                                                                                                           |
+| `require_dangerous_confirmation` | `require_dangerous_confirmation <desc>` | exit 0/1         | Interactive prompt; returns `0` on confirmation, `1` on EOF (empty line exits `0` via `exit 0`). Callers bypass this entirely by checking the `-y` flag before invoking.                                                                                                                                                                                   |
+| `unicoach_env_file`              | `unicoach_env_file <env>`               | stdout; exits    | Echoes the dotenv path for a cloud-env selector: `local` → `.env`; anything else → `.env.<env>`. Empty arg fatals with `EXIT_MISSING_REQUIRED_ARG`; named-but-absent file fatals with `EXIT_INVALID_ARG_VALUE`. Single owner of the env-file naming rule shared by `bin/infra-*` and `bin/deploy`.                                                         |
+| `require_env_vars`               | `require_env_vars <VAR…>`               | exits on failure | Fatals with `EXIT_INVALID_ARG_VALUE` naming the first of the listed variables that is unset or empty. Used after sourcing an env delta file to assert cloud-deploy inputs are present before any tofu/aws call.                                                                                                                                            |
+| `require_cloud_domain`           | `require_cloud_domain <env>`            | exits on failure | Fatals unless `APP_DOMAIN` is set and non-`localhost`. Needed because the base `.env` always supplies `APP_DOMAIN=localhost`; `require_env_vars` alone cannot catch a cloud env that omits the override. `bin/infra-plan` and `bin/infra-apply` call this after sourcing the env delta.                                                                    |
+| `validate_aws_account_id`        | `validate_aws_account_id <id>`          | exit 0/1         | Returns `0` iff `<id>` is exactly 12 digits. Single owner of the AWS-account-id-format rule (mirrors `validate_port`); pure, no AWS call. Used by `assert_aws_account`.                                                                                                                                                                                    |
+| `assert_aws_account`             | `assert_aws_account <expected-id>`      | stderr; exits    | Fail-fast deploy guard: `fatal`s unless `aws sts get-caller-identity` resolves to `<expected-id>` — also on a missing/malformed id or an unresolvable identity. Names expected-vs-actual. Used by `infra-plan`, `infra-apply`, `deploy` to refuse a wrong ambient AWS profile before any `tofu`/`aws` action, reading the selected env's `AWS_ACCOUNT_ID`. |
 
 `bin/functions` also defines the **usage-error exit-code band** (10–29) as
 assign-if-unset constants, available to every script that sources `bin/common`
@@ -495,22 +500,44 @@ resource logic. All source `bin/common`, so a valid `$ENV_FILE` with
 `POSTGRES_PORT` set is required even to run a pure-`tofu` action.
 
 - **`infra-init`**, **`infra-plan`**, **`infra-apply`**, **`infra-output`**:
-  thin `exec tofu -chdir="$PROJECT_ROOT/infra" <verb> "$@"` wrappers. They parse
-  no options of their own; all args (including any help flag `tofu` understands)
-  pass straight through to `tofu`.
+  each takes a required `<env>` first positional (e.g. `prod`) that selects the
+  target environment. They resolve the env-file path via `unicoach_env_file`,
+  set `TF_DATA_DIR=infra/.terraform-<env>` (keeping each env's local working dir
+  disjoint), and pass the partial-backend state key
+  (`key=unicoach/<env>/terraform.tfstate`) to `tofu init` so each env's remote
+  state is isolated and `prod` is never the silent default. `infra-plan` and
+  `infra-apply` additionally source the env's delta file, call
+  `require_env_vars` (asserting `ENVIRONMENT`, `APP_DOMAIN`, `GOOGLE_CLIENT_IDS`
+  are present), call `require_cloud_domain` (rejecting a `localhost`
+  `APP_DOMAIN` before any tofu work), assert the target AWS account via
+  `assert_aws_account "$AWS_ACCOUNT_ID"` (the selected env's `AWS_ACCOUNT_ID`,
+  so a stray ambient AWS profile can never silently plan/apply against the wrong
+  account), and export `TF_VAR_*` inputs; `infra-init` and `infra-output`
+  validate the env exists but source no delta file (they need no `TF_VAR_*`).
+  Remaining args pass through to the underlying `tofu` verb. `infra-plan` and
+  `infra-apply` run `tofu init` (with the per-env backend key) before the main
+  verb, so a fresh workspace does not need a separate init call.
 - **`infra-bootstrap`**: `exec tofu -chdir="$PROJECT_ROOT/infra/bootstrap" "$@"`
   — fronts the one-time state-backend setup. Run once as `infra-bootstrap init`
   then `infra-bootstrap apply`. The subcommand and extra args pass through.
-- **`deploy`**: single operator entry point for shipping a release. Sequence:
-  `bin/build` both `installDist` distributions → assemble a repo-relative
-  tarball (`rest-server`/`queue-worker` dists, `db/schema`, and every `bin/`
-  script the on-instance migration path transitively needs — the `db-*` family
-  plus `postgres-check`, which gates every `db-run`; `postgres-up` and
-  `postgres-wait-for-health` are deliberately excluded) → `aws s3 cp` to the
+- **`deploy`**: single operator entry point for shipping a release. Takes a
+  required `<env>` first positional (e.g. `prod`). Resolves the env-file via
+  `unicoach_env_file`, layers the env delta, asserts `ENVIRONMENT` is set, and
+  asserts the target AWS account via `assert_aws_account "$AWS_ACCOUNT_ID"` (the
+  selected env's `AWS_ACCOUNT_ID`) before any tofu output read, build, upload,
+  or SSM call — so a stray ambient AWS profile fails fast instead of shipping a
+  release to the wrong account. It then sets
+  `TF_DATA_DIR=infra/.terraform-<env>`, and runs `tofu init` with the per-env
+  backend key so subsequent `tofu output` reads the selected env's state.
+  Sequence thereafter: `bin/build` both `installDist` distributions → assemble a
+  repo-relative tarball (`rest-server`/`queue-worker` dists, `db/schema`, and
+  every `bin/` script the on-instance migration path transitively needs — the
+  `db-*` family plus `postgres-check`, which gates every `db-run`; `postgres-up`
+  and `postgres-wait-for-health` are deliberately excluded) → `aws s3 cp` to the
   `artifacts_bucket` → `aws ssm send-command` running `deploy-on-instance` on
-  `instance_id`. Bucket and instance id are read from `tofu output -raw`, so a
-  completed `infra-apply` and an active AWS session are prerequisites. Region
-  resolves from `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`. Rejects
+  `instance_id`. Bucket and instance id are read from `tofu output -raw`
+  (against the selected env's state). Region resolves from `AWS_REGION` →
+  `AWS_DEFAULT_REGION` → env-file `REGION` → `us-east-1`. Rejects extra
   positional args and unknown options. Side-effecting and not idempotent — each
   run ships a new, timestamp-keyed bundle.
 
@@ -760,11 +787,23 @@ place.
   `<service>.daemon.lock`) and `var/log/` (service logs) are created on demand
   by `daemon-up` and `postgres-up`. `bin/test-fuzz` creates `var/fuzz/` on
   demand (gitignored Schemathesis venv, JUnit report, cookie jar).
-- **Environment files**: `.env` (dev), `.env.test` (test), `.env.fuzz` (fuzz;
-  `PORT=8082`, `POSTGRES_DB=unicoach-fuzz-<worktree>`). Test scripts set
-  `export ENV_FILE=".../.env.test"` before sourcing `common`; `db-tests`
-  defaults to `.env.test` but honors a caller-supplied `ENV_FILE`; `test-fuzz`
-  sets `export ENV_FILE=".../.env.fuzz"`.
+- **Environment files**: `.env` (the base dev config, always sourced first by
+  `bin/common`), `.env.test` (test delta), `.env.fuzz` (fuzz delta; `PORT=8082`,
+  `POSTGRES_DB=unicoach-fuzz-<worktree>`), and `.env.<env>` (cloud-env deltas,
+  e.g. `.env.prod`). `bin/common` uses a layered strategy: it sources `.env` as
+  the base when present, then — when `ENV_FILE` points to a different file —
+  sources that file on top as a delta carrying only the keys that differ. The
+  base `.env` is optional: a deploy host has no committed `.env` (its config is
+  the SSM-rendered `ENV_FILE`), so a missing `.env` is fatal only when no
+  `ENV_FILE` override selects a different file. Shared values (including the
+  `APP_DOMAIN`/`SERVER_PORT` the infra scripts need) live once in `.env`. Test
+  scripts set `export ENV_FILE=".../.env.test"` before sourcing `common`;
+  `db-tests` defaults to `.env.test` but honors a caller-supplied `ENV_FILE`;
+  `test-fuzz` sets `export ENV_FILE=".../.env.fuzz"`. The infra scripts
+  (`infra-plan`, `infra-apply`, `deploy`) select their env delta via
+  `unicoach_env_file` and re-source it directly (they need the cloud-specific
+  overrides available as `TF_VAR_*` exports, which `bin/common`'s `set -a` has
+  already closed).
 - **Required env**: `POSTGRES_PORT` is required (no in-code default);
   `bin/common` exports it as `PGPORT` for all libpq clients. `DB_SCHEMA_DIR` is
   optional; `bin/common` exports it, defaulting to `$PROJECT_ROOT/db/schema`.
@@ -788,7 +827,11 @@ place.
   `db-bootstrap` via it) additionally require `DATABASE_USER`,
   `DATABASE_PASSWORD`, and `POSTGRES_USER`, and honor `POSTGRES_ADMIN_DB`
   (default `postgres`). `deploy` additionally honors
-  `AWS_REGION`/`AWS_DEFAULT_REGION` (default `us-east-1`).
+  `AWS_REGION`/`AWS_DEFAULT_REGION` (default `us-east-1`). The deploy paths
+  (`infra-plan`, `infra-apply`, `deploy`) read `AWS_ACCOUNT_ID` from the
+  selected env's delta (`.env.<env>`) — the 12-digit target account they assert
+  the active AWS credentials resolve to (via `assert_aws_account`) before any
+  `tofu`/`aws` action.
 - **Shared cluster, per-database isolation**: every git worktree shares one
   PostgreSQL cluster at the checkout-independent absolute path
   `$HOME/var/unicoach/postgres` (`POSTGRES_DATA_DIR`). Isolation is at the
@@ -897,3 +940,18 @@ place.
       reject unexpected arguments (exit `EXIT_UNEXPECTED_ARG=20`); recoded
       `file-lock`'s matching-op fast-fail from `10` to `3`; added
       `assert_exit_code` to `bin/tests-common`.
+- [x] [RFC-87: Multi-Environment Config and Deploy](../rfc/87-multi-environment-config-and-deploy.md)
+      — `bin/common` now uses a layered dotenv strategy: `.env` is sourced as
+      the base when present (optional on a deploy host, whose config is the
+      SSM-rendered `ENV_FILE`), then `ENV_FILE` (when it points elsewhere) is
+      sourced on top as a delta; added `unicoach_env_file`, `require_env_vars`,
+      and `require_cloud_domain` to `bin/functions`; `infra-init`, `infra-plan`,
+      `infra-apply`, `infra-output`, and `deploy` now take a required `<env>`
+      first positional, set `TF_DATA_DIR=infra/.terraform-<env>` for disjoint
+      local working dirs, and inject `key=unicoach/<env>/terraform.tfstate` as
+      the partial-backend state key so each env's remote state is isolated;
+      `infra-plan` and `infra-apply` additionally validate `require_env_vars`
+      and `require_cloud_domain` (rejecting `APP_DOMAIN=localhost` before any
+      tofu work) and run `tofu init` with the per-env key before the main verb;
+      `deploy` layers the same env-file and init logic before building and
+      uploading.

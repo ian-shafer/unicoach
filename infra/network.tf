@@ -17,7 +17,7 @@ resource "aws_vpc" "main" {
   enable_dns_hostnames = true
 
   tags = {
-    Name = "unicoach"
+    Name = local.name_prefix
   }
 }
 
@@ -25,7 +25,7 @@ resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name = "unicoach"
+    Name = local.name_prefix
   }
 }
 
@@ -38,7 +38,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "unicoach-public-${count.index}"
+    Name = "${local.name_prefix}-public-${count.index}"
   }
 }
 
@@ -50,7 +50,7 @@ resource "aws_subnet" "private" {
   availability_zone = local.azs[count.index]
 
   tags = {
-    Name = "unicoach-private-${count.index}"
+    Name = "${local.name_prefix}-private-${count.index}"
   }
 }
 
@@ -63,7 +63,7 @@ resource "aws_route_table" "public" {
   }
 
   tags = {
-    Name = "unicoach-public"
+    Name = "${local.name_prefix}-public"
   }
 }
 
@@ -80,7 +80,7 @@ resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name = "unicoach-private"
+    Name = "${local.name_prefix}-private"
   }
 }
 

@@ -1,5 +1,5 @@
 resource "aws_lb" "main" {
-  name               = "unicoach"
+  name               = local.name_prefix
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
@@ -10,12 +10,12 @@ resource "aws_lb" "main" {
   idle_timeout = 300
 
   tags = {
-    Name = "unicoach"
+    Name = local.name_prefix
   }
 }
 
 resource "aws_lb_target_group" "app" {
-  name     = "unicoach"
+  name     = local.name_prefix
   port     = 8080
   protocol = "HTTP"
   vpc_id   = aws_vpc.main.id
@@ -31,7 +31,7 @@ resource "aws_lb_target_group" "app" {
   }
 
   tags = {
-    Name = "unicoach"
+    Name = local.name_prefix
   }
 }
 

@@ -22,8 +22,11 @@ JVM serialization.
 - **INV-4**: The merged config MUST be passed through `ConfigFactory.load()` so
   that environment-variable substitutions defined in `.conf` files are resolved
   via OS environment variables automatically. `System.getenv()` MUST NOT be used
-  to resolve config _values_; it is permitted SOLELY to bootstrap the overlay
-  path (reading `XDG_CONFIG_HOME` in `overlayFile()`).
+  anywhere in config loading — neither for config values nor for bootstrapping
+  the overlay path. The overlay base is resolved exclusively from the
+  `unicoach.config.dir` system property or `${user.home}/.config`; a developer
+  who wishes to honour `XDG_CONFIG_HOME` passes it as a JVM system property
+  (e.g. `-Dunicoach.config.dir="$XDG_CONFIG_HOME"`).
 - **INV-5**: `SecretString` MUST be a plain `class`, NEVER a `data class`.
   Kotlin's generated `copy()`, `componentN()`, and default `toString()` MUST NOT
   exist on this type.
@@ -66,11 +69,12 @@ See [`AppConfig.kt`](./AppConfig.kt).
   system properties → overlay → `resources[last]` → … → `resources[0]`.
 - **Overlay Resolution**: The overlay lives at `<base>/unicoach/local.conf`,
   where `<base>` is the first non-blank of: the `unicoach.config.dir` system
-  property, the `XDG_CONFIG_HOME` environment variable, or
-  `${user.home}/.config`. An absent overlay file is a non-fatal no-op. A
-  present-but-malformed overlay surfaces as `Result.failure` carrying the
-  underlying typesafe `ConfigException` unmapped (consistent with INV-3
-  fail-fast).
+  property, or `${user.home}/.config`. No environment variable is read directly;
+  a developer who relocates their config dir (e.g. to `$XDG_CONFIG_HOME`) passes
+  the resolved path as `-Dunicoach.config.dir=…` at JVM startup. An absent
+  overlay file is a non-fatal no-op. A present-but-malformed overlay surfaces as
+  `Result.failure` carrying the underlying typesafe `ConfigException` unmapped
+  (consistent with INV-3 fail-fast).
 - **Error Handling**: Returns `Result.failure(e)` for any exception thrown
   during parsing (e.g., `ConfigException`, `IOException` for a missing
   resource). Callers MUST unwrap with `.getOrThrow()` or explicit error handling
@@ -117,12 +121,13 @@ See [`SecretString.kt`](./SecretString.kt).
   `ConfigFactory.parseResourcesAnySyntax`, which searches the JVM classpath.
   Each module MUST bundle its own `.conf` file in `src/main/resources/` for it
   to be available at runtime.
-- **Environment Variable Resolution**: `.conf` files MUST use HOCON substitution
+- **Environment Variable Resolution**: `.conf` files use HOCON substitution
   syntax (`${ENV_VAR}`) to bind deployment-specific values. The `.env.*` files
   (e.g., `.env.test`) act as the sole source of mutable deployment bounds,
   loaded into the process environment before JVM startup. `System.getenv()` is
-  used only to bootstrap the overlay path (`XDG_CONFIG_HOME`), never to resolve
-  config values.
+  not called anywhere in the config package; all environment-sourced values
+  enter exclusively through HOCON `${?VAR}` substitution after
+  `ConfigFactory.load()` resolves substitutions.
 - **Local Overlay**: An optional out-of-tree HOCON file at
   `<base>/unicoach/local.conf` supplies on-host secrets and key overrides at
   higher precedence than classpath resources (see the `AppConfig.load` contract
@@ -142,3 +147,4 @@ See [`SecretString.kt`](./SecretString.kt).
 
 - [x] [RFC-09: Global Config](../../../../../../../../rfc/09-global-config.md)
 - [x] [RFC-46: Local Config Overlay](../../../../../../../../rfc/46-local-config-overlay.md)
+- [x] [RFC-87: Multi-environment Config and Deploy](../../../../../../../../rfc/87-multi-environment-config-and-deploy.md)

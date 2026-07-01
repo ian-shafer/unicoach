@@ -1,3 +1,8 @@
+output "environment" {
+  description = "The deployment environment id this state was applied for (var.environment)."
+  value       = var.environment
+}
+
 output "alb_dns_name" {
   description = "Public DNS name of the ALB (target of the api ALIAS record)."
   value       = aws_lb.main.dns_name

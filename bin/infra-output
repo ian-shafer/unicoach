@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
-# Thin wrapper over `tofu -chdir=infra output`. Carries no resource logic — the
-# HCL under infra/ is the sole source of resource definitions. Extra args (e.g. an
-# output name, or -raw) pass through.
+# Thin wrapper over `tofu -chdir=infra output` for one environment. Carries no
+# resource logic — the HCL under infra/ is the sole source of resource
+# definitions. The first positional is the cloud-env selector (UNICOACH_ENV); it
+# selects the per-env state dir (TF_DATA_DIR) so direct operator use reads the
+# selected env's state, not the default .terraform working dir. Remaining args
+# (an output name, or -raw) pass through. bin/deploy does NOT call this — it reads
+# outputs via its own `tofu output` under its own per-env handling.
 source "$(dirname "$0")/common"
+
+UNICOACH_ENV="${1:-}"
+shift || true
+
+# Validate the env exists (resolves .env.<env>); output reads only state.
+unicoach_env_file "$UNICOACH_ENV" >/dev/null
+
+export TF_DATA_DIR="$PROJECT_ROOT/infra/.terraform-$UNICOACH_ENV"
 
 exec tofu -chdir="$PROJECT_ROOT/infra" output "$@"

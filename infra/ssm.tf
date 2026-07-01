@@ -1,4 +1,5 @@
-# Runtime configuration and secrets under /unicoach/prod/. render-env.sh on the
+# Runtime configuration and secrets under the env's SSM prefix
+# (/unicoach/${var.environment}, owned by locals.tf). render-env.sh on the
 # instance fetches the whole prefix (decrypted) and writes /etc/unicoach/env.
 #
 # Two SecureString sources:
@@ -9,7 +10,8 @@
 #     secret with the AWS CLI and OpenTofu never reverts it.
 
 locals {
-  ssm_prefix = "/unicoach/prod"
+  # ssm_prefix is owned by locals.tf (= /unicoach/${var.environment}); referenced
+  # here as local.ssm_prefix. Defining it twice would fail `tofu validate`.
 
   # Non-secret String parameters fully owned by OpenTofu.
   ssm_string_params = {
@@ -28,8 +30,13 @@ locals {
     APP_DOMAIN                         = var.app_domain
     EMAIL_DEFAULT_FROM                 = "noreply@${var.app_domain}"
     EMAIL_VERIFICATION_VERIFY_URL_BASE = "https://${var.app_domain}/verify-email"
+    EMAIL_PROVIDER                     = "ses"
     CHAT_PROVIDER                      = "anthropic"
-    GOOGLE_CLIENT_IDS                  = var.google_client_ids
+    # The committed .conf default is the offline `stub` verifier (dev-only); prod
+    # overrides it to live Google here. Paired with the .conf default flip so a
+    # missing override can never silently drop prod to a stub-auth bypass.
+    GOOGLE_AUTH_PROVIDER = "google"
+    GOOGLE_CLIENT_IDS    = var.google_client_ids
   }
 
   # SecureString secrets the operator seeds out-of-band.

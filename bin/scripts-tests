@@ -348,6 +348,51 @@ test_require_dangerous_confirmation_flag() {
 assert_success "require_dangerous_confirmation flag bypass" test_require_dangerous_confirmation_flag
 
 echo ""
+echo "==== Testing AWS account guard ===="
+# validate_aws_account_id: pure 12-digit format check (single owner of the rule).
+test_validate_aws_account_id_valid() {
+  validate_aws_account_id 464190673722
+}
+assert_success "validate_aws_account_id accepts a 12-digit id" test_validate_aws_account_id_valid
+
+test_validate_aws_account_id_invalid() {
+  if validate_aws_account_id ""; then return 1; fi
+  if validate_aws_account_id 12345; then return 1; fi         # too short
+  if validate_aws_account_id 4641906737220; then return 1; fi # 13 digits
+  if validate_aws_account_id 46419067372a; then return 1; fi  # non-digit
+  return 0
+}
+assert_success "validate_aws_account_id rejects malformed ids" test_validate_aws_account_id_invalid
+
+# assert_aws_account: fatals on a missing/malformed expected id before any AWS
+# call, and — with a shimmed `aws` reporting a known account — passes on a match
+# and fatals on a mismatch. The shim keeps the test hermetic: no real STS call,
+# no credentials, so it runs identically anywhere.
+test_assert_aws_account_guard() {
+  # Missing / malformed expected id ⇒ fatal, before aws is ever consulted.
+  if ( assert_aws_account "" ) >/dev/null 2>&1; then return 1; fi
+  if ( assert_aws_account 12345 ) >/dev/null 2>&1; then return 1; fi
+
+  local shim_dir
+  shim_dir="$(mktemp -d)"
+  cat > "$shim_dir/aws" <<'SHIM'
+#!/usr/bin/env bash
+echo 111122223333
+SHIM
+  chmod +x "$shim_dir/aws"
+
+  local rc=0
+  # Active account matches the expected id ⇒ success.
+  ( PATH="$shim_dir:$PATH"; hash -r; assert_aws_account 111122223333 ) >/dev/null 2>&1 || rc=1
+  # Active account differs from the expected id ⇒ fatal.
+  if ( PATH="$shim_dir:$PATH"; hash -r; assert_aws_account 444455556666 ) >/dev/null 2>&1; then rc=1; fi
+
+  rm -rf "$shim_dir"
+  return "$rc"
+}
+assert_success "assert_aws_account passes on a match and fatals on a mismatch" test_assert_aws_account_guard
+
+echo ""
 echo "==== Testing deploy bundle completeness ===="
 # The on-instance migration path (db-create-role -> db-create -> db-migrate)
 # transitively sources/execs exactly this script set; every entry must ship in

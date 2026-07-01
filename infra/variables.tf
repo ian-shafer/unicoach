@@ -4,13 +4,24 @@ variable "region" {
   default     = "us-east-1"
 }
 
+variable "environment" {
+  description = "Deployment environment id (e.g. prod); drives name_prefix, the SSM prefix, the state key, and the IAM scope. No default: fail fast if bin/infra-* did not supply it as TF_VAR_environment from .env.<env>'s ENVIRONMENT."
+  type        = string
+}
+
+variable "hosted_zone_name" {
+  description = "Route53 zone containing app_domain. Defaults to app_domain (apex env, e.g. prod's uni.coach); set to the parent zone for a subdomain-per-env (e.g. uni.coach when app_domain = staging.uni.coach)."
+  type        = string
+  default     = null
+}
+
 variable "app_domain" {
-  description = "The deploy apex/zone (e.g. uni.coach); the single domain knob. The Route53 hosted zone is this name and the API is served at api.<app_domain> (see locals.tf). Has no default: bin/infra-plan / bin/infra-apply supply it as TF_VAR_app_domain from .env.prod, keeping the domain set in exactly one place."
+  description = "The env's web host (e.g. uni.coach for prod, staging.uni.coach for staging); the single domain knob. The API is served at api.<app_domain>; the Route53 zone it lives in is hosted_zone_name (defaults to app_domain for apex envs). Has no default: bin/infra-plan / bin/infra-apply supply it as TF_VAR_app_domain from .env.<env>, keeping the domain set in exactly one place."
   type        = string
 }
 
 variable "google_client_ids" {
-  description = "Accepted Google OAuth client IDs (comma-separated token audiences) the backend verifies ID tokens against (auth.google.clientIds). No default: bin/infra-plan / bin/infra-apply supply it as TF_VAR_google_client_ids from .env.prod."
+  description = "Accepted Google OAuth client IDs (comma-separated token audiences) the backend verifies ID tokens against (auth.google.clientIds). No default: bin/infra-plan / bin/infra-apply supply it as TF_VAR_google_client_ids from .env.<env>."
   type        = string
 }
 
