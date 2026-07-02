@@ -77,6 +77,11 @@ struct LoginView: View {
                     GoogleSignInButton {
                         Task { await viewModel.signInWithGoogle() }
                     }
+                    // Stretch to the form width, matching the Log In button above.
+                    // GoogleSignInButton reports its own height (see its
+                    // sizeThatFits), so the ZStack reserves real vertical space and
+                    // the Register button below no longer overlaps it.
+                    .frame(maxWidth: .infinity)
                     .disabled(viewModel.phase != .idle)
 
                     if viewModel.phase == .googleLoading {

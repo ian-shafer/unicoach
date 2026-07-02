@@ -23,6 +23,18 @@ struct GoogleSignInButton: UIViewRepresentable {
         context.coordinator.action = action
     }
 
+    // `GIDSignInButton` sizes itself through Auto Layout constraints rather than
+    // an intrinsic content size, so SwiftUI's default representable sizing
+    // reserves ~zero height and any layout below it (e.g. the Register button on
+    // the login screen) overlaps it. Report the button's own fitted size instead:
+    // it fixes the height (48pt) and takes the proposed width so the button still
+    // stretches full-width when its container proposes one.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: GIDSignInButton, context: Context) -> CGSize? {
+        let fitted = uiView.sizeThatFits(UIView.layoutFittingExpandedSize)
+        let proposedWidth = proposal.width.flatMap { $0.isFinite ? $0 : nil }
+        return CGSize(width: proposedWidth ?? fitted.width, height: fitted.height)
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(action: action)
     }
