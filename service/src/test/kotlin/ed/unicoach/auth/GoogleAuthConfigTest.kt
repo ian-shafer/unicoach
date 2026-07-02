@@ -41,13 +41,17 @@ class GoogleAuthConfigTest {
     // Parse the packaged resource with env-var substitutions stripped so the test
     // observes the file's own defaults, not the harness environment (which sets
     // GOOGLE_AUTH_PROVIDER=stub). The `${?...}` overrides resolve to nothing here.
+    // allowUnresolved tolerates keys with no file-own default at all (e.g. the
+    // env-derived emailVerification.verifyUrlBase); the auth.google block under
+    // test stays fully resolved.
     val config =
       ConfigFactory
         .parseResources("service.conf")
         .resolve(
           com.typesafe.config.ConfigResolveOptions
             .defaults()
-            .setUseSystemEnvironment(false),
+            .setUseSystemEnvironment(false)
+            .setAllowUnresolved(true),
         )
     val parsed = GoogleAuthConfig.from(config).getOrThrow()
 

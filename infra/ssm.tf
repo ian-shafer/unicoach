@@ -15,14 +15,22 @@ locals {
 
   # Non-secret String parameters fully owned by OpenTofu.
   ssm_string_params = {
-    PGHOST                = aws_db_instance.main.address
-    DATABASE_HOST         = aws_db_instance.main.address
-    POSTGRES_PORT         = "5432"
-    POSTGRES_DB           = "unicoach"
-    POSTGRES_USER         = aws_db_instance.main.username
-    DATABASE_USER         = var.app_db_user
-    SERVER_HOST           = "0.0.0.0"
-    SERVER_PORT           = "8080"
+    PGHOST        = aws_db_instance.main.address
+    DATABASE_HOST = aws_db_instance.main.address
+    POSTGRES_PORT = "5432"
+    POSTGRES_DB   = "unicoach"
+    POSTGRES_USER = aws_db_instance.main.username
+    DATABASE_USER = var.app_db_user
+    SERVER_HOST   = "0.0.0.0"
+    SERVER_PORT   = "8080"
+    # public-web's bind port, and a required substitution in service.conf's
+    # emailVerification.verifyUrlBase default — HOCON resolves that default
+    # even though EMAIL_VERIFICATION_VERIFY_URL_BASE overrides it, so the
+    # variable must exist or the JVM services fail at boot. It satisfies
+    # resolution only: the http://<domain>:<port> default it feeds is never
+    # correct in prod, so the EMAIL_VERIFICATION_VERIFY_URL_BASE override
+    # below stays load-bearing.
+    PUBLIC_WEB_PORT       = "8082"
     SESSION_COOKIE_SECURE = "true"
     # The session cookie spans the whole zone (apex + api subdomain), so it is
     # the apex app_domain, not the api host. Email links derive from the same
