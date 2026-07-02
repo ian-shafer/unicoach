@@ -66,16 +66,25 @@ suspend fun ApplicationCall.respondVerifyEmailResult(
 ) {
   val (heading, detail) =
     when (outcome) {
-      VerifyEmailOutcome.Verified ->
+      VerifyEmailOutcome.Verified -> {
         VERIFIED_HEADING to "Your email address has been verified. You're all set."
-      VerifyEmailOutcome.InvalidToken ->
+      }
+
+      VerifyEmailOutcome.InvalidToken -> {
         INVALID_TOKEN_HEADING to "This verification link is not valid. Please request a new one."
-      VerifyEmailOutcome.Expired ->
+      }
+
+      VerifyEmailOutcome.Expired -> {
         EXPIRED_HEADING to "This verification link has expired. Please request a new one."
-      VerifyEmailOutcome.AlreadyUsed ->
+      }
+
+      VerifyEmailOutcome.AlreadyUsed -> {
         ALREADY_USED_HEADING to "Your email address is already verified."
-      VerifyEmailOutcome.Unavailable ->
+      }
+
+      VerifyEmailOutcome.Unavailable -> {
         UNAVAILABLE_HEADING to "We couldn't complete verification right now. Please try again shortly."
+      }
     }
 
   val showOpenInApp =

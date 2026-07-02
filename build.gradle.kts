@@ -1,11 +1,13 @@
 plugins {
   alias(libs.plugins.kotlin.jvm) apply false
-  alias(libs.plugins.ktlint)
 }
 
+// Kotlin lint/format lives entirely in `bin/format` (the nix dev-shell `ktlint`),
+// not in Gradle — one formatting avenue for the repo. `bin/format` rewrites,
+// `bin/format -c` checks; the pre-commit hook runs the check. Deliberately no
+// ktlint-gradle plugin here, so there is only ever one ktlint and nothing to keep
+// in version-sync.
 allprojects {
-  apply(plugin = "org.jlleitschuh.gradle.ktlint")
-
   repositories {
     mavenCentral()
   }

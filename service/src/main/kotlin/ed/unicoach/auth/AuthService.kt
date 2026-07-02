@@ -417,7 +417,10 @@ class AuthService(
   ): Result<GoogleLoginResult> =
     database.withConnection { session ->
       when (val resolution = resolveOrProvisionUser(session, subject, email, nameClaim)) {
-        is UserResolution.Disabled -> Result.success(GoogleLoginResult.AccountDisabled)
+        is UserResolution.Disabled -> {
+          Result.success(GoogleLoginResult.AccountDisabled)
+        }
+
         is UserResolution.Resolved -> {
           val token =
             mintSession(
@@ -557,11 +560,15 @@ class AuthService(
   ): PersonName {
     val candidate = nameClaim?.trim()?.takeIf { it.isNotEmpty() } ?: email.value.substringBefore('@')
     return when (val result = PersonName.create(candidate)) {
-      is ValidationResult.Valid -> result.value
-      is ValidationResult.Invalid ->
+      is ValidationResult.Valid -> {
+        result.value
+      }
+
+      is ValidationResult.Invalid -> {
         throw IllegalStateException(
           "Could not derive a valid PersonName from Google sign-in [candidate=$candidate, error=${result.error}]",
         )
+      }
     }
   }
 }

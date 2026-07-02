@@ -147,6 +147,8 @@ object ClaimSupportDao : Creatable<NewClaimSupport, ClaimSupport> {
         }
       }
 
-      else -> mapDatabaseError(e)
+      else -> {
+        mapDatabaseError(e)
+      }
     }
 }

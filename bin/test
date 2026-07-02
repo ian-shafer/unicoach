@@ -15,8 +15,9 @@ database first (postgres-up -> db-reset -> db-tests), then runs the selected
 modules' test tasks. With no modules, runs every module.
 
 The optional leading `check` keyword runs each selected module's Gradle `check`
-task (ktlint + tests) instead of bare `test`, for a full Kotlin verification.
-The pre-commit Kotlin gate invokes this form.
+task instead of bare `test`. The pre-commit hook invokes this form for the test
+gate. (Kotlin lint/format is not here — it lives in bin/format, the repo's single
+ktlint avenue; the hook runs `bin/format -c` alongside this.)
 
 Modules:
   common db net auth queue queue-worker rest-server service email chat admin-web public-web college

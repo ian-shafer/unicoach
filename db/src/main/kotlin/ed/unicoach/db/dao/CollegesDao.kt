@@ -462,11 +462,17 @@ object CollegesDao :
    */
   private fun mapCollegeError(e: SQLException): Exception =
     when (e.sqlState) {
-      "23503" -> NotFoundException("Referenced college not found")
+      "23503" -> {
+        NotFoundException("Referenced college not found")
+      }
+
       "23505", "23514" -> {
         val serverError = (e as? PSQLException)?.serverErrorMessage
         ConstraintViolationException(e, serverError?.constraint, serverError?.detail)
       }
-      else -> mapDatabaseError(e)
+
+      else -> {
+        mapDatabaseError(e)
+      }
     }
 }

@@ -29,8 +29,9 @@ the dev shell was not active, not that the tool is missing. Re-run via
 `nix develop -c`.
 
 **Committing also runs the toolchain.** `git commit` fires the `bin/pre-commit`
-hook, which runs `deno fmt --check` (Markdown) and `bin/test check` (Kotlin +
-Postgres) — all dev-shell tools. Commit from inside the shell, or wrap it:
+hook, which runs `bin/format -c` (the single ktlint + `deno fmt` lint gate) and
+`bin/test check` (Gradle tests + Postgres) concurrently — all dev-shell tools.
+Commit from inside the shell, or wrap it:
 
 ```sh
 nix develop -c git commit ...

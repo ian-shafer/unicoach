@@ -6,8 +6,9 @@ help() {
   cat << 'EOF'
 pre-commit [options]
 
-Native validation script to execute tests and ktlint check before committing.
-Runs Gradle check (Kotlin) and deno fmt --check (Markdown) concurrently.
+Native validation script run before committing. Runs two gates concurrently:
+the Gradle test suite (bin/test check) and the format/lint check (bin/format -c,
+the repo's single ktlint + deno fmt avenue).
 
 Options:
   -h: Help
@@ -39,26 +40,29 @@ fi
 
 log-info "Running pre-commit checks concurrently..."
 
+# Two concurrent gates: the test suite, and the format/lint check. ktlint lives
+# only in bin/format (no Gradle ktlint plugin), so `bin/format -c` is the single
+# Kotlin+Markdown lint gate; `bin/test check` runs the Gradle tests.
 "$PROJECT_ROOT/bin/test" check &
-KOTLIN_PID=$!
+TEST_PID=$!
 
-deno fmt --check "${MARKDOWN_FMT_PATHS[@]}" &
-MARKDOWN_PID=$!
+"$PROJECT_ROOT/bin/format" -c &
+LINT_PID=$!
 
-KOTLIN_STATUS=0
-MARKDOWN_STATUS=0
-wait $KOTLIN_PID || KOTLIN_STATUS=$?
-wait $MARKDOWN_PID || MARKDOWN_STATUS=$?
+TEST_STATUS=0
+LINT_STATUS=0
+wait $TEST_PID || TEST_STATUS=$?
+wait $LINT_PID || LINT_STATUS=$?
 
 FAILED=0
 
-if [ "$KOTLIN_STATUS" -ne 0 ]; then
-  log-info "Kotlin pre-commit check failed (Status: $KOTLIN_STATUS)"
+if [ "$TEST_STATUS" -ne 0 ]; then
+  log-info "Test suite failed (Status: $TEST_STATUS)"
   FAILED=1
 fi
 
-if [ "$MARKDOWN_STATUS" -ne 0 ]; then
-  log-info "Markdown pre-commit check failed (Status: $MARKDOWN_STATUS)"
+if [ "$LINT_STATUS" -ne 0 ]; then
+  log-info "Format/lint check failed (Status: $LINT_STATUS)"
   FAILED=1
 fi
 

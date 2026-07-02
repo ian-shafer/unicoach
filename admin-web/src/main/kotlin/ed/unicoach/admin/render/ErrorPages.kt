@@ -62,9 +62,18 @@ suspend fun ApplicationCall.respondInternalError() =
  */
 suspend fun ApplicationCall.respondDaoError(error: Throwable) {
   when (error) {
-    is NotFoundException -> respondNotFound()
-    is ConcurrentModificationException -> respondConflict()
-    is TransientError -> respondServiceUnavailable()
+    is NotFoundException -> {
+      respondNotFound()
+    }
+
+    is ConcurrentModificationException -> {
+      respondConflict()
+    }
+
+    is TransientError -> {
+      respondServiceUnavailable()
+    }
+
     else -> {
       adminErrorLog.error("Unexpected DAO failure handling admin request [${request.uri}]", error)
       respondInternalError()

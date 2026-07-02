@@ -164,8 +164,12 @@ object ObservationsDao :
         }
       }
 
-      "23505", "23514" -> ConstraintViolationException(e)
+      "23505", "23514" -> {
+        ConstraintViolationException(e)
+      }
 
-      else -> mapDatabaseError(e)
+      else -> {
+        mapDatabaseError(e)
+      }
     }
 }

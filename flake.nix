@@ -27,7 +27,10 @@
             # Deno — replaces node:20-alpine + npx prettier for Markdown formatting.
             pkgs.deno
 
-            # ktlint — replaces running gradlew ktlintFormat inside a Docker container.
+            # ktlint — the repo's only Kotlin linter/formatter. bin/format wraps
+            # it (format and, with -c, check); there is no Gradle ktlint plugin,
+            # so this is the single ktlint and there is no second engine to keep
+            # in version-sync.
             pkgs.ktlint
 
             # git — nix sets GIT_EXEC_PATH to its own nix store path, which

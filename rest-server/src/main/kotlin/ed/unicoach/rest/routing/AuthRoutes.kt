@@ -250,22 +250,28 @@ class AuthRouteHandler(
 
   private suspend fun RoutingContext.respondGoogleLoginOutcome(outcome: ed.unicoach.auth.GoogleLoginResult) {
     when (outcome) {
-      is ed.unicoach.auth.GoogleLoginResult.Success -> respondGoogleLoginSuccess(outcome)
+      is ed.unicoach.auth.GoogleLoginResult.Success -> {
+        respondGoogleLoginSuccess(outcome)
+      }
+
       is ed.unicoach.auth.GoogleLoginResult.InvalidToken -> {
         call.application.environment.log
           .info("Google login failed: $outcome")
         call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Invalid Google ID token", null))
       }
+
       is ed.unicoach.auth.GoogleLoginResult.EmailNotVerified -> {
         call.application.environment.log
           .info("Google login failed: $outcome")
         call.respond(HttpStatusCode.Forbidden, ErrorResponse(ErrorCode.EMAIL_NOT_VERIFIED, "Google account email is not verified", null))
       }
+
       is ed.unicoach.auth.GoogleLoginResult.AccountDisabled -> {
         call.application.environment.log
           .info("Google login failed: $outcome")
         call.respond(HttpStatusCode.Forbidden, ErrorResponse(ErrorCode.ACCOUNT_DISABLED, "Account is disabled", null))
       }
+
       is ed.unicoach.auth.GoogleLoginResult.VerificationUnavailable -> {
         call.application.environment.log
           .warn("Google login failed: $outcome")

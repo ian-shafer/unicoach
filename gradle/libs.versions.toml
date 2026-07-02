@@ -1,7 +1,6 @@
 [versions]
 kotlin = "2.3.20"
 ktor = "3.4.2"
-ktlint = "14.2.0"
 postgresql = "42.7.3"
 argon2 = "2.11"
 hikaricp = "6.2.1"
@@ -47,5 +46,4 @@ commons-csv = { module = "org.apache.commons:commons-csv", version.ref = "common
 [plugins]
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
-ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

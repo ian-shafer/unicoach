@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common"
 
+CHECK=false
+
 help() {
   cat << 'EOF'
 format [options]
 
-Formats Kotlin and Markdown source code across the project.
-Runs ktlint --format (Kotlin) and deno fmt (Markdown) concurrently using
-the native tool binaries provided by nix.
+The single Kotlin + Markdown formatting avenue for the repo, using the
+nix-provided tools: ktlint (Kotlin) and deno fmt (Markdown), run concurrently.
+There is no Gradle ktlint plugin — this script is the only ktlint, so format and
+check can never disagree.
 
 Options:
+  -c: Check only — report violations and exit non-zero WITHOUT rewriting files.
+      This is the pre-commit format gate. Default rewrites in place.
   -h: Help
 EOF
   exit 0
 }
 
-while getopts ":h" opt; do
+while getopts ":ch" opt; do
   case "$opt" in
+  c) CHECK=true ;;
   h) help ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
   :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
@@ -28,14 +34,24 @@ if [ "$#" -ne 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "Error: format accepts no positional arguments."
 fi
 
-log-info "Formatting Kotlin and Markdown code concurrently..."
+# Kotlin targets. ktlint's own `**` glob does not descend hidden dirs; none of our
+# Kotlin lives under one, so plain globs suffice (unlike the Markdown paths).
+KT_GLOBS=("**/*.kt" "**/*.kts" "!var/**" "!build/**" "!.gradle/**")
 
-# Run Kotlin formatting in background
-ktlint --format "**/*.kt" "**/*.kts" "!var/**" "!build/**" "!.gradle/**" &
-KOTLIN_PID=$!
-
-deno fmt "${MARKDOWN_FMT_PATHS[@]}" &
-MARKDOWN_PID=$!
+if [ "$CHECK" = true ]; then
+  log-info "Checking Kotlin and Markdown formatting concurrently..."
+  # ktlint with no --format is check-mode: it exits non-zero on any violation.
+  ktlint "${KT_GLOBS[@]}" &
+  KOTLIN_PID=$!
+  deno fmt --check "${MARKDOWN_FMT_PATHS[@]}" &
+  MARKDOWN_PID=$!
+else
+  log-info "Formatting Kotlin and Markdown code concurrently..."
+  ktlint --format "${KT_GLOBS[@]}" &
+  KOTLIN_PID=$!
+  deno fmt "${MARKDOWN_FMT_PATHS[@]}" &
+  MARKDOWN_PID=$!
+fi
 
 # Safely capture exit codes without un-setting set -e
 KOTLIN_STATUS=0
@@ -43,21 +59,22 @@ MARKDOWN_STATUS=0
 wait $KOTLIN_PID || KOTLIN_STATUS=$?
 wait $MARKDOWN_PID || MARKDOWN_STATUS=$?
 
+VERB=$([ "$CHECK" = true ] && echo check || echo formatter)
 FAILED=0
 
 if [ "$KOTLIN_STATUS" -ne 0 ]; then
-  log-error "Kotlin formatter failed (Status: $KOTLIN_STATUS)"
+  log-error "Kotlin ktlint $VERB failed (Status: $KOTLIN_STATUS)"
   FAILED=1
 fi
 
 if [ "$MARKDOWN_STATUS" -ne 0 ]; then
-  log-error "Markdown formatter failed (Status: $MARKDOWN_STATUS)"
+  log-error "Markdown deno fmt $VERB failed (Status: $MARKDOWN_STATUS)"
   FAILED=1
 fi
 
 if [ "$FAILED" -ne 0 ]; then
-  log-info "Formatting encountered errors."
+  log-info "Formatting $VERB found problems."
   exit 2
 fi
 
-log-info "Formatting complete."
+log-info "Formatting $VERB passed."
