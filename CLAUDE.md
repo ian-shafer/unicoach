@@ -47,10 +47,15 @@ checkpoint commits, made via
 `.claude/skills/rfc-pipeline/scripts/rfc-pipeline-checkpoint`. Those commits
 exist only as restore points and are squashed away before anything lands, so
 running the full gate on each is pure waste; the script encapsulates the
-`--no-verify` (keeping the flag out of the orchestrator's Bash command). The
-pipeline's two **final** commits — the ones the Architect actually lands — go
-through `nix develop -c git commit` and the full hook like any other commit. Do
-not reach for `--no-verify` anywhere else.
+`--no-verify` (keeping the flag out of the orchestrator's Bash command). Of the
+pipeline's two **final** commits — the ones the Architect actually lands — the
+**code** commit goes through `nix develop -c git commit` and the full hook; its
+`bin/test check` is the run's final gate, and the same hook run also validates
+the RFC markdown (`deno fmt --check` covers the whole working tree). The **RFC
+doc** commit therefore lands with `--no-verify`, since re-running the full
+`bin/test check` on a tree the hook already validated is pure waste. That is the
+extent of the carve-out: WIP checkpoints, plus the single RFC-doc final commit.
+Do not reach for `--no-verify` anywhere else.
 
 ## Running tests
 

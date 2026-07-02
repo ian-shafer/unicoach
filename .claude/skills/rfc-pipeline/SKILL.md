@@ -219,10 +219,15 @@ SHAs in its context. Run each with `-h` for its full contract.
 | `rfc-pipeline-squash`                                | `reset --soft <base>` to collapse WIP history             |
 | `rfc-pipeline-land`                                  | ff-merge, remove worktree, delete branch                  |
 
-`--no-verify` lives **only** in `rfc-pipeline-checkpoint` (fast WIP commits, and
-the flag stays out of the classifier-inspected Bash string); the Architect's two
-**final** commits run the full hook. Any bare `git …` below means
-`git -C "<codebase-root>" …`.
+`--no-verify` lives in `rfc-pipeline-checkpoint` (fast WIP commits, and the flag
+stays out of the classifier-inspected Bash string) and in **one** of the
+Architect's two final commits: the **code** commit runs the full pre-commit hook
+— its `bin/test check` is the run's final independent gate, and the same hook
+run also covers ktlint, `deno fmt --check` over the whole working tree (RFC
+markdown included), and the staged-spec fuzz — so the **RFC-doc** commit is made
+with `--no-verify` rather than paying for a second, identical `bin/test check`
+over a tree the hook already validated (see Phase 3b). Any bare `git …` below
+means `git -C "<codebase-root>" …`.
 
 ### Phase 0 — pipeline worktree (before Phase 1)
 
@@ -324,14 +329,31 @@ then revert) is invisible and acceptable. On any violation: surface it,
 `rfc-pipeline-recover` to discard the rogue writes, then re-run or escalate —
 never silently keep out-of-scope writes.
 
-### Independent verification (never trust "green")
+### Independent verification (never trust "green", but don't re-run needlessly)
 
 Write-scope verifies _where_ an agent wrote, not whether its logic is correct.
-Separately, **before reporting any test result as passing, the orchestrator
-re-runs the suite itself** via the project's test harness and reads the real
-pass/fail counts. Never relay an agent's "all tests pass" claim without an
-independent run — agent reports have been wrong, and a green claim has masked a
-broken tree.
+Separately, the orchestrator **independently re-runs the suite after any step
+that mutated tracked code** — a `/rfc-impl` return, an `/rfc-impl-fix` return,
+or the Architect's manual edits — and reads the real pass/fail counts before
+trusting them. Never relay an agent's "all tests pass" claim across a code
+mutation without an independent run — agent reports have been wrong, and a green
+claim has masked a broken tree.
+
+But run the suite **only** when code actually changed. Here **code** means the
+compiled/executed sources — Kotlin, config, tests. Markdown (`*.md`: the RFC
+doc, `INVARIANTS.md`, skills) is **documentation, not code**: a Markdown-only
+change needs formatting (`bin/format`), never a suite run. So an `/rfc-impl` or
+`/rfc-impl-fix` return that touched Kotlin/config/tests re-runs the suite; an
+RFC edit that touched only Markdown does not.
+
+A review pass (prep + leaf fan-out + aggregate) is likewise **read-only**: the
+prep agent writes nothing tracked and the leaves write only to `.scratch/`, so
+the tracked tree is byte-identical to the last code-mutating checkpoint and the
+suite result cannot have changed. Re-running it there is pure waste — the
+earlier post-mutation run still stands. The **final** gate is the code commit's
+pre-commit hook (Phase 3b), which runs `bin/test check` on the exact committed
+tree; that hook _is_ the last independent run, so no separate manual run
+precedes it.
 
 ### Subagent rules (state these in every spawn prompt)
 
@@ -347,7 +369,8 @@ broken tree.
 `rfc-pipeline-squash -s <run-scratch>` resets `--soft` to the base SHA (worktree
 
 - index preserved, WIP history dropped). The Architect then makes the two final
-  commits (RFC doc; code + any INVARIANTS.md changes), which run the full hook.
+  commits (RFC doc via `--no-verify`; code + any INVARIANTS.md changes through
+  the full hook — see Phase 3b for why one hook run covers both).
 
 ## 🗺️ Lifecycle State Machine
 
@@ -404,8 +427,9 @@ Guide the Architect through the following phases sequentially. **Before Phase 1,
 run Phase 0** (create the `pipeline/rfc-<n>` branch and record the base SHA) per
 **Change Tracking, Checkpoints & Agent Write-Scope** above. Throughout, take a
 checkpoint at every gate boundary, number every loopable step, verify each
-agent's write-scope on return, and independently re-run tests before reporting
-any result as green.
+agent's write-scope on return, and independently re-run tests after any
+code-mutating step (not after read-only review passes) per **Independent
+verification** above.
 
 ### Phase 1: Design
 
@@ -583,9 +607,11 @@ any result as green.
    scratch — the prep agent's `…/prep.json` scope/test findings plus the
    per-leaf verdict files under `…/design/leaves/` and `…/code/leaves/` (read
    each chain's `report.md` if present, else merge the per-leaf files directly).
-   Confirm the `Test Verification Completeness Check` is present and passing
-   **and independently re-run the suite yourself**. Checkpoint
-   (`rfc-pipeline-checkpoint -s <run-scratch> impl-review <i>`).
+   Confirm the `Test Verification Completeness Check` is present and passing (a
+   review artifact, read from scratch). **Do not re-run the suite here** — this
+   pass was read-only, so the tree is unchanged since the last post-mutation run
+   (`impl`, or the prior iteration's `impl-fix`) and that green still holds.
+   Checkpoint (`rfc-pipeline-checkpoint -s <run-scratch> impl-review <i>`).
 
    d. **If clean** (no actionable findings, tests green): exit the loop.
    **Otherwise** spawn a background **`/rfc-impl-fix`** pass with scratch
@@ -688,7 +714,10 @@ any result as green.
             ledger there (write-once) and skip any already applied on re-entry.
             Treat the following Architect feedback as the review report/action
             items to implement: <Architect-feedback-text>"`
-   3. Wait for the fix agent to complete.
+   3. Wait for the fix agent to complete. On its return, verify write-scope
+      (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md'`) and
+      **independently re-run the suite** — this fix mutated code, so it is the
+      trust gate; if broken, recover and re-spawn the fix, if green, checkpoint.
    4. Once complete, run a verification review pass using the **same three-part
       sequence as Phase 2 step 2** (prep + inline fan-out + aggregate) — never a
       single backgrounded `/rfc-impl-review`, per the **Depth-1 Fan-out
@@ -704,7 +733,8 @@ any result as green.
         `…/code/`. Each leaf `Read`s the file and writes one verdict file per
         leaf under its `…/leaves/`.
       - **Aggregate.** Reconstruct the verdict from `…/prep.json` plus the
-        per-leaf files, and independently re-run the suite.
+        per-leaf files. No suite re-run here — the review is read-only and the
+        tree is unchanged since the fix's post-mutation run in step 3.
    5. Present the updated code diffs and review results to the Architect,
       repeating this iteration loop.
 
@@ -712,8 +742,11 @@ any result as green.
 
    If the Architect makes manual edits/changes directly in their workspace:
 
-   1. Once they are done, explicitly ask the Architect: _"Would you like to run
-      an automated /rfc-impl-review on your manual changes?"_
+   1. Once they are done, **independently re-run the suite** — the manual edits
+      mutated code, so this is their trust gate (the review pass below, if run,
+      is read-only and will not re-test). Then explicitly ask the Architect:
+      _"Would you like to run an automated /rfc-impl-review on your manual
+      changes?"_
    2. If they say yes:
       - Run a review pass using the **same three-part sequence as Phase 2 step
         2** (prep + inline fan-out + aggregate) — never a single backgrounded
@@ -758,17 +791,34 @@ Once the landing check passes:
   staging state with `rfc-pipeline-squash -s <run-scratch>` (resets `--soft` to
   the recorded base SHA; working tree and index preserved, only the WIP history
   dropped). The two final commits are created from this state.
-- **Final independent test run**: before generating commit messages, re-run the
-  suite yourself (project test harness) and confirm it is green — do not rely on
-  any earlier agent report.
+- **Format the tree**: run `nix develop -c bin/format` in `<codebase-root>`. It
+  reformats Kotlin (`ktlint --format`) and Markdown (`deno fmt`) in place and is
+  idempotent — running the formatter is always safe. Doing it now means the code
+  commit's hook formatting checks (ktlint, `deno fmt --check`) pass on the first
+  try instead of blocking the commit on a formatting nit.
 - Ingest the final workspace diff (`git -C "<codebase-root>" diff <base-sha>` /
   `git -C "<codebase-root>" status`).
 - Generate and provide two formatted commit messages for the Architect to
   copy-paste (following the repository's commit guidelines): one for the
   new/updated RFC markdown document, and one for the actual code implementation
   (including any `INVARIANTS.md` changes the RFC declared).
-- Instruct them to verify everything locally and manually commit the changes
-  once they approve. Wait for their confirmation that the code is committed.
+- **Commit protocol — one hook run, not two.** The whole change is on disk in
+  the working tree throughout both commits, so a single `bin/test check` (run by
+  the hook) validates the suite against the working tree. Instruct the Architect
+  to:
+  1. Commit the **code** (code + any `INVARIANTS.md`) **through the full hook**
+     via `nix develop -c git commit`. This stages the code — including
+     `api-specs/openapi.yaml` if it changed, so the staged-spec fuzz gate fires
+     correctly — and its `bin/test check` **is** the run's final independent
+     test gate. If the hook fails, the tree is intact; fix and retry.
+  2. Commit the **RFC markdown doc** with `--no-verify`
+     (`nix develop -c git commit --no-verify`). It is Markdown-only
+     (documentation, not code) and already formatted by `bin/format` above, so
+     it needs no suite run — a second full `bin/test check` here would be pure
+     waste. Order of the two commits does not matter; only the code commit needs
+     the hook.
+- Instruct them to verify everything locally and commit once they approve. Wait
+  for their confirmation that both commits exist.
 
 #### 3c. Land the branch & tear down the worktree
 
