@@ -205,7 +205,8 @@ See [EmailProvider.kt](./EmailProvider.kt),
 
 See [LogOnlyEmailProvider.kt](./LogOnlyEmailProvider.kt).
 
-- **Side Effects**: Emits a log line; transmits nothing.
+- **Side Effects**: Emits a log line carrying the full message (from, to,
+  subject, body); transmits nothing.
 - **Behavior**: `id == "log"`. `send` always returns `Sent` with a freshly
   generated non-null `providerMessageId`.
 - **Error Handling**: Never returns `Rejected` or `TransientFailure`.

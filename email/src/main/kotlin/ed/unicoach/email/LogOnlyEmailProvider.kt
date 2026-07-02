@@ -13,11 +13,12 @@ class LogOnlyEmailProvider : EmailProvider {
   override suspend fun send(email: OutboundEmail): ProviderResult {
     val providerMessageId = UUID.randomUUID().toString()
     logger.info(
-      "[{}] recorded outbound email from=[{}] to=[{}] subject=[{}]",
+      "[{}] recorded outbound email from=[{}] to=[{}] subject=[{}] body=[{}]",
       PROVIDER_ID,
       email.from.value,
       email.to.value,
       email.subject.value,
+      email.body.value,
     )
     return ProviderResult.Sent(providerMessageId)
   }
