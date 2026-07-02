@@ -4,6 +4,28 @@
 <dict>
 	<key>CFBundleIdentifier</key>
 	<string>coach.uni.UnicoachiOS</string>
+	<!-- Google Sign-In: the iOS OAuth client ID and its reversed-ID redirect
+	     scheme. This value is a fixed, public (non-secret) constant that does not
+	     vary by environment, so it is written literally rather than injected
+	     through the bin/build-ios build-setting seam.
+
+	     CROSS-ARTIFACT COUPLING (documented, not enforceable across the
+	     iOS/backend boundary): this client ID must be a registered backend
+	     audience in .env.prod's GOOGLE_CLIENT_IDS (the audiences
+	     JwksGoogleTokenVerifier accepts, per RFC 64) — that variable is the
+	     source of truth. A mismatch makes every sign-in fail verification with
+	     401 unauthorized. Keep this in sync with GOOGLE_CLIENT_IDS. -->
+	<key>GIDClientID</key>
+	<string>681996899529-dmtovdf2r2ptf0mcajic3squcrkhsip6.apps.googleusercontent.com</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.681996899529-dmtovdf2r2ptf0mcajic3squcrkhsip6</string>
+			</array>
+		</dict>
+	</array>
 	<key>UnicoachBackendURL</key>
 	<string>$(UNICOACH_BACKEND_URL)</string>
 	<key>UnicoachClientKey</key>

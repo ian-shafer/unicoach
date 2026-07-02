@@ -9,8 +9,8 @@ struct LoginView: View {
         case email, password
     }
 
-    init(authClient: AuthClientProtocol, onLoginSuccess: @escaping (PublicUser) async -> Void, onSwitchToRegister: @escaping () -> Void) {
-        _viewModel = StateObject(wrappedValue: LoginViewModel(authClient: authClient, onLoginSuccess: onLoginSuccess))
+    init(authClient: AuthClientProtocol & GoogleAuthenticating, googleSignInProvider: GoogleSignInProviding, onLoginSuccess: @escaping (PublicUser) async -> Void, onSwitchToRegister: @escaping () -> Void) {
+        _viewModel = StateObject(wrappedValue: LoginViewModel(authClient: authClient, googleSignInProvider: googleSignInProvider, onLoginSuccess: onLoginSuccess))
         self.onSwitchToRegister = onSwitchToRegister
     }
 
@@ -53,12 +53,38 @@ struct LoginView: View {
 
                 LoadingButton(
                     "Log In",
-                    isLoading: viewModel.isLoading,
+                    isLoading: viewModel.phase == .passwordLoading,
                     role: .primary,
                     accessibilityIdentifier: "loginButton",
                     accessibilityLabel: "Log In",
                     action: { Task { await viewModel.login() } }
                 )
+                .disabled(viewModel.phase != .idle)
+
+                HStack(spacing: DSSpacing.md) {
+                    Rectangle()
+                        .fill(Color.dsFieldBorder)
+                        .frame(height: 1)
+                    Text("or")
+                        .font(.dsLabel)
+                        .foregroundStyle(Color.dsTextSecondary)
+                    Rectangle()
+                        .fill(Color.dsFieldBorder)
+                        .frame(height: 1)
+                }
+
+                ZStack {
+                    GoogleSignInButton {
+                        Task { await viewModel.signInWithGoogle() }
+                    }
+                    .disabled(viewModel.phase != .idle)
+
+                    if viewModel.phase == .googleLoading {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .accessibilityIdentifier("googleLoadingIndicator")
+                    }
+                }
 
                 Button(action: onSwitchToRegister) {
                     Text("Don't have an account? Register")
@@ -86,13 +112,14 @@ struct LoginView: View {
     }
 }
 
-private final class LoginPreviewAuthClient: AuthClientProtocol, @unchecked Sendable {
+private final class LoginPreviewAuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Sendable {
     func register(request: RegisterRequest) async throws -> RegisterResponse {
         RegisterResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
     }
     func login(request: LoginRequest) async throws -> LoginResponse {
         LoginResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
     }
+    func signInWithGoogle(idToken: String) async throws -> LoginResponse { fatalError() }
     func logout() async throws {}
     func me() async throws -> MeResponse {
         MeResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
@@ -103,9 +130,14 @@ private final class LoginPreviewAuthClient: AuthClientProtocol, @unchecked Senda
     }
 }
 
+private final class LoginPreviewGoogleSignInProvider: GoogleSignInProviding {
+    func signIn() async throws -> GoogleSignInOutcome { .signedIn("preview-id-token") }
+}
+
 #Preview {
     LoginView(
         authClient: LoginPreviewAuthClient(),
+        googleSignInProvider: LoginPreviewGoogleSignInProvider(),
         onLoginSuccess: { _ in },
         onSwitchToRegister: {}
     )

@@ -269,4 +269,123 @@ class AuthClientTests: XCTestCase {
             XCTAssertEqual(error.status, 409)
         }
     }
+
+    func testGoogleSignInSuccess() async throws {
+        let expectedUser = PublicUser(id: UUID(), email: "google@example.com", name: "Google", emailVerified: true)
+        let responsePayload = LoginResponse(user: expectedUser)
+        let responseData = try JSONEncoder().encode(responsePayload)
+        let sentToken = "sent-id-token"
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/auth/google")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+
+            // URLRequest.httpBody is nil under URLProtocol; read the stream body.
+            let body = request.httpBody ?? request.httpBodyStream.map { stream -> Data in
+                stream.open()
+                defer { stream.close() }
+                var data = Data()
+                let bufferSize = 1024
+                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+                defer { buffer.deallocate() }
+                while stream.hasBytesAvailable {
+                    let read = stream.read(buffer, maxLength: bufferSize)
+                    if read <= 0 { break }
+                    data.append(buffer, count: read)
+                }
+                return data
+            } ?? Data()
+            let decoded = try? JSONDecoder().decode(GoogleLoginRequest.self, from: body)
+            XCTAssertEqual(decoded?.idToken, sentToken)
+
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, responseData)
+        }
+
+        let response = try await authClient.signInWithGoogle(idToken: sentToken)
+        XCTAssertEqual(response.user.email, expectedUser.email)
+    }
+
+    func testGoogleSignInUnauthorized() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signInWithGoogle(idToken: "t")
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "unauthorized")
+            XCTAssertEqual(error.status, 401)
+        }
+    }
+
+    func testGoogleSignInEmailNotVerified() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(code: "email_not_verified", message: "Email not verified", fieldErrors: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signInWithGoogle(idToken: "t")
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "email_not_verified")
+            XCTAssertEqual(error.status, 403)
+        }
+    }
+
+    func testGoogleSignInAccountDisabled() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(code: "account_disabled", message: "Account disabled", fieldErrors: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signInWithGoogle(idToken: "t")
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "account_disabled")
+            XCTAssertEqual(error.status, 403)
+        }
+    }
+
+    func testGoogleSignInServiceUnavailable() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(code: "service_unavailable", message: "Service unavailable", fieldErrors: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signInWithGoogle(idToken: "t")
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "service_unavailable")
+            XCTAssertEqual(error.status, 503)
+        }
+    }
+
+    func testGoogleSignInServerError() async throws {
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, "Internal Server Error".data(using: .utf8)!)
+        }
+
+        do {
+            _ = try await authClient.signInWithGoogle(idToken: "t")
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "SERVER_ERROR")
+        }
+    }
 }

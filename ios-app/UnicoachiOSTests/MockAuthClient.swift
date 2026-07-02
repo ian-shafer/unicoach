@@ -1,14 +1,16 @@
 import Foundation
 @testable import UnicoachiOS
 
-class MockAuthClient: AuthClientProtocol, @unchecked Sendable {
+class MockAuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Sendable {
     var registerResult: Result<RegisterResponse, Error>?
     var loginResult: Result<LoginResponse, Error>?
+    var signInWithGoogleResult: Result<LoginResponse, Error>?
     var logoutResult: Result<Void, Error>?
     var meResult: Result<MeResponse, Error>?
     var resendVerificationResult: Result<Void, Error>?
     var changeEmailResult: Result<PublicUser, Error>?
-    
+    private(set) var signInWithGoogleCallCount = 0
+
     func register(request: RegisterRequest) async throws -> RegisterResponse {
         if let result = registerResult {
             switch result {
@@ -33,6 +35,19 @@ class MockAuthClient: AuthClientProtocol, @unchecked Sendable {
         fatalError("No result configured")
     }
     
+    func signInWithGoogle(idToken: String) async throws -> LoginResponse {
+        signInWithGoogleCallCount += 1
+        if let result = signInWithGoogleResult {
+            switch result {
+            case .success(let response):
+                return response
+            case .failure(let error):
+                throw error
+            }
+        }
+        fatalError("No result configured")
+    }
+
     func logout() async throws {
         if let result = logoutResult {
             switch result {

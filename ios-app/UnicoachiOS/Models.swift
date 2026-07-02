@@ -53,6 +53,10 @@ struct LoginResponse: Codable {
     let user: PublicUser
 }
 
+struct GoogleLoginRequest: Codable {
+    let idToken: String
+}
+
 struct MeResponse: Codable {
     let user: PublicUser
 }

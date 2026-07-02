@@ -4,22 +4,25 @@ import os
 @MainActor
 class AppViewModel: ObservableObject {
     @Published var authState: UserAuthState = .loading
-    let authClient: AuthClientProtocol
+    let authClient: AuthClientProtocol & GoogleAuthenticating
     let studentClient: StudentClientProtocol
     let conversationClient: ConversationClientProtocol
+    let googleSignInProvider: GoogleSignInProviding
     let cookieStorage: CookieStorageProtocol
     private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AppViewModel")
 
     init(
         apiClient: APIClient = APIClient(),
         cookieStorage: CookieStorageProtocol = HTTPCookieStorage.shared,
-        authClient: AuthClientProtocol? = nil,
+        authClient: (AuthClientProtocol & GoogleAuthenticating)? = nil,
         studentClient: StudentClientProtocol? = nil,
-        conversationClient: ConversationClientProtocol? = nil
+        conversationClient: ConversationClientProtocol? = nil,
+        googleSignInProvider: GoogleSignInProviding = GoogleSignInProvider()
     ) {
         self.authClient = authClient ?? AuthClient(apiClient: apiClient)
         self.studentClient = studentClient ?? StudentClient(apiClient: apiClient)
         self.conversationClient = conversationClient ?? ConversationClient(apiClient: apiClient)
+        self.googleSignInProvider = googleSignInProvider
         self.cookieStorage = cookieStorage
     }
 

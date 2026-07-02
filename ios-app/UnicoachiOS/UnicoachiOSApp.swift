@@ -1,3 +1,4 @@
+import GoogleSignIn
 import SwiftUI
 
 @main
@@ -15,6 +16,7 @@ struct UnicoachiOSApp: App {
                 case .unauthenticated:
                     AuthFlowView(
                         authClient: viewModel.authClient,
+                        googleSignInProvider: viewModel.googleSignInProvider,
                         onLoginSuccess: viewModel.onLoginSuccess,
                         onRegisterSuccess: viewModel.onRegisterSuccess
                     )
@@ -59,6 +61,11 @@ struct UnicoachiOSApp: App {
                         retryAction: { Task { await viewModel.checkSession() } }
                     )
                 }
+            }
+            .onOpenURL { url in
+                // Receive the Google OAuth callback under the SwiftUI App
+                // lifecycle (no UIApplicationDelegate exists).
+                GIDSignIn.sharedInstance.handle(url)
             }
             .onChange(of: scenePhase) { _, newPhase in
                 // Returning to the foreground is the primary detection path for an

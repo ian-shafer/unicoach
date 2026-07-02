@@ -10,7 +10,15 @@ protocol AuthClientProtocol: Sendable {
     func changeEmail(_ email: String) async throws -> PublicUser
 }
 
-class AuthClient: AuthClientProtocol, @unchecked Sendable {
+/// Narrow protocol for the Google sign-in POST, kept off `AuthClientProtocol` so
+/// the preview/test conformers that never build a `LoginViewModel` need no stub.
+/// Only conformers that construct a `LoginViewModel` (whose `authClient` is typed
+/// `AuthClientProtocol & GoogleAuthenticating`) must adopt it.
+protocol GoogleAuthenticating {
+    func signInWithGoogle(idToken: String) async throws -> LoginResponse
+}
+
+class AuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Sendable {
     private let apiClient: APIClient
     private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AuthClient")
 
@@ -27,6 +35,12 @@ class AuthClient: AuthClientProtocol, @unchecked Sendable {
     func login(request: LoginRequest) async throws -> LoginResponse {
         logger.debug("Starting login for [\(request.email)]")
         let (data, response) = try await apiClient.post("/api/v1/auth/login", body: request)
+        return try apiClient.decode(data: data, response: response, expectedStatus: 200)
+    }
+
+    func signInWithGoogle(idToken: String) async throws -> LoginResponse {
+        logger.debug("Starting Google sign-in")
+        let (data, response) = try await apiClient.post("/api/v1/auth/google", body: GoogleLoginRequest(idToken: idToken))
         return try apiClient.decode(data: data, response: response, expectedStatus: 200)
     }
 
