@@ -7,6 +7,7 @@ import ed.unicoach.admin.engine.registerAdminRoutes
 import ed.unicoach.admin.render.configureAdminStatusPages
 import ed.unicoach.admin.render.toAdminDisplay
 import ed.unicoach.admin.resources.ClaimsResource
+import ed.unicoach.admin.resources.CollegeListEntriesResource
 import ed.unicoach.admin.resources.CollegesResource
 import ed.unicoach.admin.resources.ConvoRequestsResource
 import ed.unicoach.admin.resources.ConvosResource
@@ -115,6 +116,7 @@ fun Application.adminModule(
         ConvosResource,
         ConvoRequestsResource,
         CollegesResource,
+        CollegeListEntriesResource,
       ),
     )
 

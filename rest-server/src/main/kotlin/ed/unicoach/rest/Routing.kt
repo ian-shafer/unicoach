@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import ed.unicoach.rest.routing.AuthRouteHandler
+import ed.unicoach.rest.routing.CollegeListRouteHandler
 import ed.unicoach.rest.routing.ConvoRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
 import io.ktor.http.ContentType
@@ -35,11 +36,14 @@ fun Application.configureRouting(
   emailVerifier: ed.unicoach.auth.EmailVerifier,
   queueService: ed.unicoach.queue.QueueService,
   extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
+  collegeListService: ed.unicoach.coaching.collegelist.CollegeListService,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
   val convoRouteHandler =
     ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)
+  val collegeListRouteHandler =
+    CollegeListRouteHandler(authService, studentService, collegeListService, sessionConfig)
   routing {
     route("/healthz") {
       get {
@@ -53,5 +57,6 @@ fun Application.configureRouting(
     authRouteHandler.registerRoutes(this)
     studentRouteHandler.registerRoutes(this)
     convoRouteHandler.registerRoutes(this)
+    collegeListRouteHandler.registerRoutes(this)
   }
 }

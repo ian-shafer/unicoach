@@ -13,6 +13,7 @@ import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
@@ -204,6 +205,7 @@ fun Application.appModule(
   val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)
   val studentService = ed.unicoach.student.StudentService(database)
   val coachingService = CoachingService(database, chatProvider, coachingConfig)
+  val collegeListService = CollegeListService(database)
 
   configureEmailVerificationGate(authService, sessionConfig)
 
@@ -216,5 +218,6 @@ fun Application.appModule(
     emailVerifier,
     queueService,
     extractionConfig,
+    collegeListService,
   )
 }

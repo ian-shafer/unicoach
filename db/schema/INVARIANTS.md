@@ -23,10 +23,11 @@ freshly-migrated one, so the schema stops being reproducible from this directory
 
 **Rule:** Every table designated a **log** (`convo_requests`, `convo_responses`,
 `convo_responses_raw`, `email_sends`, `observations`, `claim_support`,
-`extraction_runs`) MUST carry the `prevent_log_update` + `prevent_log_delete`
-triggers; the immutable-entity `system_prompts` MUST carry
-`prevent_immutable_entity_update` + `prevent_immutable_entity_delete`; and
-`claims` MUST carry `prevent_physical_delete` + `prevent_immutable_updates` +
+`extraction_runs`, `college_list_entry_support`) MUST carry the
+`prevent_log_update` + `prevent_log_delete` triggers; the immutable-entity
+`system_prompts` MUST carry `prevent_immutable_entity_update` +
+`prevent_immutable_entity_delete`; and `claims` MUST carry
+`prevent_physical_delete` + `prevent_immutable_updates` +
 `prevent_physical_timestamp_update` (trigger_00b). A new log or immutable table
 MUST attach the same guards; if it carries `row_created_at`, it MUST also attach
 `prevent_physical_timestamp_update`.
@@ -39,11 +40,13 @@ watermark/provenance the extraction pass reads back. The guarantee is a DB-level
 trigger, not a type, so a future migration adding a table or dropping a trigger
 can silently violate it. As of migration 0023, `prevent_immutable_updates()`
 guards `id` + `created_at` only; the `row_created_at` guarantee is carried
-separately by `prevent_physical_timestamp_update()` on the five tables that have
-that column (`users`, `sessions`, `students`, `convos`, `claims`).
+separately by `prevent_physical_timestamp_update()` on the six tables that have
+that column (`users`, `sessions`, `students`, `convos`, `claims`,
+`college_list_entries`).
 
 ## History
 
 - [x] [RFC-05: Database Scripts](../../rfc/05-db-scripts.md)
 - [x] [RFC-66: Extraction](../../rfc/66-extraction.md)
 - [x] [RFC-82: Versioned Colleges](../../rfc/82-versioned-colleges.md)
+- [x] [RFC-91: College List](../../rfc/91-college-list.md)

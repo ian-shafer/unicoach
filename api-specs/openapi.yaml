@@ -489,6 +489,266 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/students/me/college-list:
+    post:
+      summary: Add a college to the current student's college list
+      operationId: createCollegeListEntry
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCollegeListEntryRequest'
+      responses:
+        '201':
+          description: College added to the list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollegeListEntryResponse'
+        '400':
+          description: Validation failure (unknown status value)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such college, or no such observation cited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: College already on the list, or no student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Request body could not be deserialized into the expected shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: List every active entry on the current student's college list
+      operationId: listCollegeListEntries
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The caller's active college list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollegeListResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/students/me/college-list/{entryId}:
+    get:
+      summary: Get one college list entry owned by the current student
+      operationId: getCollegeListEntry
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: entryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The requested college list entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollegeListEntryResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such college list entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      summary: Replace the status and reasons on a college list entry
+      operationId: updateCollegeListEntry
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: entryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCollegeListEntryRequest'
+      responses:
+        '200':
+          description: College list entry updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollegeListEntryResponse'
+        '400':
+          description: Validation failure (unknown status value)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such college list entry, or no such observation cited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Optimistic concurrency version conflict, or no student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Request body could not be deserialized into the expected shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Remove a college from the current student's college list
+      description: >
+        Soft-deletes the entry. Removing and re-adding the same college later
+        creates a new entry; the prior removal's history stays intact under its
+        own soft-deleted id.
+      operationId: deleteCollegeListEntry
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: entryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: version
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int32
+          description: Optimistic-concurrency version the client last observed.
+      responses:
+        '204':
+          description: College list entry removed
+        '400':
+          description: Missing or non-integer version query parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such college list entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Optimistic concurrency version conflict, or no student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/conversations:
     post:
       summary: Start a conversation with its first message
@@ -1039,6 +1299,106 @@ components:
       properties:
         student:
           $ref: '#/components/schemas/PublicStudent'
+    CreateCollegeListEntryRequest:
+      type: object
+      additionalProperties: false
+      required: [collegeId]
+      properties:
+        collegeId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [considering, applying, admitted, rejected]
+          default: considering
+        reasons:
+          type: string
+          nullable: true
+          maxLength: 2048
+        observationIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+          default: []
+    UpdateCollegeListEntryRequest:
+      type: object
+      additionalProperties: false
+      required: [version, status, reasons]
+      properties:
+        version:
+          type: integer
+          format: int32
+          description: Optimistic-concurrency version the client last observed.
+        status:
+          type: string
+          enum: [considering, applying, admitted, rejected]
+        reasons:
+          type: string
+          nullable: true
+          maxLength: 2048
+        addObservationIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+          default: []
+    ObservationSummary:
+      type: object
+      required: [id, quote, utteredAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        quote:
+          type: string
+        utteredAt:
+          type: string
+          format: date-time
+    PublicCollegeListEntry:
+      type: object
+      required: [id, collegeId, status, reasons, version, createdAt, updatedAt, supportingObservations]
+      properties:
+        id:
+          type: string
+          format: uuid
+        collegeId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [considering, applying, admitted, rejected]
+        reasons:
+          type: string
+          nullable: true
+          maxLength: 2048
+        version:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        supportingObservations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObservationSummary'
+    CollegeListEntryResponse:
+      type: object
+      required: [entry]
+      properties:
+        entry:
+          $ref: '#/components/schemas/PublicCollegeListEntry'
+    CollegeListResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicCollegeListEntry'
     Conversation:
       type: object
       required: [id, name, createdAt, updatedAt]
