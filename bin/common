@@ -41,4 +41,9 @@ export PGPORT="$POSTGRES_PORT"
 
 export DB_SCHEMA_DIR="${DB_SCHEMA_DIR:-$PROJECT_ROOT/db/schema}"
 
+# Markdown targets for deno fmt, shared by bin/format (rewrites in place) and
+# bin/pre-commit (--check, read-only). deno's `**` glob skips hidden dirs, so
+# `.claude/` (skill/agent markdown) is listed explicitly. Defined once here so
+# the writer and the checker can never target different sets of files.
+MARKDOWN_FMT_PATHS=("**/*.md" ".claude")
 

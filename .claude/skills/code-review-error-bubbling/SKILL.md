@@ -19,9 +19,9 @@ the following principle. Do not review for other concerns outside this scope.
 - **Non-throwable root causes count.** Structured failure values (sealed
   `Invalid` variants, error ADTs, failure payloads) are root-cause data too.
   Converting one into an emitted error (e.g. an `Invalid` branch throwing a
-  fixed-string exception) MUST carry it. Losing context at the emission site is a
-  violation **even if** an upstream handler preserves the cause chain — a chain
-  one level up does not undo data dropped one level down.
+  fixed-string exception) MUST carry it. Losing context at the emission site is
+  a violation **even if** an upstream handler preserves the cause chain — a
+  chain one level up does not undo data dropped one level down.
 - **Justification comments are not waivers.** "Never user-facing",
   "unreachable", and the like mark the violation site; they do not resolve it.
 
@@ -35,8 +35,8 @@ the following principle. Do not review for other concerns outside this scope.
 - **Logged ≠ visible:** a faithfully-logged root cause still hidden by redaction
   (e.g. `os.Logger` `<private>`) maintains no visibility. Diagnostic, non-secret
   detail must be `privacy: .public` (or the platform equivalent).
-- **Actionable:** for each finding give ≥2 resolution options, recommend one, and
-  include a short snippet.
+- **Actionable:** for each finding give ≥2 resolution options, recommend one,
+  and include a short snippet.
 
 ## 📝 Examples
 

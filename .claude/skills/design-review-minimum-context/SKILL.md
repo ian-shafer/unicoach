@@ -14,15 +14,14 @@ understood with the absolute minimum amount of context.
 
 ### Key Definitions
 
-*   **Implicit Parsing Contracts**: Occur when a property is typed as a simple
-    primitive (like a `string`), but carries a hidden format rule (e.g.,
-    `"resolved_failed_retry"`). Every consumer of that field is implicitly
-    forced to parse, split, or substring-match the value to fully understand its
-    state.
-*   **Global Memory (Cognitive Load)**: Occurs when a developer cannot
-    understand a class, field, or line of code in isolation, but must instead
-    carry mental recollection of conventions, naming prefixes (e.g., `"opt_"`
-    meaning pending), or format rules established elsewhere in the codebase.
+- **Implicit Parsing Contracts**: Occur when a property is typed as a simple
+  primitive (like a `string`), but carries a hidden format rule (e.g.,
+  `"resolved_failed_retry"`). Every consumer of that field is implicitly forced
+  to parse, split, or substring-match the value to fully understand its state.
+- **Global Memory (Cognitive Load)**: Occurs when a developer cannot understand
+  a class, field, or line of code in isolation, but must instead carry mental
+  recollection of conventions, naming prefixes (e.g., `"opt_"` meaning pending),
+  or format rules established elsewhere in the codebase.
 
 ### 1. The Zero-Memory Rule
 
@@ -40,13 +39,13 @@ lifecycle indicators inside a single string field (using prefixes like `"opt_"`,
 delimiters, or composite tokens). * **The Invariant**: If a string requires
 downstream parsing, pattern matching (such as `startsWith()` or `includes()`),
 or token splitting to fully resolve its state, it violates this skill. * **The
-Cost**: When state is packed inside a string, *every processor of that field,
-forever, must know that it needs to parse the string to understand it.* This
+Cost**: When state is packed inside a string, _every processor of that field,
+forever, must know that it needs to parse the string to understand it._ This
 forces global codebase memory onto every developer. * **The Remedy**: Split
 composite concepts into separate, explicitly typed properties (such as Enums or
 Union types) that are self-documenting at compile time.
 
---------------------------------------------------------------------------------
+---
 
 ## 💻 Code Examples
 
@@ -62,7 +61,7 @@ prefix carries state. interface Comment { commentId: string; // e.g.,
 // Fragile and requires global codebase context to understand why we check this:
 if (comment.commentId.startsWith("opt_")) { renderTentativeMode(); } ```
 
---------------------------------------------------------------------------------
+---
 
 ### ❌ BAD: Composite String Status Contracts
 
@@ -75,13 +74,14 @@ e.g. "running_pending_sync" or "completed_failed_retry" }
 // Requires global memory to parse the composite status cleanly: if
 (task.status.endsWith("_retry")) { triggerTaskRetry(); } ```
 
---------------------------------------------------------------------------------
+---
 
 ### GOOD: Zero-Context Self-Describing Data
 
 Every property is explicitly typed and fully self-describing in isolation. A
-developer reading this interface requires exactly zero global context or
-memory. ```typescript export enum TaskStatus { RUNNING = "RUNNING", COMPLETED =
+developer reading this interface requires exactly zero global context or memory.
+
+````typescript export enum TaskStatus { RUNNING = "RUNNING", COMPLETED =
 "COMPLETED", }
 
 export enum SyncStatus { PENDING = "PENDING", SETTLED = "SETTLED", FAILED =
@@ -93,21 +93,21 @@ SyncStatus; retryCount: number; }
 
 if (task.syncStatus === SyncStatus.PENDING) { triggerTaskRetry(); } ```
 
---------------------------------------------------------------------------------
+---
 
 ## 🎯 Review Guidelines
 
--   **Adversarial Posture**: Actively search for any property that requires
-    composite string assembly, pattern parsing, or contextual inference. Look
-    for `split()`, `startsWith()`, `includes()`, or string regex matching inside
-    business logic.
--   **The Minimum Context Test**: Ask yourself: *"If a new developer is looking
-    at this single interface or line of code, can they fully understand what
-    state it represents without looking at any other file or documentation?"* If
-    not, flag it.
--   **Provide Actionable Options**: For every violation found, you MUST provide
-    at least 2 distinct structural options (using explicit enums, state unions,
-    or separate data parameters) and explicitly recommend one.
+- **Adversarial Posture**: Actively search for any property that requires
+  composite string assembly, pattern parsing, or contextual inference. Look for
+  `split()`, `startsWith()`, `includes()`, or string regex matching inside
+  business logic.
+- **The Minimum Context Test**: Ask yourself: _"If a new developer is looking at
+  this single interface or line of code, can they fully understand what state it
+  represents without looking at any other file or documentation?"_ If not, flag
+  it.
+- **Provide Actionable Options**: For every violation found, you MUST provide at
+  least 2 distinct structural options (using explicit enums, state unions, or
+  separate data parameters) and explicitly recommend one.
 
 ## 📋 Output Format
 
@@ -120,8 +120,9 @@ Group your findings by severity (Critical, Major, Minor, Nit).
 
 ## Findings
 
-- [Severity] **Finding description**: Explanation of why it requires global memory or implicit parsing.
+- [Severity] **Finding description**: Explanation of why it requires global
+  memory or implicit parsing.
   - **Option 1**: ...
   - **Option 2**: ...
   - **Recommendation**: ...
-```
+````

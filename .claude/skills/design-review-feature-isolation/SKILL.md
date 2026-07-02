@@ -23,23 +23,23 @@ background synchronization status, retry counts, migration keys, or rendering
 parameters), it MUST be isolated externally. The following 6 patterns represent
 approved solutions:
 
-1.  **Contextual Extensions / Mixins**: Define a localized schema or extended
-    interface that inherits from the base domain model for a specific workflow.
-2.  **Wrapper Entities / Decorators**: Wrap the base entity in a
-    context-specific transactional wrapper class or decorator.
-3.  **Generic Envelopes (DTO Wrappers)**: Package the core model inside a
-    generic container (`Envelope<T>`) where transaction-specific parameters
-    reside in the outer layer.
-4.  **Map-Based Registries (WeakMaps)**: Maintain transient metadata in an
-    external map or registry keyed by the core object's ID or reference.
-5.  **Dynamic Private Metadata (Symbols)**: Inject transient properties
-    dynamically using hidden runtime keys (like JavaScript `Symbol` properties)
-    that do not pollute key enumerations or object serialization.
-6.  **Decoupled Side-Tables / Join-Tables**: In database schemas, isolate
-    feature parameters in separate side-tables rather than appending nullable
-    columns to primary shared entity tables.
+1. **Contextual Extensions / Mixins**: Define a localized schema or extended
+   interface that inherits from the base domain model for a specific workflow.
+2. **Wrapper Entities / Decorators**: Wrap the base entity in a context-specific
+   transactional wrapper class or decorator.
+3. **Generic Envelopes (DTO Wrappers)**: Package the core model inside a generic
+   container (`Envelope<T>`) where transaction-specific parameters reside in the
+   outer layer.
+4. **Map-Based Registries (WeakMaps)**: Maintain transient metadata in an
+   external map or registry keyed by the core object's ID or reference.
+5. **Dynamic Private Metadata (Symbols)**: Inject transient properties
+   dynamically using hidden runtime keys (like JavaScript `Symbol` properties)
+   that do not pollute key enumerations or object serialization.
+6. **Decoupled Side-Tables / Join-Tables**: In database schemas, isolate feature
+   parameters in separate side-tables rather than appending nullable columns to
+   primary shared entity tables.
 
---------------------------------------------------------------------------------
+---
 
 ## 💻 Code Examples
 
@@ -48,19 +48,20 @@ Let's assume our core domain model is a straightforward, clean `Comment` entity:
 surprises export interface Comment { commentId: string; authorGaiaId: number;
 content: string; createdAt: Date; updatedAt: Date; }`
 
---------------------------------------------------------------------------------
+---
 
 ### ❌ BAD: Polluting the Core Domain Model
 
 The core domain interface is modified to include transient optimistic rendering
 properties (`tentative`, `errorMessage`, and private ID prefixes) that are only
-relevant to a specific UI view. `typescript // ❌ BAD: Pollutes the shared domain
+relevant to a specific UI view.
+`typescript // ❌ BAD: Pollutes the shared domain
 model with feature-specific, transient UI flags export interface Comment {
 commentId: string; // HACK: Prefixed with 'opt_' if optimistic! authorGaiaId:
 number; content: string; createdAt: Date; updatedAt: Date; tentative?: boolean;
 // ❌ Transient flag errorMessage?: string; // ❌ Contextual UI property }`
 
---------------------------------------------------------------------------------
+---
 
 ### GOOD: Contextual Extensions (Inheritance)
 
@@ -86,9 +87,9 @@ errorMessage: string | null = null ) {} } ```
 
 ### GOOD: Generic Envelopes (DTO Envelopes)
 
-Create an outer metadata carrier shell that wraps any domain record
-generically. ```typescript import {Comment} from './core/comment';
+Create an outer metadata carrier shell that wraps any domain record generically.
 
+````typescript import {Comment} from './core/comment';
 // ✅ Clean: Standardized metadata envelope wraps the inner pure payload. export
 interface Envelope<T> { data: T; metadata: { syncStatus: SyncStatus; retryCount:
 number; errorMessage?: string; }; }
@@ -101,10 +102,10 @@ syncStatus: SyncStatus.PENDING, retryCount: 0 } }; ```
 Maintain transactional states in an external private registry keyed by the core
 object instance. ```typescript import {Comment} from './core/comment';
 
-// ✅ Clean: State is private to the registry. The core comment reference remains
-100% pure. export class CommentSyncRegistry { private readonly statuses = new
-WeakMap<Comment, SyncStatus>(); private readonly errors = new
-Map<string, string>(); // Keyed by commentId
+// ✅ Clean: State is private to the registry. The core comment reference
+remains 100% pure. export class CommentSyncRegistry { private readonly statuses
+= new WeakMap<Comment, SyncStatus>(); private readonly errors = new Map<string,
+string>(); // Keyed by commentId
 
 setPending(comment: Comment) { this.statuses.set(comment, SyncStatus.PENDING); }
 
@@ -134,20 +135,20 @@ Content STRING(MAX) NOT NULL, ) PRIMARY KEY (CommentId);
 CommentMigrationStatuses ( CommentId STRING(64) NOT NULL, SyncStatus STRING(32)
 NOT NULL, RetryCount INT64 NOT NULL, ) PRIMARY KEY (CommentId); ```
 
---------------------------------------------------------------------------------
+---
 
 ## 🎯 Review Guidelines
 
--   **Adversarial Posture**: Actively inspect shared interfaces, domain models,
-    database schemas, and DTO structures. Look for transient, context-specific
-    flags, processing indicators, nullable retry properties, or
-    presentation-layer fields.
--   **Principle of Least Surprise**: Ask yourself: *"If a developer is looking
-    at this core record schema for the first time, will they be surprised or
-    confused by this field?"* If yes, flag it.
--   **Provide Actionable Options**: For every violation found, you MUST provide
-    at least 2 distinct structural resolution options (using the patterns above)
-    and recommend one.
+- **Adversarial Posture**: Actively inspect shared interfaces, domain models,
+  database schemas, and DTO structures. Look for transient, context-specific
+  flags, processing indicators, nullable retry properties, or presentation-layer
+  fields.
+- **Principle of Least Surprise**: Ask yourself: _"If a developer is looking at
+  this core record schema for the first time, will they be surprised or confused
+  by this field?"_ If yes, flag it.
+- **Provide Actionable Options**: For every violation found, you MUST provide at
+  least 2 distinct structural resolution options (using the patterns above) and
+  recommend one.
 
 ## 📋 Output Format
 
@@ -160,8 +161,9 @@ Group your findings by severity (Critical, Major, Minor, Nit).
 
 ## Findings
 
-- [Severity] **Finding description**: Explanation of why it violates the Principle of Least Surprise.
+- [Severity] **Finding description**: Explanation of why it violates the
+  Principle of Least Surprise.
   - **Option 1**: ...
   - **Option 2**: ...
   - **Recommendation**: ...
-```
+````

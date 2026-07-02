@@ -34,7 +34,7 @@ log-info "Formatting Kotlin and Markdown code concurrently..."
 ktlint --format "**/*.kt" "**/*.kts" "!var/**" "!build/**" "!.gradle/**" &
 KOTLIN_PID=$!
 
-deno fmt "**/*.md" &
+deno fmt "${MARKDOWN_FMT_PATHS[@]}" &
 MARKDOWN_PID=$!
 
 # Safely capture exit codes without un-setting set -e

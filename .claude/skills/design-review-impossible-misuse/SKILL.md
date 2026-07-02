@@ -33,7 +33,7 @@ Ensure that an object cannot be instantiated in an uninitialized or invalid
 state. * Prefer constructor parameters or builder chains that enforce complete
 initialization over mutable fields or optional setter callbacks.
 
---------------------------------------------------------------------------------
+---
 
 ## 💻 Code Examples
 
@@ -49,7 +49,7 @@ easily be missed or messed up. ```typescript interface Anchor { type:
 perfectly! const badAnchor: Anchor = { type: 'SELECTION', doc: {}, // Violates
 mutual exclusion but compiles! }; ```
 
---------------------------------------------------------------------------------
+---
 
 ### GOOD: Type-Safe Mutual Exclusion Union
 
@@ -60,21 +60,21 @@ null } | { type: 'DOC'; selection: null; doc: DocAnchor };
 
 // ✅ GOOD: Standard mutual exclusion is guaranteed by the compiler. //
 Representing both or neither will result in a compilation error! const
-goodAnchor: Anchor = { type: 'SELECTION', selection: mySelection, doc: null,
-}; ```
+goodAnchor: Anchor = { type: 'SELECTION', selection: mySelection, doc: null, };
 
+````
 ## 🎯 Review Guidelines
 
--   **Adversarial Posture**: Actively inspect interfaces, class constructor
-    models, database schemas, and DTO types. Look for optional or nullable
-    attributes where strict type unions or discriminated records should
-    represent the disjoint data invariants.
--   **The Impossible Invariant Test**: Ask yourself: *"Can a developer
-    instantiate or serialize this class in an invalid, conflicting, or
-    uninitialized state?"* If the answer is yes at compile-time, flag it.
--   **Provide Actionable Options**: For every violation found, you MUST provide
-    at least 2 distinct structural options (discriminated unions, explicit
-    constructors, sealed classes) and explicitly recommend one.
+- **Adversarial Posture**: Actively inspect interfaces, class constructor
+  models, database schemas, and DTO types. Look for optional or nullable
+  attributes where strict type unions or discriminated records should represent
+  the disjoint data invariants.
+- **The Impossible Invariant Test**: Ask yourself: _"Can a developer instantiate
+  or serialize this class in an invalid, conflicting, or uninitialized state?"_
+  If the answer is yes at compile-time, flag it.
+- **Provide Actionable Options**: For every violation found, you MUST provide at
+  least 2 distinct structural options (discriminated unions, explicit
+  constructors, sealed classes) and explicitly recommend one.
 
 ## 📋 Output Format
 
@@ -85,8 +85,9 @@ goodAnchor: Anchor = { type: 'SELECTION', selection: mySelection, doc: null,
 
 ## Findings
 
-- [Severity] **Finding description**: Explanation of why invalid compile-time states can be represented.
+- [Severity] **Finding description**: Explanation of why invalid compile-time
+  states can be represented.
   - **Option 1**: ...
   - **Option 2**: ...
   - **Recommendation**: ...
-```
+````

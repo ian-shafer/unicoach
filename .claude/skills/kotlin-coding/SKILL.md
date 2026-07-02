@@ -6,7 +6,8 @@ description:
 
 # 🤖 Skill: Kotlin Coding
 
-This skill establishes Kotlin-specific constraints and best practices building upon the general principles found in `coding/SKILL.md`.
+This skill establishes Kotlin-specific constraints and best practices building
+upon the general principles found in `coding/SKILL.md`.
 
 ## 📜 Core Philosophy
 
@@ -15,5 +16,5 @@ This skill establishes Kotlin-specific constraints and best practices building u
      (`""`) to represent an uninitialized or missing state.
    - You must explicitly define parameters and variables as nullable (`String?`)
      and use `null` as the default value when data may legitimately be absent.
-   - *Example Formulation*: `fun example(name: String? = null)` instead of
+   - _Example Formulation_: `fun example(name: String? = null)` instead of
      `fun example(name: String = "")`.

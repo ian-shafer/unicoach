@@ -42,7 +42,7 @@ log-info "Running pre-commit checks concurrently..."
 "$PROJECT_ROOT/bin/test" check &
 KOTLIN_PID=$!
 
-deno fmt --check "**/*.md" &
+deno fmt --check "${MARKDOWN_FMT_PATHS[@]}" &
 MARKDOWN_PID=$!
 
 KOTLIN_STATUS=0

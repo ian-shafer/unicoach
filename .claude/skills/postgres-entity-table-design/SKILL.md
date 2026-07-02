@@ -272,9 +272,9 @@ If versioning is desired, follow this pattern:
   - _Application-managed_:
     `UPDATE {table} SET ..., version = version + 1 WHERE id = ? AND version = ?;`
   - *Database-automated (via Trigger): The application sends the *next version
-    (incremented) in the ` SET ` clause:
+    (incremented) in the `SET` clause:
     `UPDATE {table} SET ..., version = ? WHERE id = ?;`. A trigger checks if it
-    matches ` old.version + 1 `. If the application forgets to send the version,
+    matches `old.version + 1`. If the application forgets to send the version,
     it defaults to the old version and the check fails, preventing silent
     bypass.
 - _Versions Table_: A separate table `{table}_versions` stores historical rows.
@@ -287,8 +287,8 @@ If versioning is desired, follow this pattern:
   schema and the trigger function. This is a significant maintenance cost of
   this pattern.
 - _Unique Constraints_: Unique constraints on the main table (like
-  ` UNIQUE(email) `) MUST be removed or relaxed in the versions table (except
-  for the composite primary key `(id, version)`). Keeping them would prevent
+  `UNIQUE(email)`) MUST be removed or relaxed in the versions table (except for
+  the composite primary key `(id, version)`). Keeping them would prevent
   inserting multiple versions of the same entity.
 - _Index Strategy_: The primary key on `(id, version)` in the versions table
   automatically creates an index. This is typically sufficient for history
@@ -414,8 +414,8 @@ $$ LANGUAGE plpgsql;
 
 #### Immutable Entity
 
-Immutable entities do not have an ` updated_at ` column. A ` deleted_at ` column
-is optional.
+Immutable entities do not have an `updated_at` column. A `deleted_at` column is
+optional.
 
 ```sql
 CREATE TABLE devices (
@@ -432,7 +432,7 @@ CREATE TABLE devices (
 
 #### Mutable Entity
 
-Mutable entities have an ` updated_at ` column.
+Mutable entities have an `updated_at` column.
 
 ```sql
 CREATE TABLE users (
@@ -451,8 +451,8 @@ CREATE TABLE users (
 
 #### Versioned Entity
 
-Versioned entities have a sibling ` ${entity}_versions ` table that is managed
-with a trigger on mutations (` INSERT `, ` UPDATE `).
+Versioned entities have a sibling `${entity}_versions` table that is managed
+with a trigger on mutations (`INSERT`, `UPDATE`).
 
 ```sql
 CREATE TABLE items (
@@ -526,7 +526,7 @@ EXECUTE PROCEDURE enforce_immutability();
 #### Mutable Entity updated_at Trigger
 
 These examples show how to update a database row for backfills, data migrations,
-and other out-of-band updates without changing the logical ` updated_at `
+and other out-of-band updates without changing the logical `updated_at`
 timestamp.
 
 _Option A: Role-based Bypass (Recommended)_
@@ -623,7 +623,7 @@ EXECUTE PROCEDURE enforce_versioning();
 
 #### Populate Versions Table Trigger
 
-This trigger populates the sibling ` *_versions ` table on entity mutations.
+This trigger populates the sibling `*_versions` table on entity mutations.
 
 ```sql
 CREATE OR REPLACE FUNCTION log_item_version()

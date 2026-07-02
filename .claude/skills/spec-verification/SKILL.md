@@ -46,21 +46,21 @@ Execute the `Implementation Plan` section of the spec using the following
 constraints:
 
 - Ingest context from the spec document and relevant `.agents/skills`.
-- **Single-Shot Implementation**: Follow the `rfc-impl` workflow
-  using its **"single shot implementation"** mode. You must execute all steps
-  autonomously without stopping for human review or approval between steps.
-  Complete all steps until the codebase aligns completely with your
-  interpretation of the specification. **Note**: All tests should pass (e.g., by
-  running `bin/test`) before exiting this step.
+- **Single-Shot Implementation**: Follow the `rfc-impl` workflow using its
+  **"single shot implementation"** mode. You must execute all steps autonomously
+  without stopping for human review or approval between steps. Complete all
+  steps until the codebase aligns completely with your interpretation of the
+  specification. **Note**: All tests should pass (e.g., by running `bin/test`)
+  before exiting this step.
 
 ### 3. Implementation Self-Review (Up to 3 Cycles)
 
 **MANDATORY**: Before comparing against the golden implementation or seeking
-feedback, you MUST utilize the `rfc-impl-review` skill to
-automatically review your own work. **Do not shortcut this step.** You must
-generate an artifact for this step that outlines the changes you made based on
-the reviews. Also, include the final report from the rfc-impl-review
-skill in your workspace (e.g., `SelfReviewReport.md`).
+feedback, you MUST utilize the `rfc-impl-review` skill to automatically review
+your own work. **Do not shortcut this step.** You must generate an artifact for
+this step that outlines the changes you made based on the reviews. Also, include
+the final report from the rfc-impl-review skill in your workspace (e.g.,
+`SelfReviewReport.md`).
 
 1. Trigger a review of your newly generated implementation against the spec
    constraints and codebase defensive coding skills.

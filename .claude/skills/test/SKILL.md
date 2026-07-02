@@ -62,12 +62,13 @@ each run** instead of hard-coding one.
     values (month `1–12`, leap-aware day), formatted exactly as the wire
     contract specifies.
   - An enum / status code → a random member of the valid set.
-- **Generators live in a shared test utility**, never inline in each test, so the
-  valid-range definition has a single home and the generator is reusable across
-  suites (e.g. an iOS `RandomFixtures`/`TestData` helper in the test target).
-- **Keep failures reproducible.** Pure randomness can produce a red run you can't
-  repeat. The generator MUST log the value it produced (and SHOULD accept an
-  optional seed) so any failure can be replayed exactly.
+- **Generators live in a shared test utility**, never inline in each test, so
+  the valid-range definition has a single home and the generator is reusable
+  across suites (e.g. an iOS `RandomFixtures`/`TestData` helper in the test
+  target).
+- **Keep failures reproducible.** Pure randomness can produce a red run you
+  can't repeat. The generator MUST log the value it produced (and SHOULD accept
+  an optional seed) so any failure can be replayed exactly.
 
 ## ⚠️ Cautionary Example
 
