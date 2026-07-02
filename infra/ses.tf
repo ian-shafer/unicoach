@@ -13,10 +13,9 @@
 # Workspace) — SES only adds DKIM CNAMEs and an isolated MAIL FROM subdomain,
 # neither of which collides with the apex MX/TXT.
 #
-# Two account-level actions are NOT expressible in HCL and remain runbook steps
-# (see SPEC.md § Email sending): exiting the SES sandbox (a PutAccountDetails
-# production-access request) and — while still sandboxed — verifying individual
-# test recipients.
+# Two account-level actions are NOT expressible in HCL and remain runbook steps:
+# exiting the SES sandbox (a PutAccountDetails production-access request) and —
+# while still sandboxed — verifying individual test recipients.
 
 resource "aws_sesv2_email_identity" "sender" {
   email_identity = var.app_domain

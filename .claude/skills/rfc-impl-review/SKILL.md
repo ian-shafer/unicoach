@@ -87,10 +87,13 @@ Validate that the code changes did not spill over into unrelated files.
   any file in one but not the other is a discrepancy to report.
 - If an extraneous file was modified, clearly identify it as an isolation
   failure.
-- **Spec Touch Ban:** Explicitly check if any `SPEC.md` files were modified. If
-  they were, this is an automatic isolation failure. The implementor must revert
-  all changes to `SPEC.md` files, as they are managed exclusively via the
-  `spec-sync-loop`.
+- **Invariants Landing Check:** If the RFC carries an `Invariants` section, each
+  declared invariant must appear (Rule + Why; wording may be lightly edited to
+  match the file's style, meaning unchanged) in its target directory's
+  `INVARIANTS.md` — a missing landing is a scope failure. The converse is
+  enforced too: any `INVARIANTS.md` change with no matching RFC declaration, and
+  any created `SPEC.md` (this codebase does not use them), is an automatic
+  isolation failure the implementor must revert.
 
 ### Phase 2. Implementation Scope Check
 

@@ -25,28 +25,32 @@ Adversarial review of an RFC design against the standards in
   resolution options. Explicitly recommend one.
 - **Tone**: Highly technical, dry, objective. Zero fluff. Zero subjective
   adjectives.
-- **Acceptance of N/A**: While all required headers must be present, it is generally acceptable for the content of a section to be `N/A` if it is genuinely not applicable. **However, the `Detailed Design` section is a strict exception: it should almost never be N/A. Flag `Detailed Design` as `Critical` if it is marked `N/A` unless the objective is purely exploratory and no concrete design information exists.** For other sections, do not flag `N/A` as lacking detail, incomplete, or missing if it avoids unnecessary fluff.
+- **Acceptance of N/A**: While all required headers must be present, it is
+  generally acceptable for the content of a section to be `N/A` if it is
+  genuinely not applicable. **However, the `Detailed Design` section is a strict
+  exception: it should almost never be N/A. Flag `Detailed Design` as `Critical`
+  if it is marked `N/A` unless the objective is purely exploratory and no
+  concrete design information exists.** For other sections, do not flag `N/A` as
+  lacking detail, incomplete, or missing if it avoids unnecessary fluff.
 
 ## Post-Review Interaction
 
-After presenting the full review, ask the user how they want to proceed.
-Present the options below as a **numbered selection widget** so the user can
-pick one:
+After presenting the full review, ask the user how they want to proceed. Present
+the options below as a **numbered selection widget** so the user can pick one:
 
 1. Walk through findings one-by-one.
-2. Reviewer implements accepted recommendations using the `rfc-design`
-   skill (`rfc-design/SKILL.md`). In this mode, read and follow the
-   `rfc-design` skill, then apply accepted findings directly to the RFC
-   file. Before starting, ask the user which findings to implement. Accept
-   any of the following responses:
+2. Reviewer implements accepted recommendations using the `rfc-design` skill
+   (`rfc-design/SKILL.md`). In this mode, read and follow the `rfc-design`
+   skill, then apply accepted findings directly to the RFC file. Before
+   starting, ask the user which findings to implement. Accept any of the
+   following responses:
    - **All**: Implement every finding.
    - **Severity threshold**: e.g., "Minor and above" (= Critical + Major +
      Minor), "Major and above" (= Critical + Major), "Critical only".
-   - **Individual selection**: User specifies finding IDs (e.g., "F1, F3,
-     F5").
+   - **Individual selection**: User specifies finding IDs (e.g., "F1, F3, F5").
 3. **PASS verdict only**: Ignore remaining findings and mark the RFC as ready
-   for implementation. Only present this option when the verdict is `PASS`
-   (zero Critical, zero Major).
+   for implementation. Only present this option when the verdict is `PASS` (zero
+   Critical, zero Major).
 
 ## The Review Process
 
@@ -65,16 +69,34 @@ Verify the RFC contains these exact required headers:
 - `## Executive Summary`
 - `## Detailed Design`
 - `## Tests`
+- `## Invariants`
 - `## Implementation Plan`
 - `## Files Modified`
+
+For `## Invariants`, verify the mechanics: each declared invariant carries a
+**Rule**, a **Why**, and a **target directory**; when any are declared, the
+`Implementation Plan` includes the step landing them in each target directory's
+`INVARIANTS.md` and `Files Modified` lists those paths (flag broken linkage as
+`Major`). On substance, invariants are the Architect's call — they were stated
+by the human, and the human generally wants what they asked for. Review as an
+advisor, not a gatekeeper: use breadth of knowledge to flag an invariant that
+conflicts with an existing directory invariant or with the design itself, to
+sharpen ambiguous wording, or to suggest (as `Minor`) a durable guarantee the
+design plainly introduces but the section omits. `None.` is the common, correct
+content.
 
 Extra sections are permitted **only if they do not duplicate required-section
 content**. In particular, flag a standalone `Decisions`, `Rationale`,
 `Alternatives`, or `Trade-offs` appendix as a `Major` finding when its content
 restates choices already specified in `Detailed Design`; the rationale belongs
 inline in `Detailed Design`, not in a parallel appendix (see §9). Missing or
-misspelled required headers: flag as `Critical` or `Major`. Do not stop to ask the user — proceed with the remaining
-review. Note: If a required header is present but its content is simply `N/A`, this is perfectly acceptable provided the section is legitimately not applicable, **with the strict exception of `Detailed Design` which must almost never be N/A (unless purely exploratory). Flag an invalid `N/A` in Detailed Design as `Critical`.** Do not flag valid `N/A`s as missing or incomplete.
+misspelled required headers: flag as `Critical` or `Major`. Do not stop to ask
+the user — proceed with the remaining review. Note: If a required header is
+present but its content is simply `N/A`, this is perfectly acceptable provided
+the section is legitimately not applicable, **with the strict exception of
+`Detailed Design` which must almost never be N/A (unless purely exploratory).
+Flag an invalid `N/A` in Detailed Design as `Critical`.** Do not flag valid
+`N/A`s as missing or incomplete.
 
 ### 3. Executive Summary
 
@@ -87,21 +109,25 @@ Verify:
 
 Evaluate depth across these axes and flag the listed anti-patterns:
 
-- **Structural Specifications Only**: Ensure that the RFC strictly excludes concrete implementation code (e.g., function bodies, control flow, markup templates, stylesheet rules). Verify that design specifications are restricted to declarative schemas and interfaces: API signatures, structural type definitions, database schemas, protobuf definitions, configuration schemas, etc. Flag any concrete implementation code as a `Major` finding.
-
+- **Structural Specifications Only**: Ensure that the RFC strictly excludes
+  concrete implementation code (e.g., function bodies, control flow, markup
+  templates, stylesheet rules). Verify that design specifications are restricted
+  to declarative schemas and interfaces: API signatures, structural type
+  definitions, database schemas, protobuf definitions, configuration schemas,
+  etc. Flag any concrete implementation code as a `Major` finding.
 
 - **Data Models**: Field types, nullability, and relationships (FKs) must be
   explicit. Flag missing indexes on queried fields. Flag overly broad types.
 - **API Contracts**: Exact request/response schemas and methods must be
   specified. Flag `list` endpoints missing pagination. Flag state mutations
   using `GET`.
--   **Error Handling**: Behavior for invalid inputs, dependency failures, and
-    timeouts must be specified. Flag vague "returns error" statements — demand
-    specific error codes and failure modes.
-- **Dependencies**: All services and libraries must be listed with their
-  purpose and identified as new or existing. **You MUST perform a web search**
-  to verify the latest stable release of every listed dependency. Flag outdated
-  versions as `Minor` or `Major` based on criticality and version deviation.
+- **Error Handling**: Behavior for invalid inputs, dependency failures, and
+  timeouts must be specified. Flag vague "returns error" statements — demand
+  specific error codes and failure modes.
+- **Dependencies**: All services and libraries must be listed with their purpose
+  and identified as new or existing. **You MUST perform a web search** to verify
+  the latest stable release of every listed dependency. Flag outdated versions
+  as `Minor` or `Major` based on criticality and version deviation.
 
 ### 5. Tests
 
@@ -117,8 +143,8 @@ Verify:
 Verify:
 
 - Steps are atomic and sequential.
-- Each step specifies a concrete verification action (e.g., run a test, check
-  a log).
+- Each step specifies a concrete verification action (e.g., run a test, check a
+  log).
 - Flag vague "refactor" steps with no clear deliverable.
 
 ### 7. Files Modified
@@ -130,7 +156,8 @@ Verify:
 - Files listed as **modified** or **deleted** already exist.
 - Use search tools to check for missing dependencies or configurations. Do not
   take the RFC's claims at face value.
-- **IMPORTANT**: Any time the `Files Modified` section is missing a required file or includes an extraneous file, list it as a `Minor` finding.
+- **IMPORTANT**: Any time the `Files Modified` section is missing a required
+  file or includes an extraneous file, list it as a `Minor` finding.
 
 ### 8. Completeness Check (Semantic Cross-Referencing)
 
@@ -151,8 +178,8 @@ to grow; this one forces it to shrink. Apply it as rigorously as the rest — an
 RFC that is twice as long as it needs to be is a finding, not a virtue.
 
 - Flag subjective fluff words (e.g., "elegant", "robust", "seamless").
-- Flag lack of quantification: "low latency" → demand a target in
-  milliseconds. "Handles high load" → demand QPS targets.
+- Flag lack of quantification: "low latency" → demand a target in milliseconds.
+  "Handles high load" → demand QPS targets.
 - Flag hand-wavy or non-committal language.
 - **Cross-section redundancy** (`Major`): Flag any fact, decision, or rationale
   stated in more than one section. A choice explained in the Executive Summary,
@@ -161,7 +188,7 @@ RFC that is twice as long as it needs to be is a finding, not a virtue.
   reference it tersely elsewhere.
 - **Buried essence** (`Major`): Flag any design element (table, type, endpoint,
   decision, migration) that does not open with a single plain declarative
-  sentence stating what it *is*. If the reader cannot tell what is being built
+  sentence stating what it _is_. If the reader cannot tell what is being built
   from the first line of an element — because it leads with qualification or
   rationale and only circles the actual structure — demand an essence-first
   rewrite.
@@ -180,8 +207,8 @@ Check whether the RFC should have addressed the following. Flag as
 - **Data Migration**: How to handle existing data if schemas change.
 - **Performance/Scalability**: Explicitly **IGNORE** minor (and some major)
   performance concerns at this stage. Do not flag.
-- **Security/Privacy**: Explicitly **IGNORE** PII and security concerns at
-  this stage. Do not flag or evaluate.
+- **Security/Privacy**: Explicitly **IGNORE** PII and security concerns at this
+  stage. Do not flag or evaluate.
 
 ### 11. Report Output
 

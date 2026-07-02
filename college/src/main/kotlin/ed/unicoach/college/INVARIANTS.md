@@ -47,7 +47,7 @@ of the best-effort design.
 field MUST be coerced to `NULL` and the row MUST still be persisted. Only a
 missing or invalid _required_ field, or an out-of-domain _key_ field, may skip
 the whole row. Which fields are optional versus required/key is the loader's own
-partition (described in `SPEC.md`); the invariant is that the partition is
+partition (defined in the loader code); the invariant is that the partition is
 honored — an optional field's validity failure MUST NOT escalate to dropping the
 row.
 

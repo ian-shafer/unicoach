@@ -108,9 +108,7 @@ mkdir -p \
   "$run_scratch/phase1/review-loop" \
   "$run_scratch/phase2/impl" \
   "$run_scratch/phase2/impl-review" \
-  "$run_scratch/phase2/impl-fix" \
-  "$run_scratch/phase3/spec-sync" \
-  "$run_scratch/phase3/invariants"
+  "$run_scratch/phase2/impl-fix"
 
 state_file="$(pl_state_file "$run_scratch")"
 cat > "$state_file" << EOF

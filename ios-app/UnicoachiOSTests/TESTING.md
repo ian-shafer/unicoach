@@ -1,9 +1,9 @@
 # Testing Guide — UnicoachiOS
 
 Practical conventions for writing tests in this target. This is **guidance, not
-a module spec** — the DI / `MockURLProtocol` / xcodebuild mechanics are
-specified in [../UnicoachiOS/SPEC.md](../UnicoachiOS/SPEC.md); this file
-captures _how to write a good test_ on top of them.
+a module spec** — for the DI / `MockURLProtocol` / xcodebuild mechanics, read
+the code (`UnicoachiOS/` and this target's fixtures); this file captures _how to
+write a good test_ on top of them.
 
 ## Running the suite
 

@@ -2,27 +2,27 @@
 name: rfc-pipeline
 description: >-
   A master macro skill that orchestrates the entire lifecycle of an RFC from
-  design to spec synchronization. It runs autonomous phases as background agents
+  design to the final commits. It runs autonomous phases as background agents
   to isolate contexts and prevent context bloat, and delegates interactive
   phases to separate conversations.
 ---
 
 # RFC Pipeline Master Skill
 
-This skill acts as the master orchestrator for the entire Spec-Driven
-Development (SDD) lifecycle of an RFC. It manages the state machine, spawns
-background agents to run autonomous loops, and guides the human Architect
-through interactive phases in strict sequential order. All skill references in
-this master orchestrator are prefixed with a slash (e.g., `/rfc-design`) to
-indicate they are executable macro tools rather than plain phrases.
+This skill acts as the master orchestrator for the entire RFC-driven development
+lifecycle. It manages the state machine, spawns background agents to run
+autonomous loops, and guides the human Architect through interactive phases in
+strict sequential order. All skill references in this master orchestrator are
+prefixed with a slash (e.g., `/rfc-design`) to indicate they are executable
+macro tools rather than plain phrases.
 
 **Role — master.** This skill wears the **master** hat from `iterative-work`,
 which defines the master / orchestrator / worker contracts and the universal
 rules once: capture-on-completion, scratch ownership, checkpoint-at-gates,
 verify-on-return-_and_-stall, bounded fan-out, write-scope enforcement,
 never-trust-green. Below, this skill states only the **pipeline-specific
-mechanics** (worktree, git checkpoints, phase sequencing, the Spec/Invariants
-gates); where the two overlap, `iterative-work` is the contract and this file is
+mechanics** (worktree, git checkpoints, phase sequencing, the invariants landing
+check); where the two overlap, `iterative-work` is the contract and this file is
 the instantiation.
 
 ## How work is dispatched in Claude Code
@@ -31,34 +31,31 @@ Three dispatch mechanisms, chosen by the phase's shape:
 
 - **Single-shot autonomous work → background agents.** Work that runs once with
   no human interaction and does **not** drive `/skill-loop` — implementation
-  (`/rfc-impl`), the Stage-A review prep (`[rfc-impl-review-prep]`), fix passes
-  (`/rfc-impl-fix`), and `/invariants-writer` — is spawned with the **`Agent`
-  tool** using `run_in_background: true`. The harness re-invokes this
-  orchestrator with the agent's final report when it finishes, so you can spawn,
-  then continue once notified — no polling required.
+  (`/rfc-impl`), the Stage-A review prep (`[rfc-impl-review-prep]`), and fix
+  passes (`/rfc-impl-fix`) — is spawned with the **`Agent` tool** using
+  `run_in_background: true`. The harness re-invokes this orchestrator with the
+  agent's final report when it finishes, so you can spawn, then continue once
+  notified — no polling required.
 - **Autonomous loops → an operator-launched separate conversation.** The review
-  loop (`/rfc-review-loop`, Phase 1) and SPEC sync (`/spec-sync-loop`, Phase 3a)
-  each drive `/skill-loop`, which runs its chain by spawning a background child
-  per step and awaiting it. That resume-on-completion only works when the loop
-  is the **top-level** session, so a loop **cannot** be run as a background
-  agent from here: one level down it would strand — the harness marks the middle
-  agent complete the instant it yields to wait, its background child reparents
-  to the top level, and the child's completion never returns to the loop, which
-  never resumes. So dispatch these the **same way as design**: hand the operator
-  a copy-pasteable prompt to run the loop in a **new conversation** (a fresh
-  top-level session), then pause and wait for them to return the loop's summary.
-  No human _judgment_ is exercised here — the operator is only the launch
-  vehicle for a top-level session; the loop itself is fully autonomous.
+  loop (`/rfc-review-loop`, Phase 1) drives `/skill-loop`, which runs its chain
+  by spawning a background child per step and awaiting it. That
+  resume-on-completion only works when the loop is the **top-level** session, so
+  a loop **cannot** be run as a background agent from here: one level down it
+  would strand — the harness marks the middle agent complete the instant it
+  yields to wait, its background child reparents to the top level, and the
+  child's completion never returns to the loop, which never resumes. So dispatch
+  it the **same way as design**: hand the operator a copy-pasteable prompt to
+  run the loop in a **new conversation** (a fresh top-level session), then pause
+  and wait for them to return the loop's summary. No human _judgment_ is
+  exercised here — the operator is only the launch vehicle for a top-level
+  session; the loop itself is fully autonomous.
 - **Interactive design → an operator-launched separate conversation.** Design
   needs live back-and-forth with the Architect, which a background agent cannot
   do. Same mechanism as the loops (copy-pasteable prompt, new conversation,
   pause and wait), but here the human genuinely participates.
 
 The stated reason for pushing loop and design work into a separate conversation
-is _"to keep my context window clean so I can stay focused on my job."_ The only
-Phase 3 human **judgment** touchpoint is the **minimal, inline** review gate for
-`INVARIANTS.md` (Phase 3b), handled in this orchestrator conversation, not a
-separate one.
+is _"to keep my context window clean so I can stay focused on my job."_
 
 Every dispatched unit — background agent or operator-launched conversation —
 MUST operate inside this run's dedicated **pipeline worktree**
@@ -82,21 +79,12 @@ _orchestrators_ — the Phase 1 `/rfc-review-loop` (RFC design review) and
 **every** `/rfc-impl-review` / `/rfc-impl-review-loop` pass in Phase 2 — are
 **not** pinned; they inherit that session model and so never go stale as models
 change. The model pins in this pipeline are confined to **non-adversarial** work
-where the mid tier is cheaper without costing correctness reasoning: (1) the
+where the mid tier is cheaper without costing correctness reasoning: the
 **leaf** reviewers — the code-review and design-review chains fan out to many
 small parallel agents, held to a mid tier via the `code-reviewer` and
-`design-reviewer` agent definitions in `.claude/agents/`; and (2) the **Phase 3
-spec/invariants work** (`spec-sync-loop`, `invariants-writer`) — SPEC synthesis
-and invariant distillation are descriptive/filtering work, so held to the mid
-tier; `/invariants-writer` is spawned as a background agent pinned
-`model:
-sonnet`, while `/spec-sync-loop` is operator-launched (Phase 3a) and the
-operator is asked to `/model sonnet` in that conversation. The invariants still
-pass an inline human gate. These pins — `model:` in the `code-reviewer` /
-`design-reviewer` agent files, `model: sonnet` on the `invariants-writer` spawn,
-and the `/model sonnet` step in the Phase 3a operator prompt — are the places to
-revisit if the model lineup ever reshuffles. The adversarial review
-orchestrators above stay on the session model on purpose.
+`design-reviewer` agent definitions in `.claude/agents/`. Those `model:` pins
+are the places to revisit if the model lineup ever reshuffles. The adversarial
+review orchestrators above stay on the session model on purpose.
 
 The shared review context — the base-to-HEAD diff plus each changed file's
 contents — is materialized **once to `<scratch>/review-context.md`** (by the
@@ -167,14 +155,13 @@ by RFC:
 - `<skill-name>` is the skill that session **runs**, without the leading slash.
   - This orchestrator's **own** session is `rfc-pipeline`.
   - The operator-launched separate conversations are `rfc-design` (interactive
-    design), `rfc-review-loop` (Phase 1 autonomous loop), and `spec-sync-loop`
-    (Phase 3a autonomous loop).
+    design) and `rfc-review-loop` (Phase 1 autonomous loop).
   - Each background agent uses the actual sub-skill it invokes (`rfc-impl`,
-    `rfc-impl-review-loop`, `rfc-impl-fix`, `rfc-impl-review`,
-    `invariants-writer`). The Phase 2 delegated Stage A prep agent — which runs
-    `rfc-impl-review` Stage A only and spawns no leaves — is named
-    `rfc-impl-review-prep`. The leaf fan-out (Phase 2 step 2b) runs inline in
-    **this** orchestrator session, so it spawns no separately-named session.
+    `rfc-impl-review-loop`, `rfc-impl-fix`, `rfc-impl-review`). The Phase 2
+    delegated Stage A prep agent — which runs `rfc-impl-review` Stage A only and
+    spawns no leaves — is named `rfc-impl-review-prep`. The leaf fan-out (Phase
+    2 step 2b) runs inline in **this** orchestrator session, so it spawns no
+    separately-named session.
 - `<n>` is this run's RFC number, claimed in Phase 0.
 - `<rfc-name>` is a short, human-readable title for the RFC in Sentence case,
   derived from the RFC's H1 / brief description (e.g. `69-email-verification.md`
@@ -183,8 +170,7 @@ by RFC:
 
 Examples: `[rfc-pipeline] rfc/69 Email verification`,
 `[rfc-design] rfc/69 Email verification`,
-`[rfc-impl] rfc/69 Email verification`,
-`[spec-sync-loop] rfc/69 Email verification`.
+`[rfc-impl] rfc/69 Email verification`.
 
 How each session gets its name depends on who owns it:
 
@@ -199,11 +185,11 @@ How each session gets its name depends on who owns it:
   field — the task/session name the harness surfaces. The orchestrator sets it
   directly; no human step.
 - **Operator-launched child conversations** (the interactive design conversation
-  and the two autonomous-loop conversations, `rfc-review-loop` and
-  `spec-sync-loop`). These too are sessions whose model cannot rename itself, so
-  auto-titling will be wrong. Instruct the Architect to run
-  `/rename [<skill-name>] rfc/<n> <rfc-name>` **as the first message** in the
-  new conversation (or launch it with `claude -n`), before running the skill.
+  and the `rfc-review-loop` autonomous-loop conversation). These too are
+  sessions whose model cannot rename itself, so auto-titling will be wrong.
+  Instruct the Architect to run `/rename [<skill-name>] rfc/<n> <rfc-name>` **as
+  the first message** in the new conversation (or launch it with `claude -n`),
+  before running the skill.
 
 ## Change Tracking, Checkpoints & Agent Write-Scope
 
@@ -272,8 +258,6 @@ skip-if-present, gitignored, survives recovery resets). Layout:
   phase2/impl-review/iter-<i>/code/leaves/<lens>.json    # one file per code leaf, write-once on completion
   phase2/impl-review/iter-<i>/report.md            # compiled — reconstructable from leaves/
   phase2/impl-fix/iter-<i>/ledger.jsonl            # one line per finding: applied | skipped | failed
-  phase3/spec-sync/<dir-slug>.json
-  phase3/invariants/<dir-slug>.json
 ```
 
 ### Checkpoints
@@ -322,11 +306,17 @@ orchestrator asserts that footprint against the declared scope with
 `rfc-pipeline-verify-scope` (exit 0 = within scope; exit 1 = violation with the
 offending paths on stderr):
 
-| Agent                              | May write (tracked) | `rfc-pipeline-verify-scope -s <run-scratch> …`                    |
-| ---------------------------------- | ------------------- | ----------------------------------------------------------------- |
-| `/rfc-review-loop`                 | `rfc/<rfc-file>.md` | `'rfc/<rfc-file>.md'` (allowlist: subset enforced)                |
-| `[rfc-impl-review-prep]` (Stage A) | nothing             | _(no globs: tree must be clean)_                                  |
-| `/rfc-impl`, `/rfc-impl-fix`       | code, tests, config | `-d '*/SPEC.md' -d '*/INVARIANTS.md'` (Spec/Invariants Touch Ban) |
+| Agent                              | May write (tracked)                  | `rfc-pipeline-verify-scope -s <run-scratch> …`     |
+| ---------------------------------- | ------------------------------------ | -------------------------------------------------- |
+| `/rfc-review-loop`                 | `rfc/<rfc-file>.md`                  | `'rfc/<rfc-file>.md'` (allowlist: subset enforced) |
+| `[rfc-impl-review-prep]` (Stage A) | nothing                              | _(no globs: tree must be clean)_                   |
+| `/rfc-impl`, `/rfc-impl-fix`       | code, tests, config, `INVARIANTS.md` | `-d '*/SPEC.md'` (SPEC.md Creation Ban)            |
+
+`*/INVARIANTS.md` is **in scope** for `/rfc-impl` / `/rfc-impl-fix` only to land
+invariants the RFC's **Invariants** section declares (they were human-reviewed
+with the RFC — that is the human gate); an INVARIANTS.md edit with no matching
+RFC declaration is a scope violation. `SPEC.md` files no longer exist in this
+codebase; the deny glob stops an agent from reintroducing one.
 
 The inline leaf fan-out (Phase 2 step 2b) writes only to `.scratch/`
 (gitignored, never in `git status`), so it needs no row. A net-zero edit (modify
@@ -357,7 +347,7 @@ broken tree.
 `rfc-pipeline-squash -s <run-scratch>` resets `--soft` to the base SHA (worktree
 
 - index preserved, WIP history dropped). The Architect then makes the two final
-  commits (RFC doc; code + specs), which run the full hook.
+  commits (RFC doc; code + any INVARIANTS.md changes), which run the full hook.
 
 ## 🗺️ Lifecycle State Machine
 
@@ -368,9 +358,9 @@ stateDiagram-v2
     state Phase1_Design {
         [*] --> Design_Drafting : "Copy-paste prompt"
         Design_Drafting --> Design_Review : "Draft written"
-        Design_Review --> Architect_Spec_Gate : "Review PASS or 3-iter cap"
-        Architect_Spec_Gate --> Design_Drafting : "Architect requests changes"
-        Architect_Spec_Gate --> [*] : "Architect Approved"
+        Design_Review --> Architect_Design_Gate : "Review PASS or 3-iter cap"
+        Architect_Design_Gate --> Design_Drafting : "Architect requests changes"
+        Architect_Design_Gate --> [*] : "Architect Approved"
     }
 
     Phase1_Design --> Phase2_Impl : "Architect Approved"
@@ -399,12 +389,11 @@ stateDiagram-v2
     }
 
     Option_A_Design --> Design_Drafting : "Loop back (checkpoint, edit RFC)"
-    Option_D_Done --> Phase3_Sync : "Ready for Specs"
+    Option_D_Done --> Phase3_Commit : "Ready to commit"
 
-    state Phase3_Sync {
-        [*] --> Spec_Synchronization : "Autonomous spec-sync-loop (operator-run new conversation)"
-        Spec_Synchronization --> Invariants_Gate : "SPEC.md synced"
-        Invariants_Gate --> Commit_Generation : "INVARIANTS.md approved inline"
+    state Phase3_Commit {
+        [*] --> Invariants_Landing_Check : "Verify RFC-declared invariants landed"
+        Invariants_Landing_Check --> Commit_Generation : "All landed (or none declared)"
         Commit_Generation --> [*] : "Architect commits code"
     }
 ```
@@ -528,13 +517,16 @@ any result as green.
 
    Checkpoint before spawning
    (`rfc-pipeline-checkpoint -s <run-scratch> before impl`); the spawn prompt
-   MUST state the **write-scope** (code, tests, config — but **no `*/SPEC.md`
-   and no `*/INVARIANTS.md`**), the `<run-scratch>` sub-path, and the subagent
-   rules (never commit, never stash). Print the transparency line first, then
-   spawn. Pause and wait. **On return _or stall/kill_, verify write-scope**
-   (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md' -d '*/INVARIANTS.md'`)
-   and **independently re-run the test suite** (do not trust the agent's green
-   claim, and a stalled agent may have left a broken tree). If green, checkpoint
+   MUST state the **write-scope** (code, tests, config, plus the target
+   directories' `INVARIANTS.md` **only for invariants the RFC's Invariants
+   section declares** — and **no `*/SPEC.md`**), the `<run-scratch>` sub-path,
+   and the subagent rules (never commit, never stash). Print the transparency
+   line first, then spawn. Pause and wait. **On return _or stall/kill_, verify
+   write-scope** (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md'`;
+   additionally, if `git status` shows an `INVARIANTS.md` change but the RFC
+   declares no invariants, treat it as a violation) and **independently re-run
+   the test suite** (do not trust the agent's green claim, and a stalled agent
+   may have left a broken tree). If green, checkpoint
    (`rfc-pipeline-checkpoint -s <run-scratch> impl`); if broken, recover to
    `before impl` (`rfc-pipeline-recover -s <run-scratch> before impl`) and
    re-spawn against the same scratch path (it resumes where it left off).
@@ -601,10 +593,10 @@ any result as green.
    reconstructed findings; it records a per-finding ledger
    (`applied | skipped | failed`) write-once, so a stalled fix resumes at the
    first unapplied finding. On return _or stall/kill_: verify write-scope
-   (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md' -d '*/INVARIANTS.md'`)
-   and **independently re-run the suite** — if broken, recover to
-   `impl-review [i]` (`rfc-pipeline-recover -s <run-scratch> impl-review <i>`)
-   and re-spawn the fix (it resumes from its ledger); if green, checkpoint
+   (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md'`) and
+   **independently re-run the suite** — if broken, recover to `impl-review [i]`
+   (`rfc-pipeline-recover -s <run-scratch> impl-review <i>`) and re-spawn the
+   fix (it resumes from its ledger); if green, checkpoint
    (`rfc-pipeline-checkpoint -s <run-scratch> impl-fix <i>`).
 
    Because every pass is checkpointed and every leaf and finding is captured
@@ -661,10 +653,10 @@ any result as green.
         (`rfc-pipeline-checkpoint -s <run-scratch> rfc-refine <i>`), then spawn
         a background agent running `/rfc-impl-fix` to apply only the RFC design
         changes incrementally to the existing implementation. The spawn prompt
-        MUST state the **write-scope** (code, tests, config — **no `*/SPEC.md`
-        and no `*/INVARIANTS.md`**), the `<run-scratch>` sub-path, and the
-        subagent rules. You MUST pass the captured RFC design diff as the action
-        items to implement:
+        MUST state the **write-scope** (code, tests, config, plus
+        `INVARIANTS.md` only for RFC-declared invariants — **no `*/SPEC.md`**),
+        the `<run-scratch>` sub-path, and the subagent rules. You MUST pass the
+        captured RFC design diff as the action items to implement:
         - **subagent_type**: `general-purpose`
         - **description**: `[rfc-impl-fix] rfc/<n> <rfc-name>`
         - **run_in_background**: `true`
@@ -737,110 +729,30 @@ any result as green.
    3. If they say no, ask if they are ready to proceed to Phase 3.
 
    Repeat this loop until the Architect explicitly states they are done and
-   satisfied (e.g., "done", "looks good", "ready for specs").
+   satisfied (e.g., "done", "looks good", "ready to commit").
 
-### Phase 3: Specs, Invariants & Commit
+### Phase 3: Commit
 
-Phase 3 maintains two sibling per-directory documents with strictly separated
-mandates:
+Invariants need no separate phase: they were **declared in the RFC's Invariants
+section** (human-reviewed with the RFC in Phase 1 — that is the human gate) and
+**landed in the target directories' `INVARIANTS.md` by `/rfc-impl`** alongside
+the code in Phase 2.
 
-- **`SPEC.md`** — _descriptive_: what the code does, so an LLM gets context
-  without reading every file. **Fully LLM-managed, no human gate.** Synced
-  autonomously in an operator-launched separate conversation (3a) — the loop is
-  fully autonomous; the operator only launches it (see **How work is
-  dispatched**).
-- **`INVARIANTS.md`** — _prescriptive_: the few durable guarantees that must
-  remain true as the code evolves, each with its WHY. **Human-gated**, but the
-  review is minimal because invariants are few. Drafted by a background agent,
-  approved **inline in this orchestrator conversation** (3b).
+#### 3a. Invariants landing check (orchestrator, inline)
 
-First, determine the set of directories the implementation touched:
-`git -C "<codebase-root>" diff --name-only <base-sha> HEAD`, then reduce to the
-distinct source directories (exclude `rfc/` and the RFC file itself).
+Before generating commit messages, verify the landing: for each invariant the
+RFC's Invariants section declares, confirm the target directory's
+`INVARIANTS.md` carries it (Rule + Why). If the RFC declares none, confirm no
+`INVARIANTS.md` changed
+(`git -C "<codebase-root>" diff --name-only <base-sha>
+HEAD -- '*INVARIANTS.md'`).
+On a mismatch — a declared invariant missing, or an undeclared `INVARIANTS.md`
+edit — spawn a background `/rfc-impl-fix` pass (per Phase 2 Option B mechanics)
+with the mismatch as its action items, then re-check.
 
-#### 3a. SPEC.md Synchronization (autonomous, operator-launched conversation)
+#### 3b. Commit Message Generation & Code Approval
 
-Do NOT use `/spec-editor` — SPEC.md is LLM-managed. `/spec-sync-loop` drives
-`/skill-loop`, so like the Phase 1 review loop it must run at the **top level**
-of a session and **cannot** be a background agent (it would strand — see **How
-work is dispatched**). Dispatch it via the operator in a **new conversation**;
-the loop is still fully autonomous (no human judgment), the operator only
-launches the top-level session.
-
-Checkpoint first (`rfc-pipeline-checkpoint -s <run-scratch> before spec-sync`).
-Using the touched directories determined above, give the operator this
-copy-pasteable block. SPEC sync is descriptive synthesis, not adversarial
-reasoning, so ask them to run it on the mid tier (`sonnet`) — a cost/latency
-choice, see **Review-agent model policy**. Substitute `<n>`, `<rfc-name>`,
-`<codebase-root>`, `<run-scratch>`, and the `<touched-dir-list>`:
-
-```
-/model sonnet
-```
-
-then:
-
-```
-/rename [spec-sync-loop] rfc/<n> <rfc-name>
-```
-
-then, as the next message:
-
-```
-Run /spec-sync-loop (3 iterations) on EACH of these touched directories in <codebase-root>, creating a new SPEC.md via /spec-writer where one is absent: <touched-dir-list>. Report any durable guarantee you notice that belongs in INVARIANTS.md, but do NOT write INVARIANTS.md yourself. Your scratch sub-path is <run-scratch>/phase3/spec-sync/ — record a per-directory completion artifact (<dir-slug>.json) the instant each directory's sync finishes, and skip any directory whose artifact already exists (so a re-run resumes at the first unsynced directory). Write-scope: */SPEC.md files only — no */INVARIANTS.md, no code/test/config. Never commit, never stash. When done, report the per-directory outcomes and any INVARIANTS.md candidates you noticed.
-```
-
-Pause and wait for the operator to return. On return **_or stall_, verify
-write-scope** (`rfc-pipeline-verify-scope -s <run-scratch> '*/SPEC.md'` —
-allowlist rejects any non-SPEC write). If it stalled, have them re-run it
-against the same scratch sub-path — directories already synced are skipped. Then
-checkpoint (`rfc-pipeline-checkpoint -s <run-scratch> spec-sync`).
-
-#### 3b. INVARIANTS.md (autonomous draft, minimal inline human gate)
-
-Spawn a background agent with the **`Agent`** tool:
-
-- **subagent_type**: `general-purpose`
-- **model**: `sonnet` — invariants drafting is filtered distillation feeding a
-  human gate, not correctness reasoning, so the mid tier suffices; the Architect
-  still reviews every proposed invariant inline. See **Review-agent model
-  policy**.
-- **description**: `[invariants-writer] rfc/<n> <rfc-name>`
-- **run_in_background**: `true`
-- **prompt**: instruct it to run `/invariants-writer` on **each** touched
-  directory in `<codebase-root>`, distilling the few true invariants from each
-  directory's `SPEC.md` + code + in-scope RFCs through the five-gate filter, and
-  to **return the proposed `INVARIANTS.md` drafts plus the filter rationale**
-  (what it kept and, briefly, what it filtered out and why). Give it the scratch
-  sub-path `<run-scratch>/phase3/invariants/` and tell it to write each
-  directory's proposed draft + rationale there (`<dir-slug>.json`, recording
-  "zero invariants" explicitly where that is the outcome) the instant that
-  directory is assessed, and to **skip any directory whose artifact already
-  exists**. It MUST NOT write any `INVARIANTS.md` file to the tree —
-  `INVARIANTS.md` is human-gated; the orchestrator owns the write; scratch is
-  not the tree. Many directories will legitimately yield **zero** invariants and
-  therefore **no file** — that is expected. The prompt MUST state the
-  **write-scope** (writes nothing tracked; reports + scratch only) and the
-  subagent rules.
-
-Checkpoint before spawning
-(`rfc-pipeline-checkpoint -s <run-scratch> before invariants`). On return **_or
-stall/kill_, verify write-scope** (`rfc-pipeline-verify-scope -s <run-scratch>`
-— no globs, tree must be clean), and reconstruct the proposed drafts by reading
-`<run-scratch>/phase3/invariants/` if the agent died mid-run (re-spawn to finish
-any unassessed directories — done ones are skipped). Then run the **inline human
-gate**: present each proposed `INVARIANTS.md` (they are short — a handful of
-lines each) to the Architect in this conversation, note which directories
-yielded no invariants, and ask for approval or edits. Apply the
-Architect-approved invariants by writing the `INVARIANTS.md` files yourself,
-then checkpoint (`rfc-pipeline-checkpoint -s <run-scratch> invariants`).
-
-- **CRITICAL:** Do NOT print the final commit messages during this step.
-
-#### 3c. Commit Message Generation & Code Approval
-
-Once the SPEC.md sync is done and the Architect has approved the `INVARIANTS.md`
-files:
+Once the landing check passes:
 
 - **Squash the pipeline checkpoints**: collapse all WIP checkpoints into a clean
   staging state with `rfc-pipeline-squash -s <run-scratch>` (resets `--soft` to
@@ -854,18 +766,18 @@ files:
 - Generate and provide two formatted commit messages for the Architect to
   copy-paste (following the repository's commit guidelines): one for the
   new/updated RFC markdown document, and one for the actual code implementation
-  (including the synchronized `SPEC.md` and the approved `INVARIANTS.md` files).
+  (including any `INVARIANTS.md` changes the RFC declared).
 - Instruct them to verify everything locally and manually commit the changes
   once they approve. Wait for their confirmation that the code is committed.
 
-3. **Land the branch & tear down the worktree**: Once the Architect confirms the
-   commits exist on `pipeline/rfc-<n>` (inside the worktree), run
-   `rfc-pipeline-land -s <run-scratch>`.
+#### 3c. Land the branch & tear down the worktree
 
-   It runs the teardown from the original checkout: fast-forward the base branch
-   onto `pipeline/rfc-<n>`, `git worktree remove`, and delete the merged branch.
-   It refuses if the worktree still has uncommitted changes (a safety check, not
-   an obstacle to force past) and stops cleanly if the fast-forward is not
-   possible because the base advanced — open a PR or rebase the branch instead.
-   After removal the run is fully wound down and another pipeline may take its
-   place.
+Once the Architect confirms the commits exist on `pipeline/rfc-<n>` (inside the
+worktree), run `rfc-pipeline-land -s <run-scratch>`.
+
+It runs the teardown from the original checkout: fast-forward the base branch
+onto `pipeline/rfc-<n>`, `git worktree remove`, and delete the merged branch. It
+refuses if the worktree still has uncommitted changes (a safety check, not an
+obstacle to force past) and stops cleanly if the fast-forward is not possible
+because the base advanced — open a PR or rebase the branch instead. After
+removal the run is fully wound down and another pipeline may take its place.

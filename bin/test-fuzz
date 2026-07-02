@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A dedicated, reset-per-run fuzz database and port (.env.fuzz) isolate this
 # harness from the dev and test databases. This `export ENV_FILE` is the single
-# sanctioned pre-source statement (see bin/SPEC.md §II); every child process
+# sanctioned pre-source statement (see bin/INVARIANTS.md); every child process
 # (postgres-up, db-reset, build-rest-server, rest-server-up/down) inherits it
 # and operates on the fuzz DB/port.
 export ENV_FILE="$(dirname "$0")/../.env.fuzz"
@@ -74,7 +74,7 @@ SPEC_PATH="$PROJECT_ROOT/api-specs/openapi.yaml"
 COOKIE_JAR="$FUZZ_DIR/cookies.txt"
 
 # Tear down only the rest-server this harness starts. The PostgreSQL cluster is
-# shared across worktrees (see bin/SPEC.md §II Shared Cluster) — never stop it.
+# shared across worktrees (see bin/INVARIANTS.md) — never stop it.
 # Runs Schemathesis as an ordinary child (not exec) so this trap survives to
 # fire on normal exit, interrupt, and termination.
 trap '"$PROJECT_ROOT/bin/rest-server-down" >/dev/null 2>&1 || true' EXIT INT TERM
@@ -171,7 +171,7 @@ log-info "Excluding from this run: /api/v1/conversations* (9 unimplemented), log
 #    - ignored_auth: it strips the generated security parameter to probe whether
 #      auth can be omitted, but the statically-injected -H cookie remains
 #      attached, so it would falsely report every operation as "auth ignored".
-#      (The bin/SPEC compensates with a manual wrong-cookie probe.) This is a
+#      (This harness compensates with a manual wrong-cookie probe.) This is a
 #      harness artifact of static cookie injection, not a server defect.
 #
 #    Every data-conformance check (positive_data_acceptance, not_a_server_error,

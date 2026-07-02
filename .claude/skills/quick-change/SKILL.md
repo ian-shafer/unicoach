@@ -41,10 +41,10 @@ All git/toolchain commands run via `nix develop -c` per CLAUDE.md.
 
 1. Make the change, honoring the baseline skills (`coding`, `kotlin-coding`,
    `general-design`, `shell-scripts` — whichever apply to the touched files).
-2. If the change alters behavior described in a touched directory's **SPEC.md**,
-   update that SPEC.md in the same change (SPEC.md is LLM-managed, no human
-   gate). Do **not** touch INVARIANTS.md — that is human-gated; if the change
-   affects an invariant, tell the user rather than editing it.
+2. Read every touched directory's **INVARIANTS.md** and keep its rules true —
+   but do **not** edit the file itself; it is human-gated. If the change affects
+   an invariant, tell the user rather than editing it. Never create a SPEC.md —
+   this codebase does not use them.
 3. Run the affected tests through the harness, forcing a real run:
    `nix develop -c bin/test <module> -f`. Confirm tests actually executed ("N
    executed", not an all-cache no-op). For non-Kotlin changes (docs, scripts),

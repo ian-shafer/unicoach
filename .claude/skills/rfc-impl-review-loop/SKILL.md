@@ -58,6 +58,5 @@ Follow the initialization and execution state machine instructions defined in
 Upon termination of the loop, you MUST output a final summary report that:
 
 1. Lists all the changes and fixes made to the codebase across all iterations.
-2. Recommends specific updates to the project's skills, `SPEC.md` files, or the
-   RFC itself to prevent the discovered issues from occurring in future
-   autonomous runs.
+2. Recommends specific updates to the project's skills or the RFC itself to
+   prevent the discovered issues from occurring in future autonomous runs.
