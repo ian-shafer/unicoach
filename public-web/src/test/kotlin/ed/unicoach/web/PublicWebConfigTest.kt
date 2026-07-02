@@ -4,6 +4,7 @@ import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PublicWebConfigTest {
@@ -64,7 +65,10 @@ class PublicWebConfigTest {
   }
 
   @Test
-  fun `missing required openInApp url fails fast with ConfigException`() {
+  fun `absent openInApp url parses to null (optional, no boot crash)`() {
+    // Mirrors production: `url = ${?PUBLIC_WEB_OPEN_IN_APP_URL}` with the var unset
+    // leaves the key absent. The affordance is optional, so this must parse, not
+    // fail — an unset deep link simply omits the "Open in app" link.
     val config =
       ConfigFactory.parseString(
         """
@@ -81,7 +85,7 @@ class PublicWebConfigTest {
 
     val result = PublicWebConfig.from(config)
 
-    assertTrue(result.isFailure)
-    assertTrue(result.exceptionOrNull() is ConfigException.Missing)
+    assertTrue(result.isSuccess)
+    assertNull(result.getOrThrow().openInAppUrl)
   }
 }

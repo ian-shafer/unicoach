@@ -60,7 +60,7 @@ fun main() {
 
 fun Application.publicWebModule(
   emailVerifier: EmailVerifier,
-  openInAppUrl: String,
+  openInAppUrl: String?,
 ) {
   installPublicWebRouting(emailVerifier, openInAppUrl)
 }

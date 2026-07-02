@@ -30,7 +30,8 @@ import io.ktor.server.routing.routing
  * renders a confirm form (no backend call, no state change — this preserves the
  * single-use-token guarantee against scanner prefetch), and `POST /verify-email`
  * consumes the token in-process through [emailVerifier] and renders the result
- * page. The open-in-app affordance is iPhone-only ([openInAppUrl]).
+ * page. The open-in-app affordance is iPhone-only and optional ([openInAppUrl]);
+ * a `null`/blank URL omits it.
  *
  * `StatusPages` renders the branded dynamic error pages: a `status` handler for
  * `NotFound` (unmatched routes perform no lookups, so the 404 must be caught
@@ -39,7 +40,7 @@ import io.ktor.server.routing.routing
  */
 fun Application.installPublicWebRouting(
   emailVerifier: EmailVerifier,
-  openInAppUrl: String,
+  openInAppUrl: String?,
 ) {
   install(StatusPages) {
     status(HttpStatusCode.NotFound) { call, _ ->
