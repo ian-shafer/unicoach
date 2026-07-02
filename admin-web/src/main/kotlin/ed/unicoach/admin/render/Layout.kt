@@ -46,14 +46,14 @@ private const val STYLES = """
 """
 
 /**
- * The sole admin-server client-side script (RFC 83): one delegated `click`
+ * The sole admin-web client-side script (RFC 83): one delegated `click`
  * listener on `document`. A click whose `target.closest('.id-copy')` is non-null
  * writes that element's `data-full` to the clipboard and toggles a transient
  * `copied` class a lone `setTimeout` removes — no per-button state. It guards on
  * `navigator.clipboard` being present and no-ops where it is absent (the
  * clipboard API is undefined on a non-secure origin; the hover `title` remains
  * the fallback to the full value). An inline script is permitted because
- * admin-server serves no static-asset route and sets no Content-Security-Policy;
+ * admin-web serves no static-asset route and sets no Content-Security-Policy;
  * if a CSP is ever added this must move to a nonce'd or externally-served script.
  */
 private const val COPY_FEEDBACK_MS = 1000

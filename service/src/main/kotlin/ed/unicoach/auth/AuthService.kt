@@ -262,7 +262,7 @@ class AuthService(
 
   /**
    * The user-only projection of [resolveSession], retained for the user-only
-   * callers in `admin-server` and the exempt auth handlers. Behaviourally
+   * callers in `admin-web` and the exempt auth handlers. Behaviourally
    * identical to the prior `getCurrentUser`: all three user-absent cases map to
    * `null`.
    */

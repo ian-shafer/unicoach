@@ -38,7 +38,7 @@ import io.ktor.server.routing.routing
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "admin-server.conf", "service.conf", "email.conf")
+      .load("common.conf", "db.conf", "admin-web.conf", "service.conf", "email.conf")
       .getOrThrow()
 
   val dbConfig =

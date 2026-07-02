@@ -15,13 +15,13 @@ import io.ktor.server.netty.Netty
  * Boots the public-web server: loads config from the classpath plus the local
  * overlay, binds Netty to the configured host/port, and installs the dynamic
  * render module. Unlike `rest-server` it installs no client-key gate, and
- * unlike `admin-server` it installs no auth gate — every route is public.
+ * unlike `admin-web` it installs no auth gate — every route is public.
  *
  * It reuses the shared `db.conf` `database` block (the same block `rest-server`
- * and `admin-server` load) to build a [Database], wraps it in a [DbEmailVerifier]
+ * and `admin-web` load) to build a [Database], wraps it in a [DbEmailVerifier]
  * for the in-process verify flow, and closes the `Database` on server stop via
  * the `ApplicationStopped` hook in the module lambda — matching the
- * `rest-server` / `admin-server` precedent.
+ * `rest-server` / `admin-web` precedent.
  */
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val config =

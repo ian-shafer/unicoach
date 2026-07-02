@@ -3,11 +3,11 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-build-admin-server [options]
+build-admin-web [options]
 
-Produces a self-contained installDist distribution for :admin-server via
+Produces a self-contained installDist distribution for :admin-web via
 Gradle. The resulting launch script is located at:
-  admin-server/build/install/admin-server/bin/admin-server
+  admin-web/build/install/admin-web/bin/admin-web
 
 Options:
   -h: Help
@@ -25,7 +25,7 @@ done
 shift $((OPTIND-1))
 
 if [ "$#" -gt 0 ]; then
-  fatal -s "$EXIT_UNEXPECTED_ARG" "build-admin-server does not accept positional arguments: $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "build-admin-web does not accept positional arguments: [$*]"
 fi
 
-"$PROJECT_ROOT/gradlew" :admin-server:installDist
+"$PROJECT_ROOT/gradlew" :admin-web:installDist

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+admin-web-wait-for-health [options]
+
+Polls admin-web-check at 1-second intervals until the /healthz endpoint
+returns HTTP 200 or the timeout elapses. Exits 0 on success, non-zero
+on timeout.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -gt 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "admin-web-wait-for-health accepts no arguments: [$*]"
+fi
+
+TIMEOUT=4s
+log-info "Waiting for admin-web health check on port [${ADMIN_WEB_PORT:-8081}]..."
+if ! "$PROJECT_ROOT/bin/wait-for" "$TIMEOUT" "$PROJECT_ROOT/bin/admin-web-check"; then
+  fatal "admin-web did not become healthy within [$TIMEOUT]. Check var/log/admin-web.log."
+fi
+log-info "admin-web is healthy"

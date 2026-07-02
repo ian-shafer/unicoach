@@ -25,7 +25,7 @@ data class DisplayConfig(
  * session cookie attributes, and the [DisplayConfig] render conventions. Parsed
  * fail-fast at startup, mirroring [ed.unicoach.db.DatabaseConfig.from]. The admin
  * server shares no configuration object with `rest-server`; these settings live
- * in `admin-server.conf`.
+ * in `admin-web.conf`.
  */
 data class AdminConfig(
   val host: String,
@@ -41,7 +41,7 @@ data class AdminConfig(
       runCatching {
         require(config.hasPath("admin")) { "Missing configuration section: admin" }
         val admin = config.getConfig("admin")
-        val server = admin.getConfig("server")
+        val server = admin.getConfig("web")
         val session = admin.getConfig("session")
         val display = admin.getConfig("display")
 

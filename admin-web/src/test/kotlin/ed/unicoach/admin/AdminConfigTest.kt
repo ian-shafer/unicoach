@@ -7,8 +7,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class AdminConfigTest {
-  /** Parses the packaged `admin-server.conf` (with classpath fallbacks) the way the server does. */
-  private fun packagedConfig() = ConfigFactory.load(ConfigFactory.parseResourcesAnySyntax("admin-server.conf"))
+  /** Parses the packaged `admin-web.conf` (with classpath fallbacks) the way the server does. */
+  private fun packagedConfig() = ConfigFactory.load(ConfigFactory.parseResourcesAnySyntax("admin-web.conf"))
 
   /**
    * Builds a full admin config whose `display` block is the supplied lines (each a
@@ -19,7 +19,7 @@ class AdminConfigTest {
     ConfigFactory.parseString(
       """
       admin {
-        server { host = "127.0.0.1", port = 8081 }
+        web { host = "127.0.0.1", port = 8081 }
         session {
           cookieName = "admin_session"
           cookieDomain = ""
@@ -126,7 +126,7 @@ class AdminConfigTest {
         .parseString(
           """
           admin {
-            server { host = "127.0.0.1", port = 8081 }
+            web { host = "127.0.0.1", port = 8081 }
             session {
               cookieName = "admin_session"
               cookieDomain = ""

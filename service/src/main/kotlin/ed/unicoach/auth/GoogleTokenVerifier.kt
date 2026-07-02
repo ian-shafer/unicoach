@@ -20,7 +20,7 @@ interface GoogleTokenVerifier {
 
 /**
  * Fail-closed [GoogleTokenVerifier] for hosts that never serve a Google sign-in
- * route (e.g. admin-server). It rejects every token, so wiring it can never
+ * route (e.g. admin-web). It rejects every token, so wiring it can never
  * accept a credential — the explicit, production-safe alternative to silently
  * defaulting to a stub. [GoogleTokenVerifierFactory] is the only place a real
  * verifier is selected.

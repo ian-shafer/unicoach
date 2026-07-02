@@ -6,7 +6,7 @@ import com.typesafe.config.Config
  * Public-web server configuration: the bind host/port for the internet-facing
  * marketing/legal site. Parsed fail-fast at startup, mirroring
  * [ed.unicoach.db.DatabaseConfig.from] and `AdminConfig.from`. The public-web
- * server shares no configuration object with `rest-server` or `admin-server`;
+ * server shares no configuration object with `rest-server` or `admin-web`;
  * these settings live in `public-web.conf`.
  */
 data class PublicWebConfig(

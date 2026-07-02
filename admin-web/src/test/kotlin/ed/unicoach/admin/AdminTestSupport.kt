@@ -60,14 +60,14 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Shared scaffolding for admin-server tests: a real test-DB-backed Database,
+ * Shared scaffolding for admin-web tests: a real test-DB-backed Database,
  * AuthService, and the configured admin module, plus user/student seeders. The
  * test DB is reset to a clean migrated state by `bin/test` before the suite.
  */
 object AdminTestSupport {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "admin-server.conf", "service.conf", "email.conf")
+      .load("common.conf", "db.conf", "admin-web.conf", "service.conf", "email.conf")
       .getOrThrow()
 
   private val dbConfig = DatabaseConfig.from(config).getOrThrow()

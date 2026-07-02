@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+[ "$#" -gt 0 ] && fatal -s "$EXIT_UNEXPECTED_ARG" "admin-web-bounce accepts no arguments: [$*]"
+
+"$PROJECT_ROOT/bin/admin-web-down"
+"$PROJECT_ROOT/bin/admin-web-up"
