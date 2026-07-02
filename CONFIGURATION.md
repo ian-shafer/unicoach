@@ -8,8 +8,11 @@ rests on. Full design:
 
 - **Shell environment** — `.env` (base) plus a `.env.<env>` delta (e.g.
   `.env.prod`), sourced by nearly every shell script and also read by the iOS
-  build and Terraform. On cloud hosts the environment is materialized from SSM
-  (`/unicoach/<env>`) into `/etc/unicoach/env` and handed to the JVM by systemd.
+  build and Terraform (`bin/infra-apply`/`bin/infra-plan` source the layered
+  dotenv and export matching `TF_VAR_*` variables, which OpenTofu auto-reads —
+  see `app_domain` in `infra/variables.tf`). On cloud hosts the environment is
+  materialized from SSM (`/unicoach/<env>`) into `/etc/unicoach/env` and handed
+  to the JVM by systemd.
 - **HOCON (`*.conf`)** — read only by the JVM; pulls shell environment values in
   via `${?VAR}`.
 - **Local overrides and secrets** — `~/.config/unicoach/local.conf`, on a
@@ -23,6 +26,14 @@ HOCON, never both.
 - Needed by the JVM **and** any other consumer → set it in the shell environment
   files.
 - Needed **only** by the JVM → set it in a HOCON file.
+
+**Terraform is a consumer too.** A plain Terraform `variable` with its own
+default (`region`, `instance_type`, `db_instance_class`) is correct only when no
+other consumer needs the value. A value the JVM also needs — e.g. a port that is
+both an ALB target/security-group port and the service's HOCON bind port — falls
+under "needed by the JVM and any other consumer": it belongs in the shell
+environment, with Terraform reading it via `TF_VAR_*` (mirror `app_domain`),
+never owning it as a `local`/`variable` default and pushing it out to SSM.
 
 ## Precedence
 
