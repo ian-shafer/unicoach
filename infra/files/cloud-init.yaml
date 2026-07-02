@@ -25,6 +25,18 @@ write_files:
     encoding: b64
     content: ${filebase64("${module_path}/files/unicoach-queue-worker.service")}
 
+  - path: /etc/systemd/system/unicoach-public-web.service
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${filebase64("${module_path}/files/unicoach-public-web.service")}
+
+  - path: /etc/systemd/system/unicoach-admin-web.service
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${filebase64("${module_path}/files/unicoach-admin-web.service")}
+
   - path: /opt/unicoach/bin/render-env
     owner: root:root
     permissions: "0755"
@@ -44,8 +56,11 @@ runcmd:
   - useradd --system --home-dir /opt/unicoach --shell /usr/sbin/nologin unicoach || true
   - mkdir -p /opt/unicoach/releases /opt/unicoach/bin /etc/unicoach
   - chown -R unicoach:unicoach /opt/unicoach/releases
-  # Enable both units now; they stay inactive until the first deploy creates the
-  # current symlink, then `systemctl restart` (run by deploy-on-instance) starts them.
+  # Enable every unit now; they stay inactive until the first deploy creates
+  # the current symlink, then `systemctl restart` (run by deploy-on-instance)
+  # starts them.
   - systemctl daemon-reload
   - systemctl enable unicoach-rest-server.service
   - systemctl enable unicoach-queue-worker.service
+  - systemctl enable unicoach-public-web.service
+  - systemctl enable unicoach-admin-web.service

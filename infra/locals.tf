@@ -14,4 +14,15 @@ locals {
   # subdomain-per-env sets HOSTED_ZONE_NAME to the parent zone.
   hosted_zone_name = coalesce(var.hosted_zone_name, var.app_domain)
   api_domain       = "api.${var.app_domain}"
+
+  # Host-routed web services on the app instance, beyond the default rest-server
+  # (api, served by the listener's default_action). Each drives a target group,
+  # instance attachment, security-group ingress/egress, ALB listener rule, and
+  # Route53 ALIAS. port is var.public_web_port/var.admin_web_port (sourced from
+  # .env, same value the JVM binds), not a Terraform-owned literal, so it cannot
+  # drift from the service's configured bind port.
+  web_services = {
+    public-web = { port = var.public_web_port, subdomain = "app", priority = 10 }
+    admin-web  = { port = var.admin_web_port, subdomain = "admin", priority = 20 }
+  }
 }

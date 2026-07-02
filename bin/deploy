@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # deploy: the single operator entry point for shipping a release. Contains no AWS
 # resource definitions (those are OpenTofu's). Sequence:
-#   1. bin/build           — produce both installDist distributions locally.
+#   1. bin/build           — produce all deployable installDist distributions locally.
 #   2. assemble a bundle   — tarball preserving repo-relative paths.
 #   3. upload to S3        — the artifacts bucket (OpenTofu output).
 #   4. SSM Run Command     — execute deploy-on-instance on the host (output id).
@@ -64,20 +64,23 @@ tofu -chdir="$PROJECT_ROOT/infra" init \
 # AWS_DEFAULT_REGION); the .env.<env> REGION if set, else the infra region default.
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-${REGION:-us-east-1}}}"
 
-# ── 1. Build both distributions ───────────────────────────────────────────────
+# ── 1. Build all deployable distributions ─────────────────────────────────────
 "$PROJECT_ROOT/bin/build"
 
 REST_DIST="rest-server/build/install/rest-server"
 WORKER_DIST="queue-worker/build/install/queue-worker"
+PUBLIC_WEB_DIST="public-web/build/install/public-web"
+ADMIN_WEB_DIST="admin-web/build/install/admin-web"
 
-for dist in "$REST_DIST" "$WORKER_DIST"; do
+for dist in "$REST_DIST" "$WORKER_DIST" "$PUBLIC_WEB_DIST" "$ADMIN_WEB_DIST"; do
   [ -d "$PROJECT_ROOT/$dist" ] || fatal "Missing distribution [$dist]; did bin/build succeed?"
 done
 
 # ── 2. Assemble the bundle ────────────────────────────────────────────────────
-# The two installDist trees are tarred from their build/install parent so they
-# enter the bundle as bare rest-server/ and queue-worker/ — the paths the systemd
-# units expect at current/<svc>/bin/<svc>, decoupled from the Gradle build layout.
+# The installDist trees are tarred from their build/install parent so they
+# enter the bundle as bare rest-server/, queue-worker/, public-web/, and
+# admin-web/ — the paths the systemd units expect at current/<svc>/bin/<svc>,
+# decoupled from the Gradle build layout.
 # The on-instance migration scripts source bin/common -> bin/functions and shell
 # out to the bin/db-* family; bin/db-status and bin/db-create both invoke
 # bin/db-query for their existence checks, so it must be included. Every db-run
@@ -109,6 +112,8 @@ log-info "Assembling deploy bundle [$BUNDLE_ID]..."
 tar -czf "$BUNDLE_PATH" \
   -C "$(dirname "$PROJECT_ROOT/$REST_DIST")" "$(basename "$REST_DIST")" \
   -C "$(dirname "$PROJECT_ROOT/$WORKER_DIST")" "$(basename "$WORKER_DIST")" \
+  -C "$(dirname "$PROJECT_ROOT/$PUBLIC_WEB_DIST")" "$(basename "$PUBLIC_WEB_DIST")" \
+  -C "$(dirname "$PROJECT_ROOT/$ADMIN_WEB_DIST")" "$(basename "$ADMIN_WEB_DIST")" \
   -C "$PROJECT_ROOT" "${REPO_PATHS[@]}"
 
 # ── 3. Upload to the artifacts bucket ─────────────────────────────────────────

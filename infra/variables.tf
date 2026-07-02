@@ -25,6 +25,16 @@ variable "google_client_ids" {
   type        = string
 }
 
+variable "public_web_port" {
+  description = "public-web's bind port, driving its ALB target group, security-group rule, and the PUBLIC_WEB_PORT SSM value the JVM reads. No default: it is needed by both Terraform and the JVM, so per CONFIGURATION.md it is sourced once in .env and supplied as TF_VAR_public_web_port (mirroring app_domain) rather than owned as a Terraform default."
+  type        = number
+}
+
+variable "admin_web_port" {
+  description = "admin-web's bind port, driving its ALB target group, security-group rule, and the ADMIN_WEB_PORT SSM value the JVM reads. No default: needed by both Terraform and the JVM, so sourced in .env and supplied as TF_VAR_admin_web_port (mirroring public_web_port / app_domain)."
+  type        = number
+}
+
 variable "instance_type" {
   description = "EC2 instance type for the application host (Graviton/ARM)."
   type        = string

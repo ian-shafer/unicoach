@@ -2,7 +2,7 @@
 # deploy-on-instance: invoked on the EC2 host via SSM Run Command with the S3 URI
 # of a release bundle. Unpacks the bundle into a fresh release dir, refreshes the
 # env file from SSM, runs migrations against RDS, then atomically repoints the
-# current symlink and restarts both services.
+# current symlink and restarts every service unit.
 #
 # The symlink swap and restart occur ONLY after migrations succeed, so a failed
 # migration leaves the previous release serving.
@@ -49,9 +49,11 @@ chown -R unicoach:unicoach "$RELEASE_DIR"
   ENV_FILE="$ENV_FILE" bin/db-migrate
 )
 
-# ── 4. Atomically repoint current and restart both units ──────────────────────
+# ── 4. Atomically repoint current and restart every service unit ──────────────
 ln -sfn "$RELEASE_DIR" "$APP_ROOT/current"
 systemctl restart unicoach-rest-server.service
 systemctl restart unicoach-queue-worker.service
+systemctl restart unicoach-public-web.service
+systemctl restart unicoach-admin-web.service
 
 echo "Deploy of release [$RELEASE_ID] complete."

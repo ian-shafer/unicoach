@@ -71,6 +71,31 @@ resource "aws_vpc_security_group_ingress_rule" "ec2_from_alb" {
   ip_protocol                  = "tcp"
 }
 
+# ── alb egress + ec2 ingress: the web-service ports (app, admin) ──────────────
+# One ingress/egress pair per web service, all derived from local.web_services so
+# each port matches its target group. The :8080 rules above are untouched.
+resource "aws_vpc_security_group_egress_rule" "alb_to_ec2_web" {
+  for_each = local.web_services
+
+  security_group_id            = aws_security_group.alb.id
+  description                  = "Forward to app instance on ${each.value.port} (${each.key})"
+  referenced_security_group_id = aws_security_group.ec2.id
+  from_port                    = each.value.port
+  to_port                      = each.value.port
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "ec2_from_alb_web" {
+  for_each = local.web_services
+
+  security_group_id            = aws_security_group.ec2.id
+  description                  = "Web port ${each.value.port} from the ALB (${each.key})"
+  referenced_security_group_id = aws_security_group.alb.id
+  from_port                    = each.value.port
+  to_port                      = each.value.port
+  ip_protocol                  = "tcp"
+}
+
 # ── ec2 egress: all (Anthropic API, SES, SSM endpoints, package installs) ──────
 resource "aws_vpc_security_group_egress_rule" "ec2_all" {
   security_group_id = aws_security_group.ec2.id

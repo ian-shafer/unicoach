@@ -184,7 +184,7 @@ bin/test-fuzz              # runs schemathesis against the live REST API (requir
 The backend deploys as code (OpenTofu under `infra/`) to one or more **isolated
 AWS environments**, each selected by an explicit `UNICOACH_ENV` argument
 (`prod`, a future `staging`, …). Every environment is the same topology — an ALB
-terminating TLS in front of one EC2 instance running both services under
+terminating TLS in front of one EC2 instance running every service under
 `systemd`, against an RDS PostgreSQL database — but with disjoint identity: its
 resources are named `unicoach-<env>`, its config/secrets live under
 `/unicoach/<env>/*` in SSM, and its Terraform state is a per-env key + on-disk
@@ -198,8 +198,9 @@ first argument.
 
 ### 0. Domain gate (prerequisite)
 
-Each environment serves its API at `api.<app_domain>` and writes records into a
-Route53 zone identified by `hosted_zone_name`:
+Each environment serves its hosts under `<app_domain>` (see
+[Hosts and services](#hosts-and-services)) and writes records into a Route53
+zone identified by `hosted_zone_name`:
 
 - **Apex env** (e.g. `prod`): `app_domain` _is_ its own zone (`uni.coach`), so
   `.env.prod` omits `HOSTED_ZONE_NAME` and infra coalesces it to `app_domain`.
@@ -212,6 +213,24 @@ The zone must already be registered through Route53 Domains (its hosted zone is
 auto-created). OpenTofu references it by data source; if registration is
 incomplete, `bin/infra-apply <env>` fails closed at the TLS/DNS resources with
 no partial state.
+
+#### Hosts and services
+
+The services run under `systemd` on the one instance, fronted by a single ALB
+`:443` listener that routes by host header. The internet-facing ones each get
+their own one-level host under `<app_domain>`:
+
+- `api.<app_domain>` → `rest-server` — the listener's **default action**, so any
+  unmatched host (including a direct ALB-DNS hit) also reaches it.
+- `app.<app_domain>` → `public-web` — the brand site and the email verification
+  page (`verify base = https://app.<app_domain>/verify-email`).
+- `admin.<app_domain>` → `admin-web` — the operator console, gated by its own
+  email/password login and a `Secure` session cookie.
+
+`queue-worker` binds no port (no host, no ALB target). A single wildcard
+`*.<app_domain>` ACM certificate covers all three hosts, so no per-host
+certificate is attached. The `app`/`admin` hosts are additive: the `api` default
+action and its `:8080` path are untouched.
 
 ### 1. Provision infrastructure
 
@@ -256,15 +275,15 @@ like the Route53 zone).
 bin/deploy prod
 ```
 
-`bin/deploy <env>` builds both `installDist` distributions (`bin/build`),
-bundles them with `db/schema/` and the migration scripts, uploads the bundle to
-the env's artifacts bucket, and issues an SSM Run Command. On the instance the
-deploy step refreshes `/etc/unicoach/env` from `/unicoach/<env>/*` SSM, runs
-`db-create-role → db-create → db-migrate` against RDS, then repoints
-`/opt/unicoach/current` and restarts both units. A failed migration leaves the
-previous release serving (the symlink swaps only after migrations succeed); a
-single-instance restart implies brief downtime per deploy, accepted at this
-scale.
+`bin/deploy <env>` builds all deployable `installDist` distributions
+(`bin/build`), bundles them with `db/schema/` and the migration scripts, uploads
+the bundle to the env's artifacts bucket, and issues an SSM Run Command. On the
+instance the deploy step refreshes `/etc/unicoach/env` from `/unicoach/<env>/*`
+SSM, runs `db-create-role → db-create → db-migrate` against RDS, then repoints
+`/opt/unicoach/current` and restarts every service unit. A failed migration
+leaves the previous release serving (the symlink swaps only after migrations
+succeed); a single-instance restart implies brief downtime per deploy, accepted
+at this scale.
 
 ### Add an environment
 

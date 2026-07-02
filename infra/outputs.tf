@@ -13,6 +13,16 @@ output "app_url" {
   value       = "https://${local.api_domain}"
 }
 
+output "public_web_url" {
+  description = "Public HTTPS URL public-web is served at."
+  value       = "https://${local.web_services["public-web"].subdomain}.${var.app_domain}"
+}
+
+output "admin_web_url" {
+  description = "Public HTTPS URL admin-web is served at."
+  value       = "https://${local.web_services["admin-web"].subdomain}.${var.app_domain}"
+}
+
 output "rds_endpoint" {
   description = "RDS instance endpoint (host:port)."
   value       = aws_db_instance.main.endpoint

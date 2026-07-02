@@ -23,21 +23,29 @@ locals {
     DATABASE_USER = var.app_db_user
     SERVER_HOST   = "0.0.0.0"
     SERVER_PORT   = "8080"
-    # public-web's bind port, and a required substitution in service.conf's
-    # emailVerification.verifyUrlBase default — HOCON resolves that default
-    # even though EMAIL_VERIFICATION_VERIFY_URL_BASE overrides it, so the
-    # variable must exist or the JVM services fail at boot. It satisfies
-    # resolution only: the http://<domain>:<port> default it feeds is never
-    # correct in prod, so the EMAIL_VERIFICATION_VERIFY_URL_BASE override
-    # below stays load-bearing.
-    PUBLIC_WEB_PORT       = "8082"
+    # public-web and admin-web default to loopback (127.0.0.1); in cloud they
+    # must bind 0.0.0.0 so the ALB reaches them over the instance's private IP,
+    # or their /healthz targets never turn healthy.
+    PUBLIC_WEB_HOST = "0.0.0.0"
+    ADMIN_WEB_HOST  = "0.0.0.0"
+    # public-web's / admin-web's bind ports, sourced from .env (var.public_web_port
+    # / var.admin_web_port) — the same value local.web_services feeds each ALB
+    # target group, so the configured port cannot drift. PUBLIC_WEB_PORT
+    # additionally satisfies a required substitution in service.conf's
+    # emailVerification.verifyUrlBase default — HOCON resolves that default even
+    # though EMAIL_VERIFICATION_VERIFY_URL_BASE overrides it, so the variable must
+    # exist or the JVM services fail at boot.
+    PUBLIC_WEB_PORT = tostring(var.public_web_port)
+    ADMIN_WEB_PORT  = tostring(var.admin_web_port)
+    # admin-web's session cookie rides the public HTTPS ALB, so mark it Secure.
+    ADMIN_COOKIE_SECURE   = "true"
     SESSION_COOKIE_SECURE = "true"
     # The session cookie spans the whole zone (apex + api subdomain), so it is
-    # the apex app_domain, not the api host. Email links derive from the same
-    # single knob.
+    # the apex app_domain, not the api host. The email verify base points at
+    # app.<domain>, since public-web is served only there (the apex is not routed).
     APP_DOMAIN                         = var.app_domain
     EMAIL_DEFAULT_FROM                 = "noreply@${var.app_domain}"
-    EMAIL_VERIFICATION_VERIFY_URL_BASE = "https://${var.app_domain}/verify-email"
+    EMAIL_VERIFICATION_VERIFY_URL_BASE = "https://${local.web_services["public-web"].subdomain}.${var.app_domain}/verify-email"
     EMAIL_PROVIDER                     = "ses"
     CHAT_PROVIDER                      = "anthropic"
     # The committed .conf default is the offline `stub` verifier (dev-only); prod

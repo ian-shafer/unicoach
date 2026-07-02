@@ -28,6 +28,8 @@ assert_aws_account "${AWS_ACCOUNT_ID:-}"
 export TF_VAR_environment="$ENVIRONMENT"
 export TF_VAR_app_domain="$APP_DOMAIN"
 export TF_VAR_google_client_ids="$GOOGLE_CLIENT_IDS"
+export TF_VAR_public_web_port="$PUBLIC_WEB_PORT"
+export TF_VAR_admin_web_port="$ADMIN_WEB_PORT"
 [ -n "${HOSTED_ZONE_NAME:-}" ] && export TF_VAR_hosted_zone_name="$HOSTED_ZONE_NAME"
 [ -n "${REGION:-}" ] && export TF_VAR_region="$REGION"
 
