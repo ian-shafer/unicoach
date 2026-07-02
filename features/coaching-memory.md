@@ -110,6 +110,16 @@ no observation behind them — they are the coach reasoning across other claims.
   the marquee piece.
 - **The college-knowledge layer is foundational and shared** with live chat, so
   it is sequenced as its own root RFC.
+- **Tool use in chat is staged into one shared loop.** Individual tool
+  _contracts_ (`CollegeSearchTool`, and later extraction's inline-action writer)
+  are built with their owning feature, but the chat turn's **tool-use loop** —
+  structured content blocks on `ChatMessage`, a typed `tools` field on
+  `ChatRequest`, and `stop_reason == "tool_use"` → dispatch → second call — is a
+  single **`chat-tool-use`** RFC that lands the loop once so every tool
+  registers into it. It imports `CollegeSearchTool` as its first consumer and
+  unblocks extraction's deferred inline actions. RFCs 66 and 67 both explicitly
+  defer to it: 67 ships the college tool without wiring it into a turn, and 66
+  keeps extraction worker-only until this loop exists.
 - **No standalone schema RFC.** The obs/claim/claim_support tables ship inside
   `extraction` (their first consumer); the `commitments` table ships inside
   `synthesis` (its first consumer), not `extraction` — extraction never writes a
@@ -128,11 +138,14 @@ no observation behind them — they are the coach reasoning across other claims.
 - **Substrate-as-its-own-RFC?** Currently the schema is folded into
   `extraction`. Reconsider if the schema proves heavy enough to design
   independently.
-- **Extraction timing** — explicit inline tool actions during chat (immediate,
-  visible) vs. a post-conversation worker pass (reflective, off the request
-  path). Current lean: structured high-confidence actions inline, fuzzy claims
-  in the worker pass. Must stay off the chat request path (see RFC 43 / chat
-  turns run on the request coroutine).
+- **Extraction timing — partly resolved.** Extraction shipped **worker-only**
+  (RFC 66): no inline memory actions on the chat turn, because there is no
+  tool-use dispatch in the chat path yet and inline writes would land on the
+  request coroutine, violating the request-path constraint (RFC 43). The hybrid
+  lean (structured high-confidence actions inline, fuzzy claims in the worker
+  pass) is not abandoned but **deferred to the `chat-tool-use` RFC**; the
+  extraction schema precludes nothing, since a future inline writer targets the
+  same `observations`/`claims` tables.
 - **Visibility policy** — what is student-visible by default vs. internal
   coaching note, and how that interacts with minors/parents/counselors.
 - **Confidence & decay model** — how recurrence raises confidence and how stale
@@ -146,15 +159,16 @@ merged)`.
 "Implemented" means code merged, not RFC written. Slugs are the stable handles;
 `rfc/NN-*.md` numbers are assigned at design time and backfilled here.
 
-| slug                | description                                                                                                         | status      | rfc |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
-| `extraction`        | per-conversation pass: observations → claims; defines the obs / claim / claim_support schema                        | implemented | 66  |
-| `college-knowledge` | college dataset (Scorecard/IPEDS) + retrieval; shared by live chat and reflection                                   | planned     | —   |
-| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                           | planned     | —   |
-| `synthesis`         | reflection loop; defines the commitments schema; internal lenses (gap / timing / contradiction), pull delivery      | planned     | —   |
-| `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset                                   | planned     | —   |
-| `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments)                                                 | planned     | —   |
-| `token-ledger`      | cross-cutting per-user LLM token/cost ledger (one usage row per call); unifies chat + extraction + reflection spend | planned     | —   |
+| slug                | description                                                                                                                                                                       | status      | rfc          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------ |
+| `extraction`        | per-conversation pass: observations → claims; defines the obs / claim / claim_support schema                                                                                      | implemented | 66           |
+| `college-knowledge` | college dataset (Scorecard/IPEDS) + `CollegeSearchTool` retrieval; shared by live chat and reflection                                                                             | implemented | 67 (+78, 82) |
+| `chat-tool-use`     | generic chat tool-use loop: content blocks + typed `tools` on `ChatRequest` + `tool_use` dispatch → second call; imports `CollegeSearchTool`, unblocks extraction's inline writer | planned     | —            |
+| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                                                                                         | planned     | —            |
+| `synthesis`         | reflection loop; defines the commitments schema; internal lenses (gap / timing / contradiction), pull delivery                                                                    | planned     | —            |
+| `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset                                                                                                 | planned     | —            |
+| `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments)                                                                                                               | planned     | —            |
+| `token-ledger`      | cross-cutting per-user LLM token/cost ledger (one usage row per call); unifies chat + extraction + reflection spend                                                               | planned     | —            |
 
 > **`token-ledger` is cross-cutting infrastructure, not a coaching-memory
 > node.** It was surfaced by `extraction`'s per-user token requirement but is
@@ -175,28 +189,43 @@ merged)`.
 
 ```
 extraction ──► college-list ──► synthesis ──► fit-lens
-                                   │             ▲
+  (66,done)                        │             ▲
                                    ▼             │
                               push-delivery      │
-college-knowledge ──────────────────────────────┘
-  (independent root; also consumed by live chat)
+college-knowledge ───────────────────────────────┘
+  (67,done)  │
+             └──► chat-tool-use ──► live college search in chat;
+                                    unblocks extraction's inline actions
 ```
 
 - `extraction` and `college-knowledge` are **parallel roots** — neither blocks
-  the other, so two RFCs can proceed at once.
+  the other. **Both are now implemented** (RFC 66; RFC 67 + hardening 78, 82),
+  so the two roots are done.
+- `chat-tool-use` is a **separate track off `college-knowledge`**, not part of
+  the reflection spine. It wires the live chat turn to actually _call_
+  `CollegeSearchTool`, and lands the shared tool-use loop that extraction's
+  deferred inline writer later registers into. `fit-lens` can reach the dataset
+  through the worker (via `CollegeSearchService`) without it; `chat-tool-use` is
+  what the dataset needs to show up **live in a conversation**.
 - `synthesis` is the integration point (needs claims + the list). Its **internal
   lenses ship without `college-knowledge`** — this is the MVP cut.
-- `fit-lens` is the only piece needing _both_ synthesis and the dataset, so it
-  is correctly the last marquee step.
+- `fit-lens` is the only reflection piece needing _both_ synthesis and the
+  dataset, so it is correctly the last marquee step.
 - `push-delivery` extends `synthesis` once the pull loop feels real.
 
 ## Sequencing
 
-1. **`college-knowledge`** and **`extraction`** in parallel — the two roots.
-2. **`college-list`** on top of extraction.
+1. ~~**`college-knowledge`** and **`extraction`** in parallel — the two roots.~~
+   **Done** (RFC 66; RFC 67 + hardening 78, 82).
+2. **`college-list`** on top of extraction. ← **next on the docket.**
 3. **`synthesis`** (internal lenses, pull-only) — the smallest honest "I thought
    about this" loop: a gap/timing observation surfaced as a next-session opener,
    needing only the internal model + a calendar. Proves the loop end-to-end with
    no notification infra.
 4. **`fit-lens`** once `college-knowledge` is earning its keep in chat.
 5. **`push-delivery`** last.
+
+`chat-tool-use` sits **off this spine**: it can be sequenced any time after
+`college-knowledge` (done), independent of `college-list`/`synthesis`. Do it
+when live college search in chat — or extraction's inline actions — becomes the
+priority; it is the prerequisite for both.
