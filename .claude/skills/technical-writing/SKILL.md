@@ -21,6 +21,15 @@ documents.
   said and absolutely no more.
 - **No Filler**: Do not use subjective adjectives (e.g., "elegant", "robust",
   "seamless"). State the facts.
+- **One Owner Per Fact — never restate what a link owns**: When referencing
+  another document, do not restate facts that document owns — above all **counts
+  and enumerations of its content** ("the directory's one invariant", "the three
+  supported modes", "both files"). Nothing forces the reference site to update
+  when the owning file changes, so the restatement silently goes stale. Point at
+  the owner and let it speak: "see `INVARIANTS.md`", not "the one invariant in
+  `INVARIANTS.md`". This is the prose case of the general rule in
+  `design-review-no-remote-breakage`: do not write anything a change elsewhere
+  can silently break.
 
 ## Format and Structure
 

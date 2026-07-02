@@ -3,7 +3,7 @@ import os
 import glob
 import textwrap
 
-base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.agents', 'skills'))
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.claude', 'skills'))
 
 def compile_skill(output_name, title, desc, glob_pattern):
     output_path = os.path.join(base_dir, output_name, 'SKILL.md')
