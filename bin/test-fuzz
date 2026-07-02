@@ -99,18 +99,31 @@ provision_schemathesis() {
 }
 provision_schemathesis
 
-# 2. Port guard. A pre-existing listener is either a foreign server (which must
-#    never be fuzzed against this spec) or a leftover from a crashed run; either
-#    way the harness must boot its own freshly-built server, so refuse.
-#    Probe with a bash /dev/tcp connect (succeeds iff something accepts the
-#    connection): deterministic and occupant-agnostic, where an HTTP curl probe
-#    misses a non-HTTP listener and BSD/macOS `nc -z` reports bound ports as
-#    closed. It refuses instantly on a closed port with no hang and needs no
-#    timeout, dropping the inline python3 snippet from the guard (python3 remains
-#    a hard dependency for the Schemathesis venv).
+# 2. Claim a free port for the ephemeral rest-server. The harness must boot its
+#    own freshly-built server, so rather than pin a port (and refuse when a
+#    foreign listener — e.g. a running dev server — already holds it), ask
+#    bin/find-free-port for one that is currently unbound. Export it as FUZZ_PORT:
+#    .env.fuzz derives PORT (and the JVM's SERVER_PORT) from FUZZ_PORT, and every
+#    child (rest-server-up, rest-server-wait-for-health, daemon-up, …) re-sources
+#    .env.fuzz via bin/common — so the claim must travel as FUZZ_PORT to survive
+#    that re-source; a bare `export PORT` would be reset to the default in each
+#    child. Re-derive PORT/SERVER_PORT in THIS shell too, for the steps below.
+FUZZ_PORT="$("$PROJECT_ROOT/bin/find-free-port")"
+export FUZZ_PORT
+PORT="$FUZZ_PORT"
+export PORT
+export SERVER_PORT="$PORT"
+log-info "Claimed free port $PORT for the fuzz rest-server."
+
+# 2a. Guard the find-free-port TOCTOU window: the port was free when reported,
+#    but a concurrent run could have bound it before we boot. Assert it is still
+#    unbound with a bash /dev/tcp connect (occupant-agnostic, dependency-free,
+#    refuses instantly on a closed port; see bin/INVARIANTS.md port-liveness
+#    rule) and fatal if it was taken, rather than letting rest-server-up fail
+#    opaquely on the bind.
 if (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
   exec 3>&- 3<&-
-  fatal "Port $PORT is already served. Stop the occupant before fuzzing (the harness must boot its own freshly-built rest-server)."
+  fatal "Port $PORT was taken between selection and use. Re-run the fuzz harness."
 fi
 
 # 3. Ensure the shared cluster is online.
