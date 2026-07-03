@@ -67,6 +67,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import java.sql.DriverManager
 import java.time.Instant
+import java.time.format.DateTimeFormatter
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -442,6 +443,17 @@ object AdminTestSupport {
   fun cookieHeader(token: String): String = "${adminConfig.cookieName}=$token"
 
   fun uniqueEmail(): String = "admin-test-${java.util.UUID.randomUUID()}@example.com"
+
+  /**
+   * The hover `title` a `FieldType.TIMESTAMP` cell renders for [instant]: the same
+   * instant in the configured display zone as a full ISO-8601 offset datetime,
+   * matching `renderTimestampValue`. Derived from [adminConfig]'s display zone (not
+   * hardcoded UTC) so an assertion tracks whatever `admin.display.timezone` resolves
+   * to. Note this differs from `Instant.toString()` on fractional-second formatting,
+   * so tests must format through this rather than comparing the raw ISO string.
+   */
+  fun expectedTimestampTitle(instant: Instant): String =
+    DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(instant.atZone(adminConfig.display.timezone))
 
   /**
    * Asserts that [body] renders [value] as a compacted `FieldType.UUID` cell: the

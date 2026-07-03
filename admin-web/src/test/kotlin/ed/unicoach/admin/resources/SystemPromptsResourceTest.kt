@@ -77,7 +77,10 @@ class SystemPromptsResourceTest {
       assertTrue(body.contains(bodyMarker), "Detail must render the full body")
       assertTrue(body.contains(name), "Detail must render the name")
       assertTrue(body.contains("v1"), "Detail must render the version")
-      assertTrue(body.contains(prompt.createdAt.toString()), "Detail must render createdAt")
+      assertTrue(
+        body.contains(AdminTestSupport.expectedTimestampTitle(prompt.createdAt)),
+        "Detail must render createdAt as a zoned ISO offset title",
+      )
 
       // Assert on the control URLs, not the words Edit/Delete (the body could contain them).
       assertFalse(body.contains("/system-prompt/${prompt.id.value}/edit"), "No edit control")

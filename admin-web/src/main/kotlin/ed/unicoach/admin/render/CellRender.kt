@@ -54,6 +54,14 @@ fun DisplayConfig.toAdminDisplay(isSupported: (slug: String) -> Boolean): AdminD
 /** `MMM d, yyyy` in [Locale.ENGLISH] — e.g. `Jan 3, 2026`. */
 private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.ENGLISH)
 
+/**
+ * Full ISO-8601 offset datetime — e.g. `2026-01-03T06:15:30.123-08:00`. The
+ * hover `title` for a timestamp cell: the same instant as [DATE_FORMAT] but at
+ * full precision and carrying the configured zone's offset, so the exact moment
+ * stays unambiguous behind the day-granular visible text.
+ */
+private val TITLE_FORMAT: DateTimeFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
+
 /** Pretty-printer for [FieldType.JSON] cells: re-emits a stored payload with indentation. */
 private val PRETTY_JSON = Json { prettyPrint = true }
 
@@ -64,9 +72,10 @@ private val cellRenderLog = LoggerFactory.getLogger("ed.unicoach.admin.CellRende
  * and boolean conventions live.
  *
  * - [FieldType.TIMESTAMP]: the source instant formatted as `MMM d, yyyy` in
- *   [AdminDisplay.zone], carrying the verbatim source ISO string as a hover
- *   `title`. A blank value renders nothing; a value that does not parse as an
- *   [Instant] renders its raw text (defensive — never throws).
+ *   [AdminDisplay.zone], carrying the same instant as a full ISO-8601 offset
+ *   datetime in [AdminDisplay.zone] as a hover `title`. A blank value renders
+ *   nothing; a value that does not parse as an [Instant] renders its raw text
+ *   (defensive — never throws).
  * - [FieldType.BOOL]: the configured true glyph in `bool-true` when the value is
  *   `"true"`, the configured false glyph in `bool-false` when it is `"false"`.
  *   A blank value renders nothing. (`cells()` always stringifies bools as
@@ -147,9 +156,10 @@ private fun FlowContent.renderIdValue(
 
 /**
  * The [FieldType.TIMESTAMP] body: the source instant formatted as `MMM d, yyyy`
- * in [AdminDisplay.zone], carrying the verbatim source ISO string as a hover
- * `title`. A value that does not parse as an [Instant] is logged at WARN and
- * surfaced as raw text (defensive — never throws).
+ * in [AdminDisplay.zone], carrying the same instant as a full ISO-8601 offset
+ * datetime in [AdminDisplay.zone] ([TITLE_FORMAT]) as a hover `title`. A value
+ * that does not parse as an [Instant] is logged at WARN and surfaced as raw text
+ * (defensive — never throws).
  */
 private fun FlowContent.renderTimestampValue(
   value: String,
@@ -165,9 +175,10 @@ private fun FlowContent.renderTimestampValue(
     )
     +value
   } else {
+    val zoned = instant.atZone(display.zone)
     span {
-      title = value
-      +DATE_FORMAT.format(instant.atZone(display.zone))
+      title = TITLE_FORMAT.format(zoned)
+      +DATE_FORMAT.format(zoned)
     }
   }
 }

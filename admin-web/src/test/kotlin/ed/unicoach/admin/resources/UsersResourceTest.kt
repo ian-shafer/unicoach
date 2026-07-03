@@ -433,8 +433,8 @@ class UsersResourceTest {
       val reloaded = findUser(target.id)
       assertTrue(reloaded.emailVerifiedAt != null, "emailVerifiedAt must be stamped in the DB")
       assertTrue(
-        detail.contains(reloaded.emailVerifiedAt.toString()),
-        "Version history row must show the verification timestamp",
+        detail.contains(AdminTestSupport.expectedTimestampTitle(reloaded.emailVerifiedAt!!)),
+        "Version history row must show the verification timestamp as a zoned ISO offset title",
       )
     }
 

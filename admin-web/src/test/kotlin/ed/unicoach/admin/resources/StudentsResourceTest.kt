@@ -155,16 +155,20 @@ class StudentsResourceTest {
       assertTrue(body.contains("/claim/${claim.id.value}"), "Claim id cell must link to canonical detail")
       assertTrue(body.contains("🔗"), "Claim id cell must carry the link glyph")
 
-      // The claim's Created cell renders as a formatted date carrying the source ISO title.
-      val claimCreatedIso = claim.createdAt.toString()
-      assertTrue(body.contains("title=\"$claimCreatedIso\""), "Created cell must carry the source ISO as a hover title")
+      // The claim's Created cell renders as a formatted date carrying the instant in
+      // the configured zone as an ISO offset title.
+      val claimCreatedTitle = AdminTestSupport.expectedTimestampTitle(claim.createdAt)
+      assertTrue(
+        body.contains("title=\"$claimCreatedTitle\""),
+        "Created cell must carry the zoned instant as a hover title",
+      )
 
       // The embedded student panel's Created field (a TIMESTAMP LabeledCell) renders
-      // as a formatted date with the source ISO title, exercising the embedded path.
-      val studentCreatedIso = student.createdAt.toString()
+      // as a formatted date with the zoned ISO offset title, exercising the embedded path.
+      val studentCreatedTitle = AdminTestSupport.expectedTimestampTitle(student.createdAt)
       assertTrue(
-        body.contains("title=\"$studentCreatedIso\""),
-        "Embedded student timestamp field must render as a formatted date with the source ISO title",
+        body.contains("title=\"$studentCreatedTitle\""),
+        "Embedded student timestamp field must render as a formatted date with the zoned ISO offset title",
       )
     }
 

@@ -32,19 +32,23 @@ class CellRenderTest {
   }
 
   @Test
-  fun `timestamp hover title carries the verbatim source ISO`() {
-    val iso = "2026-01-03T12:00:00Z"
-    val html = render { renderValue(iso, FieldType.TIMESTAMP, display) }
-    assertTrue(html.contains("title=\"$iso\""), "Expected verbatim ISO title, got: $html")
+  fun `timestamp hover title renders the full instant in the configured zone`() {
+    val html = render { renderValue("2026-01-03T12:00:00Z", FieldType.TIMESTAMP, display) }
+    assertTrue(
+      html.contains("title=\"2026-01-03T12:00:00Z\""),
+      "Expected the UTC instant as an ISO offset title, got: $html",
+    )
   }
 
   @Test
-  fun `non-UTC zone shifts the displayed date across midnight`() {
-    val iso = "2026-06-28T02:00:00Z"
+  fun `non-UTC zone shifts the displayed date and offsets the hover title`() {
     val pacific = display.copy(zone = ZoneId.of("America/Los_Angeles"))
-    val html = render { renderValue(iso, FieldType.TIMESTAMP, pacific) }
+    val html = render { renderValue("2026-06-28T02:00:00Z", FieldType.TIMESTAMP, pacific) }
     assertTrue(html.contains("Jun 27, 2026"), "Expected the date shifted back across midnight, got: $html")
-    assertTrue(html.contains("title=\"$iso\""), "Title must still carry the source UTC instant, got: $html")
+    assertTrue(
+      html.contains("title=\"2026-06-27T19:00:00-07:00\""),
+      "Title must carry the same instant rendered in the configured zone, got: $html",
+    )
   }
 
   @Test
