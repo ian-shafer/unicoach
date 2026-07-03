@@ -10,10 +10,13 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimSupportDao
 import ed.unicoach.db.dao.ClaimsDao
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.CommitmentSupportDao
+import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.ExtractionRunsDao
 import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.StudentsDao
+import ed.unicoach.db.dao.SynthesisRunsDao
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.Claim
@@ -24,6 +27,10 @@ import ed.unicoach.db.models.ClaimSubject
 import ed.unicoach.db.models.ClaimTopic
 import ed.unicoach.db.models.ClaimVisibility
 import ed.unicoach.db.models.College
+import ed.unicoach.db.models.Commitment
+import ed.unicoach.db.models.CommitmentDisclosure
+import ed.unicoach.db.models.CommitmentId
+import ed.unicoach.db.models.CommitmentLens
 import ed.unicoach.db.models.Convo
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
@@ -32,11 +39,13 @@ import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRun
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCollege
+import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.NewExtractionRun
 import ed.unicoach.db.models.NewObservation
 import ed.unicoach.db.models.NewStudent
+import ed.unicoach.db.models.NewSynthesisRun
 import ed.unicoach.db.models.NewSystemPrompt
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.Observation
@@ -46,6 +55,8 @@ import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.SynthesisOutcome
+import ed.unicoach.db.models.SynthesisRun
 import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
@@ -346,6 +357,66 @@ object AdminTestSupport {
   ) = runBlocking {
     database.withConnection { session -> ClaimSupportDao.link(session, claimId, observationId) }.getOrThrow()
   }
+
+  /** Resolves the migration-seeded synthesis prompt id (`synthesis v1`). */
+  private fun synthesisPromptId(): ed.unicoach.db.models.SystemPromptId =
+    runBlocking {
+      database
+        .withConnection { session -> SystemPromptsDao.findByNameAndVersion(session, "synthesis", "v1") }
+        .getOrThrow()
+        .id
+    }
+
+  /** Inserts a commitments row via the DAO. */
+  fun seedCommitment(
+    studentId: StudentId,
+    statement: String = "Help them narrow the college list",
+    lens: CommitmentLens = CommitmentLens.GAP,
+    disclosure: CommitmentDisclosure = CommitmentDisclosure.EXPLICIT,
+  ): Commitment =
+    runBlocking {
+      database
+        .withConnection { session -> CommitmentsDao.create(session, NewCommitment(studentId, lens, disclosure, statement)) }
+        .getOrThrow()
+    }
+
+  /** Links a claim to a commitment (commitment_support) via the DAO. */
+  fun seedCommitmentSupport(
+    commitmentId: CommitmentId,
+    claimId: ClaimId,
+  ) = runBlocking {
+    database.withConnection { session -> CommitmentSupportDao.link(session, commitmentId, claimId) }.getOrThrow()
+  }
+
+  /** Appends a synthesis_runs row via the DAO. */
+  fun seedSynthesisRun(
+    studentId: StudentId,
+    outcome: SynthesisOutcome = SynthesisOutcome.APPLIED,
+    modelResolved: String? = "claude-sonnet-4-6",
+    commitmentsWritten: Int = 2,
+    commitmentsDropped: Int = 1,
+    inputTokens: Int? = 100,
+    outputTokens: Int? = 50,
+  ): SynthesisRun =
+    runBlocking {
+      database
+        .withConnection { session ->
+          SynthesisRunsDao.append(
+            session,
+            NewSynthesisRun(
+              studentId = studentId,
+              outcome = outcome,
+              systemPromptId = synthesisPromptId(),
+              provider = "log",
+              modelResolved = modelResolved,
+              commitmentsWritten = if (outcome == SynthesisOutcome.FAILED) 0 else commitmentsWritten,
+              commitmentsDropped = if (outcome == SynthesisOutcome.FAILED) 0 else commitmentsDropped,
+              inputTokens = inputTokens,
+              outputTokens = outputTokens,
+            ),
+          )
+        }.getOrThrow()
+    }
 
   /** Logs in and returns the raw session cookie value for the admin session cookie. */
   fun login(

@@ -5,6 +5,9 @@ import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionHandler
 import ed.unicoach.coaching.extraction.ExtractionService
+import ed.unicoach.coaching.synthesis.SynthesisConfig
+import ed.unicoach.coaching.synthesis.SynthesisHandler
+import ed.unicoach.coaching.synthesis.SynthesisService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -32,20 +35,27 @@ fun main() {
 
   val netConfig = NetConfig.from(config).getOrThrow()
   val extractionConfig = ExtractionConfig.from(config).getOrThrow()
+  val synthesisConfig = SynthesisConfig.from(config).getOrThrow()
 
   val handlers =
     buildList<JobHandler> {
       add(SessionExpiryHandler(database, netConfig.sessionSlidingWindowThreshold))
 
-      // Extraction (RFC 66): registered only when enabled. The worker is the only
-      // place a ChatProvider is built for extraction.
-      if (extractionConfig.enabled) {
+      // The worker is the only place a ChatProvider is built for the LLM job
+      // handlers; build it once when either extraction (RFC 66) or synthesis
+      // (RFC 93) is enabled, then register each handler under its own switch.
+      if (extractionConfig.enabled || synthesisConfig.enabled) {
         val chatProvider =
           ChatProviderFactory
             .fromConfig(ChatConfig.from(config).getOrThrow())
             .getOrThrow()
-        val extractionService = ExtractionService(database, chatProvider, extractionConfig)
-        add(ExtractionHandler(extractionService))
+
+        if (extractionConfig.enabled) {
+          add(ExtractionHandler(ExtractionService(database, chatProvider, extractionConfig)))
+        }
+        if (synthesisConfig.enabled) {
+          add(SynthesisHandler(SynthesisService(database, chatProvider, synthesisConfig)))
+        }
       }
     }
 

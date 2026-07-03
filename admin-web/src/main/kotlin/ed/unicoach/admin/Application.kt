@@ -9,12 +9,14 @@ import ed.unicoach.admin.render.toAdminDisplay
 import ed.unicoach.admin.resources.ClaimsResource
 import ed.unicoach.admin.resources.CollegeListEntriesResource
 import ed.unicoach.admin.resources.CollegesResource
+import ed.unicoach.admin.resources.CommitmentsResource
 import ed.unicoach.admin.resources.ConvoRequestsResource
 import ed.unicoach.admin.resources.ConvosResource
 import ed.unicoach.admin.resources.ExtractionRunsResource
 import ed.unicoach.admin.resources.ObservationsResource
 import ed.unicoach.admin.resources.SessionsResource
 import ed.unicoach.admin.resources.StudentsResource
+import ed.unicoach.admin.resources.SynthesisRunsResource
 import ed.unicoach.admin.resources.SystemPromptsResource
 import ed.unicoach.admin.resources.UsersResource
 import ed.unicoach.auth.AuthService
@@ -113,6 +115,8 @@ fun Application.adminModule(
         ClaimsResource,
         ObservationsResource,
         ExtractionRunsResource,
+        CommitmentsResource,
+        SynthesisRunsResource,
         ConvosResource,
         ConvoRequestsResource,
         CollegesResource,

@@ -10,9 +10,12 @@ import ed.unicoach.chat.ContentDelta
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.ArchiveScope
+import ed.unicoach.db.models.Commitment
+import ed.unicoach.db.models.CommitmentId
 import ed.unicoach.db.models.Convo
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
@@ -221,7 +224,10 @@ class CoachingService(
           val convo = ConvosDao.create(session, NewConvo(studentId, resolvedName)).getOrThrow()
           val userTurn = appendUserTurn(session, convo.id, prompt.id, message)
           val messages = visibleHistory(session, convo.id) + ChatMessage(ChatRole.USER, message)
-          Preflight(convo, userTurn, prompt, messages)
+          // Next-session opener (RFC 93): compose open explicit commitments into
+          // the coach prompt so the coach raises them naturally in its first reply.
+          val pending = openExplicitCommitments(session, studentId)
+          Preflight(convo, userTurn, prompt, composeSystem(prompt, pending), messages, pending.map { it.id })
         }
       StartConvoResult.Started(
         convo = preflight.convo,
@@ -251,7 +257,9 @@ class CoachingService(
             val prompt = resolveSystemPrompt(session)
             val userTurn = appendUserTurn(session, convoId, prompt.id, message)
             val messages = visibleHistory(session, convoId) + ChatMessage(ChatRole.USER, message)
-            Preflight(owned, userTurn, prompt, messages)
+            // postTurn never surfaces commitments: only a new conversation opens
+            // with reflection, so an insight is not re-raised mid-conversation.
+            Preflight(owned, userTurn, prompt, prompt.body, messages, emptyList())
           }
         }
       if (preflight == null) {
@@ -270,8 +278,14 @@ class CoachingService(
     val convo: Convo,
     val userTurn: ConvoRequest,
     val prompt: SystemPrompt,
+    // The outgoing system text: the prompt body, optionally with open explicit
+    // commitments (RFC 93) composed in for the next-session opener.
+    val system: String,
     // Visible prior turns (USER/ASSISTANT pairs) plus this turn's new user message.
     val messages: List<ChatMessage>,
+    // Open explicit commitments surfaced in this turn's opener; marked fulfilled
+    // on a successful terminal. Empty for postTurn and when nothing is pending.
+    val disclosedCommitmentIds: List<CommitmentId>,
   )
 
   /**
@@ -288,7 +302,7 @@ class CoachingService(
       val request =
         ChatRequest(
           model = config.model,
-          system = preflight.prompt.body,
+          system = preflight.system,
           messages = preflight.messages,
           maxTokens = config.maxTokens,
         )
@@ -394,6 +408,12 @@ class CoachingService(
                   completedRow(preflight.userTurn, terminal.response, latencyMs),
                   terminal.rawPayload,
                 ).getOrThrow()
+            // A successful turn surfaced any disclosed commitments (RFC 93): mark
+            // them fulfilled against this convo. Bound to success — a failed turn
+            // soft-deletes the convo, so they stay open to re-surface next session.
+            for (commitmentId in preflight.disclosedCommitmentIds) {
+              CommitmentsDao.markFulfilled(session, commitmentId, preflight.convo.id).getOrThrow()
+            }
             ReplyEvent.Completed(response)
           }
 
@@ -479,6 +499,45 @@ class CoachingService(
         it,
       )
     }
+  }
+
+  /**
+   * The student's open explicit commitments for the next-session opener (RFC 93),
+   * or empty when the feature is disabled — the sole gate for the whole opener
+   * path, so a disabled feature reads nothing and behaves exactly as before.
+   */
+  private fun openExplicitCommitments(
+    session: ed.unicoach.db.dao.SqlSession,
+    studentId: StudentId,
+  ): List<Commitment> =
+    if (config.surfaceCommitments) {
+      CommitmentsDao.listOpenExplicitByStudent(session, studentId).getOrThrow()
+    } else {
+      emptyList()
+    }
+
+  /**
+   * Composes the outgoing system text: the prompt body verbatim when nothing is
+   * pending (identical to today), else the body plus a rendered reflection block
+   * so the coach raises the commitments naturally in its first reply.
+   */
+  private fun composeSystem(
+    prompt: SystemPrompt,
+    pending: List<Commitment>,
+  ): String {
+    if (pending.isEmpty()) return prompt.body
+    val block =
+      buildString {
+        appendLine(prompt.body)
+        appendLine()
+        appendLine(
+          "Since you last spoke, you have been reflecting on the following — raise what is relevant, naturally:",
+        )
+        for (commitment in pending) {
+          appendLine("- ${commitment.statement}")
+        }
+      }
+    return block.trimEnd()
   }
 
   private fun appendUserTurn(

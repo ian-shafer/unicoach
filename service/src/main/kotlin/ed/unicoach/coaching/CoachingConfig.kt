@@ -12,12 +12,16 @@ import com.typesafe.config.Config
  * - [maxTokens] is the per-turn response ceiling.
  * - [systemPromptName] / [systemPromptVersion] select the catalog row each turn
  *   resolves and pins by id.
+ * - [surfaceCommitments] gates the next-session opener injection at
+ *   `startConvo`: when true, open explicit commitments (RFC 93) are composed into
+ *   the coach system prompt and marked fulfilled on a successful first reply.
  */
 class CoachingConfig private constructor(
   val model: String,
   val maxTokens: Int,
   val systemPromptName: String,
   val systemPromptVersion: String,
+  val surfaceCommitments: Boolean,
 ) {
   companion object {
     fun from(config: Config): Result<CoachingConfig> =
@@ -27,6 +31,7 @@ class CoachingConfig private constructor(
           maxTokens = config.getInt("coaching.maxTokens"),
           systemPromptName = config.getString("coaching.systemPromptName"),
           systemPromptVersion = config.getString("coaching.systemPromptVersion"),
+          surfaceCommitments = config.getBoolean("coaching.surfaceCommitments"),
         )
       }
   }

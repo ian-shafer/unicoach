@@ -10,10 +10,16 @@ import ed.unicoach.chat.LogOnlyChatProvider
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.ArchiveScope
+import ed.unicoach.db.models.CommitmentDisclosure
+import ed.unicoach.db.models.CommitmentId
+import ed.unicoach.db.models.CommitmentLens
+import ed.unicoach.db.models.CommitmentStatus
 import ed.unicoach.db.models.ConvoId
+import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -37,6 +43,7 @@ import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -70,14 +77,16 @@ class CoachingServiceTest {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
       stmt.execute(
-        "TRUNCATE TABLE convos, convo_requests, convo_responses, convo_responses_raw, system_prompts, students, users CASCADE",
+        "TRUNCATE TABLE commitment_support, commitments, convos, convo_requests, convo_responses, convo_responses_raw, " +
+          "claims, system_prompts, students, users CASCADE",
       )
     }
-    // Re-seed coach/v1 (migration 0011) — the truncate above clears it.
-    connection
-      .prepareStatement(
-        "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')",
-      ).use { it.executeUpdate() }
+    // Restore all migration-seeded prompts for cross-module suites on the shared DB.
+    connection.createStatement().use { stmt ->
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v1', 'reflect over the model')")
+    }
   }
 
   private val sqlSession =
@@ -95,7 +104,36 @@ class CoachingServiceTest {
 
   private fun service(provider: ChatProvider = LogOnlyChatProvider()): CoachingService = CoachingService(database, provider, config)
 
+  /** A config with the RFC 93 opener injection disabled. */
+  private val noSurfaceConfig =
+    CoachingConfig
+      .from(
+        com.typesafe.config.ConfigFactory
+          .parseString("coaching.surfaceCommitments = false")
+          .withFallback(
+            ed.unicoach.common.config.AppConfig
+              .load("service.conf")
+              .getOrThrow(),
+          ),
+      ).getOrThrow()
+
+  private fun noSurfaceService(provider: ChatProvider): CoachingService = CoachingService(database, provider, noSurfaceConfig)
+
   // --- fixtures ---
+
+  private fun createCommitment(
+    studentId: StudentId,
+    statement: String,
+    disclosure: CommitmentDisclosure = CommitmentDisclosure.EXPLICIT,
+  ): CommitmentId =
+    CommitmentsDao
+      .create(sqlSession, NewCommitment(studentId, CommitmentLens.GAP, disclosure, statement))
+      .getOrThrow()
+      .id
+
+  private fun commitmentStatus(id: CommitmentId): CommitmentStatus = CommitmentsDao.findById(sqlSession, id).getOrThrow().status
+
+  private fun commitmentConvo(id: CommitmentId): ConvoId? = CommitmentsDao.findById(sqlSession, id).getOrThrow().disclosedInConvoId
 
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
@@ -480,7 +518,7 @@ class CoachingServiceTest {
         CoachingConfig
           .from(
             com.typesafe.config.ConfigFactory.parseString(
-              """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9" }""",
+              """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9", surfaceCommitments=true }""",
             ),
           ).getOrThrow()
       val svc = CoachingService(database, LogOnlyChatProvider(), badConfig)
@@ -603,5 +641,100 @@ class CoachingServiceTest {
       val terminal = terminalOf(events)
       assertTrue(terminal is ReplyEvent.Failed && terminal.retriable, "got $terminal")
       assertTrue(events.none { it is ReplyEvent.Completed })
+    }
+
+  // ===========================================================================
+  // Pull delivery (RFC 93): next-session opener
+  // ===========================================================================
+
+  @Test
+  fun `startConvo composes an open explicit commitment into the system text and marks it fulfilled on success`() =
+    runBlocking {
+      val student = createStudent()
+      val commitmentId = createCommitment(student, "MARKER_finances_conversation")
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      val events = drain(started.reply)
+      assertTrue(terminalOf(events) is ReplyEvent.Completed)
+
+      // The commitment statement rode the composed system prompt.
+      val systemText = captured!!.system!!
+      assertTrue(systemText.contains("MARKER_finances_conversation"), "commitment must be in the system text")
+      assertTrue(systemText.contains("You are Uni"), "the base prompt must still be present")
+
+      // A successful first turn marks it fulfilled against this convo.
+      assertEquals(CommitmentStatus.FULFILLED, commitmentStatus(commitmentId))
+      assertEquals(started.convo.id, commitmentConvo(commitmentId))
+    }
+
+  @Test
+  fun `a failed first turn leaves the commitment open`() =
+    runBlocking {
+      val student = createStudent()
+      val commitmentId = createCommitment(student, "raise the activities gap")
+
+      val failing = ScriptedProvider(deltas = listOf("x"), terminal = transient())
+      val started = service(failing).startConvo(student, "doomed first", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Failed)
+
+      // The convo was soft-deleted; the commitment stays open to re-surface next session.
+      assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
+      assertNull(commitmentConvo(commitmentId))
+    }
+
+  @Test
+  fun `internal and already-resolved commitments are not surfaced`() =
+    runBlocking {
+      val student = createStudent()
+      val internalId = createCommitment(student, "INTERNAL_note", disclosure = CommitmentDisclosure.INTERNAL)
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      // Internal commitment is neither in the prompt nor marked fulfilled.
+      assertEquals("You are Uni, a warm coach.", captured!!.system)
+      assertEquals(CommitmentStatus.OPEN, commitmentStatus(internalId))
+    }
+
+  @Test
+  fun `postTurn never surfaces commitments`() =
+    runBlocking {
+      val student = createStudent()
+      // First turn (with no commitments) so a convo exists.
+      val started = service().startConvo(student, "first", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      // Now add an open explicit commitment; postTurn must NOT surface it.
+      val commitmentId = createCommitment(student, "SHOULD_NOT_APPEAR_midconvo")
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("r"), terminal = completedTerminal("r"), onRequest = { captured = it })
+      val post = service(provider).postTurn(student, started.convo.id, "second").getOrThrow() as PostTurnResult.Started
+      drain(post.reply)
+
+      assertEquals("You are Uni, a warm coach.", captured!!.system)
+      assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
+    }
+
+  @Test
+  fun `surfaceCommitments = false leaves the system text unchanged`() =
+    runBlocking {
+      val student = createStudent()
+      val commitmentId = createCommitment(student, "SHOULD_NOT_APPEAR_disabled")
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = noSurfaceService(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      assertEquals("You are Uni, a warm coach.", captured!!.system)
+      assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
     }
 }
