@@ -39,10 +39,11 @@ import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -498,53 +499,85 @@ open class ExtractionService(
       }
 
     val observations = mutableListOf<ObservationSpec>()
-    val observationsArray = root["observations"]?.let { it as? JsonArray } ?: JsonArray(emptyList())
+    val observationsArray =
+      when (val element = root["observations"]) {
+        null -> JsonArray(emptyList())
+
+        is JsonArray -> element
+
+        // Present but not an array: a structural failure, NOT an empty result. A
+        // lenient `as? JsonArray ?: emptyList` would misclassify malformed output
+        // as a valid zero-observation APPLIED run.
+        else -> return ParseResult.Failure(ParseFailure.BadField("observations", "not an array"))
+      }
     for (element in observationsArray) {
       val obj = element as? JsonObject ?: return ParseResult.Failure(ParseFailure.BadField("observations[]", "not an object"))
       val sourceRequestId =
-        obj["sourceRequestId"]?.jsonPrimitive?.longOrNull
+        obj["sourceRequestId"].primitiveOrNull?.longOrNull
           ?: return ParseResult.Failure(ParseFailure.BadField("sourceRequestId", "missing or non-integer"))
       val quote =
-        obj["quote"]?.jsonPrimitive?.takeIf { it.isString }?.content
+        obj["quote"].primitiveOrNull?.takeIf { it.isString }?.content
           ?: return ParseResult.Failure(ParseFailure.BadField("quote", "missing or non-string"))
       if (quote.isBlank()) return ParseResult.Failure(ParseFailure.BadField("quote", "blank"))
       observations.add(ObservationSpec(sourceRequestId, quote))
     }
 
     val claims = mutableListOf<ClaimOpSpec>()
-    val claimsArray = root["claims"]?.let { it as? JsonArray } ?: JsonArray(emptyList())
+    val claimsArray =
+      when (val element = root["claims"]) {
+        null -> JsonArray(emptyList())
+
+        is JsonArray -> element
+
+        // Present but not an array: same misclassification hazard as observations.
+        else -> return ParseResult.Failure(ParseFailure.BadField("claims", "not an array"))
+      }
     for (element in claimsArray) {
       val obj = element as? JsonObject ?: return ParseResult.Failure(ParseFailure.BadField("claims[]", "not an object"))
       val op =
-        obj["op"]?.jsonPrimitive?.contentOrNull?.let { ClaimOp.fromWire(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("op", obj["op"]?.jsonPrimitive?.contentOrNull ?: "missing"))
+        obj["op"].primitiveOrNull?.contentOrNull?.let { ClaimOp.fromWire(it) }
+          ?: return ParseResult.Failure(ParseFailure.BadField("op", obj["op"].primitiveOrNull?.contentOrNull ?: "missing"))
       val statement =
-        obj["statement"]?.jsonPrimitive?.takeIf { it.isString }?.content
+        obj["statement"].primitiveOrNull?.takeIf { it.isString }?.content
           ?: return ParseResult.Failure(ParseFailure.BadField("statement", "missing or non-string"))
       if (statement.isBlank()) return ParseResult.Failure(ParseFailure.BadField("statement", "blank"))
       val kind =
-        obj["kind"]?.jsonPrimitive?.contentOrNull?.let { ClaimKind.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("kind", obj["kind"]?.jsonPrimitive?.contentOrNull ?: "missing"))
+        obj["kind"].primitiveOrNull?.contentOrNull?.let { ClaimKind.fromValue(it) }
+          ?: return ParseResult.Failure(ParseFailure.BadField("kind", obj["kind"].primitiveOrNull?.contentOrNull ?: "missing"))
       val subject =
-        obj["subject"]?.jsonPrimitive?.contentOrNull?.let { ClaimSubject.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("subject", obj["subject"]?.jsonPrimitive?.contentOrNull ?: "missing"))
+        obj["subject"].primitiveOrNull?.contentOrNull?.let { ClaimSubject.fromValue(it) }
+          ?: return ParseResult.Failure(ParseFailure.BadField("subject", obj["subject"].primitiveOrNull?.contentOrNull ?: "missing"))
       val topic =
-        obj["topic"]?.jsonPrimitive?.contentOrNull?.let { ClaimTopic.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("topic", obj["topic"]?.jsonPrimitive?.contentOrNull ?: "missing"))
+        obj["topic"].primitiveOrNull?.contentOrNull?.let { ClaimTopic.fromValue(it) }
+          ?: return ParseResult.Failure(ParseFailure.BadField("topic", obj["topic"].primitiveOrNull?.contentOrNull ?: "missing"))
       val origin =
-        obj["origin"]?.jsonPrimitive?.contentOrNull?.let { ClaimOrigin.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("origin", obj["origin"]?.jsonPrimitive?.contentOrNull ?: "missing"))
+        obj["origin"].primitiveOrNull?.contentOrNull?.let { ClaimOrigin.fromValue(it) }
+          ?: return ParseResult.Failure(ParseFailure.BadField("origin", obj["origin"].primitiveOrNull?.contentOrNull ?: "missing"))
       val visibility =
-        when (val rawVisibility = obj["visibility"]?.jsonPrimitive?.contentOrNull) {
+        when (val rawVisibility = obj["visibility"].primitiveOrNull?.contentOrNull) {
           null -> ClaimVisibility.STUDENT_VISIBLE
           else -> ClaimVisibility.fromValue(rawVisibility) ?: return ParseResult.Failure(ParseFailure.BadField("visibility", rawVisibility))
         }
       val supports =
-        obj["supports"]?.let { it as? JsonArray }?.let { arr ->
-          arr.map { s -> s.jsonPrimitive.intOrNull ?: return ParseResult.Failure(ParseFailure.BadField("supports[]", "non-integer")) }
-        } ?: emptyList()
+        when (val element = obj["supports"]) {
+          null -> {
+            emptyList()
+          }
+
+          is JsonArray -> {
+            element.map { s ->
+              s.primitiveOrNull?.intOrNull
+                ?: return ParseResult.Failure(ParseFailure.BadField("supports[]", "non-integer"))
+            }
+          }
+
+          // Present but not an array: fail rather than silently drop the support links.
+          else -> {
+            return ParseResult.Failure(ParseFailure.BadField("supports", "not an array"))
+          }
+        }
       val targetClaimId =
-        when (val rawTarget = obj["targetClaimId"]?.jsonPrimitive?.contentOrNull) {
+        when (val rawTarget = obj["targetClaimId"].primitiveOrNull?.contentOrNull) {
           null -> {
             null
           }
@@ -562,6 +595,17 @@ open class ExtractionService(
 
     return ParseResult.Parsed(ParsedOutput(observations, claims))
   }
+
+  /**
+   * Safe [JsonPrimitive] view of a (possibly absent) field: null when the field
+   * is missing or holds a non-primitive (object/array). Keeps [parseOutput]
+   * total — a non-primitive where a scalar is expected becomes a structured
+   * [ParseResult.Failure] rather than the `IllegalArgumentException` that
+   * `jsonPrimitive` throws, which would escape past [writeFailedRun] and drop the
+   * billed-token ledger.
+   */
+  private val JsonElement?.primitiveOrNull: JsonPrimitive?
+    get() = this as? JsonPrimitive
 
   /** Caps a raw LLM output to a bounded prefix so a WARN log line stays sane. */
   private fun truncateForLog(raw: String): String {

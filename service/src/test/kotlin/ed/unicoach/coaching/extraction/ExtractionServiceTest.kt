@@ -515,6 +515,57 @@ class ExtractionServiceTest {
     }
 
   @Test
+  fun `a non-primitive scalar field is a failed run carrying usage, not a thrown exception`() =
+    runBlocking {
+      val student = createStudent()
+      val convo = createConvo(student)
+      val req = appendUserTurn(convo, "hi")
+      // sourceRequestId is an object, not a scalar: parseOutput must return a
+      // structured Failure (not throw on `.jsonPrimitive`), so the billed call is
+      // still recorded as a failed run rather than crashing past writeFailedRun.
+      val doc = """{"observations":[{"sourceRequestId":{},"quote":"x"}],"claims":[]}"""
+      val result =
+        service(JsonProvider(jsonDoc = doc, usage = TokenUsage(13, 24, 0, 0)))
+          .extract(ConvoId(convo), ConvoRequestId(req))
+
+      assertTrue(result is ExtractionResult.TransientFailure, "got $result")
+      assertEquals(0L, watermark(convo))
+      connection.createStatement().use { stmt ->
+        stmt.executeQuery("SELECT outcome, input_tokens, output_tokens FROM extraction_runs WHERE convo_id = '$convo'").use { rs ->
+          rs.next()
+          assertEquals("failed", rs.getString("outcome"))
+          assertEquals(13, rs.getInt("input_tokens"))
+          assertEquals(24, rs.getInt("output_tokens"))
+        }
+      }
+    }
+
+  @Test
+  fun `a present-but-non-array observations container is a failed run, not a zero-result applied run`() =
+    runBlocking {
+      val student = createStudent()
+      val convo = createConvo(student)
+      val req = appendUserTurn(convo, "hi")
+      // observations is an object, not an array: a lenient cast would treat it as
+      // an empty list and record a valid zero-result APPLIED run advancing the
+      // watermark. Totality demands a failed run with the watermark left intact.
+      val doc = """{"observations":{},"claims":[]}"""
+      val result =
+        service(JsonProvider(jsonDoc = doc, usage = TokenUsage(5, 6, 0, 0)))
+          .extract(ConvoId(convo), ConvoRequestId(req))
+
+      assertTrue(result is ExtractionResult.TransientFailure, "got $result")
+      assertEquals(0L, watermark(convo))
+      assertEquals(0, countObservations(student))
+      connection.createStatement().use { stmt ->
+        stmt.executeQuery("SELECT outcome FROM extraction_runs WHERE convo_id = '$convo'").use { rs ->
+          rs.next()
+          assertEquals("failed", rs.getString("outcome"))
+        }
+      }
+    }
+
+  @Test
   fun `unparseable Completed whose target was overtaken mid-window writes no duplicate failed run`() =
     runBlocking {
       val student = createStudent()
