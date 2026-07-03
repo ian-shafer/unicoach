@@ -6,6 +6,7 @@ dependencies {
   implementation(project(":common"))
   implementation(project(":db"))
   implementation(project(":chat"))
+  implementation(project(":college"))
   implementation(project(":email"))
   implementation(project(":queue"))
   implementation(libs.kotlinx.coroutines.core)

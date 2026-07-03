@@ -10,4 +10,6 @@ data class NewConvoRequest(
   val systemPromptId: SystemPromptId,
   val requestParams: JsonObject?,
   val content: JsonElement,
+  val turnId: ConvoTurnId,
+  val kind: ConvoRequestKind = ConvoRequestKind.USER,
 )

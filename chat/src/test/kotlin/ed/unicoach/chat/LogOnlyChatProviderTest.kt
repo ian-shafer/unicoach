@@ -24,15 +24,24 @@ class LogOnlyChatProviderTest {
       system = "You are a coach.",
       messages =
         listOf(
-          ChatMessage(ChatRole.USER, "hello"),
-          ChatMessage(ChatRole.ASSISTANT, "hi there"),
-          ChatMessage(ChatRole.USER, "ok"),
+          ChatMessage.text(ChatRole.USER, "hello"),
+          ChatMessage.text(ChatRole.ASSISTANT, "hi there"),
+          ChatMessage.text(ChatRole.USER, "ok"),
         ),
       maxTokens = 64,
     )
 
   private val ChatRequest.inputChars: Int
-    get() = (system?.length ?: 0) + messages.sumOf { it.text.length }
+    get() = (system?.length ?: 0) + messages.sumOf { messageText(it).length }
+
+  private fun messageText(message: ChatMessage): String =
+    message.content.jsonArray
+      .filter { it.jsonObject["type"]?.jsonPrimitive?.content == "text" }
+      .joinToString("") {
+        it.jsonObject
+          .getValue("text")
+          .jsonPrimitive.content
+      }
 
   @Test
   fun `id is the wire identity log`() {
@@ -117,7 +126,7 @@ class LogOnlyChatProviderTest {
   fun `long replies chunk at the delta bound`() =
     runTest {
       val longText = "x".repeat(LogOnlyChatProvider.DELTA_CHUNK_SIZE * 3)
-      val longRequest = request.copy(messages = listOf(ChatMessage(ChatRole.USER, longText)), maxTokens = 1)
+      val longRequest = request.copy(messages = listOf(ChatMessage.text(ChatRole.USER, longText)), maxTokens = 1)
 
       val events = provider.stream(longRequest).toList()
       val chunks =

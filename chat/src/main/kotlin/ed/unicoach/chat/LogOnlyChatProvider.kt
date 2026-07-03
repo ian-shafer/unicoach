@@ -29,8 +29,8 @@ class LogOnlyChatProvider : ChatProvider {
   override fun stream(request: ChatRequest): Flow<ChatEvent> =
     flow {
       val providerRequestId = UUID.randomUUID().toString()
-      val reply = ECHO_PREFIX + (request.messages.lastOrNull()?.text ?: "")
-      val inputChars = (request.system?.length ?: 0) + request.messages.sumOf { it.text.length }
+      val reply = ECHO_PREFIX + (request.messages.lastOrNull()?.let { ContentBlocks.renderText(it.content) } ?: "")
+      val inputChars = (request.system?.length ?: 0) + request.messages.sumOf { ContentBlocks.renderText(it.content).length }
       val fullUsage =
         TokenUsage(
           inputTokens = inputChars,

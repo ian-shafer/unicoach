@@ -15,6 +15,8 @@ dependencies {
   implementation(project(":auth"))
   implementation(project(":service"))
   implementation(project(":chat"))
+  // The composition root wires CollegeSearchTool into the ToolRegistry (RFC 94).
+  implementation(project(":college"))
   implementation(project(":email"))
   implementation(project(":queue"))
   implementation(libs.ktor.server.core)

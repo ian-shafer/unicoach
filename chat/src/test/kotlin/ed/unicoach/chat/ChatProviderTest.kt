@@ -4,7 +4,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 // The chat accumulation extension against inline fake providers: streams that
@@ -15,7 +19,7 @@ class ChatProviderTest {
     ChatRequest(
       model = "claude-opus-4-8",
       system = null,
-      messages = listOf(ChatMessage(ChatRole.USER, "hello")),
+      messages = listOf(ChatMessage.text(ChatRole.USER, "hello")),
       maxTokens = 64,
     )
 
@@ -37,6 +41,18 @@ class ChatProviderTest {
 
       assertFailsWith<IllegalStateException> { provider.chat(request) }
     }
+
+  @Test
+  fun `ChatMessage text builds a single text block`() {
+    val message = ChatMessage.text(ChatRole.USER, "x")
+
+    val block =
+      message.content.jsonArray
+        .single()
+        .jsonObject
+    assertEquals("text", block.getValue("type").jsonPrimitive.content)
+    assertEquals("x", block.getValue("text").jsonPrimitive.content)
+  }
 
   private fun fakeProvider(events: Flow<ChatEvent>): ChatProvider =
     object : ChatProvider {

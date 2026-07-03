@@ -31,9 +31,9 @@ class AnthropicChatProviderTest {
       system = "You are a coach.",
       messages =
         listOf(
-          ChatMessage(ChatRole.USER, "hello"),
-          ChatMessage(ChatRole.ASSISTANT, "hi"),
-          ChatMessage(ChatRole.USER, "weather?"),
+          ChatMessage.text(ChatRole.USER, "hello"),
+          ChatMessage.text(ChatRole.ASSISTANT, "hi"),
+          ChatMessage.text(ChatRole.USER, "weather?"),
         ),
       maxTokens = 256,
     )
@@ -273,7 +273,65 @@ class AnthropicChatProviderTest {
       assertEquals(3, messages.size)
       assertEquals("user", messages[0].jsonObject["role"]!!.jsonPrimitive.content)
       assertEquals("assistant", messages[1].jsonObject["role"]!!.jsonPrimitive.content)
-      assertEquals("weather?", messages[2].jsonObject["content"]!!.jsonPrimitive.content)
+      // content serializes verbatim as the block array, not a flat string.
+      val lastContent = messages[2].jsonObject["content"]!!.jsonArray
+      val block = lastContent.single().jsonObject
+      assertEquals("text", block["type"]!!.jsonPrimitive.content)
+      assertEquals("weather?", block["text"]!!.jsonPrimitive.content)
+    }
+
+  @Test
+  fun `content serializes verbatim including a tool_result block`() =
+    runTest {
+      val toolResult =
+        kotlinx.serialization.json.buildJsonArray {
+          add(
+            kotlinx.serialization.json.buildJsonObject {
+              put("type", JsonPrimitive("tool_result"))
+              put("tool_use_id", JsonPrimitive("toolu_01"))
+              put("content", JsonPrimitive("{\"count\":3}"))
+            },
+          )
+        }
+      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      AnthropicChatProvider(captured, AutoCloseable {}).use {
+        it.stream(request.copy(messages = listOf(ChatMessage(ChatRole.USER, toolResult)))).toList()
+      }
+      val body = captured.body!!
+
+      val block =
+        body["messages"]!!
+          .jsonArray
+          .single()
+          .jsonObject["content"]!!
+          .jsonArray
+          .single()
+          .jsonObject
+      assertEquals("tool_result", block["type"]!!.jsonPrimitive.content)
+      assertEquals("toolu_01", block["tool_use_id"]!!.jsonPrimitive.content)
+    }
+
+  @Test
+  fun `tools serialize verbatim when present`() =
+    runTest {
+      val toolA = kotlinx.serialization.json.buildJsonObject { put("name", JsonPrimitive("alpha")) }
+      val toolB = kotlinx.serialization.json.buildJsonObject { put("name", JsonPrimitive("beta")) }
+      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      AnthropicChatProvider(captured, AutoCloseable {}).use {
+        it.stream(request.copy(tools = listOf(toolA, toolB))).toList()
+      }
+      val tools = captured.body!!["tools"]!!.jsonArray
+      assertEquals(2, tools.size)
+      assertEquals("alpha", tools[0].jsonObject["name"]!!.jsonPrimitive.content)
+      assertEquals("beta", tools[1].jsonObject["name"]!!.jsonPrimitive.content)
+    }
+
+  @Test
+  fun `tools key is omitted when empty`() =
+    runTest {
+      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      AnthropicChatProvider(captured, AutoCloseable {}).use { it.stream(request).toList() }
+      assertNull(captured.body!!["tools"])
     }
 
   @Test

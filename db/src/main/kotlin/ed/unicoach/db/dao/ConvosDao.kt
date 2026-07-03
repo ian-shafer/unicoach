@@ -6,10 +6,12 @@ import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ConvoRequestId
+import ed.unicoach.db.models.ConvoRequestKind
 import ed.unicoach.db.models.ConvoResponse
 import ed.unicoach.db.models.ConvoResponseId
 import ed.unicoach.db.models.ConvoResponseRaw
 import ed.unicoach.db.models.ConvoTurn
+import ed.unicoach.db.models.ConvoTurnId
 import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
@@ -85,7 +87,22 @@ object ConvosDao :
       systemPromptId = SystemPromptId(UUID.fromString(rs.getString("system_prompt_id"))),
       requestParams = rs.getJsonbOrNull("request_params") as JsonObject?,
       content = Json.parseToJsonElement(rs.getString("content")),
+      kind = parseRequestKind(rs.getString("kind"), rs.getLong("id")),
+      turnId = ConvoTurnId(rs.getLong("turn_id")),
     )
+
+  /**
+   * Reconstructs the persisted request kind for the `convo_requests` row [rowId].
+   * The `convo_requests_kind_valid_check` CHECK guarantees a valid value is
+   * stored, so an unknown value here indicates row corruption, not user input —
+   * surfaced as a [SQLException] naming the offending row and value.
+   */
+  private fun parseRequestKind(
+    value: String,
+    rowId: Long,
+  ): ConvoRequestKind =
+    ConvoRequestKind.fromValue(value)
+      ?: throw SQLException("Persisted convo_requests.kind is not a valid value for row id=[$rowId]: [$value]")
 
   private fun mapResponse(
     rs: ResultSet,
@@ -408,6 +425,19 @@ object ConvosDao :
   // Logs — write (two transaction boundaries)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Mints the next `turn_id` for a new logical user turn (one read of
+   * `convo_turn_id_seq`). The chat loop reads it once when the user opener is
+   * written and threads the same value onto every `tool_result` continuation row
+   * of the excursion, so all rows of one turn share one `turn_id`.
+   */
+  fun nextTurnId(session: SqlSession): Result<ConvoTurnId> =
+    session.queryOne(
+      "SELECT nextval('convo_turn_id_seq') AS turn_id",
+      bind = {},
+      map = { rs -> ConvoTurnId(rs.getLong("turn_id")) },
+    )
+
   fun appendRequest(
     session: SqlSession,
     request: NewConvoRequest,
@@ -415,9 +445,9 @@ object ConvosDao :
     val sql =
       """
       INSERT INTO convo_requests (
-        convo_id, provider, model_requested, system_prompt_id, request_params, content
+        convo_id, provider, model_requested, system_prompt_id, request_params, content, kind, turn_id
       )
-      VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb)
+      VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?)
       RETURNING *
       """.trimIndent()
     return session.mutateReturning(
@@ -429,6 +459,8 @@ object ConvosDao :
         stmt.setObject(4, request.systemPromptId.value)
         stmt.setJsonbOrNull(5, request.requestParams)
         stmt.setString(6, request.content.toString())
+        stmt.setString(7, request.kind.value)
+        stmt.setLong(8, request.turnId.value)
       },
       map = ::mapRequest,
       mapError = ::mapConvoError,
@@ -526,6 +558,8 @@ object ConvosDao :
       r.system_prompt_id AS req_system_prompt_id,
       r.request_params AS req_request_params,
       r.content AS req_content,
+      r.kind AS req_kind,
+      r.turn_id AS req_turn_id,
       resp.id AS resp_id,
       resp.request_id AS resp_request_id,
       resp.convo_id AS resp_convo_id,
@@ -643,6 +677,8 @@ object ConvosDao :
         systemPromptId = SystemPromptId(UUID.fromString(rs.getString("req_system_prompt_id"))),
         requestParams = rs.getJsonbOrNull("req_request_params") as JsonObject?,
         content = Json.parseToJsonElement(rs.getString("req_content")),
+        kind = parseRequestKind(rs.getString("req_kind"), rs.getLong("req_id")),
+        turnId = ConvoTurnId(rs.getLong("req_turn_id")),
       )
     // resp_id is NULL when the LEFT JOIN found no response row.
     rs.getLong("resp_id")

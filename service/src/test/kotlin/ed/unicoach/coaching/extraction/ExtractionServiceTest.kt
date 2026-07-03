@@ -150,6 +150,40 @@ class ExtractionServiceTest {
       }
   }
 
+  /** Captures the request (for transcript assertions), then returns a valid empty document. */
+  private class CapturingProvider(
+    override val id: String = "log",
+  ) : ChatProvider {
+    var captured: ChatRequest? = null
+
+    override fun stream(request: ChatRequest): Flow<ChatEvent> =
+      flow {
+        captured = request
+        val content =
+          kotlinx.serialization.json.JsonArray(
+            listOf(
+              buildJsonObject {
+                put("type", "text")
+                put("text", """{"observations":[],"claims":[]}""")
+              },
+            ),
+          )
+        emit(
+          ChatEvent.Completed(
+            response =
+              ChatResponse(
+                content = content,
+                modelResolved = "m",
+                stopReason = "end_turn",
+                usage = TokenUsage(1, 1, 0, 0),
+                providerRequestId = "req_${UUID.randomUUID()}",
+              ),
+            rawPayload = content,
+          ),
+        )
+      }
+  }
+
   /** Returns a non-Completed terminal (no usage). */
   private class TerminalProvider(
     override val id: String = "log",
@@ -238,29 +272,116 @@ class ExtractionServiceTest {
     }
   }
 
-  /** Appends a user turn, returns its convo_requests.id. [utteredDaysAgo] backdates created_at. */
+  /** Mints one turn_id from convo_turn_id_seq — the opener of a fresh logical turn. */
+  private fun nextTurnId(): Long =
+    connection.createStatement().use { stmt ->
+      stmt.executeQuery("SELECT nextval('convo_turn_id_seq')").use { rs ->
+        rs.next()
+        rs.getLong(1)
+      }
+    }
+
+  /**
+   * Appends a user turn, returns its convo_requests.id. [utteredDaysAgo]
+   * backdates created_at. [turnId] defaults to a freshly minted value (a singleton
+   * turn); pass an explicit value to open an excursion whose tool_result
+   * continuations share it.
+   *
+   * By default the turn is CLOSED: an `end_turn` final-answer response is written
+   * on the opener row, so the turn is window-eligible (a real distillable turn
+   * always has a closing answer). Excursion openers, whose opener row instead
+   * bears a `tool_use` response and whose closing answer lands on a later
+   * tool_result row, pass [close] = false and append their own responses.
+   */
   private fun appendUserTurn(
     convoId: UUID,
     text: String,
     utteredDaysAgo: Long = 0,
+    turnId: Long = nextTurnId(),
+    close: Boolean = true,
+  ): Long {
+    val pid = promptId()
+    val requestId =
+      connection
+        .prepareStatement(
+          """
+          INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id, created_at)
+          VALUES (?, 'anthropic', 'claude-opus-4-8', ?, ?::jsonb, ?, NOW() - (? || ' days')::interval)
+          RETURNING id
+          """.trimIndent(),
+        ).use { stmt ->
+          stmt.setObject(1, convoId)
+          stmt.setObject(2, pid)
+          stmt.setString(3, """[{"type":"text","text":${quote(text)}}]""")
+          stmt.setLong(4, turnId)
+          stmt.setString(5, utteredDaysAgo.toString())
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            rs.getLong("id")
+          }
+        }
+    if (close) appendResponse(convoId, requestId, "end_turn", "(coach answer)")
+    return requestId
+  }
+
+  /**
+   * Appends a tool_result continuation request row (kind='tool_result') stamped
+   * with its opener's [turnId] (the excursion shares one turn_id), returns its id.
+   */
+  private fun appendToolResultTurn(
+    convoId: UUID,
+    text: String,
+    turnId: Long,
   ): Long {
     val pid = promptId()
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, created_at)
-        VALUES (?, 'anthropic', 'claude-opus-4-8', ?, ?::jsonb, NOW() - (? || ' days')::interval)
+        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id, kind)
+        VALUES (?, 'anthropic', 'claude-opus-4-8', ?, ?::jsonb, ?, 'tool_result')
         RETURNING id
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convoId)
         stmt.setObject(2, pid)
-        stmt.setString(3, """[{"type":"text","text":${quote(text)}}]""")
-        stmt.setString(4, utteredDaysAgo.toString())
+        stmt.setString(3, """[{"type":"tool_result","tool_use_id":"t","content":${quote(text)}}]""")
+        stmt.setLong(4, turnId)
         stmt.executeQuery().use { rs ->
           rs.next()
           return rs.getLong("id")
         }
+      }
+  }
+
+  /** Reads back the turn_id of a persisted convo_requests row (for threading an excursion). */
+  private fun turnIdOf(requestId: Long): Long =
+    connection.prepareStatement("SELECT turn_id FROM convo_requests WHERE id = ?").use { stmt ->
+      stmt.setLong(1, requestId)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getLong("turn_id")
+      }
+    }
+
+  /** Appends a response row for [requestId] with the given stop_reason and coach text. */
+  private fun appendResponse(
+    convoId: UUID,
+    requestId: Long,
+    stopReason: String,
+    text: String,
+  ) {
+    connection
+      .prepareStatement(
+        """
+        INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
+        VALUES (?, ?, ?::jsonb, 'm', ?)
+        """.trimIndent(),
+      ).use { stmt ->
+        stmt.setLong(1, requestId)
+        stmt.setObject(2, convoId)
+        stmt.setString(3, """[{"type":"text","text":${quote(text)}}]""")
+        stmt.setString(4, stopReason)
+        stmt.executeUpdate()
       }
   }
 
@@ -770,4 +891,151 @@ class ExtractionServiceTest {
       assertEquals(0L, watermark(convo))
       assertEquals(0, countWhere("extraction_runs", "convo_id", convo))
     }
+
+  @Test
+  fun `transcript over an excursion emits only the user and final-coach lines and advances past it`() =
+    runBlocking {
+      val student = createStudent()
+      val convo = createConvo(student)
+      // A full excursion: user -> tool_use response; tool_result request -> end_turn response.
+      // The tool_result row shares the opener's turn_id (one logical turn).
+      val userReq = appendUserTurn(convo, "find CS colleges", close = false)
+      appendResponse(convo, userReq, "tool_use", "(calling search)")
+      val toolReq = appendToolResultTurn(convo, "(2 colleges)", turnIdOf(userReq))
+      appendResponse(convo, toolReq, "end_turn", "Here are two options.")
+
+      val provider = CapturingProvider()
+      // Extract through the continuation request id (the final answer's request).
+      val result = service(provider).extract(ConvoId(convo), ConvoRequestId(toolReq))
+      assertTrue(result is ExtractionResult.Success, "got $result")
+
+      val transcript = renderTranscript(provider.captured!!.messages.single())
+      assertTrue(transcript.contains("[userTurn id=$userReq] find CS colleges"), "user line: $transcript")
+      assertTrue(transcript.contains("[coach] Here are two options."), "coach line: $transcript")
+      // No tool plumbing: the tool_result request text and the tool_use preamble are absent.
+      assertTrue(!transcript.contains("(2 colleges)"), "tool_result text leaked: $transcript")
+      assertTrue(!transcript.contains("(calling search)"), "tool_use preamble leaked: $transcript")
+      assertTrue(!transcript.contains("id=$toolReq"), "synthetic request id surfaced: $transcript")
+
+      // The watermark advances over the whole excursion in one pass.
+      assertEquals(toolReq, watermark(convo))
+    }
+
+  @Test
+  fun `straddling excursion at the window boundary is never split - kept whole then defers the rest (F1)`() =
+    runBlocking {
+      // windowMaxTurns = 2 (cappedWindowConfig). A three-row excursion (user + two
+      // tool_result) FIRST, then two plain turns. The rows in id order are:
+      //   exUser(1) exTool1(2) exTool2(3) plain1(4) plain2(5).
+      // The shipped per-ROW cap of 2 kept rows 1..2 = {exUser, exTool1}, advancing
+      // the watermark onto exTool1 — INSIDE the excursion — permanently orphaning
+      // exTool2 (its opener now below the watermark). That is F1. The whole-turn
+      // cap instead keeps the excursion WHOLE plus plain1 (2 whole turns), never
+      // bisecting it, and advances the watermark to plain1 (a whole-turn boundary),
+      // deferring plain2 to a later pass.
+      val student = createStudent()
+      val convo = createConvo(student)
+
+      val exTurnId = nextTurnId()
+      val exUser = appendUserTurn(convo, "excursion opener", turnId = exTurnId, close = false)
+      appendResponse(convo, exUser, "tool_use", "(calling search 1)")
+      val exTool1 = appendToolResultTurn(convo, "(result 1)", exTurnId)
+      appendResponse(convo, exTool1, "tool_use", "(calling search 2)")
+      val exTool2 = appendToolResultTurn(convo, "(result 2)", exTurnId)
+      appendResponse(convo, exTool2, "end_turn", "Final excursion answer.")
+
+      val plain1 = appendUserTurn(convo, "plain turn one", close = false)
+      appendResponse(convo, plain1, "end_turn", "answer one")
+      val plain2 = appendUserTurn(convo, "plain turn two", close = false)
+      appendResponse(convo, plain2, "end_turn", "answer two")
+
+      val cappedService = ExtractionService(database, JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), cappedWindowConfig)
+
+      // First pass: target plain2, cap = 2 whole turns. The excursion is kept whole
+      // (not split at exTool1) and plain1 is kept; the watermark lands on plain1
+      // (a whole-turn boundary), NEVER on exTool1/exTool2. plain2 defers.
+      val first = cappedService.extract(ConvoId(convo), ConvoRequestId(plain2))
+      assertTrue(first is ExtractionResult.Success, "got $first")
+      assertEquals(plain1, watermark(convo))
+      assertEquals(1, countWhere("extraction_runs", "convo_id", convo))
+
+      // Second pass picks up the deferred plain2 and advances to it — no orphaned
+      // excursion row, no duplicated observation.
+      val second = cappedService.extract(ConvoId(convo), ConvoRequestId(plain2))
+      assertTrue(second is ExtractionResult.Success, "got $second")
+      assertEquals(plain2, watermark(convo))
+      assertEquals(2, countWhere("extraction_runs", "convo_id", convo))
+    }
+
+  @Test
+  fun `an in-range but still-open excursion at the boundary is deferred and the watermark does not advance`() =
+    runBlocking {
+      // Structural closure enforcement, independent of the enqueue contract: even
+      // when EVERY row of an open excursion is id-contained in (watermark,
+      // throughRequestId] — so id-containment alone would admit it — the group is
+      // withheld because its tail row is still a mid-excursion tool_use call (no
+      // final answer written yet). The watermark must NOT advance into it.
+      //
+      // Rows in id order: exUser(1, tool_use) exTool1(2, tool_use). Both <= the
+      // target (exTool1) and > the watermark (0), so the group is fully
+      // id-contained; only the missing closing answer defers it.
+      val student = createStudent()
+      val convo = createConvo(student)
+
+      val exTurnId = nextTurnId()
+      val exUser = appendUserTurn(convo, "open excursion opener", turnId = exTurnId, close = false)
+      appendResponse(convo, exUser, "tool_use", "(calling search 1)")
+      val exTool1 = appendToolResultTurn(convo, "(result 1)", exTurnId)
+      appendResponse(convo, exTool1, "tool_use", "(calling search 2)")
+
+      // Target the excursion's highest-id row: the whole group is id-contained but
+      // open (tail stop_reason = tool_use). The pass finds no window-eligible turn
+      // and no-ops — the provider must not be called, the watermark stays at 0.
+      val provider = TerminalProvider(terminal = ChatEvent.TransientFailure("should not be called", null, null))
+      val result = service(provider).extract(ConvoId(convo), ConvoRequestId(exTool1))
+
+      assertTrue(result is ExtractionResult.Success, "open excursion should be a no-op success, got $result")
+      assertEquals(0L, watermark(convo), "watermark must not advance past the open excursion's opener")
+      assertEquals(0, countWhere("extraction_runs", "convo_id", convo))
+
+      // Once the excursion closes (its final answer is written), the same target
+      // becomes window-eligible and the watermark advances over the whole turn.
+      val exTool2 = appendToolResultTurn(convo, "(result 2)", exTurnId)
+      appendResponse(convo, exTool2, "end_turn", "Final excursion answer.")
+      val closed =
+        service(JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""))
+          .extract(ConvoId(convo), ConvoRequestId(exTool2))
+      assertTrue(closed is ExtractionResult.Success, "got $closed")
+      assertEquals(exTool2, watermark(convo))
+      assertEquals(1, countWhere("extraction_runs", "convo_id", convo))
+    }
+
+  @Test
+  fun `an excursion that fits inside the cap is kept whole in one pass`() =
+    runBlocking {
+      // windowMaxTurns = 2: one plain turn then a two-row excursion = 2 whole
+      // turns, both in range. The excursion is kept whole (never half-included)
+      // and the watermark advances over its final-answer row in a single pass.
+      val student = createStudent()
+      val convo = createConvo(student)
+      val plain1 = appendUserTurn(convo, "plain turn one", close = false)
+      appendResponse(convo, plain1, "end_turn", "answer one")
+
+      val exTurnId = nextTurnId()
+      val exUser = appendUserTurn(convo, "excursion opener", turnId = exTurnId, close = false)
+      appendResponse(convo, exUser, "tool_use", "(calling search)")
+      val exTool = appendToolResultTurn(convo, "(result)", exTurnId)
+      appendResponse(convo, exTool, "end_turn", "Final answer.")
+
+      val cappedService = ExtractionService(database, JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), cappedWindowConfig)
+      val result = cappedService.extract(ConvoId(convo), ConvoRequestId(exTool))
+      assertTrue(result is ExtractionResult.Success, "got $result")
+      // Both whole turns distilled in one pass; watermark on the excursion's last row.
+      assertEquals(exTool, watermark(convo))
+      assertEquals(1, countWhere("extraction_runs", "convo_id", convo))
+    }
+
+  private fun renderTranscript(message: ed.unicoach.chat.ChatMessage): String =
+    ed.unicoach.coaching.ConvoContent
+      .renderText(message.content)
 }

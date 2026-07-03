@@ -13,5 +13,7 @@ data class ConvoRequest(
   val systemPromptId: SystemPromptId,
   val requestParams: JsonObject?,
   val content: JsonElement,
+  val kind: ConvoRequestKind,
+  val turnId: ConvoTurnId,
 ) : Identifiable<ConvoRequestId>,
   Created

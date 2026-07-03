@@ -141,8 +141,8 @@ class CollegeListEntrySupportDaoTest {
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content)
-        VALUES (?, 'anthropic', 'claude-opus-4-8', ?, '[]'::jsonb) RETURNING id
+        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id)
+        VALUES (?, 'anthropic', 'claude-opus-4-8', ?, '[]'::jsonb, nextval('convo_turn_id_seq')) RETURNING id
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convoId.value)

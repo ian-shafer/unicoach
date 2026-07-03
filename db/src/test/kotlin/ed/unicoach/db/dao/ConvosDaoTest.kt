@@ -4,7 +4,9 @@ import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
+import ed.unicoach.db.models.ConvoRequestKind
 import ed.unicoach.db.models.ConvoResponseId
+import ed.unicoach.db.models.ConvoTurnId
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.NewConvoResponse
@@ -127,6 +129,8 @@ class ConvosDaoTest {
     systemPromptId: SystemPromptId = createSystemPrompt(),
     requestParams: JsonObject? = obj { put("temperature", 0.7) },
     content: JsonElement = json("""[{"type":"text","text":"hello"}]"""),
+    kind: ConvoRequestKind = ConvoRequestKind.USER,
+    turnId: ConvoTurnId = ConvosDao.nextTurnId(session).getOrThrow(),
   ): NewConvoRequest =
     NewConvoRequest(
       convoId = convoId,
@@ -135,6 +139,8 @@ class ConvosDaoTest {
       systemPromptId = systemPromptId,
       requestParams = requestParams,
       content = content,
+      turnId = turnId,
+      kind = kind,
     )
 
   private fun appendRequestFor(convoId: ConvoId): ed.unicoach.db.models.ConvoRequest =
@@ -375,6 +381,156 @@ class ConvosDaoTest {
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     val result = ConvosDao.appendRequest(session, newRequest(convo.id, provider = "openai"))
     assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got $result")
+  }
+
+  @Test
+  fun `appendRequest persists and reads back a TOOL_RESULT kind`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val request =
+      ConvosDao
+        .appendRequest(session, newRequest(convo.id, kind = ConvoRequestKind.TOOL_RESULT))
+        .getOrThrow()
+    assertEquals(ConvoRequestKind.TOOL_RESULT, request.kind)
+
+    // Reloaded through the turn projection it still reads TOOL_RESULT.
+    val reloaded = ConvosDao.findTurnByRequestId(session, request.id, SoftDeleteScope.ACTIVE).getOrThrow()
+    assertEquals(ConvoRequestKind.TOOL_RESULT, reloaded.request.kind)
+  }
+
+  @Test
+  fun `appendRequest defaults a USER kind (backfill value)`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    // A row inserted without an explicit kind column takes the DEFAULT 'user'.
+    val promptId = createSystemPrompt()
+    connection
+      .prepareStatement(
+        """
+        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id)
+        VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, nextval('convo_turn_id_seq'))
+        RETURNING id
+        """.trimIndent(),
+      ).use { stmt ->
+        stmt.setObject(1, convo.id.value)
+        stmt.setObject(2, promptId.value)
+        stmt.executeQuery().use { rs ->
+          assertTrue(rs.next())
+          val requestId =
+            ed.unicoach.db.models
+              .ConvoRequestId(rs.getLong("id"))
+          val reloaded = ConvosDao.findTurnByRequestId(session, requestId, SoftDeleteScope.ACTIVE).getOrThrow()
+          assertEquals(ConvoRequestKind.USER, reloaded.request.kind)
+        }
+      }
+  }
+
+  @Test
+  fun `appendRequest with an out-of-allowlist kind is rejected by the CHECK`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val promptId = createSystemPrompt()
+    val failure =
+      assertFailsWith<java.sql.SQLException> {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, kind, turn_id)
+            VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, 'bogus', nextval('convo_turn_id_seq'))
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, convo.id.value)
+            stmt.setObject(2, promptId.value)
+            stmt.executeUpdate()
+          }
+      }
+    assertTrue(failure.message?.contains("convo_requests_kind_valid_check") == true, "got ${failure.message}")
+  }
+
+  @Test
+  fun `appendRequest persists and reads back an explicit turn_id on both kinds`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val turnId = ConvosDao.nextTurnId(session).getOrThrow()
+
+    // The user opener and its tool_result continuation share one minted turn_id.
+    val opener =
+      ConvosDao
+        .appendRequest(session, newRequest(convo.id, kind = ConvoRequestKind.USER, turnId = turnId))
+        .getOrThrow()
+    val continuation =
+      ConvosDao
+        .appendRequest(session, newRequest(convo.id, kind = ConvoRequestKind.TOOL_RESULT, turnId = turnId))
+        .getOrThrow()
+
+    assertEquals(turnId, opener.turnId)
+    assertEquals(turnId, continuation.turnId)
+
+    // Reloaded through the turn projection both rows still carry the shared turn_id.
+    val reloadedOpener = ConvosDao.findTurnByRequestId(session, opener.id, SoftDeleteScope.ACTIVE).getOrThrow()
+    val reloadedContinuation = ConvosDao.findTurnByRequestId(session, continuation.id, SoftDeleteScope.ACTIVE).getOrThrow()
+    assertEquals(turnId, reloadedOpener.request.turnId)
+    assertEquals(turnId, reloadedContinuation.request.turnId)
+  }
+
+  @Test
+  fun `turn_id column is a non-generated NOT NULL column after migration 0026`() {
+    // Migration 0026 backfilled every pre-existing row as its own singleton turn
+    // (turn_id = id via a STORED generated column) then DROP EXPRESSION made it a
+    // plain writable NOT NULL column. Assert the resulting column shape: NOT NULL
+    // (is_nullable = NO) and no longer generated (is_generated = NEVER), which is
+    // exactly what the generated-column → DROP EXPRESSION → SET NOT NULL sequence
+    // yields. The sequence-was-seeded-past-MAX(id) property is a migration-time
+    // guarantee verified by the migration harness, not a per-test runtime check
+    // (the id IDENTITY and the turn_id sequence advance independently across the
+    // shared-connection suite).
+    connection.createStatement().use { stmt ->
+      stmt
+        .executeQuery(
+          """
+          SELECT is_nullable, is_generated
+          FROM information_schema.columns
+          WHERE table_name = 'convo_requests' AND column_name = 'turn_id'
+          """.trimIndent(),
+        ).use { rs ->
+          assertTrue(rs.next(), "turn_id column must exist")
+          assertEquals("NO", rs.getString("is_nullable"))
+          assertEquals("NEVER", rs.getString("is_generated"))
+        }
+    }
+  }
+
+  @Test
+  fun `turn_id is mandatory - an insert omitting it fails NOT NULL`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
+    val promptId = createSystemPrompt()
+    val failure =
+      assertFailsWith<java.sql.SQLException> {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, kind)
+            VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, 'user')
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, convo.id.value)
+            stmt.setObject(2, promptId.value)
+            stmt.executeUpdate()
+          }
+      }
+    assertTrue(
+      failure.message?.contains("turn_id") == true && failure.message?.contains("null") == true,
+      "expected a turn_id NOT NULL violation, got ${failure.message}",
+    )
+  }
+
+  @Test
+  fun `nextTurnId mints strictly increasing distinct values`() {
+    val a = ConvosDao.nextTurnId(session).getOrThrow()
+    val b = ConvosDao.nextTurnId(session).getOrThrow()
+    val c = ConvosDao.nextTurnId(session).getOrThrow()
+    assertTrue(a.value < b.value && b.value < c.value, "expected strictly increasing turn ids, got $a $b $c")
   }
 
   @Test
@@ -691,8 +847,8 @@ class ConvosDaoTest {
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, created_at)
-        VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, ?::timestamptz)
+        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id, created_at)
+        VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, nextval('convo_turn_id_seq'), ?::timestamptz)
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convoId.value)

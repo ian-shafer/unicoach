@@ -8,6 +8,7 @@ import ed.unicoach.chat.ChatRole
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ConvoContent
+import ed.unicoach.coaching.ConvoProjection
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
 import ed.unicoach.db.dao.ClaimSupportDao
@@ -120,20 +121,33 @@ open class ExtractionService(
       if (throughRequestId.value <= watermark) return@withConnection ReadPhase.NoOp
 
       val allTurns = ConvosDao.listTurns(session, convoId, SoftDeleteScope.ALL).getOrThrow()
-      // When the contracted (watermark, throughRequestId] range exceeds the safety
-      // cap, keep the OLDEST windowMaxTurns turns and advance the watermark only to
-      // the last kept turn — the remaining newer turns are picked up by a later
-      // pass. Keeping the newest N instead would strand the older turns forever
-      // (the watermark would jump past turns that were never distilled).
-      val windowTurns =
-        allTurns
-          .filter { it.request.id.value > watermark && it.request.id.value <= throughRequestId.value }
-          .take(config.windowMaxTurns)
+      // Window on WHOLE logical turns (turn_id groups), never raw rows: a tool-use
+      // excursion is many rows, so a per-row cap landing inside an open excursion
+      // would drop the still-open exchange AND advance the watermark past its
+      // opener, orphaning the excursion forever (F1). Grouping by turn_id and
+      // capping on distinct turns makes that split structurally impossible.
+      //
+      // A logical turn is in-window only if ALL its rows fall in
+      // (watermark, throughRequestId] — so a turn straddling either boundary is
+      // wholly deferred, never half-included. When the contracted range exceeds
+      // the safety cap, keep the OLDEST windowMaxTurns whole turns and advance the
+      // watermark only to the last kept turn — the remaining newer turns are
+      // picked up by a later pass. Keeping the newest N instead would strand the
+      // older turns forever (the watermark would jump past turns never distilled).
+      val keptTurns = wholeTurnsInWindow(allTurns, watermark, throughRequestId.value).take(config.windowMaxTurns)
 
-      // No turn in range (e.g. all soft-deleted out of listTurns): nothing to distill.
-      if (windowTurns.isEmpty()) return@withConnection ReadPhase.NoOp
+      // No whole turn in range (e.g. all soft-deleted out of listTurns, or only a
+      // straddling open excursion): nothing to distill this pass.
+      if (keptTurns.isEmpty()) return@withConnection ReadPhase.NoOp
 
-      val effectiveThrough = windowTurns.last().request.id
+      val windowTurns = keptTurns.flatMap { it.rows }
+
+      // The effective target is the last kept whole turn's final-answer row — its
+      // highest request id. Because the cap trims to whole turns, the watermark
+      // always lands on a complete turn's last row, so the next pass's
+      // `request.id > watermark` filter excludes that whole turn (never a
+      // mid-excursion continuation).
+      val effectiveThrough = ConvoRequestId(keptTurns.last().rows.maxOf { it.request.id.value })
 
       val activeClaims = ClaimsDao.listActiveByStudent(session, studentId).getOrThrow()
       val prompt =
@@ -150,6 +164,56 @@ open class ExtractionService(
         prompt = prompt,
       )
     }
+
+  /**
+   * Groups [allTurns] by `turn_id` (via the shared [ConvoProjection.groupByTurnId]
+   * owner, preserving creation order) and returns the logical turns eligible to
+   * advance the window — those that are BOTH:
+   *
+   *  - **id-contained**: every row falls in `(watermark, throughRequestId]`, so a
+   *    turn straddling either boundary (some rows in, some out) is excluded
+   *    entirely and never half-distilled; and
+   *  - **closed**: the group's highest-id row bears a final answer — a response
+   *    with `content != null` and `stop_reason != 'tool_use'`. An in-range but
+   *    still-open excursion (its tail row is a `tool_use` call, a failed close, or
+   *    has no response yet) is deferred, not counted toward the cap.
+   *
+   * The closure test makes the whole-turn watermark boundary a structural property
+   * of this function, not merely a promise of the enqueue contract: even if a
+   * caller targets a request id sitting on an open excursion's opener, that
+   * excursion is withheld and the watermark cannot advance into it (the invariant
+   * "the watermark MUST NOT advance into an open excursion").
+   */
+  private fun wholeTurnsInWindow(
+    allTurns: List<ConvoTurn>,
+    watermark: Long,
+    throughRequestId: Long,
+  ): List<ConvoTurnGroup> =
+    ConvoProjection
+      .groupByTurnId(allTurns)
+      .values
+      .map { ConvoTurnGroup(it) }
+      .filter { group ->
+        group.rows.all { it.request.id.value > watermark && it.request.id.value <= throughRequestId } && group.isClosed
+      }
+
+  /** One logical turn: all `convo_requests` rows sharing a `turn_id`, in id order. */
+  private class ConvoTurnGroup(
+    val rows: List<ConvoTurn>,
+  ) {
+    /**
+     * True when this turn's final answer is written: its highest-id row carries a
+     * response with `content != null` and `stop_reason != 'tool_use'`. A tail row
+     * that is a mid-excursion `tool_use` call, a failed (null-content) close, or
+     * has no response yet leaves the turn open — its later rows may not exist yet,
+     * so advancing the watermark over it would strand them.
+     */
+    val isClosed: Boolean
+      get() {
+        val tail = rows.maxByOrNull { it.request.id.value }?.response ?: return false
+        return tail.content != null && tail.stopReason != ConvoProjection.TOOL_USE_STOP_REASON
+      }
+  }
 
   // ---------------------------------------------------------------------------
   // LLM call (no transaction) + write phase
@@ -466,15 +530,15 @@ open class ExtractionService(
         }
         appendLine()
         appendLine("# Transcript window")
-        for (turn in window.turns) {
-          appendLine("[userTurn id=${turn.request.id.value}] ${ConvoContent.renderText(turn.request.content)}")
-          val responseContent = turn.response?.content
-          if (responseContent != null) {
-            appendLine("[coach] ${ConvoContent.renderText(responseContent)}")
-          }
+        // Collapse any tool excursion to its user text and final coach answer:
+        // the synthetic tool_result requests and tool_use responses inside the
+        // window contribute nothing to the distilled transcript.
+        for (exchange in ConvoProjection.visibleExchanges(window.turns)) {
+          appendLine("[userTurn id=${exchange.userRequest.id.value}] ${ConvoContent.renderText(exchange.userRequest.content)}")
+          appendLine("[coach] ${ConvoContent.renderText(exchange.finalResponse.content ?: kotlinx.serialization.json.JsonNull)}")
         }
       }
-    return listOf(ChatMessage(ChatRole.USER, transcript))
+    return listOf(ChatMessage.text(ChatRole.USER, transcript))
   }
 
   // ---------------------------------------------------------------------------

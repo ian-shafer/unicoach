@@ -229,6 +229,7 @@ object AdminTestSupport {
     runBlocking {
       database
         .withConnection { session ->
+          val turnId = ConvosDao.nextTurnId(session).getOrThrow()
           ConvosDao.appendRequest(
             session,
             NewConvoRequest(
@@ -238,6 +239,7 @@ object AdminTestSupport {
               systemPromptId = extractionPromptId(),
               requestParams = null,
               content = JsonArray(emptyList()),
+              turnId = turnId,
             ),
           )
         }.getOrThrow()

@@ -15,6 +15,8 @@ import com.typesafe.config.Config
  * - [surfaceCommitments] gates the next-session opener injection at
  *   `startConvo`: when true, open explicit commitments (RFC 93) are composed into
  *   the coach system prompt and marked fulfilled on a successful first reply.
+ * - [maxToolRounds] bounds the chat tool-use loop's tool-dispatch rounds; on
+ *   reaching it the loop makes one forced no-tools call to extract a text answer.
  */
 class CoachingConfig private constructor(
   val model: String,
@@ -22,6 +24,7 @@ class CoachingConfig private constructor(
   val systemPromptName: String,
   val systemPromptVersion: String,
   val surfaceCommitments: Boolean,
+  val maxToolRounds: Int,
 ) {
   companion object {
     fun from(config: Config): Result<CoachingConfig> =
@@ -32,6 +35,7 @@ class CoachingConfig private constructor(
           systemPromptName = config.getString("coaching.systemPromptName"),
           systemPromptVersion = config.getString("coaching.systemPromptVersion"),
           surfaceCommitments = config.getBoolean("coaching.surfaceCommitments"),
+          maxToolRounds = config.getInt("coaching.maxToolRounds"),
         )
       }
   }

@@ -11,10 +11,14 @@ import ed.unicoach.auth.GoogleTokenVerifierFactory
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatProviderFactory
+import ed.unicoach.chat.ToolRegistry
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.CollegeChatTool
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.extraction.ExtractionConfig
+import ed.unicoach.college.CollegeSearchService
+import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -204,7 +208,15 @@ fun Application.appModule(
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
   val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)
   val studentService = ed.unicoach.student.StudentService(database)
-  val coachingService = CoachingService(database, chatProvider, coachingConfig)
+  // The tool registry advertised on every coaching turn (RFC 94). New tools
+  // append here; nothing else in the loop changes.
+  val toolRegistry =
+    ToolRegistry(
+      listOf(
+        CollegeChatTool(CollegeSearchTool(CollegeSearchService(database))),
+      ),
+    )
+  val coachingService = CoachingService(database, chatProvider, coachingConfig, toolRegistry)
   val collegeListService = CollegeListService(database)
 
   configureEmailVerificationGate(authService, sessionConfig)

@@ -20,7 +20,6 @@ import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ConvoResponse
-import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.User
@@ -154,7 +153,7 @@ class ConvoRouteHandler(
       is StartConvoResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
           is ReplyEvent.Completed -> {
-            enqueueExtraction(outcome.convo.id, outcome.userTurn.id)
+            enqueueExtraction(outcome.convo.id, terminal.response.requestId)
             call.respond(
               HttpStatusCode.Created,
               CreateConversationResponse(
@@ -223,7 +222,7 @@ class ConvoRouteHandler(
     val convoId = pathConvoId() ?: return respondNotFound()
 
     when (val outcome = coachingService.listTurns(student.id, convoId).getOrThrow()) {
-      is ListTurnsResult.Found -> call.respond(HttpStatusCode.OK, MessageListResponse(messagesOf(outcome.turns)))
+      is ListTurnsResult.Found -> call.respond(HttpStatusCode.OK, MessageListResponse(messagesOf(outcome.exchanges)))
       ListTurnsResult.NotFound -> respondNotFound()
     }
   }
@@ -246,7 +245,7 @@ class ConvoRouteHandler(
       is PostTurnResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
           is ReplyEvent.Completed -> {
-            enqueueExtraction(outcome.convo.id, outcome.userTurn.id)
+            enqueueExtraction(outcome.convo.id, terminal.response.requestId)
             call.respond(
               HttpStatusCode.Created,
               PostMessageResponse(
@@ -279,7 +278,7 @@ class ConvoRouteHandler(
       }
 
       is StartConvoResult.Started -> {
-        streamReply(outcome.reply, outcome.convo.id, outcome.userTurn.id) { writer ->
+        streamReply(outcome.reply, outcome.convo.id) { writer ->
           writeSseEvent(
             writer,
             "conversation",
@@ -309,7 +308,7 @@ class ConvoRouteHandler(
       }
 
       is PostTurnResult.Started -> {
-        streamReply(outcome.reply, outcome.convo.id, outcome.userTurn.id) { writer ->
+        streamReply(outcome.reply, outcome.convo.id) { writer ->
           writeSseEvent(writer, "user_message", UserMessageEvent(userMessage = userMessageOf(outcome.userTurn)))
         }
       }
@@ -320,12 +319,12 @@ class ConvoRouteHandler(
    * Opens the SSE response, writes the opening event, relays deltas, then exactly
    * one terminal frame. On a successful terminal ([ReplyEvent.Completed]) it
    * enqueues the extraction job after the frame is written — never on a failed
-   * one (RFC 66).
+   * one (RFC 66) — with the final response's request id, so the watermark
+   * advances over any tool excursion in one pass (RFC 94).
    */
   private suspend fun RoutingContext.streamReply(
     reply: Flow<ReplyEvent>,
     convoId: ConvoId,
-    throughRequestId: ConvoRequestId,
     writeOpening: suspend (ByteWriteChannel) -> Unit,
   ) {
     call.response.header(HttpHeaders.CacheControl, "no-store")
@@ -339,7 +338,7 @@ class ConvoRouteHandler(
 
           is ReplyEvent.Completed -> {
             writeSseEvent(this, "message", MessageCompletedEvent(message = coachMessageOf(event.response)))
-            enqueueExtraction(convoId, throughRequestId)
+            enqueueExtraction(convoId, event.response.requestId)
           }
 
           is ReplyEvent.Failed -> {
@@ -475,12 +474,11 @@ class ConvoRouteHandler(
       createdAt = response.createdAt,
     )
 
-  private fun messagesOf(turns: List<ConvoTurn>): List<Message> =
+  private fun messagesOf(exchanges: List<ed.unicoach.coaching.VisibleExchange>): List<Message> =
     buildList {
-      for (turn in turns) {
-        add(userMessageOf(turn.request))
-        val response = turn.response ?: continue
-        add(coachMessageOf(response))
+      for (exchange in exchanges) {
+        add(userMessageOf(exchange.userRequest))
+        add(coachMessageOf(exchange.finalResponse))
       }
     }
 }

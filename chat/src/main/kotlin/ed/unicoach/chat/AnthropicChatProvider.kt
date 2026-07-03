@@ -102,6 +102,9 @@ class AnthropicChatProvider(
       put("max_tokens", request.maxTokens)
       put("stream", true)
       request.system?.let { put("system", it) }
+      if (request.tools.isNotEmpty()) {
+        put("tools", JsonArray(request.tools))
+      }
       put(
         "messages",
         buildJsonArray {
@@ -109,7 +112,7 @@ class AnthropicChatProvider(
             add(
               buildJsonObject {
                 put("role", if (message.role == ChatRole.USER) "user" else "assistant")
-                put("content", message.text)
+                put("content", message.content)
               },
             )
           }

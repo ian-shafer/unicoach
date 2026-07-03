@@ -32,6 +32,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -151,6 +157,8 @@ class CoachingServiceTest {
 
   private fun json(raw: String): JsonElement = Json.parseToJsonElement(raw)
 
+  private fun messageText(message: ed.unicoach.chat.ChatMessage): String = ConvoContent.renderText(message.content)
+
   // --- fakes ---
 
   /** Emits the given delta texts, then the supplied terminal. */
@@ -199,6 +207,72 @@ class CoachingServiceTest {
     )
   }
 
+  /** A Completed terminal whose response is a tool_use turn requesting the given tool calls. */
+  private fun toolUseTerminal(vararg calls: Pair<String, String>): ChatEvent.Completed {
+    val blocks =
+      calls.mapIndexed { i, (name, inputJson) ->
+        """{"type":"tool_use","id":"toolu_$i","name":"$name","input":$inputJson}"""
+      }
+    val content = json("[${blocks.joinToString(",")}]")
+    return ChatEvent.Completed(
+      response =
+        ChatResponse(
+          content = content,
+          modelResolved = "claude-sonnet-4-6",
+          stopReason = "tool_use",
+          usage = TokenUsage(inputTokens = 7, outputTokens = 11, cacheReadTokens = null, cacheWriteTokens = null),
+          providerRequestId = "req_tooluse",
+        ),
+      rawPayload = json("""{"id":"req_tooluse"}"""),
+    )
+  }
+
+  /**
+   * A provider that returns a scripted terminal per call in sequence (call 0, 1,
+   * …), streaming no deltas. Captures each request for assertions on the running
+   * message list and the advertised tools.
+   */
+  private class SequencedProvider(
+    override val id: String = "log",
+    private val terminals: List<ChatEvent.Terminal>,
+    private val onRequest: (ChatRequest) -> Unit = {},
+  ) : ChatProvider {
+    private var call = 0
+
+    override fun stream(request: ChatRequest): Flow<ChatEvent> =
+      flow {
+        onRequest(request)
+        val terminal = terminals[call.coerceAtMost(terminals.size - 1)]
+        call++
+        emit(terminal)
+      }
+  }
+
+  /** A ChatTool spy: records inputs, returns a canned object (or throws). */
+  private class SpyTool(
+    override val name: String,
+    private val result: JsonObject = buildJsonObject { },
+    private val throwOnExecute: Boolean = false,
+  ) : ed.unicoach.chat.ChatTool {
+    val inputs = mutableListOf<JsonObject>()
+
+    override val definition = buildJsonObject { put("name", name) }
+
+    override suspend fun execute(input: JsonObject): JsonObject {
+      inputs.add(input)
+      if (throwOnExecute) throw RuntimeException("tool boom")
+      return result
+    }
+  }
+
+  private fun registry(vararg t: ed.unicoach.chat.ChatTool) = ed.unicoach.chat.ToolRegistry(t.toList())
+
+  private fun serviceWith(
+    provider: ChatProvider,
+    tools: ed.unicoach.chat.ToolRegistry,
+    cfg: CoachingConfig = config,
+  ): CoachingService = CoachingService(database, provider, cfg, tools)
+
   private fun rejected(payload: JsonElement? = null) =
     ChatEvent.Rejected(reason = "bad request", providerRequestId = "req_rej", rawPayload = payload)
 
@@ -234,6 +308,45 @@ class CoachingServiceTest {
         return rs.getInt(1)
       }
     }
+  }
+
+  /** Request `kind` strings for a convo, in id order. */
+  private fun requestKinds(convoId: ConvoId): List<String> {
+    val out = mutableListOf<String>()
+    connection.prepareStatement("SELECT kind FROM convo_requests WHERE convo_id = ? ORDER BY id").use { stmt ->
+      stmt.setObject(1, convoId.value)
+      stmt.executeQuery().use { rs -> while (rs.next()) out.add(rs.getString("kind")) }
+    }
+    return out
+  }
+
+  /** Request `turn_id` values for a convo, in id order. */
+  private fun turnIds(convoId: ConvoId): List<Long> {
+    val out = mutableListOf<Long>()
+    connection.prepareStatement("SELECT turn_id FROM convo_requests WHERE convo_id = ? ORDER BY id").use { stmt ->
+      stmt.setObject(1, convoId.value)
+      stmt.executeQuery().use { rs -> while (rs.next()) out.add(rs.getLong("turn_id")) }
+    }
+    return out
+  }
+
+  /** Response (stop_reason, output_tokens) pairs for a convo, in id order. */
+  private fun responseRows(convoId: ConvoId): List<Pair<String, Int?>> {
+    val out = mutableListOf<Pair<String, Int?>>()
+    connection
+      .prepareStatement(
+        "SELECT resp.stop_reason AS sr, resp.output_tokens AS ot FROM convo_responses resp " +
+          "JOIN convo_requests r ON r.id = resp.request_id WHERE r.convo_id = ? ORDER BY resp.id",
+      ).use { stmt ->
+        stmt.setObject(1, convoId.value)
+        stmt.executeQuery().use { rs ->
+          while (rs.next()) {
+            val ot = rs.getInt("ot").takeUnless { rs.wasNull() }
+            out.add(rs.getString("sr") to ot)
+          }
+        }
+      }
+    return out
   }
 
   private fun countRaw(): Int {
@@ -354,10 +467,10 @@ class CoachingServiceTest {
       val req = captured!!
       assertEquals(3, req.messages.size)
       assertEquals(ChatRole.USER, req.messages[0].role)
-      assertEquals("first", req.messages[0].text)
+      assertEquals("first", messageText(req.messages[0]))
       assertEquals(ChatRole.ASSISTANT, req.messages[1].role)
       assertEquals(ChatRole.USER, req.messages[2].role)
-      assertEquals("second", req.messages[2].text)
+      assertEquals("second", messageText(req.messages[2]))
       assertEquals("You are Uni, a warm coach.", req.system)
       assertEquals(config.maxTokens, req.maxTokens)
     }
@@ -386,7 +499,7 @@ class CoachingServiceTest {
       // listTurns omits the failed turn; next replay omits it
       val visible = service().listTurns(student, convoId).getOrThrow()
       assertTrue(visible is ListTurnsResult.Found)
-      assertEquals(1, visible.turns.size)
+      assertEquals(1, visible.exchanges.size)
 
       var captured: ChatRequest? = null
       val capture = ScriptedProvider(deltas = listOf("r"), terminal = completedTerminal("r"), onRequest = { captured = it })
@@ -395,7 +508,7 @@ class CoachingServiceTest {
       // history = [USER first, ASSISTANT first-reply, USER third] (failed turn absent)
       val replay = captured!!
       assertEquals(3, replay.messages.size)
-      assertEquals("third", replay.messages[2].text)
+      assertEquals("third", messageText(replay.messages[2]))
     }
 
   @Test
@@ -518,7 +631,7 @@ class CoachingServiceTest {
         CoachingConfig
           .from(
             com.typesafe.config.ConfigFactory.parseString(
-              """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9", surfaceCommitments=true }""",
+              """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9", surfaceCommitments=true, maxToolRounds=8 }""",
             ),
           ).getOrThrow()
       val svc = CoachingService(database, LogOnlyChatProvider(), badConfig)
@@ -736,5 +849,356 @@ class CoachingServiceTest {
 
       assertEquals("You are Uni, a warm coach.", captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
+    }
+
+  // ===========================================================================
+  // Tool-use loop (RFC 94)
+  // ===========================================================================
+
+  @Test
+  fun `loop happy path dispatches a tool then produces the final answer`() =
+    runBlocking {
+      val student = createStudent()
+      val tool = SpyTool("search_colleges", result = json("""{"colleges":[],"count":0}""") as JsonObject)
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("search_colleges" to """{"states":["CA"]}"""), completedTerminal("here you go")),
+        )
+      val started =
+        serviceWith(provider, registry(tool)).startConvo(student, "colleges in CA?", null).getOrThrow() as StartConvoResult.Started
+      val events = drain(started.reply)
+      val terminal = terminalOf(events)
+      assertTrue(terminal is ReplyEvent.Completed, "got $terminal")
+
+      val convoId = started.convo.id
+      // Two request rows: user then tool_result; two responses: tool_use then end_turn.
+      assertEquals(listOf("user", "tool_result"), requestKinds(convoId))
+      assertEquals(listOf("tool_use", "end_turn"), responseRows(convoId).map { it.first })
+      // Both rows of the excursion share one turn_id (the opener's, threaded onto
+      // the continuation, never re-minted).
+      val ids = turnIds(convoId)
+      assertEquals(2, ids.size)
+      assertEquals(ids[0], ids[1])
+      assertEquals(json("""{"states":["CA"]}""") as JsonObject, tool.inputs.single())
+      assertEquals("here you go", ConvoContent.renderText(terminal.response.content!!))
+    }
+
+  @Test
+  fun `a two-round excursion stamps every request row with one shared turn_id, distinct from the next turn`() =
+    runBlocking {
+      val student = createStudent()
+      val tool = SpyTool("search_colleges", result = json("""{"count":0}""") as JsonObject)
+      // Round 1: tool_use; round 2 (continuation): tool_use again; round 3: final answer.
+      val provider =
+        SequencedProvider(
+          terminals =
+            listOf(
+              toolUseTerminal("search_colleges" to "{}"),
+              toolUseTerminal("search_colleges" to "{}"),
+              completedTerminal("all done"),
+            ),
+        )
+      val started =
+        serviceWith(provider, registry(tool)).startConvo(student, "colleges?", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      val convoId = started.convo.id
+      // Three request rows (user + two tool_result), all sharing one turn_id.
+      assertEquals(listOf("user", "tool_result", "tool_result"), requestKinds(convoId))
+      val ids = turnIds(convoId)
+      assertEquals(3, ids.size)
+      assertEquals(1, ids.toSet().size)
+
+      // A subsequent plain turn on the same convo gets a distinct turn_id.
+      drain((serviceWith(provider, registry(tool)).postTurn(student, convoId, "thanks").getOrThrow() as PostTurnResult.Started).reply)
+      val afterFollowUp = turnIds(convoId)
+      assertTrue(afterFollowUp.last() != ids.first(), "follow-up turn must have a distinct turn_id, got $afterFollowUp")
+    }
+
+  @Test
+  fun `per-call token recording bills the continuation call`() =
+    runBlocking {
+      val student = createStudent()
+      val tool = SpyTool("search_colleges", result = json("""{"count":0}""") as JsonObject)
+      val provider =
+        SequencedProvider(terminals = listOf(toolUseTerminal("search_colleges" to "{}"), completedTerminal("done")))
+      val started =
+        serviceWith(provider, registry(tool)).startConvo(student, "hi", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      val rows = responseRows(started.convo.id)
+      // Both calls carry their scripted output_tokens (11 for the tool_use call, 5 for end_turn).
+      assertEquals(listOf(11, 5), rows.map { it.second })
+    }
+
+  @Test
+  fun `parallel tool_use dispatches all and answers with matched ids`() =
+    runBlocking {
+      val student = createStudent()
+      val tool = SpyTool("search_colleges", result = json("""{"count":1}""") as JsonObject)
+      var continuationRequest: ChatRequest? = null
+      val provider =
+        SequencedProvider(
+          terminals =
+            listOf(
+              toolUseTerminal("search_colleges" to """{"states":["CA"]}""", "search_colleges" to """{"states":["NY"]}"""),
+              completedTerminal("both done"),
+            ),
+          onRequest = { if (it.messages.any { m -> m.role == ChatRole.ASSISTANT }) continuationRequest = it },
+        )
+      val started =
+        serviceWith(provider, registry(tool)).startConvo(student, "compare", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      assertEquals(2, tool.inputs.size)
+      // The continuation's last message is a user tool_result carrying two blocks, ids matched in order.
+      val toolResult = continuationRequest!!.messages.last()
+      assertEquals(ChatRole.USER, toolResult.role)
+      val blocks = toolResult.content.jsonArray
+      assertEquals(2, blocks.size)
+      assertEquals(
+        "toolu_0",
+        blocks[0]
+          .jsonObject
+          .getValue("tool_use_id")
+          .jsonPrimitive.content,
+      )
+      assertEquals(
+        "toolu_1",
+        blocks[1]
+          .jsonObject
+          .getValue("tool_use_id")
+          .jsonPrimitive.content,
+      )
+      assertTrue(
+        blocks.all {
+          it.jsonObject
+            .getValue("type")
+            .jsonPrimitive.content == "tool_result"
+        },
+      )
+    }
+
+  @Test
+  fun `unknown tool name yields an is_error result and the loop still finishes`() =
+    runBlocking {
+      val student = createStudent()
+      var continuation: ChatRequest? = null
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("does_not_exist" to "{}"), completedTerminal("recovered")),
+          onRequest = { if (it.messages.any { m -> m.role == ChatRole.ASSISTANT }) continuation = it },
+        )
+      // Registry has a different tool, so does_not_exist is a hallucination.
+      val started =
+        serviceWith(provider, registry(SpyTool("search_colleges"))).startConvo(student, "x", null).getOrThrow() as StartConvoResult.Started
+      val terminal = terminalOf(drain(started.reply))
+      assertTrue(terminal is ReplyEvent.Completed)
+
+      val block =
+        continuation!!
+          .messages
+          .last()
+          .content.jsonArray
+          .single()
+          .jsonObject
+      assertEquals(
+        true,
+        block
+          .getValue("is_error")
+          .jsonPrimitive.content
+          .toBoolean(),
+      )
+    }
+
+  @Test
+  fun `throwing tool yields an is_error result and the loop still finishes`() =
+    runBlocking {
+      val student = createStudent()
+      var continuation: ChatRequest? = null
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("search_colleges" to "{}"), completedTerminal("ok")),
+          onRequest = { if (it.messages.any { m -> m.role == ChatRole.ASSISTANT }) continuation = it },
+        )
+      val started =
+        serviceWith(provider, registry(SpyTool("search_colleges", throwOnExecute = true)))
+          .startConvo(student, "x", null)
+          .getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      val block =
+        continuation!!
+          .messages
+          .last()
+          .content.jsonArray
+          .single()
+          .jsonObject
+      assertEquals(
+        true,
+        block
+          .getValue("is_error")
+          .jsonPrimitive.content
+          .toBoolean(),
+      )
+    }
+
+  @Test
+  fun `a tool domain error is a normal tool_result, not is_error`() =
+    runBlocking {
+      val student = createStudent()
+      var continuation: ChatRequest? = null
+      val tool = SpyTool("search_colleges", result = json("""{"error":"bad cip"}""") as JsonObject)
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("search_colleges" to "{}"), completedTerminal("adapted")),
+          onRequest = { if (it.messages.any { m -> m.role == ChatRole.ASSISTANT }) continuation = it },
+        )
+      val started =
+        serviceWith(provider, registry(tool)).startConvo(student, "x", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      val block =
+        continuation!!
+          .messages
+          .last()
+          .content.jsonArray
+          .single()
+          .jsonObject
+      // No is_error key: the model reads the tool's own {"error":...} as a normal result.
+      assertTrue(block["is_error"] == null, "domain error must not set is_error")
+    }
+
+  @Test
+  fun `round cap forces a final no-tools call`() =
+    runBlocking {
+      val student = createStudent()
+      val cappedConfig =
+        CoachingConfig
+          .from(
+            com.typesafe.config.ConfigFactory.parseString(
+              """coaching { model="claude-sonnet-4-6", maxTokens=10, systemPromptName="coach", systemPromptVersion="v1", maxToolRounds=2 }""",
+            ),
+          ).getOrThrow()
+      var forcedRequest: ChatRequest? = null
+      // Always returns tool_use except record the final (no-tools) request.
+      val provider =
+        SequencedProvider(
+          terminals =
+            listOf(
+              toolUseTerminal("search_colleges" to "{}"),
+              toolUseTerminal("search_colleges" to "{}"),
+              completedTerminal("forced answer"),
+            ),
+          onRequest = { if (it.tools.isEmpty() && it.messages.size > 1) forcedRequest = it },
+        )
+      val started =
+        serviceWith(provider, registry(SpyTool("search_colleges")), cappedConfig)
+          .startConvo(student, "loop", null)
+          .getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      // cap + 1 = 3 request rows (user + 2 tool_result), all responses recorded.
+      assertEquals(3, requestKinds(started.convo.id).size)
+      assertEquals(3, responseRows(started.convo.id).size)
+      assertNotNull(forcedRequest, "a forced no-tools call must be made at the cap")
+    }
+
+  @Test
+  fun `continuation failure deletes the convo on the first turn`() =
+    runBlocking {
+      val student = createStudent()
+      val provider =
+        SequencedProvider(terminals = listOf(toolUseTerminal("search_colleges" to "{}"), transient()))
+      val started =
+        serviceWith(provider, registry(SpyTool("search_colleges"))).startConvo(student, "x", null).getOrThrow() as StartConvoResult.Started
+      val terminal = terminalOf(drain(started.reply))
+      assertTrue(terminal is ReplyEvent.Failed)
+
+      // Both calls recorded (tool_use then error), then the first-turn convo is soft-deleted.
+      assertTrue(service().getConvo(student, started.convo.id).getOrThrow() is GetConvoResult.NotFound)
+      val deleted = ConvosDao.findById(sqlSession, started.convo.id, SoftDeleteScope.DELETED).getOrThrow()
+      assertNotNull(deleted.deletedAt)
+    }
+
+  @Test
+  fun `continuation failure on a later turn leaves the convo invisible`() =
+    runBlocking {
+      val student = createStudent()
+      // First turn succeeds (seed a visible exchange).
+      val seed = service().startConvo(student, "seed ok", null).getOrThrow() as StartConvoResult.Started
+      drain(seed.reply)
+      val convoId = seed.convo.id
+
+      val provider = SequencedProvider(terminals = listOf(toolUseTerminal("search_colleges" to "{}"), transient()))
+      val post =
+        serviceWith(
+          provider,
+          registry(SpyTool("search_colleges")),
+        ).postTurn(student, convoId, "doomed").getOrThrow() as PostTurnResult.Started
+      assertTrue(terminalOf(drain(post.reply)) is ReplyEvent.Failed)
+
+      // Convo still exists; only the seed exchange is visible.
+      assertTrue(service().getConvo(student, convoId).getOrThrow() is GetConvoResult.Found)
+      val visible = service().listTurns(student, convoId).getOrThrow() as ListTurnsResult.Found
+      assertEquals(1, visible.exchanges.size)
+    }
+
+  @Test
+  fun `replay after an excursion omits tool plumbing`() =
+    runBlocking {
+      val student = createStudent()
+      val tool = SpyTool("search_colleges", result = json("""{"count":0}""") as JsonObject)
+      val provider =
+        SequencedProvider(terminals = listOf(toolUseTerminal("search_colleges" to "{}"), completedTerminal("final coach text")))
+      val started =
+        serviceWith(provider, registry(tool)).startConvo(student, "user question", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      // Next turn's replay collapses the excursion to [USER text, ASSISTANT final].
+      var replay: ChatRequest? = null
+      val next = ScriptedProvider(deltas = listOf("r"), terminal = completedTerminal("r"), onRequest = { replay = it })
+      val post = service(next).postTurn(student, started.convo.id, "next").getOrThrow() as PostTurnResult.Started
+      drain(post.reply)
+
+      val messages = replay!!.messages
+      assertEquals(3, messages.size)
+      assertEquals("user question", messageText(messages[0]))
+      assertEquals("final coach text", messageText(messages[1]))
+      assertEquals("next", messageText(messages[2]))
+      // No empty user message, no tool_use content leaked into replay.
+      assertTrue(messages.none { messageText(it).isBlank() })
+    }
+
+  @Test
+  fun `live college-search round-trip dispatches the real tool and produces a final answer`() =
+    runBlocking {
+      val student = createStudent()
+      // The real adapter over the real search tool/service (empty DB -> count 0,
+      // a valid domain outcome — the wiring, not the data, is under test).
+      val realTool = CollegeChatTool(ed.unicoach.college.CollegeSearchTool(ed.unicoach.college.CollegeSearchService(database)))
+      var continuation: ChatRequest? = null
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("search_colleges" to """{"cipPrefix":"26"}"""), completedTerminal("no biology matches yet")),
+          onRequest = { if (it.messages.any { m -> m.role == ChatRole.ASSISTANT }) continuation = it },
+        )
+      val started =
+        serviceWith(provider, registry(realTool)).startConvo(student, "biology colleges?", null).getOrThrow() as StartConvoResult.Started
+      val terminal = terminalOf(drain(started.reply))
+      assertTrue(terminal is ReplyEvent.Completed)
+      assertEquals("no biology matches yet", ConvoContent.renderText(terminal.response.content!!))
+
+      // The continuation's tool_result carries the real serialized search result JSON.
+      val resultText =
+        continuation!!
+          .messages
+          .last()
+          .content.jsonArray
+          .single()
+          .jsonObject
+          .getValue("content")
+          .jsonPrimitive.content
+      assertTrue(resultText.contains("\"count\":0"), "expected real result JSON, got: $resultText")
     }
 }

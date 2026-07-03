@@ -4,6 +4,7 @@ import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
+import ed.unicoach.chat.ContentBlocks
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -335,10 +336,12 @@ class SynthesisServiceTest {
 
       // The assembled prompt carries the pinned "today".
       val requestText =
-        provider.lastRequest!!
-          .messages
-          .single()
-          .text
+        ContentBlocks.renderText(
+          provider.lastRequest!!
+            .messages
+            .single()
+            .content,
+        )
       assertTrue(requestText.contains("2027-01-15T00:00:00Z"), "prompt must carry pinned today; got:\n$requestText")
 
       val timing = CommitmentsDao.listOpenByStudent(sqlSession, student).getOrThrow().single()
@@ -419,10 +422,12 @@ class SynthesisServiceTest {
       service(provider).synthesize(student)
 
       val requestText =
-        provider.lastRequest!!
-          .messages
-          .single()
-          .text
+        ContentBlocks.renderText(
+          provider.lastRequest!!
+            .messages
+            .single()
+            .content,
+        )
       assertTrue(requestText.contains("MARKER_do_not_restate"), "open commitments must be in the prompt; got:\n$requestText")
     }
 

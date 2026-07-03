@@ -18,6 +18,11 @@ data class ChatRequest(
   val messages: List<ChatMessage>,
   // Response token ceiling.
   val maxTokens: Int,
+  // Verbatim Anthropic tool specs (name/description/input_schema), each an
+  // opaque JsonObject matching the port's stance that content blocks and vendor
+  // params are opaque. Serialized into the body's `tools` array; the key is
+  // omitted when empty, so tool-less callers stay byte-identical on the wire.
+  val tools: List<JsonObject> = emptyList(),
   // Vendor passthrough, mirrors convo_requests.request_params.
   val params: JsonObject? = null,
 )

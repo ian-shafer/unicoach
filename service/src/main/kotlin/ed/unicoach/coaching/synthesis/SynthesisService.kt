@@ -441,7 +441,7 @@ class SynthesisService(
           }
         }
       }
-    return listOf(ChatMessage(ChatRole.USER, context))
+    return listOf(ChatMessage.text(ChatRole.USER, context))
   }
 
   // ---------------------------------------------------------------------------

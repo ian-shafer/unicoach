@@ -66,6 +66,21 @@ LLM assign it makes the score an unreproducible model whim, decoupled from the
 actual evidence and silently un-decayed over time — defeating the recency model
 and making confidence non-comparable across passes.
 
+### The extraction watermark advances only on a whole-turn boundary
+
+**Rule:** The extraction window MUST be bounded on whole logical turns
+(`turn_id` groups): it caps on distinct turns and never includes a partial
+excursion, and the applied watermark MUST name a whole-turn boundary — it MUST
+NOT advance into an open excursion (past a turn's opener while that turn's rows
+remain undistilled).
+
+**Why:** The watermark is a monotonic high-water mark; the next pass reads only
+rows beyond it. Advancing it into an open excursion strands that excursion's
+opener below the watermark forever, so its turns are never distilled — silent,
+unrecoverable per-turn memory loss. Bounding on whole turns makes the split the
+shipped per-row cap allowed impossible.
+
 ## History
 
 - [x] [RFC-66: Extraction](../../../../../../../../rfc/66-extraction.md)
+- [x] [RFC-94: Chat Tool-Use Loop](../../../../../../../../rfc/94-chat-tool-use.md)
