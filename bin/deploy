@@ -56,13 +56,19 @@ require_env_vars ENVIRONMENT
 # to the wrong account.
 assert_aws_account "${AWS_ACCOUNT_ID:-}"
 
+# Point this run's OpenTofu reads at <env>'s disjoint state (TF_DATA_DIR) and init
+# the partial backend with its state key. The init is not optional: an output read
+# against an uninitialized or foreign-keyed backend fails or returns the wrong
+# env's state. TF_DATA_DIR is exported so the later `tofu output` reads hit the
+# same per-env data dir.
 export TF_DATA_DIR="$PROJECT_ROOT/infra/.terraform-$UNICOACH_ENV"
 tofu -chdir="$PROJECT_ROOT/infra" init \
-  -backend-config="key=unicoach/$UNICOACH_ENV/terraform.tfstate"
+  -backend-config="key=unicoach/$UNICOACH_ENV/terraform.tfstate" >&2
 
-# Region for the S3 upload and SSM call. Override with AWS_REGION (or the standard
-# AWS_DEFAULT_REGION); the .env.<env> REGION if set, else the infra region default.
-AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-${REGION:-us-east-1}}}"
+# AWS_REGION for the S3 upload and SSM --region calls below is a true env var,
+# derived from REGION in the .env base (AWS_REGION="${AWS_REGION:-$REGION}") and
+# exported when bin/common sources it with `set -a`, so the aws CLI and OpenTofu
+# (TF_VAR_region) target one region. An externally exported AWS_REGION still wins.
 
 # ── 1. Build all deployable distributions ─────────────────────────────────────
 "$PROJECT_ROOT/bin/build"
@@ -71,21 +77,30 @@ REST_DIST="rest-server/build/install/rest-server"
 WORKER_DIST="queue-worker/build/install/queue-worker"
 PUBLIC_WEB_DIST="public-web/build/install/public-web"
 ADMIN_WEB_DIST="admin-web/build/install/admin-web"
+# COLLEGE_DIST is defined once in bin/functions (sourced via bin/common) as the
+# single source of truth shared with bin/ingest-colleges; do not redefine it here.
 
-for dist in "$REST_DIST" "$WORKER_DIST" "$PUBLIC_WEB_DIST" "$ADMIN_WEB_DIST"; do
+for dist in "$REST_DIST" "$WORKER_DIST" "$PUBLIC_WEB_DIST" "$ADMIN_WEB_DIST" "$COLLEGE_DIST"; do
   [ -d "$PROJECT_ROOT/$dist" ] || fatal "Missing distribution [$dist]; did bin/build succeed?"
 done
 
 # ── 2. Assemble the bundle ────────────────────────────────────────────────────
-# The installDist trees are tarred from their build/install parent so they
-# enter the bundle as bare rest-server/, queue-worker/, public-web/, and
-# admin-web/ — the paths the systemd units expect at current/<svc>/bin/<svc>,
-# decoupled from the Gradle build layout.
+# The service dists (rest-server/, queue-worker/, public-web/, admin-web/) are
+# tarred from their build/install parent so they enter the bundle as bare
+# rest-server/, queue-worker/, public-web/, and admin-web/ — the paths the systemd
+# units expect at current/<svc>/bin/<svc>, decoupled from the Gradle build layout.
+# The college dist is tarred preserving its full repo-relative path
+# college/build/install/college, so on the instance its launcher lands at
+# current/college/build/install/college/bin/college — the SAME $PROJECT_ROOT-
+# relative path as the local dev tree, so bin/ingest-colleges resolves one path in
+# both trees (no build/install-stripping split to reconcile).
 # The on-instance migration scripts source bin/common -> bin/functions and shell
 # out to the bin/db-* family; bin/db-status and bin/db-create both invoke
 # bin/db-query for their existence checks, so it must be included. Every db-run
-# gates on bin/postgres-check, so it is bundled too. These repo files keep their
-# repo-relative paths under $PROJECT_ROOT.
+# gates on bin/postgres-check, so it is bundled too. bin/ingest-colleges is the
+# ops tool bin/remote triggers on the instance; its own script must ship alongside
+# its college/ dist. These repo files keep their repo-relative paths under
+# $PROJECT_ROOT.
 BUNDLE_ID="$(date -u +%Y%m%d%H%M%S)"
 BUNDLE_PATH="$(mktemp -t unicoach-deploy.XXXXXX).tar.gz"
 trap 'rm -f "$BUNDLE_PATH"' EXIT
@@ -102,6 +117,7 @@ REPO_PATHS=(
   "bin/db-query"
   "bin/db-run"
   "bin/postgres-check"
+  "bin/ingest-colleges"
 )
 
 for path in "${REPO_PATHS[@]}"; do
@@ -114,11 +130,15 @@ tar -czf "$BUNDLE_PATH" \
   -C "$(dirname "$PROJECT_ROOT/$WORKER_DIST")" "$(basename "$WORKER_DIST")" \
   -C "$(dirname "$PROJECT_ROOT/$PUBLIC_WEB_DIST")" "$(basename "$PUBLIC_WEB_DIST")" \
   -C "$(dirname "$PROJECT_ROOT/$ADMIN_WEB_DIST")" "$(basename "$ADMIN_WEB_DIST")" \
+  -C "$PROJECT_ROOT" "$COLLEGE_DIST" \
   -C "$PROJECT_ROOT" "${REPO_PATHS[@]}"
 
 # ── 3. Upload to the artifacts bucket ─────────────────────────────────────────
+# Read the bucket from this env's OpenTofu outputs (under the TF_DATA_DIR exported
+# above), fataling on empty so a missing/renamed output surfaces loudly instead of
+# feeding an empty string into the S3 upload.
 ARTIFACTS_BUCKET="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw artifacts_bucket)"
-[ -n "$ARTIFACTS_BUCKET" ] || fatal "Could not read artifacts_bucket from OpenTofu outputs."
+[ -n "$ARTIFACTS_BUCKET" ] || fatal "Could not read [artifacts_bucket] from OpenTofu outputs."
 
 BUNDLE_KEY="releases/unicoach-$BUNDLE_ID.tar.gz"
 BUNDLE_S3_URI="s3://$ARTIFACTS_BUCKET/$BUNDLE_KEY"
@@ -128,7 +148,7 @@ aws s3 cp --region "$AWS_REGION" "$BUNDLE_PATH" "$BUNDLE_S3_URI"
 
 # ── 4. Trigger the on-instance deploy via SSM Run Command ─────────────────────
 INSTANCE_ID="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw instance_id)"
-[ -n "$INSTANCE_ID" ] || fatal "Could not read instance_id from OpenTofu outputs."
+[ -n "$INSTANCE_ID" ] || fatal "Could not read [instance_id] from OpenTofu outputs."
 
 log-info "Issuing SSM Run Command to [$INSTANCE_ID]..."
 COMMAND_ID="$(aws ssm send-command \

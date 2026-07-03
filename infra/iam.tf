@@ -61,6 +61,23 @@ data "aws_iam_policy_document" "instance" {
       "${aws_s3_bucket.artifacts.arn}/*",
     ]
   }
+
+  # CloudWatch Logs delivery for bin/remote's ops runs. AmazonSSMManagedInstanceCore
+  # (attached above) covers Run Command execution but not the --cloud-watch-output-config
+  # sink; scope the writes to the ops-run log group ops.tf owns.
+  statement {
+    sid = "WriteOpsRunLogs"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogGroups",
+    ]
+    resources = [
+      aws_cloudwatch_log_group.ops_run.arn,
+      "${aws_cloudwatch_log_group.ops_run.arn}:*",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "instance" {

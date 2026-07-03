@@ -37,3 +37,8 @@ output "instance_id" {
   description = "EC2 instance id bin/deploy targets via SSM Run Command."
   value       = aws_instance.app.id
 }
+
+output "ops_log_group_name" {
+  description = "CloudWatch log group bin/remote points an ops run's --cloud-watch-output-config at."
+  value       = aws_cloudwatch_log_group.ops_run.name
+}

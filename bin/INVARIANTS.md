@@ -117,6 +117,14 @@ name:
   `tofu` arguments opaquely. A wrapper over an in-repo sibling owns that
   sibling's grammar and MUST name the arguments instead; this exception is for a
   third-party CLI whose grammar is not ours to re-encode.
+- **SSM command-string interpolation** — `bin/remote`: it does **not** run the
+  caller's `<script> [args…]` as a local `"$@"` child. It word-splits its own
+  options off at the required `--`, rewrites the trailing args (`@name` → the
+  uploaded file's `s3://` URI), and interpolates the single-quoted result into a
+  single `aws ssm send-command --parameters commands=[…]` **string** that
+  `send-command` receives as one argument and the instance runs under bash. That
+  is the same "one diagnostic string" shape as the `fatal … "$*"` / `log-*`
+  primitives, not a local argv forward.
 
 **Why:** `exec` and an opaque `"$@"` make a script an unbounded conduit, so its
 real behaviour is whatever the caller and the underlying tool negotiate, not
@@ -139,23 +147,70 @@ the operational CLIs (lifecycle, db, queue, build, health), not the test
 harnesses (`*-tests`, `tests-common`, `ios-scripts-tests`) or the
 `bin/functions` / `bin/common` libraries. Scripts whose grammar is an open-ended
 caller command or list — `daemon-up`, `daemon-bounce`, `wait-for`, `db-run`'s
-trailing SQL, `q-status`'s filter list — have no "surplus" to reject and are
-exempt.
+trailing SQL, `q-status`'s filter list, `bin/remote`'s trailing
+`<script> [args…]` after `--` — have no "surplus" to reject and are exempt.
 
 **Why:** A silently-ignored argument means the script did something other than
 what the caller wrote, with no signal. Rejecting it turns a typo or a stale flag
 (e.g. a former `psql` passthrough) into an immediate, diagnosable failure
 instead of a wrong-but-green run.
 
-### Daemon `-up` boots a pre-built binary or fatals
+### A `bin/` script that runs a JVM program invokes a pre-built launcher or fatals
 
-**Rule:** A daemon `-up` script MUST boot from a pre-built `installDist` binary
-and MUST fatal immediately if it is absent — it MUST NOT invoke Gradle to build
-on demand.
+**Rule:** A `bin/` script that runs a JVM program MUST invoke a pre-built
+`installDist` launcher — never build and run in the same script (no
+`gradlew … run`). It MUST fatal if the launcher is absent — it MUST NOT invoke
+Gradle to build one on demand. The launcher is referenced by a single
+`$PROJECT_ROOT`-relative path (`…/build/install/…/bin/…`) that is identical in
+the local dev tree and under `/opt/unicoach/current` on the instance. For the
+ops-tool case that path derives from the shared `COLLEGE_DIST` constant in
+`bin/functions` — the single source of truth `bin/deploy` tars and
+`bin/ingest-colleges` execs — so the two never spell it independently. The
+daemon `-up` scripts run only where the local dist exists and use their path
+directly. An ops tool run in both the local dev tree and the deployed tree
+(`/opt/unicoach/current`) resolves the same one path because `bin/deploy` tars
+the `college` dist (`COLLEGE_DIST`) preserving its `build/install` path (the two
+service dists remain stripped, since their systemd units expect
+`current/<svc>/bin/<svc>`).
 
-**Why:** Coupling boot to a build makes daemon startup slow and
-non-deterministic and hides build failures inside a "start" operation; the build
-step (`bin/build-<svc>`) is deliberately a separate, explicit phase.
+**Why:** Building on demand couples execution to the build step and silently
+forks behavior between a dev machine (which can build) and the production
+instance (which cannot); the build step (`bin/build-<module>`) is deliberately a
+separate, explicit phase, and a fatal on the absent launcher surfaces a skipped
+build loudly instead of hiding it inside a "run" operation.
+
+### `bin/` scripts parse their own options with `getopts`, single-letter only
+
+**Rule:** A `bin/` script MUST parse its own options via `getopts`, using
+single-letter options only — never a long-form (`--foo`) option of its own. The
+exception is a thin front over a third-party CLI (`infra-apply`, `infra-plan`,
+`infra-init`, `infra-output`, `infra-bootstrap`, each forwarding to `tofu`)
+whose own argument grammar isn't ours to constrain.
+
+**Why:** `getopts` is the only option parser already in use across `bin/`; a
+second, long-form syntax would fork parsing style per script and complicate a
+script like `bin/remote`, which must cleanly separate its own options from an
+opaque forwarded command.
+
+### An ops-tool script reads credentials only from `/etc/unicoach/env`
+
+**Rule:** An ops-tool script invoked via `bin/remote` MUST read runtime
+credentials only from `/etc/unicoach/env` (via `ENV_FILE`); it MUST NOT receive
+a secret through `bin/remote`'s own arguments or the SSM command it sends.
+
+**Why:** Both are visible in plaintext to anyone with CloudTrail/console access;
+`/etc/unicoach/env` is already the one trusted credentials path every deployed
+script uses.
+
+### An ops-tool script never mutates `current` or restarts a service
+
+**Rule:** An ops-tool script invoked via `bin/remote` MUST NOT modify
+`/opt/unicoach/current` or restart a systemd unit.
+
+**Why:** `deploy-on-instance.sh` treats the symlink swap and restart as atomic
+and gated on a successful migration; a second, unsynchronized path touching
+either could serve a half-deployed release or restart a service out from under
+an in-flight request.
 
 ### Test harnesses never stop or wipe the shared cluster
 
@@ -200,3 +255,4 @@ cannot run until one admin exists to bootstrap it.
 - [x] [RFC-60: Admin Website (Framework + Users Spine)](../rfc/60-admin-website.md)
 - [x] [RFC-61: Public Web Module (Dynamic HTML via Shared Layout)](../rfc/61-static-marketing-site.md)
 - [x] [RFC-80: bin/ exec and argument-passthrough discipline](../rfc/80-bin-exec-passthrough-discipline.md)
+- [x] [RFC-92: Ops Tool Runner](../rfc/92-ops-tool-runner.md)

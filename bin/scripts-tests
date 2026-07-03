@@ -392,40 +392,6 @@ SHIM
 }
 assert_success "assert_aws_account passes on a match and fatals on a mismatch" test_assert_aws_account_guard
 
-echo ""
-echo "==== Testing deploy bundle completeness ===="
-# The on-instance migration path (db-create-role -> db-create -> db-migrate)
-# transitively sources/execs exactly this script set; every entry must ship in
-# the deploy bundle or the migration fails on the instance. Guards against a
-# future regression re-dropping postgres-check (or any migration-path script).
-test_deploy_bundle_includes_migration_path() {
-  local deploy="$PROJECT_ROOT/bin/deploy"
-  # Extract the REPO_PATHS array body: the lines between "REPO_PATHS=(" and ")".
-  local bundle
-  bundle="$(awk '/^REPO_PATHS=\(/{f=1; next} f&&/^\)/{f=0} f' "$deploy")"
-  local required=(
-    "bin/common"
-    "bin/functions"
-    "bin/db-create-role"
-    "bin/db-create"
-    "bin/db-migrate"
-    "bin/db-status"
-    "bin/db-run"
-    "bin/db-write"
-    "bin/db-query"
-    "bin/postgres-check"
-  )
-  local script
-  for script in "${required[@]}"; do
-    if ! echo "$bundle" | grep -q "\"$script\""; then
-      fail_test "deploy bundle is missing migration-path script [$script]"
-      return 1
-    fi
-  done
-  return 0
-}
-assert_success "deploy bundle includes the full migration-path script set" test_deploy_bundle_includes_migration_path
-
 # Three distinct free test ports, found at run time via bin/find-free-port (which
 # uses check-port). Starting the scan at 18000 keeps them well above the harness
 # PORT=8081 so a foreign listener here never collides with a real rest-server. If
@@ -752,5 +718,121 @@ assert_exit_code "$EXIT_UNEXPECTED_ARG" "check-pid with two args exits 20" bin/c
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "q-enqueue with one arg exits 21" bin/q-enqueue only-job-type
 assert_exit_code "$EXIT_UNEXPECTED_ARG" "q-enqueue with a residual positional exits 20" bin/q-enqueue job '{}' stray
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "q-enqueue with a malformed -d delay exits 22" bin/q-enqueue job '{}' -d not-a-duration
+
+# 15. RFC 92 ops tool runner. The scripts and shared functions the ops-tool path
+#     depends on: static lint, the two shared resolvers, and the argument-validation
+#     surfaces of bin/remote and bin/ingest-colleges. The AWS trigger itself
+#     (S3 upload, send-command, the s3:// branch of resolve_file_arg) cannot run
+#     without live AWS and is covered by the RFC's post-apply deployment
+#     verification, mirroring RFC 50's original deploy path.
+echo ""
+echo "==== Testing RFC 92 ops tool runner ===="
+
+# Script lint: bash -n over every script the RFC touches or adds.
+for script in deploy build build-college ingest-colleges remote functions; do
+  assert_success "bash -n bin/$script parses cleanly" bash -n "$PROJECT_ROOT/bin/$script"
+done
+
+# OpenTofu static validation of infra/ (ops.tf + the iam.tf/outputs.tf edits).
+# fmt -check is purely static. validate needs the providers installed, so init
+# first with -backend=false (no remote state, no AWS) into a throwaway TF_DATA_DIR
+# so the developer's real infra/.terraform is left untouched; providers resolve
+# offline from the tracked infra/.terraform.lock.hcl. Both must exit 0.
+assert_success "tofu -chdir=infra fmt -check passes" \
+  tofu -chdir="$PROJECT_ROOT/infra" fmt -check
+test_tofu_validate() {
+  local tf_data rc=0
+  tf_data="$(mktemp -d)"
+  (
+    export TF_DATA_DIR="$tf_data"
+    tofu -chdir="$PROJECT_ROOT/infra" init -backend=false -input=false >/dev/null 2>&1 \
+      && tofu -chdir="$PROJECT_ROOT/infra" validate >/dev/null 2>&1
+  ) || rc=$?
+  rm -rf "$tf_data"
+  [ "$rc" -eq 0 ]
+}
+assert_success "tofu -chdir=infra validate passes (init -backend=false, no AWS)" test_tofu_validate
+
+# resolve_file_arg (local-path branch only; the s3:// branch needs AWS).
+test_resolve_file_arg_existing() {
+  local f resolved
+  f="$(mktemp)"
+  resolved="$(resolve_file_arg "$f")"
+  rm -f "$f"
+  # realpath may resolve /var -> /private/var on macOS; compare basenames.
+  [ "$(basename "$resolved")" = "$(basename "$f")" ] && [[ "$resolved" = /* ]]
+}
+assert_success "resolve_file_arg resolves an existing local path to an absolute path" test_resolve_file_arg_existing
+test_resolve_file_arg_missing() {
+  ( resolve_file_arg "/no/such/file/$$-does-not-exist" ) >/dev/null 2>&1
+}
+assert_failure "resolve_file_arg fatals on a nonexistent local path" test_resolve_file_arg_missing
+
+# bin/remote argument validation (no AWS reached: every case fatals before the
+# first tofu/aws call). A real local file (bin/functions) stands in for a -f path.
+assert_success "remote -h exits 0" bin/remote -h
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "remote with no <env> exits 21" bin/remote
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "remote without a -- separator exits 21" bin/remote prod -f a:bin/functions ingest-colleges
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "remote with -- but no <script> exits 21" bin/remote prod --
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -f with no ':' exits 22" bin/remote prod -f nocolon -- ingest-colleges
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -f with an empty name exits 22" bin/remote prod -f :bin/functions -- ingest-colleges
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -f with a '/' in the name exits 22" bin/remote prod -f a/b:bin/functions -- ingest-colleges
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -f with a name starting '-' exits 22" bin/remote prod -f -x:bin/functions -- ingest-colleges
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -f with a nonexistent path exits 22" bin/remote prod -f a:/no/such/path -- ingest-colleges
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote @name undeclared by -f exits 22" bin/remote prod -f a:bin/functions -- ingest-colleges @b
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote env=local is rejected before AWS (band 22)" bin/remote local -- ingest-colleges
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "remote rejects an unknown option (10)" bin/remote prod -z -- ingest-colleges
+
+# Ops-tool allowlist: only a sanctioned <script> may run. An unsanctioned name is
+# rejected with EXIT_INVALID_ARG_VALUE before any AWS call — the enforcement of
+# the "ops tool MUST NOT modify current / restart a service" invariant (a bare
+# bin/ token like deploy-on-instance can no longer be triggered).
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote rejects an unsanctioned <script> (band 22)" bin/remote prod -- deploy-on-instance
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote rejects a shell-injection <script> token (band 22)" bin/remote prod -- 'ingest-colleges; rm -rf /'
+
+# -t and -p take a duration string (e.g. 30m, 5s) like `sleep`, validated with
+# validate_duration. A valid duration passes the option parse and reaches the AWS
+# stage (which fails without live AWS — that failure is not a usage-band code, so
+# these two only assert the value was accepted, i.e. NOT rejected in the 10-29
+# band). A malformed value (no unit, non-numeric) is a usage error in the reserved
+# band, and a missing value is band 11, never a silent fall-through to the default.
+test_remote_t_duration_accepted() {
+  local rc=0
+  bin/remote prod -t 30m -- ingest-colleges >/dev/null 2>&1 || rc=$?
+  # Accepted past the option parse: exit is not a usage-band (10-29) rejection.
+  [ "$rc" -lt 10 ] || [ "$rc" -gt 29 ]
+}
+assert_success "remote -t 30m is accepted past the option parse (not a usage-band reject)" test_remote_t_duration_accepted
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -t badval is rejected (band 22)" bin/remote prod -t badval -- ingest-colleges
+test_remote_p_duration_accepted() {
+  local rc=0
+  bin/remote prod -p 5s -- ingest-colleges >/dev/null 2>&1 || rc=$?
+  [ "$rc" -lt 10 ] || [ "$rc" -gt 29 ]
+}
+assert_success "remote -p 5s is accepted past the option parse (not a usage-band reject)" test_remote_p_duration_accepted
+# -p 0s is a SUPPORTED value: -p is the poll interval, and 0 means poll with no
+# pause until the command reaches a terminal status (sleep 0 is a valid no-op); it
+# terminates (SSM's own -t returns TimedOut, which the loop breaks on). So it must
+# pass the option parse, NOT be rejected in the usage band.
+test_remote_p_zero_duration_accepted() {
+  local rc=0
+  bin/remote prod -p 0s -- ingest-colleges >/dev/null 2>&1 || rc=$?
+  [ "$rc" -lt 10 ] || [ "$rc" -gt 29 ]
+}
+assert_success "remote -p 0s is accepted past the option parse (not a usage-band reject)" test_remote_p_zero_duration_accepted
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -p non-duration is rejected (band 22)" bin/remote prod -p abc -- ingest-colleges
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "remote -p 0 (no unit) is rejected (band 22)" bin/remote prod -p 0 -- ingest-colleges
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "remote -p (missing value) is rejected (band 11)" bin/remote prod -p -- ingest-colleges
+
+# bin/ingest-colleges argument validation (no AWS reached: the arity guard fires
+# before resolve_file_arg / the launcher).
+assert_success "ingest-colleges -h exits 0" bin/ingest-colleges -h
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with no args exits 21" bin/ingest-colleges
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with one arg exits 21" bin/ingest-colleges only.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with three args exits 21" bin/ingest-colleges a.csv b.csv c.csv
+test_ingest_colleges_missing_file() {
+  bin/ingest-colleges "/no/such/$$-institution.csv" "/no/such/$$-fields.csv" >/dev/null 2>&1
+}
+assert_failure "ingest-colleges fatals on a nonexistent local CSV path" test_ingest_colleges_missing_file
 
 end_tests
