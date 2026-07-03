@@ -158,6 +158,53 @@ chain as its **Review Context File** so the chains skip rebuilding it. When
 Stage A is delegated (the pipeline's `[rfc-impl-review-prep]` agent), this file
 is the prep's durable handoff to the top-level fan-out.
 
+### Phase 2d. Delta carry-forward (re-review passes only)
+
+This step runs **only when the caller supplies delta inputs** — a **`Δfiles`**
+list (the files an intervening fix changed since the last review) **and** the
+**prior pass's leaves directories** (its `design/leaves/` and `code/leaves/`).
+That is the case when a re-review follows a fix (the `rfc-pipeline` supplies
+them for every `iter-<i>` with `i ≥ 2` and for its Option B/C re-review passes).
+On a **first / standalone review** no delta inputs are supplied, so skip this
+step entirely and let Phase 3 run the full lens set.
+
+When they are supplied, re-run only the leaves the fix plausibly affected and
+**carry forward** the rest. Discover the full lens set exactly as the chains do
+(skills matching `code-review-*` and `design-review-*`, excluding the `*-chain`
+macros). For each lens with a prior verdict:
+
+- **Re-run** if it returned `FAIL` or `NOT RUN` last pass — clearing those is
+  the fix's whole point, so they MUST be re-verified.
+- **Re-run** if the fix **plausibly implicates** the lens: read the `Δfiles`
+  diff and judge whether the change could newly trip what the lens checks (a fix
+  that adds error handling implicates `code-review-error-bubbling` /
+  `code-review-lossless-domain-mapping`; one that touches a data class
+  implicates `code-review-no-sentinels` / `code-review-immutable-returns`; and
+  so on). Judge from what the fix actually did, not from whether the lens's old
+  reasoning mentioned a file.
+- **Carry forward** every other `PASS`/`N/A` lens — it passed the last review
+  and the fix is not plausibly related to it.
+
+Carry-forward is a judgment call, not a proof: a carried-forward lens can
+occasionally miss something a fix newly introduced. That is an accepted trade —
+the lens already passed the full first-pass review, and the Architect's
+final-diff review is the backstop.
+
+To carry a lens forward, write a **sentinel** into this pass's matching
+`design/leaves/` or `code/leaves/` dir at `<lens>.json` — a small marker such as
+`{ "carried_forward": true, "from": "<id of the pass holding the verdict>" }`,
+**not** a copy of the verdict. `from` MUST name the pass whose `leaves/` holds
+the **real** verdict: if the prior pass's file for this lens is itself a
+sentinel, resolve through it to the original so sentinels never chain. A
+sentinel is treated as a present, already-resolved verdict — the Phase 3 fan-out
+skip-if-present logic declines to re-spawn the lens, the chain's completeness
+assertion counts it, and aggregation (Phase 4) resolves it to the referenced
+verdict.
+
+Record the re-run set and the carry-forward set in `<scratch>/prep.json` for the
+orchestrator. `review-context.md` is unchanged — always the **full** current
+change — so any lens that does re-run judges the complete post-fix state.
+
 ### Phase 3. Chain Delegation (Stage B — top-level-owned fan-out)
 
 This phase spawns leaves and so **MUST run inline in the top-level session** per
@@ -201,6 +248,10 @@ additions, not the loss of root-cause data.
 ### Phase 4. Aggregation and Final Verdict
 
 Once Phase 1-3 are complete, aggregate all findings into a final master report.
+When a leaf file is a carry-forward **sentinel** (Phase 2d), resolve it to the
+verdict in the pass it names **and report it as carried forward** from that pass
+— its verdict stands from an earlier review, not re-verified here — so the
+master report never presents a carried-forward result as freshly re-run.
 
 ## 📋 Required Review Output Format
 

@@ -258,7 +258,7 @@ skip-if-present, gitignored, survives recovery resets). Layout:
   phase1/review-loop/iter-<i>/…
   phase2/impl/…
   phase2/impl-review/iter-<i>/review-context.md    # Stage A ([rfc-impl-review-prep]) builds it; leaves Read it
-  phase2/impl-review/iter-<i>/prep.json            # Stage A scope/test findings handoff
+  phase2/impl-review/iter-<i>/prep.json            # Stage A scope/test findings handoff (+ delta re-run/carry-forward sets for i≥2)
   phase2/impl-review/iter-<i>/design/leaves/<lens>.json  # one file per design leaf, write-once on completion
   phase2/impl-review/iter-<i>/code/leaves/<lens>.json    # one file per code leaf, write-once on completion
   phase2/impl-review/iter-<i>/report.md            # compiled — reconstructable from leaves/
@@ -568,6 +568,32 @@ verification** above.
    no-fan-out Stage A prep agent, an orchestrator-owned **inline** leaf fan-out,
    and a light scratch aggregation.
 
+   **Delta-scoped re-review (iterations `i ≥ 2`).** The first pass (`i = 1`)
+   runs the **full** lens set — every `code-review-*` and `design-review-*` leaf
+   against the whole changed-file set. A later pass exists only because the
+   previous iteration's `/rfc-impl-fix` mutated code, with a known footprint, so
+   it need not always re-run every lens. Let `Δfiles` be the files that fix
+   touched — resolve the `impl-review <i-1>` and `impl-fix <i-1>` checkpoints to
+   SHAs from the ledger and take
+   `git -C "<codebase-root>" diff --name-only <impl-review i-1 sha>
+   <impl-fix i-1 sha>`.
+   Per `/rfc-impl-review` **Phase 2d**, a lens is **re-run** if it was
+   `FAIL`/`NOT RUN` last pass **or** if the fix plausibly implicates it (prep
+   judges from the `Δfiles` diff whether the change could newly trip what the
+   lens checks); every other `PASS`/`N/A` lens is **carried forward**. A
+   carried-forward lens is recorded as a **sentinel** in iteration `i`'s
+   `leaves/` dir — a small marker pointing at the pass that holds the real
+   verdict — which the fan-out's skip-if-present logic treats as already done,
+   so the lens is not re-spawned. Carry-forward is a judgment call, not a proof:
+   it can occasionally miss something a fix newly introduced, an accepted trade
+   since the lens already passed the full first pass and the Architect's
+   final-diff review is the backstop. The re-run leaves always read the **full**
+   post-fix `review-context.md` built in (a), so any lens that re-runs sees the
+   complete current state, not just `Δfiles`. Computing which lenses the fix
+   implicates and writing the carry-forward sentinels is delegated to the prep
+   agent (a), which reads the changed files anyway; the orchestrator supplies
+   only `Δfiles` and the prior `leaves/` paths.
+
    a. **Prep (delegated, depth-1, no fan-out — Stage A).** Checkpoint
    (`rfc-pipeline-checkpoint -s <run-scratch> before impl-review <i>`), then
    spawn a background `general-purpose` agent
@@ -586,6 +612,19 @@ verification** above.
    resumes. **The fan-out (b) does not start until `…/review-context.md`
    exists.**
 
+   For `i ≥ 2`, additionally hand the prep agent the **delta inputs** so it can
+   write carry-forward sentinels per **Delta-scoped re-review** above: the
+   `Δfiles` list (computed by the orchestrator from the `impl-review <i-1>` /
+   `impl-fix <i-1>` checkpoint SHAs) and the prior iteration's leaves dirs
+   (`…/iter-<i-1>/design/leaves/` and `…/iter-<i-1>/code/leaves/`). Instruct it
+   to run `/rfc-impl-review` Stage A's **delta carry-forward** step: decide the
+   re-run set, write a carry-forward **sentinel** into iteration `i`'s
+   `design/leaves/` and `code/leaves/` for every carried-forward lens
+   (write-once, each pointing at the pass that holds the real verdict), and
+   record both the re-run and carry-forward sets in `…/prep.json`. On the first
+   pass (`i = 1`) there is no prior pass, so omit the delta inputs and prep
+   seeds nothing — the fan-out runs every lens.
+
    b. **Fan-out (orchestrator-owned, leaves depth-1 — Stage B).** **This
    orchestrator session itself** invokes `design-review-chain` then
    `code-review-chain` **inline** (via the `Skill` tool — NOT a background
@@ -597,7 +636,10 @@ verification** above.
    `<run-scratch>/phase2/impl-review/iter-<i>/review-context.md` (the prep
    agent's file) so the chains skip rebuilding the context and point their
    leaves at it. Each leaf `Read`s that file and writes **one verdict file per
-   leaf** under its chain's `…/leaves/` the instant it finishes. The
+   leaf** under its chain's `…/leaves/` the instant it finishes. For `i ≥ 2` the
+   prep agent has already written carry-forward **sentinels** into those
+   `…/leaves/` dirs, so the chains' **skip-if-present** logic spawns leaves only
+   for the re-run set — the carried-forward lenses are honored in place. The
    orchestrator drains the bounded (≤10) queues holding only **lens names and
    scratch paths** in context. **Let the fan-out run to completion; do not kill
    it mid-flight.** On any partial stall, recover only the missing lenses from
@@ -605,11 +647,13 @@ verification** above.
 
    c. **Aggregate (orchestrator, light).** Reconstruct the master verdict from
    scratch — the prep agent's `…/prep.json` scope/test findings plus the
-   per-leaf verdict files under `…/design/leaves/` and `…/code/leaves/` (read
-   each chain's `report.md` if present, else merge the per-leaf files directly).
-   Confirm the `Test Verification Completeness Check` is present and passing (a
-   review artifact, read from scratch). **Do not re-run the suite here** — this
-   pass was read-only, so the tree is unchanged since the last post-mutation run
+   per-leaf verdict files under `…/design/leaves/` and `…/code/leaves/` (a
+   carry-forward sentinel resolves to the verdict in the pass it names and is
+   reported as carried forward, not re-verified this pass; read each chain's
+   `report.md` if present, else merge the per-leaf files directly). Confirm the
+   `Test Verification Completeness Check` is present and passing (a review
+   artifact, read from scratch). **Do not re-run the suite here** — this pass
+   was read-only, so the tree is unchanged since the last post-mutation run
    (`impl`, or the prior iteration's `impl-fix`) and that green still holds.
    Checkpoint (`rfc-pipeline-checkpoint -s <run-scratch> impl-review <i>`).
 
@@ -726,7 +770,12 @@ verification** above.
       - **Prep (delegated, no fan-out).** Spawn a background `general-purpose`
         agent **`[rfc-impl-review-prep] rfc/<n> <rfc-name>`** running
         `/rfc-impl-review` **Stage A only** (scope/test checks + build
-        `…/review-context.md`). Write-scope: nothing tracked.
+        `…/review-context.md`). Write-scope: nothing tracked. This pass follows
+        a fix, so — per **Delta-scoped re-review** — also hand prep the delta
+        inputs: `Δfiles` (the fix's footprint) and the most recent completed
+        review pass's `design/leaves/` and `code/leaves/`, so it writes
+        carry-forward sentinels and the inline fan-out below runs only the
+        re-run set.
       - **Fan-out (inline, leaves depth-1).** This orchestrator session invokes
         `design-review-chain` then `code-review-chain` **inline** against the
         prep-built `…/review-context.md`, with Scratch Dirs `…/design/` and
@@ -755,7 +804,12 @@ verification** above.
         (scope/test checks + build `…/review-context.md`), then this
         orchestrator session invokes `design-review-chain` and
         `code-review-chain` **inline** against that context file (leaves
-        depth-1), and aggregate the verdict from scratch.
+        depth-1), and aggregate the verdict from scratch. This pass follows the
+        Architect's manual edits, so — per **Delta-scoped re-review** — hand
+        prep the delta inputs too: `Δfiles` here is the manual-edit footprint
+        (`git -C "<codebase-root>" diff --name-only` between the
+        `architect-review [i]` checkpoint and the working tree) and the prior is
+        the most recent completed review pass's `leaves/`.
       - Present the findings to the Architect and ask: _"Would you like the
         agent to automatically fix these findings via /rfc-impl-fix?"_
       - If they say yes, loop back to **Option B, Step 2** to apply the fixes.
