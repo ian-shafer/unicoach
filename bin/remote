@@ -344,23 +344,23 @@ rewrite_command_args() {
   done
 }
 
-# Single-quote a token for the remote shell (each embedded ' escaped as '\'').
+# Quote a token as a single safe argument for the remote shell, reusing Python's
+# shlex.quote — a correct, tested POSIX-shell quoter — rather than hand-rolling
+# the '\'' escape dance, which is a notoriously easy primitive to get subtly
+# wrong. python3 is already a dev-shell tool (flake.nix) used elsewhere in bin/.
 shell_quote() {
-  local s="$1"
-  printf "'%s'" "${s//\'/\'\\\'\'}"
+  python3 -c 'import shlex, sys; sys.stdout.write(shlex.quote(sys.argv[1]))' "$1"
 }
 
-# JSON-encode a string for the --parameters commands=[...] literal. Only backslash
-# and double-quote need escaping here: the shell tokens inside the string are
-# already single-quoted by shell_quote (and <script> is allowlisted), so no jq is
-# needed — the dev shell ships awscli2, not jq, and bin/deploy builds its
-# commands=[...] parameter by hand the same way. Backslash is escaped first so the
-# quote-escape's own backslashes are not doubled.
-json_escape() {
-  local s="$1"
-  s="${s//\\/\\\\}"
-  s="${s//\"/\\\"}"
-  printf '%s' "$s"
+# Encode a string as a complete JSON string literal (surrounding quotes included)
+# for the --parameters commands=[...] value, reusing Python's json.dumps — a
+# correct, tested JSON encoder that escapes every case, control characters and
+# non-ASCII included. A hand-rolled encoder that escaped only \ and " would emit
+# invalid JSON the moment an argument held a literal newline or tab. No jq is
+# needed (the dev shell ships awscli2, not jq); python3 is already used across
+# bin/ (test-fuzz, test-tcp-listener).
+json_string() {
+  python3 -c 'import json, sys; sys.stdout.write(json.dumps(sys.argv[1]))' "$1"
 }
 
 # Assemble the single command string SSM runs on the instance and wrap it in the
@@ -377,7 +377,7 @@ build_remote_command() {
   for a in ${REWRITTEN_ARGS[@]+"${REWRITTEN_ARGS[@]}"}; do
     REMOTE_COMMAND="$REMOTE_COMMAND $(shell_quote "$a")"
   done
-  PARAMETERS="commands=[\"$(json_escape "$REMOTE_COMMAND")\"]"
+  PARAMETERS="commands=[$(json_string "$REMOTE_COMMAND")]"
 }
 
 # ── Dispatch to SSM and await the tool's exit ─────────────────────────────────
