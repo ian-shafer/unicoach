@@ -7,6 +7,9 @@
 # existing artifacts bucket under ops-inputs/<run-id>/, their s3:// URIs
 # substituted for @name in the trailing args, and every uploaded object is
 # removed on exit.
+#
+# The top-level body at the end of this file reads as a sequence of named steps;
+# each step is a function defined above, delegating its detail one level down.
 source "$(dirname "$0")/common"
 
 help() {
@@ -43,133 +46,31 @@ EOF
   exit 0
 }
 
-# ── Parse order: <env> first, then options, then a required `--`, then command ─
-# The grammar is `<env> [-f …][-t …] -- <script> [args…]`: <env> is the leading
-# positional, so it is consumed before getopts (getopts stops at the first
-# non-option and would otherwise treat every option after <env> as a positional).
-# `-h` anywhere with no env is still a help request.
-if [ "$#" -eq 0 ]; then
-  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "environment required (e.g. prod); pass it as the first argument"
-fi
-if [ "$1" = "-h" ]; then
-  help
-fi
+# ── Parse & validate the command line ─────────────────────────────────────────
 
-UNICOACH_ENV="$1"
-shift
-
-# ── Split at the required `--` separator ──────────────────────────────────────
-# Everything before the first standalone `--` is this script's own options; after
-# it is the opaque <script> [args…] forwarded to the instance. Split explicitly
-# rather than letting getopts consume `--` (it would, leaving no way to tell a
-# present `--` from an absent one, so a missing separator could not be rejected).
-OPT_ARGS=()
-CMD_ARGS=()
-found_sep=false
-for a in ${@+"$@"}; do
-  if [ "$found_sep" = false ] && [ "$a" = "--" ]; then
-    found_sep=true
-    continue
+# Parse and validate one -f <name>:<local-path> spec, appending it to the
+# F_NAMES/F_PATHS parallel arrays. Split on the first ':' only — an s3:// or a
+# Windows-style path in the value keeps its later colons.
+parse_file_spec() {
+  local spec="$1"
+  if [[ "$spec" != *:* ]]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-f requires <name>:<local-path>, got [$spec]"
   fi
-  if [ "$found_sep" = false ]; then
-    OPT_ARGS+=("$a")
-  else
-    CMD_ARGS+=("$a")
+  local name="${spec%%:*}"
+  local path="${spec#*:}"
+  if [ -z "$name" ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-f name is empty in [$spec]"
   fi
-done
-if [ "$found_sep" = false ]; then
-  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a '--' separator followed by <script> [args...] is required"
-fi
-
-# ── Options (before `--`) ─────────────────────────────────────────────────────
-# Names are collected in declaration order; the paths keyed by name. Bash 3.2
-# (macOS) has no associative arrays, so two parallel arrays back the name->path map.
-F_NAMES=()
-F_PATHS=()
-# -t and -p take a duration string (e.g. 30m, 5s) like `sleep`; each is validated
-# with validate_duration and converted to integer seconds via
-# parse-duration-to-seconds (for --timeout-seconds and the poll `sleep`).
-TIMEOUT_SECONDS="$(parse-duration-to-seconds 30m)"
-POLL_INTERVAL_SECONDS="$(parse-duration-to-seconds 3s)"
-
-set -- ${OPT_ARGS[@]+"${OPT_ARGS[@]}"}
-while getopts ":hf:t:p:" opt; do
-  case "$opt" in
-  h) help ;;
-  f)
-    local_spec="$OPTARG"
-    # Split on the first ':' only — an s3:// or a Windows-style path in the value
-    # keeps its later colons.
-    if [[ "$local_spec" != *:* ]]; then
-      fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-f requires <name>:<local-path>, got [$local_spec]"
-    fi
-    f_name="${local_spec%%:*}"
-    f_path="${local_spec#*:}"
-    if [ -z "$f_name" ]; then
-      fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-f name is empty in [$local_spec]"
-    fi
-    if [[ "$f_name" == -* ]] || [[ ! "$f_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-      fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-f name [$f_name] must match ^[a-zA-Z0-9_-]+\$ and not start with '-'"
-    fi
-    if [ ! -f "$f_path" ]; then
-      fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-f path does not exist: [$f_path]"
-    fi
-    F_NAMES+=("$f_name")
-    F_PATHS+=("$f_path")
-    ;;
-  t)
-    if ! validate_duration "$OPTARG"; then
-      fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-t requires a duration value like 30m or 45s, got [$OPTARG]"
-    fi
-    TIMEOUT_SECONDS="$(parse-duration-to-seconds "$OPTARG")"
-    ;;
-  p)
-    if ! validate_duration "$OPTARG"; then
-      fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-p requires a duration value like 5s or 1m, got [$OPTARG]"
-    fi
-    POLL_INTERVAL_SECONDS="$(parse-duration-to-seconds "$OPTARG")"
-    ;;
-  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
-  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
-  esac
-done
-shift $((OPTIND-1))
-if [ "$#" -gt 0 ]; then
-  fatal -s "$EXIT_UNEXPECTED_ARG" "unexpected argument before '--': [$1] (options must precede the '--' separator)"
-fi
-
-# ── Command: <script> [args...] (everything after `--`) ───────────────────────
-REMOTE_SCRIPT="${CMD_ARGS[0]:-}"
-if [ -z "$REMOTE_SCRIPT" ]; then
-  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a <script> to run is required after '--'"
-fi
-
-# ── Enforce the ops-tool allowlist ────────────────────────────────────────────
-# <script> is interpolated verbatim into the command string run on the prod
-# instance, so it MUST be one of an enumerated set of sanctioned ops tools — not
-# any arbitrary bin/ token. This is the enforcement of the RFC's "an ops-tool
-# script MUST NOT modify current or restart a service" invariant: without it,
-# bin/remote could trigger deploy-on-instance (or any other bin/ script) on the
-# host. A tool is onboarded by adding its name here. The @name/args are separately
-# shell_quoted below, but the script name is validated here rather than quoted:
-# an unsanctioned name is a usage error to reject, not a value to pass through.
-OPS_TOOLS=("ingest-colleges")
-remote_script_sanctioned=false
-for tool in "${OPS_TOOLS[@]}"; do
-  if [ "$REMOTE_SCRIPT" = "$tool" ]; then
-    remote_script_sanctioned=true
-    break
+  if [[ "$name" == -* ]] || [[ ! "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-f name [$name] must match ^[a-zA-Z0-9_-]+\$ and not start with '-'"
   fi
-done
-if [ "$remote_script_sanctioned" = false ]; then
-  fatal -s "$EXIT_INVALID_ARG_VALUE" \
-    "[$REMOTE_SCRIPT] is not a sanctioned ops tool; allowed: [${OPS_TOOLS[*]}]"
-fi
-# Trailing args (may be empty). A slice from index 1 is safe under set -u even
-# when CMD_ARGS holds only the script.
-REMOTE_ARGS=("${CMD_ARGS[@]:1}")
+  if [ ! -f "$path" ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-f path does not exist: [$path]"
+  fi
+  F_NAMES+=("$name")
+  F_PATHS+=("$path")
+}
 
-# ── Shared @name-resolution helpers ───────────────────────────────────────────
 # Bash 3.2 (macOS) has no associative arrays and no by-reference array passing, so
 # the name→path and name→URI maps are parallel arrays scanned linearly. index_of
 # is the single scan both the pre-flight declared-name check (against F_NAMES) and
@@ -191,63 +92,180 @@ fatal_undeclared_ref() {
   fatal -s "$EXIT_INVALID_ARG_VALUE" "[@$1] references a name never declared with -f"
 }
 
-# ── Pre-flight: every @name reference must be a declared -f name (before AWS) ──
-# The actual s3:// substitution happens after upload; this check only asserts the
+# Pre-flight: every @name reference must be a declared -f name (before AWS). The
+# actual s3:// substitution happens after upload; this check only asserts the
 # reference is resolvable, so an undeclared @name fatals as a usage error before
 # any AWS call (matching the -f validations above), not mid-run.
-for arg in ${REMOTE_ARGS[@]+"${REMOTE_ARGS[@]}"}; do
-  case "$arg" in
-  @*)
-    ref="${arg#@}"
-    index_of "$ref" ${F_NAMES[@]+"${F_NAMES[@]}"} >/dev/null \
-      || fatal_undeclared_ref "$ref"
-    ;;
-  esac
-done
+assert_arg_refs_declared() {
+  local arg ref
+  for arg in ${REMOTE_ARGS[@]+"${REMOTE_ARGS[@]}"}; do
+    case "$arg" in
+    @*)
+      ref="${arg#@}"
+      index_of "$ref" ${F_NAMES[@]+"${F_NAMES[@]}"} >/dev/null \
+        || fatal_undeclared_ref "$ref"
+      ;;
+    esac
+  done
+}
 
-# ── Guards (before any build or AWS call) ─────────────────────────────────────
-# require_cloud_domain rejects env=local before any AWS work: the SSM trigger has
-# no meaning locally; a tool's own local invocation is the correct path there.
-ENV_FILE="$(unicoach_env_file "$UNICOACH_ENV")"
-set -a
-# shellcheck source=/dev/null
-source "$ENV_FILE"
-set +a
-require_env_vars ENVIRONMENT
-require_cloud_domain "$UNICOACH_ENV"
-assert_aws_account "${AWS_ACCOUNT_ID:-}"
+# <script> is interpolated verbatim into the command string run on the prod
+# instance, so it MUST be one of an enumerated set of sanctioned ops tools — not
+# any arbitrary bin/ token. This is the enforcement of the RFC's "an ops-tool
+# script MUST NOT modify current or restart a service" invariant: without it,
+# bin/remote could trigger deploy-on-instance (or any other bin/ script) on the
+# host. A tool is onboarded by adding its name here. The @name/args are separately
+# shell_quoted below, but the script name is validated here rather than quoted:
+# an unsanctioned name is a usage error to reject, not a value to pass through.
+enforce_ops_allowlist() {
+  local ops_tools=("ingest-colleges")
+  local tool sanctioned=false
+  for tool in "${ops_tools[@]}"; do
+    if [ "$REMOTE_SCRIPT" = "$tool" ]; then
+      sanctioned=true
+      break
+    fi
+  done
+  if [ "$sanctioned" = false ]; then
+    fatal -s "$EXIT_INVALID_ARG_VALUE" \
+      "[$REMOTE_SCRIPT] is not a sanctioned ops tool; allowed: [${ops_tools[*]}]"
+  fi
+}
 
-# AWS_REGION for the S3/SSM --region calls below is a true env var, derived from
-# REGION in the .env base (AWS_REGION="${AWS_REGION:-$REGION}") and exported when
+# Turn argv into the validated globals the later steps read: UNICOACH_ENV,
+# F_NAMES/F_PATHS, TIMEOUT_SECONDS/POLL_INTERVAL_SECONDS, REMOTE_SCRIPT,
+# REMOTE_ARGS. The grammar is `<env> [-f …][-t …] -- <script> [args…]`: <env> is
+# the leading positional, consumed before getopts (getopts stops at the first
+# non-option and would otherwise treat every option after <env> as a positional);
+# then options up to a required standalone `--`; then the opaque forwarded command.
+parse_args() {
+  if [ "$#" -eq 0 ]; then
+    fatal -s "$EXIT_MISSING_REQUIRED_ARG" "environment required (e.g. prod); pass it as the first argument"
+  fi
+  # `-h` with no env is still a help request.
+  if [ "$1" = "-h" ]; then
+    help
+  fi
+  UNICOACH_ENV="$1"
+  shift
+
+  # Split at the required `--`: everything before the first standalone `--` is
+  # this script's own options; after it is the opaque <script> [args…]. Split
+  # explicitly rather than letting getopts consume `--` (it would, leaving no way
+  # to tell a present `--` from an absent one, so a missing separator could not
+  # be rejected).
+  local OPT_ARGS=() CMD_ARGS=() a found_sep=false
+  for a in ${@+"$@"}; do
+    if [ "$found_sep" = false ] && [ "$a" = "--" ]; then
+      found_sep=true
+      continue
+    fi
+    if [ "$found_sep" = false ]; then
+      OPT_ARGS+=("$a")
+    else
+      CMD_ARGS+=("$a")
+    fi
+  done
+  if [ "$found_sep" = false ]; then
+    fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a '--' separator followed by <script> [args...] is required"
+  fi
+
+  # Options (before `--`). Names are collected in declaration order; paths keyed
+  # by name (parallel arrays, Bash-3.2 reason above). -t/-p take a duration like
+  # `sleep` (30m, 5s), validated with validate_duration and converted to integer
+  # seconds via parse-duration-to-seconds.
+  F_NAMES=()
+  F_PATHS=()
+  TIMEOUT_SECONDS="$(parse-duration-to-seconds 30m)"
+  POLL_INTERVAL_SECONDS="$(parse-duration-to-seconds 3s)"
+
+  local OPTIND OPTARG opt
+  set -- ${OPT_ARGS[@]+"${OPT_ARGS[@]}"}
+  while getopts ":hf:t:p:" opt; do
+    case "$opt" in
+    h) help ;;
+    f) parse_file_spec "$OPTARG" ;;
+    t)
+      if ! validate_duration "$OPTARG"; then
+        fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-t requires a duration value like 30m or 45s, got [$OPTARG]"
+      fi
+      TIMEOUT_SECONDS="$(parse-duration-to-seconds "$OPTARG")"
+      ;;
+    p)
+      if ! validate_duration "$OPTARG"; then
+        fatal -s "$EXIT_INVALID_ARG_VALUE" -- "-p requires a duration value like 5s or 1m, got [$OPTARG]"
+      fi
+      POLL_INTERVAL_SECONDS="$(parse-duration-to-seconds "$OPTARG")"
+      ;;
+    \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+    :) fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  if [ "$#" -gt 0 ]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "unexpected argument before '--': [$1] (options must precede the '--' separator)"
+  fi
+
+  # Command: <script> [args...] (everything after `--`).
+  REMOTE_SCRIPT="${CMD_ARGS[0]:-}"
+  if [ -z "$REMOTE_SCRIPT" ]; then
+    fatal -s "$EXIT_MISSING_REQUIRED_ARG" "a <script> to run is required after '--'"
+  fi
+  enforce_ops_allowlist
+  # Trailing args (may be empty). A slice from index 1 is safe under set -u even
+  # when CMD_ARGS holds only the script.
+  REMOTE_ARGS=("${CMD_ARGS[@]:1}")
+
+  assert_arg_refs_declared
+}
+
+# ── Cloud env + infrastructure lookups ────────────────────────────────────────
+
+# Source the env's .env.<env> delta over the .env base bin/common already loaded,
+# then assert the cloud-deploy guards. require_cloud_domain rejects env=local
+# before any AWS work: the SSM trigger has no meaning locally; a tool's own local
+# invocation is the correct path there.
+#
+# AWS_REGION for the S3/SSM --region calls is a true env var, derived from REGION
+# in the .env base (AWS_REGION="${AWS_REGION:-$REGION}") and exported when
 # bin/common sources it with `set -a`, so the aws CLI and OpenTofu (TF_VAR_region)
 # target one region. An externally exported AWS_REGION still wins.
+load_cloud_env() {
+  local env="$1"
+  ENV_FILE="$(unicoach_env_file "$env")"
+  set -a
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  set +a
+  require_env_vars ENVIRONMENT
+  require_cloud_domain "$env"
+  assert_aws_account "${AWS_ACCOUNT_ID:-}"
+}
 
-# ── Per-env OpenTofu init + output reads ──────────────────────────────────────
+# Read one OpenTofu -raw output for the env, fataling with context if it is
+# empty/missing (bin/infra-output does not fatal on an empty output). The single
+# read the three resolve_infra_outputs lookups share.
+read_tf_output() {
+  local env="$1" name="$2" value
+  value="$("$PROJECT_ROOT/bin/infra-output" "$env" -raw "$name")"
+  [ -n "$value" ] || fatal "Could not read [$name] from OpenTofu outputs."
+  echo "$value"
+}
+
 # Init the env's disjoint backend (state key) via bin/infra-init, then read each
-# output via bin/infra-output — the same per-env TF_DATA_DIR + backend-key wrapper
+# output via read_tf_output — the same per-env TF_DATA_DIR + backend-key wrapper
 # scripts an operator uses directly. The init is not optional: an output read
 # against an uninitialized or foreign-keyed backend fails or returns the wrong
-# env's state. bin/infra-output does not fatal on an empty/missing output, so each
-# read keeps its own empty-check + fatal-with-context here.
-"$PROJECT_ROOT/bin/infra-init" "$UNICOACH_ENV" >&2
-ARTIFACTS_BUCKET="$("$PROJECT_ROOT/bin/infra-output" "$UNICOACH_ENV" -raw artifacts_bucket)"
-[ -n "$ARTIFACTS_BUCKET" ] || fatal "Could not read [artifacts_bucket] from OpenTofu outputs."
-INSTANCE_ID="$("$PROJECT_ROOT/bin/infra-output" "$UNICOACH_ENV" -raw instance_id)"
-[ -n "$INSTANCE_ID" ] || fatal "Could not read [instance_id] from OpenTofu outputs."
-OPS_LOG_GROUP="$("$PROJECT_ROOT/bin/infra-output" "$UNICOACH_ENV" -raw ops_log_group_name)"
-[ -n "$OPS_LOG_GROUP" ] || fatal "Could not read [ops_log_group_name] from OpenTofu outputs."
+# env's state.
+resolve_infra_outputs() {
+  local env="$1"
+  "$PROJECT_ROOT/bin/infra-init" "$env" >&2
+  ARTIFACTS_BUCKET="$(read_tf_output "$env" artifacts_bucket)"
+  INSTANCE_ID="$(read_tf_output "$env" instance_id)"
+  OPS_LOG_GROUP="$(read_tf_output "$env" ops_log_group_name)"
+}
 
-# ── Upload declared files; register cleanup before the first upload ───────────
-RUN_ID="$(date -u +%Y%m%d%H%M%S)-$$"
-INPUT_PREFIX="ops-inputs/$RUN_ID"
-# name -> s3 URI, parallel arrays (same reason as F_NAMES/F_PATHS).
-URI_NAMES=()
-URI_VALUES=()
-UPLOADED_URIS=()
-
-# Scratch file for capturing a failed poll's stderr (see the poll loop), removed
-# by the same EXIT trap that deletes the uploads.
-RESOLVE_POLL_ERR="$(mktemp)"
+# ── Upload declared inputs (with best-effort cleanup) ─────────────────────────
 
 # Best-effort deletion of every object this run uploaded, fired from the EXIT
 # trap regardless of outcome. Iteration is best-effort (one failed rm must not
@@ -264,159 +282,208 @@ delete_uploads() {
     log-warning "failed to delete ${#surviving[@]} uploaded object(s); delete manually: [${surviving[*]}]"
   fi
 }
-trap 'delete_uploads; rm -f "$RESOLVE_POLL_ERR"' EXIT
 
-i=0
-while [ "$i" -lt "${#F_NAMES[@]}" ]; do
-  name="${F_NAMES[$i]}"
-  path="${F_PATHS[$i]}"
-  base="$(basename "$path")"
-  # Key by the caller's -f <name> (already unique-validated, ^[a-zA-Z0-9_-]+$)
-  # as a path segment, not by basename alone: two -f declarations pointing at
-  # different local files that share a basename would otherwise collide at the
-  # same key and silently overwrite. The basename is preserved as the final
-  # segment so resolve_file_arg's s3:// branch still lands the object under its
-  # original name in the tool's scratch dir.
-  uri="s3://$ARTIFACTS_BUCKET/$INPUT_PREFIX/$name/$base"
-  log-info "Uploading [$path] to [$uri]..."
-  aws s3 cp --region "$AWS_REGION" "$path" "$uri" >&2 || fatal "failed to upload [$path] to [$uri]"
-  UPLOADED_URIS+=("$uri")
-  URI_NAMES+=("$name")
-  URI_VALUES+=("$uri")
-  i=$((i + 1))
-done
+# Upload each declared -f file to ops-inputs/<run-id>/<name>/<basename> in the
+# artifacts bucket, recording its s3:// URI in the URI_NAMES/URI_VALUES map. The
+# EXIT trap (registered before the first upload, and owning the poll scratch file
+# too) removes every uploaded object on exit. Key by the caller's -f <name>
+# (already unique-validated) as a path segment, not by basename alone: two -f
+# declarations pointing at different local files that share a basename would
+# otherwise collide at the same key and silently overwrite. The basename is
+# preserved as the final segment so resolve_file_arg's s3:// branch still lands
+# the object under its original name in the tool's scratch dir.
+upload_inputs() {
+  RUN_ID="$(date -u +%Y%m%d%H%M%S)-$$"
+  INPUT_PREFIX="ops-inputs/$RUN_ID"
+  # name -> s3 URI, parallel arrays (same reason as F_NAMES/F_PATHS).
+  URI_NAMES=()
+  URI_VALUES=()
+  UPLOADED_URIS=()
+  # Scratch file for capturing a failed poll's stderr (see await_terminal_status),
+  # removed by the same EXIT trap that deletes the uploads.
+  RESOLVE_POLL_ERR="$(mktemp)"
+  trap 'delete_uploads; rm -f "$RESOLVE_POLL_ERR"' EXIT
 
-# ── Rewrite trailing args: @name -> the name's s3 URI ─────────────────────────
-# Reuses index_of (the shared parallel-array scan) against URI_NAMES and the same
-# fatal_undeclared_ref message as the pre-flight pass. The pre-flight already
-# validated every @ref, so a miss here would be an internal invariant break, not a
-# caller error — but resolving through the same lookup keeps the two passes in step.
-REWRITTEN_ARGS=()
-for arg in ${REMOTE_ARGS[@]+"${REMOTE_ARGS[@]}"}; do
-  case "$arg" in
-  @*)
-    ref="${arg#@}"
-    uri_idx="$(index_of "$ref" ${URI_NAMES[@]+"${URI_NAMES[@]}"})" \
-      || fatal_undeclared_ref "$ref"
-    REWRITTEN_ARGS+=("${URI_VALUES[$uri_idx]}")
-    ;;
-  *)
-    REWRITTEN_ARGS+=("$arg")
-    ;;
-  esac
-done
+  local i=0 name path base uri
+  while [ "$i" -lt "${#F_NAMES[@]}" ]; do
+    name="${F_NAMES[$i]}"
+    path="${F_PATHS[$i]}"
+    base="$(basename "$path")"
+    uri="s3://$ARTIFACTS_BUCKET/$INPUT_PREFIX/$name/$base"
+    log-info "Uploading [$path] to [$uri]..."
+    aws s3 cp --region "$AWS_REGION" "$path" "$uri" >&2 || fatal "failed to upload [$path] to [$uri]"
+    UPLOADED_URIS+=("$uri")
+    URI_NAMES+=("$name")
+    URI_VALUES+=("$uri")
+    i=$((i + 1))
+  done
+}
 
-# ── Build the single remote command string ────────────────────────────────────
-# The rewritten args are single-quoted (each embedded ' escaped as '\'') and joined
-# into ONE command string interpolated into --parameters commands=[...]. This is
-# SSM command-string interpolation, not a local "$@" child-forward: the result is
-# one argument send-command receives, run on the instance under bash. The <script>
-# name is a fixed bin/ token; each arg is single-quoted so an s3:// URI or a value
-# with spaces reaches the tool intact and cannot inject shell.
+# ── Build the SSM command string ──────────────────────────────────────────────
+
+# Rewrite trailing args: @name -> the name's s3 URI. Reuses index_of (the shared
+# parallel-array scan) against URI_NAMES and the same fatal_undeclared_ref message
+# as the pre-flight pass. The pre-flight already validated every @ref, so a miss
+# here would be an internal invariant break, not a caller error — but resolving
+# through the same lookup keeps the two passes in step.
+rewrite_command_args() {
+  REWRITTEN_ARGS=()
+  local arg ref uri_idx
+  for arg in ${REMOTE_ARGS[@]+"${REMOTE_ARGS[@]}"}; do
+    case "$arg" in
+    @*)
+      ref="${arg#@}"
+      uri_idx="$(index_of "$ref" ${URI_NAMES[@]+"${URI_NAMES[@]}"})" \
+        || fatal_undeclared_ref "$ref"
+      REWRITTEN_ARGS+=("${URI_VALUES[$uri_idx]}")
+      ;;
+    *)
+      REWRITTEN_ARGS+=("$arg")
+      ;;
+    esac
+  done
+}
+
+# Single-quote a token for the remote shell (each embedded ' escaped as '\'').
 shell_quote() {
   local s="$1"
   printf "'%s'" "${s//\'/\'\\\'\'}"
 }
 
-REMOTE_COMMAND="cd /opt/unicoach/current && ENV_FILE=/etc/unicoach/env bin/$REMOTE_SCRIPT"
-for a in ${REWRITTEN_ARGS[@]+"${REWRITTEN_ARGS[@]}"}; do
-  REMOTE_COMMAND="$REMOTE_COMMAND $(shell_quote "$a")"
-done
-
-# JSON-encode the command string for the --parameters commands=[...] literal.
-# Only backslash and double-quote need escaping here: the shell tokens inside the
-# string are already single-quoted by shell_quote (and <script> is allowlisted),
-# so no jq is needed — the dev shell ships awscli2, not jq, and bin/deploy builds
-# its commands=[...] parameter the same hand-rolled way. Backslash is escaped
-# first so the quote-escape's own backslashes are not doubled.
+# JSON-encode a string for the --parameters commands=[...] literal. Only backslash
+# and double-quote need escaping here: the shell tokens inside the string are
+# already single-quoted by shell_quote (and <script> is allowlisted), so no jq is
+# needed — the dev shell ships awscli2, not jq, and bin/deploy builds its
+# commands=[...] parameter by hand the same way. Backslash is escaped first so the
+# quote-escape's own backslashes are not doubled.
 json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
   printf '%s' "$s"
 }
-PARAMETERS="commands=[\"$(json_escape "$REMOTE_COMMAND")\"]"
 
-# ── Send and poll ─────────────────────────────────────────────────────────────
+# Assemble the single command string SSM runs on the instance and wrap it in the
+# --parameters commands=[...] literal. The rewritten args are single-quoted and
+# joined into ONE command string: this is SSM command-string interpolation, not a
+# local "$@" child-forward — the result is one argument send-command receives, run
+# on the instance under bash. The <script> name is a fixed bin/ token; each arg is
+# single-quoted so an s3:// URI or a value with spaces reaches the tool intact and
+# cannot inject shell.
+build_remote_command() {
+  rewrite_command_args
+  REMOTE_COMMAND="cd /opt/unicoach/current && ENV_FILE=/etc/unicoach/env bin/$REMOTE_SCRIPT"
+  local a
+  for a in ${REWRITTEN_ARGS[@]+"${REWRITTEN_ARGS[@]}"}; do
+    REMOTE_COMMAND="$REMOTE_COMMAND $(shell_quote "$a")"
+  done
+  PARAMETERS="commands=[\"$(json_escape "$REMOTE_COMMAND")\"]"
+}
+
+# ── Dispatch to SSM and await the tool's exit ─────────────────────────────────
+
 # A send-command failure is an operational trigger failure (band 1-9 via fatal's
 # default), never the tool's own code — the tool never ran.
-log-info "Issuing SSM Run Command to [$INSTANCE_ID] for [bin/$REMOTE_SCRIPT]..."
-COMMAND_ID="$(aws ssm send-command \
-  --region "$AWS_REGION" \
-  --instance-ids "$INSTANCE_ID" \
-  --document-name "AWS-RunShellScript" \
-  --comment "unicoach remote $REMOTE_SCRIPT $RUN_ID" \
-  --parameters "$PARAMETERS" \
-  --cloud-watch-output-config "CloudWatchLogGroupName=$OPS_LOG_GROUP,CloudWatchOutputEnabled=true" \
-  --timeout-seconds "$TIMEOUT_SECONDS" \
-  --query "Command.CommandId" \
-  --output text)" || fatal "aws ssm send-command failed"
-[ -n "$COMMAND_ID" ] || fatal "send-command returned no CommandId."
-
-# A get-command-invocation call legitimately fails for a beat right after
-# send-command (InvocationDoesNotExist, until the invocation registers), so a
-# single failure is treated as "still pending". But a real API failure — auth
-# expiry, throttle, a deleted command — would otherwise be folded into that same
-# pending branch and poll forever with no diagnostic. So: capture stderr,
-# log-warning it with the command/instance context on each failed poll, and cap
-# consecutive failures (independent of SSM's own -t timeout) so a sustained
-# failure fatals loudly instead of spinning.
-MAX_CONSECUTIVE_POLL_FAILURES=10
-# A very small or zero -p poll interval (sleep 0 is a valid no-op) polls
-# aggressively and can trip SSM GetCommandInvocation throttling, which counts
-# toward MAX_CONSECUTIVE_POLL_FAILURES above — the operator's explicit choice.
-log-info "SSM command [$COMMAND_ID] dispatched; polling for completion..."
-consecutive_failures=0
-while true; do
-  poll_err=""
-  if STATUS="$(aws ssm get-command-invocation \
+send_ssm_command() {
+  log-info "Issuing SSM Run Command to [$INSTANCE_ID] for [bin/$REMOTE_SCRIPT]..."
+  COMMAND_ID="$(aws ssm send-command \
     --region "$AWS_REGION" \
-    --command-id "$COMMAND_ID" \
-    --instance-id "$INSTANCE_ID" \
-    --query "Status" \
-    --output text 2>"$RESOLVE_POLL_ERR")"; then
-    consecutive_failures=0
-  else
-    poll_err="$(cat "$RESOLVE_POLL_ERR")"
-    consecutive_failures=$((consecutive_failures + 1))
-    log-warning "poll of command [$COMMAND_ID] on [$INSTANCE_ID] failed (attempt $consecutive_failures/$MAX_CONSECUTIVE_POLL_FAILURES): [$poll_err]"
-    if [ "$consecutive_failures" -ge "$MAX_CONSECUTIVE_POLL_FAILURES" ]; then
-      fatal "giving up: [$MAX_CONSECUTIVE_POLL_FAILURES] consecutive get-command-invocation failures for command [$COMMAND_ID] on [$INSTANCE_ID]; last error: [$poll_err]"
+    --instance-ids "$INSTANCE_ID" \
+    --document-name "AWS-RunShellScript" \
+    --comment "unicoach remote $REMOTE_SCRIPT $RUN_ID" \
+    --parameters "$PARAMETERS" \
+    --cloud-watch-output-config "CloudWatchLogGroupName=$OPS_LOG_GROUP,CloudWatchOutputEnabled=true" \
+    --timeout-seconds "$TIMEOUT_SECONDS" \
+    --query "Command.CommandId" \
+    --output text)" || fatal "aws ssm send-command failed"
+  [ -n "$COMMAND_ID" ] || fatal "send-command returned no CommandId."
+}
+
+# Poll get-command-invocation to a terminal status. A call legitimately fails for
+# a beat right after send-command (InvocationDoesNotExist, until the invocation
+# registers), so a single failure is treated as "still pending". But a real API
+# failure — auth expiry, throttle, a deleted command — would otherwise be folded
+# into that same pending branch and poll forever with no diagnostic. So: capture
+# stderr, log-warning it with the command/instance context on each failed poll,
+# and cap consecutive failures (independent of SSM's own -t timeout) so a
+# sustained failure fatals loudly instead of spinning. A very small or zero -p
+# poll interval polls aggressively and can trip SSM throttling, which counts
+# toward max_failures — the operator's explicit choice.
+await_terminal_status() {
+  local max_failures=10
+  local consecutive_failures=0 poll_err status
+  log-info "SSM command [$COMMAND_ID] dispatched; polling for completion..."
+  while true; do
+    poll_err=""
+    if status="$(aws ssm get-command-invocation \
+      --region "$AWS_REGION" \
+      --command-id "$COMMAND_ID" \
+      --instance-id "$INSTANCE_ID" \
+      --query "Status" \
+      --output text 2>"$RESOLVE_POLL_ERR")"; then
+      consecutive_failures=0
+    else
+      poll_err="$(cat "$RESOLVE_POLL_ERR")"
+      consecutive_failures=$((consecutive_failures + 1))
+      log-warning "poll of command [$COMMAND_ID] on [$INSTANCE_ID] failed (attempt $consecutive_failures/$max_failures): [$poll_err]"
+      if [ "$consecutive_failures" -ge "$max_failures" ]; then
+        fatal "giving up: [$max_failures] consecutive get-command-invocation failures for command [$COMMAND_ID] on [$INSTANCE_ID]; last error: [$poll_err]"
+      fi
+      status="Pending"
     fi
-    STATUS="Pending"
-  fi
-  case "$STATUS" in
-  Success|Cancelled|TimedOut|Failed) break ;;
-  *) sleep "$POLL_INTERVAL_SECONDS" ;;
-  esac
-done
+    case "$status" in
+    Success | Cancelled | TimedOut | Failed) break ;;
+    *) sleep "$POLL_INTERVAL_SECONDS" ;;
+    esac
+  done
+}
 
 # Print the tool's captured stdout/stderr via --query/--output text (no jq: the
-# dev shell provides awscli2, not jq — bin/deploy reads command output the same
-# way). StandardOutputContent/StandardErrorContent are capped at ~24KB by SSM; the
-# CloudWatch Logs stream holds the untruncated record.
-aws ssm get-command-invocation \
-  --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-  --query "StandardOutputContent" --output text
-aws ssm get-command-invocation \
-  --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-  --query "StandardErrorContent" --output text >&2
-log-info "Output above is capped at ~24KB by SSM; the full record is in CloudWatch log group [$OPS_LOG_GROUP]."
+# dev shell provides awscli2, not jq). StandardOutputContent/StandardErrorContent
+# are capped at ~24KB by SSM; the CloudWatch Logs stream holds the untruncated
+# record.
+print_command_output() {
+  aws ssm get-command-invocation \
+    --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+    --query "StandardOutputContent" --output text
+  aws ssm get-command-invocation \
+    --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+    --query "StandardErrorContent" --output text >&2
+  log-info "Output above is capped at ~24KB by SSM; the full record is in CloudWatch log group [$OPS_LOG_GROUP]."
+}
 
-# The tool's own exit code, propagated as bin/remote's exit. A failure to READ
-# the ResponseCode is bin/remote's own operational failure, NOT the tool's exit:
-# fatal (band 1-9) with context rather than folding it into a bare `exit 1` that
-# would be indistinguishable from the tool genuinely exiting 1.
-if ! RESPONSE_CODE="$(aws ssm get-command-invocation \
-  --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-  --query "ResponseCode" --output text 2>"$RESOLVE_POLL_ERR")"; then
-  fatal "could not read ResponseCode for command [$COMMAND_ID] on [$INSTANCE_ID]: [$(cat "$RESOLVE_POLL_ERR")]"
-fi
-# SSM reports ResponseCode -1 when it never captured the tool's exit (e.g. the
-# command timed out or the agent went away before the script returned). Normalize
-# any -1/non-numeric value to 1 so bin/remote still exits non-zero; the Status
-# line and printed output above already explain why.
-if [[ ! "$RESPONSE_CODE" =~ ^-?[0-9]+$ ]] || [ "$RESPONSE_CODE" -lt 0 ]; then
-  RESPONSE_CODE=1
-fi
+# Read the tool's own exit code into RESPONSE_CODE. A failure to READ the
+# ResponseCode is bin/remote's own operational failure, NOT the tool's exit: fatal
+# (band 1-9) with context rather than folding it into a bare `exit 1` that would
+# be indistinguishable from the tool genuinely exiting 1. SSM reports -1 when it
+# never captured the tool's exit (e.g. the command timed out or the agent went
+# away before the script returned); normalize any -1/non-numeric value to 1 so
+# bin/remote still exits non-zero — the Status line and printed output above
+# already explain why.
+read_response_code() {
+  if ! RESPONSE_CODE="$(aws ssm get-command-invocation \
+    --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+    --query "ResponseCode" --output text 2>"$RESOLVE_POLL_ERR")"; then
+    fatal "could not read ResponseCode for command [$COMMAND_ID] on [$INSTANCE_ID]: [$(cat "$RESOLVE_POLL_ERR")]"
+  fi
+  if [[ ! "$RESPONSE_CODE" =~ ^-?[0-9]+$ ]] || [ "$RESPONSE_CODE" -lt 0 ]; then
+    RESPONSE_CODE=1
+  fi
+}
+
+# Send the command, await completion, print output, and capture the exit code.
+dispatch_and_await() {
+  send_ssm_command
+  await_terminal_status
+  print_command_output
+  read_response_code
+}
+
+# ── Top-level flow ────────────────────────────────────────────────────────────
+parse_args "$@"
+load_cloud_env "$UNICOACH_ENV"
+resolve_infra_outputs "$UNICOACH_ENV"
+upload_inputs
+build_remote_command
+dispatch_and_await
 exit "$RESPONSE_CODE"
