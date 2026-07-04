@@ -1061,4 +1061,75 @@ test_render_env_placeholder_fatals() {
 }
 assert_success "render-env fails closed on an unseeded PLACEHOLDER secret" test_render_env_placeholder_fatals
 
+# ── deploy self-updating on-instance bootstrap (build_deploy_command) ──────────
+# bin/deploy's SSM Run Command installs this release's render-env /
+# deploy-on-instance / units from the bundle before invoking deploy-on-instance, so
+# a plain deploy updates its own on-instance bootstrap. The composed command string
+# is pure string assembly (build_deploy_command, bin/functions), so the harness
+# drives the real function — no live AWS, no source scan. The AWS trigger itself
+# (build, upload, send-command) still needs a real deploy to verify end to end.
+echo "==== Testing build_deploy_command (deploy self-update) ===="
+
+# bash -n over the two infra/files shell scripts the deploy installs on the host.
+for script in render-env deploy-on-instance; do
+  assert_success "bash -n infra/files/$script.sh parses cleanly" \
+    bash -n "$PROJECT_ROOT/infra/files/$script.sh"
+done
+
+# The composed script bakes in the laptop-side bundle-id/region/s3-uri and carries
+# every install step: both 0755 scripts, all FOUR 0644 units by explicit name (no
+# wildcard, so a missing unit fails install loudly), and daemon-reload.
+test_build_deploy_command_content() {
+  local out unit
+  out="$(build_deploy_command 20260704120000 us-west-2 s3://bkt/releases/unicoach-20260704120000.tar.gz)"
+  echo "$out" | grep -qF 'RELEASE_DIR="/opt/unicoach/releases/20260704120000"' || { echo "bundle-id not baked in: $out"; return 1; }
+  echo "$out" | grep -qF 'aws s3 cp --region us-west-2 s3://bkt/releases/unicoach-20260704120000.tar.gz' || { echo "region/s3-uri not baked in: $out"; return 1; }
+  echo "$out" | grep -qF 'install -m 0755 "$RELEASE_DIR/infra/files/render-env.sh" /opt/unicoach/bin/render-env' || { echo "render-env install missing: $out"; return 1; }
+  echo "$out" | grep -qF 'install -m 0755 "$RELEASE_DIR/infra/files/deploy-on-instance.sh" /opt/unicoach/bin/deploy-on-instance' || { echo "deploy-on-instance install missing: $out"; return 1; }
+  for unit in rest-server queue-worker public-web admin-web; do
+    echo "$out" | grep -qF "\"\$RELEASE_DIR/infra/files/unicoach-$unit.service\"" || { echo "unit install source missing for [$unit]: $out"; return 1; }
+  done
+  echo "$out" | grep -qF '/etc/systemd/system/' || { echo "systemd unit dest missing: $out"; return 1; }
+  # No wildcard install: the units are enumerated, not globbed.
+  echo "$out" | grep -qF 'unicoach-*.service' && { echo "unexpected wildcard unit install: $out"; return 1; }
+  echo "$out" | grep -qF 'systemctl daemon-reload' || { echo "daemon-reload missing: $out"; return 1; }
+  return 0
+}
+assert_success "build_deploy_command bakes in values and every install step" test_build_deploy_command_content
+
+# The install + daemon-reload MUST precede the deploy-on-instance invocation — the
+# ordering that lets the freshly-installed copy run this deploy.
+test_build_deploy_command_install_before_invoke() {
+  local out reload_line invoke_line
+  out="$(build_deploy_command b us-east-1 s3://x/y.tar.gz)"
+  reload_line="$(echo "$out" | grep -nF 'systemctl daemon-reload' | cut -d: -f1)"
+  invoke_line="$(echo "$out" | grep -nF '/opt/unicoach/bin/deploy-on-instance "$RELEASE_DIR"' | cut -d: -f1)"
+  [ -n "$reload_line" ] && [ -n "$invoke_line" ] || { echo "missing markers: reload=$reload_line invoke=$invoke_line"; return 1; }
+  [ "$reload_line" -lt "$invoke_line" ] || { echo "daemon-reload ($reload_line) not before invoke ($invoke_line)"; return 1; }
+}
+assert_success "build_deploy_command installs+daemon-reload before invoking deploy-on-instance" test_build_deploy_command_install_before_invoke
+
+# The emitted remote script must be syntactically valid bash (the instance runs it).
+test_build_deploy_command_valid_bash() {
+  local out tmp rc=0
+  out="$(build_deploy_command b us-east-1 s3://x/y.tar.gz)"
+  tmp="$(mktemp)"
+  printf '%s\n' "$out" > "$tmp"
+  bash -n "$tmp" || rc=$?
+  rm -f "$tmp"
+  [ "$rc" -eq 0 ]
+}
+assert_success "build_deploy_command emits syntactically valid bash" test_build_deploy_command_valid_bash
+
+# json_string encodes the multi-line, quote-bearing script as ONE valid JSON string
+# that decodes back verbatim — the send-command --parameters commands=[...] contract.
+test_json_string_roundtrips_multiline() {
+  local out encoded decoded
+  out="$(build_deploy_command b us-east-1 s3://x/y.tar.gz)"
+  encoded="$(json_string "$out")"
+  decoded="$(printf '%s' "$encoded" | python3 -c 'import json,sys; sys.stdout.write(json.load(sys.stdin))')" || return 1
+  [ "$decoded" = "$out" ] || { echo "json round-trip mismatch"; return 1; }
+}
+assert_success "json_string round-trips the multi-line deploy script through JSON" test_json_string_roundtrips_multiline
+
 end_tests

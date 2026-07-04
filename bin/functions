@@ -283,3 +283,57 @@ load_deploy_control_env() {
   assert_aws_account "${AWS_ACCOUNT_ID:-}"
 }
 
+# Encode a string as a complete JSON string literal (surrounding quotes included)
+# for an `aws ssm send-command --parameters commands=[...]` value, reusing Python's
+# json.dumps — a correct, tested JSON encoder that escapes every case, control
+# characters and non-ASCII included. A hand-rolled encoder that escaped only \ and
+# " would emit invalid JSON the moment the string held a literal newline or tab —
+# which the multi-line install script bin/deploy composes always does. No jq is
+# needed (the dev shell ships awscli2, not jq); python3 is already used across
+# bin/ (test-fuzz, test-tcp-listener). Shared by bin/deploy and bin/remote.
+json_string() {
+  python3 -c 'import json, sys; sys.stdout.write(json.dumps(sys.argv[1]))' "$1"
+}
+
+# Build the remote install-then-deploy script that bin/deploy transmits via SSM
+# Run Command (AWS-RunShellScript); the instance runs it under bash. Named to match
+# its sibling build_remote_command (bin/remote), which assembles bin/remote's SSM
+# command the same way. Emitted as a
+# multi-line script on stdout; the caller JSON-encodes it as the single `commands`
+# element (json_string). It is transmitted fresh every deploy so it can update its
+# OWN on-instance bootstrap: download and unpack the bundle, install this release's
+# render-env / deploy-on-instance (0755) and the four systemd units (0644),
+# `systemctl daemon-reload`, then invoke the now-current deploy-on-instance with the
+# extracted release dir. The install MUST live in this transmitted script, never a
+# pre-installed on-instance one: an old deploy-on-instance carrying no install logic
+# would run first and never install its replacement. Because the script is sent
+# anew each deploy, it works against the current old box with zero manual
+# bootstrapping — closing the gap that previously forced a manual SSM live-write
+# when these files changed. $1 bundle_id (names the release dir, correlating it with
+# the S3 bundle), $2 AWS region, $3 the bundle's s3:// URI — all laptop-side, baked
+# in; every other `$` is escaped so it resolves on the instance. Pure string
+# assembly (no AWS call), so scripts-tests drives it directly.
+build_deploy_command() {
+  local bundle_id="$1" region="$2" s3_uri="$3"
+  cat << EOF
+set -euo pipefail
+RELEASE_DIR="/opt/unicoach/releases/$bundle_id"
+mkdir -p "\$RELEASE_DIR"
+BUNDLE_TMP="\$(mktemp)"
+trap 'rm -f "\$BUNDLE_TMP"' EXIT
+aws s3 cp --region $region $s3_uri "\$BUNDLE_TMP"
+tar -xzf "\$BUNDLE_TMP" -C "\$RELEASE_DIR"
+chown -R unicoach:unicoach "\$RELEASE_DIR"
+install -m 0755 "\$RELEASE_DIR/infra/files/render-env.sh" /opt/unicoach/bin/render-env
+install -m 0755 "\$RELEASE_DIR/infra/files/deploy-on-instance.sh" /opt/unicoach/bin/deploy-on-instance
+install -m 0644 \\
+  "\$RELEASE_DIR/infra/files/unicoach-rest-server.service" \\
+  "\$RELEASE_DIR/infra/files/unicoach-queue-worker.service" \\
+  "\$RELEASE_DIR/infra/files/unicoach-public-web.service" \\
+  "\$RELEASE_DIR/infra/files/unicoach-admin-web.service" \\
+  /etc/systemd/system/
+systemctl daemon-reload
+/opt/unicoach/bin/deploy-on-instance "\$RELEASE_DIR"
+EOF
+}
+

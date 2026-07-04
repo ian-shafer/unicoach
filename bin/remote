@@ -369,16 +369,8 @@ shell_quote() {
   python3 -c 'import shlex, sys; sys.stdout.write(shlex.quote(sys.argv[1]))' "$1"
 }
 
-# Encode a string as a complete JSON string literal (surrounding quotes included)
-# for the --parameters commands=[...] value, reusing Python's json.dumps — a
-# correct, tested JSON encoder that escapes every case, control characters and
-# non-ASCII included. A hand-rolled encoder that escaped only \ and " would emit
-# invalid JSON the moment an argument held a literal newline or tab. No jq is
-# needed (the dev shell ships awscli2, not jq); python3 is already used across
-# bin/ (test-fuzz, test-tcp-listener).
-json_string() {
-  python3 -c 'import json, sys; sys.stdout.write(json.dumps(sys.argv[1]))' "$1"
-}
+# json_string (JSON-encode a string for the --parameters commands=[...] value)
+# lives in bin/functions, shared with bin/deploy.
 
 # Assemble the single command string SSM runs on the instance and wrap it in the
 # --parameters commands=[...] literal. The rewritten args are single-quoted and

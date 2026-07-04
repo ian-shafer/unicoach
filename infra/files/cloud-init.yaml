@@ -4,6 +4,14 @@
 # systemd units plus the render-env / deploy-on-instance scripts. All file bodies
 # are injected verbatim from the committed infra/files/* sources via filebase64,
 # so cloud-init is the only place that knows the host layout, not a second copy.
+#
+# First-boot copy only. The systemd units and the render-env / deploy-on-instance
+# scripts written below are the initial baseline; from the first deploy onward they
+# are DEPLOY-MANAGED — bin/deploy ships them in the release bundle and its SSM Run
+# Command reinstalls this release's copy (from the same infra/files/* sources)
+# before invoking deploy-on-instance. cloud-init runs once at first boot and cannot
+# reach a running instance, so it is not the update path; a plain `bin/deploy`
+# refreshes these files with no manual step.
 
 write_files:
   - path: /etc/unicoach/deploy.env

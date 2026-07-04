@@ -4,7 +4,8 @@
 #   1. bin/build           — produce all deployable installDist distributions locally.
 #   2. assemble a bundle   — tarball preserving repo-relative paths.
 #   3. upload to S3        — the artifacts bucket (OpenTofu output).
-#   4. SSM Run Command     — execute deploy-on-instance on the host (output id).
+#   4. SSM Run Command     — install this release's deploy-managed scripts/units
+#                            on the host, then run deploy-on-instance (output id).
 source "$(dirname "$0")/common"
 
 help() {
@@ -132,7 +133,26 @@ REPO_PATHS=(
   "bin/ingest-colleges"
 )
 
-for path in "${REPO_PATHS[@]}"; do
+# The deploy-managed on-instance files: the two scripts installed into
+# /opt/unicoach/bin/ and the four systemd units installed into
+# /etc/systemd/system/. cloud-init writes an initial copy at first boot, but from
+# then on every deploy refreshes them — the SSM command below installs these
+# (extracted from the bundle at infra/files/*) before invoking deploy-on-instance,
+# closing the gap where a changed render-env / deploy-on-instance / unit could only
+# reach a running instance via a manual SSM live-write. cloud-init (filebase64) and
+# this bundle both read the same infra/files/* source files, so the bytes installed
+# by either path are identical; the on-instance installer (build_deploy_command)
+# enumerates the same four units by name that this array does.
+DEPLOY_MANAGED_PATHS=(
+  "infra/files/render-env.sh"
+  "infra/files/deploy-on-instance.sh"
+  "infra/files/unicoach-rest-server.service"
+  "infra/files/unicoach-queue-worker.service"
+  "infra/files/unicoach-public-web.service"
+  "infra/files/unicoach-admin-web.service"
+)
+
+for path in "${REPO_PATHS[@]}" "${DEPLOY_MANAGED_PATHS[@]}"; do
   [ -e "$PROJECT_ROOT/$path" ] || fatal "Bundle path missing [$path]."
 done
 
@@ -148,6 +168,7 @@ tar -czf "$BUNDLE_PATH" \
   -C "$(dirname "$PROJECT_ROOT/$ADMIN_WEB_DIST")" "$(basename "$ADMIN_WEB_DIST")" \
   -C "$PROJECT_ROOT" "$COLLEGE_DIST" \
   -C "$PROJECT_ROOT" "${REPO_PATHS[@]}" \
+  -C "$PROJECT_ROOT" "${DEPLOY_MANAGED_PATHS[@]}" \
   -C "$GEN_STAGE" "${GEN_PATHS[@]}"
 
 # ── 3. Upload to the artifacts bucket ─────────────────────────────────────────
@@ -167,13 +188,22 @@ aws s3 cp --region "$AWS_REGION" "$BUNDLE_PATH" "$BUNDLE_S3_URI"
 INSTANCE_ID="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw instance_id)"
 [ -n "$INSTANCE_ID" ] || fatal "Could not read [instance_id] from OpenTofu outputs."
 
+# build_deploy_command (bin/functions) builds the remote script transmitted here:
+# it installs this release's render-env / deploy-on-instance / units from the bundle
+# and only THEN invokes the now-current deploy-on-instance, so a plain `bin/deploy`
+# updates its own on-instance bootstrap with no manual live-write. The install must
+# live in this transmitted string (not a pre-installed script) so it works against
+# the current old box on the very first deploy. json_string encodes the whole
+# multi-line script as one `commands` element.
+REMOTE_DEPLOY_SCRIPT="$(build_deploy_command "$BUNDLE_ID" "$AWS_REGION" "$BUNDLE_S3_URI")"
+
 log-info "Issuing SSM Run Command to [$INSTANCE_ID]..."
 COMMAND_ID="$(aws ssm send-command \
   --region "$AWS_REGION" \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --comment "unicoach deploy $BUNDLE_ID" \
-  --parameters "commands=[\"/opt/unicoach/bin/deploy-on-instance $BUNDLE_S3_URI\"]" \
+  --parameters "commands=[$(json_string "$REMOTE_DEPLOY_SCRIPT")]" \
   --query "Command.CommandId" \
   --output text)"
 
