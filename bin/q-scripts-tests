@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-export ENV_FILE="$(dirname "$0")/../.env.test"
+# Layer `.env -> .env.dev -> .env.test` (RFC 95): the DB block lives in .env.dev.
+# ENV_FILES is a PATH-like ':'-separated string, exported so the q-* / db-* child
+# processes inherit the same stack and target the per-worktree test DB. bin/common
+# resolves each entry against PROJECT_ROOT.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 

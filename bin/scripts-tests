@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-export ENV_FILE="$(dirname "$0")/../.env.test"
+# Layer `.env -> .env.dev -> .env.test` (RFC 95): the DB block and required-toggle
+# dev values live in .env.dev. ENV_FILES is a PATH-like ':'-separated string,
+# exported so this harness's child processes (db-reset, rest-server-up/down,
+# queue-worker-up/down, the bin/ SUTs it drives) inherit the same stack and target
+# the per-worktree test DB. bin/common resolves each entry against PROJECT_ROOT.
+export ENV_FILES=".env.dev:.env.test"
 # Make fatal/log-* available before the PORT guard. `functions` only defines
 # functions — it sources no `.env` — so it does not disturb the bootstrap
 # ordering (`common`/`.env.test` is still sourced afterward and re-defines these
@@ -834,5 +839,226 @@ test_ingest_colleges_missing_file() {
   bin/ingest-colleges "/no/such/$$-institution.csv" "/no/such/$$-fields.csv" >/dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent local CSV path" test_ingest_colleges_missing_file
+
+# ── bin/common layering (RFC 95): ENV_FILES string, both-set, empty base ───────
+echo "==== Testing bin/common dotenv layering ===="
+
+# ENV_FILES layers left-to-right over the base: a key set only in the last delta
+# wins over an earlier delta wins over the base. Drives a real child bin/common.
+test_env_files_layering() {
+  local dev test_delta out
+  dev="$(mktemp)"; test_delta="$(mktemp)"
+  printf 'POSTGRES_PORT=5432\nLAYER_KEY=from_dev\n' > "$dev"
+  printf 'LAYER_KEY=from_test\n' > "$test_delta"
+  out="$(ENV_FILES="$dev:$test_delta" bash -c 'source "'"$PROJECT_ROOT"'/bin/common"; echo "$LAYER_KEY"' 2>&1)"
+  rm -f "$dev" "$test_delta"
+  [ "$out" = "from_test" ] || { echo "LAYER_KEY was [$out]"; return 1; }
+}
+assert_success "ENV_FILES layers deltas left-to-right (last wins)" test_env_files_layering
+
+# ENV_FILE and ENV_FILES together fatal (mutually exclusive).
+test_env_file_and_files_mutually_exclusive() {
+  local delta
+  delta="$(mktemp)"
+  printf 'POSTGRES_PORT=5432\n' > "$delta"
+  ENV_FILE="$delta" ENV_FILES="$delta" bash -c 'source "'"$PROJECT_ROOT"'/bin/common"' >/dev/null 2>&1
+  local rc=$?
+  rm -f "$delta"
+  [ "$rc" -ne 0 ]
+}
+assert_success "ENV_FILE + ENV_FILES set together fatals" test_env_file_and_files_mutually_exclusive
+
+# Empty base + ENV_FILE=<complete>: sourcing yields exactly the complete file's
+# values and does not fatal (no "deploy host has no .env" special case). Runs in a
+# throwaway PROJECT_ROOT whose .env is empty.
+test_empty_base_host_shape() {
+  local root complete out
+  root="$(mktemp -d)"; mkdir -p "$root/bin"
+  cp "$PROJECT_ROOT/bin/functions" "$PROJECT_ROOT/bin/common" "$root/bin/"
+  printf '# intentionally empty base\n' > "$root/.env"
+  complete="$root/etc-env"
+  printf 'POSTGRES_PORT=5432\nHOST_KEY=complete\n' > "$complete"
+  # Clear the harness's exported ENV_FILES so pinning a single ENV_FILE does not
+  # trip the mutual-exclusion fatal (this simulates the on-host caller, which sets
+  # only ENV_FILE=/etc/unicoach/env).
+  out="$(env -u ENV_FILES ENV_FILE="$complete" bash -c 'source "'"$root"'/bin/common"; echo "$HOST_KEY"' 2>&1)"
+  local rc=$?
+  rm -rf "$root"
+  [ "$rc" -eq 0 ] && [ "$out" = "complete" ] || { echo "rc=$rc HOST_KEY=[$out]"; return 1; }
+}
+assert_success "empty base + ENV_FILE=<complete> yields the complete values, no fatal" test_empty_base_host_shape
+
+# ── bin/gen-deployed-env (RFC 95) ─────────────────────────────────────────────
+echo "==== Testing gen-deployed-env ===="
+
+# Build a throwaway env root with its own .env/.env.dev/.env.<env> so the test is
+# hermetic (never touches the repo's real cloud env files). Echoes the root.
+make_gen_env_root() {
+  local root; root="$(mktemp -d)"
+  mkdir -p "$root/bin"
+  cp "$PROJECT_ROOT/bin/functions" "$PROJECT_ROOT/bin/common" "$PROJECT_ROOT/bin/gen-deployed-env" "$root/bin/"
+  cat > "$root/.env" <<'EOF'
+POSTGRES_PORT=5432
+POSTGRES_DB=unicoach
+DATABASE_MAXIMUM_POOL_SIZE=10
+PUBLIC_WEB_PORT=8082
+ADMIN_WEB_PORT=8081
+SERVER_PORT=8080
+EOF
+  # .env.dev carries a dev value for a DEPLOY_VAR_NAMES key (GOOGLE_AUTH_PROVIDER)
+  # that the cloud fixture below deliberately OMITS — the leak-close under test.
+  cat > "$root/.env.dev" <<'EOF'
+GOOGLE_AUTH_PROVIDER=stub
+DATABASE_PASSWORD=devpassword
+PGHOST=localhost
+POSTGRES_USER=postgres
+DATABASE_USER=unicoach
+APP_DOMAIN=localhost
+EOF
+  echo "$root"
+}
+
+# Full, valid cloud fixture (all DEPLOY_VAR_NAMES keys present).
+write_full_cloud_env() {
+  cat > "$1/.env.gentest" <<'EOF'
+APP_DOMAIN=gentest.example.com
+GOOGLE_CLIENT_IDS=abc.apps.googleusercontent.com
+SERVER_HOST=0.0.0.0
+PUBLIC_WEB_HOST=0.0.0.0
+ADMIN_WEB_HOST=0.0.0.0
+SESSION_COOKIE_SECURE=true
+ADMIN_COOKIE_SECURE=true
+EMAIL_PROVIDER=ses
+CHAT_PROVIDER=anthropic
+GOOGLE_AUTH_PROVIDER=google
+EMAIL_DEFAULT_FROM=noreply@$APP_DOMAIN
+EMAIL_VERIFICATION_VERIFY_URL_BASE=https://app.$APP_DOMAIN/verify-email
+EOF
+}
+
+test_gen_deployed_env_happy() {
+  local root out; root="$(make_gen_env_root)"; write_full_cloud_env "$root"
+  out="$("$root/bin/gen-deployed-env" gentest 2>/dev/null)"
+  local rc=$?
+  rm -rf "$root"
+  [ "$rc" -eq 0 ] || { echo "exit $rc"; return 1; }
+  # APP_DOMAIN reflects the delta; EMAIL_DEFAULT_FROM interpolation is resolved;
+  # nothing has a surviving '$'; and PATH/HOME are absent.
+  echo "$out" | grep -qx 'APP_DOMAIN=gentest.example.com' || { echo "APP_DOMAIN wrong: $out"; return 1; }
+  echo "$out" | grep -qx 'EMAIL_DEFAULT_FROM=noreply@gentest.example.com' || { echo "email not interpolated: $out"; return 1; }
+  echo "$out" | grep -q '[$]' && { echo "unresolved \$ in output: $out"; return 1; }
+  echo "$out" | grep -qE '^(PATH|HOME)=' && { echo "leaked PATH/HOME: $out"; return 1; }
+  return 0
+}
+assert_success "gen-deployed-env emits resolved DEPLOY_VAR_NAMES, no \$/PATH/HOME leak" test_gen_deployed_env_happy
+
+test_gen_deployed_env_no_secret_or_identity_leak() {
+  local root out; root="$(make_gen_env_root)"; write_full_cloud_env "$root"
+  out="$("$root/bin/gen-deployed-env" gentest 2>/dev/null)"
+  rm -rf "$root"
+  # None of the secrets nor the four Terraform-owned RDS-identity keys appear.
+  echo "$out" | grep -qE '^(DATABASE_PASSWORD|CHAT_ANTHROPIC_API_KEY|PGPASSWORD)=' && return 1
+  echo "$out" | grep -qE '^(PGHOST|DATABASE_HOST|POSTGRES_USER|DATABASE_USER)=' && return 1
+  return 0
+}
+assert_success "gen-deployed-env leaks no secret nor RDS-identity key" test_gen_deployed_env_no_secret_or_identity_leak
+
+# .env.dev is NOT layered: a DEPLOY_VAR_NAMES key present in .env.dev but omitted
+# from the cloud fixture is UNSET, so gen-deployed-env fatals naming it (it does
+# not inherit the dev value and emit it). This is the direct leak-close test.
+test_gen_deployed_env_omitted_key_fatals() {
+  local root err; root="$(make_gen_env_root)"
+  # Full fixture MINUS GOOGLE_AUTH_PROVIDER (which IS present in .env.dev).
+  write_full_cloud_env "$root"
+  grep -v '^GOOGLE_AUTH_PROVIDER=' "$root/.env.gentest" > "$root/.env.gentest.tmp"
+  mv "$root/.env.gentest.tmp" "$root/.env.gentest"
+  err="$("$root/bin/gen-deployed-env" gentest 2>&1 >/dev/null)"
+  local rc=$?
+  rm -rf "$root"
+  [ "$rc" -ne 0 ] || { echo "expected nonzero exit"; return 1; }
+  echo "$err" | grep -q 'GOOGLE_AUTH_PROVIDER' || { echo "did not name the missing key: $err"; return 1; }
+}
+assert_success "gen-deployed-env fatals (no dev leak) when a key is omitted from .env.<env>" test_gen_deployed_env_omitted_key_fatals
+
+# Complement: a key present in BOTH .env.dev and .env.<env> with different values
+# emits the .env.<env> value, never the .env.dev one.
+test_gen_deployed_env_delta_value_wins() {
+  local root out; root="$(make_gen_env_root)"; write_full_cloud_env "$root"
+  out="$("$root/bin/gen-deployed-env" gentest 2>/dev/null)"
+  rm -rf "$root"
+  # APP_DOMAIN is localhost in .env.dev, gentest.example.com in the delta.
+  echo "$out" | grep -qx 'APP_DOMAIN=gentest.example.com' || { echo "delta value did not win: $out"; return 1; }
+}
+assert_success "gen-deployed-env: .env.<env> value wins over .env.dev" test_gen_deployed_env_delta_value_wins
+
+# ── render-env merge (RFC 95) ─────────────────────────────────────────────────
+echo "==== Testing render-env merge ===="
+
+# Stub `aws ssm get-parameters-by-path` by putting a fake `aws` first on PATH that
+# emits the given Name<TAB>Value rows. Echoes the stub dir (caller removes it).
+make_aws_stub() {
+  local rows_file="$1" stub_dir
+  stub_dir="$(mktemp -d)"
+  cat > "$stub_dir/aws" <<EOF
+#!/usr/bin/env bash
+# Only the get-parameters-by-path text query is stubbed; echo the fixture rows.
+cat "$rows_file"
+EOF
+  chmod +x "$stub_dir/aws"
+  echo "$stub_dir"
+}
+
+test_render_env_merge() {
+  local release rows stub out_env
+  release="$(mktemp -d)"; rows="$(mktemp)"; out_env="$(mktemp)"
+  # deploy-env (non-secret box config) — includes APP_DOMAIN, which SSM ALSO sets
+  # to a different value below to prove SSM wins on overlap.
+  printf 'APP_DOMAIN=from-deploy-env\nEMAIL_PROVIDER=ses\n' > "$release/deploy-env"
+  # SSM rows: a secret, an RDS-identity key, and an overlapping APP_DOMAIN.
+  printf '/unicoach/test/DATABASE_PASSWORD\treal-secret\n/unicoach/test/PGHOST\trds.example.com\n/unicoach/test/APP_DOMAIN\tfrom-ssm\n' > "$rows"
+  stub="$(make_aws_stub "$rows")"
+  PATH="$stub:$PATH" SSM_PREFIX="/unicoach/test" ENV_PATH="$out_env" \
+    ENV_OWNER="$(id -un)" ENV_GROUP="$(id -gn)" \
+    bash "$PROJECT_ROOT/infra/files/render-env.sh" "$release" >/dev/null 2>&1
+  local rc=$?
+  local mode content
+  content="$(cat "$out_env" 2>/dev/null)"
+  # GNU stat (nix dev shell) uses -c '%a'; BSD/macOS stat uses -f '%Lp'. Try GNU
+  # first, fall back to BSD, so the mode check is portable across both.
+  mode="$(stat -c '%a' "$out_env" 2>/dev/null || stat -f '%Lp' "$out_env" 2>/dev/null)"
+  rm -rf "$release" "$stub"; rm -f "$rows" "$out_env"
+  [ "$rc" -eq 0 ] || { echo "render-env exit $rc"; return 1; }
+  # Union: the non-overlapping deploy-env key survives; both SSM-only keys present.
+  echo "$content" | grep -qx 'EMAIL_PROVIDER=ses' || { echo "deploy-env key lost: $content"; return 1; }
+  echo "$content" | grep -qx 'DATABASE_PASSWORD=real-secret' || { echo "SSM secret missing: $content"; return 1; }
+  echo "$content" | grep -qx 'PGHOST=rds.example.com' || { echo "SSM identity missing: $content"; return 1; }
+  # SSM wins on APP_DOMAIN overlap: the deploy-env value must NOT be the effective
+  # one. The merged file lists deploy-env keys SSM does not override, then all SSM
+  # keys; assert the deploy-env APP_DOMAIN line is absent and the SSM one present.
+  echo "$content" | grep -qx 'APP_DOMAIN=from-deploy-env' && { echo "deploy-env APP_DOMAIN not overridden: $content"; return 1; }
+  echo "$content" | grep -qx 'APP_DOMAIN=from-ssm' || { echo "SSM APP_DOMAIN missing: $content"; return 1; }
+  [ "$mode" = "600" ] || { echo "mode was [$mode], expected 600"; return 1; }
+  return 0
+}
+assert_success "render-env merges deploy-env under SSM (SSM wins), mode 0600" test_render_env_merge
+
+# An unseeded PLACEHOLDER secret still fails closed before writing the env file.
+test_render_env_placeholder_fatals() {
+  local release rows stub out_env
+  release="$(mktemp -d)"; rows="$(mktemp)"; out_env="$(mktemp)"
+  printf 'APP_DOMAIN=x\n' > "$release/deploy-env"
+  printf '/unicoach/test/DATABASE_PASSWORD\tPLACEHOLDER_SEED_OUT_OF_BAND\n' > "$rows"
+  stub="$(make_aws_stub "$rows")"
+  : > "$out_env"  # ensure it stays empty (must not be written)
+  PATH="$stub:$PATH" SSM_PREFIX="/unicoach/test" ENV_PATH="$out_env" \
+    ENV_OWNER="$(id -un)" ENV_GROUP="$(id -gn)" \
+    bash "$PROJECT_ROOT/infra/files/render-env.sh" "$release" >/dev/null 2>&1
+  local rc=$?
+  local written; written="$(cat "$out_env" 2>/dev/null)"
+  rm -rf "$release" "$stub"; rm -f "$rows" "$out_env"
+  [ "$rc" -ne 0 ] || { echo "expected nonzero exit on unseeded PLACEHOLDER"; return 1; }
+  [ -z "$written" ] || { echo "env file was written despite PLACEHOLDER: $written"; return 1; }
+}
+assert_success "render-env fails closed on an unseeded PLACEHOLDER secret" test_render_env_placeholder_fatals
 
 end_tests

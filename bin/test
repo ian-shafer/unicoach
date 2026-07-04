@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 
-export ENV_FILE="$(dirname $0)/../.env.test"
+# Layer `.env -> .env.dev -> .env.test`: the DB-connection block and the
+# required-toggle dev values live in .env.dev (RFC 95), so a harness that only
+# layered .env.test would lose them. ENV_FILES is a PATH-like ':'-separated string;
+# it is exported so the child postgres-up/db-reset/db-tests invocations below
+# inherit the full stack and target the per-worktree test DB. bin/common resolves
+# each relative entry against PROJECT_ROOT.
+export ENV_FILES=".env.dev:.env.test"
 source "$(dirname "$0")/common"
 
 # Add new Gradle modules here, in sync with settings.gradle.kts.

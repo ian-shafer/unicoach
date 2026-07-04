@@ -221,25 +221,42 @@ parse_args() {
 
 # ── Cloud env + infrastructure lookups ────────────────────────────────────────
 
-# Source the env's .env.<env> delta over the .env base bin/common already loaded,
-# then assert the cloud-deploy guards. require_cloud_domain rejects env=local
-# before any AWS work: the SSM trigger has no meaning locally; a tool's own local
-# invocation is the correct path there.
+# Load the env's non-secret app config and deploy-control config, then assert the
+# cloud-deploy guards. bin/common (sourced at the top of this file with ENV_FILE
+# unset) already layered the empty-shape default; here we pin ENV_FILE=.env.<env>
+# and re-source bin/common so it layers exactly `.env -> .env.<env>` (never
+# .env.dev — the chain rule; a dev value must not mask a missing key). The
+# deploy-control config (AWS_ACCOUNT_ID/REGION) comes from .env.deploy.<env>.
+#
+# require_cloud_domain rejects env=local before any AWS work: the SSM trigger has
+# no meaning locally; a tool's own local invocation is the correct path there.
+# ENVIRONMENT is removed by RFC 95 — the env identity bin/remote needs is the
+# <env> positional (UNICOACH_ENV), never a sourced ENVIRONMENT — so its former
+# require_env_vars ENVIRONMENT guard is dropped (it would fatal on every run).
 #
 # AWS_REGION for the S3/SSM --region calls is a true env var, derived from REGION
-# in the .env base (AWS_REGION="${AWS_REGION:-$REGION}") and exported when
-# bin/common sources it with `set -a`, so the aws CLI and OpenTofu (TF_VAR_region)
-# target one region. An externally exported AWS_REGION still wins.
+# in .env.deploy.<env> (AWS_REGION="${AWS_REGION:-$REGION}") and exported below,
+# so the aws CLI and OpenTofu (TF_VAR_region) target one region. An externally
+# exported AWS_REGION still wins.
 load_cloud_env() {
   local env="$1"
   ENV_FILE="$(unicoach_env_file "$env")"
-  set -a
+  export ENV_FILE
+  # Pin a single ENV_FILE, so any inherited ENV_FILES (e.g. a test harness parent's
+  # exported stack) must be cleared first — the two are mutually exclusive.
+  unset ENV_FILES
   # shellcheck source=/dev/null
-  source "$ENV_FILE"
-  set +a
-  require_env_vars ENVIRONMENT
+  source "$PROJECT_ROOT/bin/common"
+
+  # Reject an env=local/dev target FIRST (before touching deploy-control or AWS):
+  # the SSM trigger has no meaning locally, and require_cloud_domain issues the
+  # proper usage-band code for that rejection.
   require_cloud_domain "$env"
-  assert_aws_account "${AWS_ACCOUNT_ID:-}"
+
+  # Deploy-control config (AWS_ACCOUNT_ID/REGION) comes from .env.deploy.<env>;
+  # load_deploy_control_env sources it and asserts the active credentials resolve to
+  # its declared account before any AWS work.
+  load_deploy_control_env "$env"
 }
 
 # Read one OpenTofu -raw output for the env, fataling with context if it is

@@ -39,14 +39,15 @@ class GoogleAuthConfigTest {
   @Test
   fun `applies documented defaults from the packaged service conf`() {
     // Parse the packaged resource with env-var substitutions stripped so the test
-    // observes the file's own defaults, not the harness environment (which sets
-    // GOOGLE_AUTH_PROVIDER=stub). The `${?...}` overrides resolve to nothing here.
-    // allowUnresolved tolerates keys with no file-own default at all (e.g. the
-    // env-derived emailVerification.verifyUrlBase); the auth.google block under
-    // test stays fully resolved.
+    // observes the file's own defaults, not the harness environment. `provider` is
+    // a REQUIRED substitution (no .conf default) after RFC 95, so supply
+    // GOOGLE_AUTH_PROVIDER explicitly; every OTHER auth.google key still has a
+    // committed default the test pins. allowUnresolved tolerates keys with no
+    // file-own default at all (e.g. the env-derived emailVerification.verifyUrlBase).
     val config =
       ConfigFactory
-        .parseResources("service.conf")
+        .parseString("GOOGLE_AUTH_PROVIDER = stub")
+        .withFallback(ConfigFactory.parseResources("service.conf"))
         .resolve(
           com.typesafe.config.ConfigResolveOptions
             .defaults()
@@ -55,10 +56,10 @@ class GoogleAuthConfigTest {
         )
     val parsed = GoogleAuthConfig.from(config).getOrThrow()
 
-    // Committed config is development-only: the packaged default is the offline
-    // `stub` verifier, not live `google`. This assertion is the regression guard
-    // ensuring a regressed `google` default fails the suite rather than silently
-    // dropping prod to a non-overridden bypass.
+    // provider has NO committed default — it is required and set per-env in the
+    // dotenv (.env.dev=stub, .env.<env>=google), so a forgotten prod override
+    // fails the JVM at boot rather than silently dropping to a stub-auth bypass
+    // (RFC 95). Here it reflects the value supplied above.
     assertEquals("stub", parsed.provider)
     assertEquals(listOf("accounts.google.com", "https://accounts.google.com"), parsed.issuers)
     assertEquals("https://www.googleapis.com/oauth2/v3/certs", parsed.jwksUri)

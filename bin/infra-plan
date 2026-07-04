@@ -10,22 +10,32 @@ source "$(dirname "$0")/common"
 UNICOACH_ENV="${1:-}"
 shift || true
 
+# Pin ENV_FILE=.env.<env> and re-source bin/common so it layers exactly
+# `.env -> .env.<env>` (never .env.dev — the chain rule; a dev value must not mask
+# a missing TF_VAR_* source). unicoach_env_file needs PROJECT_ROOT (set by the
+# top-of-file bin/common source); any inherited ENV_FILES is cleared first, since
+# ENV_FILE and ENV_FILES are mutually exclusive.
 ENV_FILE="$(unicoach_env_file "$UNICOACH_ENV")"
-set -a
+export ENV_FILE
+unset ENV_FILES
 # shellcheck source=/dev/null
-source "$ENV_FILE"
-set +a
+source "$PROJECT_ROOT/bin/common"
 
-require_env_vars ENVIRONMENT APP_DOMAIN GOOGLE_CLIENT_IDS
+# Assert the cloud-env app config first (from the already-loaded .env.<env>), so a
+# missing key or a local/dev target is rejected before touching deploy-control/AWS.
+require_env_vars APP_DOMAIN GOOGLE_CLIENT_IDS
 require_cloud_domain "$UNICOACH_ENV"
 
-# Fail-fast: refuse to run tofu against the wrong AWS account. A stray ambient
-# profile can otherwise silently target the wrong account; assert the active
-# credentials resolve to the account this env declares (the sourced .env.<env>'s
-# AWS_ACCOUNT_ID) first.
-assert_aws_account "${AWS_ACCOUNT_ID:-}"
+# Deploy-control config (AWS_ACCOUNT_ID / REGION) from .env.deploy.<env>.
+# load_deploy_control_env sources it and, fail-fast, refuses to run tofu against the
+# wrong AWS account: a stray ambient profile can otherwise silently target the wrong
+# account, so it asserts the active credentials resolve to the account this env
+# declares (.env.deploy.<env>'s AWS_ACCOUNT_ID) before any tofu action.
+load_deploy_control_env "$UNICOACH_ENV"
 
-export TF_VAR_environment="$ENVIRONMENT"
+# TF_VAR_environment derives from the <env> argument (ENVIRONMENT is removed by
+# RFC 95); the other TF_VAR_* come from .env.<env> / .env.deploy.<env>.
+export TF_VAR_environment="$UNICOACH_ENV"
 export TF_VAR_app_domain="$APP_DOMAIN"
 export TF_VAR_google_client_ids="$GOOGLE_CLIENT_IDS"
 export TF_VAR_public_web_port="$PUBLIC_WEB_PORT"

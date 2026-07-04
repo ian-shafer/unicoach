@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # A dedicated, reset-per-run fuzz database and port (.env.fuzz) isolate this
-# harness from the dev and test databases. This `export ENV_FILE` is the single
-# sanctioned pre-source statement (see bin/INVARIANTS.md); every child process
-# (postgres-up, db-reset, build-rest-server, rest-server-up/down) inherits it
-# and operates on the fuzz DB/port.
-export ENV_FILE="$(dirname "$0")/../.env.fuzz"
+# harness from the dev and test databases. Layer `.env -> .env.dev -> .env.fuzz`:
+# the DB-connection block and the required-toggle dev values live in .env.dev
+# (RFC 95), so layering only .env.fuzz would lose them. ENV_FILES is a PATH-like
+# ':'-separated string; it is exported so every child process (postgres-up,
+# db-reset, build-rest-server, rest-server-up/down) inherits the same stack and
+# operates on the fuzz DB/port. bin/common resolves each entry against PROJECT_ROOT.
+export ENV_FILES=".env.dev:.env.fuzz"
 source "$(dirname "$0")/common"
 
 # Pinned Schemathesis release. Provisioned into a gitignored pip venv on the

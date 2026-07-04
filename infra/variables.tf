@@ -5,7 +5,7 @@ variable "region" {
 }
 
 variable "environment" {
-  description = "Deployment environment id (e.g. prod); drives name_prefix, the SSM prefix, the state key, and the IAM scope. No default: fail fast if bin/infra-* did not supply it as TF_VAR_environment from .env.<env>'s ENVIRONMENT."
+  description = "Deployment environment id (e.g. prod); drives name_prefix, the SSM prefix, the state key, and the IAM scope. No default: fail fast if bin/infra-* did not supply it as TF_VAR_environment, which they derive from the <env> command argument (RFC 95 removed the .env.<env> ENVIRONMENT key; the <env> argument is the sole identity)."
   type        = string
 }
 

@@ -6,15 +6,44 @@ rests on. Full design:
 
 ## Config sources
 
-- **Shell environment** — `.env` (base) plus a `.env.<env>` delta (e.g.
-  `.env.prod`), sourced by nearly every shell script and also read by the iOS
-  build and Terraform (`bin/infra-apply`/`bin/infra-plan` source the layered
-  dotenv and export matching `TF_VAR_*` variables, which OpenTofu auto-reads —
-  see `app_domain` in `infra/variables.tf`). On cloud hosts the environment is
-  materialized from SSM (`/unicoach/<env>`) into `/etc/unicoach/env` and handed
-  to the JVM by systemd.
+- **Shell environment** — a layered dotenv `bin/common` sources, and the same
+  layered shape reaches the iOS build, Terraform, and the cloud hosts. Five
+  roles (RFC 95), split by scope:
+  - **`.env`** — the base: env-**neutral** non-secret app config only (values
+    identical in dev and every cloud env). No dev-dangerous value, no
+    deploy-control value.
+  - **`.env.dev`** — local-dev's env-specific and dev-dangerous values (dev DB
+    password, `trust`, `localhost`, the bind-host loopback overrides, the
+    required toggles' dev values). Layered by `bin/common`'s ambient default
+    (`.env → .env.dev`) and by the test harnesses
+    (`ENV_FILES=".env.dev:.env.test|.env.fuzz"`). The deploy/infra path
+    **never** layers it.
+  - **`.env.<env>`** (e.g. `.env.prod`) — a cloud env's non-secret app config.
+    Read only by `bin/gen-deployed-env` (to flatten into the `deploy-env`
+    artifact) and `bin/infra-*` (to export `TF_VAR_*`), always as
+    `.env → .env.<env>` with **`.env.dev` excluded** (the deploy/infra chain
+    rule). A key omitted here is **unset**, not inherited from `.env.dev`, so
+    `require_env_vars` fatals on the laptop before build.
+  - **`.env.deploy.<env>`** — deploy-control only (`AWS_ACCOUNT_ID`, `REGION`,
+    and the `AWS_REGION` derivation). Sourced by
+    `bin/deploy`/`bin/remote`/`bin/infra-*` to reach the right AWS
+    account/region; never shipped to the instance.
+  - **SSM `/unicoach/<env>`** — the two Terraform-owned classes only: secrets
+    (SecureStrings) and RDS identity (`PGHOST`/`DATABASE_HOST`/`POSTGRES_USER`/
+    `DATABASE_USER`).
+
+  `ENV_FILE` selects a single delta; `ENV_FILES` is a PATH-like `:`-separated,
+  exported string of deltas layered left-to-right (later wins) — the two are
+  mutually exclusive. On a **cloud host** the release bundle carries an
+  intentionally **empty** `.env` and `render-env` writes the **complete**
+  `/etc/unicoach/env` by merging the bundle's flat `deploy-env` **under** the
+  SSM fetch (SSM last-wins); both systemd (`EnvironmentFile`) and `bin/common`
+  (`ENV_FILE=/etc/unicoach/env`, layered over the empty base) read that one file
+  identically. The `<env>` argument to `bin/infra-*`/`bin/deploy` is the sole
+  env identity (there is no `ENVIRONMENT` dotenv key).
 - **HOCON (`*.conf`)** — read only by the JVM; pulls shell environment values in
-  via `${?VAR}`.
+  via `${?VAR}` (or a required `${VAR}` for a security/mode toggle — see
+  invariant 7).
 - **Local overrides and secrets** — `~/.config/unicoach/local.conf`, on a
   developer's machine only.
 
@@ -43,11 +72,13 @@ overlay > process environment (`${?VAR}`, SSM-rendered on cloud) > committed
 
 ## Invariants
 
-1. **Committed config is development-only.** Committed `.conf` defaults and the
-   `.env` sourced at runtime hold working dev values; no non-dev value is a
-   committed default. Non-dev environments override solely through the process
-   environment (`${?VAR}`), materialized from SSM on cloud hosts. _A fresh
-   checkout runs with zero setup and zero AWS._
+1. **Committed config spans every environment, split by role.** `.env` holds
+   env-neutral non-secret values; `.env.dev` holds local-dev values; each
+   `.env.<env>` holds that cloud env's non-secret values. No secret and no
+   Terraform-owned identity is committed — those are the only two classes SSM
+   owns (`/unicoach/<env>`). A fresh checkout still runs with zero setup and
+   zero AWS, because `bin/common` layers `.env → .env.dev` by default.
+   _Secrets/identity are never committed; a checkout needs no AWS._
 2. **Secrets are never committed.** A secret lives only in `/unicoach/<env>` SSM
    SecureStrings (cloud) or `~/.config/unicoach/local.conf` (local) — never in a
    committed file. _A pushed secret is effectively unrevocable._
@@ -65,3 +96,17 @@ overlay > process environment (`${?VAR}`, SSM-rendered on cloud) > committed
    prefix (`/unicoach/<env>`), Terraform state key, on-disk state dir, IAM
    scope, and AWS resource names are disjoint. _Shared identity lets one
    environment read or clobber another's config, state, or resources._
+7. **A silently-wrong-in-prod toggle is a required HOCON substitution.** A
+   config value whose committed dev default would run silently-wrong in a
+   deployed environment — weakening security (an auth bypass, an unsecured
+   cookie) or running a wrong-but-non-erroring mode (email/chat routed to `log`)
+   — MUST be a **required** HOCON substitution (`${VAR}`, no default line) and
+   be set explicitly in every environment's dotenv (`.env.dev`, `.env.<env>`).
+   _Silence is the hazard — a required substitution turns a forgotten override
+   from a silent wrong-mode into a boot failure._
+8. **`/etc/unicoach/env` is the complete on-host environment.** On a cloud host,
+   `/etc/unicoach/env` is the **complete** materialized environment; both
+   systemd (`EnvironmentFile`) and `bin/common` MUST read exactly that one file,
+   and no other on-host source may contribute app config. _A partial
+   materialization or a second on-host config source lets the two consumers
+   diverge, so a service and an ops tool would run different config._

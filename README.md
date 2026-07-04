@@ -189,12 +189,12 @@ terminating TLS in front of one EC2 instance running every service under
 resources are named `unicoach-<env>`, its config/secrets live under
 `/unicoach/<env>/*` in SSM, and its Terraform state is a per-env key + on-disk
 `infra/.terraform-<env>` working dir (no Terraform workspaces). All resource
-identity derives from two tokens — `ENVIRONMENT` and the base domain — so a new
-environment is stood up by authoring one `.env.<env>` file (see
-[Add an environment](#add-an-environment)). There is no CI; deployment is
-operator-invoked. All commands below assume an active `nix develop` shell and a
-configured AWS session (`aws configure` / SSO), and take the environment as the
-first argument.
+identity derives from two tokens — the `<env>` argument and the base domain — so
+a new environment is stood up by authoring its `.env.<env>` and
+`.env.deploy.<env>` files (see [Add an environment](#add-an-environment)). There
+is no CI; deployment is operator-invoked. All commands below assume an active
+`nix develop` shell and a configured AWS session (`aws configure` / SSO), and
+take the environment as the first argument.
 
 ### 0. Domain gate (prerequisite)
 
@@ -287,15 +287,22 @@ at this scale.
 
 ### Add an environment
 
-A second cloud environment needs no code change — only a new `.env.<env>` file:
+A second cloud environment needs no code change — only two new dotenv files (the
+`<env>` argument is the sole env identity; there is no `ENVIRONMENT` key):
 
-1. Author `.env.<env>` (`ENVIRONMENT=<env>`, `APP_DOMAIN`, `GOOGLE_CLIENT_IDS`,
-   and — for a subdomain env — `HOSTED_ZONE_NAME` = the parent zone).
-2. `bin/infra-apply <env>` — stands up the full env (`0 to destroy`).
-3. Seed the operator secrets into `/unicoach/<env>/*`
+1. Author `.env.<env>` — the env's full non-secret app config: `APP_DOMAIN`,
+   `GOOGLE_CLIENT_IDS`, the `0.0.0.0` bind hosts, the cookie/provider toggles,
+   the derived email values, and — for a subdomain env — `HOSTED_ZONE_NAME` =
+   the parent zone. (See `.env.template` for the full `DEPLOY_VAR_NAMES` set.)
+2. Author `.env.deploy.<env>` — deploy-control only: `AWS_ACCOUNT_ID`, `REGION`,
+   and the `AWS_REGION` derivation.
+3. `bin/infra-apply <env>` — stands up the full env (`0 to destroy`).
+4. Seed the operator secrets into `/unicoach/<env>/*`
    (`aws ssm put-parameter … --type SecureString`).
-4. `bin/db-create-role`.
-5. `bin/deploy <env>`.
+5. `bin/db-create-role`.
+6. `bin/deploy <env>` — flattens `.env → .env.<env>` into `deploy-env`, ships
+   it, and `render-env` merges it under the SSM secrets/RDS-identity prefix into
+   the complete `/etc/unicoach/env`.
 
 The iOS app targets local and prod only; it does not consume the cloud-env
 selector.
@@ -425,23 +432,26 @@ dotenv layer; HOCON pulls them with a required `${VAR}`.
 **Layers and the hand-off** — the process environment is the universal hand-off
 point:
 
-- **Local:** `bin/*` source `.env` → exported env → JVM `${?VAR}`; the
+- **Local:** `bin/*` layer `.env → .env.dev` → exported env → JVM `${?VAR}`; the
   `~/.config/unicoach/local.conf` overlay (the on-host home for local secrets)
   sits highest.
-- **Cloud:** `.env.<env>` → `TF_VAR_*` → SSM `/unicoach/<env>/*` →
-  `render-env.sh` → `/etc/unicoach/env` → systemd → JVM `${?VAR}`. No `.env`, no
-  overlay on the host.
+- **Cloud:** `.env → .env.<env>` (never `.env.dev`) is flattened by
+  `bin/gen-deployed-env` into the bundle's flat `deploy-env`; on the host
+  `render-env.sh` merges it **under** SSM `/unicoach/<env>/*` (secrets + RDS
+  identity, SSM last-wins) into the complete `/etc/unicoach/env` → systemd → JVM
+  `${?VAR}`. The same file, layered over an intentionally-empty base `.env`, is
+  what `bin/common` reads on the host. No overlay on the host.
 
 **Per-environment manifest:**
 
-| Variable            | Where                        | Notes                                   |
-| ------------------- | ---------------------------- | --------------------------------------- |
-| `UNICOACH_ENV`      | invocation arg               | selects `.env.<env>`, state, SSM prefix |
-| `ENVIRONMENT`       | `.env.<env>` → `TF_VAR_*`    | MUST equal `UNICOACH_ENV`; required     |
-| `APP_DOMAIN`        | `.env.<env>` → `TF_VAR_*`    | the env's web host; required            |
-| `HOSTED_ZONE_NAME`  | `.env.<env>` (omit for apex) | parent zone; coalesces to `APP_DOMAIN`  |
-| `GOOGLE_CLIENT_IDS` | `.env.<env>` → `TF_VAR_*`    | accepted OAuth audiences; required      |
-| `REGION`            | `.env.<env>` → `TF_VAR_*`    | AWS region; defaults to `us-east-1`     |
+| Variable            | Where                            | Notes                                                                             |
+| ------------------- | -------------------------------- | --------------------------------------------------------------------------------- |
+| `UNICOACH_ENV`      | invocation arg                   | the sole env identity; selects the files, state, SSM prefix, `TF_VAR_environment` |
+| `APP_DOMAIN`        | `.env.<env>` → `TF_VAR_*`        | the env's web host; required                                                      |
+| `HOSTED_ZONE_NAME`  | `.env.<env>` (omit for apex)     | parent zone; coalesces to `APP_DOMAIN`                                            |
+| `GOOGLE_CLIENT_IDS` | `.env.<env>` → `TF_VAR_*`        | accepted OAuth audiences; required                                                |
+| `AWS_ACCOUNT_ID`    | `.env.deploy.<env>`              | the target AWS account; asserted before any AWS action                            |
+| `REGION`            | `.env.deploy.<env>` → `TF_VAR_*` | AWS region; drives `AWS_REGION`                                                   |
 
 **Secret inventory** (cloud home → set by):
 

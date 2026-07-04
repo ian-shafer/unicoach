@@ -1,14 +1,43 @@
 package ed.unicoach.admin
 
+import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigFactory
+import com.typesafe.config.ConfigResolveOptions
 import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class AdminConfigTest {
   /** Parses the packaged `admin-web.conf` (with classpath fallbacks) the way the server does. */
   private fun packagedConfig() = ConfigFactory.load(ConfigFactory.parseResourcesAnySyntax("admin-web.conf"))
+
+  private val offlineOptions =
+    ConfigResolveOptions
+      .defaults()
+      .setUseSystemEnvironment(false)
+
+  @Test
+  fun `required ADMIN_COOKIE_SECURE fails to resolve when unset`() {
+    // cookieSecure = ${ADMIN_COOKIE_SECURE} is a required substitution (no .conf
+    // default): resolving the packaged conf offline, with no ADMIN_COOKIE_SECURE
+    // supplied, must fail rather than silently serving an insecure cookie (RFC 95).
+    assertFailsWith<ConfigException.UnresolvedSubstitution> {
+      ConfigFactory.parseResourcesAnySyntax("admin-web.conf").resolve(offlineOptions)
+    }
+  }
+
+  @Test
+  fun `ADMIN_COOKIE_SECURE resolves to the set value`() {
+    val config =
+      ConfigFactory
+        .parseString("ADMIN_COOKIE_SECURE = true")
+        .withFallback(ConfigFactory.parseResourcesAnySyntax("admin-web.conf"))
+        .resolve(offlineOptions)
+
+    assertTrue(config.getBoolean("admin.session.cookieSecure"))
+  }
 
   /**
    * Builds a full admin config whose `display` block is the supplied lines (each a

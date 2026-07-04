@@ -140,12 +140,15 @@ require_env_vars() {
   done
 }
 
-# Fatals unless the effective APP_DOMAIN is a real cloud domain. require_env_vars
-# alone cannot catch a cloud .env.<env> that omits APP_DOMAIN, because the base
-# .env layered underneath always supplies APP_DOMAIN=localhost (the local-only
-# default) — so the var is never empty. Every bin/infra-* run targets a cloud env,
-# where `localhost` is never valid; this asserts the delta overrode it. Takes the
-# env name for the message. Depends only on fatal (this file).
+# Fatals unless the effective APP_DOMAIN is a real cloud domain. Since RFC 95 the
+# deploy/infra path layers `.env -> .env.<env>` and NEVER .env.dev, so APP_DOMAIN
+# (which lives in .env.dev, not the base) is UNSET when a cloud .env.<env> omits
+# it — the omitted-key fatal is now require_env_vars APP_DOMAIN's job. This guard's
+# remaining, still-needed job is to reject a target whose resolved APP_DOMAIN is
+# `localhost`: that value now arrives only from an operator mistargeting `local`/dev
+# on the deploy/infra path (where the SSM/OpenTofu action has no meaning), never
+# from a base default. Body unchanged: fatal unless APP_DOMAIN is set and non-
+# localhost. Takes the env name for the message. Depends only on fatal (this file).
 require_cloud_domain() {
   local env="$1"
   if [ -z "${APP_DOMAIN:-}" ] || [ "$APP_DOMAIN" = "localhost" ]; then
@@ -240,7 +243,7 @@ validate_aws_account_id() {
 # Fail-fast deploy guard: assert the AWS account the active credentials resolve
 # to matches the one this deployment expects, before any tofu/aws action can
 # target it. $1 is the expected 12-digit account id (AWS_ACCOUNT_ID from the
-# deploy env file, .env.prod). Fatals — naming expected vs actual — when the
+# deploy-control file, .env.deploy.<env>). Fatals — naming expected vs actual — when the
 # expected id is missing/malformed, when the live identity cannot be resolved, or
 # when the two differ, so a stray ambient AWS profile can never silently deploy
 # to the wrong account. Resolves the live identity via `aws sts
@@ -248,7 +251,7 @@ validate_aws_account_id() {
 assert_aws_account() {
   local expected="$1"
   if ! validate_aws_account_id "$expected"; then
-    fatal "AWS_ACCOUNT_ID must be the target account's 12-digit id; got [$expected]. Set it in .env.prod."
+    fatal "AWS_ACCOUNT_ID must be the target account's 12-digit id; got [$expected]. Set it in .env.deploy.<env>."
   fi
   local actual
   if ! actual="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"; then
@@ -257,5 +260,26 @@ assert_aws_account() {
   if [ "$actual" != "$expected" ]; then
     fatal "Wrong AWS account: active credentials target [$actual] but this deploy expects [$expected]. Fix AWS_PROFILE / your credentials before retrying."
   fi
+}
+
+# Load a cloud env's deploy-control config and assert the AWS account, in one
+# step. $1 is the cloud-env selector (UNICOACH_ENV, e.g. prod). Resolves
+# $PROJECT_ROOT/.env.deploy.<env> (deploy-control only: AWS_ACCOUNT_ID / REGION /
+# the AWS_REGION derivation), fatals (bracketed path) if it is absent, sources it
+# under `set -a` so its keys export, then calls assert_aws_account with the sourced
+# AWS_ACCOUNT_ID so a stray ambient profile fails loudly before any tofu/aws action.
+# The single owner of the deploy-control bootstrap shared by bin/deploy,
+# bin/remote, bin/infra-plan, and bin/infra-apply. Depends on PROJECT_ROOT (set by
+# bin/common), fatal, and assert_aws_account (this file).
+load_deploy_control_env() {
+  local env="$1"
+  local deploy_env_file="$PROJECT_ROOT/.env.deploy.$env"
+  [ -f "$deploy_env_file" ] || fatal "Deploy-control file not found [$deploy_env_file]."
+  set -a
+  # shellcheck source=/dev/null
+  source "$deploy_env_file"
+  set +a
+
+  assert_aws_account "${AWS_ACCOUNT_ID:-}"
 }
 

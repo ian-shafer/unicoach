@@ -29,11 +29,13 @@ The backend URL is honor-if-set, else derived from a dotenv's APP_DOMAIN:
     UNICOACH_BACKEND_URL=https://api.$APP_DOMAIN — HTTPS, TLS terminated at the
     ALB, no port. The checked-in `prod` / `prod-simulator` targets use this, so
     the api host is never restated in the target file.
-  - DERIVE (local): otherwise the repo .env supplies APP_DOMAIN/SERVER_PORT (the
-    same single source the server reads), and the build bakes
-    UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}. APP_DOMAIN
-    defaults to localhost; a bare IP literal is rejected (invalid cookie
-    Domain). This is the local-dev path that keeps app and server in sync.
+  - DERIVE (local): otherwise the repo .env.dev supplies APP_DOMAIN and the base
+    .env supplies SERVER_PORT (the same single sources the local server reads),
+    and the build bakes UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}.
+    APP_DOMAIN defaults to localhost; a bare IP literal is rejected (invalid cookie
+    Domain). This is the local-dev path that keeps app and server in sync. (Since
+    RFC 95 APP_DOMAIN lives in .env.dev, not the base — override it there for
+    on-device use.)
 
 A target is a simulator build iff its UNICOACH_DESTINATION contains "Simulator";
 otherwise it is a device build, which additionally sources ios-app/env/signing.env
@@ -85,25 +87,33 @@ set +a
 UNICOACH_CONFIGURATION="${UNICOACH_CONFIGURATION:-Debug}"
 
 # A dotenv is sourced UNCONDITIONALLY on both the honor and derive paths: it is
-# the single source of UNICOACH_CLIENT_KEY (forwarded to xcodebuild below) and,
-# on the derive path, of APP_DOMAIN. A deploy target (UNICOACH_DEPLOY set in the
-# target file) sources .env.prod — the single source of the prod domain — so the
-# prod URL derives from APP_DOMAIN without restating it in the target. A
-# non-deploy (local) target sources the repo .env. UNICOACH_DOTENV overrides the
-# choice (used by bin/ios-scripts-tests to point at a temp fixture).
+# the source of UNICOACH_CLIENT_KEY (forwarded to xcodebuild below) and, on the
+# derive path, of APP_DOMAIN. A deploy target (UNICOACH_DEPLOY set in the target
+# file) sources .env.prod — the single source of the prod domain — so the prod URL
+# derives from APP_DOMAIN without restating it in the target. A non-deploy (local)
+# target sources the repo base .env AND .env.dev (RFC 95 moved APP_DOMAIN and the
+# other dev values into .env.dev; the base carries SERVER_PORT), mirroring the
+# `.env → .env.dev` stack the local server reads. UNICOACH_DOTENV overrides the
+# choice with a single file (used by bin/ios-scripts-tests to point at a temp
+# fixture).
 if [ -n "${UNICOACH_DOTENV:-}" ]; then
-  DOTENV="$UNICOACH_DOTENV"
+  DOTENVS=("$UNICOACH_DOTENV")
 elif [ -n "${UNICOACH_DEPLOY:-}" ]; then
-  DOTENV="$PROJECT_ROOT/.env.prod"
+  DOTENVS=("$PROJECT_ROOT/.env.prod")
 else
-  DOTENV="$PROJECT_ROOT/.env"
+  DOTENVS=("$PROJECT_ROOT/.env" "$PROJECT_ROOT/.env.dev")
 fi
-if [ -f "$DOTENV" ]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$DOTENV"
-  set +a
-fi
+# DOTENV names the last-layered file for diagnostics (the one an operator edits to
+# set APP_DOMAIN on the derive path).
+DOTENV="${DOTENVS[${#DOTENVS[@]}-1]}"
+for dotenv in "${DOTENVS[@]}"; do
+  if [ -f "$dotenv" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$dotenv"
+    set +a
+  fi
+done
 
 # Backend URL: honor-if-set, else derive. If the target file (or environment)
 # set a non-empty UNICOACH_BACKEND_URL, it is forwarded verbatim — no

@@ -34,14 +34,18 @@ aws s3 cp --region "$AWS_REGION" "$BUNDLE_S3_URI" "$BUNDLE_TMP"
 tar -xzf "$BUNDLE_TMP" -C "$RELEASE_DIR"
 chown -R unicoach:unicoach "$RELEASE_DIR"
 
-# ── 2. Refresh /etc/unicoach/env from SSM ─────────────────────────────────────
-/opt/unicoach/bin/render-env
+# ── 2. Refresh /etc/unicoach/env (bundle deploy-env merged under SSM) ─────────
+# render-env merges this release's flat deploy-env (non-secret box config) UNDER
+# the SSM prefix (secrets + RDS identity, SSM last-wins), writing the complete
+# /etc/unicoach/env. Pass this release's dir so it reads the fresh deploy-env.
+/opt/unicoach/bin/render-env "$RELEASE_DIR"
 
 # ── 3. Run migrations against RDS (before the symlink swap) ────────────────────
-# bin/common layers dotenv: the host has no base .env, so ENV_FILE (the
-# SSM-rendered /etc/unicoach/env) is sourced as the delta and satisfies it.
-# The master-role psql steps require PGPASSWORD (RDS rejects libpq trust auth);
-# an absent PGPASSWORD fails here, before the symlink swap.
+# bin/common layers dotenv: the host carries an intentionally EMPTY base .env, and
+# ENV_FILE pins the complete SSM-rendered /etc/unicoach/env as the delta, so the
+# same `base -> delta` shape runs here as locally (the empty base contributes
+# nothing). The master-role psql steps require PGPASSWORD (RDS rejects libpq trust
+# auth); an absent PGPASSWORD fails here, before the symlink swap.
 (
   cd "$RELEASE_DIR"
   ENV_FILE="$ENV_FILE" bin/db-create-role

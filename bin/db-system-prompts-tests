@@ -13,7 +13,11 @@
 # fixture; every case is a self-contained BEGIN/ROLLBACK insert. Cases use a
 # namespaced name (sp-test-*) to avoid colliding with the convos harness fixture
 # prompt.
-export ENV_FILE="$(dirname "$0")/../.env.test"
+# Layer `.env -> .env.dev -> .env.test` (RFC 95): the DB block lives in .env.dev.
+# ENV_FILES is a PATH-like ':'-separated string, exported so the db-query/db-run
+# child processes inherit the same stack and target the per-worktree test DB.
+# bin/common resolves each entry against PROJECT_ROOT.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
 

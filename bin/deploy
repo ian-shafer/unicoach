@@ -39,22 +39,19 @@ if [ "$#" -gt 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "deploy accepts only an environment argument: $*"
 fi
 
-# Select and validate the environment, then point this run's tofu output reads at
-# its disjoint state (TF_DATA_DIR) and supply the partial backend's state key.
-# `unicoach_env_file` fatals on a missing/absent env before any AWS or build work.
-ENV_FILE="$(unicoach_env_file "$UNICOACH_ENV")"
-set -a
-# shellcheck source=/dev/null
-source "$ENV_FILE"
-set +a
-require_env_vars ENVIRONMENT
-
-# Fail-fast: refuse to ship to the wrong AWS account. deploy sources the selected
-# env's delta above; assert the active credentials resolve to the account it
-# declares (its AWS_ACCOUNT_ID) before any tofu output read, build, upload, or SSM
-# call, so a stray ambient AWS profile fails loudly instead of shipping a release
-# to the wrong account.
-assert_aws_account "${AWS_ACCOUNT_ID:-}"
+# Deploy-control config (AWS account/region) comes from .env.deploy.<env>, sourced
+# over the base bin/common already loaded. bin/deploy itself reads only the
+# account/region and the <env> argument; the app config it forwards to
+# gen-deployed-env, which resolves its own ENV_FILE=.env.<env> (base -> .env.<env>,
+# never .env.dev — the chain rule). AWS_REGION is derived from REGION inside
+# .env.deploy.<env> and exported by the helper, feeding every
+# `aws … --region "$AWS_REGION"` call below. `unicoach_env_file` fatals on a
+# missing/absent env before any work; load_deploy_control_env then sources the
+# deploy-control file and asserts the active credentials resolve to its declared
+# AWS_ACCOUNT_ID before any tofu output read, build, upload, or SSM call, so a stray
+# ambient AWS profile fails loudly instead of shipping a release to the wrong account.
+unicoach_env_file "$UNICOACH_ENV" >/dev/null
+load_deploy_control_env "$UNICOACH_ENV"
 
 # Point this run's OpenTofu reads at <env>'s disjoint state (TF_DATA_DIR) and init
 # the partial backend with its state key. The init is not optional: an output read
@@ -66,8 +63,8 @@ tofu -chdir="$PROJECT_ROOT/infra" init \
   -backend-config="key=unicoach/$UNICOACH_ENV/terraform.tfstate" >&2
 
 # AWS_REGION for the S3 upload and SSM --region calls below is a true env var,
-# derived from REGION in the .env base (AWS_REGION="${AWS_REGION:-$REGION}") and
-# exported when bin/common sources it with `set -a`, so the aws CLI and OpenTofu
+# derived from REGION in .env.deploy.<env> (AWS_REGION="${AWS_REGION:-$REGION}")
+# and exported when sourced above with `set -a`, so the aws CLI and OpenTofu
 # (TF_VAR_region) target one region. An externally exported AWS_REGION still wins.
 
 # ── 1. Build all deployable distributions ─────────────────────────────────────
@@ -103,7 +100,22 @@ done
 # $PROJECT_ROOT.
 BUNDLE_ID="$(date -u +%Y%m%d%H%M%S)"
 BUNDLE_PATH="$(mktemp -t unicoach-deploy.XXXXXX).tar.gz"
-trap 'rm -f "$BUNDLE_PATH"' EXIT
+
+# Stage the two GENERATED bundle members (deploy-env, empty .env) in a scratch dir
+# tarred with -C, so nothing is written into the working tree. Cleaned up with the
+# bundle on exit.
+GEN_STAGE="$(mktemp -d -t unicoach-deploy-gen.XXXXXX)"
+trap 'rm -f "$BUNDLE_PATH"; rm -rf "$GEN_STAGE"' EXIT
+
+# Flatten .env -> .env.<env> (never .env.dev) into deploy-env: the non-secret box
+# config as flat KEY=<resolved-value> lines. gen-deployed-env fatals on the laptop
+# (before upload) if any DEPLOY_VAR_NAMES key is missing, aborting the deploy. The
+# empty .env is the intentionally-empty base the host carries so bin/common runs
+# the same `base -> delta` shape everywhere (the complete /etc/unicoach/env layers
+# on top of it, contributing nothing).
+log-info "Generating deploy-env for [$UNICOACH_ENV]..."
+"$PROJECT_ROOT/bin/gen-deployed-env" "$UNICOACH_ENV" > "$GEN_STAGE/deploy-env"
+printf '# Intentionally empty base on the deploy host. The complete materialized\n# environment is /etc/unicoach/env, layered over this by bin/common (RFC 95).\n' > "$GEN_STAGE/.env"
 
 REPO_PATHS=(
   "db/schema"
@@ -124,6 +136,10 @@ for path in "${REPO_PATHS[@]}"; do
   [ -e "$PROJECT_ROOT/$path" ] || fatal "Bundle path missing [$path]."
 done
 
+# The two staged generated members enter the bundle at the repo-relative root
+# (deploy-env and .env), the paths render-env and bin/common expect on the host.
+GEN_PATHS=("deploy-env" ".env")
+
 log-info "Assembling deploy bundle [$BUNDLE_ID]..."
 tar -czf "$BUNDLE_PATH" \
   -C "$(dirname "$PROJECT_ROOT/$REST_DIST")" "$(basename "$REST_DIST")" \
@@ -131,7 +147,8 @@ tar -czf "$BUNDLE_PATH" \
   -C "$(dirname "$PROJECT_ROOT/$PUBLIC_WEB_DIST")" "$(basename "$PUBLIC_WEB_DIST")" \
   -C "$(dirname "$PROJECT_ROOT/$ADMIN_WEB_DIST")" "$(basename "$ADMIN_WEB_DIST")" \
   -C "$PROJECT_ROOT" "$COLLEGE_DIST" \
-  -C "$PROJECT_ROOT" "${REPO_PATHS[@]}"
+  -C "$PROJECT_ROOT" "${REPO_PATHS[@]}" \
+  -C "$GEN_STAGE" "${GEN_PATHS[@]}"
 
 # ── 3. Upload to the artifacts bucket ─────────────────────────────────────────
 # Read the bucket from this env's OpenTofu outputs (under the TF_DATA_DIR exported

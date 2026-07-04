@@ -4,46 +4,103 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 source "$PROJECT_ROOT/bin/functions"
 
-# Layered dotenv: .env is the base (committed dev config); $ENV_FILE, when set to
-# a delta file (.env.test/.env.fuzz/.env.<env>), is sourced AFTER it and carries
-# only the keys whose values differ from .env. Every other key inherits from the
-# base, so shared values (and the now-required ${APP_DOMAIN}/${SERVER_PORT}) live
-# once in .env. A caller that leaves ENV_FILE unset gets just the base.
+# Layered dotenv. .env is the base (env-neutral non-secret app config). One or
+# more deltas layer over it, each overriding the earlier:
+#
+#   - ENV_FILE   — a single delta file (mutually exclusive with ENV_FILES).
+#   - ENV_FILES  — a PATH-like ':'-separated string of delta files, layered after
+#                  the base left-to-right (later overrides earlier), e.g.
+#                  `$PROJECT_ROOT/.env.dev:$PROJECT_ROOT/.env.test`. A plain scalar
+#                  env var, so it is EXPORTED and crosses process boundaries
+#                  naturally: bin/test/bin/test-fuzz export it, and their child
+#                  postgres-up/db-reset/db-tests invocations inherit the full stack
+#                  and target the per-worktree test/fuzz DB (the DB-connection block
+#                  moved into .env.dev, RFC 95). Empty segments (a stray leading/
+#                  trailing ':') are skipped. A ':' embedded in a path is a
+#                  pathological edge we accept, exactly as PATH does.
+#   - neither    — the ambient local default `.env -> .env.dev`, so bare local
+#                  scripts pick up the dev-dangerous values that moved into
+#                  .env.dev (RFC 95).
+#
+# On a cloud host the release bundle carries an intentionally EMPTY .env, and the
+# caller pins ENV_FILE=/etc/unicoach/env, so the same `base -> delta` shape runs
+# everywhere: the empty base contributes nothing and the complete materialized
+# env layers on top.
 BASE_ENV_FILE="$PROJECT_ROOT/.env"
-ENV_FILE="${ENV_FILE:-$BASE_ENV_FILE}"
 
-set -a
-# .env is the committed dev base. A deploy host has no .env (config is the
-# SSM-rendered ENV_FILE, per the cloud read-channel), so the base is optional
-# when an explicit ENV_FILE override selects a different file; otherwise it is
-# required.
-if [ -f "$BASE_ENV_FILE" ]; then
-  source "$BASE_ENV_FILE"
-elif [ "$ENV_FILE" = "$BASE_ENV_FILE" ]; then
-  set +a
-  fatal "Environment file not found [$BASE_ENV_FILE]."
-fi
+# Split the ':'-separated ENV_FILES string into the ENV_DELTAS array (empty
+# segments dropped). ENV_FILES is left untouched so it survives, exported, to
+# grandchildren. Resolves each relative entry against PROJECT_ROOT (as ENV_FILE is
+# used today), so a delta path is correct regardless of the child's cwd.
+split_env_files_into_deltas() {
+  ENV_DELTAS=()
+  [ -n "${ENV_FILES:-}" ] || return 0
+  local segment IFS=':'
+  for segment in $ENV_FILES; do
+    [ -n "$segment" ] || continue
+    case "$segment" in
+    /*) ENV_DELTAS+=("$segment") ;;
+    *) ENV_DELTAS+=("$PROJECT_ROOT/$segment") ;;
+    esac
+  done
+}
 
-# Layer the delta file when ENV_FILE selects one other than the base itself.
-if [ "$ENV_FILE" != "$BASE_ENV_FILE" ]; then
-  if [ ! -f "$ENV_FILE" ]; then
-    set +a
-    fatal "Environment file not found [$ENV_FILE]."
+# Resolve the delta list into ENV_DELTAS, an ordered array of paths layered after
+# the base. ENV_FILE and ENV_FILES are mutually exclusive; neither set selects
+# the ambient `.env.dev` local default.
+resolve_env_deltas() {
+  if [ -n "${ENV_FILE:-}" ] && [ -n "${ENV_FILES:-}" ]; then
+    fatal "ENV_FILE and ENV_FILES are mutually exclusive; set only one."
   fi
-  source "$ENV_FILE"
-fi
-set +a
 
-# POSTGRES_PORT is required (set in ENV_FILE). Under `set -u` an unset value aborts
+  if [ -n "${ENV_FILES:-}" ]; then
+    split_env_files_into_deltas
+  elif [ -n "${ENV_FILE:-}" ]; then
+    ENV_DELTAS=("$ENV_FILE")
+  else
+    ENV_DELTAS=("$PROJECT_ROOT/.env.dev")
+  fi
+}
+
+# Source the base then each delta under `set -a`, so every KEY=VALUE and every
+# $VAR/$(…) interpolation is exported and expanded at source time. The base is
+# required (a missing .env is a setup error); each delta must exist too. An empty
+# base is valid — on a cloud host it is deliberately empty.
+load_env_layers() {
+  set -a
+  if [ ! -f "$BASE_ENV_FILE" ]; then
+    set +a
+    fatal "Environment file not found [$BASE_ENV_FILE]."
+  fi
+  # shellcheck source=/dev/null
+  source "$BASE_ENV_FILE"
+
+  local delta
+  for delta in "${ENV_DELTAS[@]}"; do
+    if [ ! -f "$delta" ]; then
+      set +a
+      fatal "Environment file not found [$delta]."
+    fi
+    # shellcheck source=/dev/null
+    source "$delta"
+  done
+  set +a
+}
+
+# POSTGRES_PORT is required (set in a delta). Under `set -u` an unset value aborts
 # here rather than silently defaulting. Exporting PGPORT makes every libpq client
 # (psql via db-run, pg_isready) target the configured port with no per-call flags.
-export PGPORT="$POSTGRES_PORT"
+export_derived_env() {
+  export PGPORT="$POSTGRES_PORT"
+  export DB_SCHEMA_DIR="${DB_SCHEMA_DIR:-$PROJECT_ROOT/db/schema}"
+}
 
-export DB_SCHEMA_DIR="${DB_SCHEMA_DIR:-$PROJECT_ROOT/db/schema}"
+resolve_env_deltas
+load_env_layers
+export_derived_env
 
 # Markdown targets for deno fmt, shared by bin/format (rewrites in place) and
 # bin/pre-commit (--check, read-only). deno's `**` glob skips hidden dirs, so
 # `.claude/` (skill/agent markdown) is listed explicitly. Defined once here so
 # the writer and the checker can never target different sets of files.
 MARKDOWN_FMT_PATHS=("**/*.md" ".claude")
-

@@ -84,7 +84,7 @@ class CoachingServiceTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE commitment_support, commitments, convos, convo_requests, convo_responses, convo_responses_raw, " +
-          "claims, system_prompts, students, users CASCADE",
+          "claims, colleges, system_prompts, students, users CASCADE",
       )
     }
     // Restore all migration-seeded prompts for cross-module suites on the shared DB.

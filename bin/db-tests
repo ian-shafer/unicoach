@@ -5,7 +5,12 @@
 # who has run db-bootstrap then db-reset) provides a live, already-migrated
 # database. It runs each harness sequentially and aborts non-zero if any harness
 # fails.
-export ENV_FILE="${ENV_FILE:-$(dirname "$0")/../.env.test}"
+# Layer `.env -> .env.dev -> .env.test` (RFC 95): the DB block and required-toggle
+# dev values live in .env.dev. ENV_FILES is a PATH-like ':'-separated string.
+# Under bin/test it is inherited (exported) across the process boundary; run
+# STANDALONE it defaults here to the same stack if unset. bin/common resolves each
+# entry against PROJECT_ROOT.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
 source "$(dirname "$0")/common"
 
 "$PROJECT_ROOT/bin/db-system-prompts-tests"

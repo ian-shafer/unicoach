@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# gen-deployed-env <env>: a pure transformation `env -> flat KEY=VALUE`, producing
+# the non-secret box config for a cloud env. It layers `.env -> .env.<env>` (NEVER
+# .env.dev — see the deploy/infra chain rule in CONFIGURATION.md), asserts every
+# DEPLOY_VAR_NAMES key is set, and prints each key with its resolved value to
+# stdout. A missing key fatals here — on the laptop, at deploy time, before build.
+#
+# Flatten-to-literal is load-bearing: the emitted deploy-env (and the
+# /etc/unicoach/env it feeds) is a FLAT LITERAL file — each line is
+# KEY=<already-resolved-value> with no surviving $VAR/$(…). One of its two on-host
+# consumers, systemd's EnvironmentFile, does NO shell expansion, so an unresolved
+# EMAIL_DEFAULT_FROM=noreply@$APP_DOMAIN would reach the JVM verbatim. Resolution
+# happens at SOURCE time: bin/common sources the layers under `set -a`, expanding
+# every interpolation before this script reads each value from the environment and
+# prints its literal.
+#
+# ENV_FILE is pinned in a pre-common prelude so bin/common layers exactly
+# `.env -> .env.<env>` in one pass. The <env> positional is resolved to its
+# .env.<env> path via unicoach_env_file (bin/functions), which fatals on a
+# missing/absent env before anything else.
+
+# ── Prelude: pin ENV_FILE=.env.<env> before sourcing bin/common ───────────────
+# unicoach_env_file needs PROJECT_ROOT + fatal from bin/functions, but bin/common
+# (which sets PROJECT_ROOT) reads ENV_FILE at source time — so resolve the path
+# from bin/functions first, using this script's own dir, then hand it to common.
+GEN_DEPLOYED_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$GEN_DEPLOYED_ENV_ROOT/bin/functions"
+
+UNICOACH_ENV="${1:-}"
+if [ -z "$UNICOACH_ENV" ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "environment required (e.g. prod); pass it as the first argument"
+fi
+shift
+if [ "$#" -gt 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "gen-deployed-env accepts only an environment argument: $*"
+fi
+if [ "$UNICOACH_ENV" = "local" ]; then
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "gen-deployed-env targets a cloud env (e.g. prod); [local] has no deploy-env"
+fi
+
+# ── The enumerated non-secret box keys ────────────────────────────────────────
+# The exact set of keys shipped to the instance as non-secret config. The
+# RDS-identity keys (PGHOST/DATABASE_HOST/POSTGRES_USER/DATABASE_USER) and the
+# secrets are NOT here — SSM supplies them on the instance (infra/ssm.tf).
+DEPLOY_VAR_NAMES=(
+  POSTGRES_PORT
+  POSTGRES_DB
+  DATABASE_MAXIMUM_POOL_SIZE
+  SERVER_HOST
+  SERVER_PORT
+  PUBLIC_WEB_HOST
+  ADMIN_WEB_HOST
+  PUBLIC_WEB_PORT
+  ADMIN_WEB_PORT
+  SESSION_COOKIE_SECURE
+  ADMIN_COOKIE_SECURE
+  APP_DOMAIN
+  EMAIL_DEFAULT_FROM
+  EMAIL_VERIFICATION_VERIFY_URL_BASE
+  EMAIL_PROVIDER
+  CHAT_PROVIDER
+  GOOGLE_AUTH_PROVIDER
+  GOOGLE_CLIENT_IDS
+)
+
+# Scrub every DEPLOY_VAR_NAMES key from the inherited environment BEFORE sourcing
+# the layers. bin/deploy (this script's caller) sources bin/common with the ambient
+# `.env.dev` default, so a stale dev value (e.g. GOOGLE_AUTH_PROVIDER=stub) would
+# otherwise sit exported in this child's environment and make require_env_vars see
+# a key as "set" even when .env.<env> omits it — leaking the dev value into
+# deploy-env. Unsetting first makes the presence check honest: a key is set ONLY if
+# the `.env -> .env.<env>` layering below sets it. This is load-bearing for the
+# RFC's core leak-close.
+unset "${DEPLOY_VAR_NAMES[@]}"
+
+# Resolve .env.<env> using PROJECT_ROOT from this script's location (bin/functions
+# does not set it), then pin it so bin/common layers `.env -> .env.<env>` only. Any
+# inherited ENV_FILES (e.g. from a test-harness parent's exported stack) is cleared
+# first — a single ENV_FILE and ENV_FILES are mutually exclusive.
+PROJECT_ROOT="$GEN_DEPLOYED_ENV_ROOT"
+ENV_FILE="$(unicoach_env_file "$UNICOACH_ENV")"
+export ENV_FILE
+unset ENV_FILES
+source "$GEN_DEPLOYED_ENV_ROOT/bin/common"
+
+# Assert every key is set (a key omitted from .env.<env> is UNSET on this path,
+# because .env.dev is excluded and the inherited env was scrubbed above — so this
+# fatals on the laptop naming the key).
+require_env_vars "${DEPLOY_VAR_NAMES[@]}"
+
+# Emit each key's already-resolved literal value, one KEY=VALUE per line.
+emit_deployed_env() {
+  local key
+  for key in "${DEPLOY_VAR_NAMES[@]}"; do
+    printf '%s=%s\n' "$key" "${!key}"
+  done
+}
+
+emit_deployed_env
