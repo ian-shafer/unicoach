@@ -139,13 +139,14 @@ no observation behind them — they are the coach reasoning across other claims.
   `extraction`. Reconsider if the schema proves heavy enough to design
   independently.
 - **Extraction timing — partly resolved.** Extraction shipped **worker-only**
-  (RFC 66): no inline memory actions on the chat turn, because there is no
-  tool-use dispatch in the chat path yet and inline writes would land on the
-  request coroutine, violating the request-path constraint (RFC 43). The hybrid
-  lean (structured high-confidence actions inline, fuzzy claims in the worker
-  pass) is not abandoned but **deferred to the `chat-tool-use` RFC**; the
-  extraction schema precludes nothing, since a future inline writer targets the
-  same `observations`/`claims` tables.
+  (RFC 66): no inline memory actions on the chat turn, because there was no
+  tool-use dispatch in the chat path and inline writes would land on the request
+  coroutine, violating the request-path constraint (RFC 43). That blocker is now
+  gone — `chat-tool-use` (RFC 94) landed the shared tool-use loop — so the
+  hybrid lean (structured high-confidence actions inline, fuzzy claims in the
+  worker pass) is unblocked but **not yet built**: a future extraction follow-up
+  registers an inline writer into the loop. The extraction schema precludes
+  nothing, since that writer targets the same `observations`/`claims` tables.
 - **Visibility policy** — what is student-visible by default vs. internal
   coaching note, and how that interacts with minors/parents/counselors.
 - **Confidence & decay model** — how recurrence raises confidence and how stale
@@ -163,8 +164,8 @@ merged)`.
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------ |
 | `extraction`        | per-conversation pass: observations → claims; defines the obs / claim / claim_support schema                                                                                                                                            | implemented | 66           |
 | `college-knowledge` | college dataset (Scorecard/IPEDS) + `CollegeSearchTool` retrieval; shared by live chat and reflection                                                                                                                                   | implemented | 67 (+78, 82) |
-| `chat-tool-use`     | generic chat tool-use loop: content blocks + typed `tools` on `ChatRequest` + `tool_use` dispatch → second call; imports `CollegeSearchTool`, unblocks extraction's inline writer                                                       | planned     | —            |
-| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                                                                                                                                               | planned     | —            |
+| `chat-tool-use`     | generic chat tool-use loop: content blocks + typed `tools` on `ChatRequest` + `tool_use` dispatch → second call; imports `CollegeSearchTool`, unblocks extraction's inline writer                                                       | implemented | 94           |
+| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                                                                                                                                               | implemented | 91           |
 | `synthesis`         | per-student reflection pass; defines the commitments schema; internal lenses (gap / timing / contradiction); pull delivery. Periodic trigger deferred to a future scheduler/cron RFC (enqueued manually via `bin/q-enqueue` until then) | implemented | 93           |
 | `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset                                                                                                                                                       | planned     | —            |
 | `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments)                                                                                                                                                                     | planned     | —            |
@@ -189,13 +190,14 @@ merged)`.
 
 ```
 extraction ──► college-list ──► synthesis ──► fit-lens
-  (66,done)                        │             ▲
+  (66,done)     (91,done)        (93,done)       ▲
+                                   │             │
                                    ▼             │
                               push-delivery      │
 college-knowledge ───────────────────────────────┘
   (67,done)  │
              └──► chat-tool-use ──► live college search in chat;
-                                    unblocks extraction's inline actions
+                  (94,done)         unblocks extraction's inline actions
 ```
 
 - `extraction` and `college-knowledge` are **parallel roots** — neither blocks
@@ -206,9 +208,11 @@ college-knowledge ────────────────────�
   `CollegeSearchTool`, and lands the shared tool-use loop that extraction's
   deferred inline writer later registers into. `fit-lens` can reach the dataset
   through the worker (via `CollegeSearchService`) without it; `chat-tool-use` is
-  what the dataset needs to show up **live in a conversation**.
+  what the dataset needs to show up **live in a conversation**. **Done** (RFC
+  94).
 - `synthesis` is the integration point (needs claims + the list). Its **internal
-  lenses ship without `college-knowledge`** — this is the MVP cut.
+  lenses ship without `college-knowledge`** — this is the MVP cut. **Done** (RFC
+  93), on top of `college-list` (**done**, RFC 91).
 - `fit-lens` is the only reflection piece needing _both_ synthesis and the
   dataset, so it is correctly the last marquee step.
 - `push-delivery` extends `synthesis` once the pull loop feels real.
@@ -217,15 +221,18 @@ college-knowledge ────────────────────�
 
 1. ~~**`college-knowledge`** and **`extraction`** in parallel — the two roots.~~
    **Done** (RFC 66; RFC 67 + hardening 78, 82).
-2. **`college-list`** on top of extraction. ← **next on the docket.**
-3. **`synthesis`** (internal lenses, pull-only) — the smallest honest "I thought
-   about this" loop: a gap/timing observation surfaced as a next-session opener,
-   needing only the internal model + a calendar. Proves the loop end-to-end with
-   no notification infra.
-4. **`fit-lens`** once `college-knowledge` is earning its keep in chat.
+2. ~~**`college-list`** on top of extraction.~~ **Done** (RFC 91).
+3. ~~**`synthesis`** (internal lenses, pull-only) — the smallest honest "I
+   thought about this" loop: a gap/timing observation surfaced as a next-session
+   opener, needing only the internal model + a calendar. Proves the loop
+   end-to-end with no notification infra.~~ **Done** (RFC 93).
+4. **`fit-lens`** once `college-knowledge` is earning its keep in chat. ← **next
+   on the docket.**
 5. **`push-delivery`** last.
 
 `chat-tool-use` sits **off this spine**: it can be sequenced any time after
-`college-knowledge` (done), independent of `college-list`/`synthesis`. Do it
+`college-knowledge` (done), independent of `college-list`/`synthesis`. ~~Do it
 when live college search in chat — or extraction's inline actions — becomes the
-priority; it is the prerequisite for both.
+priority; it is the prerequisite for both.~~ **Done** (RFC 94): the live chat
+turn now calls `CollegeSearchTool`, and the shared tool-use loop is landed for
+extraction's deferred inline writer to register into.
