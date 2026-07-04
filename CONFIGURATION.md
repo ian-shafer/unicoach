@@ -110,3 +110,11 @@ overlay > process environment (`${?VAR}`, SSM-rendered on cloud) > committed
    and no other on-host source may contribute app config. _A partial
    materialization or a second on-host config source lets the two consumers
    diverge, so a service and an ops tool would run different config._
+9. **Config is validated at startup, but only without IO.** Every config value
+   whose validity is checkable without IO — parsing, range/enum checks, a regex,
+   `ZoneId.of` and the like — MUST be validated as config is parsed at startup,
+   so a malformed value crashes the process before it binds. Validation that
+   would require IO (a DB query, an RPC, a reachability probe) MUST NOT run at
+   startup; such a value is trusted at parse time and surfaces at first use if
+   wrong. _Fail fast on what's cheap to check; never turn startup into a
+   dependency probe._
