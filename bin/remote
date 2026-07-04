@@ -369,14 +369,14 @@ shell_quote() {
   python3 -c 'import shlex, sys; sys.stdout.write(shlex.quote(sys.argv[1]))' "$1"
 }
 
-# json_string (JSON-encode a string for the --parameters commands=[...] value)
-# lives in bin/functions, shared with bin/deploy.
+# ssm_shell_command_parameters (build the --parameters JSON-object value) lives in
+# bin/functions, shared with bin/deploy.
 
-# Assemble the single command string SSM runs on the instance and wrap it in the
-# --parameters commands=[...] literal. The rewritten args are single-quoted and
-# joined into ONE command string: this is SSM command-string interpolation, not a
-# local "$@" child-forward — the result is one argument send-command receives, run
-# on the instance under bash. The <script> name is a fixed bin/ token; each arg is
+# Assemble the single command string SSM runs on the instance and wrap it as the
+# --parameters JSON-object value. The rewritten args are single-quoted and joined
+# into ONE command string: this is SSM command-string interpolation, not a local
+# "$@" child-forward — the result is one argument send-command receives, run on the
+# instance under bash. The <script> name is a fixed bin/ token; each arg is
 # single-quoted so an s3:// URI or a value with spaces reaches the tool intact and
 # cannot inject shell.
 build_remote_command() {
@@ -386,7 +386,7 @@ build_remote_command() {
   for a in ${REWRITTEN_ARGS[@]+"${REWRITTEN_ARGS[@]}"}; do
     REMOTE_COMMAND="$REMOTE_COMMAND $(shell_quote "$a")"
   done
-  PARAMETERS="commands=[$(json_string "$REMOTE_COMMAND")]"
+  PARAMETERS="$(ssm_shell_command_parameters "$REMOTE_COMMAND")"
 }
 
 # ── Dispatch to SSM and await the tool's exit ─────────────────────────────────

@@ -193,8 +193,10 @@ INSTANCE_ID="$(tofu -chdir="$PROJECT_ROOT/infra" output -raw instance_id)"
 # and only THEN invokes the now-current deploy-on-instance, so a plain `bin/deploy`
 # updates its own on-instance bootstrap with no manual live-write. The install must
 # live in this transmitted string (not a pre-installed script) so it works against
-# the current old box on the very first deploy. json_string encodes the whole
-# multi-line script as one `commands` element.
+# the current old box on the very first deploy. ssm_shell_command_parameters wraps
+# the whole multi-line script as the JSON-object `--parameters` value (the
+# `commands=[...]` shorthand would strip the `\n` escapes and collapse it to one
+# line).
 REMOTE_DEPLOY_SCRIPT="$(build_deploy_command "$BUNDLE_ID" "$AWS_REGION" "$BUNDLE_S3_URI")"
 
 log-info "Issuing SSM Run Command to [$INSTANCE_ID]..."
@@ -203,7 +205,7 @@ COMMAND_ID="$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --comment "unicoach deploy $BUNDLE_ID" \
-  --parameters "commands=[$(json_string "$REMOTE_DEPLOY_SCRIPT")]" \
+  --parameters "$(ssm_shell_command_parameters "$REMOTE_DEPLOY_SCRIPT")" \
   --query "Command.CommandId" \
   --output text)"
 

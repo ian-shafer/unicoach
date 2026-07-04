@@ -283,16 +283,28 @@ load_deploy_control_env() {
   assert_aws_account "${AWS_ACCOUNT_ID:-}"
 }
 
-# Encode a string as a complete JSON string literal (surrounding quotes included)
-# for an `aws ssm send-command --parameters commands=[...]` value, reusing Python's
-# json.dumps — a correct, tested JSON encoder that escapes every case, control
-# characters and non-ASCII included. A hand-rolled encoder that escaped only \ and
-# " would emit invalid JSON the moment the string held a literal newline or tab —
-# which the multi-line install script bin/deploy composes always does. No jq is
-# needed (the dev shell ships awscli2, not jq); python3 is already used across
-# bin/ (test-fuzz, test-tcp-listener). Shared by bin/deploy and bin/remote.
+# Encode a string as a complete JSON string literal (surrounding quotes included),
+# reusing Python's json.dumps — a correct, tested JSON encoder that escapes every
+# case, control characters and non-ASCII included. A hand-rolled encoder that
+# escaped only \ and " would emit invalid JSON the moment the string held a literal
+# newline or tab — which the multi-line install script bin/deploy composes always
+# does. No jq is needed (the dev shell ships awscli2, not jq); python3 is already
+# used across bin/ (test-fuzz, test-tcp-listener). Callers wrap this via
+# ssm_shell_command_parameters below; not used raw.
 json_string() {
   python3 -c 'import json, sys; sys.stdout.write(json.dumps(sys.argv[1]))' "$1"
+}
+
+# Build the full `aws ssm send-command --parameters` value for AWS-RunShellScript
+# as a JSON OBJECT — {"commands":["<script>"]} — NOT the `commands=[...]` shorthand.
+# The shorthand parser does NOT JSON-decode escapes, so a `\n` in a multi-line
+# script has its backslash stripped and the whole script collapses onto line 1
+# (the instance then runs `set -euo pipefailn...` and dies). The JSON-object form
+# is decoded by the CLI, so newlines survive. json_string JSON-encodes the script
+# (quotes + escapes); this wraps it as the single `commands` element. Shared by
+# bin/deploy (multi-line install script) and bin/remote (single-line tool command).
+ssm_shell_command_parameters() {
+  printf '{"commands":[%s]}' "$(json_string "$1")"
 }
 
 # Build the remote install-then-deploy script that bin/deploy transmits via SSM
