@@ -8,20 +8,16 @@ edge panels, and error pages.
 
 ### Every cell routes through `renderCell`
 
-**Rule:** Every cell value emitted by the admin website (list-table cells,
-detail-field-table cells, edge-table cells, and embedded-panel field cells) MUST
-route through `renderCell(value, type, refSlug, display)`. No view function MUST
-emit a cell's string value directly (e.g. `+value` or `+cells[field.name]`
-unmediated).
+**Rule:** Every cell value the admin site emits — list, detail, edge, and
+embedded-panel cells — MUST go through `renderCell(...)`. No view may emit a
+cell's value directly (`+value`, `+cells[field.name]`).
 
-**Why:** `renderCell` is the single place all four RFC 79 display conventions
-live: datetime timezone formatting, boolean glyphs, entity-reference id-link
-glyphs, and blank suppression. A view that emits a cell value directly bypasses
-all four: an id cell shows a raw UUID with no navigation glyph; a timestamp cell
-shows a raw ISO string instead of the configured timezone-formatted date; a
-boolean cell shows `"true"`/`"false"` text instead of the configured glyphs. The
-result is a silently degraded UI — no exception, no test failure unless a test
-specifically asserts the formatted output — making the regression easy to miss.
+**Why:** `renderCell` is the one place the RFC 79 display conventions live
+(timezone formatting, boolean glyphs, entity-reference id-link glyphs, blank
+suppression). A view that emits a value directly bypasses all of them — e.g. a
+raw UUID with no navigation link instead of a formatted, linked cell — and
+degrades silently: no exception, no test failure unless a test asserts the
+formatted output.
 
 ### Cell value text is never wrapped in a hyperlink
 
