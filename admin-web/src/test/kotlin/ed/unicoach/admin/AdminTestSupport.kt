@@ -14,6 +14,8 @@ import ed.unicoach.db.dao.CommitmentSupportDao
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.ExtractionRunsDao
+import ed.unicoach.db.dao.FitLensRunsDao
+import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SynthesisRunsDao
@@ -27,6 +29,7 @@ import ed.unicoach.db.models.ClaimSubject
 import ed.unicoach.db.models.ClaimTopic
 import ed.unicoach.db.models.ClaimVisibility
 import ed.unicoach.db.models.College
+import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.Commitment
 import ed.unicoach.db.models.CommitmentDisclosure
 import ed.unicoach.db.models.CommitmentId
@@ -37,12 +40,17 @@ import ed.unicoach.db.models.ConvoName
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRun
+import ed.unicoach.db.models.FitLensOutcome
+import ed.unicoach.db.models.FitLensRun
+import ed.unicoach.db.models.FitSuggestion
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.NewExtractionRun
+import ed.unicoach.db.models.NewFitLensRun
+import ed.unicoach.db.models.NewFitSuggestion
 import ed.unicoach.db.models.NewObservation
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.NewSynthesisRun
@@ -403,6 +411,73 @@ object AdminTestSupport {
               modelResolved = modelResolved,
               commitmentsWritten = if (outcome == SynthesisOutcome.FAILED) 0 else commitmentsWritten,
               commitmentsDropped = if (outcome == SynthesisOutcome.FAILED) 0 else commitmentsDropped,
+              inputTokens = inputTokens,
+              outputTokens = outputTokens,
+            ),
+          )
+        }.getOrThrow()
+    }
+
+  // Find-or-create: the fit-lens prompts are migration-seeded, but a sibling
+  // module's test on the shared DB may TRUNCATE system_prompts and restore only
+  // its own rows, so a self-healing lookup keeps the fit-lens seeders robust
+  // under the full-suite run order.
+  private fun fitLensPromptId(name: String): ed.unicoach.db.models.SystemPromptId =
+    runBlocking {
+      database
+        .withConnection { session ->
+          SystemPromptsDao.findByNameAndVersion(session, name, "v1").recoverCatching {
+            SystemPromptsDao
+              .create(
+                session,
+                ed.unicoach.db.models
+                  .NewSystemPrompt(name, "v1", "$name test body"),
+              ).getOrThrow()
+          }
+        }.getOrThrow()
+        .id
+    }
+
+  private fun fitLensQueryPromptId(): ed.unicoach.db.models.SystemPromptId = fitLensPromptId("fit_lens_query")
+
+  private fun fitLensReasonPromptId(): ed.unicoach.db.models.SystemPromptId = fitLensPromptId("fit_lens_reason")
+
+  /** Inserts a fit_suggestions row via the DAO (RFC 98). */
+  fun seedFitSuggestion(
+    studentId: StudentId,
+    collegeId: CollegeId,
+    rationale: String = "A grounded pitch for this school",
+  ): FitSuggestion =
+    runBlocking {
+      database
+        .withConnection { session -> FitSuggestionsDao.create(session, NewFitSuggestion(studentId, collegeId, rationale)) }
+        .getOrThrow()
+    }
+
+  /** Appends a fit_lens_runs row via the DAO (RFC 98). */
+  fun seedFitLensRun(
+    studentId: StudentId,
+    outcome: FitLensOutcome = FitLensOutcome.APPLIED,
+    modelResolved: String? = "claude-sonnet-4-6",
+    suggestionsWritten: Int = 1,
+    matchesConsidered: Int? = 5,
+    inputTokens: Int? = 300,
+    outputTokens: Int? = 120,
+  ): FitLensRun =
+    runBlocking {
+      database
+        .withConnection { session ->
+          FitLensRunsDao.append(
+            session,
+            NewFitLensRun(
+              studentId = studentId,
+              outcome = outcome,
+              querySystemPromptId = fitLensQueryPromptId(),
+              reasonSystemPromptId = fitLensReasonPromptId(),
+              provider = "log",
+              modelResolved = modelResolved,
+              suggestionsWritten = if (outcome == FitLensOutcome.FAILED) 0 else suggestionsWritten,
+              matchesConsidered = matchesConsidered,
               inputTokens = inputTokens,
               outputTokens = outputTokens,
             ),

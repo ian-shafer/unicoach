@@ -12,14 +12,20 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
+import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.ArchiveScope
+import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CommitmentDisclosure
 import ed.unicoach.db.models.CommitmentId
 import ed.unicoach.db.models.CommitmentLens
 import ed.unicoach.db.models.CommitmentStatus
 import ed.unicoach.db.models.ConvoId
+import ed.unicoach.db.models.FitSuggestionId
+import ed.unicoach.db.models.FitSuggestionStatus
+import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCommitment
+import ed.unicoach.db.models.NewFitSuggestion
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -48,6 +54,7 @@ import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -83,7 +90,7 @@ class CoachingServiceTest {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
       stmt.execute(
-        "TRUNCATE TABLE commitment_support, commitments, convos, convo_requests, convo_responses, convo_responses_raw, " +
+        "TRUNCATE TABLE commitment_support, commitments, fit_suggestions, convos, convo_requests, convo_responses, convo_responses_raw, " +
           "claims, colleges, system_prompts, students, users CASCADE",
       )
     }
@@ -124,6 +131,73 @@ class CoachingServiceTest {
       ).getOrThrow()
 
   private fun noSurfaceService(provider: ChatProvider): CoachingService = CoachingService(database, provider, noSurfaceConfig)
+
+  /** A config with the RFC 98 fit-lens opener contribution disabled (commitments still on). */
+  private val noSurfaceFitConfig =
+    CoachingConfig
+      .from(
+        com.typesafe.config.ConfigFactory
+          .parseString("coaching.surfaceFitSuggestions = false")
+          .withFallback(
+            ed.unicoach.common.config.AppConfig
+              .load("service.conf")
+              .getOrThrow(),
+          ),
+      ).getOrThrow()
+
+  private fun noSurfaceFitService(provider: ChatProvider): CoachingService = CoachingService(database, provider, noSurfaceFitConfig)
+
+  private var unitIdCounter = 800000
+
+  /** Inserts a college and returns its id. */
+  private fun createCollege(
+    name: String = "Reed College",
+    city: String = "Portland",
+    state: String = "OR",
+  ): CollegeId =
+    ed.unicoach.db.dao.CollegesDao
+      .upsert(
+        sqlSession,
+        NewCollege(
+          unitId = unitIdCounter++,
+          opeid = null,
+          name = name,
+          city = city,
+          state = state,
+          region = 8,
+          locale = 13,
+          latitude = 45.0,
+          longitude = -122.0,
+          control = 2,
+          undergradEnrollment = 1400,
+          admissionRate = 0.35,
+          satAvg = 1400,
+          costAttendance = 70000,
+          netPrice = 30000,
+          tuitionInState = 60000,
+          tuitionOutState = 60000,
+          graduationRate = 0.8,
+          medianEarnings = 60000,
+          pctPell = 0.15,
+          website = null,
+        ),
+      ).getOrThrow()
+      .id
+
+  /** Creates an open fit suggestion for the student and returns its id. */
+  private fun createFitSuggestion(
+    studentId: StudentId,
+    collegeId: CollegeId,
+    rationale: String,
+  ): FitSuggestionId =
+    FitSuggestionsDao
+      .create(sqlSession, NewFitSuggestion(studentId, collegeId, rationale))
+      .getOrThrow()
+      .id
+
+  private fun fitSuggestionStatus(id: FitSuggestionId): FitSuggestionStatus = FitSuggestionsDao.findById(sqlSession, id).getOrThrow().status
+
+  private fun fitSuggestionConvo(id: FitSuggestionId): ConvoId? = FitSuggestionsDao.findById(sqlSession, id).getOrThrow().surfacedInConvoId
 
   // --- fixtures ---
 
@@ -631,7 +705,7 @@ class CoachingServiceTest {
         CoachingConfig
           .from(
             com.typesafe.config.ConfigFactory.parseString(
-              """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9", surfaceCommitments=true, maxToolRounds=8 }""",
+              """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9", surfaceCommitments=true, surfaceFitSuggestions=true, maxToolRounds=8 }""",
             ),
           ).getOrThrow()
       val svc = CoachingService(database, LogOnlyChatProvider(), badConfig)
@@ -849,6 +923,93 @@ class CoachingServiceTest {
 
       assertEquals("You are Uni, a warm coach.", captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
+    }
+
+  // ===========================================================================
+  // Pull delivery (RFC 98): fit-lens next-session opener
+  // ===========================================================================
+
+  @Test
+  fun `startConvo composes an open fit suggestion into the system text and marks it surfaced on success`() =
+    runBlocking {
+      val student = createStudent()
+      val college = createCollege(name = "MARKER_Reed_College")
+      val suggestionId = createFitSuggestion(student, college, "small liberal-arts fit for your writing interest")
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      val events = drain(started.reply)
+      assertTrue(terminalOf(events) is ReplyEvent.Completed)
+
+      val systemText = captured!!.system!!
+      assertTrue(systemText.contains("I found a school you'd love: MARKER_Reed_College"), "the fit line must be in the system text")
+      assertTrue(systemText.contains("small liberal-arts fit"), "the rationale must be composed in")
+      assertTrue(systemText.contains("You are Uni"), "the base prompt must still be present")
+
+      // A successful first turn marks it surfaced against this convo.
+      assertEquals(FitSuggestionStatus.SURFACED, fitSuggestionStatus(suggestionId))
+      assertEquals(started.convo.id, fitSuggestionConvo(suggestionId))
+    }
+
+  @Test
+  fun `a failed first turn leaves the fit suggestion open`() =
+    runBlocking {
+      val student = createStudent()
+      val college = createCollege()
+      val suggestionId = createFitSuggestion(student, college, "grounded pitch")
+
+      val failing = ScriptedProvider(deltas = listOf("x"), terminal = transient())
+      val started = service(failing).startConvo(student, "doomed first", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Failed)
+
+      // The convo was soft-deleted; the suggestion stays open to re-surface next session.
+      assertEquals(FitSuggestionStatus.OPEN, fitSuggestionStatus(suggestionId))
+      assertNull(fitSuggestionConvo(suggestionId))
+    }
+
+  @Test
+  fun `surfaceFitSuggestions = false leaves the system text unchanged and the commitment opener unaffected`() =
+    runBlocking {
+      val student = createStudent()
+      val college = createCollege()
+      val suggestionId = createFitSuggestion(student, college, "SHOULD_NOT_APPEAR_disabled")
+      // An open explicit commitment must still be surfaced (the two gates are independent).
+      val commitmentId = createCommitment(student, "COMMITMENT_still_surfaced")
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = noSurfaceFitService(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      val systemText = captured!!.system!!
+      assertFalse(systemText.contains("SHOULD_NOT_APPEAR_disabled"), "the fit suggestion must not be surfaced when the gate is off")
+      assertFalse(systemText.contains("I found a school"), "no fit line when the gate is off")
+      assertTrue(systemText.contains("COMMITMENT_still_surfaced"), "the commitment opener is unaffected by the fit gate")
+
+      assertEquals(FitSuggestionStatus.OPEN, fitSuggestionStatus(suggestionId))
+      assertEquals(CommitmentStatus.FULFILLED, commitmentStatus(commitmentId))
+    }
+
+  @Test
+  fun `postTurn never surfaces fit suggestions`() =
+    runBlocking {
+      val student = createStudent()
+      val started = service().startConvo(student, "first", null).getOrThrow() as StartConvoResult.Started
+      drain(started.reply)
+
+      val college = createCollege()
+      val suggestionId = createFitSuggestion(student, college, "SHOULD_NOT_APPEAR_midconvo")
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("r"), terminal = completedTerminal("r"), onRequest = { captured = it })
+      val post = service(provider).postTurn(student, started.convo.id, "second").getOrThrow() as PostTurnResult.Started
+      drain(post.reply)
+
+      assertEquals("You are Uni, a warm coach.", captured!!.system)
+      assertEquals(FitSuggestionStatus.OPEN, fitSuggestionStatus(suggestionId))
     }
 
   // ===========================================================================

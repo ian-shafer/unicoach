@@ -13,6 +13,8 @@ import ed.unicoach.admin.resources.CommitmentsResource
 import ed.unicoach.admin.resources.ConvoRequestsResource
 import ed.unicoach.admin.resources.ConvosResource
 import ed.unicoach.admin.resources.ExtractionRunsResource
+import ed.unicoach.admin.resources.FitLensRunsResource
+import ed.unicoach.admin.resources.FitSuggestionsResource
 import ed.unicoach.admin.resources.ObservationsResource
 import ed.unicoach.admin.resources.PeriodicJobsResource
 import ed.unicoach.admin.resources.SessionsResource
@@ -115,6 +117,8 @@ fun Application.adminModule(
         ExtractionRunsResource,
         CommitmentsResource,
         SynthesisRunsResource,
+        FitSuggestionsResource,
+        FitLensRunsResource,
         ConvosResource,
         ConvoRequestsResource,
         CollegesResource,

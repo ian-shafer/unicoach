@@ -12,6 +12,10 @@ dependencies {
   implementation(project(":db"))
   implementation(project(":queue"))
   implementation(project(":service"))
+  // Direct dependency (Gradle `implementation` is non-transitive) to construct the
+  // CollegeSearchService for the fit-lens handler (RFC 98); :service depends on
+  // :college via implementation, so the type is not otherwise on the classpath.
+  implementation(project(":college"))
   implementation(project(":net"))
   // Direct dependency (was only transitive via :service) to build the
   // ChatProvider for extraction and bring chat.conf onto the classpath (RFC 66).

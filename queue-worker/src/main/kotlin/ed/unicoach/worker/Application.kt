@@ -7,10 +7,15 @@ import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionHandler
 import ed.unicoach.coaching.extraction.ExtractionService
+import ed.unicoach.coaching.fitlens.FitLensConfig
+import ed.unicoach.coaching.fitlens.FitLensHandler
+import ed.unicoach.coaching.fitlens.FitLensService
+import ed.unicoach.coaching.fitlens.FitLensSweepHandler
 import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.coaching.synthesis.SynthesisHandler
 import ed.unicoach.coaching.synthesis.SynthesisService
 import ed.unicoach.coaching.synthesis.SynthesisSweepHandler
+import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -44,6 +49,7 @@ fun main() {
   val netConfig = NetConfig.from(config).getOrThrow()
   val extractionConfig = ExtractionConfig.from(config).getOrThrow()
   val synthesisConfig = SynthesisConfig.from(config).getOrThrow()
+  val fitLensConfig = FitLensConfig.from(config).getOrThrow()
 
   // The worker is the sole transmitter of outbound email (RFC 96), so it is the
   // only process that constructs an EmailProvider/EmailService. verifyUrlBase
@@ -64,9 +70,9 @@ fun main() {
       add(EmailSendHandler(emailService, listOf(VerificationEmailRenderer(verifyUrlBase))))
 
       // The worker is the only place a ChatProvider is built for the LLM job
-      // handlers; build it once when either extraction (RFC 66) or synthesis
-      // (RFC 93) is enabled, then register each handler under its own switch.
-      if (extractionConfig.enabled || synthesisConfig.enabled) {
+      // handlers; build it once when extraction (RFC 66), synthesis (RFC 93), or
+      // fit-lens (RFC 98) is enabled, then register each handler under its own switch.
+      if (extractionConfig.enabled || synthesisConfig.enabled || fitLensConfig.enabled) {
         val chatProvider =
           ChatProviderFactory
             .fromConfig(ChatConfig.from(config).getOrThrow())
@@ -82,6 +88,14 @@ fun main() {
           // SYNTHESIZE_STUDENT consumer are present together or absent together —
           // a fired sweep never fans out into unhandled per-student jobs.
           add(SynthesisSweepHandler(database, QueueService(database, jobsDao)))
+        }
+        if (fitLensConfig.enabled) {
+          val fitLensService = FitLensService(database, chatProvider, CollegeSearchService(database), fitLensConfig)
+          add(FitLensHandler(fitLensService))
+          // The weekly dispatcher (RFC 98), gated by the same switch as the
+          // per-student handler so the FIT_LENS_SWEEP producer and the FIT_LENS
+          // consumer are present together or absent together.
+          add(FitLensSweepHandler(database, QueueService(database, jobsDao)))
         }
       }
     }

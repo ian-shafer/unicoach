@@ -8,6 +8,7 @@ import ed.unicoach.chat.ChatRole
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ConvoContent
+import ed.unicoach.common.util.truncateForLog
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
 import ed.unicoach.db.dao.ClaimsDao
@@ -32,6 +33,7 @@ import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SynthesisOutcome
 import ed.unicoach.db.models.SystemPrompt
+import ed.unicoach.db.models.latestUpdatedAt
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -69,11 +71,6 @@ class SynthesisService(
   private val logger = LoggerFactory.getLogger(SynthesisService::class.java)
 
   private val json = Json { ignoreUnknownKeys = true }
-
-  private companion object {
-    /** Bounded prefix length for a raw LLM output excerpt in a WARN log line. */
-    private const val LOG_EXCERPT_CHARS = 2_000
-  }
 
   /**
    * Runs one synthesis pass over [studentId]. Returns a sealed [SynthesisResult]
@@ -122,7 +119,7 @@ class SynthesisService(
       // Freshness gate (read-phase-only): the newest model mutation across active
       // claims and list entries. If nothing changed since the last applied pass,
       // no-op before any LLM call.
-      val freshness = modelFreshness(activeClaims, listEntries)
+      val freshness = (activeClaims + listEntries).latestUpdatedAt()
       if (lastAppliedAt != null && freshness != null && !freshness.isAfter(lastAppliedAt)) {
         return@withConnection ReadPhase.NoOp
       }
@@ -145,12 +142,6 @@ class SynthesisService(
         prompt = prompt,
       )
     }
-
-  /** The newest `updated_at` across active claims and college-list entries, or null when both empty. */
-  private fun modelFreshness(
-    activeClaims: List<Claim>,
-    listEntries: List<CollegeListEntry>,
-  ): Instant? = (activeClaims.map { it.updatedAt } + listEntries.map { it.updatedAt }).maxOrNull()
 
   // ---------------------------------------------------------------------------
   // LLM call (no transaction) + write phase
@@ -526,14 +517,6 @@ class SynthesisService(
           .atStartOfDay(java.time.ZoneOffset.UTC)
           .toInstant()
       }.getOrNull()
-
-  /** Caps a raw LLM output to a bounded prefix so a WARN log line stays sane. */
-  private fun truncateForLog(raw: String): String =
-    if (raw.length <= LOG_EXCERPT_CHARS) {
-      raw
-    } else {
-      raw.take(LOG_EXCERPT_CHARS) + "…(${raw.length - LOG_EXCERPT_CHARS} more chars)"
-    }
 
   // ---------------------------------------------------------------------------
   // Internal carriers

@@ -296,6 +296,27 @@ object CollegesDao :
     )
 
   /**
+   * The display names of the given college [ids], in no particular order. Used by
+   * the fit-lens read phase to render its exclusion set (college-list + prior
+   * suggestions) into LLM call #1 by name. An empty [ids] short-circuits to an
+   * empty list without a query.
+   */
+  fun listNamesByIds(
+    session: SqlSession,
+    ids: Collection<CollegeId>,
+  ): Result<List<String>> {
+    if (ids.isEmpty()) return Result.success(emptyList())
+    val placeholders = ids.joinToString(", ") { "?" }
+    return session.queryList(
+      "SELECT name FROM colleges WHERE id IN ($placeholders)",
+      bind = { stmt ->
+        ids.forEachIndexed { i, id -> stmt.setObject(i + 1, id.value) }
+      },
+      map = { it.getString("name") },
+    )
+  }
+
+  /**
    * Admin read surface (RFC 82): a page of colleges ordered by `name, unit_id`.
    * `unit_id` is unique, so the order is total/deterministic for count-free paging.
    */

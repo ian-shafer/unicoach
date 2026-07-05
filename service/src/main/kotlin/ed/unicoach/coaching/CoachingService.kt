@@ -13,6 +13,7 @@ import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
+import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.Commitment
@@ -23,6 +24,8 @@ import ed.unicoach.db.models.ConvoName
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ConvoRequestKind
 import ed.unicoach.db.models.ConvoWithActivity
+import ed.unicoach.db.models.FitSuggestionForOpener
+import ed.unicoach.db.models.FitSuggestionId
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.NewConvoResponse
@@ -234,10 +237,20 @@ class CoachingService(
           val convo = ConvosDao.create(session, NewConvo(studentId, resolvedName)).getOrThrow()
           val userTurn = appendUserTurn(session, convo.id, prompt.id, message)
           val messages = visibleHistory(session, convo.id) + ChatMessage.text(ChatRole.USER, message)
-          // Next-session opener (RFC 93): compose open explicit commitments into
-          // the coach prompt so the coach raises them naturally in its first reply.
+          // Next-session opener: compose open explicit commitments (RFC 93) and
+          // open fit-lens suggestions (RFC 98) into the coach prompt so the coach
+          // raises them naturally in its first reply.
           val pending = openExplicitCommitments(session, studentId)
-          Preflight(convo, userTurn, prompt, composeSystem(prompt, pending), messages, pending.map { it.id })
+          val pendingFits = openFitSuggestions(session, studentId)
+          Preflight(
+            convo,
+            userTurn,
+            prompt,
+            composeSystem(prompt, pending, pendingFits),
+            messages,
+            pending.map { it.id },
+            pendingFits.map { it.id },
+          )
         }
       StartConvoResult.Started(
         convo = preflight.convo,
@@ -267,9 +280,10 @@ class CoachingService(
             val prompt = resolveSystemPrompt(session)
             val userTurn = appendUserTurn(session, convoId, prompt.id, message)
             val messages = visibleHistory(session, convoId) + ChatMessage.text(ChatRole.USER, message)
-            // postTurn never surfaces commitments: only a new conversation opens
-            // with reflection, so an insight is not re-raised mid-conversation.
-            Preflight(owned, userTurn, prompt, prompt.body, messages, emptyList())
+            // postTurn never surfaces commitments or fit suggestions: only a new
+            // conversation opens with reflection, so an insight is not re-raised
+            // mid-conversation.
+            Preflight(owned, userTurn, prompt, prompt.body, messages, emptyList(), emptyList())
           }
         }
       if (preflight == null) {
@@ -296,6 +310,9 @@ class CoachingService(
     // Open explicit commitments surfaced in this turn's opener; marked fulfilled
     // on a successful terminal. Empty for postTurn and when nothing is pending.
     val disclosedCommitmentIds: List<CommitmentId>,
+    // Open fit-lens suggestions (RFC 98) surfaced in this turn's opener; marked
+    // surfaced on a successful terminal. Empty for postTurn and when none pending.
+    val surfacedFitSuggestionIds: List<FitSuggestionId>,
   )
 
   /**
@@ -356,6 +373,7 @@ class CoachingService(
                 // failed turn soft-deletes the convo, so they stay open to
                 // re-surface next session.
                 markDisclosedCommitmentsFulfilled(preflight)
+                markSurfacedFitSuggestions(preflight)
                 succeeded = true
                 emit(ReplyEvent.Completed(persisted.response))
                 break@loop
@@ -728,24 +746,48 @@ class CoachingService(
     }
 
   /**
+   * The student's open fit-lens suggestions for the next-session opener (RFC 98),
+   * or empty when the feature is disabled — the sole gate for the fit-lens opener
+   * contribution, so a disabled feature reads nothing and behaves exactly as
+   * before.
+   */
+  private fun openFitSuggestions(
+    session: ed.unicoach.db.dao.SqlSession,
+    studentId: StudentId,
+  ): List<FitSuggestionForOpener> =
+    if (config.surfaceFitSuggestions) {
+      FitSuggestionsDao.listOpenForOpener(session, studentId).getOrThrow()
+    } else {
+      emptyList()
+    }
+
+  /**
    * Composes the outgoing system text: the prompt body verbatim when nothing is
    * pending (identical to today), else the body plus a rendered reflection block
-   * so the coach raises the commitments naturally in its first reply.
+   * so the coach raises the commitments (RFC 93) and fit-lens suggestions (RFC 98)
+   * naturally in its first reply.
    */
   private fun composeSystem(
     prompt: SystemPrompt,
     pending: List<Commitment>,
+    pendingFits: List<FitSuggestionForOpener>,
   ): String {
-    if (pending.isEmpty()) return prompt.body
+    if (pending.isEmpty() && pendingFits.isEmpty()) return prompt.body
     val block =
       buildString {
         appendLine(prompt.body)
-        appendLine()
-        appendLine(
-          "Since you last spoke, you have been reflecting on the following — raise what is relevant, naturally:",
-        )
-        for (commitment in pending) {
-          appendLine("- ${commitment.statement}")
+        if (pending.isNotEmpty()) {
+          appendLine()
+          appendLine(
+            "Since you last spoke, you have been reflecting on the following — raise what is relevant, naturally:",
+          )
+          for (commitment in pending) {
+            appendLine("- ${commitment.statement}")
+          }
+        }
+        for (fit in pendingFits) {
+          appendLine()
+          appendLine("I found a school you'd love: ${fit.collegeName} (${fit.city}, ${fit.state}) — ${fit.rationale}")
         }
       }
     return block.trimEnd()
@@ -763,6 +805,22 @@ class CoachingService(
     database.withConnection { session ->
       for (commitmentId in preflight.disclosedCommitmentIds) {
         CommitmentsDao.markFulfilled(session, commitmentId, preflight.convo.id).getOrThrow()
+      }
+    }
+  }
+
+  /**
+   * Marks the fit-lens suggestions surfaced in this turn's opener (RFC 98) as
+   * surfaced against the convo, in one transaction. Called only on the loop's
+   * final successful answer — a failed turn soft-deletes the convo, leaving the
+   * suggestions open to re-surface next session. Empty for postTurn and when
+   * nothing was pending, so this is a no-op on the common path.
+   */
+  private suspend fun markSurfacedFitSuggestions(preflight: Preflight) {
+    if (preflight.surfacedFitSuggestionIds.isEmpty()) return
+    database.withConnection { session ->
+      for (suggestionId in preflight.surfacedFitSuggestionIds) {
+        FitSuggestionsDao.markSurfaced(session, suggestionId, preflight.convo.id).getOrThrow()
       }
     }
   }

@@ -160,17 +160,17 @@ merged)`.
 "Implemented" means code merged, not RFC written. Slugs are the stable handles;
 `rfc/NN-*.md` numbers are assigned at design time and backfilled here.
 
-| slug                | description                                                                                                                                                                                                                                               | status      | rfc          |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------ |
-| `extraction`        | per-conversation pass: observations → claims; defines the obs / claim / claim_support schema                                                                                                                                                              | implemented | 66           |
-| `college-knowledge` | college dataset (Scorecard/IPEDS) + `CollegeSearchTool` retrieval; shared by live chat and reflection                                                                                                                                                     | implemented | 67 (+78, 82) |
-| `chat-tool-use`     | generic chat tool-use loop: content blocks + typed `tools` on `ChatRequest` + `tool_use` dispatch → second call; imports `CollegeSearchTool`, unblocks extraction's inline writer                                                                         | implemented | 94           |
-| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                                                                                                                                                                 | implemented | 91           |
-| `synthesis`         | per-student reflection pass; defines the commitments schema; internal lenses (gap / timing / contradiction); pull delivery. Triggered daily by the periodic-task infra: a `SYNTHESIS_SWEEP` cron job fans out one `SYNTHESIZE_STUDENT` per active student | implemented | 93 (+97)     |
-| `periodic-task`     | general scheduler: a `:cron` process claims due `periodic_jobs` rows and enqueues each onto the queue (one-directional, cron feeds the queue); synthesis is its first consumer                                                                            | implemented | 97           |
-| `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset                                                                                                                                                                         | planned     | —            |
-| `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments); rides the queue's `scheduled_at` for the delivery delay, produced by the periodic-task infra                                                                                         | planned     | —            |
-| `token-ledger`      | cross-cutting per-user LLM token/cost ledger (one usage row per call); unifies chat + extraction + reflection spend                                                                                                                                       | planned     | —            |
+| slug                | description                                                                                                                                                                                                                                                          | status      | rfc          |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------ |
+| `extraction`        | per-conversation pass: observations → claims; defines the obs / claim / claim_support schema                                                                                                                                                                         | implemented | 66           |
+| `college-knowledge` | college dataset (Scorecard/IPEDS) + `CollegeSearchTool` retrieval; shared by live chat and reflection                                                                                                                                                                | implemented | 67 (+78, 82) |
+| `chat-tool-use`     | generic chat tool-use loop: content blocks + typed `tools` on `ChatRequest` + `tool_use` dispatch → second call; imports `CollegeSearchTool`, unblocks extraction's inline writer                                                                                    | implemented | 94           |
+| `college-list`      | student-facing list entity (status / reasons / dates), references supporting observations                                                                                                                                                                            | implemented | 91           |
+| `synthesis`         | per-student reflection pass; defines the commitments schema; internal lenses (gap / timing / contradiction); pull delivery. Triggered daily by the periodic-task infra: a `SYNTHESIS_SWEEP` cron job fans out one `SYNTHESIZE_STUDENT` per active student            | implemented | 93 (+97)     |
+| `periodic-task`     | general scheduler: a `:cron` process claims due `periodic_jobs` rows and enqueues each onto the queue (one-directional, cron feeds the queue); synthesis is its first consumer                                                                                       | implemented | 97           |
+| `fit-lens`          | "I found a school you'd love" — fit/discovery reflection over the college dataset. A **sibling of synthesis, not a lens inside it** (own periodic job, own retrieval + two LLM calls); a weekly `FIT_LENS_SWEEP` cron job fans out one `FIT_LENS` per active student | designed    | 98           |
+| `push-delivery`     | notifications + scheduled ticklers (calendar-triggered commitments); rides the queue's `scheduled_at` for the delivery delay, produced by the periodic-task infra                                                                                                    | planned     | —            |
+| `token-ledger`      | cross-cutting per-user LLM token/cost ledger (one usage row per call); unifies chat + extraction + reflection spend                                                                                                                                                  | planned     | —            |
 
 > **`token-ledger` is cross-cutting infrastructure, not a coaching-memory
 > node.** It was surfaced by `extraction`'s per-user token requirement but is
@@ -214,8 +214,11 @@ college-knowledge ────────────────────�
 - `synthesis` is the integration point (needs claims + the list). Its **internal
   lenses ship without `college-knowledge`** — this is the MVP cut. **Done** (RFC
   93), on top of `college-list` (**done**, RFC 91).
-- `fit-lens` is the only reflection piece needing _both_ synthesis and the
-  dataset, so it is correctly the last marquee step.
+- `fit-lens` is a **sibling of synthesis, not a lens inside it** (RFC 98): it
+  reads the same accumulated model (claims + college-list) but adds
+  college-dataset retrieval and a second LLM call, so it carries its own
+  periodic job, cadence, and failure isolation, leaving `SynthesisService`
+  untouched.
 - `push-delivery` extends `synthesis` once the pull loop feels real.
 
 ## Sequencing
@@ -227,8 +230,8 @@ college-knowledge ────────────────────�
    thought about this" loop: a gap/timing observation surfaced as a next-session
    opener, needing only the internal model + a calendar. Proves the loop
    end-to-end with no notification infra.~~ **Done** (RFC 93).
-4. **`fit-lens`** once `college-knowledge` is earning its keep in chat. ← **next
-   on the docket.**
+4. **`fit-lens`** once `college-knowledge` is earning its keep in chat.
+   **Designed** (RFC 98) — a synthesis sibling, not a lens.
 5. **`push-delivery`** last.
 
 `chat-tool-use` sits **off this spine**: it can be sequenced any time after

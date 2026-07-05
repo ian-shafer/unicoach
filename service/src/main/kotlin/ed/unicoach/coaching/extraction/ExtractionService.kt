@@ -9,6 +9,7 @@ import ed.unicoach.chat.TokenUsage
 import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ConvoContent
 import ed.unicoach.coaching.ConvoProjection
+import ed.unicoach.common.util.truncateForLog
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
 import ed.unicoach.db.dao.ClaimSupportDao
@@ -670,12 +671,6 @@ open class ExtractionService(
    */
   private val JsonElement?.primitiveOrNull: JsonPrimitive?
     get() = this as? JsonPrimitive
-
-  /** Caps a raw LLM output to a bounded prefix so a WARN log line stays sane. */
-  private fun truncateForLog(raw: String): String {
-    val limit = 2_000
-    return if (raw.length <= limit) raw else raw.take(limit) + "…(${raw.length - limit} more chars)"
-  }
 
   // ---------------------------------------------------------------------------
   // Internal carriers

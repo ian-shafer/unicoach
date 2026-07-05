@@ -15,6 +15,8 @@ class CoachingConfigTest {
     assertEquals(4096, coaching.maxTokens)
     assertEquals("coach", coaching.systemPromptName)
     assertEquals("v1", coaching.systemPromptVersion)
+    assertTrue(coaching.surfaceCommitments)
+    assertTrue(coaching.surfaceFitSuggestions, "surfaceFitSuggestions (RFC 98) must be read from the packaged defaults")
   }
 
   @Test

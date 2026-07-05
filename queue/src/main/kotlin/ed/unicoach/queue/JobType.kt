@@ -15,6 +15,12 @@ enum class JobType(
   // The daily dispatcher (RFC 97): cron enqueues one SYNTHESIS_SWEEP; its handler
   // enumerates active students and fans out one SYNTHESIZE_STUDENT per student.
   SYNTHESIS_SWEEP("SYNTHESIS_SWEEP"),
+
+  // The weekly fit-lens dispatcher (RFC 98), a sibling of SYNTHESIS_SWEEP: cron
+  // enqueues one FIT_LENS_SWEEP; its handler enumerates active students and fans
+  // out one FIT_LENS per student, each a two-call college-discovery pass.
+  FIT_LENS_SWEEP("FIT_LENS_SWEEP"),
+  FIT_LENS("FIT_LENS"),
   ;
 
   companion object {
