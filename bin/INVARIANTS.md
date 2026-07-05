@@ -7,22 +7,16 @@ linting, CLIs, testing, iOS deploy, and infrastructure.
 
 ### Source `bin/common` first (system-Xcode scripts excepted)
 
-**Rule:** Every shell script MUST source `bin/common` as its first non-comment,
-non-shebang line — optionally preceded only by an `export ENV_FILE=…` or
-`export ENV_FILES=…` (the two mutually-exclusive env-file selectors `bin/common`
-reads). The sole exception is the system-Xcode scripts (`build-ios`,
-`install-ios`, `release-ios`, `ios-scripts-tests`) and the dev-shell predicate
-`is-nix`, which MUST source only `bin/functions` and MUST NOT source
-`bin/common`.
+**Rule:** Every shell script MUST `source bin/common` as its first non-shebang,
+non-comment line, optionally preceded only by an `export ENV_FILE=…` /
+`export ENV_FILES=…` selector. Exempt: the system-Xcode scripts (`build-ios`,
+`install-ios`, `release-ios`, `ios-scripts-tests`) and `is-nix`, which run
+outside the Nix dev shell and source only `bin/functions`.
 
-**Why:** `bin/common` sets `set -euo pipefail`, resolves `PROJECT_ROOT`, loads
-the base `.env` plus the selected delta(s) (from `ENV_FILE` or `ENV_FILES`), and
-exports `PGPORT` from the required `POSTGRES_PORT`. A script that skips it runs
-without strict-mode, without the env, and against an unset port — silently
-targeting the wrong database or aborting on an unbound variable. Conversely,
-`bin/common` assumes the Nix dev shell and fatals on a missing `.env`; the
-system-Xcode scripts run under the system toolchain, never `nix develop`, so
-sourcing it would defeat their purpose.
+**Why:** `bin/common` is where the shared setup lives — `set -euo pipefail`,
+`PROJECT_ROOT`, the loaded `.env` plus deltas, and required vars like `PGPORT`.
+A script that skips it runs without strict-mode, without the env, and against
+unset variables.
 
 ### Absolute paths only
 
