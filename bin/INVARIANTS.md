@@ -109,29 +109,18 @@ bind it.
 what the caller wrote, with no signal. Rejecting it turns a typo or a stale flag
 into an immediate, diagnosable failure instead of a wrong-but-green run.
 
-### A `bin/` script that runs a JVM program invokes a pre-built launcher or fatals
+### Build and run are separate steps; run never builds
 
-**Rule:** A `bin/` script that runs a JVM program MUST invoke a pre-built
-`installDist` launcher — never build and run in the same script (no
-`gradlew … run`). It MUST fatal if the launcher is absent — it MUST NOT invoke
-Gradle to build one on demand. The launcher is referenced by a single
-`$PROJECT_ROOT`-relative path (`…/build/install/…/bin/…`) that is identical in
-the local dev tree and under `/opt/unicoach/current` on the instance. For the
-ops-tool case that path derives from the shared `COLLEGE_DIST` constant in
-`bin/functions` — the single source of truth `bin/deploy` tars and
-`bin/ingest-colleges` execs — so the two never spell it independently. The
-daemon `-up` scripts run only where the local dist exists and use their path
-directly. An ops tool run in both the local dev tree and the deployed tree
-(`/opt/unicoach/current`) resolves the same one path because `bin/deploy` tars
-the `college` dist (`COLLEGE_DIST`) preserving its `build/install` path (the two
-service dists remain stripped, since their systemd units expect
-`current/<svc>/bin/<svc>`).
+**Rule:** A `bin/` script that runs a compiled program MUST invoke the pre-built
+artifact directly and MUST NOT build it on demand. Build is its own step
+(`bin/build-<module>`); run only executes the artifact. Run MAY verify the
+artifact exists and fail with a clear message (as it does today), but is not
+required to — a missing artifact may simply crash.
 
-**Why:** Building on demand couples execution to the build step and silently
-forks behavior between a dev machine (which can build) and the production
-instance (which cannot); the build step (`bin/build-<module>`) is deliberately a
-separate, explicit phase, and a fatal on the absent launcher surfaces a skipped
-build loudly instead of hiding it inside a "run" operation.
+**Why:** Building on demand couples run to build and silently forks behavior
+between a dev machine (which can build) and the production instance (which
+cannot). Keeping them separate means a skipped build fails loudly at run instead
+of being papered over.
 
 ### `bin/` scripts parse their own options with `getopts`, single-letter only
 
