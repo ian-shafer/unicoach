@@ -117,39 +117,167 @@ class CellRenderTest {
   }
 
   @Test
-  fun `JSON value renders pretty-printed inside pre`() {
+  fun `JSON object renders wrapped inside a json-pretty pre`() {
     val html = render { renderValue("""{"a":1,"b":2}""", FieldType.JSON, display) }
-    assertTrue(html.contains("<pre>"), "Expected a <pre> element, got: $html")
-    // kotlinx.html escapes the JSON quotes (&quot;); assert on the unescaped key text and value.
-    assertTrue(html.contains("a") && html.contains(": 1"), "Expected the pretty-printed JSON keys/values, got: $html")
-    assertTrue(html.contains("\n"), "Expected pretty-print newlines, got: $html")
+    assertTrue(html.contains("<pre class=\"json-pretty\">"), "Expected a json-pretty <pre>, got: $html")
   }
 
   @Test
-  fun `JSON array renders pretty-printed inside pre`() {
+  fun `JSON key renders inside a json-key span`() {
+    val html = render { renderValue("""{"a":1}""", FieldType.JSON, display) }
+    // kotlinx.html escapes the JSON quotes to &quot;; the key is the quoted string form.
+    assertTrue(
+      html.contains("<span class=\"json-key\">&quot;a&quot;</span>"),
+      "Expected the key in a json-key span, got: $html",
+    )
+  }
+
+  @Test
+  fun `JSON string value renders quoted inside a json-string span`() {
+    val html = render { renderValue("""{"a":"hi"}""", FieldType.JSON, display) }
+    assertTrue(
+      html.contains("<span class=\"json-string\">&quot;hi&quot;</span>"),
+      "Expected the quoted string value in a json-string span, got: $html",
+    )
+  }
+
+  @Test
+  fun `JSON number renders inside a json-number span`() {
+    val html = render { renderValue("""{"a":42}""", FieldType.JSON, display) }
+    assertTrue(
+      html.contains("<span class=\"json-number\">42</span>"),
+      "Expected the number in a json-number span, got: $html",
+    )
+  }
+
+  @Test
+  fun `JSON true renders inside a json-bool span`() {
+    val html = render { renderValue("""{"a":true}""", FieldType.JSON, display) }
+    assertTrue(
+      html.contains("<span class=\"json-bool\">true</span>"),
+      "Expected true in a json-bool span, got: $html",
+    )
+  }
+
+  @Test
+  fun `JSON false renders inside a json-bool span`() {
+    val html = render { renderValue("""{"a":false}""", FieldType.JSON, display) }
+    assertTrue(
+      html.contains("<span class=\"json-bool\">false</span>"),
+      "Expected false in a json-bool span, got: $html",
+    )
+  }
+
+  @Test
+  fun `JSON null renders inside a json-null span`() {
+    val html = render { renderValue("""{"a":null}""", FieldType.JSON, display) }
+    assertTrue(
+      html.contains("<span class=\"json-null\">null</span>"),
+      "Expected null in a json-null span, got: $html",
+    )
+  }
+
+  @Test
+  fun `top-level JSON primitive renders inside a json-pretty pre`() {
+    val string = render { renderValue("\"hello\"", FieldType.JSON, display) }
+    assertTrue(string.contains("<pre class=\"json-pretty\">"), "Expected a json-pretty <pre> for a string, got: $string")
+    assertTrue(
+      string.contains("<span class=\"json-string\">&quot;hello&quot;</span>"),
+      "Expected the string in a json-string span, got: $string",
+    )
+
+    val number = render { renderValue("42", FieldType.JSON, display) }
+    assertTrue(number.contains("<pre class=\"json-pretty\">"), "Expected a json-pretty <pre> for a number, got: $number")
+    assertTrue(
+      number.contains("<span class=\"json-number\">42</span>"),
+      "Expected the number in a json-number span, got: $number",
+    )
+
+    val bool = render { renderValue("true", FieldType.JSON, display) }
+    assertTrue(bool.contains("<pre class=\"json-pretty\">"), "Expected a json-pretty <pre> for a bool, got: $bool")
+    assertTrue(bool.contains("<span class=\"json-bool\">true</span>"), "Expected true in a json-bool span, got: $bool")
+
+    val nul = render { renderValue("null", FieldType.JSON, display) }
+    assertTrue(nul.contains("<pre class=\"json-pretty\">"), "Expected a json-pretty <pre> for null, got: $nul")
+    assertTrue(nul.contains("<span class=\"json-null\">null</span>"), "Expected null in a json-null span, got: $nul")
+  }
+
+  @Test
+  fun `JSON braces, brackets, colon, and comma render inside json-punct spans`() {
+    val obj = render { renderValue("""{"a":1,"b":2}""", FieldType.JSON, display) }
+    assertTrue(obj.contains("<span class=\"json-punct\">{</span>"), "Expected an open brace in json-punct, got: $obj")
+    assertTrue(obj.contains("<span class=\"json-punct\">}</span>"), "Expected a close brace in json-punct, got: $obj")
+    assertTrue(obj.contains("<span class=\"json-punct\">:</span>"), "Expected a colon in json-punct, got: $obj")
+    assertTrue(obj.contains("<span class=\"json-punct\">,</span>"), "Expected a comma in json-punct, got: $obj")
+
+    val arr = render { renderValue("""[1,2]""", FieldType.JSON, display) }
+    assertTrue(arr.contains("<span class=\"json-punct\">[</span>"), "Expected an open bracket in json-punct, got: $arr")
+    assertTrue(arr.contains("<span class=\"json-punct\">]</span>"), "Expected a close bracket in json-punct, got: $arr")
+  }
+
+  @Test
+  fun `nested JSON object indents by 2 spaces per level`() {
+    val html = render { renderValue("""{"a":{"b":1}}""", FieldType.JSON, display) }
+    // The outer key sits at 2 spaces; the inner key at 4 spaces (2 per level).
+    assertTrue(
+      html.contains("\n  <span class=\"json-key\">&quot;a&quot;</span>"),
+      "Expected the outer key indented 2 spaces, got: $html",
+    )
+    assertTrue(
+      html.contains("\n    <span class=\"json-key\">&quot;b&quot;</span>"),
+      "Expected the nested key indented 4 spaces, got: $html",
+    )
+  }
+
+  @Test
+  fun `empty object renders inline braces on one line`() {
+    val html = render { renderValue("{}", FieldType.JSON, display) }
+    // The full pre body is exactly the single inline {} span: no interior newline
+    // expands it across lines (the newline framing the <pre> is the outer div's).
+    assertTrue(
+      html.contains("<pre class=\"json-pretty\"><span class=\"json-punct\">{}</span></pre>"),
+      "Expected {} inline in one json-punct span with no interior newline, got: $html",
+    )
+  }
+
+  @Test
+  fun `empty array renders inline brackets on one line`() {
+    val html = render { renderValue("[]", FieldType.JSON, display) }
+    assertTrue(
+      html.contains("<pre class=\"json-pretty\"><span class=\"json-punct\">[]</span></pre>"),
+      "Expected [] inline in one json-punct span with no interior newline, got: $html",
+    )
+  }
+
+  @Test
+  fun `JSON array renders each element on its own line`() {
     val html = render { renderValue("""[1,2,3]""", FieldType.JSON, display) }
-    assertTrue(html.contains("<pre>"), "Expected a <pre> element for a top-level array, got: $html")
-    assertTrue(html.contains("\n"), "Expected pretty-print newlines, got: $html")
+    assertTrue(html.contains("<pre class=\"json-pretty\">"), "Expected a json-pretty <pre>, got: $html")
+    assertTrue(
+      html.contains("\n  <span class=\"json-number\">1</span>"),
+      "Expected the first element on its own indented line, got: $html",
+    )
+    assertTrue(
+      html.contains("\n  <span class=\"json-number\">2</span>"),
+      "Expected the second element on its own indented line, got: $html",
+    )
+    assertTrue(
+      html.contains("\n  <span class=\"json-number\">3</span>"),
+      "Expected the third element on its own indented line, got: $html",
+    )
   }
 
   @Test
-  fun `JSON primitive renders pretty-printed inside pre`() {
-    val html = render { renderValue("\"hello\"", FieldType.JSON, display) }
-    assertTrue(html.contains("<pre>"), "Expected a <pre> element for a top-level primitive, got: $html")
-    assertTrue(html.contains("hello"), "Expected the primitive value, got: $html")
-  }
-
-  @Test
-  fun `JSON blank value renders nothing`() {
+  fun `blank JSON value renders nothing`() {
     val html = render { renderValue("", FieldType.JSON, display) }
     assertEquals("<div></div>", html.trim())
   }
 
   @Test
-  fun `unparseable JSON renders raw text and does not throw`() {
+  fun `unparseable JSON renders raw text without throwing, and emits no pre`() {
     val html = render { renderValue("not json {", FieldType.JSON, display) }
     assertTrue(html.contains("not json {"), "Expected the raw text fallback, got: $html")
-    assertFalse(html.contains("<pre>"), "Unparseable JSON must not emit a <pre>, got: $html")
+    assertFalse(html.contains("<pre"), "Unparseable JSON must not emit a <pre>, got: $html")
   }
 
   @Test

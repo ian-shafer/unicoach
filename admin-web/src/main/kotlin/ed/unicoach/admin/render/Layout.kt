@@ -43,6 +43,13 @@ private const val STYLES = """
   label { display: block; font-weight: bold; margin-top: 0.5rem; }
   input, textarea, select { width: 320px; padding: 0.3rem; }
   button { margin-top: 0.75rem; padding: 0.4rem 0.8rem; }
+  pre.json-pretty { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+  .json-key { color: #0f766e; font-weight: bold; }
+  .json-string { color: #15803d; }
+  .json-number { color: #1d4ed8; }
+  .json-bool { color: #7e22ce; font-weight: bold; }
+  .json-null { color: #627d98; font-style: italic; }
+  .json-punct { color: #627d98; font-weight: bold; }
 """
 
 /**

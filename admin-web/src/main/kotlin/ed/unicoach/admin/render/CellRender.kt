@@ -10,6 +10,11 @@ import kotlinx.html.pre
 import kotlinx.html.span
 import kotlinx.html.title
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.time.ZoneId
@@ -62,8 +67,12 @@ private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d,
  */
 private val TITLE_FORMAT: DateTimeFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
 
-/** Pretty-printer for [FieldType.JSON] cells: re-emits a stored payload with indentation. */
-private val PRETTY_JSON = Json { prettyPrint = true }
+/**
+ * The per-nesting-level indent for [FieldType.JSON] cells: two spaces. Narrower
+ * than `prettyPrint`'s 4-space default so deeply nested values consume less
+ * horizontal width per level, directly serving the no-horizontal-scroll goal.
+ */
+private const val JSON_INDENT_UNIT = "  "
 
 private val cellRenderLog = LoggerFactory.getLogger("ed.unicoach.admin.CellRender")
 
@@ -81,9 +90,10 @@ private val cellRenderLog = LoggerFactory.getLogger("ed.unicoach.admin.CellRende
  *   A blank value renders nothing. (`cells()` always stringifies bools as
  *   `"true"`/`"false"`.) Any other value is surfaced as raw text rather than
  *   masked as false, so an unexpected value is visible.
- * - [FieldType.JSON]: the value parsed and re-emitted pretty-printed inside a
- *   `<pre>` element. A blank value renders nothing; a value that does not parse
- *   as JSON is logged at WARN and surfaced as raw text (defensive — never throws).
+ * - [FieldType.JSON]: the value parsed and re-emitted as a recursively
+ *   syntax-highlighted, wrapping tree inside a `pre.json-pretty` element. A blank
+ *   value renders nothing; a value that does not parse as JSON is logged at WARN
+ *   and surfaced as raw text (defensive — never throws).
  * - [FieldType.UUID]: a compacted UUID id (RFC 83) — an ellipsis plus the last
  *   [AdminDisplay.idTailChars] characters, with the full value carried in a hover
  *   `title` and a click-to-copy button. A blank value renders nothing.
@@ -105,20 +115,127 @@ fun FlowContent.renderValue(
 }
 
 /**
- * The [FieldType.JSON] body: the cell string parsed and re-emitted
- * pretty-printed inside a `<pre>` element. A value that does not parse as JSON is
- * logged at WARN and surfaced as raw text (defensive — never throws), mirroring
- * the [renderTimestampValue] fallback.
+ * The [FieldType.JSON] body: the cell string parsed and re-emitted as a recursive
+ * syntax-highlighted tree inside a `pre.json-pretty` element. The `<pre>` wraps to
+ * the available width (see `Layout.STYLES`), and each token — key, string, number,
+ * boolean, null, punctuation — carries a `json-*` class for coloring. A value that
+ * does not parse as JSON is logged at WARN and surfaced as raw text (defensive —
+ * never throws, emits no `<pre>`), mirroring the [renderTimestampValue] fallback.
  */
 private fun FlowContent.renderJsonValue(value: String) {
-  val pretty =
-    runCatching { PRETTY_JSON.encodeToString(Json.parseToJsonElement(value)) }
+  val root =
+    runCatching { Json.parseToJsonElement(value) }
       .getOrElse { error ->
         cellRenderLog.warn("Unparseable JSON value rendered as raw text: [{}]", value, error)
         +value
         return
       }
-  pre { +pretty }
+  pre("json-pretty") { renderJsonElement(root, "") }
+}
+
+/**
+ * Dispatches a parsed [JsonElement] to the renderer for its subtype, carrying the
+ * current [indent] (the accumulated leading whitespace for this nesting level)
+ * down to the container renderers. A [JsonNull] renders `null` in a `json-null`
+ * span; a [JsonPrimitive] delegates to [renderJsonPrimitive]; a [JsonArray] and
+ * [JsonObject] delegate to their renderers. Because the parsed root may itself be
+ * a scalar or null, a bare-scalar cell value renders through this same dispatch.
+ */
+private fun FlowContent.renderJsonElement(
+  element: JsonElement,
+  indent: String,
+) {
+  when (element) {
+    is JsonNull -> span("json-null") { +"null" }
+    is JsonPrimitive -> renderJsonPrimitive(element)
+    is JsonArray -> renderJsonArray(element, indent)
+    is JsonObject -> renderJsonObject(element, indent)
+  }
+}
+
+/**
+ * Renders a non-null [JsonPrimitive]: a string ([JsonPrimitive.isString]) in a
+ * `json-string` span using [JsonPrimitive.toString], which supplies the
+ * JSON-escaped, quoted form directly (no hand-rolled escaping); the two boolean
+ * literals in a `json-bool` span; every other primitive (numbers) in a
+ * `json-number` span.
+ */
+private fun FlowContent.renderJsonPrimitive(value: JsonPrimitive) {
+  when {
+    value.isString -> span("json-string") { +value.toString() }
+    value.content == "true" || value.content == "false" -> span("json-bool") { +value.content }
+    else -> span("json-number") { +value.content }
+  }
+}
+
+/**
+ * The shared container skeleton for [renderJsonArray] and [renderJsonObject] —
+ * the traversal both bracket-delimited containers share, differing only in their
+ * bracket glyphs and per-entry payload. Emits [openBracket]/[closeBracket] in
+ * `json-punct` spans; an empty container ([count] == 0) renders
+ * `[openBracket][closeBracket]` inline on one line. Otherwise emits [count]
+ * entries, each on its own line at `indent` + [JSON_INDENT_UNIT] via [renderEntry] (given that entry's index and
+ * the deeper `inner` indent), with inter-entry `,` in `json-punct` spans and the
+ * closing bracket back at [indent]. The newline/indentation between entries are
+ * plain text nodes, not part of any token span.
+ */
+private fun FlowContent.renderJsonContainer(
+  openBracket: String,
+  closeBracket: String,
+  indent: String,
+  count: Int,
+  renderEntry: FlowContent.(index: Int, inner: String) -> Unit,
+) {
+  if (count == 0) {
+    span("json-punct") { +"$openBracket$closeBracket" }
+    return
+  }
+  val inner = indent + JSON_INDENT_UNIT
+  span("json-punct") { +openBracket }
+  for (index in 0 until count) {
+    +"\n$inner"
+    renderEntry(index, inner)
+    if (index != count - 1) span("json-punct") { +"," }
+  }
+  +"\n$indent"
+  span("json-punct") { +closeBracket }
+}
+
+/**
+ * Renders a [JsonArray]: the `[`/`]` brackets in `json-punct` spans, one element
+ * per line at `indent` + [JSON_INDENT_UNIT], each recursing through
+ * [renderJsonElement] at the deeper indent, with inter-element `,` in `json-punct`
+ * spans. An empty array renders `[]` inline on one line.
+ */
+private fun FlowContent.renderJsonArray(
+  array: JsonArray,
+  indent: String,
+) {
+  renderJsonContainer("[", "]", indent, array.size) { index, inner ->
+    renderJsonElement(array[index], inner)
+  }
+}
+
+/**
+ * Renders a [JsonObject]: the `{`/`}` braces in `json-punct` spans, one
+ * `"key": value` entry per line at `indent` + [JSON_INDENT_UNIT] — the key in a
+ * `json-key` span, the `:` and inter-entry `,` in `json-punct` spans, the value
+ * via [renderJsonElement] at the deeper indent. An empty object renders `{}`
+ * inline on one line. The space after `:` and the newline/indentation between
+ * entries are plain text nodes, not part of any token span.
+ */
+private fun FlowContent.renderJsonObject(
+  obj: JsonObject,
+  indent: String,
+) {
+  val entries = obj.entries.toList()
+  renderJsonContainer("{", "}", indent, entries.size) { index, inner ->
+    val (key, element) = entries[index]
+    span("json-key") { +JsonPrimitive(key).toString() }
+    span("json-punct") { +":" }
+    +" "
+    renderJsonElement(element, inner)
+  }
 }
 
 /**

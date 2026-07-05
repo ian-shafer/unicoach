@@ -88,7 +88,10 @@ class ConvoRequestsResourceTest {
       val detail = client().get("/convo-request/${turn.requestId}") { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.OK, detail.status)
       val body = detail.bodyAsText()
-      assertTrue(body.contains("<pre>"), "Request/response content must render in a pretty-printed <pre>")
+      assertTrue(
+        body.contains("<pre class=\"json-pretty\">"),
+        "Request/response content must render in a syntax-highlighted json-pretty <pre>",
+      )
       assertTrue(body.contains("REPLY_MARKER"), "Response content must render")
       assertTrue(body.contains("end_turn"), "Response stop reason must render")
       assertTrue(body.contains("Input Tokens"), "Token cells must render")
