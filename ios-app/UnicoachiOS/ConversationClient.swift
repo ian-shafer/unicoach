@@ -131,10 +131,16 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
         opener: Opener,
         continuation: AsyncThrowingStream<ConversationStreamEvent, Error>.Continuation
     ) async throws {
+        // Accept the SSE stream on success AND JSON on failure. The server
+        // serializes every error (401/403/404/…) as application/json; with only
+        // `text/event-stream` the server's content negotiation cannot satisfy the
+        // Accept header for those error bodies and replaces them with an empty 406,
+        // which surfaces here as an unparseable-body decode failure instead of the
+        // real status.
         let bytes = try await apiClient.stream(
             path,
             body: body,
-            accept: "text/event-stream",
+            accept: "text/event-stream, application/json",
             expectedStatus: 200
         )
 

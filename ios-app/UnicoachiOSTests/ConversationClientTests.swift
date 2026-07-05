@@ -91,7 +91,7 @@ final class ConversationClientTests: XCTestCase {
             XCTAssertEqual(request.url?.path, "/api/v1/conversations/stream")
             XCTAssertEqual(request.httpMethod, "POST")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream, application/json")
             // URLSession.bytes(for:) moves the body to httpBodyStream.
             let body = request.bodyData()
             let decoded = try JSONDecoder().decode(CreateConversationRequest.self, from: body)
@@ -270,7 +270,7 @@ final class ConversationClientTests: XCTestCase {
             XCTAssertEqual(request.url?.path, "/api/v1/conversations/\(conversationId.uuidString)/messages/stream")
             XCTAssertEqual(request.httpMethod, "POST")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream, application/json")
             let body = request.bodyData()
             let decoded = try JSONDecoder().decode(PostMessageRequest.self, from: body)
             XCTAssertEqual(decoded.message, "Tell me more")
