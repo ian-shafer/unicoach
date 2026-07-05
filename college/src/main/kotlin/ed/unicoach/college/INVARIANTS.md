@@ -8,22 +8,6 @@ shape.
 
 ## Invariants
 
-### Each loader row upserts inside its own SAVEPOINT
-
-**Rule:** Every per-row upsert in `CollegeScorecardLoader` MUST be wrapped in a
-SQL `SAVEPOINT` (see `upsertWithSavepoint`), rolled back to on a failed `Result`
-and released on success. A failing row MUST NOT be allowed to abort the
-enclosing per-file transaction.
-
-**Why:** All rows of a file load inside one `withConnection` transaction. Once
-any statement fails, PostgreSQL aborts the whole transaction (SQLSTATE `25P02`)
-and every subsequent statement errors until rollback. Without the per-row
-savepoint the first malformed/duplicate row would turn every following row into
-a false "skip" and the terminal commit would discard all the good rows already
-applied — converting a best-effort ingest into all-or-nothing data loss. The
-savepoint scopes the blast radius to the one bad row, which is the entire point
-of the best-effort design.
-
 ### An out-of-domain optional field is coerced to NULL — a row is NEVER dropped for a bad optional cell
 
 **Rule:** When an _optional_ field's value falls outside its valid domain, that
