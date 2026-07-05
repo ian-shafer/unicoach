@@ -67,16 +67,6 @@ guards with stderr suppressed. A reserved band keeps the two classes disjoint;
 the converse — an operational outcome in 10–29 — is equally forbidden, which is
 why `file-lock`'s matching-op fast-fail uses the operational code `3`.
 
-### Port-liveness probe via pure-bash `/dev/tcp`
-
-**Rule:** A script determining whether a TCP port is served MUST probe with
-`exec 3<>/dev/tcp/127.0.0.1/$PORT`. It MUST NOT use `nc -z` or an HTTP `curl`
-probe for this.
-
-**Why:** `nc -z` reports bound ports as closed on BSD/macOS (false negative),
-and a `curl` probe misses a non-HTTP listener. The `/dev/tcp` connect is
-occupant-agnostic, dependency-free, and refuses instantly on a closed port.
-
 ### `exec <command>` and `"$@"`/`"$*"` child-forwarding are forbidden
 
 **Rule:** A script MUST NOT replace its process with `exec <command>`, and MUST

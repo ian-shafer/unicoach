@@ -7,7 +7,8 @@ check-port <port>
 
 Passively probes whether 127.0.0.1:<port> has a listener. Performs a single
 exec 3<>/dev/tcp/127.0.0.1/<port> connect and immediately closes the
-descriptor — occupant-agnostic, dependency-free, no nc/curl/lsof.
+descriptor — occupant-agnostic, dependency-free, no nc/curl/lsof (nc -z
+false-negatives on bound ports on BSD/macOS; curl misses a non-HTTP listener).
 
 Note: 0=in-use deliberately inverts check-pid's 0=alive. Each primitive's
 success exit answers its own question (is the port taken? vs is the PID
