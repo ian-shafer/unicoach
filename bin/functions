@@ -157,19 +157,13 @@ require_cloud_domain() {
   fi
 }
 
-# Resolves a file argument to an absolute local path, accepting either a local
-# path or an `s3://` URI. An `s3://` argument is downloaded into a lazily-created
-# per-invocation scratch directory (mktemp -d), preserving the object's basename;
-# a single EXIT trap removes that directory on exit. Anything else is resolved via
-# realpath, fataling (with realpath's own diagnostic) if it cannot be resolved.
-# Both branches echo an absolute path.
+# Resolves a file argument to an absolute local path: a local path via
+# realpath, or an `s3://` URI downloaded into the caller-supplied `scratch_dir`
+# (ignored otherwise). Always called via `VAR="$(resolve_file_arg ...)"`, a
+# subshell — so scratch_dir's creation and cleanup belong to the caller, not
+# this function, which would lose them the moment the subshell exits.
 # Shared by any ops-tool script that takes file arguments (bin/ingest-colleges).
 # Depends on fatal (this file); the s3:// branch also on `aws`.
-# Caveat: the s3:// branch registers an EXIT trap with `trap … EXIT`, which
-# REPLACES (bash traps do not stack) any EXIT trap a caller set. No live bug today
-# — neither current caller (bin/ingest-colleges) sets its own EXIT trap — but a
-# future caller that does must register a combined handler rather than relying on
-# both surviving.
 # Single source of truth for the college installDist location, repo-relative.
 # bin/deploy tars THIS exact path PRESERVED (unstripped), so it resolves
 # identically in the local dev tree and under /opt/unicoach/current; and
@@ -179,21 +173,22 @@ require_cloud_domain() {
 # drift on the path.
 COLLEGE_DIST="college/build/install/college"
 
-RESOLVE_FILE_ARG_SCRATCH=""
 resolve_file_arg() {
-  local arg="$1"
+  local arg="$1" scratch_dir="${2:-}"
   if [ -z "$arg" ]; then
     fatal -s "$EXIT_MISSING_REQUIRED_ARG" "resolve_file_arg requires a path or s3:// URI"
   fi
 
   case "$arg" in
   s3://*)
-    if [ -z "$RESOLVE_FILE_ARG_SCRATCH" ]; then
-      RESOLVE_FILE_ARG_SCRATCH="$(mktemp -d)"
-      # shellcheck disable=SC2064
-      trap "rm -rf '$RESOLVE_FILE_ARG_SCRATCH'" EXIT
+    if [ -z "$scratch_dir" ]; then
+      fatal "resolve_file_arg requires a scratch_dir to download [$arg] into"
     fi
-    local dest="$RESOLVE_FILE_ARG_SCRATCH/$(basename "$arg")"
+    # A fresh subdirectory per download: two s3:// args sharing one scratch_dir
+    # would otherwise collide if their objects share a basename.
+    local dest_dir
+    dest_dir="$(mktemp -d -p "$scratch_dir")"
+    local dest="$dest_dir/$(basename "$arg")"
     aws s3 cp "$arg" "$dest" >&2 || fatal "failed to download s3 object [$arg]"
     echo "$dest"
     ;;

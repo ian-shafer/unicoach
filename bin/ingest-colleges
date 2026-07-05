@@ -32,12 +32,16 @@ if [ "$#" -ne 2 ]; then
   fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges requires exactly two arguments: <institution.csv> <fields.csv>"
 fi
 
-# Resolve each CSV argument to an absolute local path. resolve_file_arg accepts
-# either a local path (realpath, fatal if missing) or an s3:// URI (downloaded to
-# a per-run scratch dir), so the same script serves a developer's local run and a
-# bin/remote-triggered run where bin/remote rewrites the args to s3:// URIs.
-INSTITUTION_CSV="$(resolve_file_arg "$1")"
-FIELDS_CSV="$(resolve_file_arg "$2")"
+# Own the scratch dir resolve_file_arg downloads s3:// args into: the file
+# must outlive that (subshell) call, so this script holds the EXIT trap.
+INGEST_SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$INGEST_SCRATCH"' EXIT
+
+# Resolve each CSV arg to an absolute path: local (realpath) or s3://
+# (downloaded into INGEST_SCRATCH), so the same script serves a developer's
+# local run and a bin/remote-triggered run.
+INSTITUTION_CSV="$(resolve_file_arg "$1" "$INGEST_SCRATCH")"
+FIELDS_CSV="$(resolve_file_arg "$2" "$INGEST_SCRATCH")"
 
 # Run the prebuilt installDist launcher directly (never Gradle), fataling if the
 # build artifact is absent (bin/INVARIANTS.md pre-built-launcher rule). The path is
