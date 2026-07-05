@@ -314,11 +314,16 @@ ssm_shell_command_parameters() {
 # multi-line script on stdout; the caller JSON-encodes it as the single `commands`
 # element (json_string). It is transmitted fresh every deploy so it can update its
 # OWN on-instance bootstrap: download and unpack the bundle, install this release's
-# render-env / deploy-on-instance (0755) and the four systemd units (0644),
-# `systemctl daemon-reload`, then invoke the now-current deploy-on-instance with the
-# extracted release dir. The install MUST live in this transmitted script, never a
-# pre-installed on-instance one: an old deploy-on-instance carrying no install logic
-# would run first and never install its replacement. Because the script is sent
+# render-env / deploy-on-instance (0755) and the five systemd units (0644),
+# `systemctl daemon-reload`, then `systemctl enable` those units (idempotent, and
+# `enable` only — never `--now` — so it registers them for reboot persistence
+# without starting anything; deploy-on-instance's `restart` is what (re)starts
+# them), then invoke the now-current deploy-on-instance with the extracted release
+# dir. Enabling here (not just at cloud-init first boot) is what lets a unit added
+# to an already-running instance survive a reboot. The install MUST live in this
+# transmitted script, never a pre-installed on-instance one: an old
+# deploy-on-instance carrying no install logic would run first and never install
+# its replacement. Because the script is sent
 # anew each deploy, it works against the current old box with zero manual
 # bootstrapping — closing the gap that previously forced a manual SSM live-write
 # when these files changed. $1 bundle_id (names the release dir, correlating it with
@@ -341,10 +346,14 @@ install -m 0755 "\$RELEASE_DIR/infra/files/deploy-on-instance.sh" /opt/unicoach/
 install -m 0644 \\
   "\$RELEASE_DIR/infra/files/unicoach-rest-server.service" \\
   "\$RELEASE_DIR/infra/files/unicoach-queue-worker.service" \\
+  "\$RELEASE_DIR/infra/files/unicoach-cron.service" \\
   "\$RELEASE_DIR/infra/files/unicoach-public-web.service" \\
   "\$RELEASE_DIR/infra/files/unicoach-admin-web.service" \\
   /etc/systemd/system/
 systemctl daemon-reload
+systemctl enable \\
+  unicoach-rest-server.service unicoach-queue-worker.service unicoach-cron.service \\
+  unicoach-public-web.service unicoach-admin-web.service
 /opt/unicoach/bin/deploy-on-instance "\$RELEASE_DIR"
 EOF
 }

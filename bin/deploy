@@ -136,7 +136,7 @@ REPO_PATHS=(
 )
 
 # The deploy-managed on-instance files: the two scripts installed into
-# /opt/unicoach/bin/ and the four systemd units installed into
+# /opt/unicoach/bin/ and the five systemd units installed into
 # /etc/systemd/system/. cloud-init writes an initial copy at first boot, but from
 # then on every deploy refreshes them — the SSM command below installs these
 # (extracted from the bundle at infra/files/*) before invoking deploy-on-instance,
@@ -144,12 +144,13 @@ REPO_PATHS=(
 # reach a running instance via a manual SSM live-write. cloud-init (filebase64) and
 # this bundle both read the same infra/files/* source files, so the bytes installed
 # by either path are identical; the on-instance installer (build_deploy_command)
-# enumerates the same four units by name that this array does.
+# enumerates the same five units by name that this array does.
 DEPLOY_MANAGED_PATHS=(
   "infra/files/render-env.sh"
   "infra/files/deploy-on-instance.sh"
   "infra/files/unicoach-rest-server.service"
   "infra/files/unicoach-queue-worker.service"
+  "infra/files/unicoach-cron.service"
   "infra/files/unicoach-public-web.service"
   "infra/files/unicoach-admin-web.service"
 )

@@ -738,6 +738,34 @@ for script in deploy build build-college ingest-colleges remote functions; do
   assert_success "bash -n bin/$script parses cleanly" bash -n "$PROJECT_ROOT/bin/$script"
 done
 
+# Every systemd unit under infra/files/ MUST be deploy-managed across all four
+# lists: bin/deploy bundles it (DEPLOY_MANAGED_PATHS); build_deploy_command
+# (bin/functions) installs it into /etc/systemd/system/ AND `systemctl enable`s it;
+# and deploy-on-instance.sh `systemctl restart`s it. Miss bundle/install/enable and
+# a unit added to an already-running instance never lands there; miss the restart
+# and deploy-on-instance never (re)starts it — or, for a unit whose restart line
+# exists but was never installed, `systemctl restart` (set -e) aborts the whole
+# deploy. This guards RFC 97's cron unit — and any future unit — against that gap.
+echo ""
+echo "==== Testing every systemd unit is deploy-managed ===="
+unit_bundled() { grep -qF "infra/files/$1" "$PROJECT_ROOT/bin/deploy"; }
+unit_installed() { grep -qF "infra/files/$1" "$PROJECT_ROOT/bin/functions"; }
+unit_restarted() { grep -qF "systemctl restart $1" "$PROJECT_ROOT/infra/files/deploy-on-instance.sh"; }
+# The enable list names units bare (no path). Strip comment lines first so a
+# future comment naming a unit can't masquerade as its `systemctl enable` entry;
+# of the survivors, the line carrying the bare name but no 'infra/files/' path is
+# the enable line (vs the path-bearing install line). Capture-and-test for
+# non-empty rather than piping into `grep -q`, which under `set -o pipefail` exits
+# early and SIGPIPEs the upstream grep, wrongly failing the pipeline.
+unit_enabled() { [ -n "$(grep -vE '^[[:space:]]*#' "$PROJECT_ROOT/bin/functions" | grep -F "$1" | grep -v 'infra/files/')" ]; }
+for unit_path in "$PROJECT_ROOT"/infra/files/unicoach-*.service; do
+  unit="$(basename "$unit_path")"
+  assert_success "bin/deploy bundles $unit (DEPLOY_MANAGED_PATHS)" unit_bundled "$unit"
+  assert_success "build_deploy_command installs $unit" unit_installed "$unit"
+  assert_success "build_deploy_command enables $unit" unit_enabled "$unit"
+  assert_success "deploy-on-instance restarts $unit" unit_restarted "$unit"
+done
+
 # OpenTofu static validation of infra/ (ops.tf + the iam.tf/outputs.tf edits).
 # fmt -check is purely static. validate needs the providers installed, so init
 # first with -backend=false (no remote state, no AWS) into a throwaway TF_DATA_DIR
@@ -1077,8 +1105,9 @@ for script in render-env deploy-on-instance; do
 done
 
 # The composed script bakes in the laptop-side bundle-id/region/s3-uri and carries
-# every install step: both 0755 scripts, all FOUR 0644 units by explicit name (no
-# wildcard, so a missing unit fails install loudly), and daemon-reload.
+# every install step: both 0755 scripts, all FIVE 0644 units by explicit name (no
+# wildcard, so a missing unit fails install loudly), daemon-reload, and the
+# `systemctl enable` step that gives those units reboot persistence.
 test_build_deploy_command_content() {
   local out unit
   out="$(build_deploy_command 20260704120000 us-west-2 s3://bkt/releases/unicoach-20260704120000.tar.gz)"
@@ -1086,13 +1115,14 @@ test_build_deploy_command_content() {
   echo "$out" | grep -qF 'aws s3 cp --region us-west-2 s3://bkt/releases/unicoach-20260704120000.tar.gz' || { echo "region/s3-uri not baked in: $out"; return 1; }
   echo "$out" | grep -qF 'install -m 0755 "$RELEASE_DIR/infra/files/render-env.sh" /opt/unicoach/bin/render-env' || { echo "render-env install missing: $out"; return 1; }
   echo "$out" | grep -qF 'install -m 0755 "$RELEASE_DIR/infra/files/deploy-on-instance.sh" /opt/unicoach/bin/deploy-on-instance' || { echo "deploy-on-instance install missing: $out"; return 1; }
-  for unit in rest-server queue-worker public-web admin-web; do
+  for unit in rest-server queue-worker cron public-web admin-web; do
     echo "$out" | grep -qF "\"\$RELEASE_DIR/infra/files/unicoach-$unit.service\"" || { echo "unit install source missing for [$unit]: $out"; return 1; }
   done
   echo "$out" | grep -qF '/etc/systemd/system/' || { echo "systemd unit dest missing: $out"; return 1; }
   # No wildcard install: the units are enumerated, not globbed.
   echo "$out" | grep -qF 'unicoach-*.service' && { echo "unexpected wildcard unit install: $out"; return 1; }
   echo "$out" | grep -qF 'systemctl daemon-reload' || { echo "daemon-reload missing: $out"; return 1; }
+  echo "$out" | grep -qF 'systemctl enable' || { echo "systemctl enable step missing: $out"; return 1; }
   return 0
 }
 assert_success "build_deploy_command bakes in values and every install step" test_build_deploy_command_content
