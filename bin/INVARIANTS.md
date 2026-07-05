@@ -67,62 +67,34 @@ guards with stderr suppressed. A reserved band keeps the two classes disjoint;
 the converse — an operational outcome in 10–29 — is equally forbidden, which is
 why `file-lock`'s matching-op fast-fail uses the operational code `3`.
 
-### `exec <command>` and `"$@"`/`"$*"` child-forwarding are forbidden
+### Don't forward `"$@"`/`"$*"` as a child's argument vector
 
-**Rule:** A script MUST NOT replace its process with `exec <command>`, and MUST
-NOT pass `"$@"`, `"$*"`, `"${@}"`, or unquoted `$@`/`$*` as the argument vector
-of an invoked command. A script delegates by invoking the target as an ordinary
-child with explicit arguments it chose: fixed literals, parsed `getopts`
-options, or a named array assembled from the script's OWN parsed options and
-literals — never a verbatim `("$@")` capture of the caller's argv handed onward
-as a child's argument vector. (Interpolating `"$*"` into a single diagnostic
-_string_ — e.g. `fatal -s "$EXIT_UNEXPECTED_ARG" "… : $*"` — is not forwarding;
-the command receives one argument it named. A script's own positional args used
-for its own logic — e.g. `q-status`'s `types=("$@")`, a filter list it consumes
-itself — are likewise not a child-forward.) The only exceptions, permitted by
-name:
+**Rule:** A script MUST NOT pass `"$@"` or `"$*"` (including the unquoted
+`$@`/`$*`) as the argument vector of a command it invokes; it must explicitly
+name the arguments it chooses. Indiscriminate forwarding is allowed only in
+exceptional cases — e.g. `wait-for`, which cannot know the command it waits for,
+or the `log-*` functions, which log an arbitrary list of strings.
 
-- **TCP-liveness redirection** — `exec 3<>/dev/tcp/127.0.0.1/$PORT` (no command
-  word; opens a probe descriptor, does not replace the process) in `check-port`
-  and `test-fuzz`, mandated by the port-liveness rule above. _[standing]_
-- **Variadic diagnostic primitives** — `bin/functions`' `log-info` /
-  `log-warning` / `log-error` (`echo "$@"`) and `fatal` (`echo "[FATAL] $*"`),
-  which join the script's own message onto stderr, never to a delegated program.
-- **Irreducible caller-command capture** — `daemon-up`, `daemon-bounce`,
-  `wait-for`, `tests-common`, `ios-scripts-tests`: the script executes, polls,
-  or asserts an arbitrary caller-supplied _command_ it cannot name, so its
-  `"$@"` is that command, not a delegated program's options.
-  `ios-scripts-tests`' `run_*` helpers forward an arbitrary caller-supplied
-  command/args to the iOS-build SUT (`build-ios`, `install-ios`, `release-ios`,
-  `is-nix`), the same harness-forwards-to-SUT shape as `tests-common`. (Its
-  `for a in "$@"; do echo "$a"; done` lines are bodies of the generated
-  `xcodebuild`/`xcrun` test stubs written via heredoc — generated stub source
-  whose `$@` resolves when the stub runs, not `ios-scripts-tests`' own argv
-  forward.)
-- **Thin third-party-CLI fronts** — `infra-apply`, `infra-plan`, `infra-init`,
-  `infra-output`, `infra-bootstrap`: each `exec tofu -chdir=… "$@"`, a
-  single-target front contributing only `-chdir` and forwarding the caller's
-  `tofu` arguments opaquely. A wrapper over an in-repo sibling owns that
-  sibling's grammar and MUST name the arguments instead; this exception is for a
-  third-party CLI whose grammar is not ours to re-encode.
-- **SSM command-string interpolation** — `bin/remote`: it does **not** run the
-  caller's `<script> [args…]` as a local `"$@"` child. It word-splits its own
-  options off at the required `--`, rewrites the trailing args (`@name` → the
-  uploaded file's `s3://` URI), and interpolates the single-quoted result into a
-  single `aws ssm send-command --parameters commands=[…]` **string** that
-  `send-command` receives as one argument and the instance runs under bash. That
-  is the same "one diagnostic string" shape as the `fatal … "$*"` / `log-*`
-  primitives, not a local argv forward.
+**Why:** Explicit over implicit, and minimal surface area — both central to
+controlling complexity. An opaque `"$@"` makes the script's interface implicitly
+whatever the caller passed, so it can't be reasoned about, tested against its
+help text, or trusted to reject bad input. Naming every argument makes the input
+contract explicit and finite.
 
-**Why:** `exec` and an opaque `"$@"` make a script an unbounded conduit, so its
-real behaviour is whatever the caller and the underlying tool negotiate, not
-what the script documents. Naming every argument keeps behaviour bounded by the
-declared interface and rejects the rest, which is the only way a wrapper can
-carry a contract distinct from the tool it fronts. The exceptions are the cases
-where the forwarded tokens are not a bounded delegation at all (the redirection;
-the message primitives) or _are_ the script's irreducible purpose (running a
-caller's command; fronting a third-party CLI) — each enumerated so the boundary
-is explicit, not discovered by `grep`.
+### `exec` only when ceding control is intended
+
+**Rule:** A script MUST NOT replace its process with `exec <command>` unless it
+is genuinely fine to cede all control to that command; normally it runs the
+target as an ordinary child and stays alive to handle the result. The sanctioned
+case is a thin front over a third-party CLI whose exit status is meant to pass
+straight through (the `infra-*` wrappers `exec tofu -chdir=… …`), where ceding
+control is the point. (An `exec 3<>/dev/tcp/…` fd redirect has no command word —
+it opens a descriptor, not a new process — so it is not this kind of `exec`.)
+
+**Why:** `exec` hands the process to the target and returns nothing — no code
+runs after it, so the script cedes all control of the outcome: it can't map the
+exit code, clean up, or enforce a postcondition. Only cede that control when
+passing the target's result straight through is the whole point.
 
 ### Operational scripts reject unexpected arguments
 
