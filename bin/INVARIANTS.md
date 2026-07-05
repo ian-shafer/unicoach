@@ -23,9 +23,10 @@ unset variables.
 **Rule:** Scripts MUST reference other scripts and files by absolute path,
 typically `"$PROJECT_ROOT/bin/<script>"`.
 
-**Why:** The harness resets the working directory between calls and `cd` is
-avoided, so a relative path resolves against an unpredictable CWD and breaks
-across worktrees.
+**Why:** An absolute path can only be interpreted one way, so it is
+deterministic. A relative path resolves against whatever the current directory
+happens to be — which the harness resets between calls — so it breaks
+unpredictably across worktrees.
 
 ### All log output to stderr
 
