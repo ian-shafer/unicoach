@@ -27,9 +27,9 @@ is sent. All uploaded objects are deleted when the run finishes.
 The tool reads runtime credentials from /etc/unicoach/env on the instance (via
 ENV_FILE); never pass a secret through remote's arguments or the sent command.
 
-Only a sanctioned ops tool may be run as <script> (currently: ingest-colleges);
-any other name is rejected. A tool is onboarded by adding it to bin/remote's
-OPS_TOOLS allowlist.
+Only a sanctioned ops tool may be run as <script> (currently: ingest-colleges,
+admin-grant); any other name is rejected. A tool is onboarded by adding it to
+bin/remote's OPS_TOOLS allowlist.
 
 Options:
   -f <name>:<local-path>   Upload a file and bind it to <name> (repeatable).
@@ -118,7 +118,7 @@ assert_arg_refs_declared() {
 # shell_quoted below, but the script name is validated here rather than quoted:
 # an unsanctioned name is a usage error to reject, not a value to pass through.
 enforce_ops_allowlist() {
-  local ops_tools=("ingest-colleges")
+  local ops_tools=("ingest-colleges" "admin-grant")
   local tool sanctioned=false
   for tool in "${ops_tools[@]}"; do
     if [ "$REMOTE_SCRIPT" = "$tool" ]; then

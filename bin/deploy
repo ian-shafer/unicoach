@@ -97,9 +97,10 @@ done
 # The on-instance migration scripts source bin/common -> bin/functions and shell
 # out to the bin/db-* family; bin/db-status and bin/db-create both invoke
 # bin/db-query for their existence checks, so it must be included. Every db-run
-# gates on bin/postgres-check, so it is bundled too. bin/ingest-colleges is the
-# ops tool bin/remote triggers on the instance; its own script must ship alongside
-# its college/ dist. These repo files keep their repo-relative paths under
+# gates on bin/postgres-check, so it is bundled too. bin/ingest-colleges and
+# bin/admin-grant are ops tools bin/remote triggers on the instance; each
+# script must ship alongside its dist (ingest-colleges) or on its own
+# (admin-grant). These repo files keep their repo-relative paths under
 # $PROJECT_ROOT.
 BUNDLE_ID="$(date -u +%Y%m%d%H%M%S)"
 BUNDLE_PATH="$(mktemp -t unicoach-deploy.XXXXXX).tar.gz"
@@ -133,6 +134,7 @@ REPO_PATHS=(
   "bin/db-run"
   "bin/postgres-check"
   "bin/ingest-colleges"
+  "bin/admin-grant"
 )
 
 # The deploy-managed on-instance files: the two scripts installed into
