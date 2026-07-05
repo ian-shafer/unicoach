@@ -7,23 +7,6 @@ untyped HTML form into validated DAO input; the engine owns routing/rendering.
 
 ## Invariants
 
-### `email_verified_at` is never editable through the generic update path
-
-**Rule:** `UsersResource`'s `emailVerifiedAt` field MUST stay `editable = false`
-and MUST NOT appear in `createExtraInputs` or the edit form, and `UserEdit` MUST
-NOT carry an `emailVerifiedAt`. The verification marker MUST be written only by
-the dedicated `verify-email` route (`UsersDao.markEmailVerified`) and the auth
-layer's change-email path — never by the generic `update`/`UserEdit` write.
-
-**Why:** `email_verified_at` is a security-bearing trust marker (a verified
-address gates downstream behavior). The generic OCC update path applies whatever
-fields the edit form carries; if `emailVerifiedAt` leaked into the editable set
-or into `UserEdit`, an operator (or a forged edit-form POST) could stamp or
-clear verification at will, bypassing the dedicated DAO path that owns that
-column's lifecycle — forging verification state. This mirrors the same
-write-isolation the sensitive `password_hash` column already enjoys; collapsing
-the two write paths re-opens the hole.
-
 ### Verification actions are enforced by their routes, not by the disabled button
 
 **Rule:** The `verify-email` and `send-verification-email` POST handlers MUST
