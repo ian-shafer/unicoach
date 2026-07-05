@@ -98,22 +98,16 @@ passing the target's result straight through is the whole point.
 
 ### Operational scripts reject unexpected arguments
 
-**Rule:** An operational `bin/` script MUST reject any argument outside its
-declared grammar — a positional beyond the count it consumes, or an unknown
-option — with a non-zero exit from the usage-error band (rule above), never
-silently ignore it. A script that takes no positional MUST error on the first
-one; a script that takes a fixed count MUST error on a surplus one. This binds
-the operational CLIs (lifecycle, db, queue, build, health), not the test
-harnesses (`*-tests`, `tests-common`, `ios-scripts-tests`) or the
-`bin/functions` / `bin/common` libraries. Scripts whose grammar is an open-ended
-caller command or list — `daemon-up`, `daemon-bounce`, `wait-for`, `db-run`'s
-trailing SQL, `q-status`'s filter list, `bin/remote`'s trailing
-`<script> [args…]` after `--` — have no "surplus" to reject and are exempt.
+**Rule:** An operational `bin/` script with a fixed argument grammar MUST reject
+an argument outside it — a surplus positional or an unknown option — with a
+non-zero usage error, never silently ignore it. A script whose grammar is
+intentionally an open-ended list (a command to run like `wait-for`, trailing SQL
+in `db-run`, a filter list in `q-status`) has no surplus, so the rule doesn't
+bind it.
 
 **Why:** A silently-ignored argument means the script did something other than
 what the caller wrote, with no signal. Rejecting it turns a typo or a stale flag
-(e.g. a former `psql` passthrough) into an immediate, diagnosable failure
-instead of a wrong-but-green run.
+into an immediate, diagnosable failure instead of a wrong-but-green run.
 
 ### A `bin/` script that runs a JVM program invokes a pre-built launcher or fatals
 
