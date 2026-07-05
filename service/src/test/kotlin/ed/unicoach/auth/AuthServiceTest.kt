@@ -65,6 +65,7 @@ class AuthServiceTest {
   fun resetDatabase() {
     connection.createStatement().use { stmt ->
       stmt.execute("TRUNCATE TABLE sessions, users CASCADE")
+      stmt.execute("TRUNCATE TABLE jobs CASCADE")
     }
   }
 
@@ -75,39 +76,22 @@ class AuthServiceTest {
 
   private val argon2Hasher = Argon2Hasher()
 
-  private fun emailVerificationService(): EmailVerificationService {
-    val emailConfig =
-      ed.unicoach.email.EmailConfig
-        .from(appConfig)
-        .getOrThrow()
-    val provider =
-      ed.unicoach.email.EmailProviderFactory
-        .fromConfig(emailConfig)
-        .getOrThrow()
-    val emailService = ed.unicoach.email.EmailService(database, provider, emailConfig)
+  private fun emailVerificationService(
+    queueService: ed.unicoach.queue.QueueService = ed.unicoach.queue.QueueService(database),
+  ): EmailVerificationService {
     val evConfig = EmailVerificationConfig.from(appConfig).getOrThrow()
-    return EmailVerificationService(database, emailService, ed.unicoach.util.TokenGenerator(), evConfig)
+    return EmailVerificationService(database, queueService, ed.unicoach.util.TokenGenerator(), evConfig)
   }
 
   private fun newAuthService() =
     AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), emailVerificationService(), StubGoogleTokenVerifier())
 
-  private class RejectingProvider : ed.unicoach.email.EmailProvider {
-    override val id: String = "rejecting"
-
-    override suspend fun send(email: ed.unicoach.email.OutboundEmail): ed.unicoach.email.ProviderResult =
-      ed.unicoach.email.ProviderResult
-        .Rejected("test rejection")
-  }
-
-  private fun authServiceWithRejectingEmail(): AuthService {
-    val emailConfig =
-      ed.unicoach.email.EmailConfig
-        .from(appConfig)
-        .getOrThrow()
-    val emailService = ed.unicoach.email.EmailService(database, RejectingProvider(), emailConfig)
-    val evConfig = EmailVerificationConfig.from(appConfig).getOrThrow()
-    val evService = EmailVerificationService(database, emailService, ed.unicoach.util.TokenGenerator(), evConfig)
+  private fun authServiceWithFailingEnqueue(): AuthService {
+    // A real QueueService over a JobsDao whose insert always reports a database
+    // failure, driving the rollback path through the production
+    // EnqueueResult.DatabaseFailure mapping (no facade subclassing).
+    val failingQueueService = ed.unicoach.queue.QueueService(database, FailingJobsDao())
+    val evService = emailVerificationService(failingQueueService)
     return AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), evService, StubGoogleTokenVerifier())
   }
 
@@ -120,7 +104,7 @@ class AuthServiceTest {
     }
   }
 
-  private fun emailSendsCountTo(recipient: String): Int = countRows("SELECT COUNT(*) FROM email_sends WHERE recipient_email = '$recipient'")
+  private fun sendEmailJobsTo(recipient: String): Int = SendEmailJobQueries.countTo(connection, recipient)
 
   private val authService by lazy { newAuthService() }
 
@@ -406,7 +390,7 @@ class AuthServiceTest {
     }
 
   @Test
-  fun `register inserts one verification token and one email_sends row`() =
+  fun `register enqueues one SEND_EMAIL job and sends nothing inline`() =
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val email = "verify_register@example.com"
@@ -419,32 +403,29 @@ class AuthServiceTest {
         countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}'"),
         "Exactly one verification token must exist for the new user",
       )
-      assertEquals(1, countRows("SELECT COUNT(*) FROM email_sends"), "Log provider must record one email_sends row")
+      assertEquals(1, sendEmailJobsTo(email), "Registration must enqueue exactly one SEND_EMAIL job to the registrant")
+      assertEquals(0, countRows("SELECT COUNT(*) FROM email_sends"), "Registration must send nothing inline (no email_sends row)")
     }
 
   @Test
-  fun `register succeeds even when the email provider rejects the send`() =
+  fun `register rolls back the user and token when the enqueue fails`() =
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
-      val service = authServiceWithRejectingEmail()
+      val service = authServiceWithFailingEnqueue()
       val email = "verify_reject@example.com"
       val result = service.register(email, "Verify Reject", "Password123", null, 86400L, null, null)
 
-      assertTrue(result.isSuccess && result.getOrNull() is RegisterResult.Success, "Registration must succeed despite send rejection")
-      val user = (result.getOrNull() as RegisterResult.Success).user
+      assertTrue(result.isFailure, "Registration must fail when the required enqueue fails")
 
-      // The user and verification token still exist (transactional), even though the
-      // best-effort send was rejected.
-      assertEquals(
-        1,
-        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}'"),
-        "Verification token must persist despite send rejection",
-      )
-      assertTrue(UsersDao.findById(sqlSession, user.id).isSuccess, "User must persist despite send rejection")
+      // The behavioral change from today's best-effort send: neither the user nor a
+      // verification token is committed when the enqueue aborts the transaction.
+      val emailAddr = (EmailAddress.create(email) as ValidationResult.Valid).value
+      assertTrue(UsersDao.findByEmail(sqlSession, emailAddr).isFailure, "No user may persist when the enqueue fails")
+      assertEquals(0, countRows("SELECT COUNT(*) FROM verification_tokens"), "No verification token may persist when the enqueue fails")
     }
 
   @Test
-  fun `changeEmail rewrites the address re-arms verification and emails the new address`() =
+  fun `changeEmail enqueues a job to the new address and burns prior tokens`() =
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val email = "change_src@example.com"
@@ -466,8 +447,8 @@ class AuthServiceTest {
 
       assertEquals(
         1,
-        emailSendsCountTo(newEmail),
-        "A verification email must be sent to the new address",
+        sendEmailJobsTo(newEmail),
+        "A verification email job must be enqueued to the new address",
       )
       assertEquals(
         1,
@@ -525,7 +506,7 @@ class AuthServiceTest {
       UsersDao.markEmailVerified(sqlSession, user.id).getOrThrow()
       val verified = UsersDao.findById(sqlSession, user.id).getOrThrow()
 
-      val before = emailSendsCountTo(takenEmail)
+      val before = sendEmailJobsTo(takenEmail)
       val result = authService.changeEmail(verified, takenEmail)
       assertTrue(result.isSuccess)
       assertTrue(result.getOrNull() is ChangeEmailResult.DuplicateEmail, "Expected DuplicateEmail, got ${result.getOrNull()}")
@@ -533,7 +514,7 @@ class AuthServiceTest {
       val reloaded = UsersDao.findById(sqlSession, user.id).getOrThrow()
       assertEquals(email, reloaded.email.value, "Collider's email must be unchanged")
       assertTrue(reloaded.emailVerifiedAt != null, "Collider's verified state must be unchanged")
-      assertEquals(before, emailSendsCountTo(takenEmail), "No verification email must be sent to the taken address")
+      assertEquals(before, sendEmailJobsTo(takenEmail), "No verification email job must be enqueued to the taken address")
     }
 
   @Test
@@ -543,7 +524,7 @@ class AuthServiceTest {
       val email = "change_invalid@example.com"
       val reg = authService.register(email, "Invalid", "Password123", null, 86400L, null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
-      val before = countRows("SELECT COUNT(*) FROM email_sends")
+      val before = SendEmailJobQueries.count(connection)
 
       val result = authService.changeEmail(user, "not-an-email")
       assertTrue(result.isSuccess)
@@ -551,7 +532,11 @@ class AuthServiceTest {
 
       val reloaded = UsersDao.findById(sqlSession, user.id).getOrThrow()
       assertEquals(email, reloaded.email.value, "Email must not change on validation failure")
-      assertEquals(before, countRows("SELECT COUNT(*) FROM email_sends"), "No email must be sent on validation failure")
+      assertEquals(
+        before,
+        SendEmailJobQueries.count(connection),
+        "No verification email job must be enqueued on validation failure",
+      )
     }
 
   @Test
@@ -596,7 +581,7 @@ class AuthServiceTest {
     }
 
   @Test
-  fun `changeEmail succeeds and commits even when the email provider rejects the send`() =
+  fun `changeEmail rolls back the rewrite and token when the enqueue fails`() =
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val service = newAuthService()
@@ -604,18 +589,13 @@ class AuthServiceTest {
       val reg = service.register(email, "Reject Src", "Password123", null, 86400L, null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
 
-      val rejectingService = authServiceWithRejectingEmail()
+      val failingService = authServiceWithFailingEnqueue()
       val newEmail = "change_reject_dst@example.com"
-      val result = rejectingService.changeEmail(user, newEmail)
-      assertTrue(result.isSuccess && result.getOrNull() is ChangeEmailResult.Success, "Change must succeed despite send rejection")
+      val result = failingService.changeEmail(user, newEmail)
+      assertTrue(result.isFailure, "changeEmail must fail when the required enqueue fails")
 
+      // The rewrite is atomic with the enqueue (RFC 96): a failed enqueue aborts it.
       val reloaded = UsersDao.findById(sqlSession, user.id).getOrThrow()
-      assertEquals(newEmail, reloaded.email.value, "Email rewrite must be committed despite send rejection")
-      assertTrue(reloaded.emailVerifiedAt == null, "Verification reset must be committed")
-      assertEquals(
-        1,
-        countRows("SELECT COUNT(*) FROM verification_tokens WHERE user_id = '${user.id.value}' AND consumed_at IS NULL"),
-        "A fresh token must be committed despite send rejection",
-      )
+      assertEquals(email, reloaded.email.value, "Email rewrite must roll back with the failed enqueue")
     }
 }

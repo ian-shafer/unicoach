@@ -114,20 +114,15 @@ class EmailVerificationGateTest {
     return Registered(email, cookie)
   }
 
-  /** Reads the verification email body for [email] and extracts the raw token. */
-  private fun verificationTokenFor(email: String): String {
-    dbConnection
-      .prepareStatement("SELECT body FROM email_sends WHERE recipient_email = ? ORDER BY id DESC LIMIT 1")
-      .use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "Expected a verification email_sends row for $email")
-          val body = rs.getString("body")
-          val match = Regex("token=([^\\s]+)").find(body)
-          return match!!.groupValues[1]
-        }
-      }
-  }
+  /**
+   * The raw verification token carried by the SEND_EMAIL job the register/resend
+   * request enqueued for [email] (RFC 96, `context.verifyToken`). The enqueue
+   * commits in the request transaction, so the job row is present the instant the
+   * response returns — no polling, no delivery observed.
+   */
+  private fun verificationTokenFor(email: String): String =
+    ed.unicoach.rest.EnqueuedVerificationEmail
+      .verifyTokenFor(dbConnection, email)
 
   @Test
   fun `unverified user on a gated route gets 403 email_not_verified`() =
@@ -415,15 +410,6 @@ private fun io.ktor.server.application.Application.moduleWith(
     ed.unicoach.coaching.CoachingConfig
       .from(config)
       .getOrThrow()
-  val emailConfig =
-    ed.unicoach.email.EmailConfig
-      .from(config)
-      .getOrThrow()
-  val emailProvider =
-    ed.unicoach.email.EmailProviderFactory
-      .fromConfig(emailConfig)
-      .getOrThrow()
-  val emailService = ed.unicoach.email.EmailService(database, emailProvider, emailConfig)
   val emailVerificationConfig =
     ed.unicoach.auth.EmailVerificationConfig
       .from(config)
@@ -441,7 +427,6 @@ private fun io.ktor.server.application.Application.moduleWith(
     chatProvider,
     coachingConfig,
     clientKeyGateConfig,
-    emailService,
     emailVerificationConfig,
     ed.unicoach.auth.StubGoogleTokenVerifier(),
     queueService,

@@ -22,9 +22,6 @@ import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.email.EmailConfig
-import ed.unicoach.email.EmailProviderFactory
-import ed.unicoach.email.EmailService
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
@@ -60,7 +57,7 @@ fun startServer(
 ): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf", "email.conf")
+      .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf")
       .getOrThrow()
 
   val dbConfig =
@@ -103,11 +100,6 @@ fun startServer(
       .from(config)
       .getOrThrow()
 
-  val emailConfig =
-    EmailConfig
-      .from(config)
-      .getOrThrow()
-
   val emailVerificationConfig =
     EmailVerificationConfig
       .from(config)
@@ -119,12 +111,6 @@ fun startServer(
       .getOrThrow()
 
   val database = Database(dbConfig)
-
-  val emailProvider =
-    EmailProviderFactory
-      .fromConfig(emailConfig)
-      .getOrThrow()
-  val emailService = EmailService(database, emailProvider, emailConfig)
 
   val queueService = QueueService(database)
 
@@ -153,7 +139,6 @@ fun startServer(
         chatProvider,
         coachingConfig,
         clientKeyGateConfig,
-        emailService,
         emailVerificationConfig,
         googleTokenVerifier,
         queueService,
@@ -190,7 +175,6 @@ fun Application.appModule(
   chatProvider: ChatProvider,
   coachingConfig: CoachingConfig,
   clientKeyGateConfig: ClientKeyGateConfig,
-  emailService: EmailService,
   emailVerificationConfig: EmailVerificationConfig,
   googleTokenVerifier: GoogleTokenVerifier,
   queueService: QueueService,
@@ -204,7 +188,7 @@ fun Application.appModule(
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
   val emailVerificationService =
-    EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)
+    EmailVerificationService(database, queueService, tokenGenerator, emailVerificationConfig)
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
   val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)
   val studentService = ed.unicoach.student.StudentService(database)

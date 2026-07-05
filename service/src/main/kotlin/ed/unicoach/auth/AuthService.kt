@@ -78,95 +78,80 @@ class AuthService(
         passwordHash = pwdHash,
       )
 
-    // Raw verification token captured from inside the transaction for best-effort
-    // delivery after the commit. Null when registration did not reach a success.
-    var verificationRawToken: String? = null
-    var registeredUser: ed.unicoach.db.models.User? = null
-
-    val outcome =
-      try {
-        database.withConnection { session ->
-          val daoResult = UsersDao.create(session, newUser)
-          if (daoResult.isFailure) {
-            val ex = daoResult.exceptionOrNull()
-            if (ex is DuplicateEmailException) {
-              return@withConnection Result.success(RegisterResult.DuplicateEmail(emailAddr.value))
-            } else {
-              return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
-            }
+    return try {
+      database.withConnection { session ->
+        val daoResult = UsersDao.create(session, newUser)
+        if (daoResult.isFailure) {
+          val ex = daoResult.exceptionOrNull()
+          if (ex is DuplicateEmailException) {
+            return@withConnection Result.success(RegisterResult.DuplicateEmail(emailAddr.value))
+          } else {
+            return@withConnection Result.failure(ex ?: RuntimeException("Error during user creation"))
           }
-          val user = daoResult.getOrNull()!!
-
-          val newToken = tokenGenerator.generateToken()
-          val newHash = TokenHash.fromRawToken(newToken)
-          var wasReminted = false
-
-          if (oldCookieToken != null) {
-            val oldHash = TokenHash.fromRawToken(oldCookieToken)
-            val found = SessionsDao.findByTokenHash(session, oldHash)
-            if (found.isSuccess) {
-              val sessionVal = found.getOrNull()!!
-              SessionsDao
-                .remintToken(
-                  session = session,
-                  id = sessionVal.id,
-                  currentVersion = sessionVal.version,
-                  newUserId = user.id,
-                  newTokenHash = newHash.value,
-                  newExpirationSeconds = sessionExpirationSeconds,
-                  newLoginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
-                ).getOrThrow()
-              wasReminted = true
-            }
-          }
-
-          if (!wasReminted) {
-            SessionsDao
-              .create(
-                session = session,
-                input =
-                  ed.unicoach.db.models.NewSession(
-                    userId = user.id,
-                    tokenHash = newHash,
-                    userAgent = userAgent,
-                    initialIp = initialIp,
-                    metadata = null,
-                    expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
-                    loginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
-                  ),
-              ).getOrThrow()
-          }
-
-          // Issue the verification token inside the user-creation transaction so it
-          // is atomic with the user + session; the raw token is captured for
-          // best-effort delivery after the commit.
-          verificationRawToken = emailVerificationService.issueToken(session, user.id).getOrThrow()
-          registeredUser = user
-
-          Result.success(RegisterResult.Success(user, newToken))
         }
-      } catch (e: Exception) {
-        Result.failure(e)
+        val user = daoResult.getOrNull()!!
+
+        val newToken = tokenGenerator.generateToken()
+        val newHash = TokenHash.fromRawToken(newToken)
+        var wasReminted = false
+
+        if (oldCookieToken != null) {
+          val oldHash = TokenHash.fromRawToken(oldCookieToken)
+          val found = SessionsDao.findByTokenHash(session, oldHash)
+          if (found.isSuccess) {
+            val sessionVal = found.getOrNull()!!
+            SessionsDao
+              .remintToken(
+                session = session,
+                id = sessionVal.id,
+                currentVersion = sessionVal.version,
+                newUserId = user.id,
+                newTokenHash = newHash.value,
+                newExpirationSeconds = sessionExpirationSeconds,
+                newLoginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
+              ).getOrThrow()
+            wasReminted = true
+          }
+        }
+
+        if (!wasReminted) {
+          SessionsDao
+            .create(
+              session = session,
+              input =
+                ed.unicoach.db.models.NewSession(
+                  userId = user.id,
+                  tokenHash = newHash,
+                  userAgent = userAgent,
+                  initialIp = initialIp,
+                  metadata = null,
+                  expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+                  loginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
+                ),
+            ).getOrThrow()
+        }
+
+        // Issue the verification token and enqueue the verification email inside the
+        // user-creation transaction so all three are atomic (RFC 96). A failed
+        // enqueue aborts the transaction: no user/token is committed and the route
+        // surfaces it as a 500 via getOrThrow().
+        val verificationRawToken = emailVerificationService.issueToken(session, user.id).getOrThrow()
+        emailVerificationService.enqueue(session, user.email, verificationRawToken).getOrThrow()
+
+        Result.success(RegisterResult.Success(user, newToken))
       }
-
-    // Post-commit, best-effort verification email. A send failure must not fail
-    // registration — the user can resend.
-    val rawToken = verificationRawToken
-    val user = registeredUser
-    if (outcome.isSuccess && outcome.getOrNull() is RegisterResult.Success && rawToken != null && user != null) {
-      emailVerificationService.sendVerificationEmail(user.email, rawToken)
+    } catch (e: Exception) {
+      Result.failure(e)
     }
-
-    return outcome
   }
 
   /**
    * Rewrites the session user's email and re-arms verification. In one
    * transaction it rewrites `users.email`, clears `email_verified_at`, burns the
-   * user's outstanding verification tokens, and issues a fresh one (the raw token
-   * captured for post-commit delivery). After commit it best-effort delivers the
-   * verification email to the new address — a send failure does not fail the
-   * request. Mirrors [register]'s transaction shape.
+   * user's outstanding verification tokens, issues a fresh one, and enqueues the
+   * verification email to the new address (RFC 96). A failed enqueue aborts the
+   * whole transaction, so the request fails and nothing is committed. Mirrors
+   * [register]'s transaction shape.
    */
   suspend fun changeEmail(
     user: ed.unicoach.db.models.User,
@@ -184,46 +169,31 @@ class AuthService(
     }
     val emailAddr = emailValidation.value
 
-    // Raw verification token captured from inside the transaction for best-effort
-    // delivery after the commit; the updated user carries the new address.
-    var verificationRawToken: String? = null
-    var updatedUser: ed.unicoach.db.models.User? = null
-
-    val outcome =
-      try {
-        database.withConnection { session ->
-          val daoResult = UsersDao.changeEmail(session, user.id, emailAddr)
-          if (daoResult.isFailure) {
-            val ex = daoResult.exceptionOrNull()
-            if (ex is DuplicateEmailException) {
-              return@withConnection Result.success(ChangeEmailResult.DuplicateEmail(emailAddr.value))
-            } else {
-              return@withConnection Result.failure(ex ?: RuntimeException("Error during email change"))
-            }
+    return try {
+      database.withConnection { session ->
+        val daoResult = UsersDao.changeEmail(session, user.id, emailAddr)
+        if (daoResult.isFailure) {
+          val ex = daoResult.exceptionOrNull()
+          if (ex is DuplicateEmailException) {
+            return@withConnection Result.success(ChangeEmailResult.DuplicateEmail(emailAddr.value))
+          } else {
+            return@withConnection Result.failure(ex ?: RuntimeException("Error during email change"))
           }
-          val rewritten = daoResult.getOrNull()!!
-
-          // Burn any in-flight token bound to the old address, then issue a fresh
-          // one atomic with the email rewrite.
-          VerificationTokensDao.consumeAllForUser(session, user.id).getOrThrow()
-          verificationRawToken = emailVerificationService.issueToken(session, user.id).getOrThrow()
-          updatedUser = rewritten
-
-          Result.success(ChangeEmailResult.Success(rewritten))
         }
-      } catch (e: Exception) {
-        Result.failure(e)
+        val rewritten = daoResult.getOrNull()!!
+
+        // Burn any in-flight token bound to the old address, issue a fresh one, and
+        // enqueue the verification email to the new address — all atomic with the
+        // rewrite. A failed enqueue aborts the transaction (surfaced as a 500).
+        VerificationTokensDao.consumeAllForUser(session, user.id).getOrThrow()
+        val verificationRawToken = emailVerificationService.issueToken(session, user.id).getOrThrow()
+        emailVerificationService.enqueue(session, rewritten.email, verificationRawToken).getOrThrow()
+
+        Result.success(ChangeEmailResult.Success(rewritten))
       }
-
-    // Post-commit, best-effort verification email to the new address. A send
-    // failure must not fail the request — the user can resend.
-    val rawToken = verificationRawToken
-    val refreshed = updatedUser
-    if (outcome.isSuccess && outcome.getOrNull() is ChangeEmailResult.Success && rawToken != null && refreshed != null) {
-      emailVerificationService.sendVerificationEmail(refreshed.email, rawToken)
+    } catch (e: Exception) {
+      Result.failure(e)
     }
-
-    return outcome
   }
 
   /**

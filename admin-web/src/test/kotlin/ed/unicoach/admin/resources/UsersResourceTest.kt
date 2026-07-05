@@ -507,6 +507,7 @@ class UsersResourceTest {
       assertEquals(HttpStatusCode.Found, sent.status)
       assertEquals("/user/${target.id.value}", sent.headers[HttpHeaders.Location])
       assertEquals(1, unconsumedTokenCount(target.id), "A fresh unconsumed verification token must exist")
+      assertEquals(1, sendEmailJobsTo(target.email.value), "The admin resend action must enqueue a SEND_EMAIL job to the target user")
     }
 
   @Test
@@ -574,6 +575,26 @@ private fun unconsumedTokenCount(id: UserId): Int {
     .use { conn ->
       conn.prepareStatement(sql).use { stmt ->
         stmt.setObject(1, id.value)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getInt(1)
+        }
+      }
+    }
+}
+
+/** Counts SEND_EMAIL jobs whose payload `to` matches [recipient] via a direct test-DB query. */
+private fun sendEmailJobsTo(recipient: String): Int {
+  val dbConfig =
+    ed.unicoach.db.DatabaseConfig
+      .from(AdminTestSupport.config)
+      .getOrThrow()
+  val sql = "SELECT COUNT(*) FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'to' = ?"
+  return java.sql.DriverManager
+    .getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
+    .use { conn ->
+      conn.prepareStatement(sql).use { stmt ->
+        stmt.setString(1, recipient)
         stmt.executeQuery().use { rs ->
           rs.next()
           rs.getInt(1)

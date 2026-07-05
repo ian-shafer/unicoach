@@ -27,6 +27,13 @@ import kotlin.test.assertTrue
  * verification_tokens table stores only the SHA-256 hash, so the tests insert a
  * known raw token (and its hash) directly for a registered user, then drive the
  * POST endpoints with that raw token.
+ *
+ * The send now runs on the worker (RFC 96). These tests prove **enqueue only** —
+ * that a request commits a `SEND_EMAIL` job — and do not boot a worker or observe
+ * delivery (`email_sends`). Where a verify-flow test needs the raw token it reads
+ * it from the enqueued job's `context.verifyToken` via [EnqueuedVerificationEmail]
+ * (deterministic: the enqueue commits in the request transaction, so the job row
+ * is present the instant the response returns).
  */
 class EmailVerificationRoutingTest {
   companion object {
@@ -50,7 +57,7 @@ class EmailVerificationRoutingTest {
 
       val config =
         ed.unicoach.common.config.AppConfig
-          .load("common.conf", "db.conf")
+          .load("common.conf", "db.conf", "service.conf", "email.conf")
           .getOrThrow()
       val dbConfig =
         ed.unicoach.db.DatabaseConfig
@@ -127,39 +134,19 @@ class EmailVerificationRoutingTest {
       }
     }
 
-  private fun emailSendsCount(): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM email_sends").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  /** Count of SEND_EMAIL jobs enqueued to [recipient] (proves enqueue, not delivery). */
+  private fun enqueuedEmailCountTo(recipient: String): Int = EnqueuedVerificationEmail.countTo(connection, recipient)
 
-  /**
-   * Recovers the raw verification token from the most recent verification email
-   * sent to [recipient]. Only the token hash is persisted, so the raw token is
-   * read back out of the delivered email body, the same way a real recipient
-   * would follow the verify link.
-   */
-  private fun latestTokenSentTo(recipient: String): String =
-    connection
-      .prepareStatement(
-        "SELECT body FROM email_sends WHERE recipient_email = ? ORDER BY created_at DESC LIMIT 1",
-      ).use { stmt ->
-        stmt.setString(1, recipient)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "Expected a delivered email for $recipient")
-          val body = rs.getString("body")
-          Regex("[?&]token=([^\\s&]+)").find(body)?.groupValues?.get(1)
-            ?: error("No ?token= found in delivered email body: $body")
-        }
-      }
+  /** Raw token carried by the SEND_EMAIL job enqueued to [recipient]. */
+  private fun verifyTokenFor(recipient: String): String = EnqueuedVerificationEmail.verifyTokenFor(connection, recipient)
 
   @Test
   fun `full loop register insert-token verify-email then me reports verified`() =
     runBlocking {
       val email = uniqueEmail()
       val (cookiePair, userId) = registerUser(email)
+      // Registration transactionally enqueues one SEND_EMAIL job to the registrant.
+      assertEquals(1, enqueuedEmailCountTo(email), "register must enqueue a SEND_EMAIL job to the registrant")
       val raw = "loop-raw-${UUID.randomUUID()}"
       insertToken(userId, raw, Instant.now().plus(1, ChronoUnit.DAYS))
 
@@ -245,6 +232,7 @@ class EmailVerificationRoutingTest {
       // Registration already issued one outstanding token.
       assertTrue(outstandingTokenCount(userId) >= 1, "Registration should leave an outstanding token")
 
+      val before = enqueuedEmailCountTo(email)
       val response =
         client.post(buildUrl("/api/v1/auth/resend-verification")) {
           header(HttpHeaders.Cookie, cookiePair)
@@ -253,6 +241,8 @@ class EmailVerificationRoutingTest {
 
       // Resend invalidates prior tokens and issues exactly one fresh one.
       assertEquals(1, outstandingTokenCount(userId), "Resend must leave exactly one outstanding token")
+      // ...and transactionally enqueues one fresh SEND_EMAIL job to the recipient.
+      assertEquals(before + 1, enqueuedEmailCountTo(email), "Resend must enqueue exactly one new SEND_EMAIL job")
     }
 
   @Test
@@ -264,10 +254,13 @@ class EmailVerificationRoutingTest {
     }
 
   @Test
-  fun `resend-verification for an already-verified user returns 204 with no new email_sends row`() =
+  fun `resend-verification for an already-verified user returns 204 enqueuing no new email to that recipient`() =
     runBlocking {
       val email = uniqueEmail()
       val (cookiePair, userId) = registerUser(email)
+      // Registration transactionally enqueued one SEND_EMAIL job. The count is
+      // recipient-scoped, so a concurrent test's enqueue cannot perturb it.
+
       // Verify the user first.
       val raw = "preverify-raw-${UUID.randomUUID()}"
       insertToken(userId, raw, Instant.now().plus(1, ChronoUnit.DAYS))
@@ -278,33 +271,18 @@ class EmailVerificationRoutingTest {
         }
       assertEquals(HttpStatusCode.OK, verify.status)
 
-      val before = emailSendsCount()
+      val before = enqueuedEmailCountTo(email)
       val response =
         client.post(buildUrl("/api/v1/auth/resend-verification")) {
           header(HttpHeaders.Cookie, cookiePair)
         }
       assertEquals(HttpStatusCode.NoContent, response.status)
-      assertEquals(before, emailSendsCount(), "An already-verified resend must not record a new email send")
+      assertEquals(
+        before,
+        enqueuedEmailCountTo(email),
+        "An already-verified resend must not enqueue a new email to that recipient",
+      )
     }
-
-  /** Polls for the verification email delivered to [recipient] (post-commit, best-effort send). */
-  private fun awaitTokenSentTo(recipient: String): String {
-    repeat(50) {
-      val present =
-        connection
-          .prepareStatement("SELECT COUNT(*) FROM email_sends WHERE recipient_email = ?")
-          .use { stmt ->
-            stmt.setString(1, recipient)
-            stmt.executeQuery().use { rs ->
-              rs.next()
-              rs.getInt(1) > 0
-            }
-          }
-      if (present) return latestTokenSentTo(recipient)
-      Thread.sleep(100)
-    }
-    error("No verification email arrived for $recipient")
-  }
 
   @Test
   fun `change-email authenticated with a valid new email returns 200 unverified`() =
@@ -412,8 +390,10 @@ class EmailVerificationRoutingTest {
         }
       assertEquals(HttpStatusCode.OK, change.status)
 
-      // Recover the new raw token from the delivered email (post-commit send).
-      val rawToken = awaitTokenSentTo(newEmail)
+      // Recover the new raw token from the enqueued SEND_EMAIL job's payload
+      // (context.verifyToken) — the same raw token the worker would render into the
+      // verify link. The enqueue is transactional, so the job is present now.
+      val rawToken = verifyTokenFor(newEmail)
 
       val verify =
         client.post(buildUrl("/api/v1/auth/verify-email")) {

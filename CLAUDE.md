@@ -112,6 +112,12 @@ Treat `INVARIANTS.md` as reviewed intent, not proof: the **code + applied
 migrations remain the source of truth**. When a file and the code disagree, the
 code wins.
 
+The repo-root [`ASYNC_WORK.md`](ASYNC_WORK.md) is a sibling of the per-directory
+`INVARIANTS.md` files: it records the few cross-cutting rules for async-capable
+work (queue-by-default, and a required enqueue as part of the request
+transaction) that govern every request-handling surface rather than one
+directory (RFC 96).
+
 ## Transient pipeline output
 
 Transient output from the RFC pipeline — RFC backup snapshots and the

@@ -16,4 +16,10 @@ class JobTypeTest {
     val result = JobType.fromValue("totally_unknown_type")
     assertNull(result)
   }
+
+  @Test
+  fun `SEND_EMAIL round-trips through fromValue`() {
+    assertEquals(JobType.SEND_EMAIL, JobType.fromValue("SEND_EMAIL"))
+    assertEquals("SEND_EMAIL", JobType.SEND_EMAIL.value)
+  }
 }

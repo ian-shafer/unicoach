@@ -60,8 +60,11 @@ class GoogleAuthServiceTest {
   fun resetDatabase() {
     connection.createStatement().use { stmt ->
       stmt.execute("TRUNCATE TABLE users CASCADE")
+      stmt.execute("TRUNCATE TABLE jobs CASCADE")
     }
   }
+
+  private fun sendEmailJobCount(): Int = SendEmailJobQueries.count(connection)
 
   private val sqlSession =
     object : SqlSession {
@@ -69,17 +72,9 @@ class GoogleAuthServiceTest {
     }
 
   private fun emailVerificationService(): EmailVerificationService {
-    val emailConfig =
-      ed.unicoach.email.EmailConfig
-        .from(appConfig)
-        .getOrThrow()
-    val provider =
-      ed.unicoach.email.EmailProviderFactory
-        .fromConfig(emailConfig)
-        .getOrThrow()
-    val emailService = ed.unicoach.email.EmailService(database, provider, emailConfig)
+    val queueService = ed.unicoach.queue.QueueService(database)
     val evConfig = EmailVerificationConfig.from(appConfig).getOrThrow()
-    return EmailVerificationService(database, emailService, ed.unicoach.util.TokenGenerator(), evConfig)
+    return EmailVerificationService(database, queueService, ed.unicoach.util.TokenGenerator(), evConfig)
   }
 
   private val authService by lazy {
@@ -124,6 +119,10 @@ class GoogleAuthServiceTest {
     val sessionRow = SessionsDao.findByTokenHash(sqlSession, TokenHash.fromRawToken(result.token)).getOrThrow()
     assertEquals(LoginMethod.GOOGLE, sessionRow.loginMethod)
     assertEquals(user.id, sessionRow.userId)
+
+    // The Google path is pre-verified (email_verified gated upstream), so it never
+    // enqueues a verification email (RFC 96).
+    assertEquals(0, sendEmailJobCount(), "A Google sign-in must enqueue no SEND_EMAIL job")
   }
 
   @Test

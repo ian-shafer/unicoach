@@ -3,10 +3,9 @@ package ed.unicoach.email
 import aws.sdk.kotlin.runtime.auth.credentials.StaticCredentialsProvider
 import aws.sdk.kotlin.services.sesv2.SesV2Client
 
-// Selector mapping the config `provider` string to a concrete EmailProvider. The
-// module stays unwired: no production main() calls this; it is exercised by tests
-// only, mirroring RFC 34's stance that production construction is the queue RFC's
-// responsibility.
+// Selector mapping the config `provider` string to a concrete EmailProvider.
+// Called at production startup by the `queue-worker` process — the sole
+// transmitter of outbound email (RFC 96); a request never constructs a provider.
 object EmailProviderFactory {
   fun fromConfig(config: EmailConfig): Result<EmailProvider> =
     when (config.provider) {

@@ -103,4 +103,47 @@ class QueueServiceTest {
       assertTrue(result is EnqueueResult.Success)
       assertNull(result.job.maxAttempts)
     }
+
+  @Test
+  fun `enqueue(session) inserts a SCHEDULED SEND_EMAIL job on the caller's connection`() =
+    runTest {
+      val payload = JsonObject(mapOf("to" to JsonPrimitive("user@example.com")))
+      val result =
+        database.withConnection { session ->
+          service.enqueue(session, JobType.SEND_EMAIL, payload)
+        }
+
+      assertTrue(result is EnqueueResult.Success)
+      assertEquals(JobStatus.SCHEDULED, result.job.status)
+      assertEquals(JobType.SEND_EMAIL, result.job.jobType)
+      assertEquals(payload, result.job.payload)
+      assertEquals(1, jobCount(JobType.SEND_EMAIL))
+    }
+
+  @Test
+  fun `enqueue(session) rolls back with the surrounding transaction`() =
+    runTest {
+      runCatching {
+        database.withConnection { session ->
+          service.enqueue(session, JobType.SEND_EMAIL, simplePayload())
+          throw RuntimeException("abort the surrounding transaction")
+        }
+      }
+
+      // The enqueue shared the caller's transaction, so the rollback removed it.
+      assertEquals(0, jobCount(JobType.SEND_EMAIL))
+    }
+
+  private fun jobCount(jobType: JobType): Int {
+    val conn = DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "")
+    conn.use { c ->
+      c.prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = ?").use { stmt ->
+        stmt.setString(1, jobType.value)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return rs.getInt(1)
+        }
+      }
+    }
+  }
 }

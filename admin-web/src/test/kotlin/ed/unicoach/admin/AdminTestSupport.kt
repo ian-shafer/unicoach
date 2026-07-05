@@ -79,7 +79,7 @@ import kotlin.test.assertTrue
 object AdminTestSupport {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "admin-web.conf", "service.conf", "email.conf")
+      .load("common.conf", "db.conf", "admin-web.conf", "service.conf")
       .getOrThrow()
 
   private val dbConfig = DatabaseConfig.from(config).getOrThrow()
@@ -87,22 +87,11 @@ object AdminTestSupport {
 
   val database = Database(dbConfig)
   val argon2Hasher = Argon2Hasher()
-  private val emailConfig =
-    ed.unicoach.email.EmailConfig
-      .from(config)
-      .getOrThrow()
-  private val emailService =
-    ed.unicoach.email.EmailService(
-      database,
-      ed.unicoach.email.EmailProviderFactory
-        .fromConfig(emailConfig)
-        .getOrThrow(),
-      emailConfig,
-    )
+  private val queueService = ed.unicoach.queue.QueueService(database)
   private val emailVerificationService =
     ed.unicoach.auth.EmailVerificationService(
       database,
-      emailService,
+      queueService,
       TokenGenerator(),
       ed.unicoach.auth.EmailVerificationConfig
         .from(config)
@@ -121,7 +110,7 @@ object AdminTestSupport {
    */
   fun resetDatabase() {
     DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "").use { conn ->
-      conn.createStatement().use { it.execute("TRUNCATE TABLE users, colleges CASCADE") }
+      conn.createStatement().use { it.execute("TRUNCATE TABLE users, colleges, jobs CASCADE") }
     }
   }
 

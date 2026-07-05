@@ -26,9 +26,7 @@ import ed.unicoach.auth.StubGoogleTokenVerifier
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.email.EmailConfig
-import ed.unicoach.email.EmailProviderFactory
-import ed.unicoach.email.EmailService
+import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import io.ktor.server.application.Application
@@ -41,7 +39,7 @@ import io.ktor.server.routing.routing
 fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "admin-web.conf", "service.conf", "email.conf")
+      .load("common.conf", "db.conf", "admin-web.conf", "service.conf")
       .getOrThrow()
 
   val dbConfig =
@@ -57,17 +55,15 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val database = Database(dbConfig)
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
-  // The admin gate only authenticates via AuthService; it never registers users
-  // or sends verification mail. The EmailVerificationService is wired purely to
-  // satisfy the AuthService constructor (RFC 65); the log provider is inert here.
-  // The StubGoogleTokenVerifier (RFC 64) is likewise inert: the admin gate never
-  // exercises the Google login path.
-  val emailConfig = EmailConfig.from(config).getOrThrow()
-  val emailProvider = EmailProviderFactory.fromConfig(emailConfig).getOrThrow()
-  val emailService = EmailService(database, emailProvider, emailConfig)
+  // The admin "send verification email" action enqueues a SEND_EMAIL job via
+  // EmailVerificationService.resend (RFC 96); the worker transmits it. admin-web
+  // is now a pure enqueue-only producer — it constructs a QueueService, never an
+  // EmailService/provider. The StubGoogleTokenVerifier (RFC 64) stays inert: the
+  // admin gate never exercises the Google login path.
+  val queueService = QueueService(database)
   val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
   val emailVerificationService =
-    EmailVerificationService(database, emailService, tokenGenerator, emailVerificationConfig)
+    EmailVerificationService(database, queueService, tokenGenerator, emailVerificationConfig)
   val authService =
     AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, StubGoogleTokenVerifier())
 

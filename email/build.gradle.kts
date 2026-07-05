@@ -1,10 +1,12 @@
 plugins {
   alias(libs.plugins.kotlin.jvm)
+  alias(libs.plugins.kotlin.serialization)
 }
 
 dependencies {
   implementation(project(":common"))
   implementation(project(":db"))
+  implementation(project(":queue"))
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.slf4j.api)
   implementation(libs.aws.sesv2)

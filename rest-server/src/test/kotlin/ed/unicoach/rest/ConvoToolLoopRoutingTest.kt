@@ -123,15 +123,6 @@ class ConvoToolLoopRoutingTest {
       val coachingConfig = CoachingConfig.from(config).getOrThrow()
       val clientKeyGateConfig = ClientKeyGateConfig.from(config).getOrThrow()
       val queueService = ed.unicoach.queue.QueueService(database)
-      val emailConfig =
-        ed.unicoach.email.EmailConfig
-          .from(config)
-          .getOrThrow()
-      val emailProvider =
-        ed.unicoach.email.EmailProviderFactory
-          .fromConfig(emailConfig)
-          .getOrThrow()
-      val emailService = ed.unicoach.email.EmailService(database, emailProvider, emailConfig)
       val emailVerificationConfig =
         ed.unicoach.auth.EmailVerificationConfig
           .from(config)
@@ -149,7 +140,6 @@ class ConvoToolLoopRoutingTest {
             fakeProvider,
             coachingConfig,
             clientKeyGateConfig,
-            emailService,
             emailVerificationConfig,
             googleTokenVerifier,
             queueService,

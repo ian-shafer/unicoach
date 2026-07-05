@@ -68,20 +68,12 @@ class CallerResolutionTest {
   }
 
   private fun authServiceOver(db: Database): AuthService {
-    val emailConfig =
-      ed.unicoach.email.EmailConfig
-        .from(config)
-        .getOrThrow()
-    val provider =
-      ed.unicoach.email.EmailProviderFactory
-        .fromConfig(emailConfig)
-        .getOrThrow()
-    val emailService = ed.unicoach.email.EmailService(db, provider, emailConfig)
+    val queueService = ed.unicoach.queue.QueueService(db)
     val evConfig =
       ed.unicoach.auth.EmailVerificationConfig
         .from(config)
         .getOrThrow()
-    val evService = ed.unicoach.auth.EmailVerificationService(db, emailService, TokenGenerator(), evConfig)
+    val evService = ed.unicoach.auth.EmailVerificationService(db, queueService, TokenGenerator(), evConfig)
     return AuthService(db, Argon2Hasher(), TokenGenerator(), evService, StubGoogleTokenVerifier())
   }
 

@@ -14,7 +14,14 @@ import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
 
-class JobsDao {
+/**
+ * `open` at the [insert] seam only: [QueueService] takes a [JobsDao] as an
+ * injectable constructor parameter, so a test can supply a [JobsDao] whose
+ * `insert` returns [JobInsertResult.DatabaseFailure] to drive the
+ * enqueue-failure/rollback paths without subclassing the production
+ * [QueueService] facade. Production code constructs the plain [JobsDao].
+ */
+open class JobsDao {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
@@ -71,7 +78,7 @@ class JobsDao {
    * Inserts a job with status SCHEDULED. If [newJob].delay is non-null,
    * scheduled_at is set to NOW() + that interval via SQL.
    */
-  fun insert(
+  open fun insert(
     session: SqlSession,
     newJob: NewJob,
   ): JobInsertResult =
