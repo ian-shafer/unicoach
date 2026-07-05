@@ -68,7 +68,7 @@ class FitLensHandler(
       // Dead-lettered: a completed pass with unusable output is never retried. Log
       // the specific parse-failure reason so the dropped pass is diagnosable.
       is FitLensResult.Failed -> {
-        logger.warn("Dead-lettering fit-lens job for student=[{}]: [{}]", studentId.asString, result.reason)
+        logger.warn("Dead-lettering fit-lens job for student=[{}]: [{}]", studentId.asString, result.reason.toDisplay())
         JobResult.Success
       }
 

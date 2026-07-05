@@ -505,12 +505,12 @@ class FitLensServiceTest {
       assertTrue(offSetResult is FitLensResult.Failed, "Expected Failed, got: $offSetResult")
 
       assertTrue(
-        malformedResult.reason.contains("malformed JSON"),
-        "the malformed-query reason names the JSON failure, got: ${malformedResult.reason}",
+        malformedResult.reason.toDisplay().contains("malformed JSON"),
+        "the malformed-query reason names the JSON failure, got: ${malformedResult.reason.toDisplay()}",
       )
       assertTrue(
-        offSetResult.reason.contains("outside the retrieved match set"),
-        "the off-match-set reason names the match-set failure, got: ${offSetResult.reason}",
+        offSetResult.reason.toDisplay().contains("outside the retrieved match set"),
+        "the off-match-set reason names the match-set failure, got: ${offSetResult.reason.toDisplay()}",
       )
     }
 

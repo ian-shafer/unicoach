@@ -107,15 +107,19 @@ class FitLensService(
   private suspend fun readPhase(studentId: StudentId): ReadPhase =
     database.withConnection { session ->
       val studentResult = StudentsDao.findById(session, studentId, SoftDeleteScope.ALL)
-      if (studentResult.exceptionOrNull() is NotFoundException) return@withConnection ReadPhase.Skip("student not found")
+      if (studentResult.exceptionOrNull() is NotFoundException) {
+        return@withConnection ReadPhase.Skip(SkipReason.StudentNotFound(studentId))
+      }
       val student = studentResult.getOrThrow()
-      if (student.deletedAt != null) return@withConnection ReadPhase.Skip("student soft-deleted")
+      if (student.deletedAt != null) return@withConnection ReadPhase.Skip(SkipReason.StudentSoftDeleted(studentId))
 
       AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
 
       val activeClaims = ClaimsDao.listActiveByStudent(session, studentId).getOrThrow()
       // minClaims floor: too little signal to search on.
-      if (activeClaims.size < config.minClaims) return@withConnection ReadPhase.Skip("below minClaims floor")
+      if (activeClaims.size < config.minClaims) {
+        return@withConnection ReadPhase.Skip(SkipReason.BelowMinClaimsFloor(studentId, activeClaims.size, config.minClaims))
+      }
 
       val listEntries = CollegeListEntriesDao.listActiveByStudent(session, studentId).getOrThrow()
       val suggestedIds = FitSuggestionsDao.listSuggestedCollegeIds(session, studentId).getOrThrow()
@@ -124,14 +128,16 @@ class FitLensService(
       val lastAppliedAt = FitLensRunsDao.lastAppliedAt(session, studentId).getOrThrow()
       val freshness = (activeClaims + listEntries).latestUpdatedAt()
       if (lastAppliedAt != null && freshness != null && !freshness.isAfter(lastAppliedAt)) {
-        return@withConnection ReadPhase.Skip("model unchanged since last applied run")
+        return@withConnection ReadPhase.Skip(SkipReason.ModelUnchangedSinceLastApplied(studentId, freshness, lastAppliedAt))
       }
 
       // Failure circuit breaker: stop re-billing a model state that has failed to
       // parse maxConsecutiveFailures times running.
       val consecutiveFailures = FitLensRunsDao.consecutiveFailuresSince(session, studentId).getOrThrow()
       if (consecutiveFailures >= config.maxConsecutiveFailures) {
-        return@withConnection ReadPhase.Skip("failure circuit breaker open ($consecutiveFailures failures)")
+        return@withConnection ReadPhase.Skip(
+          SkipReason.FailureCircuitBreakerOpen(studentId, consecutiveFailures, config.maxConsecutiveFailures),
+        )
       }
 
       // Resolve both prompt catalog rows up front so a later failure still has
@@ -181,7 +187,7 @@ class FitLensService(
 
     val queryRaw = ContentBlocks.renderText(queryCompleted.response.content)
     val query =
-      when (val parsed = parseQuery(queryRaw)) {
+      when (val parsed = parseQuery(studentId, queryRaw)) {
         is QueryParse.Failure -> return onQueryParseFailure(studentId, ready, parsed, queryRaw, queryUsage, modelResolved)
         is QueryParse.Parsed -> parsed.query
       }
@@ -207,7 +213,7 @@ class FitLensService(
     val reasonRaw = ContentBlocks.renderText(reasonCompleted.response.content)
     val matchIds = matches.map { it.id }.toSet()
 
-    return when (val parsed = parseReason(reasonRaw, matchIds)) {
+    return when (val parsed = parseReason(studentId, reasonRaw, matchIds)) {
       is ReasonParse.Failure -> onReasonParseFailure(studentId, ready, parsed, reasonRaw, matches.size, totalUsage, modelResolved)
       is ReasonParse.Empty -> onReasonEmpty(studentId, ready, matches.size, totalUsage, modelResolved)
       is ReasonParse.Chosen -> writePhase(studentId, ready, parsed.collegeId, parsed.rationale, matches.size, totalUsage, modelResolved)
@@ -255,13 +261,12 @@ class FitLensService(
     logger.warn(
       "unparseable fit-lens CollegeQuery for student=[{}]: [{}]; raw=[{}]",
       studentId.asString,
-      parsed.detail,
+      parsed.detail.toDisplay(),
       truncateForLog(queryRaw),
     )
     return writeFailedRun(
       studentId,
       ready,
-      category = parsed.category,
       reason = parsed.detail,
       matchesConsidered = null,
       usage = queryUsage,
@@ -281,7 +286,7 @@ class FitLensService(
   ): FitLensResult {
     val write =
       writeAppliedRun(studentId, ready, suggestionsWritten = 0, matchesConsidered = 0, usage = queryUsage, modelResolved = modelResolved)
-    return write ?: FitLensResult.Skipped("zero search matches")
+    return write ?: FitLensResult.Skipped(SkipReason.ZeroSearchMatches(studentId))
   }
 
   private suspend fun onReasonParseFailure(
@@ -296,13 +301,12 @@ class FitLensService(
     logger.warn(
       "unusable fit-lens reason output for student=[{}]: [{}]; raw=[{}]",
       studentId.asString,
-      parsed.detail,
+      parsed.detail.toDisplay(),
       truncateForLog(reasonRaw),
     )
     return writeFailedRun(
       studentId,
       ready,
-      category = parsed.category,
       reason = parsed.detail,
       matchesConsidered = matchesConsidered,
       usage = totalUsage,
@@ -327,7 +331,7 @@ class FitLensService(
         usage = totalUsage,
         modelResolved = modelResolved,
       )
-    return write ?: FitLensResult.Skipped("reason returned no fit")
+    return write ?: FitLensResult.Skipped(SkipReason.ReasonReturnedNoFit(studentId))
   }
 
   // ---------------------------------------------------------------------------
@@ -429,8 +433,7 @@ class FitLensService(
   private suspend fun writeFailedRun(
     studentId: StudentId,
     ready: ReadPhase.Ready,
-    category: FitLensFailureCategory,
-    reason: String,
+    reason: FailureReason,
     matchesConsidered: Int?,
     usage: TokenUsage,
     modelResolved: String?,
@@ -447,8 +450,8 @@ class FitLensService(
           matchesConsidered,
           usage,
           modelResolved,
-          failureCategory = category,
-          failureReason = reason,
+          failureCategory = reason.category,
+          failureReason = reason.toDisplay(),
         )
       }
       FitLensResult.Failed(reason)
@@ -585,13 +588,16 @@ class FitLensService(
    * structural or type-invalid field fails the pass (no partial acceptance). The
    * model never sets `limit`; the service sets it after parse.
    */
-  private fun parseQuery(raw: String): QueryParse {
+  private fun parseQuery(
+    studentId: StudentId,
+    raw: String,
+  ): QueryParse {
     val root =
       try {
         json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return QueryParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "root is not a JSON object")
+          ?: return QueryParse.Failure(FailureReason.QueryNotJsonObject(studentId))
       } catch (e: Exception) {
-        return QueryParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "malformed JSON: ${e.message}")
+        return QueryParse.Failure(FailureReason.QueryMalformedJson(studentId, e.message))
       }
 
     fun stringField(name: String): String? = (root[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
@@ -650,7 +656,7 @@ class FitLensService(
         ),
       )
     } catch (e: IllegalArgumentException) {
-      QueryParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "type-invalid field [${e.message}]")
+      QueryParse.Failure(FailureReason.QueryTypeInvalidField(studentId, e.message))
     }
   }
 
@@ -661,15 +667,16 @@ class FitLensService(
    * rationale, is [ReasonParse.Failure].
    */
   private fun parseReason(
+    studentId: StudentId,
     raw: String,
     matchIds: Set<CollegeId>,
   ): ReasonParse {
     val root =
       try {
         json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return ReasonParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "root is not a JSON object")
+          ?: return ReasonParse.Failure(FailureReason.ReasonNotJsonObject(studentId))
       } catch (e: Exception) {
-        return ReasonParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "malformed JSON: ${e.message}")
+        return ReasonParse.Failure(FailureReason.ReasonMalformedJson(studentId, e.message))
       }
 
     val collegeIdRaw = (root["collegeId"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
@@ -680,27 +687,21 @@ class FitLensService(
 
     val collegeId =
       runCatching { CollegeId(java.util.UUID.fromString(collegeIdRaw)) }.getOrNull()
-        ?: return ReasonParse.Failure(FitLensFailureCategory.INVALID_CONTENT, "collegeId is not a UUID: [$collegeIdRaw]")
+        ?: return ReasonParse.Failure(FailureReason.ReasonInvalidCollegeId(studentId, collegeIdRaw))
     if (collegeId !in matchIds) {
-      return ReasonParse.Failure(
-        FitLensFailureCategory.INVALID_CONTENT,
-        "collegeId [$collegeIdRaw] is outside the retrieved match set",
-      )
+      return ReasonParse.Failure(FailureReason.ReasonCollegeIdOutsideMatchSet(studentId, collegeId))
     }
 
     val rationale = (root["rationale"] as? JsonPrimitive)?.takeIf { it.isString }?.content
     if (rationale == null || rationale.isBlank()) {
-      return ReasonParse.Failure(FitLensFailureCategory.INVALID_CONTENT, "rationale is missing or blank")
+      return ReasonParse.Failure(FailureReason.ReasonRationaleMissing(studentId))
     }
     // Belt-and-suspenders: reject an over-length rationale here as a parse failure
     // (a Failed pass) rather than letting it reach the write and trip
     // fit_suggestions_rationale_length_check as a swallowed no-op. The DB CHECK
     // remains the backstop.
     if (rationale.length > MAX_RATIONALE_CHARS) {
-      return ReasonParse.Failure(
-        FitLensFailureCategory.INVALID_CONTENT,
-        "rationale exceeds $MAX_RATIONALE_CHARS chars (${rationale.length})",
-      )
+      return ReasonParse.Failure(FailureReason.ReasonRationaleTooLong(studentId, rationale.length, MAX_RATIONALE_CHARS))
     }
 
     return ReasonParse.Chosen(collegeId, rationale)
@@ -723,7 +724,7 @@ class FitLensService(
 
   private sealed interface ReadPhase {
     data class Skip(
-      val reason: String,
+      val reason: SkipReason,
     ) : ReadPhase
 
     data class Ready(
@@ -740,8 +741,7 @@ class FitLensService(
     ) : QueryParse
 
     data class Failure(
-      val category: FitLensFailureCategory,
-      val detail: String,
+      val detail: FailureReason,
     ) : QueryParse
   }
 
@@ -754,8 +754,7 @@ class FitLensService(
     data object Empty : ReasonParse
 
     data class Failure(
-      val category: FitLensFailureCategory,
-      val detail: String,
+      val detail: FailureReason,
     ) : ReasonParse
   }
 }
