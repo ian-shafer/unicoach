@@ -122,18 +122,15 @@ between a dev machine (which can build) and the production instance (which
 cannot). Keeping them separate means a skipped build fails loudly at run instead
 of being papered over.
 
-### `bin/` scripts parse their own options with `getopts`, single-letter only
+### Scripts parse their own options with `getopts`
 
-**Rule:** A `bin/` script MUST parse its own options via `getopts`, using
-single-letter options only — never a long-form (`--foo`) option of its own. The
-exception is a thin front over a third-party CLI (`infra-apply`, `infra-plan`,
-`infra-init`, `infra-output`, `infra-bootstrap`, each forwarding to `tofu`)
-whose own argument grammar isn't ours to constrain.
+**Rule:** A `bin/` script MUST parse its own options with `getopts`, and MUST
+NOT hand-roll long-form (`--foo`) options (e.g. via the `getopts -:` trick).
+Exception: the `infra-*` `tofu` fronts, whose argument grammar isn't ours to
+constrain.
 
-**Why:** `getopts` is the only option parser already in use across `bin/`; a
-second, long-form syntax would fork parsing style per script and complicate a
-script like `bin/remote`, which must cleanly separate its own options from an
-opaque forwarded command.
+**Why:** One option parser across all of `bin/`. A second, long-form syntax
+would fork the parsing style script by script for no benefit.
 
 ### An ops-tool script reads credentials only from `/etc/unicoach/env`
 
