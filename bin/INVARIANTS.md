@@ -188,19 +188,6 @@ private-cluster harnesses, or managed RDS in production). If the DDL scripts
 also provisioned, the local and deploy paths would fork on cluster provisioning
 — production RDS must never be `initdb`-ed by a migration run.
 
-### `admin-grant` is the sole sanctioned raw-SQL entity mutation
-
-**Rule:** `bin/admin-grant` is the ONLY `bin/` script that may issue raw
-entity-mutating SQL, and only to mint the **first** admin. It MUST set
-`is_admin` in a single `psql` transaction that reads-and-bumps the row `version`
-so the versioning/timestamp/history triggers fire. All later grants/revocations
-MUST route through the in-tool DAO path.
-
-**Why:** Bypassing the typed DAOs skips the in-app versioning and history
-capture, so a raw `UPDATE` would mutate state without an audit row in
-`users_versions`. The exception exists only because the in-tool grant path
-cannot run until one admin exists to bootstrap it.
-
 ## History
 
 - [x] [RFC-03: Daemon Scripts](../rfc/03-daemon-scripts.md)
