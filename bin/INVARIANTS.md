@@ -179,9 +179,9 @@ other worktree running against it.
 
 ### DDL scripts attach to a running cluster; never provision one
 
-**Rule:** `db-create`, `db-create-role`, and `db-migrate` MUST connect to an
-already-running cluster at `PGHOST:PGPORT` and MUST NOT start or initialise one
-(no `initdb`, `postgres-up`, or `pg_ctl`).
+**Rule:** `db-create`, `db-create-role`, and `db-migrate` MUST assume an
+already-running cluster at `PGHOST:PGPORT`; they MUST NOT start or initialise
+one (no `initdb`, `postgres-up`, or `pg_ctl`).
 
 **Why:** Cluster startup is owned by the environment (local `bin/test`, the
 private-cluster harnesses, or managed RDS in production). If the DDL scripts
