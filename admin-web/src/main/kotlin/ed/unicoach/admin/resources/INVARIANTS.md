@@ -7,23 +7,19 @@ untyped HTML form into validated DAO input; the engine owns routing/rendering.
 
 ## Invariants
 
-### Verification actions are enforced by their routes, not by the disabled button
+### Action handlers enforce their own preconditions, not the disabled button
 
-**Rule:** The `verify-email` and `send-verification-email` POST handlers MUST
-independently reject an action that the UI would disable:
-`send-verification-
-email` MUST load the user at `SoftDeleteScope.ACTIVE` (so a
-soft-deleted user yields `NotFoundException` → 404), and `verify-email` MUST
-rely on `markEmailVerified`'s `deleted_at IS NULL` guard and its idempotent
-no-op on an already-verified row. Neither handler may treat the rendered
-disabled button as the gate.
+**Rule:** Every state-changing action handler MUST enforce its own preconditions
+server-side. The UI's enabled/disabled affordance reflects backend state and is
+never the gate; a handler MUST re-check the conditions that disabled state
+implies (e.g. `send-verification-email` loads at `SoftDeleteScope.ACTIVE`;
+`verify-email` leans on `markEmailVerified`'s `deleted_at IS NULL` guard and
+idempotent no-op).
 
-**Why:** The disabled button is a client-side affordance only; an operator can
-forge or replay either POST directly. The routes register unconditionally, so
-the DAO/service contract is the sole real barrier. A refactor that "simplifies"
-a handler to skip the ACTIVE-scope load, or that trusts the button state, would
-silently let a forged POST resend mail to — or re-verify — a soft-deleted user,
-the exact bypass these guards exist to close.
+**Why:** The frontend reflects backend state but can drift, and a client can
+forge or replay any POST directly. Routes register unconditionally, so the
+handler's own checks are the only real barrier. A handler that trusts the button
+state lets a forged POST perform an action the UI would have blocked.
 
 ## History
 
