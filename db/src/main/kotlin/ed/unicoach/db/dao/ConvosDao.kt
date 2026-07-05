@@ -686,6 +686,25 @@ object ConvosDao :
     return ConvoTurn(request, response)
   }
 
+  /**
+   * The latest `convo_requests.id` for [convoId], or null when the conversation
+   * has no requests yet. Backs the admin extraction trigger's `throughRequestId`
+   * (RFC 100): the same window boundary the automatic per-turn enqueue passes.
+   * Does not filter on the owning convo's `deleted_at` — the caller has already
+   * resolved the convo.
+   */
+  fun findLatestRequestIdForConvo(
+    session: SqlSession,
+    convoId: ConvoId,
+  ): Result<ConvoRequestId?> =
+    session.queryOne(
+      "SELECT MAX(id) AS max_id FROM convo_requests WHERE convo_id = ?",
+      bind = { it.setObject(1, convoId.value) },
+      map = { rs ->
+        rs.getLong("max_id").takeUnless { rs.wasNull() }?.let(::ConvoRequestId)
+      },
+    )
+
   fun findRawByResponseId(
     session: SqlSession,
     responseId: ConvoResponseId,

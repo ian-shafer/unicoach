@@ -10,9 +10,11 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.parameters
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class StudentsResourceTest {
@@ -26,6 +28,28 @@ class StudentsResourceTest {
     AdminTestSupport.seedUser(email, isAdmin = true)
     return AdminTestSupport.cookieHeader(AdminTestSupport.login(email, "Password123!"))
   }
+
+  private data class EnqueuedJob(
+    val jobType: String,
+    val payload: String,
+  )
+
+  /** The single row in `jobs`, or null when the table is empty. Fails if more than one row exists. */
+  private fun findSoleJob(): EnqueuedJob? =
+    runBlocking {
+      AdminTestSupport.database.withConnection { session ->
+        session.prepareStatement("SELECT job_type, payload FROM jobs").use { stmt ->
+          stmt.executeQuery().use { rs ->
+            if (!rs.next()) {
+              return@withConnection null
+            }
+            val job = EnqueuedJob(rs.getString("job_type"), rs.getString("payload"))
+            assertTrue(!rs.next(), "Expected exactly one enqueued job")
+            job
+          }
+        }
+      }
+    }
 
   @Test
   fun `embedded student panel offers create then renders edit and delete inline`() =
@@ -72,22 +96,99 @@ class StudentsResourceTest {
     }
 
   @Test
-  fun `no standalone student route resolves`() =
+  fun `GET student lists real paginated rows and nav lists Student`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
       val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
       val student = AdminTestSupport.seedStudent(user.id)
 
-      // EMBEDDED_ENTITY has no /student list or detail page.
+      // The promoted top-level resource now serves a real /student list (not the
+      // empty stub) and a standalone detail page.
+      val list = client().get("/student") { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, list.status)
+      assertTrue(
+        list.bodyAsText().contains("/student/${student.id.value}"),
+        "The /student list must render a link to the seeded student's detail page",
+      )
+
       assertEquals(
-        HttpStatusCode.NotFound,
+        HttpStatusCode.OK,
         client().get("/student/${student.id.value}") { header(HttpHeaders.Cookie, cookie) }.status,
+        "The promoted resource has a standalone detail page",
       )
-      assertEquals(
-        HttpStatusCode.NotFound,
-        client().get("/student") { header(HttpHeaders.Cookie, cookie) }.status,
+
+      // Nav-presence assertion (mirrors SystemPromptsResourceTest).
+      val dashboard = client().get("/") { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, dashboard.status)
+      assertTrue(dashboard.bodyAsText().contains("Student"), "Dashboard nav must list the topLevel Student resource")
+      assertTrue(dashboard.bodyAsText().contains("/student"), "Dashboard must link to /student")
+    }
+
+  @Test
+  fun `trigger-synthesis enqueues SYNTHESIZE_STUDENT and redirects to the student detail`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+
+      val res =
+        client().submitForm(
+          url = "/student/${student.id.value}/trigger-synthesis",
+          formParameters = parameters {},
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.Found, res.status)
+      assertEquals("/student/${student.id.value}", res.headers[HttpHeaders.Location])
+
+      val job = findSoleJob()
+      assertTrue(job != null, "A job row must be inserted")
+      assertEquals("SYNTHESIZE_STUDENT", job.jobType)
+      assertTrue(
+        job.payload.contains("\"${student.id.value}\""),
+        "The payload must carry the student id: ${job.payload}",
       )
+    }
+
+  @Test
+  fun `trigger-fit-lens enqueues FIT_LENS and redirects to the student detail`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+
+      val res =
+        client().submitForm(
+          url = "/student/${student.id.value}/trigger-fit-lens",
+          formParameters = parameters {},
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.Found, res.status)
+      assertEquals("/student/${student.id.value}", res.headers[HttpHeaders.Location])
+
+      val job = findSoleJob()
+      assertTrue(job != null, "A job row must be inserted")
+      assertEquals("FIT_LENS", job.jobType)
+      assertTrue(
+        job.payload.contains("\"${student.id.value}\""),
+        "The payload must carry the student id: ${job.payload}",
+      )
+    }
+
+  @Test
+  fun `student detail renders both trigger buttons with their help captions`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+
+      val body = client().get("/student/${student.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(body.contains("/student/${student.id.value}/trigger-synthesis"), "Synthesis trigger action present")
+      assertTrue(body.contains("/student/${student.id.value}/trigger-fit-lens"), "Fit-lens trigger action present")
+      assertTrue(body.contains("freshness gate"), "Synthesis help caption renders")
+      assertTrue(body.contains("circuit breaker"), "Fit-lens help caption renders")
+      assertNull(findSoleJob(), "Rendering the detail page must not enqueue a job")
     }
 
   @Test

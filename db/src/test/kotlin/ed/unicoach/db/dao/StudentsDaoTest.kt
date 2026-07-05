@@ -4,6 +4,7 @@ import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.PartialDate
+import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.UserId
 import org.junit.jupiter.api.AfterAll
@@ -430,5 +431,39 @@ class StudentsDaoTest {
 
     assertEquals(setOf(activeA.id, activeB.id), ids.toSet(), "Only active students' ids are returned")
     assertTrue(deleted.id !in ids, "A soft-deleted student must be excluded")
+  }
+
+  @Test
+  fun `list filters by SoftDeleteScope`() {
+    val activeA = StudentsDao.create(session, NewStudent(createUser(), partialDate("2028"))).getOrThrow()
+    val activeB = StudentsDao.create(session, NewStudent(createUser(), partialDate("2029"))).getOrThrow()
+    val deleted = StudentsDao.create(session, NewStudent(createUser(), partialDate("2030"))).getOrThrow()
+    StudentsDao.delete(session, deleted.id, deleted.version).getOrThrow()
+
+    val active = StudentsDao.list(session, SoftDeleteScope.ACTIVE, limit = 100, offset = 0).getOrThrow()
+    assertEquals(setOf(activeA.id, activeB.id), active.map { it.id }.toSet(), "ACTIVE excludes the soft-deleted row")
+
+    val onlyDeleted = StudentsDao.list(session, SoftDeleteScope.DELETED, limit = 100, offset = 0).getOrThrow()
+    assertEquals(setOf(deleted.id), onlyDeleted.map { it.id }.toSet(), "DELETED returns only the soft-deleted row")
+
+    val all = StudentsDao.list(session, SoftDeleteScope.ALL, limit = 100, offset = 0).getOrThrow()
+    assertEquals(setOf(activeA.id, activeB.id, deleted.id), all.map { it.id }.toSet(), "ALL returns every row")
+  }
+
+  @Test
+  fun `list paginates by limit and offset`() {
+    val all = (1..5).map { StudentsDao.create(session, NewStudent(createUser(), partialDate("2028"))).getOrThrow().id }.toSet()
+
+    val page1 = StudentsDao.list(session, SoftDeleteScope.ALL, limit = 2, offset = 0).getOrThrow().map { it.id }
+    val page2 = StudentsDao.list(session, SoftDeleteScope.ALL, limit = 2, offset = 2).getOrThrow().map { it.id }
+    val page3 = StudentsDao.list(session, SoftDeleteScope.ALL, limit = 2, offset = 4).getOrThrow().map { it.id }
+
+    assertEquals(2, page1.size, "First page is capped at the limit")
+    assertEquals(2, page2.size, "Second page is capped at the limit")
+    assertEquals(1, page3.size, "Final page holds the remainder")
+
+    val paged = page1 + page2 + page3
+    assertEquals(all.size, paged.size, "Paging returns each row exactly once (no overlap)")
+    assertEquals(all, paged.toSet(), "The pages together cover every row")
   }
 }

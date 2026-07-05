@@ -1171,4 +1171,40 @@ class ConvosDaoTest {
     val rows = ConvosDao.listByStudentWithActivity(session, student, ArchiveScope.ALL, SoftDeleteScope.ALL).getOrThrow()
     assertEquals(3, rows.size)
   }
+
+  @Test
+  fun `findLatestRequestIdForConvo returns null for a convo with zero requests`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student, "empty")).getOrThrow()
+    assertNull(ConvosDao.findLatestRequestIdForConvo(session, convo.id).getOrThrow())
+  }
+
+  @Test
+  fun `findLatestRequestIdForConvo returns the sole request id for a convo with one request`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student, "one")).getOrThrow()
+    val req = appendRequestFor(convo.id)
+    assertEquals(req.id, ConvosDao.findLatestRequestIdForConvo(session, convo.id).getOrThrow())
+  }
+
+  @Test
+  fun `findLatestRequestIdForConvo returns the latest request id for a convo with several requests`() {
+    val student = createStudent()
+    val convo = ConvosDao.create(session, newConvo(student, "many")).getOrThrow()
+    appendRequestFor(convo.id)
+    appendRequestFor(convo.id)
+    val latest = appendRequestFor(convo.id)
+    assertEquals(latest.id, ConvosDao.findLatestRequestIdForConvo(session, convo.id).getOrThrow())
+  }
+
+  @Test
+  fun `findLatestRequestIdForConvo scopes to the given convo, ignoring another convo's requests`() {
+    val student = createStudent()
+    val target = ConvosDao.create(session, newConvo(student, "target")).getOrThrow()
+    val other = ConvosDao.create(session, newConvo(student, "other")).getOrThrow()
+    val targetReq = appendRequestFor(target.id)
+    // A later request on a different convo has a higher global id but must not be returned.
+    appendRequestFor(other.id)
+    assertEquals(targetReq.id, ConvosDao.findLatestRequestIdForConvo(session, target.id).getOrThrow())
+  }
 }

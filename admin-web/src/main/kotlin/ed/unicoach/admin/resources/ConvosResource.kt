@@ -4,14 +4,26 @@ import ed.unicoach.admin.engine.AdminEdge
 import ed.unicoach.admin.engine.AdminField
 import ed.unicoach.admin.engine.AdminKind
 import ed.unicoach.admin.engine.AdminResource
+import ed.unicoach.admin.engine.CustomAction
 import ed.unicoach.admin.engine.EdgePanel
 import ed.unicoach.admin.engine.FieldType
+import ed.unicoach.admin.render.respondDaoError
+import ed.unicoach.common.json.asJson
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ConvosDao
+import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.SoftDeleteScope
+import ed.unicoach.queue.ExtractionPayload
+import ed.unicoach.queue.JobType
+import ed.unicoach.queue.QueueService
+import io.ktor.server.application.call
+import io.ktor.server.response.respondRedirect
+import io.ktor.server.routing.Route
+import io.ktor.server.routing.post
+import org.slf4j.LoggerFactory
 import java.util.UUID
 
 /**
@@ -32,7 +44,11 @@ private const val TURNS_PANEL_LIMIT = 50
  * visible; [isDeleted] drives the deleted marker. The turns panel rows link to
  * each turn's `/convo-request/{id}` detail page (canonical routing).
  */
-object ConvosResource : AdminResource<ConvoWithActivity, ConvoId> {
+class ConvosResource(
+  private val queueService: QueueService,
+) : AdminResource<ConvoWithActivity, ConvoId> {
+  private val logger = LoggerFactory.getLogger(ConvosResource::class.java)
+
   override val slug = "convo"
   override val title = "Conversations"
   override val kind = AdminKind.ENTITY
@@ -93,6 +109,59 @@ object ConvosResource : AdminResource<ConvoWithActivity, ConvoId> {
   override val update: (suspend (Database, ConvoId, Map<String, String>) -> Result<Unit>)? = null
   override val delete: (suspend (Database, ConvoId) -> Result<Unit>)? = null
   override val undelete: (suspend (Database, ConvoId) -> Result<Unit>)? = null
+
+  /**
+   * The manual extraction trigger (RFC 100). Always enabled
+   * (`disabledReason = { null }`): the downstream watermark already no-ops a
+   * redundant run. The [CustomAction.helpText] is static caption text
+   * documenting the no-op condition, not a live per-row gate check.
+   */
+  override val customActions =
+    listOf(
+      CustomAction<ConvoWithActivity>(
+        label = "Trigger extraction",
+        pathSuffix = "trigger-extraction",
+        disabledReason = { null },
+        helpText =
+          "No-ops if this conversation has no turns past its last applied " +
+            "extraction (watermark).",
+      ),
+    )
+
+  /**
+   * Registers the extraction trigger route. Parses the id (malformed → redirect
+   * to the list, per the extra-route convention), resolves the convo's latest
+   * `convo_requests.id` for the window boundary, and enqueues the identical
+   * `EXTRACT_CONVERSATION` payload the automatic per-turn path uses — no bypass
+   * flag, so the same watermark check applies (the manual-trigger invariant).
+   * A convo with zero requests short-circuits to a 404 with no job enqueued
+   * (there is nothing to extract through). Enqueue is fire-and-forget (not a
+   * required enqueue under ASYNC_WORK.md Rule 2); on success it redirects to the
+   * convo's detail page, matching [PeriodicJobsResource] (no confirmation
+   * banner). A queue failure renders the shared DAO-error page.
+   */
+  override fun registerExtraRoutes(
+    scope: Route,
+    db: Database,
+  ) {
+    scope.post("/$slug/{id}/trigger-extraction") {
+      val id = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondRedirect("/$slug")
+      val maxRequestId =
+        db
+          .withConnection { session -> ConvosDao.findLatestRequestIdForConvo(session, id) }
+          .getOrElse { return@post call.respondDaoError(it) }
+      if (maxRequestId == null) {
+        // respondDaoError's NotFound branch renders a generic 404 without reading
+        // the message, so surface the convo id here (mirroring PeriodicJobsResource).
+        val message = "Conversation [${id.value}] has no turns to extract."
+        logger.warn(message)
+        return@post call.respondDaoError(NotFoundException(message))
+      }
+      val payload = ExtractionPayload(convoId = id.value.toString(), throughRequestId = maxRequestId.value).asJson()
+      val result = queueService.enqueue(JobType.EXTRACT_CONVERSATION, payload)
+      call.respondEnqueueOutcome(result, "/$slug/${id.value}", "extraction", id.value, logger)
+    }
+  }
 
   /** One panel listing this convo's turns; the Request cell links to `/convo-request/{id}`. */
   override suspend fun resolveEdges(

@@ -11,9 +11,13 @@ package ed.unicoach.admin.engine
  * @property disabledReason null => the button is enabled; non-null => the button
  *   renders disabled and the string is its hover title explaining why. Single
  *   source of truth: enabled iff this returns null.
+ * @property helpText optional fixed caption rendered under the button. Static
+ *   documentation (e.g. what makes the action a no-op), not a live per-row gate
+ *   check; null renders nothing.
  */
 data class CustomAction<ROW>(
   val label: String,
   val pathSuffix: String,
   val disabledReason: (ROW) -> String?,
+  val helpText: String? = null,
 )

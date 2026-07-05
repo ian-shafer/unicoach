@@ -21,7 +21,19 @@ forge or replay any POST directly. Routes register unconditionally, so the
 handler's own checks are the only real barrier. A handler that trusts the button
 state lets a forged POST perform an action the UI would have blocked.
 
+### Manual-trigger routes enqueue the unmodified existing job type/payload
+
+**Rule:** Admin manual-trigger routes MUST enqueue the unmodified existing job
+type/payload for that feature (`EXTRACT_CONVERSATION` / `SYNTHESIZE_STUDENT` /
+`FIT_LENS`) — no bypass flag that skips the freshness gate, watermark, or
+circuit-breaker a normal run would hit.
+
+**Why:** These gates prevent duplicate billed LLM calls and duplicate writes
+(RFC 66/93/98); a manual "force" path would silently reintroduce the
+double-billing/double-write risk those gates exist to close.
+
 ## History
 
 - [x] [RFC-63: Admin System Prompts](../../../../../../../../rfc/63-admin-system-prompts.md)
 - [x] [RFC-76: Admin email-verification actions](../../../../../../../../rfc/76-admin-email-verification-actions.md)
+- [x] [RFC-100: Admin manual run triggers](../../../../../../../../rfc/100-admin-manual-run-triggers.md)

@@ -15,6 +15,7 @@ import java.util.UUID
 
 object StudentsDao :
   SoftDeleteFindable<Student, StudentId>,
+  SoftDeleteListable<Student>,
   Creatable<NewStudent, Student>,
   Updatable<StudentEdit, Student>,
   OccDeletable<Student, StudentId>,
@@ -229,6 +230,35 @@ object StudentsDao :
       bind = {},
       map = { StudentId(UUID.fromString(it.getString("id"))) },
     )
+
+  /**
+   * Admin read surface: page the full student table newest-first, modeled on
+   * [UsersDao.list]. The [scope] filter is a fixed SQL fragment (no caller data);
+   * admin lists default to [SoftDeleteScope.ALL] so soft-deleted rows stay
+   * visible. Backs the top-level `/student` list (RFC 100).
+   */
+  override fun list(
+    session: SqlSession,
+    scope: SoftDeleteScope,
+    limit: Int,
+    offset: Int,
+  ): Result<List<Student>> {
+    val sql =
+      """
+      SELECT * FROM students
+      WHERE ${scope.predicate()}
+      ORDER BY created_at DESC, id
+      LIMIT ? OFFSET ?
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = {
+        it.setInt(1, limit)
+        it.setInt(2, offset)
+      },
+      map = ::mapStudent,
+    )
+  }
 
   /** Admin read surface: a student's full version history, ascending by version. */
   override fun listVersions(

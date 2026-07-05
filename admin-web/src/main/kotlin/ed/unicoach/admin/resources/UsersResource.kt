@@ -45,6 +45,7 @@ import java.util.UUID
 class UsersResource(
   private val argon2Hasher: Argon2Hasher,
   private val emailVerificationService: EmailVerificationService,
+  private val studentsResource: StudentsResource,
 ) : AdminResource<User, UserId> {
   override val slug = "user"
   override val title = "User"
@@ -73,7 +74,7 @@ class UsersResource(
 
   override val edges =
     listOf(
-      AdminEdge.Embedded("Student profile", StudentsResource),
+      AdminEdge.Embedded("Student profile", studentsResource),
       AdminEdge.HasMany("Sessions", targetSlug = "session"),
       AdminEdge.History("Version history"),
     )
@@ -325,7 +326,7 @@ class UsersResource(
     db: Database,
     row: User,
   ): Result<List<EdgePanel>> {
-    val studentPanel = StudentsResource.buildPanel(db, row.id).getOrElse { return Result.failure(it) }
+    val studentPanel = studentsResource.buildPanel(db, row.id).getOrElse { return Result.failure(it) }
 
     val sessions =
       db

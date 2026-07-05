@@ -4,8 +4,10 @@ import ed.unicoach.admin.engine.AdminEdge
 import ed.unicoach.admin.engine.AdminField
 import ed.unicoach.admin.engine.AdminKind
 import ed.unicoach.admin.engine.AdminResource
+import ed.unicoach.admin.engine.CustomAction
 import ed.unicoach.admin.engine.EdgePanel
 import ed.unicoach.admin.engine.FieldType
+import ed.unicoach.common.json.asJson
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ClaimsDao
 import ed.unicoach.db.dao.ConvosDao
@@ -18,6 +20,15 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.UserId
+import ed.unicoach.queue.FitLensPayload
+import ed.unicoach.queue.JobType
+import ed.unicoach.queue.QueueService
+import ed.unicoach.queue.SynthesisPayload
+import io.ktor.server.application.call
+import io.ktor.server.response.respondRedirect
+import io.ktor.server.routing.Route
+import io.ktor.server.routing.post
+import org.slf4j.LoggerFactory
 import java.util.UUID
 
 /**
@@ -35,17 +46,28 @@ private const val STUDENT_PANEL_LIMIT = 50
 internal fun Boolean.toScope(): SoftDeleteScope = if (this) SoftDeleteScope.ALL else SoftDeleteScope.ACTIVE
 
 /**
- * The embedded `students` profile. Per the canonical-routing invariant an
- * EMBEDDED_ENTITY has no standalone list/detail URL; its `get`/`list` members
- * exist so the owner's [AdminEdge.Embedded] edge can render the inline panel, but
- * they are never bound to a route. Mutations flow through owner-nested endpoints
- * registered by [UsersResource].
+ * The `students` profile. A top-level [AdminKind.ENTITY] with a real `/student`
+ * list/detail read surface (RFC 100), while staying embedded under
+ * [UsersResource] via that resource's [AdminEdge.Embedded] edge — the same
+ * dual-registration precedent as [ConvosResource]. Mutations
+ * (create/update/delete/undelete) still flow only through the owner-nested
+ * endpoints [UsersResource] registers; this resource adds a read/trigger surface
+ * only, so all four write handlers stay null.
+ *
+ * Two per-row [CustomAction]s enqueue the same jobs the automatic paths use —
+ * `SYNTHESIZE_STUDENT` and `FIT_LENS` — with no bypass flag, so a click hits the
+ * identical freshness gate / circuit-breaker a scheduled run would (the
+ * manual-trigger invariant).
  */
-object StudentsResource : AdminResource<Student, StudentId> {
+class StudentsResource(
+  private val queueService: QueueService,
+) : AdminResource<Student, StudentId> {
+  private val logger = LoggerFactory.getLogger(StudentsResource::class.java)
+
   override val slug = "student"
   override val title = "Student"
-  override val kind = AdminKind.EMBEDDED_ENTITY
-  override val topLevel = false
+  override val kind = AdminKind.ENTITY
+  override val topLevel = true
 
   override val fields =
     listOf(
@@ -93,7 +115,7 @@ object StudentsResource : AdminResource<Student, StudentId> {
     limit: Int,
     offset: Int,
     scope: SoftDeleteScope,
-  ): Result<List<Student>> = Result.success(emptyList())
+  ): Result<List<Student>> = db.withConnection { session -> StudentsDao.list(session, scope, limit, offset) }
 
   override suspend fun get(
     db: Database,
@@ -105,6 +127,60 @@ object StudentsResource : AdminResource<Student, StudentId> {
   override val update: (suspend (Database, StudentId, Map<String, String>) -> Result<Unit>)? = null
   override val delete: (suspend (Database, StudentId) -> Result<Unit>)? = null
   override val undelete: (suspend (Database, StudentId) -> Result<Unit>)? = null
+
+  /**
+   * The two student-scoped manual triggers (RFC 100). Both are always enabled
+   * (`disabledReason = { null }`): there is no in-flight/spam guard because the
+   * downstream gates already no-op a redundant run. The [CustomAction.helpText]
+   * documents what makes each a no-op; it is static caption text, not a live
+   * per-row gate check.
+   */
+  override val customActions =
+    listOf(
+      CustomAction<Student>(
+        label = "Trigger synthesis",
+        pathSuffix = "trigger-synthesis",
+        disabledReason = { null },
+        helpText =
+          "No-ops if nothing has changed in this student's claims or college list " +
+            "since the last applied synthesis run (freshness gate).",
+      ),
+      CustomAction<Student>(
+        label = "Trigger fit-lens",
+        pathSuffix = "trigger-fit-lens",
+        disabledReason = { null },
+        helpText =
+          "Skipped if too few claims, no changes since the last applied run, or too many " +
+            "consecutive failures (circuit breaker).",
+      ),
+    )
+
+  /**
+   * Registers the two trigger routes. Each parses the id (malformed → redirect to
+   * the list, per the extra-route convention), enqueues the identical job
+   * type/payload the automatic path uses via a fire-and-forget [QueueService]
+   * (not session-threaded — not a required enqueue under ASYNC_WORK.md Rule 2),
+   * and on success redirects to the row's own detail page — matching
+   * [PeriodicJobsResource] (no confirmation banner). A queue failure renders the
+   * shared DAO-error page.
+   */
+  override fun registerExtraRoutes(
+    scope: Route,
+    db: Database,
+  ) {
+    scope.post("/$slug/{id}/trigger-synthesis") {
+      val id = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondRedirect("/$slug")
+      val payload = SynthesisPayload(id.value.toString()).asJson()
+      val result = queueService.enqueue(JobType.SYNTHESIZE_STUDENT, payload)
+      call.respondEnqueueOutcome(result, "/$slug/${id.value}", "synthesis", id.value, logger)
+    }
+    scope.post("/$slug/{id}/trigger-fit-lens") {
+      val id = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondRedirect("/$slug")
+      val payload = FitLensPayload(id.value.toString()).asJson()
+      val result = queueService.enqueue(JobType.FIT_LENS, payload)
+      call.respondEnqueueOutcome(result, "/$slug/${id.value}", "fit-lens", id.value, logger)
+    }
+  }
 
   /**
    * Builds the inline embedded panel for a user: the student profile (if any),

@@ -81,6 +81,9 @@ fun <ROW, ID> MAIN.renderDetail(
       label = action.label,
       disabledReason = action.disabledReason(row),
     )
+    if (action.helpText != null) {
+      p("action-help") { +action.helpText }
+    }
   }
 
   edges.forEach { panel -> renderEdgePanel(panel, display) }

@@ -173,12 +173,16 @@ class PeriodicJobsResource(
 
   override val customActions =
     listOf(
-      CustomAction<PeriodicJob>("Enable", "enable") { row ->
-        if (row.enabled) "Already enabled." else null
-      },
-      CustomAction<PeriodicJob>("Disable", "disable") { row ->
-        if (!row.enabled) "Already disabled." else null
-      },
+      CustomAction<PeriodicJob>(
+        label = "Enable",
+        pathSuffix = "enable",
+        disabledReason = { row -> if (row.enabled) "Already enabled." else null },
+      ),
+      CustomAction<PeriodicJob>(
+        label = "Disable",
+        pathSuffix = "disable",
+        disabledReason = { row -> if (!row.enabled) "Already disabled." else null },
+      ),
     )
 
   override fun registerExtraRoutes(

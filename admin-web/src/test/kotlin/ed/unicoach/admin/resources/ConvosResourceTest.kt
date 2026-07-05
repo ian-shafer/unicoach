@@ -2,11 +2,19 @@ package ed.unicoach.admin.resources
 
 import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.db.dao.ConvosDao
+import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.queue.NewJob
+import ed.unicoach.queue.QueueService
+import ed.unicoach.queue.dao.JobInsertResult
+import ed.unicoach.queue.dao.JobsDao
+import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.parameters
+import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
@@ -15,6 +23,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ConvosResourceTest {
@@ -48,6 +57,28 @@ class ConvosResourceTest {
     val studentId: String,
     val requestId: String,
   )
+
+  private data class EnqueuedJob(
+    val jobType: String,
+    val payload: String,
+  )
+
+  /** The single row in `jobs`, or null when the table is empty. Fails if more than one row exists. */
+  private fun findSoleJob(): EnqueuedJob? =
+    runBlocking {
+      AdminTestSupport.database.withConnection { session ->
+        session.prepareStatement("SELECT job_type, payload FROM jobs").use { stmt ->
+          stmt.executeQuery().use { rs ->
+            if (!rs.next()) {
+              return@withConnection null
+            }
+            val job = EnqueuedJob(rs.getString("job_type"), rs.getString("payload"))
+            assertTrue(!rs.next(), "Expected exactly one enqueued job")
+            job
+          }
+        }
+      }
+    }
 
   @Test
   fun `GET convo lists conversations`() =
@@ -186,5 +217,104 @@ class ConvosResourceTest {
       val detail = client().get("/convo/${seeded.convoId}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
       assertFalse(detail.contains("/convo/${seeded.convoId}/edit"), "No edit control")
       assertFalse(detail.contains("/convo/${seeded.convoId}/delete"), "No delete control")
+    }
+
+  @Test
+  fun `trigger-extraction with at least one request enqueues EXTRACT_CONVERSATION through the latest request`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val seeded = seedConvoWithTurn("Trigger convo ${UUID.randomUUID()}")
+
+      val res =
+        client().submitForm(
+          url = "/convo/${seeded.convoId}/trigger-extraction",
+          formParameters = parameters {},
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.Found, res.status)
+      assertEquals("/convo/${seeded.convoId}", res.headers[HttpHeaders.Location])
+
+      val job = findSoleJob()
+      assertTrue(job != null, "A job row must be inserted")
+      assertEquals("EXTRACT_CONVERSATION", job.jobType)
+      // Normalize whitespace: Postgres re-serializes the stored JSONB with spaces after colons.
+      val payload = job.payload.replace(" ", "")
+      assertTrue(payload.contains("\"convoId\":\"${seeded.convoId}\""), "Payload carries the convo id: ${job.payload}")
+      // throughRequestId is the convo's latest request id (a BIGINT, serialized unquoted).
+      assertTrue(
+        payload.contains("\"throughRequestId\":${seeded.requestId}"),
+        "Payload's throughRequestId must be the latest request id: ${job.payload}",
+      )
+    }
+
+  @Test
+  fun `trigger-extraction with zero requests enqueues nothing and responds with an error`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      // A convo with no requests: findLatestRequestIdForConvo is null.
+      val convo = AdminTestSupport.seedConvo(student.id, "Empty convo ${UUID.randomUUID()}")
+
+      val res =
+        client().submitForm(
+          url = "/convo/${convo.id.value}/trigger-extraction",
+          formParameters = parameters {},
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.NotFound, res.status, "A convo with no requests must respond with an error, not a redirect")
+      assertNull(findSoleJob(), "No job may be enqueued for a request-less convo")
+    }
+
+  @Test
+  fun `convo detail renders the extraction trigger button with its help caption`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val seeded = seedConvoWithTurn("Help caption convo ${UUID.randomUUID()}")
+
+      val body = client().get("/convo/${seeded.convoId}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(body.contains("/convo/${seeded.convoId}/trigger-extraction"), "Extraction trigger action present")
+      assertTrue(body.contains("watermark"), "The extraction help caption renders")
+      assertNull(findSoleJob(), "Rendering the detail page must not enqueue a job")
+    }
+
+  /**
+   * A [JobsDao] whose insert always fails at the DB, so a [QueueService] built on
+   * it returns [ed.unicoach.queue.EnqueueResult.DatabaseFailure] — the seam the
+   * constructor-injected [QueueService] (RFC 100 F7) opens for exercising the
+   * enqueue-failure branch of a trigger handler.
+   */
+  private class FailingJobsDao : JobsDao() {
+    override fun insert(
+      session: SqlSession,
+      newJob: NewJob,
+    ): JobInsertResult = JobInsertResult.DatabaseFailure(Exception("enqueue failed"))
+  }
+
+  @Test
+  fun `trigger-extraction renders the DAO-error page and enqueues nothing when the queue insert fails`() =
+    testApplication {
+      // Inject a QueueService whose enqueue fails at the DB — the branch that is
+      // only reachable now that ConvosResource takes QueueService via its
+      // constructor rather than instantiating it inline.
+      val failingQueue = QueueService(AdminTestSupport.database, FailingJobsDao())
+      val resource = ConvosResource(failingQueue)
+      application {
+        routing { resource.registerExtraRoutes(this, AdminTestSupport.database) }
+      }
+      val seeded = seedConvoWithTurn("Enqueue failure convo ${UUID.randomUUID()}")
+
+      val res =
+        client().submitForm(
+          url = "/convo/${seeded.convoId}/trigger-extraction",
+          formParameters = parameters {},
+        )
+      assertEquals(
+        HttpStatusCode.InternalServerError,
+        res.status,
+        "An enqueue DatabaseFailure must render the shared DAO-error page (500), not a redirect",
+      )
+      assertNull(findSoleJob(), "No job may be enqueued when the queue insert fails")
     }
 }

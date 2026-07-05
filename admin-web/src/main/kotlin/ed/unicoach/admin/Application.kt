@@ -76,7 +76,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       environment.monitor.subscribe(ApplicationStopped) {
         database.close()
       }
-      adminModule(database, authService, argon2Hasher, emailVerificationService, adminConfig)
+      adminModule(database, authService, argon2Hasher, emailVerificationService, queueService, adminConfig)
     }
 
   server.start(wait = false)
@@ -99,17 +99,20 @@ fun Application.adminModule(
   authService: AuthService,
   argon2Hasher: Argon2Hasher,
   emailVerificationService: EmailVerificationService,
+  queueService: QueueService,
   adminConfig: AdminConfig,
 ) {
   configureAdminStatusPages()
 
   installAdminGate(authService, adminConfig)
 
+  val studentsResource = StudentsResource(queueService)
+
   val registry =
     AdminRegistry(
       listOf(
-        UsersResource(argon2Hasher, emailVerificationService),
-        StudentsResource,
+        UsersResource(argon2Hasher, emailVerificationService, studentsResource),
+        studentsResource,
         SessionsResource,
         SystemPromptsResource,
         ClaimsResource,
@@ -119,7 +122,7 @@ fun Application.adminModule(
         SynthesisRunsResource,
         FitSuggestionsResource,
         FitLensRunsResource,
-        ConvosResource,
+        ConvosResource(queueService),
         ConvoRequestsResource,
         CollegesResource,
         CollegeListEntriesResource,
