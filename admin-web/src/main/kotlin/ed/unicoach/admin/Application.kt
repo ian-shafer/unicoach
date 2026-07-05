@@ -14,6 +14,7 @@ import ed.unicoach.admin.resources.ConvoRequestsResource
 import ed.unicoach.admin.resources.ConvosResource
 import ed.unicoach.admin.resources.ExtractionRunsResource
 import ed.unicoach.admin.resources.ObservationsResource
+import ed.unicoach.admin.resources.PeriodicJobsResource
 import ed.unicoach.admin.resources.SessionsResource
 import ed.unicoach.admin.resources.StudentsResource
 import ed.unicoach.admin.resources.SynthesisRunsResource
@@ -24,6 +25,7 @@ import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.StubGoogleTokenVerifier
 import ed.unicoach.common.config.AppConfig
+import ed.unicoach.cron.dao.PeriodicJobsDao
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.queue.QueueService
@@ -117,6 +119,7 @@ fun Application.adminModule(
         ConvoRequestsResource,
         CollegesResource,
         CollegeListEntriesResource,
+        PeriodicJobsResource(PeriodicJobsDao()),
       ),
     )
 

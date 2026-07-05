@@ -10,6 +10,7 @@ import ed.unicoach.coaching.extraction.ExtractionService
 import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.coaching.synthesis.SynthesisHandler
 import ed.unicoach.coaching.synthesis.SynthesisService
+import ed.unicoach.coaching.synthesis.SynthesisSweepHandler
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -21,6 +22,7 @@ import ed.unicoach.net.NetConfig
 import ed.unicoach.net.handlers.SessionExpiryHandler
 import ed.unicoach.queue.JobHandler
 import ed.unicoach.queue.QueueConfig
+import ed.unicoach.queue.QueueService
 import ed.unicoach.queue.QueueWorker
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
@@ -75,6 +77,11 @@ fun main() {
         }
         if (synthesisConfig.enabled) {
           add(SynthesisHandler(SynthesisService(database, chatProvider, synthesisConfig)))
+          // The daily dispatcher (RFC 97) is gated by the same switch as the
+          // per-student handler, so the SYNTHESIS_SWEEP producer and the
+          // SYNTHESIZE_STUDENT consumer are present together or absent together —
+          // a fired sweep never fans out into unhandled per-student jobs.
+          add(SynthesisSweepHandler(database, QueueService(database, jobsDao)))
         }
       }
     }

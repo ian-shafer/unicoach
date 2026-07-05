@@ -48,6 +48,7 @@ echo "Deploying release from [$RELEASE_DIR]..."
 ln -sfn "$RELEASE_DIR" "$APP_ROOT/current"
 systemctl restart unicoach-rest-server.service
 systemctl restart unicoach-queue-worker.service
+systemctl restart unicoach-cron.service
 systemctl restart unicoach-public-web.service
 systemctl restart unicoach-admin-web.service
 

@@ -33,6 +33,12 @@ write_files:
     encoding: b64
     content: ${filebase64("${module_path}/files/unicoach-queue-worker.service")}
 
+  - path: /etc/systemd/system/unicoach-cron.service
+    owner: root:root
+    permissions: "0644"
+    encoding: b64
+    content: ${filebase64("${module_path}/files/unicoach-cron.service")}
+
   - path: /etc/systemd/system/unicoach-public-web.service
     owner: root:root
     permissions: "0644"
@@ -70,5 +76,6 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable unicoach-rest-server.service
   - systemctl enable unicoach-queue-worker.service
+  - systemctl enable unicoach-cron.service
   - systemctl enable unicoach-public-web.service
   - systemctl enable unicoach-admin-web.service

@@ -10,7 +10,7 @@ export ENV_FILES=".env.dev:.env.test"
 source "$(dirname "$0")/common"
 
 # Add new Gradle modules here, in sync with settings.gradle.kts.
-MODULES=(common db net auth queue queue-worker rest-server service email chat admin-web public-web college)
+MODULES=(common db net auth queue queue-worker cron rest-server service email chat admin-web public-web college)
 
 help() {
   cat << 'EOF'
@@ -26,7 +26,7 @@ gate. (Kotlin lint/format is not here — it lives in bin/format, the repo's sin
 ktlint avenue; the hook runs `bin/format -c` alongside this.)
 
 Modules:
-  common db net auth queue queue-worker rest-server service email chat admin-web public-web college
+  common db net auth queue queue-worker cron rest-server service email chat admin-web public-web college
 
 Options:
   -t GLOB   Gradle test filter (requires exactly one module)

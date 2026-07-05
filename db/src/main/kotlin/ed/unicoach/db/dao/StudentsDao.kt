@@ -216,6 +216,20 @@ object StudentsDao :
       mapError = ::mapCreateUpdateError,
     )
 
+  /**
+   * The synthesis sweep's enumeration (RFC 97): the ids of all active
+   * (non-soft-deleted) students, ordered by id for a stable sweep. The
+   * per-student freshness gate downstream no-ops those not actually due, so this
+   * intentionally returns every active student (an SQL eligibility push-down is a
+   * named future optimization, not built here).
+   */
+  fun listActiveIds(session: SqlSession): Result<List<StudentId>> =
+    session.queryList(
+      "SELECT id FROM students WHERE deleted_at IS NULL ORDER BY id",
+      bind = {},
+      map = { StudentId(UUID.fromString(it.getString("id"))) },
+    )
+
   /** Admin read surface: a student's full version history, ascending by version. */
   override fun listVersions(
     session: SqlSession,

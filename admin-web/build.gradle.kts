@@ -12,6 +12,12 @@ dependencies {
   implementation(project(":common"))
   implementation(project(":db"))
   implementation(project(":service"))
+  implementation(project(":email"))
+  // The periodic-jobs admin resource (RFC 97): :cron owns PeriodicJobsDao /
+  // PeriodicJob / PeriodicJobName, and :queue owns JobType (the declared type of
+  // PeriodicJob.jobType). :cron's runtime deps (cron-utils, scheduler classes)
+  // ride on the classpath unused — an accepted trade for not relocating the DAO.
+  implementation(project(":cron"))
   implementation(project(":queue"))
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)

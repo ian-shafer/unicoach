@@ -73,20 +73,22 @@ tofu -chdir="$PROJECT_ROOT/infra" init \
 
 REST_DIST="rest-server/build/install/rest-server"
 WORKER_DIST="queue-worker/build/install/queue-worker"
+CRON_DIST="cron/build/install/cron"
 PUBLIC_WEB_DIST="public-web/build/install/public-web"
 ADMIN_WEB_DIST="admin-web/build/install/admin-web"
 # COLLEGE_DIST is defined once in bin/functions (sourced via bin/common) as the
 # single source of truth shared with bin/ingest-colleges; do not redefine it here.
 
-for dist in "$REST_DIST" "$WORKER_DIST" "$PUBLIC_WEB_DIST" "$ADMIN_WEB_DIST" "$COLLEGE_DIST"; do
+for dist in "$REST_DIST" "$WORKER_DIST" "$CRON_DIST" "$PUBLIC_WEB_DIST" "$ADMIN_WEB_DIST" "$COLLEGE_DIST"; do
   [ -d "$PROJECT_ROOT/$dist" ] || fatal "Missing distribution [$dist]; did bin/build succeed?"
 done
 
 # ── 2. Assemble the bundle ────────────────────────────────────────────────────
-# The service dists (rest-server/, queue-worker/, public-web/, admin-web/) are
-# tarred from their build/install parent so they enter the bundle as bare
-# rest-server/, queue-worker/, public-web/, and admin-web/ — the paths the systemd
-# units expect at current/<svc>/bin/<svc>, decoupled from the Gradle build layout.
+# The service dists (rest-server/, queue-worker/, cron/, public-web/, admin-web/)
+# are tarred from their build/install parent so they enter the bundle as bare
+# rest-server/, queue-worker/, cron/, public-web/, and admin-web/ — the paths the
+# systemd units expect at current/<svc>/bin/<svc>, decoupled from the Gradle build
+# layout.
 # The college dist is tarred preserving its full repo-relative path
 # college/build/install/college, so on the instance its launcher lands at
 # current/college/build/install/college/bin/college — the SAME $PROJECT_ROOT-
@@ -164,6 +166,7 @@ log-info "Assembling deploy bundle [$BUNDLE_ID]..."
 tar -czf "$BUNDLE_PATH" \
   -C "$(dirname "$PROJECT_ROOT/$REST_DIST")" "$(basename "$REST_DIST")" \
   -C "$(dirname "$PROJECT_ROOT/$WORKER_DIST")" "$(basename "$WORKER_DIST")" \
+  -C "$(dirname "$PROJECT_ROOT/$CRON_DIST")" "$(basename "$CRON_DIST")" \
   -C "$(dirname "$PROJECT_ROOT/$PUBLIC_WEB_DIST")" "$(basename "$PUBLIC_WEB_DIST")" \
   -C "$(dirname "$PROJECT_ROOT/$ADMIN_WEB_DIST")" "$(basename "$ADMIN_WEB_DIST")" \
   -C "$PROJECT_ROOT" "$COLLEGE_DIST" \

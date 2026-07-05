@@ -11,6 +11,10 @@ enum class JobType(
   EXTRACT_CONVERSATION("EXTRACT_CONVERSATION"),
   SYNTHESIZE_STUDENT("SYNTHESIZE_STUDENT"),
   SEND_EMAIL("SEND_EMAIL"),
+
+  // The daily dispatcher (RFC 97): cron enqueues one SYNTHESIS_SWEEP; its handler
+  // enumerates active students and fans out one SYNTHESIZE_STUDENT per student.
+  SYNTHESIS_SWEEP("SYNTHESIS_SWEEP"),
   ;
 
   companion object {

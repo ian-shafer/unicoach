@@ -418,4 +418,17 @@ class StudentsDaoTest {
     assertEquals("2029-06", versions[1].entity.expectedHighSchoolGraduationDate.toIso())
     assertEquals("2030-06-15", versions[2].entity.expectedHighSchoolGraduationDate.toIso())
   }
+
+  @Test
+  fun `listActiveIds returns active students and excludes soft-deleted ones`() {
+    val activeA = StudentsDao.create(session, NewStudent(createUser(), partialDate("2028"))).getOrThrow()
+    val activeB = StudentsDao.create(session, NewStudent(createUser(), partialDate("2029"))).getOrThrow()
+    val deleted = StudentsDao.create(session, NewStudent(createUser(), partialDate("2030"))).getOrThrow()
+    StudentsDao.delete(session, deleted.id, deleted.version).getOrThrow()
+
+    val ids = StudentsDao.listActiveIds(session).getOrThrow()
+
+    assertEquals(setOf(activeA.id, activeB.id), ids.toSet(), "Only active students' ids are returned")
+    assertTrue(deleted.id !in ids, "A soft-deleted student must be excluded")
+  }
 }

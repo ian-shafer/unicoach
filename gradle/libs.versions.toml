@@ -12,6 +12,7 @@ kotlinx-serialization = "1.11.0"
 jackson = "2.15.2"
 aws-sdk-kotlin = "1.6.27"
 commons-csv = "1.14.1"
+cron-utils = "9.2.1"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -42,6 +43,7 @@ typesafe-config = { module = "com.typesafe:config", version.ref = "typesafe-conf
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 aws-sesv2 = { module = "aws.sdk.kotlin:sesv2", version.ref = "aws-sdk-kotlin" }
 commons-csv = { module = "org.apache.commons:commons-csv", version.ref = "commons-csv" }
+cron-utils = { module = "com.cronutils:cron-utils", version.ref = "cron-utils" }
 
 [plugins]
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
