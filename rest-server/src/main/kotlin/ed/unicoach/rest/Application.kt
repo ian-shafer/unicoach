@@ -30,6 +30,7 @@ import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.plugins.SessionExpiryPlugin
 import ed.unicoach.rest.plugins.configureClientKeyGate
 import ed.unicoach.rest.plugins.configureEmailVerificationGate
+import ed.unicoach.rest.plugins.configureRequestLogging
 import ed.unicoach.rest.plugins.configureRequestSizeLimit
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
@@ -180,6 +181,7 @@ fun Application.appModule(
   queueService: QueueService,
   extractionConfig: ExtractionConfig,
 ) {
+  configureRequestLogging()
   configureSerialization()
   configureClientKeyGate(clientKeyGateConfig)
   configureStatusPages()

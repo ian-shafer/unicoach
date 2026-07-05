@@ -25,6 +25,7 @@ dependencies {
   implementation(libs.ktor.server.content.negotiation)
   implementation(libs.ktor.server.status.pages)
   implementation(libs.ktor.server.body.limit)
+  implementation(libs.ktor.server.call.logging)
   implementation(libs.ktor.serialization.jackson)
   implementation(libs.jackson.datatype.jsr310)
   implementation(libs.logback.classic)
