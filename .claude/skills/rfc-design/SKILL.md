@@ -53,6 +53,26 @@ feature in the codebase.
 - **Living Draft**: During the interview phases, you MUST maintain a 'living
   draft' of the RFC using artifacts or code blocks so the architect can see the
   state accumulating as you converse.
+- **End-to-end walkthrough (interactive only)**: Once the design is fully
+  fleshed out and before asking for final approval to write the RFC, offer to
+  walk the architect through the whole design, beginning to end, in sequential
+  chunks. This is a plain-language comprehension gate: it lets the architect
+  validate the design's actual behavior, and catch flaws, before it is committed
+  to prose. Rules:
+  - ONE chunk per response. Wait for the architect to advance ("next") before
+    the next chunk. Never dump the whole thing at once.
+  - Each chunk is ≤60 words, plain and concrete — name the real components,
+    tables, and calls, not abstractions.
+  - Number the chunks ("Chunk N of M") so progress and remaining length are
+    visible.
+  - Cover the whole design in order, beginning to end, following whatever spine
+    fits the feature (e.g. for a runtime flow: trigger → dispatch → per-unit
+    work → each processing step → persistence and guards → user-visible
+    surfacing).
+  - End with a one-paragraph recap of the whole design plus the one or two
+    load-bearing ideas.
+  - Skip entirely in non-interactive/harness/writer mode, same as the interview
+    steps.
 - Be clear, concise, and to the point in all your communication.
 - The tone of the document must be highly technical, dry, and objective.
   Maintain an extremely high signal-to-noise ratio. Eliminate all fluff, filler
@@ -183,8 +203,14 @@ the architect are fully satisfied with the current step:
 7. Make a comprehensive list of all files that must be modified (created,
    updated, deleted, or moved) to implement this RFC. You MUST use your search
    tools here to hunt for unlisted dependencies or configurations.
-8. Summarize your understanding of all components and ask the architect for
-   final approval to write the RFC
-9. Once approved, generate the complete markdown document using the exact
-   headers defined in `RFC Requirements` and write it to the appropriate `.md`
-   file in the `rfc/` directory
+8. **(Interactive only)** Offer the end-to-end walkthrough (see Critical
+   Behaviours): step the architect through the whole design, beginning to end,
+   in sequential numbered chunks, one per response, ending with a one-paragraph
+   recap. Skip in non-interactive mode.
+9. Summarize your understanding of all components and ask the architect for
+   final approval to write the RFC. In interactive mode, the end-to-end
+   walkthrough (step 8) is a precondition: do not ask for final approval until
+   it is complete.
+10. Once approved, generate the complete markdown document using the exact
+    headers defined in `RFC Requirements` and write it to the appropriate `.md`
+    file in the `rfc/` directory
