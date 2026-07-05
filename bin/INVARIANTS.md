@@ -132,15 +132,24 @@ constrain.
 **Why:** One option parser across all of `bin/`. A second, long-form syntax
 would fork the parsing style script by script for no benefit.
 
-### An ops-tool script reads credentials only from `/etc/unicoach/env`
+### Secrets reach a script only through the environment
 
-**Rule:** An ops-tool script invoked via `bin/remote` MUST read runtime
-credentials only from `/etc/unicoach/env` (via `ENV_FILE`); it MUST NOT receive
-a secret through `bin/remote`'s own arguments or the SSM command it sends.
+**Rule:** A `bin/` script MUST obtain any secret from the loaded environment
+(`/etc/unicoach/env` on hosts, the layered dotenv / `local.conf` in dev, via
+`bin/common`), never as a command-line argument or committed value.
 
-**Why:** Both are visible in plaintext to anyone with CloudTrail/console access;
-`/etc/unicoach/env` is already the one trusted credentials path every deployed
-script uses.
+**Why:** Command arguments are visible in process listings, shell history, and
+command logs, and a committed secret is effectively unrevocable; the environment
+file is the one access-controlled channel.
+
+### Ops tools never route secrets through `bin/remote`
+
+**Rule:** An ops-tool script run via `bin/remote` MUST NOT receive a secret
+through `bin/remote`'s arguments or the SSM command payload; it reads what it
+needs from `/etc/unicoach/env` already on the instance.
+
+**Why:** The SSM `send-command` path is logged in plaintext to CloudTrail, so a
+secret in its arguments leaks.
 
 ### An ops-tool script never mutates `current` or restarts a service
 
