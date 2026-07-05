@@ -3,6 +3,12 @@
 The operational scripts for the Unicoach application: build, daemon control,
 linting, CLIs, testing, iOS deploy, and infrastructure.
 
+An **ops-tool** is a sanctioned `bin/` script run on a deployed instance via
+`bin/remote` (SSM Run Command) to perform an operational task against the
+running deployment — currently only `ingest-colleges`, gated by `bin/remote`'s
+allowlist. It is distinct from the deploy path, which owns the release swap and
+restart.
+
 ## Invariants
 
 ### Source `bin/common` first (system-Xcode scripts excepted)
@@ -156,10 +162,10 @@ secret in its arguments leaks.
 **Rule:** An ops-tool script invoked via `bin/remote` MUST NOT modify
 `/opt/unicoach/current` or restart a systemd unit.
 
-**Why:** `deploy-on-instance.sh` treats the symlink swap and restart as atomic
-and gated on a successful migration; a second, unsynchronized path touching
-either could serve a half-deployed release or restart a service out from under
-an in-flight request.
+**Why:** `deploy-on-instance.sh` is the only tool allowed to do this: it swaps
+the release and restarts atomically, gated on a successful migration, so a
+second, unsynchronized path can't serve a half-deployed release or restart a
+service mid-request.
 
 ### Test harnesses never stop or wipe the shared cluster
 
