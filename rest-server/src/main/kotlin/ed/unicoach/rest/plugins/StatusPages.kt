@@ -13,7 +13,11 @@ import io.ktor.server.application.*
 import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.PayloadTooLargeException
 import io.ktor.server.plugins.statuspages.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("ed.unicoach.rest.StatusPages")
 
 fun Application.configureStatusPages() {
   install(StatusPages) {
@@ -45,36 +49,47 @@ fun Application.configureStatusPages() {
       )
     }
     exception<Throwable> { call, cause ->
-      when (cause) {
-        is PermanentError -> {
-          val status =
-            when (cause) {
-              is NotFoundException -> HttpStatusCode.NotFound
+      val (status, body) =
+        when (cause) {
+          is PermanentError -> {
+            val status =
+              when (cause) {
+                is NotFoundException -> HttpStatusCode.NotFound
 
-              is DuplicateEmailException -> HttpStatusCode.Conflict
+                is DuplicateEmailException -> HttpStatusCode.Conflict
 
-              is DatabaseException,
-              is CorruptPersistedValueException,
-              -> HttpStatusCode.InternalServerError
+                is DatabaseException,
+                is CorruptPersistedValueException,
+                -> HttpStatusCode.InternalServerError
 
-              else -> HttpStatusCode.BadRequest
-            }
-          val message = cause.message ?: "Bad request"
-          call.respond(status, ErrorResponse(code = ErrorCode.PERMANENT_ERROR, message = message))
+                else -> HttpStatusCode.BadRequest
+              }
+            status to ErrorResponse(code = ErrorCode.PERMANENT_ERROR, message = cause.message ?: "Bad request")
+          }
+
+          is TransientError -> {
+            HttpStatusCode.ServiceUnavailable to
+              ErrorResponse(code = ErrorCode.INTERNAL_ERROR, message = cause.message ?: "Internal server error")
+          }
+
+          else -> {
+            HttpStatusCode.InternalServerError to
+              ErrorResponse(code = ErrorCode.INTERNAL_ERROR, message = "An internal error occurred")
+          }
         }
 
-        is TransientError -> {
-          val message = cause.message ?: "Internal server error"
-          call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse(code = ErrorCode.INTERNAL_ERROR, message = message))
-        }
-
-        else -> {
-          call.respond(
-            HttpStatusCode.InternalServerError,
-            ErrorResponse(code = ErrorCode.INTERNAL_ERROR, message = "An internal error occurred"),
-          )
-        }
+      // A 5xx is a server fault: log the whole cause chain (stack trace) so the
+      // root cause — e.g. the SQLException a DatabaseException wraps — is
+      // recoverable from the log rather than collapsed into a generic message.
+      // 4xx are expected domain outcomes already captured by request logging, so
+      // they stay at debug to avoid drowning real faults.
+      val request = "${call.request.httpMethod.value} ${call.request.uri}"
+      if (status.value >= 500) {
+        logger.error("[$request] failed with [${status.value}]", cause)
+      } else {
+        logger.debug("[$request] rejected with [${status.value}]: [${body.message}]")
       }
+      call.respond(status, body)
     }
   }
 }
