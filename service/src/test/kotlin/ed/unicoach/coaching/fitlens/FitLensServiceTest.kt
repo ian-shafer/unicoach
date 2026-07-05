@@ -21,6 +21,7 @@ import ed.unicoach.db.models.ClaimTopic
 import ed.unicoach.db.models.ClaimVisibility
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCollege
@@ -390,6 +391,8 @@ class FitLensServiceTest {
               modelResolved = "m",
               suggestionsWritten = 0,
               matchesConsidered = null,
+              failureCategory = FitLensFailureCategory.MALFORMED_OUTPUT,
+              failureReason = "test failure",
             ),
           ).getOrThrow()
       }

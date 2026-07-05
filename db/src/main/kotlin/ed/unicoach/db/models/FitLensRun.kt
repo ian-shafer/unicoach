@@ -11,6 +11,8 @@ import java.time.Instant
  * completed pass including failures. [matchesConsidered] is the size of the
  * retrieved set call #2 saw (0 for a completed zero-match retrieve; null only
  * when the retrieve never ran — a `failed` pass that died at LLM call #1).
+ * [failureCategory]/[failureReason] carry the cause of a `failed` pass (null
+ * on `applied`).
  */
 data class FitLensRun(
   override val id: FitLensRunId,
@@ -27,5 +29,7 @@ data class FitLensRun(
   val outputTokens: Int?,
   val cacheReadTokens: Int?,
   val cacheWriteTokens: Int?,
+  val failureCategory: FitLensFailureCategory?,
+  val failureReason: String?,
 ) : Identifiable<FitLensRunId>,
   Created

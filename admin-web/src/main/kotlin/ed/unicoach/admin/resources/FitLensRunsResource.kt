@@ -22,7 +22,9 @@ import ed.unicoach.db.models.SoftDeleteScope
  *
  * The token and count columns are on the list (`inList = true`) so per-student
  * LLM spend is eyeballable; the secondary provenance columns are detail-only.
- * No edges.
+ * `failureCategory` is on the list too (a triage-at-a-glance "what's failing"
+ * column, null on `applied` rows); `failureReason`'s free-text diagnostic is
+ * detail-only. No edges.
  */
 object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
   override val slug = "fit-lens-run"
@@ -36,6 +38,7 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "fit-lens-run"),
       AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
       AdminField("outcome", "Outcome", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("failureCategory", "Failure Category", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("modelResolved", "Model", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("suggestionsWritten", "Suggestions Written", FieldType.INT, editable = false, sensitive = false),
       AdminField("matchesConsidered", "Matches Considered", FieldType.INT, editable = false, sensitive = false),
@@ -63,6 +66,7 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
       AdminField("provider", "Provider", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("cacheReadTokens", "Cache Read Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("cacheWriteTokens", "Cache Write Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
+      AdminField("failureReason", "Failure Reason", FieldType.TEXT, editable = false, sensitive = false, inList = false),
     )
 
   override val edges = emptyList<AdminEdge>()
@@ -80,6 +84,7 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
       "id" to row.id.value.toString(),
       "studentId" to row.studentId.value.toString(),
       "outcome" to row.outcome.value,
+      "failureCategory" to (row.failureCategory?.value ?: ""),
       "modelResolved" to (row.modelResolved ?: ""),
       "suggestionsWritten" to row.suggestionsWritten.toString(),
       "matchesConsidered" to (row.matchesConsidered?.toString() ?: ""),
@@ -91,6 +96,7 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
       "provider" to row.provider,
       "cacheReadTokens" to (row.cacheReadTokens?.toString() ?: ""),
       "cacheWriteTokens" to (row.cacheWriteTokens?.toString() ?: ""),
+      "failureReason" to (row.failureReason ?: ""),
     )
 
   override suspend fun list(

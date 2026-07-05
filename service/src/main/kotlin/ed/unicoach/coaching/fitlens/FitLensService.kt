@@ -26,6 +26,7 @@ import ed.unicoach.db.models.Claim
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
@@ -260,6 +261,7 @@ class FitLensService(
     return writeFailedRun(
       studentId,
       ready,
+      category = parsed.category,
       reason = parsed.detail,
       matchesConsidered = null,
       usage = queryUsage,
@@ -300,6 +302,7 @@ class FitLensService(
     return writeFailedRun(
       studentId,
       ready,
+      category = parsed.category,
       reason = parsed.detail,
       matchesConsidered = matchesConsidered,
       usage = totalUsage,
@@ -415,15 +418,18 @@ class FitLensService(
 
   /**
    * Writes a `failed` run carrying the pass's token usage (the spend is
-   * recorded); the freshness marker does not advance. Returns
-   * [FitLensResult.Failed] with the parse-failure [reason] so the handler
-   * dead-letters (no retry) with a specific diagnostic. If the DB write itself
-   * fails, propagates a [FitLensResult.TransientFailure] instead so the run row
-   * is not silently lost — matching [writePhase]'s propagation.
+   * recorded); the freshness marker does not advance. [category]/[reason] are
+   * persisted onto the row (`fit_lens_runs_failure_consistency_check` requires
+   * both on a `failed` row) and [reason] also rides on the returned
+   * [FitLensResult.Failed] so the handler dead-letters (no retry) with a
+   * specific diagnostic. If the DB write itself fails, propagates a
+   * [FitLensResult.TransientFailure] instead so the run row is not silently
+   * lost — matching [writePhase]'s propagation.
    */
   private suspend fun writeFailedRun(
     studentId: StudentId,
     ready: ReadPhase.Ready,
+    category: FitLensFailureCategory,
     reason: String,
     matchesConsidered: Int?,
     usage: TokenUsage,
@@ -432,7 +438,18 @@ class FitLensService(
     try {
       database.withConnection { session ->
         AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
-        appendRun(session, studentId, ready, FitLensOutcome.FAILED, 0, matchesConsidered, usage, modelResolved)
+        appendRun(
+          session,
+          studentId,
+          ready,
+          FitLensOutcome.FAILED,
+          0,
+          matchesConsidered,
+          usage,
+          modelResolved,
+          failureCategory = category,
+          failureReason = reason,
+        )
       }
       FitLensResult.Failed(reason)
     } catch (e: Exception) {
@@ -449,6 +466,8 @@ class FitLensService(
     matchesConsidered: Int?,
     usage: TokenUsage,
     modelResolved: String?,
+    failureCategory: FitLensFailureCategory? = null,
+    failureReason: String? = null,
   ) {
     FitLensRunsDao
       .append(
@@ -466,6 +485,8 @@ class FitLensService(
           outputTokens = usage.outputTokens,
           cacheReadTokens = usage.cacheReadTokens,
           cacheWriteTokens = usage.cacheWriteTokens,
+          failureCategory = failureCategory,
+          failureReason = failureReason,
         ),
       ).getOrThrow()
   }
@@ -568,9 +589,9 @@ class FitLensService(
     val root =
       try {
         json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return QueryParse.Failure("root is not a JSON object")
+          ?: return QueryParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "root is not a JSON object")
       } catch (e: Exception) {
-        return QueryParse.Failure("malformed JSON: ${e.message}")
+        return QueryParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "malformed JSON: ${e.message}")
       }
 
     fun stringField(name: String): String? = (root[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
@@ -629,7 +650,7 @@ class FitLensService(
         ),
       )
     } catch (e: IllegalArgumentException) {
-      QueryParse.Failure("type-invalid field [${e.message}]")
+      QueryParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "type-invalid field [${e.message}]")
     }
   }
 
@@ -646,9 +667,9 @@ class FitLensService(
     val root =
       try {
         json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return ReasonParse.Failure("root is not a JSON object")
+          ?: return ReasonParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "root is not a JSON object")
       } catch (e: Exception) {
-        return ReasonParse.Failure("malformed JSON: ${e.message}")
+        return ReasonParse.Failure(FitLensFailureCategory.MALFORMED_OUTPUT, "malformed JSON: ${e.message}")
       }
 
     val collegeIdRaw = (root["collegeId"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
@@ -659,21 +680,27 @@ class FitLensService(
 
     val collegeId =
       runCatching { CollegeId(java.util.UUID.fromString(collegeIdRaw)) }.getOrNull()
-        ?: return ReasonParse.Failure("collegeId is not a UUID: [$collegeIdRaw]")
+        ?: return ReasonParse.Failure(FitLensFailureCategory.INVALID_CONTENT, "collegeId is not a UUID: [$collegeIdRaw]")
     if (collegeId !in matchIds) {
-      return ReasonParse.Failure("collegeId [$collegeIdRaw] is outside the retrieved match set")
+      return ReasonParse.Failure(
+        FitLensFailureCategory.INVALID_CONTENT,
+        "collegeId [$collegeIdRaw] is outside the retrieved match set",
+      )
     }
 
     val rationale = (root["rationale"] as? JsonPrimitive)?.takeIf { it.isString }?.content
     if (rationale == null || rationale.isBlank()) {
-      return ReasonParse.Failure("rationale is missing or blank")
+      return ReasonParse.Failure(FitLensFailureCategory.INVALID_CONTENT, "rationale is missing or blank")
     }
     // Belt-and-suspenders: reject an over-length rationale here as a parse failure
     // (a Failed pass) rather than letting it reach the write and trip
     // fit_suggestions_rationale_length_check as a swallowed no-op. The DB CHECK
     // remains the backstop.
     if (rationale.length > MAX_RATIONALE_CHARS) {
-      return ReasonParse.Failure("rationale exceeds $MAX_RATIONALE_CHARS chars (${rationale.length})")
+      return ReasonParse.Failure(
+        FitLensFailureCategory.INVALID_CONTENT,
+        "rationale exceeds $MAX_RATIONALE_CHARS chars (${rationale.length})",
+      )
     }
 
     return ReasonParse.Chosen(collegeId, rationale)
@@ -713,6 +740,7 @@ class FitLensService(
     ) : QueryParse
 
     data class Failure(
+      val category: FitLensFailureCategory,
       val detail: String,
     ) : QueryParse
   }
@@ -726,6 +754,7 @@ class FitLensService(
     data object Empty : ReasonParse
 
     data class Failure(
+      val category: FitLensFailureCategory,
       val detail: String,
     ) : ReasonParse
   }

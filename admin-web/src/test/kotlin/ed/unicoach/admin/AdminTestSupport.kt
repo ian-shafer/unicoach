@@ -40,6 +40,7 @@ import ed.unicoach.db.models.ConvoName
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRun
+import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.FitLensRun
 import ed.unicoach.db.models.FitSuggestion
@@ -463,6 +464,11 @@ object AdminTestSupport {
     matchesConsidered: Int? = 5,
     inputTokens: Int? = 300,
     outputTokens: Int? = 120,
+    // fit_lens_runs_failure_consistency_check requires both set exactly when
+    // outcome = FAILED.
+    failureCategory: FitLensFailureCategory? =
+      if (outcome == FitLensOutcome.FAILED) FitLensFailureCategory.MALFORMED_OUTPUT else null,
+    failureReason: String? = if (outcome == FitLensOutcome.FAILED) "test failure" else null,
   ): FitLensRun =
     runBlocking {
       database
@@ -480,6 +486,8 @@ object AdminTestSupport {
               matchesConsidered = matchesConsidered,
               inputTokens = inputTokens,
               outputTokens = outputTokens,
+              failureCategory = failureCategory,
+              failureReason = failureReason,
             ),
           )
         }.getOrThrow()

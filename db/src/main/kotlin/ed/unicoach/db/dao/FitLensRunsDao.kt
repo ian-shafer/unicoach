@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.FitLensRun
 import ed.unicoach.db.models.FitLensRunId
@@ -39,11 +40,17 @@ object FitLensRunsDao :
       outputTokens = rs.getInt("output_tokens").takeUnless { rs.wasNull() },
       cacheReadTokens = rs.getInt("cache_read_tokens").takeUnless { rs.wasNull() },
       cacheWriteTokens = rs.getInt("cache_write_tokens").takeUnless { rs.wasNull() },
+      failureCategory = rs.getString("failure_category")?.let(::parseFailureCategory),
+      failureReason = rs.getString("failure_reason"),
     )
 
   private fun parseOutcome(value: String): FitLensOutcome =
     FitLensOutcome.fromValue(value)
       ?: throw SQLException("Persisted fit_lens_runs.outcome is not a valid value: \"$value\"")
+
+  private fun parseFailureCategory(value: String): FitLensFailureCategory =
+    FitLensFailureCategory.fromValue(value)
+      ?: throw SQLException("Persisted fit_lens_runs.failure_category is not a valid value: \"$value\"")
 
   /** Appends one fit-lens-run row (`applied` or `failed`). */
   fun append(
@@ -71,6 +78,8 @@ object FitLensRunsDao :
           "output_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.outputTokens) },
           "cache_read_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheReadTokens) },
           "cache_write_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheWriteTokens) },
+          "failure_category" to { stmt, i -> stmt.setStringOrNull(i, input.failureCategory?.value) },
+          "failure_reason" to { stmt, i -> stmt.setStringOrNull(i, input.failureReason) },
         ),
       map = ::mapRun,
       mapError = ::mapRunError,

@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.StudentId
@@ -87,6 +88,12 @@ class FitLensRunsDaoTest {
     matchesConsidered: Int? = 0,
     input: Int? = 100,
     output: Int? = 50,
+    // fit_lens_runs_failure_consistency_check requires both set exactly when
+    // outcome = FAILED; default to a stand-in pair so FAILED calls that don't
+    // care about the specific reason (most of this file) still satisfy it.
+    failureCategory: FitLensFailureCategory? =
+      if (outcome == FitLensOutcome.FAILED) FitLensFailureCategory.MALFORMED_OUTPUT else null,
+    failureReason: String? = if (outcome == FitLensOutcome.FAILED) "test failure" else null,
   ) = FitLensRunsDao
     .append(
       session,
@@ -103,6 +110,8 @@ class FitLensRunsDaoTest {
         outputTokens = output,
         cacheReadTokens = 0,
         cacheWriteTokens = 0,
+        failureCategory = failureCategory,
+        failureReason = failureReason,
       ),
     ).getOrThrow()
 
@@ -120,10 +129,28 @@ class FitLensRunsDaoTest {
     assertEquals(300, applied.inputTokens)
     assertEquals(120, applied.outputTokens)
 
-    val failed = append(student, FitLensOutcome.FAILED, queryPrompt, reasonPrompt, suggestionsWritten = 0, matchesConsidered = null)
+    val failed =
+      append(
+        student,
+        FitLensOutcome.FAILED,
+        queryPrompt,
+        reasonPrompt,
+        suggestionsWritten = 0,
+        matchesConsidered = null,
+        failureCategory = FitLensFailureCategory.INVALID_CONTENT,
+        failureReason = "collegeId [11111111-1111-1111-1111-111111111111] is outside the retrieved match set",
+      )
     assertEquals(FitLensOutcome.FAILED, failed.outcome)
     assertEquals(0, failed.suggestionsWritten)
     assertNull(failed.matchesConsidered, "matches_considered is null when the retrieve never ran")
+    assertEquals(FitLensFailureCategory.INVALID_CONTENT, failed.failureCategory)
+    assertEquals(
+      "collegeId [11111111-1111-1111-1111-111111111111] is outside the retrieved match set",
+      failed.failureReason,
+    )
+
+    assertNull(applied.failureCategory, "an applied run carries no failure category")
+    assertNull(applied.failureReason, "an applied run carries no failure reason")
   }
 
   @Test
