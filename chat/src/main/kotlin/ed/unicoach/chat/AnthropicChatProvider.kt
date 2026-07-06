@@ -105,6 +105,7 @@ class AnthropicChatProvider(
       if (request.tools.isNotEmpty()) {
         put("tools", JsonArray(request.tools))
       }
+      request.toolChoice?.let { put("tool_choice", it) }
       put(
         "messages",
         buildJsonArray {

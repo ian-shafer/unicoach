@@ -5,11 +5,13 @@ import ed.unicoach.chat.ChatMessage
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatRole
-import ed.unicoach.chat.ContentBlocks
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.chat.chat
+import ed.unicoach.coaching.ForcedToolInput
+import ed.unicoach.coaching.ToolSchema
+import ed.unicoach.coaching.forcedToolChoice
+import ed.unicoach.coaching.readForcedTool
 import ed.unicoach.college.CollegeSearchService
-import ed.unicoach.common.util.truncateForLog
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
 import ed.unicoach.db.dao.ClaimsDao
@@ -33,7 +35,6 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.latestUpdatedAt
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -68,8 +69,6 @@ class FitLensService(
 ) {
   private val logger = LoggerFactory.getLogger(FitLensService::class.java)
 
-  private val json = Json { ignoreUnknownKeys = true }
-
   private companion object {
     /**
      * Upper bound on a rationale's length, mirroring the
@@ -78,6 +77,49 @@ class FitLensService(
      * the CHECK at write time.
      */
     private const val MAX_RATIONALE_CHARS = 2_048
+
+    const val RECORD_COLLEGE_QUERY_TOOL_NAME = "record_college_query"
+    const val RECORD_FIT_REASON_TOOL_NAME = "record_fit_reason"
+
+    // Call #1: the CollegeQuery filter fields, all optional (absent = the axis is
+    // unconstrained). `limit` is not in the schema — the service sets it after
+    // parse. Guidance, not a hard validator (tier A) — parseQuery enforces.
+    private val RECORD_COLLEGE_QUERY_TOOL: JsonObject =
+      ToolSchema.tool(
+        name = RECORD_COLLEGE_QUERY_TOOL_NAME,
+        description =
+          "Record the structured college-dataset query distilled from the " +
+            "student's claims. Omit any axis you are unsure of.",
+        inputSchema =
+          ToolSchema.objectSchema(
+            "cipPrefix" to ToolSchema.string(),
+            "states" to ToolSchema.arrayOf(ToolSchema.string()),
+            "region" to ToolSchema.integer(),
+            "locales" to ToolSchema.arrayOf(ToolSchema.integer()),
+            "control" to ToolSchema.arrayOf(ToolSchema.integer()),
+            "minUndergradEnrollment" to ToolSchema.integer(),
+            "maxUndergradEnrollment" to ToolSchema.integer(),
+            "minAdmissionRate" to ToolSchema.number(),
+            "maxAdmissionRate" to ToolSchema.number(),
+            "maxNetPrice" to ToolSchema.integer(),
+            "minGraduationRate" to ToolSchema.number(),
+          ),
+      )
+
+    // Call #2: the chosen college (or none). Absent/blank collegeId = no fit.
+    // Guidance, not a hard validator (tier A) — parseReason enforces.
+    private val RECORD_FIT_REASON_TOOL: JsonObject =
+      ToolSchema.tool(
+        name = RECORD_FIT_REASON_TOOL_NAME,
+        description =
+          "Record at most one recommended college from the supplied matches, " +
+            "with a rationale. Omit collegeId when nothing genuinely fits.",
+        inputSchema =
+          ToolSchema.objectSchema(
+            "collegeId" to ToolSchema.string(),
+            "rationale" to ToolSchema.string(),
+          ),
+      )
   }
 
   /**
@@ -184,11 +226,17 @@ class FitLensService(
     val queryUsage = queryCompleted.response.usage
     val modelResolved = queryCompleted.response.modelResolved
 
-    val queryRaw = ContentBlocks.renderText(queryCompleted.response.content)
+    // The forced tool's input object is the payload; a missing tool_use block is
+    // the tier-A analogue of an unparseable envelope.
+    val queryParse =
+      when (val forced = readForcedTool(queryCompleted.response, RECORD_COLLEGE_QUERY_TOOL_NAME)) {
+        is ForcedToolInput.Absent -> QueryParse.Failure(FailureReason.QueryNoToolUse(studentId, forced.stopReason, forced.excerpt))
+        is ForcedToolInput.Present -> parseQuery(studentId, forced.input)
+      }
     val query =
-      when (val parsed = parseQuery(studentId, queryRaw)) {
-        is QueryParse.Failure -> return onQueryParseFailure(studentId, ready, parsed, queryRaw, queryUsage, modelResolved)
-        is QueryParse.Parsed -> parsed.query
+      when (queryParse) {
+        is QueryParse.Failure -> return onQueryParseFailure(studentId, ready, queryParse, queryUsage, modelResolved)
+        is QueryParse.Parsed -> queryParse.query
       }
 
     // Retrieve — run the query directly in the worker (no shared txn).
@@ -209,13 +257,25 @@ class FitLensService(
       }
     // Both calls are billed on a completed pass: the run's token columns sum them.
     val totalUsage = sumUsage(queryUsage, reasonCompleted.response.usage)
-    val reasonRaw = ContentBlocks.renderText(reasonCompleted.response.content)
     val matchIds = matches.map { it.id }.toSet()
 
-    return when (val parsed = parseReason(studentId, reasonRaw, matchIds)) {
-      is ReasonParse.Failure -> onReasonParseFailure(studentId, ready, parsed, reasonRaw, matches.size, totalUsage, modelResolved)
-      is ReasonParse.Empty -> onReasonEmpty(studentId, ready, matches.size, totalUsage, modelResolved)
-      is ReasonParse.Chosen -> writePhase(studentId, ready, parsed.collegeId, parsed.rationale, matches.size, totalUsage, modelResolved)
+    val reasonParse =
+      when (val forced = readForcedTool(reasonCompleted.response, RECORD_FIT_REASON_TOOL_NAME)) {
+        is ForcedToolInput.Absent -> ReasonParse.Failure(FailureReason.ReasonNoToolUse(studentId, forced.stopReason, forced.excerpt))
+        is ForcedToolInput.Present -> parseReason(studentId, forced.input, matchIds)
+      }
+    return when (reasonParse) {
+      is ReasonParse.Failure -> {
+        onReasonParseFailure(studentId, ready, reasonParse, matches.size, totalUsage, modelResolved)
+      }
+
+      is ReasonParse.Empty -> {
+        onReasonEmpty(studentId, ready, matches.size, totalUsage, modelResolved)
+      }
+
+      is ReasonParse.Chosen -> {
+        writePhase(studentId, ready, reasonParse.collegeId, reasonParse.rationale, matches.size, totalUsage, modelResolved)
+      }
     }
   }
 
@@ -253,15 +313,13 @@ class FitLensService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     parsed: QueryParse.Failure,
-    queryRaw: String,
     queryUsage: TokenUsage,
     modelResolved: String?,
   ): FitLensResult {
     logger.warn(
-      "unparseable fit-lens CollegeQuery for student=[{}]: [{}]; raw=[{}]",
+      "unusable fit-lens CollegeQuery for student=[{}]: [{}]",
       studentId.asString,
       parsed.detail.toDisplay(),
-      truncateForLog(queryRaw),
     )
     return writeFailedRun(
       studentId,
@@ -292,16 +350,14 @@ class FitLensService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     parsed: ReasonParse.Failure,
-    reasonRaw: String,
     matchesConsidered: Int,
     totalUsage: TokenUsage,
     modelResolved: String?,
   ): FitLensResult {
     logger.warn(
-      "unusable fit-lens reason output for student=[{}]: [{}]; raw=[{}]",
+      "unusable fit-lens reason output for student=[{}]: [{}]",
       studentId.asString,
       parsed.detail.toDisplay(),
-      truncateForLog(reasonRaw),
     )
     return writeFailedRun(
       studentId,
@@ -511,6 +567,8 @@ class FitLensService(
       system = ready.queryPrompt.body,
       messages = listOf(ChatMessage.text(ChatRole.USER, buildQueryContext(ready))),
       maxTokens = config.queryMaxTokens,
+      tools = listOf(RECORD_COLLEGE_QUERY_TOOL),
+      toolChoice = forcedToolChoice(RECORD_COLLEGE_QUERY_TOOL_NAME),
     )
 
   private fun buildQueryContext(ready: ReadPhase.Ready): String =
@@ -546,6 +604,8 @@ class FitLensService(
       system = ready.reasonPrompt.body,
       messages = listOf(ChatMessage.text(ChatRole.USER, buildReasonContext(ready, matches))),
       maxTokens = config.reasonMaxTokens,
+      tools = listOf(RECORD_FIT_REASON_TOOL),
+      toolChoice = forcedToolChoice(RECORD_FIT_REASON_TOOL_NAME),
     )
 
   private fun buildReasonContext(
@@ -574,22 +634,15 @@ class FitLensService(
   // ---------------------------------------------------------------------------
 
   /**
-   * Parses call #1's strict-JSON [CollegeQuery] filter object defensively. Any
-   * structural or type-invalid field fails the pass (no partial acceptance). The
-   * model never sets `limit`; the service sets it after parse.
+   * Reads call #1's [CollegeQuery] filter object from the forced tool's
+   * `tool_use.input` defensively. Any type-invalid field fails the pass (no
+   * partial acceptance). The model never sets `limit`; the service sets it after
+   * parse.
    */
   private fun parseQuery(
     studentId: StudentId,
-    raw: String,
+    root: JsonObject,
   ): QueryParse {
-    val root =
-      try {
-        json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return QueryParse.Failure(FailureReason.QueryNotJsonObject(studentId))
-      } catch (e: Exception) {
-        return QueryParse.Failure(FailureReason.QueryMalformedJson(studentId, e.message))
-      }
-
     fun stringField(name: String): String? = (root[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
 
     // An absent key is a legitimately unconstrained axis (null). A present key
@@ -651,24 +704,16 @@ class FitLensService(
   }
 
   /**
-   * Parses call #2's strict-JSON output. An empty object `{}` (or an object with
-   * a null/absent collegeId) is [ReasonParse.Empty] (nothing fits). A named
-   * `collegeId` must be present in [matchIds]; one outside the set, or a blank
-   * rationale, is [ReasonParse.Failure].
+   * Reads call #2's output from the forced tool's `tool_use.input`. An empty
+   * object `{}` (or an object with a null/absent collegeId) is [ReasonParse.Empty]
+   * (nothing fits). A named `collegeId` must be present in [matchIds]; one outside
+   * the set, or a blank rationale, is [ReasonParse.Failure].
    */
   private fun parseReason(
     studentId: StudentId,
-    raw: String,
+    root: JsonObject,
     matchIds: Set<CollegeId>,
   ): ReasonParse {
-    val root =
-      try {
-        json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return ReasonParse.Failure(FailureReason.ReasonNotJsonObject(studentId))
-      } catch (e: Exception) {
-        return ReasonParse.Failure(FailureReason.ReasonMalformedJson(studentId, e.message))
-      }
-
     val collegeIdRaw = (root["collegeId"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
     if (collegeIdRaw == null || collegeIdRaw.isBlank()) {
       // An empty {} or an absent/null collegeId: nothing genuinely fits.

@@ -13,7 +13,9 @@ import ed.unicoach.db.models.ConvoRequestId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -66,6 +68,7 @@ class ExtractionServiceTest {
     // modules' suites that resolve coach/v1 (cross-suite isolation).
     connection.createStatement().use { stmt ->
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v2', 'call the record_extraction tool')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v1', 'reflect over the model')")
     }
@@ -116,12 +119,65 @@ class ExtractionServiceTest {
   // Fakes
   // ---------------------------------------------------------------------------
 
-  /** Returns a Completed terminal whose content is a single text block holding [jsonDoc]. */
-  private class JsonProvider(
+  private fun completed(
+    content: kotlinx.serialization.json.JsonElement,
+    usage: TokenUsage,
+    model: String = "claude-sonnet-4-6",
+  ): ChatEvent.Completed =
+    ChatEvent.Completed(
+      response =
+        ChatResponse(
+          content = content,
+          modelResolved = model,
+          stopReason = "tool_use",
+          usage = usage,
+          providerRequestId = "req_${UUID.randomUUID()}",
+        ),
+      rawPayload = content,
+    )
+
+  /**
+   * The forced-tool content array: a single `tool_use` block whose `input` is
+   * [input]. This is the shape a forced `tool_choice` produces (RFC 104), read
+   * by `ContentBlocks.toolUseInput`.
+   */
+  private fun toolUseContent(input: JsonObject): kotlinx.serialization.json.JsonElement =
+    kotlinx.serialization.json.JsonArray(
+      listOf(
+        buildJsonObject {
+          put("type", "tool_use")
+          put("id", "toolu_${UUID.randomUUID()}")
+          put("name", "record_extraction")
+          put("input", input)
+        },
+      ),
+    )
+
+  /** Parses [jsonDoc] into the JsonObject the model would have returned as the tool input. */
+  private fun toolInput(jsonDoc: String): JsonObject =
+    kotlinx.serialization.json.Json
+      .parseToJsonElement(jsonDoc) as JsonObject
+
+  /**
+   * Returns a Completed terminal whose content is a forced `record_extraction`
+   * tool_use block carrying the object parsed from [jsonDoc].
+   */
+  private inner class JsonProvider(
     override val id: String = "log",
     private val jsonDoc: String,
     private val usage: TokenUsage = TokenUsage(100, 50, 0, 0),
     private val model: String = "claude-sonnet-4-6",
+  ) : ChatProvider {
+    override fun stream(request: ChatRequest): Flow<ChatEvent> = flow { emit(completed(toolUseContent(toolInput(jsonDoc)), usage, model)) }
+  }
+
+  /**
+   * Returns a Completed terminal whose content is a text-only block (no tool_use
+   * block) — the model declined to call the forced tool, mapped to `NoToolUse`.
+   */
+  private inner class NoToolUseProvider(
+    override val id: String = "log",
+    private val usage: TokenUsage = TokenUsage(11, 22, 0, 0),
   ) : ChatProvider {
     override fun stream(request: ChatRequest): Flow<ChatEvent> =
       flow {
@@ -130,28 +186,16 @@ class ExtractionServiceTest {
             listOf(
               buildJsonObject {
                 put("type", "text")
-                put("text", jsonDoc)
+                put("text", "I could not do that.")
               },
             ),
           )
-        emit(
-          ChatEvent.Completed(
-            response =
-              ChatResponse(
-                content = content,
-                modelResolved = model,
-                stopReason = "end_turn",
-                usage = usage,
-                providerRequestId = "req_${UUID.randomUUID()}",
-              ),
-            rawPayload = content,
-          ),
-        )
+        emit(completed(content, usage))
       }
   }
 
-  /** Captures the request (for transcript assertions), then returns a valid empty document. */
-  private class CapturingProvider(
+  /** Captures the request (for transcript/tool assertions), then returns a valid empty document. */
+  private inner class CapturingProvider(
     override val id: String = "log",
   ) : ChatProvider {
     var captured: ChatRequest? = null
@@ -159,28 +203,7 @@ class ExtractionServiceTest {
     override fun stream(request: ChatRequest): Flow<ChatEvent> =
       flow {
         captured = request
-        val content =
-          kotlinx.serialization.json.JsonArray(
-            listOf(
-              buildJsonObject {
-                put("type", "text")
-                put("text", """{"observations":[],"claims":[]}""")
-              },
-            ),
-          )
-        emit(
-          ChatEvent.Completed(
-            response =
-              ChatResponse(
-                content = content,
-                modelResolved = "m",
-                stopReason = "end_turn",
-                usage = TokenUsage(1, 1, 0, 0),
-                providerRequestId = "req_${UUID.randomUUID()}",
-              ),
-            rawPayload = content,
-          ),
-        )
+        emit(completed(toolUseContent(toolInput("""{"observations":[],"claims":[]}""")), TokenUsage(1, 1, 0, 0)))
       }
   }
 
@@ -195,10 +218,10 @@ class ExtractionServiceTest {
   /**
    * Runs [beforeReply] (a side effect simulating an interleaved concurrent pass
    * that advances the watermark during the lock-free LLM window) and THEN emits
-   * an unparseable [ChatEvent.Completed], so the calling pass's writeFailedRun
+   * a no-tool-use [ChatEvent.Completed], so the calling pass's writeFailedRun
    * observes a watermark already past its target.
    */
-  private class InterleavingProvider(
+  private inner class InterleavingProvider(
     override val id: String = "log",
     private val beforeReply: suspend () -> Unit,
   ) : ChatProvider {
@@ -210,23 +233,11 @@ class ExtractionServiceTest {
             listOf(
               buildJsonObject {
                 put("type", "text")
-                put("text", "not json")
+                put("text", "no tool call")
               },
             ),
           )
-        emit(
-          ChatEvent.Completed(
-            response =
-              ChatResponse(
-                content = content,
-                modelResolved = "m",
-                stopReason = "end_turn",
-                usage = TokenUsage(7, 3, 0, 0),
-                providerRequestId = "req_${UUID.randomUUID()}",
-              ),
-            rawPayload = content,
-          ),
-        )
+        emit(completed(content, TokenUsage(7, 3, 0, 0)))
       }
   }
 
@@ -614,13 +625,15 @@ class ExtractionServiceTest {
     }
 
   @Test
-  fun `unparseable Completed writes a failed run carrying usage and leaves the watermark unchanged`() =
+  fun `a Completed with no tool_use block writes a failed run carrying usage and leaves the watermark unchanged`() =
     runBlocking {
       val student = createStudent()
       val convo = createConvo(student)
       val req = appendUserTurn(convo, "hi")
+      // The model returned text instead of calling the forced tool: NoToolUse,
+      // mapped to the not_a_json_object category (the payload never arrived).
       val result =
-        service(JsonProvider(jsonDoc = "this is not json", usage = TokenUsage(11, 22, 0, 0)))
+        service(NoToolUseProvider(usage = TokenUsage(11, 22, 0, 0)))
           .extract(ConvoId(convo), ConvoRequestId(req))
 
       assertTrue(result is ExtractionResult.TransientFailure, "got $result")
@@ -634,10 +647,65 @@ class ExtractionServiceTest {
             assertEquals("failed", rs.getString("outcome"))
             assertEquals(11, rs.getInt("input_tokens"))
             assertEquals(22, rs.getInt("output_tokens"))
-            assertEquals("malformed_json", rs.getString("failure_category"))
+            assertEquals("not_a_json_object", rs.getString("failure_category"))
             assertTrue(rs.getString("failure_reason").isNotBlank(), "failure_reason must be populated")
           }
       }
+    }
+
+  @Test
+  fun `a bad enum in the tool input is a failed run with invalid_field category`() =
+    runBlocking {
+      val student = createStudent()
+      val convo = createConvo(student)
+      val req = appendUserTurn(convo, "hi")
+      // A claim with an out-of-set kind: BadField → invalid_field. The tool input
+      // is a valid object, so the failure is content, not shape.
+      val doc =
+        """
+        {"observations":[{"sourceRequestId":$req,"quote":"x"}],
+         "claims":[{"op":"new","statement":"s","kind":"bogus","subject":"student",
+                    "topic":"academics","origin":"student_stated","supports":[0]}]}
+        """.trimIndent()
+      val result =
+        service(JsonProvider(jsonDoc = doc, usage = TokenUsage(9, 4, 0, 0)))
+          .extract(ConvoId(convo), ConvoRequestId(req))
+
+      assertTrue(result is ExtractionResult.TransientFailure, "got $result")
+      assertEquals(0L, watermark(convo))
+      connection.createStatement().use { stmt ->
+        stmt
+          .executeQuery("SELECT outcome, failure_category, failure_reason FROM extraction_runs WHERE convo_id = '$convo'")
+          .use { rs ->
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals("invalid_field", rs.getString("failure_category"))
+            assertTrue(rs.getString("failure_reason").contains("kind"), rs.getString("failure_reason"))
+          }
+      }
+    }
+
+  @Test
+  fun `the request carries the record_extraction tool and a forcing tool_choice`() =
+    runBlocking {
+      val student = createStudent()
+      val convo = createConvo(student)
+      val req = appendUserTurn(convo, "hi")
+      val provider = CapturingProvider()
+      service(provider).extract(ConvoId(convo), ConvoRequestId(req))
+
+      val captured = provider.captured!!
+      assertEquals(1, captured.tools.size, "exactly one tool spec")
+      assertEquals(
+        "record_extraction",
+        captured.tools
+          .single()["name"]
+          ?.jsonPrimitive
+          ?.content,
+      )
+      val toolChoice = captured.toolChoice!!
+      assertEquals("tool", toolChoice["type"]?.jsonPrimitive?.content)
+      assertEquals("record_extraction", toolChoice["name"]?.jsonPrimitive?.content)
     }
 
   @Test
@@ -772,7 +840,7 @@ class ExtractionServiceTest {
         .extract(ConvoId(convo), ConvoRequestId(req1))
 
       val req2 = appendUserTurn(convo, "more")
-      service(JsonProvider(jsonDoc = "garbage", usage = TokenUsage(30, 0, 0, 0)))
+      service(NoToolUseProvider(usage = TokenUsage(30, 0, 0, 0)))
         .extract(ConvoId(convo), ConvoRequestId(req2))
 
       connection.prepareStatement("SELECT COALESCE(SUM(input_tokens),0) FROM extraction_runs WHERE student_id = ?").use { stmt ->
@@ -794,8 +862,8 @@ class ExtractionServiceTest {
             assertEquals(null, rs.getString("failure_category"))
             rs.next()
             assertEquals("failed", rs.getString("outcome"))
-            // "garbage" parses leniently as a bare JSON primitive (not an object),
-            // not a JSON syntax error: NOT_A_JSON_OBJECT, not MALFORMED_JSON.
+            // No tool_use block: the forced payload never arrived (NoToolUse),
+            // mapped to the not_a_json_object category.
             assertEquals("not_a_json_object", rs.getString("failure_category"))
             assertTrue(rs.getString("failure_reason").isNotBlank(), "failure_reason must be populated")
           }

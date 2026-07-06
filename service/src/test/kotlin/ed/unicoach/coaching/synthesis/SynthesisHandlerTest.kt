@@ -68,6 +68,7 @@ class SynthesisHandlerTest {
       )
       // Restore all migration-seeded prompts for cross-module suites on the shared DB.
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v1', 'reflect over the model')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v2', 'call the record_synthesis tool')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
     }

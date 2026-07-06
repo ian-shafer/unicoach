@@ -3,25 +3,31 @@ package ed.unicoach.coaching
 import ed.unicoach.db.models.JsonParseFailureCategory
 
 /**
- * Why an LLM output document could not be parsed (RFC 101), shared by
- * `ExtractionService` and `SynthesisService` — their parse shapes are
- * byte-for-byte identical, so one shared top-level type serves both rather than
- * two duplicate private definitions. The direct analog of RFC 98's `FailureReason`
- * living in `FitLensResult.kt`.
+ * Why an LLM output document could not be used (RFC 101, tier-A forced tool use
+ * per RFC 104), shared by `ExtractionService` and `SynthesisService` — their
+ * shapes are byte-for-byte identical, so one shared top-level type serves both
+ * rather than two duplicate private definitions. The direct analog of RFC 98's
+ * `FailureReason` living in `FitLensResult.kt`.
  *
- * - [NotAnObject]: the root of the parsed output wasn't a JSON object at all.
- * - [MalformedJson]: the raw text didn't parse as JSON ([detail] carries the raw error).
- * - [BadField]: it parsed as an object, but a field was missing, wrong-shape, or
+ * The payload arrives as the forced tool's `tool_use.input` object, so
+ * "malformed JSON" and "root is not an object" are unrepresentable; the residual
+ * surfaces are:
+ *
+ * - [NoToolUse]: the response carried no `tool_use` block — the structured object
+ *   the model was forced to produce never arrived. Carries the provider
+ *   [stopReason] and a bounded [excerpt] of whatever text the model returned
+ *   instead (refusal, clarifying prose, or a `max_tokens` truncation), so the
+ *   persisted `failure_reason` retains the context needed to tell those apart.
+ * - [BadField]: the input was an object, but a field was missing, wrong-shape, or
  *   failed enum membership ([field]/[value] name the offender).
  *
  * [category] is the coarse persisted bucket, derived from the variant identity;
  * [toDisplay] renders the free-text diagnostic persisted as `failure_reason`.
  */
 sealed interface JsonParseFailure {
-  data object NotAnObject : JsonParseFailure
-
-  data class MalformedJson(
-    val detail: String?,
+  data class NoToolUse(
+    val stopReason: String,
+    val excerpt: String,
   ) : JsonParseFailure
 
   data class BadField(
@@ -38,15 +44,18 @@ sealed interface JsonParseFailure {
 val JsonParseFailure.category: JsonParseFailureCategory
   get() =
     when (this) {
-      is JsonParseFailure.NotAnObject -> JsonParseFailureCategory.NOT_A_JSON_OBJECT
-      is JsonParseFailure.MalformedJson -> JsonParseFailureCategory.MALFORMED_JSON
+      // A forced tool payload that never arrived is the tier-A analogue of the
+      // old prose-not-an-object failure, so it reuses NOT_A_JSON_OBJECT (a
+      // deliberate overload; no DB enum migration). MALFORMED_JSON remains valid
+      // historical vocabulary with no new live producer.
+      is JsonParseFailure.NoToolUse -> JsonParseFailureCategory.NOT_A_JSON_OBJECT
+
       is JsonParseFailure.BadField -> JsonParseFailureCategory.INVALID_FIELD
     }
 
 /** Renders a [JsonParseFailure] to the human string logged and persisted as `failure_reason`. */
 fun JsonParseFailure.toDisplay(): String =
   when (this) {
-    is JsonParseFailure.NotAnObject -> "root is not a JSON object"
-    is JsonParseFailure.MalformedJson -> "malformed JSON: [$detail]"
+    is JsonParseFailure.NoToolUse -> "response carried no tool_use block (stop_reason=[$stopReason], text=[$excerpt])"
     is JsonParseFailure.BadField -> "field [$field]=[$value]"
   }

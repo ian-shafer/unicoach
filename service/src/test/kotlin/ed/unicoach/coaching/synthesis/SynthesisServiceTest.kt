@@ -28,7 +28,9 @@ import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -81,6 +83,7 @@ class SynthesisServiceTest {
       )
       // Restore all migration-seeded prompts for cross-module suites on the shared DB.
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v1', 'reflect over the model')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v2', 'call the record_synthesis tool')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
     }
@@ -118,8 +121,49 @@ class SynthesisServiceTest {
   // Fakes
   // ---------------------------------------------------------------------------
 
-  /** Returns a Completed terminal whose content is a single text block holding [jsonDoc]; captures the request. */
-  private class JsonProvider(
+  /**
+   * The forced-tool content array: a single `record_synthesis` tool_use block
+   * whose `input` is [input], the shape a forced `tool_choice` produces (RFC 104).
+   */
+  private fun toolUseContent(input: JsonObject): kotlinx.serialization.json.JsonElement =
+    kotlinx.serialization.json.JsonArray(
+      listOf(
+        buildJsonObject {
+          put("type", "tool_use")
+          put("id", "toolu_${UUID.randomUUID()}")
+          put("name", "record_synthesis")
+          put("input", input)
+        },
+      ),
+    )
+
+  /** Parses [jsonDoc] into the JsonObject the model would have returned as the tool input. */
+  private fun toolInput(jsonDoc: String): JsonObject =
+    kotlinx.serialization.json.Json
+      .parseToJsonElement(jsonDoc) as JsonObject
+
+  private fun completed(
+    content: kotlinx.serialization.json.JsonElement,
+    usage: TokenUsage,
+    model: String = "claude-sonnet-4-6",
+  ): ChatEvent.Completed =
+    ChatEvent.Completed(
+      response =
+        ChatResponse(
+          content = content,
+          modelResolved = model,
+          stopReason = "tool_use",
+          usage = usage,
+          providerRequestId = "req_${UUID.randomUUID()}",
+        ),
+      rawPayload = content,
+    )
+
+  /**
+   * Returns a Completed terminal whose content is a forced `record_synthesis`
+   * tool_use block carrying the object parsed from [jsonDoc]; captures the request.
+   */
+  private inner class JsonProvider(
     override val id: String = "log",
     private val jsonDoc: String,
     private val usage: TokenUsage = TokenUsage(100, 50, 0, 0),
@@ -132,28 +176,33 @@ class SynthesisServiceTest {
       flow {
         lastRequest = request
         calls++
+        emit(completed(toolUseContent(toolInput(jsonDoc)), usage, model))
+      }
+  }
+
+  /**
+   * Returns a Completed terminal whose content is a text-only block (no tool_use
+   * block) — the model declined to call the forced tool, mapped to `NoToolUse`.
+   */
+  private inner class NoToolUseProvider(
+    override val id: String = "log",
+    private val usage: TokenUsage = TokenUsage(11, 22, 0, 0),
+  ) : ChatProvider {
+    var calls = 0
+
+    override fun stream(request: ChatRequest): Flow<ChatEvent> =
+      flow {
+        calls++
         val content =
           kotlinx.serialization.json.JsonArray(
             listOf(
               buildJsonObject {
                 put("type", "text")
-                put("text", jsonDoc)
+                put("text", "I could not do that.")
               },
             ),
           )
-        emit(
-          ChatEvent.Completed(
-            response =
-              ChatResponse(
-                content = content,
-                modelResolved = model,
-                stopReason = "end_turn",
-                usage = usage,
-                providerRequestId = "req_${UUID.randomUUID()}",
-              ),
-            rawPayload = content,
-          ),
-        )
+        emit(completed(content, usage))
       }
   }
 
@@ -493,12 +542,14 @@ class SynthesisServiceTest {
     }
 
   @Test
-  fun `unparseable Completed writes a failed run carrying usage and does not advance the marker`() =
+  fun `a Completed with no tool_use block writes a failed run carrying usage and does not advance the marker`() =
     runBlocking {
       val student = createStudent()
       createClaim(student)
+      // The model returned text instead of calling the forced tool: NoToolUse,
+      // mapped to the not_a_json_object category (the payload never arrived).
       val result =
-        service(JsonProvider(jsonDoc = "this is not json", usage = TokenUsage(11, 22, 0, 0))).synthesize(student)
+        service(NoToolUseProvider(usage = TokenUsage(11, 22, 0, 0))).synthesize(student)
 
       assertTrue(result is SynthesisResult.TransientFailure, "got $result")
       assertNull(
@@ -516,10 +567,57 @@ class SynthesisServiceTest {
             assertEquals("failed", rs.getString("outcome"))
             assertEquals(11, rs.getInt("input_tokens"))
             assertEquals(22, rs.getInt("output_tokens"))
-            assertEquals("malformed_json", rs.getString("failure_category"))
+            assertEquals("not_a_json_object", rs.getString("failure_category"))
             assertTrue(rs.getString("failure_reason").isNotBlank(), "failure_reason must be populated")
           }
         }
+    }
+
+  @Test
+  fun `a bad enum in the tool input is a failed run with invalid_field category`() =
+    runBlocking {
+      val student = createStudent()
+      createClaim(student)
+      // A commitment with an out-of-set lens: BadField → invalid_field. The tool
+      // input is a valid object, so the failure is content, not shape.
+      val doc = """{"commitments":[{"lens":"bogus","disclosure":"explicit","statement":"x","supports":[]}]}"""
+      val result =
+        service(JsonProvider(jsonDoc = doc, usage = TokenUsage(9, 4, 0, 0))).synthesize(student)
+
+      assertTrue(result is SynthesisResult.TransientFailure, "got $result")
+      connection
+        .prepareStatement("SELECT outcome, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ?")
+        .use { stmt ->
+          stmt.setObject(1, student.value)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals("invalid_field", rs.getString("failure_category"))
+            assertTrue(rs.getString("failure_reason").contains("lens"), rs.getString("failure_reason"))
+          }
+        }
+    }
+
+  @Test
+  fun `the request carries the record_synthesis tool and a forcing tool_choice`() =
+    runBlocking {
+      val student = createStudent()
+      createClaim(student)
+      val provider = JsonProvider(jsonDoc = gapDoc())
+      service(provider).synthesize(student)
+
+      val captured = provider.lastRequest!!
+      assertEquals(1, captured.tools.size, "exactly one tool spec")
+      assertEquals(
+        "record_synthesis",
+        captured.tools
+          .single()["name"]
+          ?.jsonPrimitive
+          ?.content,
+      )
+      val toolChoice = captured.toolChoice!!
+      assertEquals("tool", toolChoice["type"]?.jsonPrimitive?.content)
+      assertEquals("record_synthesis", toolChoice["name"]?.jsonPrimitive?.content)
     }
 
   @Test
@@ -670,9 +768,9 @@ class SynthesisServiceTest {
       createClaim(student)
       service(JsonProvider(jsonDoc = gapDoc(), usage = TokenUsage(100, 50, 0, 0))).synthesize(student)
 
-      // Make the model fresh again and drive an unparseable pass.
+      // Make the model fresh again and drive a no-tool-use pass.
       createClaim(student, "fresh belief")
-      service(JsonProvider(jsonDoc = "garbage", usage = TokenUsage(30, 0, 0, 0))).synthesize(student)
+      service(NoToolUseProvider(usage = TokenUsage(30, 0, 0, 0))).synthesize(student)
 
       connection.prepareStatement("SELECT COALESCE(SUM(input_tokens),0) FROM synthesis_runs WHERE student_id = ?").use { stmt ->
         stmt.setObject(1, student.value)
@@ -693,8 +791,8 @@ class SynthesisServiceTest {
             assertEquals(null, rs.getString("failure_category"))
             rs.next()
             assertEquals("failed", rs.getString("outcome"))
-            // "garbage" parses leniently as a bare JSON primitive (not an object),
-            // not a JSON syntax error: NOT_A_JSON_OBJECT, not MALFORMED_JSON.
+            // No tool_use block: the forced payload never arrived (NoToolUse),
+            // mapped to the not_a_json_object category.
             assertEquals("not_a_json_object", rs.getString("failure_category"))
             assertTrue(rs.getString("failure_reason").isNotBlank(), "failure_reason must be populated")
           }
@@ -736,22 +834,7 @@ class SynthesisServiceTest {
               createClaim(student, "fresh belief B")
               val r = service(JsonProvider(jsonDoc = gapDoc())).synthesize(student)
               assertTrue(r is SynthesisResult.Success, "interleaved pass should apply, got $r")
-              val content =
-                kotlinx.serialization.json.JsonArray(
-                  listOf(
-                    buildJsonObject {
-                      put("type", "text")
-                      put("text", gapDoc())
-                    },
-                  ),
-                )
-              emit(
-                ChatEvent.Completed(
-                  response =
-                    ChatResponse(content, "m", "end_turn", TokenUsage(1, 1, 0, 0), "req_${UUID.randomUUID()}"),
-                  rawPayload = content,
-                ),
-              )
+              emit(completed(toolUseContent(toolInput(gapDoc())), TokenUsage(1, 1, 0, 0), "m"))
             }
         }
 

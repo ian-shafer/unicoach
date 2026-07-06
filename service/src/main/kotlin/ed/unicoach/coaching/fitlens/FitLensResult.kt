@@ -129,13 +129,10 @@ fun SkipReason.toDisplay(): String =
 sealed interface FailureReason {
   val studentId: StudentId
 
-  data class QueryNotJsonObject(
+  data class QueryNoToolUse(
     override val studentId: StudentId,
-  ) : FailureReason
-
-  data class QueryMalformedJson(
-    override val studentId: StudentId,
-    val detail: String?,
+    val stopReason: String,
+    val excerpt: String,
   ) : FailureReason
 
   data class QueryTypeInvalidField(
@@ -143,13 +140,10 @@ sealed interface FailureReason {
     val field: String?,
   ) : FailureReason
 
-  data class ReasonNotJsonObject(
+  data class ReasonNoToolUse(
     override val studentId: StudentId,
-  ) : FailureReason
-
-  data class ReasonMalformedJson(
-    override val studentId: StudentId,
-    val detail: String?,
+    val stopReason: String,
+    val excerpt: String,
   ) : FailureReason
 
   data class ReasonInvalidCollegeId(
@@ -176,24 +170,16 @@ sealed interface FailureReason {
 /** Renders a [FailureReason] to the human string logged at the edge boundary. */
 fun FailureReason.toDisplay(): String =
   when (this) {
-    is FailureReason.QueryNotJsonObject -> {
-      "root is not a JSON object (student=${studentId.asString})"
-    }
-
-    is FailureReason.QueryMalformedJson -> {
-      "malformed JSON: $detail (student=${studentId.asString})"
+    is FailureReason.QueryNoToolUse -> {
+      "query call carried no tool_use block (stop_reason=[$stopReason], text=[$excerpt]) (student=${studentId.asString})"
     }
 
     is FailureReason.QueryTypeInvalidField -> {
       "type-invalid field [$field] (student=${studentId.asString})"
     }
 
-    is FailureReason.ReasonNotJsonObject -> {
-      "root is not a JSON object (student=${studentId.asString})"
-    }
-
-    is FailureReason.ReasonMalformedJson -> {
-      "malformed JSON: $detail (student=${studentId.asString})"
+    is FailureReason.ReasonNoToolUse -> {
+      "reason call carried no tool_use block (stop_reason=[$stopReason], text=[$excerpt]) (student=${studentId.asString})"
     }
 
     is FailureReason.ReasonInvalidCollegeId -> {
@@ -221,11 +207,13 @@ fun FailureReason.toDisplay(): String =
 val FailureReason.category: FitLensFailureCategory
   get() =
     when (this) {
-      is FailureReason.QueryNotJsonObject,
-      is FailureReason.QueryMalformedJson,
+      // A forced tool payload that never arrived is a shape defect, not a
+      // content defect — it joins QueryTypeInvalidField under MALFORMED_OUTPUT
+      // (which the DB's `malformed_output` category already covers; no enum
+      // migration).
+      is FailureReason.QueryNoToolUse,
       is FailureReason.QueryTypeInvalidField,
-      is FailureReason.ReasonNotJsonObject,
-      is FailureReason.ReasonMalformedJson,
+      is FailureReason.ReasonNoToolUse,
       -> FitLensFailureCategory.MALFORMED_OUTPUT
 
       is FailureReason.ReasonInvalidCollegeId,

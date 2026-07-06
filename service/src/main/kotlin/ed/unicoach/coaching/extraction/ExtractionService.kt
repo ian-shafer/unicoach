@@ -9,10 +9,13 @@ import ed.unicoach.chat.TokenUsage
 import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ConvoContent
 import ed.unicoach.coaching.ConvoProjection
+import ed.unicoach.coaching.ForcedToolInput
 import ed.unicoach.coaching.JsonParseFailure
+import ed.unicoach.coaching.ToolSchema
 import ed.unicoach.coaching.category
+import ed.unicoach.coaching.forcedToolChoice
+import ed.unicoach.coaching.readForcedTool
 import ed.unicoach.coaching.toDisplay
-import ed.unicoach.common.util.truncateForLog
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
 import ed.unicoach.db.dao.ClaimSupportDao
@@ -42,7 +45,6 @@ import ed.unicoach.db.models.Observation
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -76,8 +78,6 @@ open class ExtractionService(
   private val config: ExtractionConfig,
 ) {
   private val logger = LoggerFactory.getLogger(ExtractionService::class.java)
-
-  private val json = Json { ignoreUnknownKeys = true }
 
   /**
    * Runs one extraction pass over [convoId] up to and including [throughRequestId].
@@ -234,6 +234,8 @@ open class ExtractionService(
         system = window.prompt.body,
         messages = buildPromptMessages(window),
         maxTokens = config.maxTokens,
+        tools = listOf(RECORD_EXTRACTION_TOOL),
+        toolChoice = forcedToolChoice(RECORD_EXTRACTION_TOOL_NAME),
       )
 
     val terminal =
@@ -257,22 +259,27 @@ open class ExtractionService(
       is ChatEvent.Completed -> {
         val usage = terminal.response.usage
         val modelResolved = terminal.response.modelResolved
-        // A Completed call is billed regardless of what the JSON contains.
-        val raw = ConvoContent.renderText(terminal.response.content)
-        when (val parsed = parseOutput(raw)) {
+        // A Completed call is billed regardless of what the tool input contains.
+        // The forced tool's input object is the payload; a missing tool_use block
+        // is the tier-A analogue of an unparseable envelope.
+        val parseResult =
+          when (val forced = readForcedTool(terminal.response, RECORD_EXTRACTION_TOOL_NAME)) {
+            is ForcedToolInput.Absent -> ParseResult.Failure(JsonParseFailure.NoToolUse(forced.stopReason, forced.excerpt))
+            is ForcedToolInput.Present -> parseOutput(forced.input)
+          }
+        when (parseResult) {
           is ParseResult.Failure -> {
             logger.warn(
-              "unparseable extraction output for convo=[{}]: [{}]; raw=[{}]",
+              "unusable extraction output for convo=[{}]: [{}]",
               convoId.asString,
-              parsed.failure.toDisplay(),
-              truncateForLog(raw),
+              parseResult.failure.toDisplay(),
             )
-            writeFailedRun(convoId, throughRequestId, window, parsed.failure, usage, modelResolved)
-            ExtractionResult.TransientFailure("unparseable extraction output: ${parsed.failure.toDisplay()}")
+            writeFailedRun(convoId, throughRequestId, window, parseResult.failure, usage, modelResolved)
+            ExtractionResult.TransientFailure("unusable extraction output: ${parseResult.failure.toDisplay()}")
           }
 
           is ParseResult.Parsed -> {
-            writePhase(convoId, throughRequestId, window, parsed.output, usage, modelResolved)
+            writePhase(convoId, throughRequestId, window, parseResult.output, usage, modelResolved)
           }
         }
       }
@@ -553,22 +560,16 @@ open class ExtractionService(
   // ---------------------------------------------------------------------------
 
   /**
-   * Parses the strict-JSON document via the JSON element DSL (the `service`
-   * module has no kotlinx-serialization compiler plugin, so generated
-   * `@Serializable` serializers are unavailable here). Returns a
-   * [ParseResult.Failure] carrying a structured [ParseFailure] — naming the
-   * offending field/value — on any structural, type, or enum-membership failure,
-   * so the caller can record what was wrong rather than a bare "unparseable".
+   * Extracts the observations/claims from the forced tool's `tool_use.input`
+   * object via the JSON element DSL (the `service` module has no
+   * kotlinx-serialization compiler plugin, so generated `@Serializable`
+   * serializers are unavailable here). The object always arrives structured
+   * (forced tool use, RFC 104) — this is only the per-field enforcement point.
+   * Returns a [ParseResult.Failure] naming the offending field/value on any
+   * missing, wrong-shape, or enum-membership failure, so the caller can record
+   * what was wrong rather than a bare "unusable".
    */
-  private fun parseOutput(raw: String): ParseResult {
-    val root =
-      try {
-        json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return ParseResult.Failure(JsonParseFailure.NotAnObject)
-      } catch (e: Exception) {
-        return ParseResult.Failure(JsonParseFailure.MalformedJson(e.message))
-      }
-
+  private fun parseOutput(root: JsonObject): ParseResult {
     val observations = mutableListOf<ObservationSpec>()
     val observationsArray =
       when (val element = root["observations"]) {
@@ -766,6 +767,51 @@ open class ExtractionService(
         topic = topic,
         visibility = visibility,
         statement = statement,
+      )
+  }
+
+  private companion object {
+    const val RECORD_EXTRACTION_TOOL_NAME = "record_extraction"
+
+    // Mirrors the fields parseOutput reads, with every enum enumerated to steer
+    // the model. Guidance, not a hard validator (tier A) — parseOutput enforces.
+    private val RECORD_EXTRACTION_TOOL: JsonObject =
+      ToolSchema.tool(
+        name = RECORD_EXTRACTION_TOOL_NAME,
+        description =
+          "Record the observations and claim operations distilled from the " +
+            "supplied transcript window.",
+        inputSchema =
+          ToolSchema.objectSchema(
+            "observations" to
+              ToolSchema.arrayOf(
+                ToolSchema.objectSchema(
+                  "sourceRequestId" to ToolSchema.integer(),
+                  "quote" to ToolSchema.string(),
+                ),
+              ),
+            "claims" to
+              ToolSchema.arrayOf(
+                ToolSchema.objectSchema(
+                  // `op` has no backing domain enum in scope — the three wire
+                  // literals are defined by ClaimOp.fromWire in this file, so they
+                  // stay literal here (a derivation would only re-hardcode them).
+                  "op" to ToolSchema.enum("new", "reinforce", "supersede"),
+                  "statement" to ToolSchema.string(),
+                  // Every enumerated value is derived from its owner enum's wire
+                  // `.value`, so a new/renamed enum member cannot silently drift
+                  // the schema out of sync with what parseOutput accepts (matching
+                  // SynthesisService's lens/disclosure derivation).
+                  "kind" to ToolSchema.enum(*ClaimKind.entries.map { it.value }.toTypedArray()),
+                  "subject" to ToolSchema.enum(*ClaimSubject.entries.map { it.value }.toTypedArray()),
+                  "topic" to ToolSchema.enum(*ClaimTopic.entries.map { it.value }.toTypedArray()),
+                  "origin" to ToolSchema.enum(*ClaimOrigin.entries.map { it.value }.toTypedArray()),
+                  "visibility" to ToolSchema.enum(*ClaimVisibility.entries.map { it.value }.toTypedArray()),
+                  "supports" to ToolSchema.arrayOf(ToolSchema.integer()),
+                  "targetClaimId" to ToolSchema.string(),
+                ),
+              ),
+          ),
       )
   }
 }

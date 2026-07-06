@@ -28,4 +28,34 @@ object ContentBlocks {
       }
     }
   }
+
+  /**
+   * The `input` object of the first `tool_use` block in [content] whose `name`
+   * is [expectedName], or null when no such block is present (a forced tool call
+   * that produced none, or produced a differently-named block). A matching block
+   * with absent/non-object `input` yields an empty object, mirroring
+   * [ConvoContent.toolUses]. Forced `tool_choice` yields exactly one `tool_use`
+   * block, named for the forced tool; this is the single-payload variant the
+   * structured-output calls need, distinct from `ConvoContent.toolUses` (the
+   * multi-block list the chat tool-use loop consumes). `renderText` renders
+   * `tool_use` blocks as empty, so the structured-output response side must read
+   * the payload here.
+   *
+   * Matching on [expectedName] (not merely `type == "tool_use"`) makes the read
+   * the single enforcement point of the forced-tool contract: a block for some
+   * other tool cannot be mistaken for the forced payload.
+   */
+  fun toolUseInput(
+    content: JsonElement,
+    expectedName: String,
+  ): JsonObject? {
+    if (content !is JsonArray) return null
+    for (block in content) {
+      val obj = block as? JsonObject ?: continue
+      if (obj["type"]?.jsonPrimitive?.contentOrNull != "tool_use") continue
+      if (obj["name"]?.jsonPrimitive?.contentOrNull != expectedName) continue
+      return obj["input"] as? JsonObject ?: JsonObject(emptyMap())
+    }
+    return null
+  }
 }

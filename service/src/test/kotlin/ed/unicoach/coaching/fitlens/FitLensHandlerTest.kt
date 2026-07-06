@@ -73,6 +73,8 @@ class FitLensHandlerTest {
       )
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_query', 'v1', 'formulate')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_reason', 'v1', 'reason')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_query', 'v2', 'call record_college_query')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_reason', 'v2', 'call record_fit_reason')")
     }
   }
 
@@ -157,7 +159,10 @@ class FitLensHandlerTest {
       ).getOrThrow()
   }
 
-  /** Returns the given JSON doc as a single Completed terminal on every call. */
+  /**
+   * Returns [doc] parsed into a forced tool_use block's `input` as a single
+   * Completed terminal on every call (RFC 104). [doc] must be a valid JSON object.
+   */
   private class DocProvider(
     private val doc: String,
   ) : ChatProvider {
@@ -169,8 +174,14 @@ class FitLensHandlerTest {
           JsonArray(
             listOf(
               buildJsonObject {
-                put("type", "text")
-                put("text", doc)
+                put("type", "tool_use")
+                put("id", "toolu_x")
+                put("name", "record_fit_lens")
+                put(
+                  "input",
+                  kotlinx.serialization.json.Json
+                    .parseToJsonElement(doc) as kotlinx.serialization.json.JsonObject,
+                )
               },
             ),
           )
@@ -180,7 +191,38 @@ class FitLensHandlerTest {
               ChatResponse(
                 content = content,
                 modelResolved = "claude-sonnet-4-6",
-                stopReason = "end_turn",
+                stopReason = "tool_use",
+                usage = TokenUsage(10, 5, 0, 0),
+                providerRequestId = "req",
+              ),
+            rawPayload = content,
+          ),
+        )
+      }
+  }
+
+  /** Returns a Completed terminal with a text-only block (no tool_use): NoToolUse. */
+  private class NoToolUseProvider : ChatProvider {
+    override val id = "log"
+
+    override fun stream(request: ChatRequest): Flow<ChatEvent> =
+      flow {
+        val content =
+          JsonArray(
+            listOf(
+              buildJsonObject {
+                put("type", "text")
+                put("text", "I could not do that.")
+              },
+            ),
+          )
+        emit(
+          ChatEvent.Completed(
+            response =
+              ChatResponse(
+                content = content,
+                modelResolved = "claude-sonnet-4-6",
+                stopReason = "tool_use",
                 usage = TokenUsage(10, 5, 0, 0),
                 providerRequestId = "req",
               ),
@@ -227,11 +269,12 @@ class FitLensHandlerTest {
   @Test
   fun `a Failed pass with unusable model output is dead-lettered as Success`() =
     runBlocking {
-      // Enough claims + a college so the pass runs; call #1 returns garbage -> Failed.
+      // Enough claims + a college so the pass runs; call #1 returns no tool_use
+      // block -> Failed (dead-lettered).
       val student = createStudent()
       createClaims(student, 3)
       createCollege()
-      val handler = FitLensHandler(serviceWith(DocProvider("garbage not json")))
+      val handler = FitLensHandler(serviceWith(NoToolUseProvider()))
       val result = handler.execute(buildJsonObject { put("studentId", student.asString) })
       assertTrue(result is JobResult.Success, "A Failed pass is dead-lettered (no retry) as Success, got: $result")
     }

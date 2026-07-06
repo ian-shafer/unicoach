@@ -7,11 +7,13 @@ import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatRole
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.chat.chat
-import ed.unicoach.coaching.ConvoContent
+import ed.unicoach.coaching.ForcedToolInput
 import ed.unicoach.coaching.JsonParseFailure
+import ed.unicoach.coaching.ToolSchema
 import ed.unicoach.coaching.category
+import ed.unicoach.coaching.forcedToolChoice
+import ed.unicoach.coaching.readForcedTool
 import ed.unicoach.coaching.toDisplay
-import ed.unicoach.common.util.truncateForLog
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
 import ed.unicoach.db.dao.ClaimsDao
@@ -37,7 +39,6 @@ import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SynthesisOutcome
 import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.latestUpdatedAt
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -72,8 +73,6 @@ class SynthesisService(
   private val clock: Clock = Clock.systemUTC(),
 ) {
   private val logger = LoggerFactory.getLogger(SynthesisService::class.java)
-
-  private val json = Json { ignoreUnknownKeys = true }
 
   /**
    * Runs one synthesis pass over [studentId]. Returns a sealed [SynthesisResult]
@@ -160,6 +159,8 @@ class SynthesisService(
         system = ready.prompt.body,
         messages = buildPromptMessages(ready),
         maxTokens = config.maxTokens,
+        tools = listOf(RECORD_SYNTHESIS_TOOL),
+        toolChoice = forcedToolChoice(RECORD_SYNTHESIS_TOOL_NAME),
       )
 
     val terminal =
@@ -198,22 +199,27 @@ class SynthesisService(
   ): SynthesisResult {
     val usage = terminal.response.usage
     val modelResolved = terminal.response.modelResolved
-    // A Completed call is billed regardless of what the JSON contains.
-    val raw = ConvoContent.renderText(terminal.response.content)
-    return when (val parsed = parseOutput(raw)) {
+    // A Completed call is billed regardless of what the tool input contains. The
+    // forced tool's input object is the payload; a missing tool_use block is the
+    // tier-A analogue of an unparseable envelope.
+    val parseResult =
+      when (val forced = readForcedTool(terminal.response, RECORD_SYNTHESIS_TOOL_NAME)) {
+        is ForcedToolInput.Absent -> ParseResult.Failure(JsonParseFailure.NoToolUse(forced.stopReason, forced.excerpt))
+        is ForcedToolInput.Present -> parseOutput(forced.input)
+      }
+    return when (parseResult) {
       is ParseResult.Failure -> {
         logger.warn(
-          "unparseable synthesis output for student=[{}]: [{}]; raw=[{}]",
+          "unusable synthesis output for student=[{}]: [{}]",
           studentId.asString,
-          parsed.failure.toDisplay(),
-          truncateForLog(raw),
+          parseResult.failure.toDisplay(),
         )
-        writeFailedRun(studentId, ready, parsed.failure, usage, modelResolved)
-        SynthesisResult.TransientFailure("unparseable synthesis output: ${parsed.failure.toDisplay()}")
+        writeFailedRun(studentId, ready, parseResult.failure, usage, modelResolved)
+        SynthesisResult.TransientFailure("unusable synthesis output: ${parseResult.failure.toDisplay()}")
       }
 
       is ParseResult.Parsed -> {
-        writePhase(studentId, ready, parsed.output, usage, modelResolved)
+        writePhase(studentId, ready, parseResult.output, usage, modelResolved)
       }
     }
   }
@@ -454,20 +460,14 @@ class SynthesisService(
   // ---------------------------------------------------------------------------
 
   /**
-   * Parses the strict-JSON commitments document via the JSON element DSL (the
-   * `service` module has no kotlinx-serialization compiler plugin). Returns a
-   * [ParseResult.Failure] naming the offending field on any structural, type, or
-   * enum-membership failure.
+   * Extracts the commitments from the forced tool's `tool_use.input` object via
+   * the JSON element DSL (the `service` module has no kotlinx-serialization
+   * compiler plugin). The object always arrives structured (forced tool use, RFC
+   * 104) — this is only the per-field enforcement point. Returns a
+   * [ParseResult.Failure] naming the offending field on any missing, wrong-shape,
+   * or enum-membership failure.
    */
-  private fun parseOutput(raw: String): ParseResult {
-    val root =
-      try {
-        json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return ParseResult.Failure(JsonParseFailure.NotAnObject)
-      } catch (e: Exception) {
-        return ParseResult.Failure(JsonParseFailure.MalformedJson(e.message))
-      }
-
+  private fun parseOutput(root: JsonObject): ParseResult {
     val commitments = mutableListOf<CommitmentSpec>()
     // Distinguish "key absent" (a legitimately empty proposal set → empty array)
     // from "key present but not an array" (a structurally malformed output). The
@@ -569,5 +569,32 @@ class SynthesisService(
     data class Failure(
       val failure: JsonParseFailure,
     ) : ParseResult
+  }
+
+  private companion object {
+    const val RECORD_SYNTHESIS_TOOL_NAME = "record_synthesis"
+
+    // Mirrors the fields parseOutput reads, enums enumerated from the domain
+    // enums. Guidance, not a hard validator (tier A) — parseOutput enforces.
+    private val RECORD_SYNTHESIS_TOOL: JsonObject =
+      ToolSchema.tool(
+        name = RECORD_SYNTHESIS_TOOL_NAME,
+        description = "Record the coach commitments synthesized from the student's model.",
+        inputSchema =
+          ToolSchema.objectSchema(
+            "commitments" to
+              ToolSchema.arrayOf(
+                ToolSchema.objectSchema(
+                  "lens" to
+                    ToolSchema.enum(*CommitmentLens.entries.map { it.value }.toTypedArray()),
+                  "disclosure" to
+                    ToolSchema.enum(*CommitmentDisclosure.entries.map { it.value }.toTypedArray()),
+                  "statement" to ToolSchema.string(),
+                  "triggerAt" to ToolSchema.string(),
+                  "supports" to ToolSchema.arrayOf(ToolSchema.string()),
+                ),
+              ),
+          ),
+      )
   }
 }

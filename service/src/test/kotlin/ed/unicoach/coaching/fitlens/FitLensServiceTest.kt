@@ -34,7 +34,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -84,6 +86,8 @@ class FitLensServiceTest {
       )
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_query', 'v1', 'formulate a query')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_reason', 'v1', 'reason over matches')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_query', 'v2', 'call the record_college_query tool')")
+      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_reason', 'v2', 'call the record_fit_reason tool')")
     }
   }
 
@@ -148,7 +152,13 @@ class FitLensServiceTest {
       }
   }
 
-  private fun scripted(vararg docs: String): ScriptedProvider = ScriptedProvider(terminals = docs.map { completed(it) })
+  // The pass calls query (#1) then reason (#2), so the first doc is the
+  // record_college_query payload and any subsequent doc is a record_fit_reason
+  // payload — the block name is now load-bearing (toolUseInput matches on it).
+  private fun scripted(vararg docs: String): ScriptedProvider =
+    ScriptedProvider(
+      terminals = docs.mapIndexed { i, doc -> completed(doc, toolName = if (i == 0) "record_college_query" else "record_fit_reason") },
+    )
 
   // ---------------------------------------------------------------------------
   // Fixtures
@@ -261,7 +271,7 @@ class FitLensServiceTest {
           terminals =
             listOf(
               completed("""{"states":["CA"]}""", input = 100, output = 40),
-              completed(reasonDoc(college), input = 200, output = 60),
+              completed(reasonDoc(college), input = 200, output = 60, toolName = "record_fit_reason"),
             ),
         )
 
@@ -297,7 +307,7 @@ class FitLensServiceTest {
 
       val provider =
         ScriptedProvider(
-          terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(college))),
+          terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(college), toolName = "record_fit_reason")),
         )
       val result = service(provider).discover(student)
 
@@ -316,7 +326,7 @@ class FitLensServiceTest {
 
       val provider =
         ScriptedProvider(
-          terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(college))),
+          terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(college), toolName = "record_fit_reason")),
         )
       val result = service(provider).discover(student)
 
@@ -451,18 +461,77 @@ class FitLensServiceTest {
     }
 
   @Test
-  fun `malformed CollegeQuery JSON fails, writes a failed run with matches_considered null`() =
+  fun `a query call with no tool_use block fails, writes a failed run with matches_considered null`() =
     runBlocking {
       val student = createStudent()
       createClaims(student, 3)
       createCollege()
-      val provider = scripted("not json at all")
+      // Call #1 returned text instead of calling the forced tool: QueryNoToolUse.
+      val provider = ScriptedProvider(terminals = listOf(noToolUseCompleted()))
       val result = service(provider).discover(student)
 
       assertTrue(result is FitLensResult.Failed, "Expected Failed, got: $result")
       assertTrue(latestRun(student).outcome is FitLensOutcome.Failed, "Expected a Failed run outcome")
+      assertEquals(
+        FitLensFailureCategory.MALFORMED_OUTPUT,
+        (latestRun(student).outcome as FitLensOutcome.Failed).category,
+      )
       assertNull(latestRun(student).matchesConsidered, "the retrieve never ran, so matches_considered is null")
       assertEquals(0, suggestionRows(student))
+    }
+
+  @Test
+  fun `a reason call with no tool_use block fails, writes a failed run recording spent tokens`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      createCollege(name = "Retrieved U")
+      // Call #1 returns a valid query; call #2 returns text (no tool_use):
+      // ReasonNoToolUse → MALFORMED_OUTPUT, both calls' tokens summed.
+      val provider = ScriptedProvider(terminals = listOf(completed("""{"states":["CA"]}"""), noToolUseCompleted()))
+      val result = service(provider).discover(student)
+
+      assertTrue(result is FitLensResult.Failed, "Expected Failed, got: $result")
+      assertEquals(
+        FitLensFailureCategory.MALFORMED_OUTPUT,
+        (latestRun(student).outcome as FitLensOutcome.Failed).category,
+      )
+      assertEquals(0, suggestionRows(student))
+    }
+
+  @Test
+  fun `both requests carry their forcing tool and tool_choice`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      val college = createCollege(name = "Great Fit U")
+      val provider =
+        ScriptedProvider(
+          terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(college), toolName = "record_fit_reason")),
+        )
+      service(provider).discover(student)
+
+      val queryReq = provider.requests[0]
+      assertEquals(
+        "record_college_query",
+        queryReq.tools
+          .single()["name"]
+          ?.jsonPrimitive
+          ?.content,
+      )
+      assertEquals("record_college_query", queryReq.toolChoice!!["name"]?.jsonPrimitive?.content)
+      assertEquals("tool", queryReq.toolChoice!!["type"]?.jsonPrimitive?.content)
+
+      val reasonReq = provider.requests[1]
+      assertEquals(
+        "record_fit_reason",
+        reasonReq.tools
+          .single()["name"]
+          ?.jsonPrimitive
+          ?.content,
+      )
+      assertEquals("record_fit_reason", reasonReq.toolChoice!!["name"]?.jsonPrimitive?.content)
+      assertEquals("tool", reasonReq.toolChoice!!["type"]?.jsonPrimitive?.content)
     }
 
   @Test
@@ -481,14 +550,17 @@ class FitLensServiceTest {
     }
 
   @Test
-  fun `Failed reason distinguishes the malformed-query from the off-match-set case`() =
+  fun `Failed category distinguishes the shape-defect query from the content-defect off-match-set case`() =
     runBlocking {
-      val malformedStudent = createStudent()
-      createClaims(malformedStudent, 3)
+      // A type-invalid query field (states is not an array): a shape defect →
+      // QueryTypeInvalidField → MALFORMED_OUTPUT.
+      val shapeStudent = createStudent()
+      createClaims(shapeStudent, 3)
       createCollege()
-      val malformedResult = service(scripted("not json at all")).discover(malformedStudent)
-      assertTrue(malformedResult is FitLensResult.Failed, "Expected Failed, got: $malformedResult")
+      val shapeResult = service(scripted("""{"states":"CA"}""")).discover(shapeStudent)
+      assertTrue(shapeResult is FitLensResult.Failed, "Expected Failed, got: $shapeResult")
 
+      // A collegeId outside the retrieved set: a content defect → INVALID_CONTENT.
       val offSetStudent = createStudent()
       createClaims(offSetStudent, 3)
       createCollege(name = "Retrieved U")
@@ -497,9 +569,15 @@ class FitLensServiceTest {
         service(scripted("""{"states":["CA"]}""", reasonDoc(phantom))).discover(offSetStudent)
       assertTrue(offSetResult is FitLensResult.Failed, "Expected Failed, got: $offSetResult")
 
-      assertTrue(
-        malformedResult.reason.toDisplay().contains("malformed JSON"),
-        "the malformed-query reason names the JSON failure, got: ${malformedResult.reason.toDisplay()}",
+      assertEquals(
+        FitLensFailureCategory.MALFORMED_OUTPUT,
+        (latestRun(shapeStudent).outcome as FitLensOutcome.Failed).category,
+        "a type-invalid query field is a shape defect (malformed_output)",
+      )
+      assertEquals(
+        FitLensFailureCategory.INVALID_CONTENT,
+        (latestRun(offSetStudent).outcome as FitLensOutcome.Failed).category,
+        "an off-match-set collegeId is a content defect (invalid_content)",
       )
       assertTrue(
         offSetResult.reason.toDisplay().contains("outside the retrieved match set"),
@@ -562,7 +640,10 @@ class FitLensServiceTest {
       // A third college to actually reason over.
       val fresh = createCollege(name = "Fresh Candidate College")
 
-      val provider = ScriptedProvider(terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(fresh))))
+      val provider =
+        ScriptedProvider(
+          terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(fresh), toolName = "record_fit_reason")),
+        )
       service(provider).discover(student)
 
       val call1Text =
@@ -590,7 +671,7 @@ class FitLensServiceTest {
       val student = createStudent()
       createClaims(student, 3)
       createCollege()
-      val provider = scripted("garbage")
+      val provider = ScriptedProvider(terminals = listOf(noToolUseCompleted()))
       val handler = FitLensHandler(service(provider))
       val result =
         handler.execute(
@@ -632,24 +713,39 @@ class FitLensServiceTest {
       .getOrThrow()
       .id
 
+  /**
+   * A Completed terminal whose content is a forced tool_use block carrying the
+   * object parsed from [doc] (the shape a forced `tool_choice` produces, RFC 104,
+   * read by `ContentBlocks.toolUseInput`). The block's [toolName] IS load-bearing
+   * — `toolUseInput` now matches on it — so it defaults to the query tool
+   * (`record_college_query`, call #1) and reason-call slots pass
+   * `record_fit_reason`.
+   */
   private fun completed(
     doc: String,
     input: Int = 100,
     output: Int = 50,
-  ): ChatEvent.Completed = completedFrom(doc, input, output)
+    toolName: String = "record_college_query",
+  ): ChatEvent.Completed = completedFrom(doc, input, output, toolName)
 }
 
 private fun completedFrom(
   doc: String,
   input: Int,
   output: Int,
+  toolName: String = "record_college_query",
 ): ChatEvent.Completed {
+  val toolInput =
+    kotlinx.serialization.json.Json
+      .parseToJsonElement(doc) as JsonObject
   val content =
     JsonArray(
       listOf(
         buildJsonObject {
-          put("type", "text")
-          put("text", doc)
+          put("type", "tool_use")
+          put("id", "toolu_${UUID.randomUUID()}")
+          put("name", toolName)
+          put("input", toolInput)
         },
       ),
     )
@@ -658,7 +754,37 @@ private fun completedFrom(
       ChatResponse(
         content = content,
         modelResolved = "claude-sonnet-4-6",
-        stopReason = "end_turn",
+        stopReason = "tool_use",
+        usage = TokenUsage(input, output, 0, 0),
+        providerRequestId = "req_${UUID.randomUUID()}",
+      ),
+    rawPayload = content,
+  )
+}
+
+/**
+ * A Completed terminal whose content is a text-only block (no tool_use block) —
+ * the model declined to call the forced tool, mapped to `Query|ReasonNoToolUse`.
+ */
+private fun noToolUseCompleted(
+  input: Int = 100,
+  output: Int = 50,
+): ChatEvent.Completed {
+  val content =
+    JsonArray(
+      listOf(
+        buildJsonObject {
+          put("type", "text")
+          put("text", "I could not do that.")
+        },
+      ),
+    )
+  return ChatEvent.Completed(
+    response =
+      ChatResponse(
+        content = content,
+        modelResolved = "claude-sonnet-4-6",
+        stopReason = "tool_use",
         usage = TokenUsage(input, output, 0, 0),
         providerRequestId = "req_${UUID.randomUUID()}",
       ),

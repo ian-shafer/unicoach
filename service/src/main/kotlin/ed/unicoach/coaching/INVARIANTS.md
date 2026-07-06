@@ -1,5 +1,20 @@
 # Invariants — `coaching`
 
+## Structured-output passes read the forced tool's `tool_use.input`
+
+**Rule:** The four structured-output coaching passes (extraction, synthesis,
+fit-lens query, fit-lens reason) MUST obtain their parsed payload from the
+forced tool's `tool_use.input` object (`ContentBlocks.toolUseInput`), and MUST
+send both the tool definition and `tool_choice: {type:"tool", name:…}` that
+force it — never rendered assistant text.
+
+**Why:** `ContentBlocks.renderText` renders `tool_use` blocks as empty. A
+refactor that reads the payload with `renderText`, or drops `tool_choice` so the
+model may answer in prose, silently produces a 100%-`NoToolUse` failure rate
+that reads as a model problem, not a code regression — re-introducing the
+unparseable-envelope failure class this design removes. The coupling is a
+write-path discipline, not type-enforced.
+
 ## Every provider call in the tool-use loop records its own usage
 
 **Rule:** Each provider call the chat tool-use loop makes MUST persist its own

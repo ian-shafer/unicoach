@@ -23,6 +23,11 @@ data class ChatRequest(
   // params are opaque. Serialized into the body's `tools` array; the key is
   // omitted when empty, so tool-less callers stay byte-identical on the wire.
   val tools: List<JsonObject> = emptyList(),
+  // Verbatim Anthropic tool_choice object, e.g. {"type":"tool","name":…};
+  // serialized as `tool_choice` when present, omitted when null so
+  // tool_choice-less callers stay byte-identical on the wire. Symmetric with
+  // [tools] — request-shaping, not the persisted opaque vendor [params].
+  val toolChoice: JsonObject? = null,
   // Vendor passthrough, mirrors convo_requests.request_params.
   val params: JsonObject? = null,
 )
