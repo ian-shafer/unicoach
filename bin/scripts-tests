@@ -57,7 +57,7 @@ reap_foreign_listeners() {
 
 # Tear down only the daemons this harness starts. The PostgreSQL cluster is
 # shared across worktrees (see bin/INVARIANTS.md) — never stop it.
-trap 'bin/rest-server-down >/dev/null 2>&1 || true; bin/queue-worker-down >/dev/null 2>&1 || true; bin/daemon-down idem-test >/dev/null 2>&1 || true; bin/daemon-down collision-test >/dev/null 2>&1 || true; reap_foreign_listeners' EXIT INT TERM
+trap 'bin/rest-server-down >/dev/null 2>&1 || true; bin/queue-worker-down >/dev/null 2>&1 || true; bin/daemon-down idem-test >/dev/null 2>&1 || true; bin/daemon-down collision-test >/dev/null 2>&1 || true; bin/daemon-down reclaim-test >/dev/null 2>&1 || true; reap_foreign_listeners' EXIT INT TERM
 
 echo "Harness up"
 echo ""
@@ -109,8 +109,10 @@ rm -rf "${TEST_LOCK}.stale."* || true
 FOREIGN_LISTENER_PID=""
 
 _spawn_test_listener() {
-  local port="$1" mode="$2"
-  "$PROJECT_ROOT/bin/test-tcp-listener" "$port" "$mode" >/dev/null 2>&1 &
+  local port="$1" mode="$2" ignore_term="${3:-}"
+  local env_prefix=()
+  [ "$ignore_term" = ignore-term ] && env_prefix=(env TEST_LISTENER_IGNORE_SIGTERM=1)
+  "${env_prefix[@]}" "$PROJECT_ROOT/bin/test-tcp-listener" "$port" "$mode" >/dev/null 2>&1 &
   local listener_pid=$!
   FOREIGN_LISTENER_PIDS+=("$listener_pid")
   local i
@@ -133,6 +135,10 @@ start_foreign_listener() { _spawn_test_listener "$1" close; }
 # curl against this blocks forever, so it proves daemon-http-check's bounded
 # probe gives up instead of hanging.
 start_stalled_listener() { _spawn_test_listener "$1" hold; }
+
+# accept + immediately close, but ignore SIGTERM: survives daemon-up -k and is
+# cleared only by -9 (SIGKILL). The fixture that distinguishes the two signals.
+start_term_ignoring_listener() { _spawn_test_listener "$1" close ignore-term; }
 
 stop_foreign_listener() {
   local listener_pid="$1"
@@ -404,6 +410,7 @@ assert_success "assert_aws_account passes on a match and fatals on a mismatch" t
 PORT_FREE="$(bin/find-free-port 18000)"
 PORT_IDEM="$(bin/find-free-port $((PORT_FREE + 1)))"
 PORT_HTTP="$(bin/find-free-port $((PORT_IDEM + 1)))"
+PORT_KILL="$(bin/find-free-port $((PORT_HTTP + 1)))"
 
 echo ""
 echo "==== Testing check-port ===="
@@ -519,6 +526,72 @@ du_status=0; bin/daemon-up -p "" idem-test -- sleep 60 >/dev/null 2>&1 || du_sta
 if [ "$du_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: daemon-up -p '' did not reject empty value with $EXIT_INVALID_ARG_VALUE (got $du_status)"; exit 1; fi
 if [ -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up -p '' wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
 pass_test "daemon-up rejects an empty -p value without spawning"
+
+# -k requires -p: reclaim modifies the port preflight, which never runs portless,
+# so -k without -p is a usage error (21) rejected before any spawn.
+duk_status=0; bin/daemon-up -k idem-test -- sleep 60 >/dev/null 2>&1 || duk_status=$?
+if [ "$duk_status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then echo "Fail: daemon-up -k without -p did not reject with $EXIT_MISSING_REQUIRED_ARG (got $duk_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+if [ -f "$PROJECT_ROOT/var/run/idem-test.pid" ]; then echo "Fail: daemon-up -k without -p wrote a PID file"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+pass_test "daemon-up -k without -p is rejected without spawning"
+
+# -9 goes through the same require-a-port guard as -k.
+du9_status=0; bin/daemon-up -9 idem-test -- sleep 60 >/dev/null 2>&1 || du9_status=$?
+if [ "$du9_status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then echo "Fail: daemon-up -9 without -p did not reject with $EXIT_MISSING_REQUIRED_ARG (got $du9_status)"; bin/daemon-down idem-test >/dev/null 2>&1; exit 1; fi
+pass_test "daemon-up -9 without -p is rejected without spawning"
+
+echo ""
+echo "==== Testing list-listening-pids and is-port-free ===="
+# Free port: list-listening-pids prints nothing at exit 0 (lsof's non-zero "no
+# match" is swallowed); is-port-free exits 0.
+llp_out="$(bin/list-listening-pids "$PORT_KILL")"; llp_rc=$?
+if [ "$llp_rc" -ne 0 ] || [ -n "$llp_out" ]; then echo "Fail: list-listening-pids on a free port did not print nothing at exit 0 (rc=$llp_rc, out=[$llp_out])"; exit 1; fi
+pass_test "list-listening-pids prints nothing (exit 0) for a free port"
+assert_success "is-port-free exits 0 for a free port" bin/is-port-free "$PORT_KILL"
+
+# Bound port: list-listening-pids reports the owning PID on its own line;
+# is-port-free exits 1.
+start_foreign_listener "$PORT_KILL" || { echo "Fail: could not bind foreign listener on $PORT_KILL"; exit 1; }
+llp_listener="$FOREIGN_LISTENER_PID"
+llp_out="$(bin/list-listening-pids "$PORT_KILL")"
+if ! echo "$llp_out" | grep -qx "$llp_listener"; then echo "Fail: list-listening-pids did not report the listener PID $llp_listener (got [$llp_out])"; stop_foreign_listener "$llp_listener"; exit 1; fi
+pf_status=0; bin/is-port-free "$PORT_KILL" >/dev/null 2>&1 || pf_status=$?
+if [ "$pf_status" -ne 1 ]; then echo "Fail: is-port-free did not exit 1 for a bound port (got $pf_status)"; stop_foreign_listener "$llp_listener"; exit 1; fi
+stop_foreign_listener "$llp_listener"
+pass_test "list-listening-pids reports the bound port's PID; is-port-free exits 1 while bound"
+
+echo ""
+echo "==== Testing daemon-up -k port reclaim ===="
+# -k reclaims the port: SIGTERM to the listener frees it, the boot proceeds, and
+# the old listener is gone while the new daemon is recorded and alive.
+rm -f "$PROJECT_ROOT/var/run/reclaim-test.pid"
+rm -rf "$PROJECT_ROOT/var/run/reclaim-test.daemon.lock"
+start_foreign_listener "$PORT_KILL" || { echo "Fail: could not bind foreign listener on $PORT_KILL"; exit 1; }
+rk_listener="$FOREIGN_LISTENER_PID"
+up_status=0
+bin/daemon-up -k -p "$PORT_KILL" reclaim-test -- sleep 876543 >/dev/null 2>&1 || up_status=$?
+if [ "$up_status" -ne 0 ]; then echo "Fail: daemon-up -k did not reclaim the port and boot (exit $up_status)"; pkill -f 'sleep 876543' 2>/dev/null; stop_foreign_listener "$rk_listener"; exit 1; fi
+if bin/check-pid "$rk_listener" >/dev/null 2>&1; then echo "Fail: daemon-up -k left the listener (PID $rk_listener) alive"; pkill -f 'sleep 876543' 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$rk_listener"; exit 1; fi
+rk_pid="$(cat "$PROJECT_ROOT/var/run/reclaim-test.pid" 2>/dev/null || true)"
+if [ -z "$rk_pid" ] || ! bin/check-pid "$rk_pid" >/dev/null 2>&1; then echo "Fail: daemon-up -k did not spawn/record a live daemon (pid=[$rk_pid])"; pkill -f 'sleep 876543' 2>/dev/null; stop_foreign_listener "$rk_listener"; exit 1; fi
+bin/daemon-down reclaim-test >/dev/null 2>&1 || true
+pkill -f 'sleep 876543' 2>/dev/null || true
+stop_foreign_listener "$rk_listener"
+pass_test "daemon-up -k reclaims the port listener (SIGTERM) and boots"
+
+# -9 escalates to SIGKILL: a listener that ignores SIGTERM is untouched by -k
+# but reclaimed by -9 (SIGKILL cannot be trapped), so the boot proceeds.
+start_term_ignoring_listener "$PORT_KILL" || { echo "Fail: could not bind SIGTERM-ignoring listener on $PORT_KILL"; exit 1; }
+k9_listener="$FOREIGN_LISTENER_PID"
+rm -f "$PROJECT_ROOT/var/run/reclaim-test.pid"
+rm -rf "$PROJECT_ROOT/var/run/reclaim-test.daemon.lock"
+up_status=0
+bin/daemon-up -9 -p "$PORT_KILL" reclaim-test -- sleep 989898 >/dev/null 2>&1 || up_status=$?
+if [ "$up_status" -ne 0 ]; then echo "Fail: daemon-up -9 did not reclaim a SIGTERM-ignoring listener (exit $up_status)"; pkill -f 'sleep 989898' 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$k9_listener"; exit 1; fi
+if bin/check-pid "$k9_listener" >/dev/null 2>&1; then echo "Fail: daemon-up -9 left the SIGTERM-ignoring listener (PID $k9_listener) alive"; pkill -f 'sleep 989898' 2>/dev/null; bin/daemon-down reclaim-test >/dev/null 2>&1; stop_foreign_listener "$k9_listener"; exit 1; fi
+bin/daemon-down reclaim-test >/dev/null 2>&1 || true
+pkill -f 'sleep 989898' 2>/dev/null || true
+stop_foreign_listener "$k9_listener"
+pass_test "daemon-up -9 (SIGKILL) reclaims a listener that ignores SIGTERM"
 
 # A non-numeric / out-of-range -p must be rejected before any port check, in
 # daemon-check too (matching daemon-up's existing validation).
@@ -720,6 +793,21 @@ assert_exit_code "$EXIT_UNKNOWN_OPTION" "rest-server-check rejects an unknown op
 #     a missing required positional maps to EXIT_MISSING_REQUIRED_ARG (21).
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "check-pid with zero args exits 21" bin/check-pid
 assert_exit_code "$EXIT_UNEXPECTED_ARG" "check-pid with two args exits 20" bin/check-pid 1 2
+assert_success "list-listening-pids -h exits 0" bin/list-listening-pids -h
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "list-listening-pids with zero args exits 21" bin/list-listening-pids
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "list-listening-pids with two args exits 20" bin/list-listening-pids 18000 18001
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "list-listening-pids with a non-numeric port exits 22" bin/list-listening-pids notaport
+assert_success "is-port-free -h exits 0" bin/is-port-free -h
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "is-port-free with zero args exits 21" bin/is-port-free
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "is-port-free with two args exits 20" bin/is-port-free 18000 18001
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "is-port-free with a non-numeric port exits 22" bin/is-port-free notaport
+# The port-bound up-wrappers learned -k: it parses as a known no-value option, so
+# a stray positional after it is EXIT_UNEXPECTED_ARG (20), never EXIT_UNKNOWN_OPTION
+# (10). Firing before the binary check, this proves -k is accepted without booting.
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "rest-server-up -k parses (stray positional -> 20)" bin/rest-server-up -k stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "rest-server-up -9 parses (stray positional -> 20)" bin/rest-server-up -9 stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "admin-web-up -k parses (stray positional -> 20)" bin/admin-web-up -k stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "public-web-up -k parses (stray positional -> 20)" bin/public-web-up -k stray
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "q-enqueue with one arg exits 21" bin/q-enqueue only-job-type
 assert_exit_code "$EXIT_UNEXPECTED_ARG" "q-enqueue with a residual positional exits 20" bin/q-enqueue job '{}' stray
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "q-enqueue with a malformed -d delay exits 22" bin/q-enqueue job '{}' -d not-a-duration

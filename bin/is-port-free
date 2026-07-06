@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+is-port-free <port>
+
+Exits 0 if 127.0.0.1:<port> is free (no listener), non-zero if it is in use.
+The positive-polarity inverse of check-port (which exits 0 when the port is in
+USE): a "wait until free" caller wants success to mean free so it can drive
+bin/wait-for — `wait-for <timeout> is-port-free <port>` blocks until the port
+frees. The probe itself is delegated to check-port, the single owner of how a
+bound port is detected; this script only inverts its polarity.
+
+Arguments:
+  port: The TCP port to probe on 127.0.0.1.
+
+Exit codes:
+  0:  Port is free (no listener).
+  1:  Port is in use.
+  20: Unexpected argument.
+  21: Missing required <port>.
+  22: Invalid <port> (non-numeric or outside 1..65535).
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -lt 1 ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Missing required <port> argument."
+fi
+if [ "$#" -gt 1 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "is-port-free accepts exactly one <port>; received: $*"
+fi
+
+PORT="$1"
+shift
+
+# Delegate the probe to check-port and invert its polarity: check-port exits
+# 0=in-use, 1=free; we exit 0=free, 1=in-use. A usage error from check-port (an
+# invalid port -> 22) is neither 0 nor 1, so it propagates unchanged.
+port_status=0
+"$PROJECT_ROOT/bin/check-port" "$PORT" || port_status=$?
+case "$port_status" in
+0) exit 1 ;;
+1) exit 0 ;;
+*) exit "$port_status" ;;
+esac

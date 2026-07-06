@@ -18,6 +18,13 @@ not already running: if 127.0.0.1:<port> is already bound (by any process,
 including a daemon from another worktree), the boot is refused rather than
 spawning a doomed process. When -p is absent the preflight is skipped.
 
+With -k, a port collision is reclaimed instead of refused: the listener
+holding <port> is sent SIGTERM and the boot proceeds once the port frees.
+Use -9 instead of -k to send SIGKILL, for a listener that ignores SIGTERM.
+This is a deliberate, forceful "clear this port" — it signals whatever holds
+the port, including a daemon from another worktree. -k/-9 require -p; reclaim
+modifies the port preflight, and there is no port to reclaim without one.
+
 Arguments:
   service-name: Logical service identifier (e.g. postgres, rest-server).
   --:           Argument separator. Everything after this is the command to run.
@@ -25,12 +32,18 @@ Arguments:
 
 Options:
   -h:        Help
+  -k:        On a port collision, SIGTERM the listener on <port> and proceed
+             once the port frees, instead of refusing. Needs -p.
+  -9:        Like -k, but send SIGKILL instead of SIGTERM. Wins if both given.
+             Needs -p.
   -p <port>: TCP port the daemon binds; preflighted before spawn.
 
 Exit codes:
   0: Service started, or already running (idempotent), or a concurrent up won.
   1: Lock acquisition failed, or a usage error.
-  3: Port collision — <port> is already bound; the service was NOT spawned.
+  3: Port <port> is unavailable and the service was NOT spawned — a collision
+     without -k, or a -k reclaim that could not free the port (no identifiable
+     listener, or the port still held after the signal).
 EOF
   exit 0
 }
@@ -38,15 +51,23 @@ EOF
 SERVICE_NAME=""
 PORT=""
 PORT_SET=false
+# The signal reclaim will send, or "" for no reclaim (refuse on collision): -k
+# sets TERM, -9 sets KILL. -9 wins if both are given, regardless of order.
+RECLAIM_SIGNAL=""
+
+# Seconds to wait for a -k-reclaimed port to free after signalling before giving up.
+RECLAIM_GRACE_SECONDS=5
 
 # getopts parses only the LEADING options and halts at the first non-option
 # (<service-name>), which always precedes the mandatory --, so it never consumes
 # the -- separator or the verbatim command. Both error arms route to fatal -s
 # with their band code: an unknown option -> EXIT_UNKNOWN_OPTION, a missing -p
 # value -> EXIT_OPTION_REQUIRES_VALUE.
-while getopts ":hp:" opt; do
+while getopts ":hk9p:" opt; do
   case "$opt" in
   h) help ;;
+  k) [ "$RECLAIM_SIGNAL" = KILL ] || RECLAIM_SIGNAL=TERM ;;
+  9) RECLAIM_SIGNAL=KILL ;;
   p) PORT="$OPTARG"; PORT_SET=true ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
   :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
@@ -58,6 +79,14 @@ shift $((OPTIND-1))
 # degrade); -p must carry a valid 1..65535 port.
 if [ "$PORT_SET" = true ] && ! validate_port "$PORT"; then
   fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid -p value [$PORT]. Expected an integer in 1..65535."
+fi
+
+# -k/-9 only modify the -p port preflight, which does not run without a port.
+# Reject them without -p rather than accept a flag that can never act: a portless
+# daemon-up never preflights, so a squatter would still yield a doomed spawn and
+# false success — the exact failure the caller reached for -k/-9 to avoid.
+if [ -n "$RECLAIM_SIGNAL" ] && [ "$PORT_SET" != true ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "cannot use -k/-9 without -p <port>; there is no port to reclaim."
 fi
 
 if [ "$#" -lt 1 ]; then
@@ -77,6 +106,27 @@ if [ "$#" -lt 1 ]; then
 fi
 
 COMMAND=("$@")
+
+# -k reclaim: signal whatever is listening on $PORT with $RECLAIM_SIGNAL (SIGTERM
+# for -k, SIGKILL for -9), then wait for the port to free so the caller can bind
+# it. wait-for polls is-port-free until it succeeds or the grace period elapses;
+# if the port is still held then, exit 3 (unavailable, not spawned). Composed from
+# list-listening-pids (who holds the port) and wait-for + is-port-free (poll until
+# it frees).
+reclaim_port() {
+  local pids pid
+  pids="$("$PROJECT_ROOT/bin/list-listening-pids" "$PORT")"
+
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    log-info "Reclaiming [127.0.0.1:$PORT] from process (PID $pid): sending SIG${RECLAIM_SIGNAL}..."
+    kill -"$RECLAIM_SIGNAL" "$pid" 2>/dev/null || true
+  done <<< "$pids"
+
+  if ! "$PROJECT_ROOT/bin/wait-for" "${RECLAIM_GRACE_SECONDS}s" "$PROJECT_ROOT/bin/is-port-free" "$PORT"; then
+    fatal -s 3 "Cannot start [$SERVICE_NAME]: port [127.0.0.1:$PORT] still held after SIG${RECLAIM_SIGNAL}."
+  fi
+}
 
 PID_FILE="$PROJECT_ROOT/var/run/${SERVICE_NAME}.pid"
 LOG_FILE="$PROJECT_ROOT/var/log/${SERVICE_NAME}.log"
@@ -110,11 +160,16 @@ fi
 # Port preflight: we have concluded we are not running (our PID file is absent
 # or stale). If -p was supplied and the port is already bound — by a foreign
 # process, another worktree's daemon, or our own orphaned-alive process whose
-# PID file we lost — refuse rather than spawn a doomed JVM that will die with a
-# BindException while we write a dead PID and report false success. The trap
-# removes the lock directory on this exit.
+# PID file we lost — we cannot just spawn: a second bind dies with a
+# BindException while we write a dead PID and report false success. Without -k,
+# refuse (exit 3). With -k, reclaim the port from its listener and proceed.
+# Either way the trap removes the lock directory on exit.
 if [ -n "$PORT" ] && "$PROJECT_ROOT/bin/check-port" "$PORT"; then
-  fatal -s 3 "Cannot start [$SERVICE_NAME]: port [127.0.0.1:$PORT] is already held by another process."
+  if [ -n "$RECLAIM_SIGNAL" ]; then
+    reclaim_port
+  else
+    fatal -s 3 "Cannot start [$SERVICE_NAME]: port [127.0.0.1:$PORT] is already held by another process."
+  fi
 fi
 
 mkdir -p "$PROJECT_ROOT/var/run"

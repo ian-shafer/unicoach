@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+list-listening-pids <port>
+
+Prints the PID of every process holding a LISTEN socket on TCP <port>, one per
+line; prints nothing when the port has no listener. The companion to check-port:
+check-port answers only whether the port is bound, this answers who binds it —
+for a caller that must signal the owner, which bash's connect-only /dev/tcp
+cannot reveal.
+
+Resolves socket owners with lsof, a system utility in the same class as the
+kill/ps/rm the daemon scripts already rely on. lsof reports "no matching
+sockets" with a non-zero exit and empty output; that is a free port, not a
+failure, and is reported here as exit 0 with no output.
+
+Arguments:
+  port: The TCP port to inspect.
+
+Exit codes:
+  0:  Ran successfully (zero or more PIDs printed, one per line).
+  10: Unknown option.
+  11: Option missing its value.
+  20: Unexpected argument.
+  21: Missing required <port>.
+  22: Invalid <port> (non-numeric or outside 1..65535).
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -lt 1 ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "Missing required <port> argument."
+fi
+if [ "$#" -gt 1 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "list-listening-pids accepts exactly one <port>; received: $*"
+fi
+
+PORT="$1"
+shift
+
+if ! validate_port "$PORT"; then
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "Invalid <port> [$PORT]. Expected an integer in 1..65535."
+fi
+
+# lsof -t prints only PIDs, one per line — the terse form intended for piping to
+# kill. -sTCP:LISTEN restricts the match to listening sockets, so an established
+# client connection to the port is never mistaken for its owner. lsof exits
+# non-zero with empty output when nothing matches (the port is free); that is not
+# an error here, so swallow the status and let the empty stdout speak for itself.
+lsof -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true

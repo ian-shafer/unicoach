@@ -14,13 +14,19 @@ without invoking Gradle.
 
 Options:
   -h: Help
+  -k: Reclaim the port from its listener (SIGTERM) instead of refusing to
+      start on a collision. Forwarded to daemon-up.
+  -9: Like -k, but send SIGKILL. Forwarded to daemon-up.
 EOF
   exit 0
 }
 
-while getopts ":h" opt; do
+RECLAIM_OPT=""
+while getopts ":hk9" opt; do
   case "$opt" in
   h) help ;;
+  k) [ "$RECLAIM_OPT" = -9 ] || RECLAIM_OPT=-k ;;
+  9) RECLAIM_OPT=-9 ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
   :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
@@ -37,6 +43,8 @@ if [ ! -x "$BINARY" ]; then
   fatal "public-web binary not found at [$BINARY]. Run 'bin/build-public-web' first."
 fi
 
-"$PROJECT_ROOT/bin/daemon-up" -p "${PUBLIC_WEB_PORT:-8082}" public-web -- "$BINARY"
+UP_OPTS=()
+[ -n "$RECLAIM_OPT" ] && UP_OPTS+=("$RECLAIM_OPT")
+"$PROJECT_ROOT/bin/daemon-up" "${UP_OPTS[@]}" -p "${PUBLIC_WEB_PORT:-8082}" public-web -- "$BINARY"
 
 "$PROJECT_ROOT/bin/public-web-wait-for-health"
