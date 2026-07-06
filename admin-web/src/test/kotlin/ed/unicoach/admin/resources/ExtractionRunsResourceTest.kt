@@ -133,6 +133,40 @@ class ExtractionRunsResourceTest {
     }
 
   @Test
+  fun `a failed row's failureCategory renders on the list and failureReason renders on the detail`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val convo = AdminTestSupport.seedConvo(student.id)
+      val req = AdminTestSupport.seedConvoRequest(convo.id)
+      val runId =
+        AdminTestSupport
+          .seedExtractionRun(
+            student.id,
+            convo.id,
+            req.id,
+            outcome =
+              ed.unicoach.db.models.ExtractionOutcome
+                .Failed(
+                  ed.unicoach.db.models.JsonParseFailureCategory.INVALID_FIELD,
+                  "field [quote]=[missing or non-string]",
+                ),
+          ).id.value
+          .toString()
+
+      val list = client().get("/extraction-run") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(list.contains("invalid_field"), "List must render the failure category")
+
+      val detail = client().get("/extraction-run/$runId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(
+        detail.contains("field [quote]=[missing or non-string]"),
+        "Detail must render the failure reason",
+      )
+    }
+
+  @Test
   fun `detail links convoId to convo and throughRequestId to convo-request`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }

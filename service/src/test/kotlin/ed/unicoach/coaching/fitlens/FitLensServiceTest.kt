@@ -270,8 +270,7 @@ class FitLensServiceTest {
       assertTrue(result is FitLensResult.Applied, "Expected Applied, got: $result")
       assertEquals(1, suggestionRows(student), "one open suggestion written")
       val run = latestRun(student)
-      assertEquals(FitLensOutcome.APPLIED, run.outcome)
-      assertEquals(1, run.suggestionsWritten)
+      assertEquals(FitLensOutcome.Applied(suggestionsWritten = 1), run.outcome)
       assertEquals(300, run.inputTokens, "tokens summed across both calls")
       assertEquals(100, run.outputTokens, "tokens summed across both calls")
       assertEquals(
@@ -304,7 +303,7 @@ class FitLensServiceTest {
 
       assertTrue(result is FitLensResult.Applied, "Expected Applied, got: $result")
       assertEquals(0, suggestionRows(student), "no suggestion written for a college already on the list")
-      assertEquals(0, latestRun(student).suggestionsWritten)
+      assertEquals(FitLensOutcome.Applied(suggestionsWritten = 0), latestRun(student).outcome)
     }
 
   @Test
@@ -323,7 +322,7 @@ class FitLensServiceTest {
 
       assertTrue(result is FitLensResult.Applied, "Expected Applied, got: $result")
       assertEquals(1, suggestionRows(student), "only the pre-existing suggestion remains; no duplicate")
-      assertEquals(0, latestRun(student).suggestionsWritten)
+      assertEquals(FitLensOutcome.Applied(suggestionsWritten = 0), latestRun(student).outcome)
     }
 
   @Test
@@ -354,12 +353,11 @@ class FitLensServiceTest {
           session,
           NewFitLensRun(
             studentId = student,
-            outcome = FitLensOutcome.APPLIED,
+            outcome = FitLensOutcome.Applied(suggestionsWritten = 0),
             querySystemPromptId = queryPromptId(),
             reasonSystemPromptId = reasonPromptId(),
             provider = "log",
             modelResolved = "m",
-            suggestionsWritten = 0,
             matchesConsidered = 0,
           ),
         ).getOrThrow()
@@ -384,15 +382,12 @@ class FitLensServiceTest {
             session,
             NewFitLensRun(
               studentId = student,
-              outcome = FitLensOutcome.FAILED,
+              outcome = FitLensOutcome.Failed(FitLensFailureCategory.MALFORMED_OUTPUT, "test failure"),
               querySystemPromptId = queryPromptId(),
               reasonSystemPromptId = reasonPromptId(),
               provider = "log",
               modelResolved = "m",
-              suggestionsWritten = 0,
               matchesConsidered = null,
-              failureCategory = FitLensFailureCategory.MALFORMED_OUTPUT,
-              failureReason = "test failure",
             ),
           ).getOrThrow()
       }
@@ -437,8 +432,7 @@ class FitLensServiceTest {
 
       assertTrue(result is FitLensResult.Skipped, "Expected Skipped, got: $result")
       assertEquals(1, runRows(student), "an applied run records the spent tokens")
-      assertEquals(FitLensOutcome.APPLIED, latestRun(student).outcome)
-      assertEquals(0, latestRun(student).suggestionsWritten)
+      assertEquals(FitLensOutcome.Applied(suggestionsWritten = 0), latestRun(student).outcome)
       assertEquals(0, latestRun(student).matchesConsidered)
     }
 
@@ -453,8 +447,7 @@ class FitLensServiceTest {
 
       assertTrue(result is FitLensResult.Skipped, "Expected Skipped, got: $result")
       assertEquals(0, suggestionRows(student))
-      assertEquals(FitLensOutcome.APPLIED, latestRun(student).outcome)
-      assertEquals(0, latestRun(student).suggestionsWritten)
+      assertEquals(FitLensOutcome.Applied(suggestionsWritten = 0), latestRun(student).outcome)
     }
 
   @Test
@@ -467,7 +460,7 @@ class FitLensServiceTest {
       val result = service(provider).discover(student)
 
       assertTrue(result is FitLensResult.Failed, "Expected Failed, got: $result")
-      assertEquals(FitLensOutcome.FAILED, latestRun(student).outcome)
+      assertTrue(latestRun(student).outcome is FitLensOutcome.Failed, "Expected a Failed run outcome")
       assertNull(latestRun(student).matchesConsidered, "the retrieve never ran, so matches_considered is null")
       assertEquals(0, suggestionRows(student))
     }
@@ -483,7 +476,7 @@ class FitLensServiceTest {
       val result = service(provider).discover(student)
 
       assertTrue(result is FitLensResult.Failed, "Expected Failed, got: $result")
-      assertEquals(FitLensOutcome.FAILED, latestRun(student).outcome)
+      assertTrue(latestRun(student).outcome is FitLensOutcome.Failed, "Expected a Failed run outcome")
       assertEquals(0, suggestionRows(student))
     }
 
@@ -529,7 +522,10 @@ class FitLensServiceTest {
 
       assertTrue(result is FitLensResult.Failed, "an over-length rationale must be Failed, not Applied, got: $result")
       assertEquals(0, suggestionRows(student), "no suggestion is written for an over-length rationale")
-      assertEquals(FitLensOutcome.FAILED, latestRun(student).outcome, "the run is recorded failed, not silently applied")
+      assertTrue(
+        latestRun(student).outcome is FitLensOutcome.Failed,
+        "the run is recorded failed, not silently applied",
+      )
     }
 
   @Test

@@ -8,6 +8,7 @@ import ed.unicoach.admin.engine.FieldType
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.SynthesisRunsDao
 import ed.unicoach.db.models.SoftDeleteScope
+import ed.unicoach.db.models.SynthesisOutcome
 import ed.unicoach.db.models.SynthesisRun
 import ed.unicoach.db.models.SynthesisRunId
 
@@ -21,7 +22,9 @@ import ed.unicoach.db.models.SynthesisRunId
  *
  * The token and count columns are on the list (`inList = true`) so per-student
  * LLM spend is eyeballable; the secondary provenance columns are detail-only.
- * No edges.
+ * `failureCategory` is on the list too (a triage-at-a-glance "what's failing"
+ * column, null on `applied` rows, RFC 101); `failureReason`'s free-text
+ * diagnostic is detail-only. No edges.
  */
 object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
   override val slug = "synthesis-run"
@@ -35,6 +38,7 @@ object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "synthesis-run"),
       AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
       AdminField("outcome", "Outcome", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("failureCategory", "Failure Category", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("modelResolved", "Model", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("commitmentsWritten", "Commitments Written", FieldType.INT, editable = false, sensitive = false),
       AdminField("commitmentsDropped", "Commitments Dropped", FieldType.INT, editable = false, sensitive = false),
@@ -53,6 +57,7 @@ object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
       AdminField("provider", "Provider", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("cacheReadTokens", "Cache Read Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("cacheWriteTokens", "Cache Write Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
+      AdminField("failureReason", "Failure Reason", FieldType.TEXT, editable = false, sensitive = false, inList = false),
     )
 
   override val edges = emptyList<AdminEdge>()
@@ -65,14 +70,39 @@ object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
 
   override fun isDeleted(row: SynthesisRun): Boolean = false
 
-  override fun cells(row: SynthesisRun): Map<String, String> =
-    mapOf(
+  override fun cells(row: SynthesisRun): Map<String, String> {
+    // Destructure the outcome ADT back into the flat column-per-field projection:
+    // real counts on Applied (0 on Failed), the failure category/reason on Failed
+    // ("" on Applied). The exhaustive `when` forces every variant to be handled,
+    // so a future third outcome fails to compile rather than rendering defaults.
+    val cells =
+      when (val outcome = row.outcome) {
+        is SynthesisOutcome.Applied -> {
+          OutcomeCells(
+            commitmentsWritten = outcome.commitmentsWritten.toString(),
+            commitmentsDropped = outcome.commitmentsDropped.toString(),
+            failureCategory = "",
+            failureReason = "",
+          )
+        }
+
+        is SynthesisOutcome.Failed -> {
+          OutcomeCells(
+            commitmentsWritten = "0",
+            commitmentsDropped = "0",
+            failureCategory = outcome.category.value,
+            failureReason = outcome.reason,
+          )
+        }
+      }
+    return mapOf(
       "id" to row.id.value.toString(),
       "studentId" to row.studentId.value.toString(),
       "outcome" to row.outcome.value,
+      "failureCategory" to cells.failureCategory,
       "modelResolved" to (row.modelResolved ?: ""),
-      "commitmentsWritten" to row.commitmentsWritten.toString(),
-      "commitmentsDropped" to row.commitmentsDropped.toString(),
+      "commitmentsWritten" to cells.commitmentsWritten,
+      "commitmentsDropped" to cells.commitmentsDropped,
       "inputTokens" to (row.inputTokens?.toString() ?: ""),
       "outputTokens" to (row.outputTokens?.toString() ?: ""),
       "createdAt" to row.createdAt.toString(),
@@ -80,7 +110,17 @@ object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
       "provider" to row.provider,
       "cacheReadTokens" to (row.cacheReadTokens?.toString() ?: ""),
       "cacheWriteTokens" to (row.cacheWriteTokens?.toString() ?: ""),
+      "failureReason" to cells.failureReason,
     )
+  }
+
+  /** The outcome-discriminated cell strings for one synthesis-run row. */
+  private data class OutcomeCells(
+    val commitmentsWritten: String,
+    val commitmentsDropped: String,
+    val failureCategory: String,
+    val failureReason: String,
+  )
 
   override suspend fun list(
     db: Database,

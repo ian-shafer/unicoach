@@ -7,6 +7,7 @@ import ed.unicoach.admin.engine.AdminResource
 import ed.unicoach.admin.engine.FieldType
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.FitLensRunsDao
+import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.FitLensRun
 import ed.unicoach.db.models.FitLensRunId
 import ed.unicoach.db.models.SoftDeleteScope
@@ -79,14 +80,37 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
 
   override fun isDeleted(row: FitLensRun): Boolean = false
 
-  override fun cells(row: FitLensRun): Map<String, String> =
-    mapOf(
+  override fun cells(row: FitLensRun): Map<String, String> {
+    // Destructure the outcome ADT back into the flat column-per-field projection:
+    // real suggestions count on Applied (0 on Failed), the failure category/reason
+    // on Failed ("" on Applied). The exhaustive `when` forces every variant to be
+    // handled, so a future third outcome fails to compile rather than rendering
+    // defaults. matches_considered stays a flat field.
+    val cells =
+      when (val outcome = row.outcome) {
+        is FitLensOutcome.Applied -> {
+          OutcomeCells(
+            suggestionsWritten = outcome.suggestionsWritten.toString(),
+            failureCategory = "",
+            failureReason = "",
+          )
+        }
+
+        is FitLensOutcome.Failed -> {
+          OutcomeCells(
+            suggestionsWritten = "0",
+            failureCategory = outcome.category.value,
+            failureReason = outcome.reason,
+          )
+        }
+      }
+    return mapOf(
       "id" to row.id.value.toString(),
       "studentId" to row.studentId.value.toString(),
       "outcome" to row.outcome.value,
-      "failureCategory" to (row.failureCategory?.value ?: ""),
+      "failureCategory" to cells.failureCategory,
       "modelResolved" to (row.modelResolved ?: ""),
-      "suggestionsWritten" to row.suggestionsWritten.toString(),
+      "suggestionsWritten" to cells.suggestionsWritten,
       "matchesConsidered" to (row.matchesConsidered?.toString() ?: ""),
       "inputTokens" to (row.inputTokens?.toString() ?: ""),
       "outputTokens" to (row.outputTokens?.toString() ?: ""),
@@ -96,8 +120,16 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
       "provider" to row.provider,
       "cacheReadTokens" to (row.cacheReadTokens?.toString() ?: ""),
       "cacheWriteTokens" to (row.cacheWriteTokens?.toString() ?: ""),
-      "failureReason" to (row.failureReason ?: ""),
+      "failureReason" to cells.failureReason,
     )
+  }
+
+  /** The outcome-discriminated cell strings for one fit-lens-run row. */
+  private data class OutcomeCells(
+    val suggestionsWritten: String,
+    val failureCategory: String,
+    val failureReason: String,
+  )
 
   override suspend fun list(
     db: Database,

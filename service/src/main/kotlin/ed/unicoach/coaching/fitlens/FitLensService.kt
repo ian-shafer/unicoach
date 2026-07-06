@@ -26,7 +26,6 @@ import ed.unicoach.db.models.Claim
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
-import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
@@ -386,7 +385,7 @@ class FitLensService(
             }
           }
 
-        appendRun(session, studentId, ready, FitLensOutcome.APPLIED, suggestionsWritten, matchesConsidered, usage, modelResolved)
+        appendRun(session, studentId, ready, FitLensOutcome.Applied(suggestionsWritten), matchesConsidered, usage, modelResolved)
         FitLensResult.Applied
       }
     } catch (e: Exception) {
@@ -412,7 +411,7 @@ class FitLensService(
     try {
       database.withConnection { session ->
         AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
-        appendRun(session, studentId, ready, FitLensOutcome.APPLIED, suggestionsWritten, matchesConsidered, usage, modelResolved)
+        appendRun(session, studentId, ready, FitLensOutcome.Applied(suggestionsWritten), matchesConsidered, usage, modelResolved)
       }
       null
     } catch (e: Exception) {
@@ -445,13 +444,10 @@ class FitLensService(
           session,
           studentId,
           ready,
-          FitLensOutcome.FAILED,
-          0,
+          FitLensOutcome.Failed(reason.category, reason.toDisplay()),
           matchesConsidered,
           usage,
           modelResolved,
-          failureCategory = reason.category,
-          failureReason = reason.toDisplay(),
         )
       }
       FitLensResult.Failed(reason)
@@ -465,12 +461,9 @@ class FitLensService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     outcome: FitLensOutcome,
-    suggestionsWritten: Int,
     matchesConsidered: Int?,
     usage: TokenUsage,
     modelResolved: String?,
-    failureCategory: FitLensFailureCategory? = null,
-    failureReason: String? = null,
   ) {
     FitLensRunsDao
       .append(
@@ -482,14 +475,11 @@ class FitLensService(
           reasonSystemPromptId = ready.reasonPrompt.id,
           provider = chatProvider.id,
           modelResolved = modelResolved,
-          suggestionsWritten = suggestionsWritten,
           matchesConsidered = matchesConsidered,
           inputTokens = usage.inputTokens,
           outputTokens = usage.outputTokens,
           cacheReadTokens = usage.cacheReadTokens,
           cacheWriteTokens = usage.cacheWriteTokens,
-          failureCategory = failureCategory,
-          failureReason = failureReason,
         ),
       ).getOrThrow()
   }

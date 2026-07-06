@@ -506,15 +506,20 @@ class SynthesisServiceTest {
           .lastAppliedAt(sqlSession, student)
           .getOrThrow(),
       )
-      connection.prepareStatement("SELECT outcome, input_tokens, output_tokens FROM synthesis_runs WHERE student_id = ?").use { stmt ->
-        stmt.setObject(1, student.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          assertEquals("failed", rs.getString("outcome"))
-          assertEquals(11, rs.getInt("input_tokens"))
-          assertEquals(22, rs.getInt("output_tokens"))
+      connection
+        .prepareStatement(
+          "SELECT outcome, input_tokens, output_tokens, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ?",
+        ).use { stmt ->
+          stmt.setObject(1, student.value)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals(11, rs.getInt("input_tokens"))
+            assertEquals(22, rs.getInt("output_tokens"))
+            assertEquals("malformed_json", rs.getString("failure_category"))
+            assertTrue(rs.getString("failure_reason").isNotBlank(), "failure_reason must be populated")
+          }
         }
-      }
     }
 
   @Test
@@ -544,16 +549,24 @@ class SynthesisServiceTest {
           .getOrThrow(),
         "a failed parse must not advance the freshness marker",
       )
-      connection.prepareStatement("SELECT outcome, input_tokens, output_tokens FROM synthesis_runs WHERE student_id = ?").use { stmt ->
-        stmt.setObject(1, student.value)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "a failed synthesis_runs row must exist")
-          assertEquals("failed", rs.getString("outcome"))
-          assertEquals(13, rs.getInt("input_tokens"))
-          assertEquals(27, rs.getInt("output_tokens"))
-          assertTrue(!rs.next(), "exactly one run row")
+      connection
+        .prepareStatement(
+          "SELECT outcome, input_tokens, output_tokens, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ?",
+        ).use { stmt ->
+          stmt.setObject(1, student.value)
+          stmt.executeQuery().use { rs ->
+            assertTrue(rs.next(), "a failed synthesis_runs row must exist")
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals(13, rs.getInt("input_tokens"))
+            assertEquals(27, rs.getInt("output_tokens"))
+            assertEquals("invalid_field", rs.getString("failure_category"))
+            assertTrue(
+              rs.getString("failure_reason").contains("supports"),
+              "failure_reason must name the offending field: ${rs.getString("failure_reason")}",
+            )
+            assertTrue(!rs.next(), "exactly one run row")
+          }
         }
-      }
     }
   }
 
@@ -668,6 +681,24 @@ class SynthesisServiceTest {
           assertEquals(130, rs.getInt(1))
         }
       }
+
+      connection
+        .prepareStatement(
+          "SELECT outcome, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ? ORDER BY id",
+        ).use { stmt ->
+          stmt.setObject(1, student.value)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals("applied", rs.getString("outcome"))
+            assertEquals(null, rs.getString("failure_category"))
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            // "garbage" parses leniently as a bare JSON primitive (not an object),
+            // not a JSON syntax error: NOT_A_JSON_OBJECT, not MALFORMED_JSON.
+            assertEquals("not_a_json_object", rs.getString("failure_category"))
+            assertTrue(rs.getString("failure_reason").isNotBlank(), "failure_reason must be populated")
+          }
+        }
     }
 
   @Test

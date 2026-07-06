@@ -24,33 +24,57 @@ object FitLensRunsDao :
   Findable<FitLensRun, FitLensRunId>,
   Listable<FitLensRun>,
   Creatable<NewFitLensRun, FitLensRun> {
+  /** The flat suggestion/failure column values an outcome variant maps to on insert. */
+  private data class FitLensOutcomeColumns(
+    val suggestionsWritten: Int,
+    val failureCategory: String?,
+    val failureReason: String?,
+  )
+
   private fun mapRun(rs: ResultSet): FitLensRun =
     FitLensRun(
       id = FitLensRunId(rs.getLong("id")),
       createdAt = rs.getInstant("created_at"),
       studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
-      outcome = parseOutcome(rs.getString("outcome")),
+      outcome = mapOutcome(rs),
       querySystemPromptId = SystemPromptId(UUID.fromString(rs.getString("query_system_prompt_id"))),
       reasonSystemPromptId = SystemPromptId(UUID.fromString(rs.getString("reason_system_prompt_id"))),
       provider = rs.getString("provider"),
       modelResolved = rs.getString("model_resolved"),
-      suggestionsWritten = rs.getInt("suggestions_written"),
       matchesConsidered = rs.getInt("matches_considered").takeUnless { rs.wasNull() },
       inputTokens = rs.getInt("input_tokens").takeUnless { rs.wasNull() },
       outputTokens = rs.getInt("output_tokens").takeUnless { rs.wasNull() },
       cacheReadTokens = rs.getInt("cache_read_tokens").takeUnless { rs.wasNull() },
       cacheWriteTokens = rs.getInt("cache_write_tokens").takeUnless { rs.wasNull() },
-      failureCategory = rs.getString("failure_category")?.let(::parseFailureCategory),
-      failureReason = rs.getString("failure_reason"),
     )
 
-  private fun parseOutcome(value: String): FitLensOutcome =
-    FitLensOutcome.fromValue(value)
-      ?: throw SQLException("Persisted fit_lens_runs.outcome is not a valid value: \"$value\"")
+  /**
+   * Reconstructs the [FitLensOutcome] ADT from the flat outcome/count/failure
+   * columns. The failure columns are non-null on a `failed` row by CHECK, so the
+   * `Failed` construction is total; a corrupt row (raw SQL bypassing the app)
+   * surfaces as an [SQLException] here, never a silent misread.
+   */
+  private fun mapOutcome(rs: ResultSet): FitLensOutcome =
+    when (val outcome = rs.getString("outcome")) {
+      "applied" -> {
+        FitLensOutcome.Applied(suggestionsWritten = rs.getInt("suggestions_written"))
+      }
+
+      "failed" -> {
+        FitLensOutcome.Failed(
+          category = parseFailureCategory(rs.getString("failure_category")),
+          reason = rs.getString("failure_reason"),
+        )
+      }
+
+      else -> {
+        throw SQLException("Persisted fit_lens_runs.outcome is not a valid value: [$outcome]")
+      }
+    }
 
   private fun parseFailureCategory(value: String): FitLensFailureCategory =
     FitLensFailureCategory.fromValue(value)
-      ?: throw SQLException("Persisted fit_lens_runs.failure_category is not a valid value: \"$value\"")
+      ?: throw SQLException("Persisted fit_lens_runs.failure_category is not a valid value: [$value]")
 
   /** Appends one fit-lens-run row (`applied` or `failed`). */
   fun append(
@@ -61,8 +85,33 @@ object FitLensRunsDao :
   override fun create(
     session: SqlSession,
     input: NewFitLensRun,
-  ): Result<FitLensRun> =
-    session.insertReturning(
+  ): Result<FitLensRun> {
+    // Destructure the outcome ADT into the flat columns: an Applied row carries
+    // its suggestions count and null failure columns; a Failed row carries zero
+    // suggestions and the failure category/reason. The exhaustive `when` forces
+    // every variant to be handled, so a future third outcome fails to compile
+    // here rather than silently writing default columns. matches_considered
+    // varies independently of the outcome, so it binds straight from the flat
+    // field.
+    val cols =
+      when (val outcome = input.outcome) {
+        is FitLensOutcome.Applied -> {
+          FitLensOutcomeColumns(
+            suggestionsWritten = outcome.suggestionsWritten,
+            failureCategory = null,
+            failureReason = null,
+          )
+        }
+
+        is FitLensOutcome.Failed -> {
+          FitLensOutcomeColumns(
+            suggestionsWritten = 0,
+            failureCategory = outcome.category.value,
+            failureReason = outcome.reason,
+          )
+        }
+      }
+    return session.insertReturning(
       table = "fit_lens_runs",
       columns =
         linkedMapOf<String, Bind>(
@@ -72,18 +121,19 @@ object FitLensRunsDao :
           "reason_system_prompt_id" to { stmt, i -> stmt.setObject(i, input.reasonSystemPromptId.value) },
           "provider" to { stmt, i -> stmt.setString(i, input.provider) },
           "model_resolved" to { stmt, i -> stmt.setStringOrNull(i, input.modelResolved) },
-          "suggestions_written" to { stmt, i -> stmt.setInt(i, input.suggestionsWritten) },
+          "suggestions_written" to { stmt, i -> stmt.setInt(i, cols.suggestionsWritten) },
           "matches_considered" to { stmt, i -> stmt.setIntOrNull(i, input.matchesConsidered) },
           "input_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.inputTokens) },
           "output_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.outputTokens) },
           "cache_read_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheReadTokens) },
           "cache_write_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheWriteTokens) },
-          "failure_category" to { stmt, i -> stmt.setStringOrNull(i, input.failureCategory?.value) },
-          "failure_reason" to { stmt, i -> stmt.setStringOrNull(i, input.failureReason) },
+          "failure_category" to { stmt, i -> stmt.setStringOrNull(i, cols.failureCategory) },
+          "failure_reason" to { stmt, i -> stmt.setStringOrNull(i, cols.failureReason) },
         ),
       map = ::mapRun,
       mapError = ::mapRunError,
     )
+  }
 
   /**
    * The student's fit-lens freshness marker: the latest `created_at` over

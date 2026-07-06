@@ -15,6 +15,7 @@ import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class FitLensRunsDaoTest {
   companion object {
@@ -79,21 +80,20 @@ class FitLensRunsDaoTest {
     return SystemPromptId(id)
   }
 
+  /** A default `Applied` outcome, for cases that don't assert on the suggestions count. */
+  private fun applied(suggestionsWritten: Int = 0): FitLensOutcome.Applied = FitLensOutcome.Applied(suggestionsWritten = suggestionsWritten)
+
+  /** A default `Failed` outcome, for cases that don't assert on the specific reason. */
+  private fun failed(): FitLensOutcome.Failed = FitLensOutcome.Failed(FitLensFailureCategory.MALFORMED_OUTPUT, "test failure")
+
   private fun append(
     student: StudentId,
     outcome: FitLensOutcome,
     queryPrompt: SystemPromptId,
     reasonPrompt: SystemPromptId,
-    suggestionsWritten: Int = 0,
     matchesConsidered: Int? = 0,
     input: Int? = 100,
     output: Int? = 50,
-    // fit_lens_runs_failure_consistency_check requires both set exactly when
-    // outcome = FAILED; default to a stand-in pair so FAILED calls that don't
-    // care about the specific reason (most of this file) still satisfy it.
-    failureCategory: FitLensFailureCategory? =
-      if (outcome == FitLensOutcome.FAILED) FitLensFailureCategory.MALFORMED_OUTPUT else null,
-    failureReason: String? = if (outcome == FitLensOutcome.FAILED) "test failure" else null,
   ) = FitLensRunsDao
     .append(
       session,
@@ -104,14 +104,11 @@ class FitLensRunsDaoTest {
         reasonSystemPromptId = reasonPrompt,
         provider = "log",
         modelResolved = "claude-sonnet-4-6",
-        suggestionsWritten = suggestionsWritten,
         matchesConsidered = matchesConsidered,
         inputTokens = input,
         outputTokens = output,
         cacheReadTokens = 0,
         cacheWriteTokens = 0,
-        failureCategory = failureCategory,
-        failureReason = failureReason,
       ),
     ).getOrThrow()
 
@@ -121,9 +118,9 @@ class FitLensRunsDaoTest {
     val queryPrompt = createPrompt("fit_lens_query")
     val reasonPrompt = createPrompt("fit_lens_reason")
 
-    val applied = append(student, FitLensOutcome.APPLIED, queryPrompt, reasonPrompt, suggestionsWritten = 1, input = 300, output = 120)
-    assertEquals(FitLensOutcome.APPLIED, applied.outcome)
-    assertEquals(1, applied.suggestionsWritten)
+    val applied = append(student, applied(suggestionsWritten = 1), queryPrompt, reasonPrompt, input = 300, output = 120)
+    // The applied round-trip yields an Applied variant carrying the suggestions count.
+    assertEquals(FitLensOutcome.Applied(suggestionsWritten = 1), applied.outcome)
     assertEquals(queryPrompt, applied.querySystemPromptId)
     assertEquals(reasonPrompt, applied.reasonSystemPromptId)
     assertEquals(300, applied.inputTokens)
@@ -132,25 +129,24 @@ class FitLensRunsDaoTest {
     val failed =
       append(
         student,
-        FitLensOutcome.FAILED,
+        FitLensOutcome.Failed(
+          category = FitLensFailureCategory.INVALID_CONTENT,
+          reason = "collegeId [11111111-1111-1111-1111-111111111111] is outside the retrieved match set",
+        ),
         queryPrompt,
         reasonPrompt,
-        suggestionsWritten = 0,
         matchesConsidered = null,
-        failureCategory = FitLensFailureCategory.INVALID_CONTENT,
-        failureReason = "collegeId [11111111-1111-1111-1111-111111111111] is outside the retrieved match set",
       )
-    assertEquals(FitLensOutcome.FAILED, failed.outcome)
-    assertEquals(0, failed.suggestionsWritten)
-    assertNull(failed.matchesConsidered, "matches_considered is null when the retrieve never ran")
-    assertEquals(FitLensFailureCategory.INVALID_CONTENT, failed.failureCategory)
+    // The Failed outcome round-trips through mapRun to an equal Failed variant;
+    // matches_considered stays a flat field, null when the retrieve never ran.
     assertEquals(
-      "collegeId [11111111-1111-1111-1111-111111111111] is outside the retrieved match set",
-      failed.failureReason,
+      FitLensOutcome.Failed(
+        category = FitLensFailureCategory.INVALID_CONTENT,
+        reason = "collegeId [11111111-1111-1111-1111-111111111111] is outside the retrieved match set",
+      ),
+      failed.outcome,
     )
-
-    assertNull(applied.failureCategory, "an applied run carries no failure category")
-    assertNull(applied.failureReason, "an applied run carries no failure reason")
+    assertNull(failed.matchesConsidered, "matches_considered is null when the retrieve never ran")
   }
 
   @Test
@@ -161,9 +157,9 @@ class FitLensRunsDaoTest {
 
     assertNull(FitLensRunsDao.lastAppliedAt(session, student).getOrThrow(), "null when never applied")
 
-    val first = append(student, FitLensOutcome.APPLIED, queryPrompt, reasonPrompt)
+    val first = append(student, applied(), queryPrompt, reasonPrompt)
     // A later failed run must not advance the freshness marker.
-    append(student, FitLensOutcome.FAILED, queryPrompt, reasonPrompt)
+    append(student, failed(), queryPrompt, reasonPrompt)
 
     val marker = FitLensRunsDao.lastAppliedAt(session, student).getOrThrow()
     assertEquals(first.createdAt, marker, "The freshness marker is the latest applied created_at, not the later failed run")
@@ -178,20 +174,64 @@ class FitLensRunsDaoTest {
     assertEquals(0, FitLensRunsDao.consecutiveFailuresSince(session, student).getOrThrow(), "0 with no runs")
 
     // Never applied: counts from the first run.
-    append(student, FitLensOutcome.FAILED, queryPrompt, reasonPrompt)
-    append(student, FitLensOutcome.FAILED, queryPrompt, reasonPrompt)
+    append(student, failed(), queryPrompt, reasonPrompt)
+    append(student, failed(), queryPrompt, reasonPrompt)
     assertEquals(2, FitLensRunsDao.consecutiveFailuresSince(session, student).getOrThrow(), "counts from the first run when never applied")
 
     // An applied run resets the breaker.
-    append(student, FitLensOutcome.APPLIED, queryPrompt, reasonPrompt)
+    append(student, applied(), queryPrompt, reasonPrompt)
     assertEquals(0, FitLensRunsDao.consecutiveFailuresSince(session, student).getOrThrow(), "reset the moment an applied run lands")
 
     // Failures accumulate again after the applied.
-    append(student, FitLensOutcome.FAILED, queryPrompt, reasonPrompt)
+    append(student, failed(), queryPrompt, reasonPrompt)
     assertEquals(
       1,
       FitLensRunsDao.consecutiveFailuresSince(session, student).getOrThrow(),
       "counts only the failures since the last applied",
     )
+  }
+
+  @Test
+  fun `a row with failure_category set and failure_reason null (or vice versa) is rejected`() {
+    // Both half-populated states are unrepresentable via the outcome ADT, so drive
+    // the new 0036 pairing CHECK directly with raw SQL on an 'applied' row (which
+    // the pre-0036 consistency check did not touch).
+    val student = createStudent()
+    val queryPrompt = createPrompt("fit_lens_query")
+    val reasonPrompt = createPrompt("fit_lens_reason")
+
+    val categoryOnly =
+      runCatching {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO fit_lens_runs (student_id, outcome, query_system_prompt_id, reason_system_prompt_id, provider, failure_category)
+            VALUES (?, 'applied', ?, ?, 'log', 'malformed_output')
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, student.value)
+            stmt.setObject(2, queryPrompt.value)
+            stmt.setObject(3, reasonPrompt.value)
+            stmt.executeUpdate()
+          }
+      }.exceptionOrNull()
+    assertTrue(categoryOnly is java.sql.SQLException && categoryOnly.sqlState == "23514", "got $categoryOnly")
+
+    val reasonOnly =
+      runCatching {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO fit_lens_runs (student_id, outcome, query_system_prompt_id, reason_system_prompt_id, provider, failure_reason)
+            VALUES (?, 'applied', ?, ?, 'log', 'orphaned reason')
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, student.value)
+            stmt.setObject(2, queryPrompt.value)
+            stmt.setObject(3, reasonPrompt.value)
+            stmt.executeUpdate()
+          }
+      }.exceptionOrNull()
+    assertTrue(reasonOnly is java.sql.SQLException && reasonOnly.sqlState == "23514", "got $reasonOnly")
   }
 }

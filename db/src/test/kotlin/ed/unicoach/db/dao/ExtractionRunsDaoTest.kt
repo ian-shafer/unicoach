@@ -4,6 +4,7 @@ import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRunId
+import ed.unicoach.db.models.JsonParseFailureCategory
 import ed.unicoach.db.models.NewExtractionRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
@@ -131,10 +132,10 @@ class ExtractionRunsDaoTest {
     val r2 = appendRequest(convo)
     val r3 = appendRequest(convo)
 
-    ExtractionRunsDao.append(session, run(convo, student, prompt, r1, ExtractionOutcome.APPLIED)).getOrThrow()
-    ExtractionRunsDao.append(session, run(convo, student, prompt, r2, ExtractionOutcome.APPLIED)).getOrThrow()
+    ExtractionRunsDao.append(session, run(convo, student, prompt, r1, applied())).getOrThrow()
+    ExtractionRunsDao.append(session, run(convo, student, prompt, r2, applied())).getOrThrow()
     // a later failed row must NOT advance the watermark.
-    ExtractionRunsDao.append(session, run(convo, student, prompt, r3, ExtractionOutcome.FAILED)).getOrThrow()
+    ExtractionRunsDao.append(session, run(convo, student, prompt, r3, failed())).getOrThrow()
 
     assertEquals(r2.value, ExtractionRunsDao.watermark(session, convo).getOrThrow())
   }
@@ -154,13 +155,15 @@ class ExtractionRunsDaoTest {
             convoId = convo,
             studentId = student,
             throughRequestId = req,
-            outcome = ExtractionOutcome.APPLIED,
+            outcome =
+              ExtractionOutcome.Applied(
+                observationsWritten = 2,
+                claimsWritten = 1,
+                claimsSuperseded = 0,
+              ),
             systemPromptId = prompt,
             provider = "log",
             modelResolved = "claude-sonnet-4-6",
-            observationsWritten = 2,
-            claimsWritten = 1,
-            claimsSuperseded = 0,
             inputTokens = 100,
             outputTokens = 50,
             cacheReadTokens = 10,
@@ -168,12 +171,14 @@ class ExtractionRunsDaoTest {
           ),
         ).getOrThrow()
 
-    assertEquals(ExtractionOutcome.APPLIED, appended.outcome)
+    // The applied round-trip yields an Applied variant carrying the counts and no failure payload.
+    assertEquals(
+      ExtractionOutcome.Applied(observationsWritten = 2, claimsWritten = 1, claimsSuperseded = 0),
+      appended.outcome,
+    )
     assertEquals(prompt, appended.systemPromptId)
     assertEquals("log", appended.provider)
     assertEquals("claude-sonnet-4-6", appended.modelResolved)
-    assertEquals(2, appended.observationsWritten)
-    assertEquals(1, appended.claimsWritten)
     assertEquals(100, appended.inputTokens)
     assertEquals(50, appended.outputTokens)
     assertEquals(10, appended.cacheReadTokens)
@@ -191,12 +196,12 @@ class ExtractionRunsDaoTest {
     ExtractionRunsDao
       .append(
         session,
-        run(convo, student, prompt, r1, ExtractionOutcome.APPLIED, input = 100, output = 50),
+        run(convo, student, prompt, r1, applied(), input = 100, output = 50),
       ).getOrThrow()
     ExtractionRunsDao
       .append(
         session,
-        run(convo, student, prompt, r2, ExtractionOutcome.FAILED, input = 30, output = 0),
+        run(convo, student, prompt, r2, failed(), input = 30, output = 0),
       ).getOrThrow()
 
     connection
@@ -218,7 +223,7 @@ class ExtractionRunsDaoTest {
     val convo = createConvo(student)
     val prompt = createSystemPrompt()
     val req = appendRequest(convo)
-    val appended = ExtractionRunsDao.append(session, run(convo, student, prompt, req, ExtractionOutcome.APPLIED)).getOrThrow()
+    val appended = ExtractionRunsDao.append(session, run(convo, student, prompt, req, applied())).getOrThrow()
 
     assertEquals(appended.id, ExtractionRunsDao.findById(session, appended.id).getOrThrow().id)
 
@@ -234,9 +239,9 @@ class ExtractionRunsDaoTest {
     val r1 = appendRequest(convo)
     val r2 = appendRequest(convo)
     val r3 = appendRequest(convo)
-    val e1 = ExtractionRunsDao.append(session, run(convo, student, prompt, r1, ExtractionOutcome.APPLIED)).getOrThrow()
-    val e2 = ExtractionRunsDao.append(session, run(convo, student, prompt, r2, ExtractionOutcome.APPLIED)).getOrThrow()
-    val e3 = ExtractionRunsDao.append(session, run(convo, student, prompt, r3, ExtractionOutcome.FAILED)).getOrThrow()
+    val e1 = ExtractionRunsDao.append(session, run(convo, student, prompt, r1, applied())).getOrThrow()
+    val e2 = ExtractionRunsDao.append(session, run(convo, student, prompt, r2, applied())).getOrThrow()
+    val e3 = ExtractionRunsDao.append(session, run(convo, student, prompt, r3, failed())).getOrThrow()
 
     assertEquals(listOf(e1.id, e2.id), ExtractionRunsDao.list(session, 2, 0).getOrThrow().map { it.id })
     assertEquals(listOf(e3.id), ExtractionRunsDao.list(session, 2, 2).getOrThrow().map { it.id })
@@ -261,13 +266,15 @@ class ExtractionRunsDaoTest {
             convoId = convo,
             studentId = student,
             throughRequestId = r1,
-            outcome = ExtractionOutcome.APPLIED,
+            outcome =
+              ExtractionOutcome.Applied(
+                observationsWritten = 3,
+                claimsWritten = 2,
+                claimsSuperseded = 1,
+              ),
             systemPromptId = prompt,
             provider = "log",
             modelResolved = "claude-sonnet-4-6",
-            observationsWritten = 3,
-            claimsWritten = 2,
-            claimsSuperseded = 1,
             inputTokens = 100,
             outputTokens = 50,
             cacheReadTokens = 10,
@@ -276,19 +283,20 @@ class ExtractionRunsDaoTest {
         ).getOrThrow()
     val failed =
       ExtractionRunsDao
-        .append(session, run(convo, student, prompt, r2, ExtractionOutcome.FAILED, input = 30, output = 0))
+        .append(session, run(convo, student, prompt, r2, failed(), input = 30, output = 0))
         .getOrThrow()
     ExtractionRunsDao
-      .append(session, run(otherConvo, other, prompt, rOther, ExtractionOutcome.APPLIED))
+      .append(session, run(otherConvo, other, prompt, rOther, applied()))
       .getOrThrow()
 
     val mine = ExtractionRunsDao.listByStudent(session, student, 50, 0).getOrThrow()
     assertEquals(listOf(applied.id, failed.id), mine.map { it.id })
 
     val appliedRow = mine.first { it.id == applied.id }
-    assertEquals(3, appliedRow.observationsWritten)
-    assertEquals(2, appliedRow.claimsWritten)
-    assertEquals(1, appliedRow.claimsSuperseded)
+    assertEquals(
+      ExtractionOutcome.Applied(observationsWritten = 3, claimsWritten = 2, claimsSuperseded = 1),
+      appliedRow.outcome,
+    )
     assertEquals(100, appliedRow.inputTokens)
     assertEquals(50, appliedRow.outputTokens)
     assertEquals(10, appliedRow.cacheReadTokens)
@@ -297,29 +305,6 @@ class ExtractionRunsDaoTest {
     // Bounded by limit/offset.
     assertEquals(listOf(applied.id), ExtractionRunsDao.listByStudent(session, student, 1, 0).getOrThrow().map { it.id })
     assertEquals(listOf(failed.id), ExtractionRunsDao.listByStudent(session, student, 1, 1).getOrThrow().map { it.id })
-  }
-
-  @Test
-  fun `failed row with nonzero write counts is rejected`() {
-    val student = createStudent()
-    val convo = createConvo(student)
-    val prompt = createSystemPrompt()
-    val req = appendRequest(convo)
-    val result =
-      ExtractionRunsDao.append(
-        session,
-        NewExtractionRun(
-          convoId = convo,
-          studentId = student,
-          throughRequestId = req,
-          outcome = ExtractionOutcome.FAILED,
-          systemPromptId = prompt,
-          provider = "log",
-          modelResolved = null,
-          claimsWritten = 1,
-        ),
-      )
-    assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got ${result.exceptionOrNull()}")
   }
 
   @Test
@@ -354,7 +339,7 @@ class ExtractionRunsDaoTest {
     val prompt = createSystemPrompt()
     val req = appendRequest(convo)
     val appended =
-      ExtractionRunsDao.append(session, run(convo, student, prompt, req, ExtractionOutcome.APPLIED)).getOrThrow()
+      ExtractionRunsDao.append(session, run(convo, student, prompt, req, applied())).getOrThrow()
 
     val ex =
       runCatching {
@@ -370,7 +355,7 @@ class ExtractionRunsDaoTest {
     val prompt = createSystemPrompt()
     val req = appendRequest(convo)
     val appended =
-      ExtractionRunsDao.append(session, run(convo, student, prompt, req, ExtractionOutcome.APPLIED)).getOrThrow()
+      ExtractionRunsDao.append(session, run(convo, student, prompt, req, applied())).getOrThrow()
 
     val ex =
       runCatching {
@@ -378,6 +363,12 @@ class ExtractionRunsDaoTest {
       }.exceptionOrNull()
     assertTrue(ex is java.sql.SQLException && ex.sqlState == "P0001", "got $ex")
   }
+
+  /** A default `Applied` outcome with zero counts, for cases that don't assert on the payload. */
+  private fun applied(): ExtractionOutcome.Applied = ExtractionOutcome.Applied(0, 0, 0)
+
+  /** A default `Failed` outcome, for cases that don't assert on the specific reason. */
+  private fun failed(): ExtractionOutcome.Failed = ExtractionOutcome.Failed(JsonParseFailureCategory.MALFORMED_JSON, "test failure")
 
   private fun run(
     convo: ConvoId,
@@ -399,4 +390,174 @@ class ExtractionRunsDaoTest {
       inputTokens = input,
       outputTokens = output,
     )
+
+  @Test
+  fun `append persists a failed run's failure_category and failure_reason`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val req = appendRequest(convo)
+
+    val appended =
+      ExtractionRunsDao
+        .append(
+          session,
+          NewExtractionRun(
+            convoId = convo,
+            studentId = student,
+            throughRequestId = req,
+            outcome =
+              ExtractionOutcome.Failed(
+                category = JsonParseFailureCategory.INVALID_FIELD,
+                reason = "field [quote]=[missing or non-string]",
+              ),
+            systemPromptId = prompt,
+            provider = "log",
+            modelResolved = null,
+          ),
+        ).getOrThrow()
+
+    // The Failed outcome round-trips through mapRun back to an equal Failed variant.
+    assertEquals(
+      ExtractionOutcome.Failed(
+        category = JsonParseFailureCategory.INVALID_FIELD,
+        reason = "field [quote]=[missing or non-string]",
+      ),
+      appended.outcome,
+    )
+  }
+
+  @Test
+  fun `a failed row with failure_category NULL is rejected`() {
+    // A Failed outcome without a category is unrepresentable in Kotlin, so drive
+    // the DB CHECK directly via raw SQL: outcome = 'failed' with a null
+    // failure_category must be rejected by extraction_runs_failure_consistency_check.
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val req = appendRequest(convo)
+    val ex =
+      runCatching {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider)
+            VALUES (?, ?, ?, 'failed', ?, 'log')
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, convo.value)
+            stmt.setObject(2, student.value)
+            stmt.setLong(3, req.value)
+            stmt.setObject(4, prompt.value)
+            stmt.executeUpdate()
+          }
+      }.exceptionOrNull()
+    assertTrue(ex is java.sql.SQLException && ex.sqlState == "23514", "got $ex")
+  }
+
+  @Test
+  fun `an applied row with failure_category set is rejected`() {
+    // Also unrepresentable via the ADT: raw-SQL an 'applied' row with a
+    // failure_category set — extraction_runs_failure_consistency_check rejects it.
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val req = appendRequest(convo)
+    val ex =
+      runCatching {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider, failure_category, failure_reason)
+            VALUES (?, ?, ?, 'applied', ?, 'log', 'malformed_json', 'should not be allowed')
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, convo.value)
+            stmt.setObject(2, student.value)
+            stmt.setLong(3, req.value)
+            stmt.setObject(4, prompt.value)
+            stmt.executeUpdate()
+          }
+      }.exceptionOrNull()
+    assertTrue(ex is java.sql.SQLException && ex.sqlState == "23514", "got $ex")
+  }
+
+  @Test
+  fun `one column set with the other null is rejected regardless of outcome`() {
+    // The pairing CHECK: failure_category set with failure_reason null (here on an
+    // 'applied' row) is rejected regardless of outcome. Unrepresentable via the
+    // ADT, so exercised through raw SQL.
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val req = appendRequest(convo)
+    val ex =
+      runCatching {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider, failure_category)
+            VALUES (?, ?, ?, 'applied', ?, 'log', 'malformed_json')
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, convo.value)
+            stmt.setObject(2, student.value)
+            stmt.setLong(3, req.value)
+            stmt.setObject(4, prompt.value)
+            stmt.executeUpdate()
+          }
+      }.exceptionOrNull()
+    assertTrue(ex is java.sql.SQLException && ex.sqlState == "23514", "got $ex")
+  }
+
+  @Test
+  fun `an invalid failure_category value is rejected`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val req = appendRequest(convo)
+    val ex =
+      runCatching {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider, failure_category, failure_reason)
+            VALUES (?, ?, ?, 'failed', ?, 'log', 'bogus_category', 'x')
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, convo.value)
+            stmt.setObject(2, student.value)
+            stmt.setLong(3, req.value)
+            stmt.setObject(4, prompt.value)
+            stmt.executeUpdate()
+          }
+      }.exceptionOrNull()
+    assertTrue(ex is java.sql.SQLException && ex.sqlState == "23514", "got $ex")
+  }
+
+  @Test
+  fun `a failure_reason over 2048 chars is rejected`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val req = appendRequest(convo)
+    val result =
+      ExtractionRunsDao.append(
+        session,
+        NewExtractionRun(
+          convoId = convo,
+          studentId = student,
+          throughRequestId = req,
+          outcome =
+            ExtractionOutcome.Failed(
+              category = JsonParseFailureCategory.MALFORMED_JSON,
+              reason = "x".repeat(2049),
+            ),
+          systemPromptId = prompt,
+          provider = "log",
+          modelResolved = null,
+        ),
+      )
+    assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got ${result.exceptionOrNull()}")
+  }
 }

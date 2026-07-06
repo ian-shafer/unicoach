@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.JsonParseFailureCategory
 import ed.unicoach.db.models.NewSynthesisRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SynthesisOutcome
@@ -22,26 +23,59 @@ object SynthesisRunsDao :
   Findable<SynthesisRun, SynthesisRunId>,
   Listable<SynthesisRun>,
   Creatable<NewSynthesisRun, SynthesisRun> {
+  /** The flat count/failure column values an outcome variant maps to on insert. */
+  private data class SynthesisOutcomeColumns(
+    val commitmentsWritten: Int,
+    val commitmentsDropped: Int,
+    val failureCategory: String?,
+    val failureReason: String?,
+  )
+
   private fun mapRun(rs: ResultSet): SynthesisRun =
     SynthesisRun(
       id = SynthesisRunId(rs.getLong("id")),
       createdAt = rs.getInstant("created_at"),
       studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
-      outcome = parseOutcome(rs.getString("outcome")),
+      outcome = mapOutcome(rs),
       systemPromptId = SystemPromptId(UUID.fromString(rs.getString("system_prompt_id"))),
       provider = rs.getString("provider"),
       modelResolved = rs.getString("model_resolved"),
-      commitmentsWritten = rs.getInt("commitments_written"),
-      commitmentsDropped = rs.getInt("commitments_dropped"),
       inputTokens = rs.getInt("input_tokens").takeUnless { rs.wasNull() },
       outputTokens = rs.getInt("output_tokens").takeUnless { rs.wasNull() },
       cacheReadTokens = rs.getInt("cache_read_tokens").takeUnless { rs.wasNull() },
       cacheWriteTokens = rs.getInt("cache_write_tokens").takeUnless { rs.wasNull() },
     )
 
-  private fun parseOutcome(value: String): SynthesisOutcome =
-    SynthesisOutcome.fromValue(value)
-      ?: throw SQLException("Persisted synthesis_runs.outcome is not a valid value: \"$value\"")
+  /**
+   * Reconstructs the [SynthesisOutcome] ADT from the flat outcome/count/failure
+   * columns. The failure columns are non-null on a `failed` row by CHECK, so the
+   * `Failed` construction is total; a corrupt row (raw SQL bypassing the app)
+   * surfaces as an [SQLException] here, never a silent misread.
+   */
+  private fun mapOutcome(rs: ResultSet): SynthesisOutcome =
+    when (val outcome = rs.getString("outcome")) {
+      "applied" -> {
+        SynthesisOutcome.Applied(
+          commitmentsWritten = rs.getInt("commitments_written"),
+          commitmentsDropped = rs.getInt("commitments_dropped"),
+        )
+      }
+
+      "failed" -> {
+        SynthesisOutcome.Failed(
+          category = parseFailureCategory(rs.getString("failure_category")),
+          reason = rs.getString("failure_reason"),
+        )
+      }
+
+      else -> {
+        throw SQLException("Persisted synthesis_runs.outcome is not a valid value: [$outcome]")
+      }
+    }
+
+  private fun parseFailureCategory(value: String): JsonParseFailureCategory =
+    JsonParseFailureCategory.fromValue(value)
+      ?: throw SQLException("Persisted synthesis_runs.failure_category is not a valid value: [$value]")
 
   /** Appends one synthesis-run row (success or failure). */
   fun append(
@@ -52,8 +86,34 @@ object SynthesisRunsDao :
   override fun create(
     session: SqlSession,
     input: NewSynthesisRun,
-  ): Result<SynthesisRun> =
-    session.insertReturning(
+  ): Result<SynthesisRun> {
+    // Destructure the outcome ADT into the flat columns: an Applied row carries
+    // its write counts and null failure columns; a Failed row carries zero
+    // counts and the failure category/reason. The exhaustive `when` forces every
+    // variant to be handled, so a future third outcome fails to compile here
+    // rather than silently writing default columns. The DAO is the sole boundary
+    // between the ADT and the flat row + CHECK.
+    val cols =
+      when (val outcome = input.outcome) {
+        is SynthesisOutcome.Applied -> {
+          SynthesisOutcomeColumns(
+            commitmentsWritten = outcome.commitmentsWritten,
+            commitmentsDropped = outcome.commitmentsDropped,
+            failureCategory = null,
+            failureReason = null,
+          )
+        }
+
+        is SynthesisOutcome.Failed -> {
+          SynthesisOutcomeColumns(
+            commitmentsWritten = 0,
+            commitmentsDropped = 0,
+            failureCategory = outcome.category.value,
+            failureReason = outcome.reason,
+          )
+        }
+      }
+    return session.insertReturning(
       table = "synthesis_runs",
       columns =
         linkedMapOf<String, Bind>(
@@ -62,16 +122,19 @@ object SynthesisRunsDao :
           "system_prompt_id" to { stmt, i -> stmt.setObject(i, input.systemPromptId.value) },
           "provider" to { stmt, i -> stmt.setString(i, input.provider) },
           "model_resolved" to { stmt, i -> stmt.setStringOrNull(i, input.modelResolved) },
-          "commitments_written" to { stmt, i -> stmt.setInt(i, input.commitmentsWritten) },
-          "commitments_dropped" to { stmt, i -> stmt.setInt(i, input.commitmentsDropped) },
+          "commitments_written" to { stmt, i -> stmt.setInt(i, cols.commitmentsWritten) },
+          "commitments_dropped" to { stmt, i -> stmt.setInt(i, cols.commitmentsDropped) },
           "input_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.inputTokens) },
           "output_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.outputTokens) },
           "cache_read_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheReadTokens) },
           "cache_write_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheWriteTokens) },
+          "failure_category" to { stmt, i -> stmt.setStringOrNull(i, cols.failureCategory) },
+          "failure_reason" to { stmt, i -> stmt.setStringOrNull(i, cols.failureReason) },
         ),
       map = ::mapRun,
       mapError = ::mapRunError,
     )
+  }
 
   /**
    * The student's synthesis freshness marker: the latest `created_at` over

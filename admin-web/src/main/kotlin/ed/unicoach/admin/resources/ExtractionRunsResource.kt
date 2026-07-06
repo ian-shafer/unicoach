@@ -7,6 +7,7 @@ import ed.unicoach.admin.engine.AdminResource
 import ed.unicoach.admin.engine.FieldType
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ExtractionRunsDao
+import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRun
 import ed.unicoach.db.models.ExtractionRunId
 import ed.unicoach.db.models.SoftDeleteScope
@@ -20,7 +21,9 @@ import ed.unicoach.db.models.SoftDeleteScope
  *
  * The token and write-count columns are on the list (`inList = true`) so
  * per-student LLM spend is eyeballable; the secondary provenance columns are
- * detail-only. No edges.
+ * detail-only. `failureCategory` is on the list too (a triage-at-a-glance
+ * "what's failing" column, null on `applied` rows, RFC 101); `failureReason`'s
+ * free-text diagnostic is detail-only. No edges.
  */
 object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
   override val slug = "extraction-run"
@@ -34,6 +37,7 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "extraction-run"),
       AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
       AdminField("outcome", "Outcome", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("failureCategory", "Failure Category", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("modelResolved", "Model", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("claimsWritten", "Claims Written", FieldType.INT, editable = false, sensitive = false),
       AdminField("inputTokens", "Input Tokens", FieldType.INT, editable = false, sensitive = false),
@@ -64,6 +68,7 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
       AdminField("claimsSuperseded", "Claims Superseded", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("cacheReadTokens", "Cache Read Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("cacheWriteTokens", "Cache Write Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
+      AdminField("failureReason", "Failure Reason", FieldType.TEXT, editable = false, sensitive = false, inList = false),
     )
 
   override val edges = emptyList<AdminEdge>()
@@ -76,13 +81,40 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
 
   override fun isDeleted(row: ExtractionRun): Boolean = false
 
-  override fun cells(row: ExtractionRun): Map<String, String> =
-    mapOf(
+  override fun cells(row: ExtractionRun): Map<String, String> {
+    // Destructure the outcome ADT back into the flat column-per-field projection:
+    // real counts on Applied (0 on Failed), the failure category/reason on Failed
+    // ("" on Applied). The exhaustive `when` forces every variant to be handled,
+    // so a future third outcome fails to compile rather than rendering defaults.
+    val cells =
+      when (val outcome = row.outcome) {
+        is ExtractionOutcome.Applied -> {
+          OutcomeCells(
+            observationsWritten = outcome.observationsWritten.toString(),
+            claimsWritten = outcome.claimsWritten.toString(),
+            claimsSuperseded = outcome.claimsSuperseded.toString(),
+            failureCategory = "",
+            failureReason = "",
+          )
+        }
+
+        is ExtractionOutcome.Failed -> {
+          OutcomeCells(
+            observationsWritten = "0",
+            claimsWritten = "0",
+            claimsSuperseded = "0",
+            failureCategory = outcome.category.value,
+            failureReason = outcome.reason,
+          )
+        }
+      }
+    return mapOf(
       "id" to row.id.value.toString(),
       "studentId" to row.studentId.value.toString(),
       "outcome" to row.outcome.value,
+      "failureCategory" to cells.failureCategory,
       "modelResolved" to (row.modelResolved ?: ""),
-      "claimsWritten" to row.claimsWritten.toString(),
+      "claimsWritten" to cells.claimsWritten,
       "inputTokens" to (row.inputTokens?.toString() ?: ""),
       "outputTokens" to (row.outputTokens?.toString() ?: ""),
       "createdAt" to row.createdAt.toString(),
@@ -90,11 +122,22 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
       "throughRequestId" to row.throughRequestId.value.toString(),
       "systemPromptId" to row.systemPromptId.value.toString(),
       "provider" to row.provider,
-      "observationsWritten" to row.observationsWritten.toString(),
-      "claimsSuperseded" to row.claimsSuperseded.toString(),
+      "observationsWritten" to cells.observationsWritten,
+      "claimsSuperseded" to cells.claimsSuperseded,
       "cacheReadTokens" to (row.cacheReadTokens?.toString() ?: ""),
       "cacheWriteTokens" to (row.cacheWriteTokens?.toString() ?: ""),
+      "failureReason" to cells.failureReason,
     )
+  }
+
+  /** The outcome-discriminated cell strings for one extraction-run row. */
+  private data class OutcomeCells(
+    val observationsWritten: String,
+    val claimsWritten: String,
+    val claimsSuperseded: String,
+    val failureCategory: String,
+    val failureReason: String,
+  )
 
   override suspend fun list(
     db: Database,

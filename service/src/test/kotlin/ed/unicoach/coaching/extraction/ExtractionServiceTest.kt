@@ -626,12 +626,17 @@ class ExtractionServiceTest {
       assertTrue(result is ExtractionResult.TransientFailure, "got $result")
       assertEquals(0L, watermark(convo))
       connection.createStatement().use { stmt ->
-        stmt.executeQuery("SELECT outcome, input_tokens, output_tokens FROM extraction_runs WHERE convo_id = '$convo'").use { rs ->
-          rs.next()
-          assertEquals("failed", rs.getString("outcome"))
-          assertEquals(11, rs.getInt("input_tokens"))
-          assertEquals(22, rs.getInt("output_tokens"))
-        }
+        stmt
+          .executeQuery(
+            "SELECT outcome, input_tokens, output_tokens, failure_category, failure_reason FROM extraction_runs WHERE convo_id = '$convo'",
+          ).use { rs ->
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals(11, rs.getInt("input_tokens"))
+            assertEquals(22, rs.getInt("output_tokens"))
+            assertEquals("malformed_json", rs.getString("failure_category"))
+            assertTrue(rs.getString("failure_reason").isNotBlank(), "failure_reason must be populated")
+          }
       }
     }
 
@@ -652,12 +657,20 @@ class ExtractionServiceTest {
       assertTrue(result is ExtractionResult.TransientFailure, "got $result")
       assertEquals(0L, watermark(convo))
       connection.createStatement().use { stmt ->
-        stmt.executeQuery("SELECT outcome, input_tokens, output_tokens FROM extraction_runs WHERE convo_id = '$convo'").use { rs ->
-          rs.next()
-          assertEquals("failed", rs.getString("outcome"))
-          assertEquals(13, rs.getInt("input_tokens"))
-          assertEquals(24, rs.getInt("output_tokens"))
-        }
+        stmt
+          .executeQuery(
+            "SELECT outcome, input_tokens, output_tokens, failure_category, failure_reason FROM extraction_runs WHERE convo_id = '$convo'",
+          ).use { rs ->
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals(13, rs.getInt("input_tokens"))
+            assertEquals(24, rs.getInt("output_tokens"))
+            assertEquals("invalid_field", rs.getString("failure_category"))
+            assertTrue(
+              rs.getString("failure_reason").contains("sourceRequestId"),
+              "failure_reason must name the offending field: ${rs.getString("failure_reason")}",
+            )
+          }
       }
     }
 
@@ -769,6 +782,24 @@ class ExtractionServiceTest {
           assertEquals(130, rs.getInt(1))
         }
       }
+
+      connection
+        .prepareStatement(
+          "SELECT outcome, failure_category, failure_reason FROM extraction_runs WHERE student_id = ? ORDER BY id",
+        ).use { stmt ->
+          stmt.setObject(1, student)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals("applied", rs.getString("outcome"))
+            assertEquals(null, rs.getString("failure_category"))
+            rs.next()
+            assertEquals("failed", rs.getString("outcome"))
+            // "garbage" parses leniently as a bare JSON primitive (not an object),
+            // not a JSON syntax error: NOT_A_JSON_OBJECT, not MALFORMED_JSON.
+            assertEquals("not_a_json_object", rs.getString("failure_category"))
+            assertTrue(rs.getString("failure_reason").isNotBlank(), "failure_reason must be populated")
+          }
+        }
     }
 
   @Test

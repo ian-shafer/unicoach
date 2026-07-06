@@ -40,7 +40,6 @@ import ed.unicoach.db.models.ConvoName
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRun
-import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.FitLensRun
 import ed.unicoach.db.models.FitSuggestion
@@ -317,15 +316,14 @@ object AdminTestSupport {
         }.getOrThrow()
     }
 
-  /** Appends an extraction_runs row via the DAO. */
+  /** Appends an extraction_runs row via the DAO. Defaults to an `Applied` outcome. */
   fun seedExtractionRun(
     studentId: StudentId,
     convoId: ConvoId,
     throughRequestId: ed.unicoach.db.models.ConvoRequestId,
-    outcome: ExtractionOutcome = ExtractionOutcome.APPLIED,
+    outcome: ExtractionOutcome =
+      ExtractionOutcome.Applied(observationsWritten = 1, claimsWritten = 1, claimsSuperseded = 0),
     modelResolved: String? = "claude-sonnet-4-6",
-    observationsWritten: Int = 1,
-    claimsWritten: Int = 1,
     inputTokens: Int? = 100,
     outputTokens: Int? = 50,
   ): ExtractionRun =
@@ -342,8 +340,6 @@ object AdminTestSupport {
               systemPromptId = extractionPromptId(),
               provider = "log",
               modelResolved = modelResolved,
-              observationsWritten = if (outcome == ExtractionOutcome.FAILED) 0 else observationsWritten,
-              claimsWritten = if (outcome == ExtractionOutcome.FAILED) 0 else claimsWritten,
               inputTokens = inputTokens,
               outputTokens = outputTokens,
             ),
@@ -389,13 +385,11 @@ object AdminTestSupport {
     database.withConnection { session -> CommitmentSupportDao.link(session, commitmentId, claimId) }.getOrThrow()
   }
 
-  /** Appends a synthesis_runs row via the DAO. */
+  /** Appends a synthesis_runs row via the DAO. Defaults to an `Applied` outcome. */
   fun seedSynthesisRun(
     studentId: StudentId,
-    outcome: SynthesisOutcome = SynthesisOutcome.APPLIED,
+    outcome: SynthesisOutcome = SynthesisOutcome.Applied(commitmentsWritten = 2, commitmentsDropped = 1),
     modelResolved: String? = "claude-sonnet-4-6",
-    commitmentsWritten: Int = 2,
-    commitmentsDropped: Int = 1,
     inputTokens: Int? = 100,
     outputTokens: Int? = 50,
   ): SynthesisRun =
@@ -410,8 +404,6 @@ object AdminTestSupport {
               systemPromptId = synthesisPromptId(),
               provider = "log",
               modelResolved = modelResolved,
-              commitmentsWritten = if (outcome == SynthesisOutcome.FAILED) 0 else commitmentsWritten,
-              commitmentsDropped = if (outcome == SynthesisOutcome.FAILED) 0 else commitmentsDropped,
               inputTokens = inputTokens,
               outputTokens = outputTokens,
             ),
@@ -455,20 +447,14 @@ object AdminTestSupport {
         .getOrThrow()
     }
 
-  /** Appends a fit_lens_runs row via the DAO (RFC 98). */
+  /** Appends a fit_lens_runs row via the DAO (RFC 98). Defaults to an `Applied` outcome. */
   fun seedFitLensRun(
     studentId: StudentId,
-    outcome: FitLensOutcome = FitLensOutcome.APPLIED,
+    outcome: FitLensOutcome = FitLensOutcome.Applied(suggestionsWritten = 1),
     modelResolved: String? = "claude-sonnet-4-6",
-    suggestionsWritten: Int = 1,
     matchesConsidered: Int? = 5,
     inputTokens: Int? = 300,
     outputTokens: Int? = 120,
-    // fit_lens_runs_failure_consistency_check requires both set exactly when
-    // outcome = FAILED.
-    failureCategory: FitLensFailureCategory? =
-      if (outcome == FitLensOutcome.FAILED) FitLensFailureCategory.MALFORMED_OUTPUT else null,
-    failureReason: String? = if (outcome == FitLensOutcome.FAILED) "test failure" else null,
   ): FitLensRun =
     runBlocking {
       database
@@ -482,12 +468,9 @@ object AdminTestSupport {
               reasonSystemPromptId = fitLensReasonPromptId(),
               provider = "log",
               modelResolved = modelResolved,
-              suggestionsWritten = if (outcome == FitLensOutcome.FAILED) 0 else suggestionsWritten,
               matchesConsidered = matchesConsidered,
               inputTokens = inputTokens,
               outputTokens = outputTokens,
-              failureCategory = failureCategory,
-              failureReason = failureReason,
             ),
           )
         }.getOrThrow()

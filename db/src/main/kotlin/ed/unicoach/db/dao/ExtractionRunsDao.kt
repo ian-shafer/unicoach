@@ -5,6 +5,7 @@ import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRun
 import ed.unicoach.db.models.ExtractionRunId
+import ed.unicoach.db.models.JsonParseFailureCategory
 import ed.unicoach.db.models.NewExtractionRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
@@ -22,6 +23,15 @@ object ExtractionRunsDao :
   Findable<ExtractionRun, ExtractionRunId>,
   Listable<ExtractionRun>,
   Creatable<NewExtractionRun, ExtractionRun> {
+  /** The flat count/failure column values an outcome variant maps to on insert. */
+  private data class ExtractionOutcomeColumns(
+    val observationsWritten: Int,
+    val claimsWritten: Int,
+    val claimsSuperseded: Int,
+    val failureCategory: String?,
+    val failureReason: String?,
+  )
+
   private fun mapRun(rs: ResultSet): ExtractionRun =
     ExtractionRun(
       id = ExtractionRunId(rs.getLong("id")),
@@ -29,22 +39,47 @@ object ExtractionRunsDao :
       convoId = ConvoId(UUID.fromString(rs.getString("convo_id"))),
       studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
       throughRequestId = ConvoRequestId(rs.getLong("through_request_id")),
-      outcome = parseOutcome(rs.getString("outcome")),
+      outcome = mapOutcome(rs),
       systemPromptId = SystemPromptId(UUID.fromString(rs.getString("system_prompt_id"))),
       provider = rs.getString("provider"),
       modelResolved = rs.getString("model_resolved"),
-      observationsWritten = rs.getInt("observations_written"),
-      claimsWritten = rs.getInt("claims_written"),
-      claimsSuperseded = rs.getInt("claims_superseded"),
       inputTokens = rs.getInt("input_tokens").takeUnless { rs.wasNull() },
       outputTokens = rs.getInt("output_tokens").takeUnless { rs.wasNull() },
       cacheReadTokens = rs.getInt("cache_read_tokens").takeUnless { rs.wasNull() },
       cacheWriteTokens = rs.getInt("cache_write_tokens").takeUnless { rs.wasNull() },
     )
 
-  private fun parseOutcome(value: String): ExtractionOutcome =
-    ExtractionOutcome.fromValue(value)
-      ?: throw SQLException("Persisted extraction_runs.outcome is not a valid value: \"$value\"")
+  /**
+   * Reconstructs the [ExtractionOutcome] ADT from the flat outcome/count/failure
+   * columns. The failure columns are non-null on a `failed` row by CHECK, so the
+   * `Failed` construction is total; a corrupt row (raw SQL bypassing the app)
+   * surfaces as an [SQLException] here, never a silent misread.
+   */
+  private fun mapOutcome(rs: ResultSet): ExtractionOutcome =
+    when (val outcome = rs.getString("outcome")) {
+      "applied" -> {
+        ExtractionOutcome.Applied(
+          observationsWritten = rs.getInt("observations_written"),
+          claimsWritten = rs.getInt("claims_written"),
+          claimsSuperseded = rs.getInt("claims_superseded"),
+        )
+      }
+
+      "failed" -> {
+        ExtractionOutcome.Failed(
+          category = parseFailureCategory(rs.getString("failure_category")),
+          reason = rs.getString("failure_reason"),
+        )
+      }
+
+      else -> {
+        throw SQLException("Persisted extraction_runs.outcome is not a valid value: [$outcome]")
+      }
+    }
+
+  private fun parseFailureCategory(value: String): JsonParseFailureCategory =
+    JsonParseFailureCategory.fromValue(value)
+      ?: throw SQLException("Persisted extraction_runs.failure_category is not a valid value: [$value]")
 
   /** Appends one extraction-run row (success or failure). */
   fun append(
@@ -55,8 +90,36 @@ object ExtractionRunsDao :
   override fun create(
     session: SqlSession,
     input: NewExtractionRun,
-  ): Result<ExtractionRun> =
-    session.insertReturning(
+  ): Result<ExtractionRun> {
+    // Destructure the outcome ADT into the flat columns: an Applied row carries
+    // its write counts and null failure columns; a Failed row carries zero
+    // counts and the failure category/reason. The exhaustive `when` forces every
+    // variant to be handled, so a future third outcome fails to compile here
+    // rather than silently writing default columns. The DAO is the sole boundary
+    // between the ADT and the flat row + CHECK.
+    val cols =
+      when (val outcome = input.outcome) {
+        is ExtractionOutcome.Applied -> {
+          ExtractionOutcomeColumns(
+            observationsWritten = outcome.observationsWritten,
+            claimsWritten = outcome.claimsWritten,
+            claimsSuperseded = outcome.claimsSuperseded,
+            failureCategory = null,
+            failureReason = null,
+          )
+        }
+
+        is ExtractionOutcome.Failed -> {
+          ExtractionOutcomeColumns(
+            observationsWritten = 0,
+            claimsWritten = 0,
+            claimsSuperseded = 0,
+            failureCategory = outcome.category.value,
+            failureReason = outcome.reason,
+          )
+        }
+      }
+    return session.insertReturning(
       table = "extraction_runs",
       columns =
         linkedMapOf<String, Bind>(
@@ -67,17 +130,20 @@ object ExtractionRunsDao :
           "system_prompt_id" to { stmt, i -> stmt.setObject(i, input.systemPromptId.value) },
           "provider" to { stmt, i -> stmt.setString(i, input.provider) },
           "model_resolved" to { stmt, i -> stmt.setStringOrNull(i, input.modelResolved) },
-          "observations_written" to { stmt, i -> stmt.setInt(i, input.observationsWritten) },
-          "claims_written" to { stmt, i -> stmt.setInt(i, input.claimsWritten) },
-          "claims_superseded" to { stmt, i -> stmt.setInt(i, input.claimsSuperseded) },
+          "observations_written" to { stmt, i -> stmt.setInt(i, cols.observationsWritten) },
+          "claims_written" to { stmt, i -> stmt.setInt(i, cols.claimsWritten) },
+          "claims_superseded" to { stmt, i -> stmt.setInt(i, cols.claimsSuperseded) },
           "input_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.inputTokens) },
           "output_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.outputTokens) },
           "cache_read_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheReadTokens) },
           "cache_write_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheWriteTokens) },
+          "failure_category" to { stmt, i -> stmt.setStringOrNull(i, cols.failureCategory) },
+          "failure_reason" to { stmt, i -> stmt.setStringOrNull(i, cols.failureReason) },
         ),
       map = ::mapRun,
       mapError = ::mapRunError,
     )
+  }
 
   /**
    * The conversation's extraction watermark: the highest `through_request_id`

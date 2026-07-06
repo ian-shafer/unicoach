@@ -119,11 +119,39 @@ class SynthesisRunsResourceTest {
       val student = AdminTestSupport.seedStudent(user.id)
       val runId =
         AdminTestSupport
-          .seedSynthesisRun(student.id, outcome = ed.unicoach.db.models.SynthesisOutcome.FAILED)
-          .id.value
+          .seedSynthesisRun(
+            student.id,
+            outcome =
+              ed.unicoach.db.models.SynthesisOutcome
+                .Failed(ed.unicoach.db.models.JsonParseFailureCategory.MALFORMED_JSON, "test failure"),
+          ).id.value
           .toString()
 
       val detail = client().get("/synthesis-run/$runId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
       assertTrue(detail.contains("failed"), "Detail must render the failed outcome")
+    }
+
+  @Test
+  fun `a failed row's failureCategory renders on the list and failureReason renders on the detail`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
+      val student = AdminTestSupport.seedStudent(user.id)
+      val runId =
+        AdminTestSupport
+          .seedSynthesisRun(
+            student.id,
+            outcome =
+              ed.unicoach.db.models.SynthesisOutcome
+                .Failed(ed.unicoach.db.models.JsonParseFailureCategory.INVALID_FIELD, "field [lens]=[missing]"),
+          ).id.value
+          .toString()
+
+      val list = client().get("/synthesis-run") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(list.contains("invalid_field"), "List must render the failure category")
+
+      val detail = client().get("/synthesis-run/$runId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(detail.contains("field [lens]=[missing]"), "Detail must render the failure reason")
     }
 }

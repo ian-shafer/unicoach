@@ -9,6 +9,9 @@ import ed.unicoach.chat.TokenUsage
 import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ConvoContent
 import ed.unicoach.coaching.ConvoProjection
+import ed.unicoach.coaching.JsonParseFailure
+import ed.unicoach.coaching.category
+import ed.unicoach.coaching.toDisplay
 import ed.unicoach.common.util.truncateForLog
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
@@ -261,11 +264,11 @@ open class ExtractionService(
             logger.warn(
               "unparseable extraction output for convo=[{}]: [{}]; raw=[{}]",
               convoId.asString,
-              parsed.failure,
+              parsed.failure.toDisplay(),
               truncateForLog(raw),
             )
-            writeFailedRun(convoId, throughRequestId, window, usage, modelResolved)
-            ExtractionResult.TransientFailure("unparseable extraction output: ${parsed.failure}")
+            writeFailedRun(convoId, throughRequestId, window, parsed.failure, usage, modelResolved)
+            ExtractionResult.TransientFailure("unparseable extraction output: ${parsed.failure.toDisplay()}")
           }
 
           is ParseResult.Parsed -> {
@@ -289,6 +292,7 @@ open class ExtractionService(
     convoId: ConvoId,
     throughRequestId: ConvoRequestId,
     window: ReadPhase.Window,
+    failure: JsonParseFailure,
     usage: TokenUsage,
     modelResolved: String?,
   ) {
@@ -303,7 +307,7 @@ open class ExtractionService(
             convoId = convoId,
             studentId = window.studentId,
             throughRequestId = throughRequestId,
-            outcome = ExtractionOutcome.FAILED,
+            outcome = ExtractionOutcome.Failed(failure.category, failure.toDisplay()),
             systemPromptId = window.prompt.id,
             provider = chatProvider.id,
             modelResolved = modelResolved,
@@ -452,13 +456,15 @@ open class ExtractionService(
           convoId = convoId,
           studentId = window.studentId,
           throughRequestId = throughRequestId,
-          outcome = ExtractionOutcome.APPLIED,
+          outcome =
+            ExtractionOutcome.Applied(
+              observationsWritten = insertedObservations.size,
+              claimsWritten = claimsWritten,
+              claimsSuperseded = claimsSuperseded,
+            ),
           systemPromptId = window.prompt.id,
           provider = chatProvider.id,
           modelResolved = modelResolved,
-          observationsWritten = insertedObservations.size,
-          claimsWritten = claimsWritten,
-          claimsSuperseded = claimsSuperseded,
           inputTokens = usage.inputTokens,
           outputTokens = usage.outputTokens,
           cacheReadTokens = usage.cacheReadTokens,
@@ -558,9 +564,9 @@ open class ExtractionService(
     val root =
       try {
         json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return ParseResult.Failure(ParseFailure.NotAnObject)
+          ?: return ParseResult.Failure(JsonParseFailure.NotAnObject)
       } catch (e: Exception) {
-        return ParseResult.Failure(ParseFailure.MalformedJson(e.message))
+        return ParseResult.Failure(JsonParseFailure.MalformedJson(e.message))
       }
 
     val observations = mutableListOf<ObservationSpec>()
@@ -573,17 +579,17 @@ open class ExtractionService(
         // Present but not an array: a structural failure, NOT an empty result. A
         // lenient `as? JsonArray ?: emptyList` would misclassify malformed output
         // as a valid zero-observation APPLIED run.
-        else -> return ParseResult.Failure(ParseFailure.BadField("observations", "not an array"))
+        else -> return ParseResult.Failure(JsonParseFailure.BadField("observations", "not an array"))
       }
     for (element in observationsArray) {
-      val obj = element as? JsonObject ?: return ParseResult.Failure(ParseFailure.BadField("observations[]", "not an object"))
+      val obj = element as? JsonObject ?: return ParseResult.Failure(JsonParseFailure.BadField("observations[]", "not an object"))
       val sourceRequestId =
         obj["sourceRequestId"].primitiveOrNull?.longOrNull
-          ?: return ParseResult.Failure(ParseFailure.BadField("sourceRequestId", "missing or non-integer"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("sourceRequestId", "missing or non-integer"))
       val quote =
         obj["quote"].primitiveOrNull?.takeIf { it.isString }?.content
-          ?: return ParseResult.Failure(ParseFailure.BadField("quote", "missing or non-string"))
-      if (quote.isBlank()) return ParseResult.Failure(ParseFailure.BadField("quote", "blank"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("quote", "missing or non-string"))
+      if (quote.isBlank()) return ParseResult.Failure(JsonParseFailure.BadField("quote", "blank"))
       observations.add(ObservationSpec(sourceRequestId, quote))
     }
 
@@ -595,33 +601,39 @@ open class ExtractionService(
         is JsonArray -> element
 
         // Present but not an array: same misclassification hazard as observations.
-        else -> return ParseResult.Failure(ParseFailure.BadField("claims", "not an array"))
+        else -> return ParseResult.Failure(JsonParseFailure.BadField("claims", "not an array"))
       }
     for (element in claimsArray) {
-      val obj = element as? JsonObject ?: return ParseResult.Failure(ParseFailure.BadField("claims[]", "not an object"))
+      val obj = element as? JsonObject ?: return ParseResult.Failure(JsonParseFailure.BadField("claims[]", "not an object"))
       val op =
         obj["op"].primitiveOrNull?.contentOrNull?.let { ClaimOp.fromWire(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("op", obj["op"].primitiveOrNull?.contentOrNull ?: "missing"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("op", obj["op"].primitiveOrNull?.contentOrNull ?: "missing"))
       val statement =
         obj["statement"].primitiveOrNull?.takeIf { it.isString }?.content
-          ?: return ParseResult.Failure(ParseFailure.BadField("statement", "missing or non-string"))
-      if (statement.isBlank()) return ParseResult.Failure(ParseFailure.BadField("statement", "blank"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("statement", "missing or non-string"))
+      if (statement.isBlank()) return ParseResult.Failure(JsonParseFailure.BadField("statement", "blank"))
       val kind =
         obj["kind"].primitiveOrNull?.contentOrNull?.let { ClaimKind.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("kind", obj["kind"].primitiveOrNull?.contentOrNull ?: "missing"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("kind", obj["kind"].primitiveOrNull?.contentOrNull ?: "missing"))
       val subject =
         obj["subject"].primitiveOrNull?.contentOrNull?.let { ClaimSubject.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("subject", obj["subject"].primitiveOrNull?.contentOrNull ?: "missing"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("subject", obj["subject"].primitiveOrNull?.contentOrNull ?: "missing"))
       val topic =
         obj["topic"].primitiveOrNull?.contentOrNull?.let { ClaimTopic.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("topic", obj["topic"].primitiveOrNull?.contentOrNull ?: "missing"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("topic", obj["topic"].primitiveOrNull?.contentOrNull ?: "missing"))
       val origin =
         obj["origin"].primitiveOrNull?.contentOrNull?.let { ClaimOrigin.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("origin", obj["origin"].primitiveOrNull?.contentOrNull ?: "missing"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("origin", obj["origin"].primitiveOrNull?.contentOrNull ?: "missing"))
       val visibility =
         when (val rawVisibility = obj["visibility"].primitiveOrNull?.contentOrNull) {
-          null -> ClaimVisibility.STUDENT_VISIBLE
-          else -> ClaimVisibility.fromValue(rawVisibility) ?: return ParseResult.Failure(ParseFailure.BadField("visibility", rawVisibility))
+          null -> {
+            ClaimVisibility.STUDENT_VISIBLE
+          }
+
+          else -> {
+            ClaimVisibility.fromValue(rawVisibility)
+              ?: return ParseResult.Failure(JsonParseFailure.BadField("visibility", rawVisibility))
+          }
         }
       val supports =
         when (val element = obj["supports"]) {
@@ -632,13 +644,13 @@ open class ExtractionService(
           is JsonArray -> {
             element.map { s ->
               s.primitiveOrNull?.intOrNull
-                ?: return ParseResult.Failure(ParseFailure.BadField("supports[]", "non-integer"))
+                ?: return ParseResult.Failure(JsonParseFailure.BadField("supports[]", "non-integer"))
             }
           }
 
           // Present but not an array: fail rather than silently drop the support links.
           else -> {
-            return ParseResult.Failure(ParseFailure.BadField("supports", "not an array"))
+            return ParseResult.Failure(JsonParseFailure.BadField("supports", "not an array"))
           }
         }
       val targetClaimId =
@@ -649,11 +661,11 @@ open class ExtractionService(
 
           else -> {
             runCatching { ClaimId(java.util.UUID.fromString(rawTarget)) }.getOrNull()
-              ?: return ParseResult.Failure(ParseFailure.BadField("targetClaimId", rawTarget))
+              ?: return ParseResult.Failure(JsonParseFailure.BadField("targetClaimId", rawTarget))
           }
         }
       if (op != ClaimOp.NEW && targetClaimId == null) {
-        return ParseResult.Failure(ParseFailure.BadField("targetClaimId", "required for op=${op.name.lowercase()}"))
+        return ParseResult.Failure(JsonParseFailure.BadField("targetClaimId", "required for op=${op.name.lowercase()}"))
       }
       claims.add(ClaimOpSpec(op, statement, kind, subject, topic, origin, visibility, supports, targetClaimId))
     }
@@ -708,28 +720,8 @@ open class ExtractionService(
     ) : ParseResult
 
     data class Failure(
-      val failure: ParseFailure,
+      val failure: JsonParseFailure,
     ) : ParseResult
-  }
-
-  /** Why an LLM output document could not be parsed — surfaced in logs + the failure message. */
-  private sealed interface ParseFailure {
-    data object NotAnObject : ParseFailure {
-      override fun toString(): String = "root is not a JSON object"
-    }
-
-    data class MalformedJson(
-      val detail: String?,
-    ) : ParseFailure {
-      override fun toString(): String = "malformed JSON: [$detail]"
-    }
-
-    data class BadField(
-      val field: String,
-      val value: String,
-    ) : ParseFailure {
-      override fun toString(): String = "field [$field]=[$value]"
-    }
   }
 
   private data class ObservationSpec(

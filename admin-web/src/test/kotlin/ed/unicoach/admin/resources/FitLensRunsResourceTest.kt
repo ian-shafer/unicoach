@@ -120,8 +120,13 @@ class FitLensRunsResourceTest {
       val student = AdminTestSupport.seedStudent(user.id)
       val runId =
         AdminTestSupport
-          .seedFitLensRun(student.id, outcome = ed.unicoach.db.models.FitLensOutcome.FAILED, matchesConsidered = null)
-          .id.value
+          .seedFitLensRun(
+            student.id,
+            outcome =
+              ed.unicoach.db.models.FitLensOutcome
+                .Failed(ed.unicoach.db.models.FitLensFailureCategory.MALFORMED_OUTPUT, "test failure"),
+            matchesConsidered = null,
+          ).id.value
           .toString()
 
       val detail = client().get("/fit-lens-run/$runId") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()

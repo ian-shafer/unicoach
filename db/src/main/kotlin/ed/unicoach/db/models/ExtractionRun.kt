@@ -7,7 +7,10 @@ import java.time.Instant
  * LLM call over a conversation. Serves as the conversation watermark (highest
  * [throughRequestId] over `applied` rows), the provenance of the pass's writes
  * (prompt/provider/model), and the per-pass token ledger (the four token
- * columns, recorded for every billed call including failures).
+ * columns, recorded for every billed call including failures). [outcome] is the
+ * sealed [ExtractionOutcome] ADT (RFC 101): an `Applied` carries the write
+ * counts, a `Failed` names why the LLM output was unparseable — the DAO
+ * reconstructs it from the flat outcome/count/failure columns.
  */
 data class ExtractionRun(
   override val id: ExtractionRunId,
@@ -19,9 +22,6 @@ data class ExtractionRun(
   val systemPromptId: SystemPromptId,
   val provider: String,
   val modelResolved: String?,
-  val observationsWritten: Int,
-  val claimsWritten: Int,
-  val claimsSuperseded: Int,
   val inputTokens: Int?,
   val outputTokens: Int?,
   val cacheReadTokens: Int?,

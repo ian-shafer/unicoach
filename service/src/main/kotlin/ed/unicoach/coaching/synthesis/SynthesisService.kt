@@ -8,6 +8,9 @@ import ed.unicoach.chat.ChatRole
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ConvoContent
+import ed.unicoach.coaching.JsonParseFailure
+import ed.unicoach.coaching.category
+import ed.unicoach.coaching.toDisplay
 import ed.unicoach.common.util.truncateForLog
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
@@ -202,11 +205,11 @@ class SynthesisService(
         logger.warn(
           "unparseable synthesis output for student=[{}]: [{}]; raw=[{}]",
           studentId.asString,
-          parsed.failure,
+          parsed.failure.toDisplay(),
           truncateForLog(raw),
         )
-        writeFailedRun(studentId, ready, usage, modelResolved)
-        SynthesisResult.TransientFailure("unparseable synthesis output: ${parsed.failure}")
+        writeFailedRun(studentId, ready, parsed.failure, usage, modelResolved)
+        SynthesisResult.TransientFailure("unparseable synthesis output: ${parsed.failure.toDisplay()}")
       }
 
       is ParseResult.Parsed -> {
@@ -224,6 +227,7 @@ class SynthesisService(
   private suspend fun writeFailedRun(
     studentId: StudentId,
     ready: ReadPhase.Ready,
+    failure: JsonParseFailure,
     usage: TokenUsage,
     modelResolved: String?,
   ) {
@@ -231,7 +235,14 @@ class SynthesisService(
       database.withConnection { session ->
         AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
         if (lostRace(session, studentId, ready.lastAppliedAt)) return@withConnection
-        appendRun(session, studentId, ready.prompt.id, SynthesisOutcome.FAILED, 0, 0, usage, modelResolved)
+        appendRun(
+          session,
+          studentId,
+          ready.prompt.id,
+          SynthesisOutcome.Failed(failure.category, failure.toDisplay()),
+          usage,
+          modelResolved,
+        )
       }
     } catch (e: Exception) {
       // A DB failure here must not overwrite the "unparseable synthesis output"
@@ -285,7 +296,14 @@ class SynthesisService(
   ): SynthesisResult {
     val commitmentsWritten = createProposedCommitments(session, studentId, parsed, activeIds)
     val commitmentsDropped = staleDropOpenCommitments(session, ready.openCommitments, activeIds)
-    appendRun(session, studentId, ready.prompt.id, SynthesisOutcome.APPLIED, commitmentsWritten, commitmentsDropped, usage, modelResolved)
+    appendRun(
+      session,
+      studentId,
+      ready.prompt.id,
+      SynthesisOutcome.Applied(commitmentsWritten, commitmentsDropped),
+      usage,
+      modelResolved,
+    )
     return SynthesisResult.Success
   }
 
@@ -363,8 +381,6 @@ class SynthesisService(
     studentId: StudentId,
     systemPromptId: ed.unicoach.db.models.SystemPromptId,
     outcome: SynthesisOutcome,
-    commitmentsWritten: Int,
-    commitmentsDropped: Int,
     usage: TokenUsage,
     modelResolved: String?,
   ) {
@@ -377,8 +393,6 @@ class SynthesisService(
           systemPromptId = systemPromptId,
           provider = chatProvider.id,
           modelResolved = modelResolved,
-          commitmentsWritten = commitmentsWritten,
-          commitmentsDropped = commitmentsDropped,
           inputTokens = usage.inputTokens,
           outputTokens = usage.outputTokens,
           cacheReadTokens = usage.cacheReadTokens,
@@ -449,9 +463,9 @@ class SynthesisService(
     val root =
       try {
         json.parseToJsonElement(raw.trim()) as? JsonObject
-          ?: return ParseResult.Failure(ParseFailure.NotAnObject)
+          ?: return ParseResult.Failure(JsonParseFailure.NotAnObject)
       } catch (e: Exception) {
-        return ParseResult.Failure(ParseFailure.MalformedJson(e.message))
+        return ParseResult.Failure(JsonParseFailure.MalformedJson(e.message))
       }
 
     val commitments = mutableListOf<CommitmentSpec>()
@@ -464,25 +478,25 @@ class SynthesisService(
       when (commitmentsElement) {
         null -> JsonArray(emptyList())
         is JsonArray -> commitmentsElement
-        else -> return ParseResult.Failure(ParseFailure.BadField("commitments", "not an array"))
+        else -> return ParseResult.Failure(JsonParseFailure.BadField("commitments", "not an array"))
       }
     for (element in commitmentsArray) {
-      val obj = element as? JsonObject ?: return ParseResult.Failure(ParseFailure.BadField("commitments[]", "not an object"))
+      val obj = element as? JsonObject ?: return ParseResult.Failure(JsonParseFailure.BadField("commitments[]", "not an object"))
       // Read each field via a safe cast to JsonPrimitive: a JsonObject/JsonArray
       // where a scalar is expected returns null (a BadField), never throws (`.jsonPrimitive`
       // would). Keeps parseOutput total so a malformed Completed reaches writeFailedRun.
       val lensRaw = (obj["lens"] as? JsonPrimitive)?.contentOrNull
       val lens =
         lensRaw?.let { CommitmentLens.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("lens", lensRaw ?: "missing"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("lens", lensRaw ?: "missing"))
       val disclosureRaw = (obj["disclosure"] as? JsonPrimitive)?.contentOrNull
       val disclosure =
         disclosureRaw?.let { CommitmentDisclosure.fromValue(it) }
-          ?: return ParseResult.Failure(ParseFailure.BadField("disclosure", disclosureRaw ?: "missing"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("disclosure", disclosureRaw ?: "missing"))
       val statement =
         (obj["statement"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-          ?: return ParseResult.Failure(ParseFailure.BadField("statement", "missing or non-string"))
-      if (statement.isBlank()) return ParseResult.Failure(ParseFailure.BadField("statement", "blank"))
+          ?: return ParseResult.Failure(JsonParseFailure.BadField("statement", "missing or non-string"))
+      if (statement.isBlank()) return ParseResult.Failure(JsonParseFailure.BadField("statement", "blank"))
       val triggerAt =
         when (val rawTrigger = (obj["triggerAt"] as? JsonPrimitive)?.contentOrNull) {
           null -> {
@@ -491,7 +505,7 @@ class SynthesisService(
 
           else -> {
             parseTriggerAt(rawTrigger)
-              ?: return ParseResult.Failure(ParseFailure.BadField("triggerAt", rawTrigger))
+              ?: return ParseResult.Failure(JsonParseFailure.BadField("triggerAt", rawTrigger))
           }
         }
       val supports =
@@ -499,7 +513,7 @@ class SynthesisService(
           arr.map { s ->
             val idRaw = (s as? JsonPrimitive)?.contentOrNull
             runCatching { ClaimId(java.util.UUID.fromString(idRaw)) }.getOrNull()
-              ?: return ParseResult.Failure(ParseFailure.BadField("supports[]", idRaw ?: "null"))
+              ?: return ParseResult.Failure(JsonParseFailure.BadField("supports[]", idRaw ?: "null"))
           }
         } ?: emptyList()
       commitments.add(CommitmentSpec(lens, disclosure, statement, triggerAt, supports))
@@ -553,26 +567,7 @@ class SynthesisService(
     ) : ParseResult
 
     data class Failure(
-      val failure: ParseFailure,
+      val failure: JsonParseFailure,
     ) : ParseResult
-  }
-
-  private sealed interface ParseFailure {
-    data object NotAnObject : ParseFailure {
-      override fun toString(): String = "root is not a JSON object"
-    }
-
-    data class MalformedJson(
-      val detail: String?,
-    ) : ParseFailure {
-      override fun toString(): String = "malformed JSON: [$detail]"
-    }
-
-    data class BadField(
-      val field: String,
-      val value: String,
-    ) : ParseFailure {
-      override fun toString(): String = "field [$field]=[$value]"
-    }
   }
 }
