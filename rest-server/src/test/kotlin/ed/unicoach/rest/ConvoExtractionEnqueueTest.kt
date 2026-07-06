@@ -15,6 +15,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
+import ed.unicoach.rest.config.RequestLoggingConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.CreateStudentRequest
@@ -120,6 +121,7 @@ class ConvoExtractionEnqueueTest {
       val requestSizeConfig = RequestSizeConfig.from(config).getOrThrow()
       val coachingConfig = CoachingConfig.from(config).getOrThrow()
       val clientKeyGateConfig = ClientKeyGateConfig.from(config).getOrThrow()
+      val requestLoggingConfig = RequestLoggingConfig.from(config).getOrThrow()
       val queueService = ed.unicoach.queue.QueueService(database)
       val emailVerificationConfig =
         ed.unicoach.auth.EmailVerificationConfig
@@ -150,6 +152,7 @@ class ConvoExtractionEnqueueTest {
             googleTokenVerifier,
             queueService,
             enabledConfig,
+            requestLoggingConfig,
           )
         }
       enabledServer.start(wait = false)
@@ -175,6 +178,7 @@ class ConvoExtractionEnqueueTest {
             googleTokenVerifier,
             queueService,
             disabledConfig,
+            requestLoggingConfig,
           )
         }
       disabledServer.start(wait = false)

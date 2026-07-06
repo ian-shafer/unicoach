@@ -12,6 +12,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
+import ed.unicoach.rest.config.RequestLoggingConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.CreateStudentRequest
@@ -83,6 +84,7 @@ class ConvoStreamErrorRoutingTest {
       val requestSizeConfig = RequestSizeConfig.from(config).getOrThrow()
       val coachingConfig = CoachingConfig.from(config).getOrThrow()
       val clientKeyGateConfig = ClientKeyGateConfig.from(config).getOrThrow()
+      val requestLoggingConfig = RequestLoggingConfig.from(config).getOrThrow()
       val emailVerificationConfig =
         ed.unicoach.auth.EmailVerificationConfig
           .from(config)
@@ -107,6 +109,7 @@ class ConvoStreamErrorRoutingTest {
             StubGoogleTokenVerifier(),
             queueService,
             extractionConfig,
+            requestLoggingConfig,
           )
         }
       testServer.start(wait = false)

@@ -7,6 +7,7 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.appModule
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
+import ed.unicoach.rest.config.RequestLoggingConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.VerifyEmailRequest
@@ -419,6 +420,7 @@ private fun io.ktor.server.application.Application.moduleWith(
     ed.unicoach.coaching.extraction.ExtractionConfig
       .from(config)
       .getOrThrow()
+  val requestLoggingConfig = RequestLoggingConfig.from(config).getOrThrow()
 
   appModule(
     database,
@@ -431,5 +433,6 @@ private fun io.ktor.server.application.Application.moduleWith(
     ed.unicoach.auth.StubGoogleTokenVerifier(),
     queueService,
     extractionConfig,
+    requestLoggingConfig,
   )
 }

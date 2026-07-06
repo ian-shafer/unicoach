@@ -38,6 +38,20 @@ StatusPages must be installed first so a DB fault raised inside the gate's
 `resolveSession` is caught and mapped (to `500 internal_error`) instead of
 escaping the pre-handler intercept unhandled.
 
+### Secret request-header values are never logged, in any environment
+
+**Rule:** The request log MUST NOT emit the value of any header whose name
+matches an entry in `requestLogging.secretHeaders`, in any environment or
+verbosity mode (including `headers="*"`); the secret set is subtracted last,
+after header selection, by case-insensitive name match.
+
+**Why:** `Cookie`, `Authorization`, and `X-Unicoach-Client-Key` carry session
+and credential material; logging them writes durable credentials into the log
+store. Dev's `headers="*"` selects every header sent, so this subtraction is the
+only barrier — applied before the wildcard expansion, or matched
+case-sensitively (so a lowercase `authorization` slips through), it would leak.
+
 ## History
 
 - [x] [RFC-69: Email-Verification Gate + Error-Code Unification (Backend)](../../../../../../../../rfc/69-email-verification-gate.md)
+- [x] [RFC-103: Configurable, self-diagnosing request log](../../../../../../../../rfc/103-configurable-self-diagnosing-request-log.md)

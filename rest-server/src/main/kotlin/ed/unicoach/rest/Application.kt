@@ -26,6 +26,7 @@ import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
+import ed.unicoach.rest.config.RequestLoggingConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.plugins.SessionExpiryPlugin
 import ed.unicoach.rest.plugins.configureClientKeyGate
@@ -101,6 +102,11 @@ fun startServer(
       .from(config)
       .getOrThrow()
 
+  val requestLoggingConfig =
+    RequestLoggingConfig
+      .from(config)
+      .getOrThrow()
+
   val emailVerificationConfig =
     EmailVerificationConfig
       .from(config)
@@ -144,6 +150,7 @@ fun startServer(
         googleTokenVerifier,
         queueService,
         extractionConfig,
+        requestLoggingConfig,
       )
 
       install(SessionExpiryPlugin) {
@@ -180,8 +187,9 @@ fun Application.appModule(
   googleTokenVerifier: GoogleTokenVerifier,
   queueService: QueueService,
   extractionConfig: ExtractionConfig,
+  requestLoggingConfig: RequestLoggingConfig,
 ) {
-  configureRequestLogging()
+  configureRequestLogging(requestLoggingConfig)
   configureSerialization()
   configureClientKeyGate(clientKeyGateConfig)
   configureStatusPages()
