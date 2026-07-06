@@ -22,6 +22,15 @@ enum class JsonParseFailureCategory(
 
   /** The output parsed as a JSON object, but a field was missing, wrong-shape, or failed enum membership. */
   INVALID_FIELD("invalid_field"),
+
+  /**
+   * The row is a pre-RFC-101 failure whose detail was logged-only and never
+   * persisted, backfilled by migration 0035. Read-only/historical: the write
+   * path (`JsonParseFailure.category`) never produces it, so it appears only on
+   * rows that predate failure capture. Not a member of `fit_lens_runs`' CHECK
+   * (that table postdates capture and has no such rows).
+   */
+  UNRECORDED("unrecorded"),
   ;
 
   companion object {
