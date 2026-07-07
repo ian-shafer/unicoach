@@ -8,10 +8,15 @@ application invariants.
 
 ### Migrations are append-only and never edited after application
 
-**Rule:** A committed migration file MUST NOT be edited, renumbered, or deleted,
-and there are NO down-migrations. A schema change is always a new,
-higher-numbered `NNNN.kebab-case-name.sql` file; reversion is a full `db-reset`
-(drop → create → migrate), never an in-place rollback.
+**Rule:** A successfully applied migration file MUST NOT be edited, renumbered,
+or deleted, and the schema only ever moves forward: every change is a new,
+higher-numbered `NNNN.kebab-case-name.sql` file. There is no rollback or reverse
+migration — to undo a change you add a new, compensating one. (`db-reset` — drop
+→ create → migrate — is a **dev-only** rebuild from scratch; it destroys all
+data and MUST NEVER be run against a deployed database.) The one exception to
+immutability: a migration that _failed_ to apply in a deployed environment may
+be edited to fix the failure — its transaction (including the
+`schema_migrations` insert) rolled back, so it was never recorded as applied.
 
 **Why:** `bin/db-migrate` tracks applied files by `version_id` in
 `schema_migrations` and skips any already-applied version. Editing an applied
