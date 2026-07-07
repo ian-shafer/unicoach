@@ -16,7 +16,7 @@ struct AuthFlowView: View {
                     withAnimation { showingRegistration = false }
                 }
             )
-            .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
+            .transition(.move(edge: .trailing))
         } else {
             LoginView(
                 authClient: authClient,
@@ -26,7 +26,7 @@ struct AuthFlowView: View {
                     withAnimation { showingRegistration = true }
                 }
             )
-            .transition(.asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing)))
+            .transition(.move(edge: .leading))
         }
     }
 }
