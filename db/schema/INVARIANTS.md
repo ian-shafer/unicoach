@@ -24,31 +24,6 @@ file silently diverges deployed databases (which never re-run it) from a
 freshly-migrated one, so the schema stops being reproducible from this directory
 — the single fact migration tracking depends on.
 
-### Append-only log and immutable-entity tables keep their write guards
-
-**Rule:** Every table designated a **log** (`convo_requests`, `convo_responses`,
-`convo_responses_raw`, `email_sends`, `observations`, `claim_support`,
-`extraction_runs`, `college_list_entry_support`, `commitment_support`,
-`synthesis_runs`) MUST carry the `prevent_log_update` + `prevent_log_delete`
-triggers; the immutable-entity `system_prompts` MUST carry
-`prevent_immutable_entity_update` + `prevent_immutable_entity_delete`; and
-`claims` MUST carry `prevent_physical_delete` + `prevent_immutable_updates` +
-`prevent_physical_timestamp_update` (trigger_00b). A new log or immutable table
-MUST attach the same guards; if it carries `row_created_at`, it MUST also attach
-`prevent_physical_timestamp_update`.
-
-**Why:** These tables are the audit trail and provenance ledger — observation
-evidence, the token-spend record, the exact prompt that produced each turn or
-claim. An in-place UPDATE or DELETE destroys the very record the table exists to
-preserve, and (for `extraction_runs`/`observations`) corrupts the
-watermark/provenance the extraction pass reads back. The guarantee is a DB-level
-trigger, not a type, so a future migration adding a table or dropping a trigger
-can silently violate it. As of migration 0023, `prevent_immutable_updates()`
-guards `id` + `created_at` only; the `row_created_at` guarantee is carried
-separately by `prevent_physical_timestamp_update()` on the seven tables that
-have that column (`users`, `sessions`, `students`, `convos`, `claims`,
-`commitments`, `college_list_entries`).
-
 ## History
 
 - [x] [RFC-05: Database Scripts](../../rfc/05-db-scripts.md)
