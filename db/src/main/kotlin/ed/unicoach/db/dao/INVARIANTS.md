@@ -21,38 +21,24 @@ transaction — corrupting the atomic unit of work — and escapes the `use`-sco
 cleanup that prevents connection exhaustion. (The no-leak-upward half is the
 general `code-review-no-leaks` lens.)
 
-### Generated SQL never interpolates caller data
+### Caller data is never interpolated into SQL text
 
-**Rule:** In `insertReturning`, `updateColumnsReturning`, `softDeleteReturning`,
-and `SoftDeleteScope.predicate`, the `table` name, the column-map keys, and the
-`predicate` column MUST be fixed DAO-supplied identifiers. Only values bound
-through `?` placeholders (the `Bind` closures) may carry caller data.
+**Rule:** No caller- or LLM-supplied value may be concatenated into SQL text —
+every such value MUST be a bound `?` parameter. Only DAO-fixed identifiers may
+be interpolated: the `table` name and column keys in the shared generators
+(`insertReturning`, `updateColumnsReturning`, `softDeleteReturning`,
+`SoftDeleteScope.predicate`), and the fixed fragments plus generated `?, ?, …`
+lists in the hand-rolled `CollegesDao.search` (list length may set the
+placeholder count; the values are always bound).
 
-**Why:** These helpers concatenate `table` and column names directly into the
-SQL string — there is no parameterization for an identifier. Routing any
-caller-controlled value through a column name or table argument turns the shared
-generator into a SQL-injection vector across every DAO that uses it.
-
-### `CollegesDao.search` builds its dynamic SQL from fixed fragments only — every filter value is a bound parameter
-
-**Rule:** In `CollegesDao.search`, the only strings concatenated into the SQL
-text MUST be DAO-fixed fragments: fixed column/clause skeletons and `?`
-placeholders (including the `?, ?, …` lists generated for `states`, `locales`,
-and `control`, whose count derives only from list size). Every filter value —
-including each element of a list filter and the `limit` — MUST be supplied
-through a `?` placeholder bound in the `bind` block. No caller-controlled value
-may ever be string-interpolated into the query.
-
-**Why:** Unlike the other DAOs, `search` hand-rolls a variable-shape `WHERE`
-clause and an optional `JOIN` rather than going through the shared
-`insertReturning`/`updateColumnsReturning` helpers, so the existing "Generated
-SQL never interpolates caller data" guarantee does not cover it. The filter
-values originate from an LLM tool call — the least-trusted input in the system.
-Interpolating any of them (e.g. building `c.state IN ('CA','NY')` by splicing
-the values instead of emitting `?`s and binding them) reopens SQL injection on
-the one query that takes adversarial input. The `?, ?` lists must stay
-value-free: the number of placeholders may scale with list length, but the list
-contents are always bound, never written.
+**Why:** SQL can't parameterize an identifier, so these helpers splice
+table/column names directly into the string — routing a caller value through one
+makes it an injection vector across every DAO. `CollegesDao.search` is the sole
+query that hand-rolls a variable-shape `WHERE`/`JOIN` instead of using the
+generators, and its filters come from an LLM tool call — the least-trusted input
+— so interpolating a filter value there (e.g. splicing `c.state IN ('CA','NY')`
+instead of binding `?`s) reopens injection on exactly the query that takes
+adversarial input.
 
 ### `SystemPromptsDao` exposes no mutate-or-delete path
 
