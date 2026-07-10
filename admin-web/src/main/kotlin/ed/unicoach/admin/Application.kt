@@ -33,6 +33,8 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
+import ed.unicoach.web.common.logging.RequestLoggingConfig
+import ed.unicoach.web.common.logging.configureRequestLogging
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.engine.EmbeddedServer
@@ -56,6 +58,11 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       .from(config)
       .getOrThrow()
 
+  val requestLoggingConfig =
+    RequestLoggingConfig
+      .from(config)
+      .getOrThrow()
+
   val database = Database(dbConfig)
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
@@ -76,7 +83,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       environment.monitor.subscribe(ApplicationStopped) {
         database.close()
       }
-      adminModule(database, authService, argon2Hasher, emailVerificationService, queueService, adminConfig)
+      adminModule(database, authService, argon2Hasher, emailVerificationService, queueService, adminConfig, requestLoggingConfig)
     }
 
   server.start(wait = false)
@@ -101,7 +108,10 @@ fun Application.adminModule(
   emailVerificationService: EmailVerificationService,
   queueService: QueueService,
   adminConfig: AdminConfig,
+  requestLoggingConfig: RequestLoggingConfig,
 ) {
+  // Must stay first so the request-logging interceptor wraps the whole pipeline.
+  configureRequestLogging(requestLoggingConfig)
   configureAdminStatusPages()
 
   installAdminGate(authService, adminConfig)

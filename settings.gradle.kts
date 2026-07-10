@@ -1,5 +1,6 @@
 rootProject.name = "unicoach"
 include("common")
+include("web-common")
 include("service")
 include("rest-server")
 include("db")

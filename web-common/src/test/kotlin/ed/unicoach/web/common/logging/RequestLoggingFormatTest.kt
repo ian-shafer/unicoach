@@ -1,8 +1,5 @@
-package ed.unicoach.rest.plugins
+package ed.unicoach.web.common.logging
 
-import ed.unicoach.rest.config.Detail
-import ed.unicoach.rest.config.HeaderSelection
-import ed.unicoach.rest.config.RequestLoggingConfig
 import io.ktor.http.Headers
 import io.ktor.http.headersOf
 import org.junit.jupiter.api.Test

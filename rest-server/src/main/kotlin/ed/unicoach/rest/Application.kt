@@ -26,17 +26,17 @@ import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
-import ed.unicoach.rest.config.RequestLoggingConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.plugins.SessionExpiryPlugin
 import ed.unicoach.rest.plugins.configureClientKeyGate
 import ed.unicoach.rest.plugins.configureEmailVerificationGate
-import ed.unicoach.rest.plugins.configureRequestLogging
 import ed.unicoach.rest.plugins.configureRequestSizeLimit
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
+import ed.unicoach.web.common.logging.RequestLoggingConfig
+import ed.unicoach.web.common.logging.configureRequestLogging
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.application.install
@@ -189,6 +189,7 @@ fun Application.appModule(
   extractionConfig: ExtractionConfig,
   requestLoggingConfig: RequestLoggingConfig,
 ) {
+  // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
   configureSerialization()
   configureClientKeyGate(clientKeyGateConfig)

@@ -14,7 +14,7 @@ class HomePageTest {
   @Test
   fun `home renders dynamically through the shared layout`() =
     testApplication {
-      application { publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL) }
+      application { publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG) }
 
       val response = client.get("/")
       assertEquals(HttpStatusCode.OK, response.status)

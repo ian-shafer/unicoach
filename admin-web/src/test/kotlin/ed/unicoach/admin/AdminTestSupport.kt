@@ -92,6 +92,10 @@ object AdminTestSupport {
 
   private val dbConfig = DatabaseConfig.from(config).getOrThrow()
   val adminConfig = AdminConfig.from(config).getOrThrow()
+  private val requestLoggingConfig =
+    ed.unicoach.web.common.logging.RequestLoggingConfig
+      .from(config)
+      .getOrThrow()
 
   val database = Database(dbConfig)
   val argon2Hasher = Argon2Hasher()
@@ -108,7 +112,7 @@ object AdminTestSupport {
   val authService = AuthService(database, argon2Hasher, TokenGenerator(), emailVerificationService, StubGoogleTokenVerifier())
 
   fun Application.installTestAdminModule() {
-    adminModule(database, authService, argon2Hasher, emailVerificationService, queueService, adminConfig)
+    adminModule(database, authService, argon2Hasher, emailVerificationService, queueService, adminConfig, requestLoggingConfig)
   }
 
   /**

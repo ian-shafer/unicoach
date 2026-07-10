@@ -1,4 +1,4 @@
-package ed.unicoach.rest.config
+package ed.unicoach.web.common.logging
 
 import com.typesafe.config.ConfigFactory
 import org.junit.jupiter.api.Test

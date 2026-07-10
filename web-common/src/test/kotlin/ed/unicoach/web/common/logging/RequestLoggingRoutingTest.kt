@@ -1,16 +1,16 @@
-package ed.unicoach.rest.plugins
+package ed.unicoach.web.common.logging
 
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
-import ed.unicoach.rest.config.Detail
-import ed.unicoach.rest.config.HeaderSelection
-import ed.unicoach.rest.config.RequestLoggingConfig
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.jackson.jackson
 import io.ktor.server.application.call
+import io.ktor.server.application.install
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
@@ -45,7 +45,7 @@ class RequestLoggingRoutingTest {
       testApplication {
         application {
           configureRequestLogging(config, nanoTime = sequenceNanos())
-          configureSerialization()
+          install(ContentNegotiation) { jackson() }
         }
         routing {
           route("/reset") {

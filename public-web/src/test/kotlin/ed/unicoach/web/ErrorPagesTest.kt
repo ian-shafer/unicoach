@@ -17,7 +17,7 @@ class ErrorPagesTest {
   @Test
   fun `unmatched route renders the branded 404 through the shared layout`() =
     testApplication {
-      application { publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL) }
+      application { publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG) }
 
       val response = client.get("/does-not-exist")
       assertEquals(HttpStatusCode.NotFound, response.status)
@@ -40,7 +40,7 @@ class ErrorPagesTest {
     testApplication {
       application {
         // publicWebModule installs StatusPages (incl. exception<Throwable>).
-        publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL)
+        publicWebModule(FakeEmailVerifier(), TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG)
         // A test-only route that throws so the catch-all 503 handler fires.
         routing {
           get("/boom") {

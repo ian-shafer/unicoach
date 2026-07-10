@@ -5,6 +5,8 @@ import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.web.common.logging.RequestLoggingConfig
+import ed.unicoach.web.common.logging.configureRequestLogging
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.engine.EmbeddedServer
@@ -34,13 +36,18 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       .from(config)
       .getOrThrow()
 
+  val requestLoggingConfig =
+    RequestLoggingConfig
+      .from(config)
+      .getOrThrow()
+
   val database = Database(DatabaseConfig.from(config).getOrThrow())
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
 
   val server =
     embeddedServer(Netty, port = publicWebConfig.port, host = publicWebConfig.host) {
       environment.monitor.subscribe(ApplicationStopped) { database.close() }
-      publicWebModule(emailVerifier, publicWebConfig.openInAppUrl)
+      publicWebModule(emailVerifier, publicWebConfig.openInAppUrl, requestLoggingConfig)
     }
 
   server.start(wait = false)
@@ -61,6 +68,9 @@ fun main() {
 fun Application.publicWebModule(
   emailVerifier: EmailVerifier,
   openInAppUrl: String?,
+  requestLoggingConfig: RequestLoggingConfig,
 ) {
+  // Must stay first so the request-logging interceptor wraps the whole pipeline.
+  configureRequestLogging(requestLoggingConfig)
   installPublicWebRouting(emailVerifier, openInAppUrl)
 }

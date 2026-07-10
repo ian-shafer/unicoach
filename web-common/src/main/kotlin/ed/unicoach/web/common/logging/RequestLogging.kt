@@ -1,8 +1,5 @@
-package ed.unicoach.rest.plugins
+package ed.unicoach.web.common.logging
 
-import ed.unicoach.rest.config.Detail
-import ed.unicoach.rest.config.HeaderSelection
-import ed.unicoach.rest.config.RequestLoggingConfig
 import io.ktor.http.Headers
 import io.ktor.http.decodeURLQueryComponent
 import io.ktor.server.application.Application
@@ -37,11 +34,13 @@ val SecretQueryParamsKey = AttributeKey<Set<String>>("RequestLogSecretQueryParam
 
 /**
  * Logs one line per HTTP request at INFO — method, request URI, and the final
- * response status — self-diagnosing on failure. Installed first in `appModule`
- * so its interceptor wraps the whole pipeline and reports the status the client
- * actually received, including responses short-circuited by a gate (client-key,
- * email-verification) or rewritten by content negotiation (a `406` when `Accept`
- * matches no converter) or by StatusPages (a `415` rewritten to `400`).
+ * response status — self-diagnosing on failure. Every consumer must install this
+ * first in its module function (`appModule`, `adminModule`, `publicWebModule`)
+ * so its `Setup`-phase interceptor wraps the whole pipeline and reports the
+ * status the client actually received, including responses short-circuited by a
+ * gate (client-key, email-verification) or rewritten by content negotiation (a
+ * `406` when `Accept` matches no converter) or by StatusPages (a `415` rewritten
+ * to `400`).
  *
  * On an enriched line (see [RequestLoggingConfig.formatLogLine]) it attaches a
  * configurable set of request headers, request/response body sizes, and a

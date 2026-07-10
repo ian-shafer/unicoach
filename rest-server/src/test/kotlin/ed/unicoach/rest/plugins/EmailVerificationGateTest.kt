@@ -7,10 +7,10 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.rest.appModule
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
-import ed.unicoach.rest.config.RequestLoggingConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.VerifyEmailRequest
+import ed.unicoach.web.common.logging.RequestLoggingConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get

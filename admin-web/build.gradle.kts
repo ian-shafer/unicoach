@@ -10,6 +10,7 @@ application {
 
 dependencies {
   implementation(project(":common"))
+  implementation(project(":web-common"))
   implementation(project(":db"))
   implementation(project(":service"))
   implementation(project(":email"))
