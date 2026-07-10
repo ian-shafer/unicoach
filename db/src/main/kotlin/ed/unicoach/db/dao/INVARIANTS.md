@@ -40,23 +40,6 @@ generators, and its filters come from an LLM tool call — the least-trusted inp
 instead of binding `?`s) reopens injection on exactly the query that takes
 adversarial input.
 
-### Email and verification state mutate only through dedicated isolated writers
-
-**Rule:** The `email` and `email_verified_at` columns of `users` MUST be written
-only by the dedicated `UsersDao` writers — `changeEmail` (rewrite + reset to
-`NULL`), `markEmailVerified` (stamp), and the full-row restores
-(`updatePhysicalRecord`/`revertToVersion`). They MUST NOT be added to the
-generic `UserEdit`/`update` column set, nor reachable through any other generic
-mutation surface.
-
-**Why:** `email_verified_at` is the sole record of whether an address has been
-proven, and `changeEmail` deliberately resets it to `NULL`. Folding either
-column into the generic `update` path would give the ordinary profile-edit
-surface a second, unguarded channel to rewrite the address or alter verification
-state — letting a profile edit silently forge a verified address or clear a real
-verification. Confining these columns to purpose-built writers keeps that
-transition auditable and single-sourced.
-
 ## History
 
 - [x] [RFC-62: DAO Capability Interfaces and Shared Query Scaffolding](../../../../../../../../rfc/62-dao-interfaces.md)
