@@ -7,21 +7,19 @@ DAO delegates to.
 
 ## Invariants
 
-### SqlSession is the DAOs' only database interface, and leaks no resources
+### Database access goes through `SqlSession`; the `Connection` never leaks
 
-**Rule:** DAOs MUST affect the database solely through `SqlSession`; no DAO may
-acquire or operate on the raw `java.sql.Connection` or any other direct driver
-handle. `SqlSession` MUST NOT leak those resources upward — it MUST NOT return,
-or otherwise hand a caller, the underlying `Connection` or anything exposing
-transaction control (`commit`/`rollback`/`setAutoCommit`). It surfaces only
-narrow, scoped operations (today `prepareStatement`; any future method follows
-the same no-leak rule).
+**Rule:** All database access — any code, not just DAOs — goes through the
+`SqlSession` handed out by `Database.withConnection`; no code acquires or
+operates on the raw `java.sql.Connection` or any driver handle, and `SqlSession`
+never hands one upward (nor anything exposing `commit`/`rollback`/
+`setAutoCommit`).
 
-**Why:** Connection lifecycle and transaction boundaries are owned exclusively
-by `Database.withConnection`. A leaked `Connection` lets a single DAO commit,
-roll back, or strand a half-open transaction — corrupting the caller's atomic
-unit of work — and escapes the `use`-scoped cleanup that prevents connection
-exhaustion.
+**Why:** `withConnection` owns connection lifecycle and transaction boundaries.
+A leaked `Connection` lets a caller commit, roll back, or strand a half-open
+transaction — corrupting the atomic unit of work — and escapes the `use`-scoped
+cleanup that prevents connection exhaustion. (The no-leak-upward half is the
+general `code-review-no-leaks` lens.)
 
 ### Generated SQL never interpolates caller data
 
