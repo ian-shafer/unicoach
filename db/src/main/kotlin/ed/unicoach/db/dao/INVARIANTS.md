@@ -40,23 +40,6 @@ generators, and its filters come from an LLM tool call — the least-trusted inp
 instead of binding `?`s) reopens injection on exactly the query that takes
 adversarial input.
 
-### `SystemPromptsDao` exposes no mutate-or-delete path
-
-**Rule:** `SystemPromptsDao` MUST expose only read and insert capabilities
-(`Findable`, `Listable`, `Creatable`, plus `findByNameAndVersion`). It MUST NOT
-gain an `update`/`delete` method, and MUST NOT adopt any `SoftDelete*` or
-`OccDeletable` capability. A "new version" of a prompt is a new immutable row,
-never a mutation of an existing one.
-
-**Why:** `system_prompts` is an immutable entity: its triggers raise `P0001` on
-any `UPDATE`/`DELETE` and it has no `deleted_at` column (schema 0007). Adding a
-mutate/delete path would either dead-end at the trigger or — worse — present
-prompts as editable, breaking the guarantee that an `id` pins one exact
-`(name, version, body)` forever. Downstream integrity depends on this:
-`convo_requests.system_prompt_id` is a permanent pin (`ON DELETE RESTRICT`), so
-a mutated or deleted prompt would silently rewrite or orphan the prompt every
-past coaching turn was generated from.
-
 ### Email and verification state mutate only through dedicated isolated writers
 
 **Rule:** The `email` and `email_verified_at` columns of `users` MUST be written
