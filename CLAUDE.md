@@ -87,6 +87,11 @@ but are not the source of truth — the files in the codebase are; when an RFC a
 the code disagree, the code wins. See [`rfc/README.md`](rfc/README.md) for the
 full convention.
 
+**Don't get anchored on RFC prose.** An RFC's wording never outranks sound
+engineering; while it's still uncommitted, rewrite the prose to fit the right
+implementation, not the reverse. Decide on the merits, then make the prose say
+that.
+
 ## Invariants
 
 A documented directory may carry a sibling **`INVARIANTS.md`** — prescriptive
