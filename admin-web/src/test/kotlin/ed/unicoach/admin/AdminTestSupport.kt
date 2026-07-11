@@ -16,6 +16,7 @@ import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.ExtractionRunsDao
 import ed.unicoach.db.dao.FitLensRunsDao
 import ed.unicoach.db.dao.FitSuggestionsDao
+import ed.unicoach.db.dao.LlmCallsDao
 import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SynthesisRunsDao
@@ -43,6 +44,8 @@ import ed.unicoach.db.models.ExtractionRun
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.FitLensRun
 import ed.unicoach.db.models.FitSuggestion
+import ed.unicoach.db.models.LlmCallOutcome
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCommitment
@@ -51,6 +54,8 @@ import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.NewExtractionRun
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
+import ed.unicoach.db.models.NewLlmRequest
+import ed.unicoach.db.models.NewLlmResponse
 import ed.unicoach.db.models.NewObservation
 import ed.unicoach.db.models.NewStudent
 import ed.unicoach.db.models.NewSynthesisRun
@@ -122,7 +127,10 @@ object AdminTestSupport {
    */
   fun resetDatabase() {
     DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "").use { conn ->
-      conn.createStatement().use { it.execute("TRUNCATE TABLE users, colleges, jobs CASCADE") }
+      // `llm_requests` (and its `llm_responses` / `llm_responses_raw` cascade, RFC 106)
+      // is truncated explicitly: an orphan/unlinked call has no FK back to `users`, so
+      // the user cascade alone would leave stale calls to pollute the unlinked-call test.
+      conn.createStatement().use { it.execute("TRUNCATE TABLE users, colleges, jobs, llm_requests CASCADE") }
     }
   }
 
@@ -226,8 +234,92 @@ object AdminTestSupport {
       database.withConnection { session -> ConvosDao.create(session, NewConvo(studentId, convoName)) }.getOrThrow()
     }
 
-  /** Appends a convo_request (FK parent for an observation's source_request_id and a run's through_request_id). */
-  fun seedConvoRequest(convoId: ConvoId): ConvoRequest =
+  /**
+   * Appends an `llm_requests` row (RFC 106) and returns its id — the FK a
+   * `convo_requests` / `*_runs` row references. [content] defaults to a minimal
+   * one-message array; [tools] is null unless a call wants to render a tool schema.
+   */
+  fun seedLlmRequest(
+    provider: String = "anthropic",
+    modelRequested: String = "claude-opus-4-8",
+    system: String? = "be a good coach",
+    content: JsonArray = JsonArray(emptyList()),
+    maxTokens: Int = 1024,
+    tools: JsonArray? = null,
+    toolChoice: kotlinx.serialization.json.JsonObject? = null,
+    params: kotlinx.serialization.json.JsonObject? = null,
+  ): LlmRequestId =
+    runBlocking {
+      database
+        .withConnection { session ->
+          LlmCallsDao.appendRequest(
+            session,
+            NewLlmRequest(
+              provider = provider,
+              modelRequested = modelRequested,
+              system = system,
+              content = content,
+              maxTokens = maxTokens,
+              tools = tools,
+              toolChoice = toolChoice,
+              params = params,
+            ),
+          )
+        }.getOrThrow()
+        .id
+    }
+
+  /**
+   * Appends a completed `llm_responses` row (+ raw when [rawPayload] is non-null)
+   * for [llmRequestId] (RFC 106), so a joined read finds a terminal.
+   */
+  fun seedLlmResponse(
+    llmRequestId: LlmRequestId,
+    outcome: LlmCallOutcome =
+      LlmCallOutcome.Completed(
+        content =
+          kotlinx.serialization.json.Json
+            .parseToJsonElement("""[{"type":"text","text":"hi there"}]"""),
+        modelResolved = "claude-opus-4-8",
+        stopReason = "end_turn",
+      ),
+    providerRequestId: String? = "req_test",
+    inputTokens: Int? = 100,
+    outputTokens: Int? = 50,
+    cacheReadTokens: Int? = 0,
+    cacheWriteTokens: Int? = 0,
+    latencyMs: Int = 123,
+    rawPayload: kotlinx.serialization.json.JsonElement? = JsonArray(emptyList()),
+  ) = runBlocking {
+    database
+      .withConnection { session ->
+        LlmCallsDao.appendResponse(
+          session,
+          NewLlmResponse(
+            requestId = llmRequestId,
+            outcome = outcome,
+            providerRequestId = providerRequestId,
+            inputTokens = inputTokens,
+            outputTokens = outputTokens,
+            cacheReadTokens = cacheReadTokens,
+            cacheWriteTokens = cacheWriteTokens,
+            latencyMs = latencyMs,
+          ),
+          rawPayload = rawPayload,
+        )
+      }.getOrThrow()
+  }
+
+  /**
+   * Appends a convo_request (FK parent for an observation's source_request_id and
+   * a run's through_request_id). Seeds an owning `llm_requests` row first (RFC 106)
+   * unless [llmRequestId] is supplied.
+   */
+  fun seedConvoRequest(
+    convoId: ConvoId,
+    llmRequestId: LlmRequestId = seedLlmRequest(),
+    kind: ed.unicoach.db.models.ConvoRequestKind = ed.unicoach.db.models.ConvoRequestKind.USER,
+  ): ConvoRequest =
     runBlocking {
       database
         .withConnection { session ->
@@ -236,54 +328,11 @@ object AdminTestSupport {
             session,
             NewConvoRequest(
               convoId = convoId,
-              provider = "anthropic",
-              modelRequested = "claude-opus-4-8",
               systemPromptId = extractionPromptId(),
-              requestParams = null,
-              content = JsonArray(emptyList()),
+              llmRequestId = llmRequestId,
               turnId = turnId,
+              kind = kind,
             ),
-          )
-        }.getOrThrow()
-    }
-
-  /**
-   * Appends a convo_response paired to a request (RFC 81 turn detail). A null
-   * [content] with `stopReason = "error"` and null token counts is the
-   * transport-error turn; a non-null [content] writes a raw sibling row.
-   */
-  fun seedConvoResponse(
-    requestId: ed.unicoach.db.models.ConvoRequestId,
-    convoId: ConvoId,
-    content: kotlinx.serialization.json.JsonElement? = JsonArray(emptyList()),
-    stopReason: String = "end_turn",
-    modelResolved: String? = "claude-opus-4-8",
-    inputTokens: Int? = 100,
-    outputTokens: Int? = 50,
-    cacheReadTokens: Int? = 0,
-    cacheWriteTokens: Int? = 0,
-    providerRequestId: String? = "req_test",
-    latencyMs: Int? = 123,
-  ): ed.unicoach.db.models.ConvoResponse =
-    runBlocking {
-      database
-        .withConnection { session ->
-          ConvosDao.appendResponse(
-            session,
-            ed.unicoach.db.models.NewConvoResponse(
-              requestId = requestId,
-              convoId = convoId,
-              content = content,
-              modelResolved = modelResolved,
-              stopReason = stopReason,
-              inputTokens = inputTokens,
-              outputTokens = outputTokens,
-              cacheReadTokens = cacheReadTokens,
-              cacheWriteTokens = cacheWriteTokens,
-              providerRequestId = providerRequestId,
-              latencyMs = latencyMs,
-            ),
-            rawPayload = content,
           )
         }.getOrThrow()
     }
@@ -320,16 +369,14 @@ object AdminTestSupport {
         }.getOrThrow()
     }
 
-  /** Appends an extraction_runs row via the DAO. Defaults to an `Applied` outcome. */
+  /** Appends an extraction_runs row via the DAO. Defaults to an `Applied` outcome. Seeds its owning call (RFC 106). */
   fun seedExtractionRun(
     studentId: StudentId,
     convoId: ConvoId,
     throughRequestId: ed.unicoach.db.models.ConvoRequestId,
     outcome: ExtractionOutcome =
       ExtractionOutcome.Applied(observationsWritten = 1, claimsWritten = 1, claimsSuperseded = 0),
-    modelResolved: String? = "claude-sonnet-4-6",
-    inputTokens: Int? = 100,
-    outputTokens: Int? = 50,
+    llmRequestId: LlmRequestId = seedLlmRequest(provider = "anthropic", modelRequested = "claude-sonnet-4-6"),
   ): ExtractionRun =
     runBlocking {
       database
@@ -342,10 +389,7 @@ object AdminTestSupport {
               throughRequestId = throughRequestId,
               outcome = outcome,
               systemPromptId = extractionPromptId(),
-              provider = "log",
-              modelResolved = modelResolved,
-              inputTokens = inputTokens,
-              outputTokens = outputTokens,
+              llmRequestId = llmRequestId,
             ),
           )
         }.getOrThrow()
@@ -389,13 +433,11 @@ object AdminTestSupport {
     database.withConnection { session -> CommitmentSupportDao.link(session, commitmentId, claimId) }.getOrThrow()
   }
 
-  /** Appends a synthesis_runs row via the DAO. Defaults to an `Applied` outcome. */
+  /** Appends a synthesis_runs row via the DAO. Defaults to an `Applied` outcome. Seeds its owning call (RFC 106). */
   fun seedSynthesisRun(
     studentId: StudentId,
     outcome: SynthesisOutcome = SynthesisOutcome.Applied(commitmentsWritten = 2, commitmentsDropped = 1),
-    modelResolved: String? = "claude-sonnet-4-6",
-    inputTokens: Int? = 100,
-    outputTokens: Int? = 50,
+    llmRequestId: LlmRequestId = seedLlmRequest(provider = "anthropic", modelRequested = "claude-sonnet-4-6"),
   ): SynthesisRun =
     runBlocking {
       database
@@ -406,10 +448,7 @@ object AdminTestSupport {
               studentId = studentId,
               outcome = outcome,
               systemPromptId = synthesisPromptId(),
-              provider = "log",
-              modelResolved = modelResolved,
-              inputTokens = inputTokens,
-              outputTokens = outputTokens,
+              llmRequestId = llmRequestId,
             ),
           )
         }.getOrThrow()
@@ -451,14 +490,18 @@ object AdminTestSupport {
         .getOrThrow()
     }
 
-  /** Appends a fit_lens_runs row via the DAO (RFC 98). Defaults to an `Applied` outcome. */
+  /**
+   * Appends a fit_lens_runs row via the DAO (RFC 98). Defaults to an `Applied`
+   * outcome. Seeds two owning calls (RFC 106): [queryLlmRequestId] and
+   * [reasonLlmRequestId]. Pass `reasonLlmRequestId = null` for a pass that bailed
+   * before the reason call.
+   */
   fun seedFitLensRun(
     studentId: StudentId,
     outcome: FitLensOutcome = FitLensOutcome.Applied(suggestionsWritten = 1),
-    modelResolved: String? = "claude-sonnet-4-6",
     matchesConsidered: Int? = 5,
-    inputTokens: Int? = 300,
-    outputTokens: Int? = 120,
+    queryLlmRequestId: LlmRequestId = seedLlmRequest(provider = "anthropic", modelRequested = "claude-sonnet-4-6"),
+    reasonLlmRequestId: LlmRequestId? = seedLlmRequest(provider = "anthropic", modelRequested = "claude-sonnet-4-6"),
   ): FitLensRun =
     runBlocking {
       database
@@ -470,11 +513,9 @@ object AdminTestSupport {
               outcome = outcome,
               querySystemPromptId = fitLensQueryPromptId(),
               reasonSystemPromptId = fitLensReasonPromptId(),
-              provider = "log",
-              modelResolved = modelResolved,
+              queryLlmRequestId = queryLlmRequestId,
+              reasonLlmRequestId = reasonLlmRequestId,
               matchesConsidered = matchesConsidered,
-              inputTokens = inputTokens,
-              outputTokens = outputTokens,
             ),
           )
         }.getOrThrow()

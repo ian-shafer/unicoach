@@ -1,5 +1,6 @@
 package ed.unicoach.chat
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
@@ -21,6 +22,27 @@ data class ChatMessage(
   val content: JsonElement,
 ) {
   companion object {
+    /**
+     * Serializes a message list to the wire `messages` array — one
+     * `{"role","content"}` object per message, `role` mapped USER → `"user"` and
+     * ASSISTANT → `"assistant"`, `content` passed through verbatim. The single
+     * definition of the on-the-wire messages shape: both
+     * `AnthropicChatProvider.requestBody` (what is transmitted) and the RFC-106
+     * `llm_requests.content` capture serialize through this one function, so the
+     * logged request is byte-identical to the sent one.
+     */
+    fun serializeChatMessages(messages: List<ChatMessage>): JsonArray =
+      buildJsonArray {
+        for (message in messages) {
+          add(
+            buildJsonObject {
+              put("role", if (message.role == ChatRole.USER) "user" else "assistant")
+              put("content", message.content)
+            },
+          )
+        }
+      }
+
     /** Convenience for the common single-text-block message. */
     fun text(
       role: ChatRole,

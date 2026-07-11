@@ -15,6 +15,7 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ConvoWithActivity
+import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.queue.ExtractionPayload
 import ed.unicoach.queue.JobType
@@ -187,10 +188,10 @@ class ConvosResource(
         // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
         EdgePanel.Table.Column("Request", refSlug = "convo-request"),
         EdgePanel.Table.Column("Sent", FieldType.TIMESTAMP),
-        EdgePanel.Table.Column("Model"),
+        // The model / token columns moved to the linked call (RFC 106); a Stop Reason
+        // stays as an at-a-glance signal, read from the joined terminal (blank on a
+        // failure or an absent call).
         EdgePanel.Table.Column("Stop Reason"),
-        EdgePanel.Table.Column("In", FieldType.INT),
-        EdgePanel.Table.Column("Out", FieldType.INT),
       )
     val rows =
       turns.map { turn ->
@@ -200,10 +201,7 @@ class ConvosResource(
               turn.request.id.value
                 .toString(),
               turn.request.createdAt.toString(),
-              turn.request.modelRequested,
-              turn.response?.stopReason ?: "",
-              turn.response?.inputTokens?.toString() ?: "",
-              turn.response?.outputTokens?.toString() ?: "",
+              (turn.call?.response?.outcome as? LlmCallOutcome.Completed)?.stopReason ?: "",
             ),
         )
       } + listOfNotNull(truncationRow(turns.size, TURNS_PANEL_LIMIT, columns.size, "convo-request"))

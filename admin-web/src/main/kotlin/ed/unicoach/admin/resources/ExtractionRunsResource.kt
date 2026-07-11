@@ -14,16 +14,17 @@ import ed.unicoach.db.models.SoftDeleteScope
 
 /**
  * The append-only `extraction_runs` log (RFC 66), surfaced read-only (RFC 77):
- * one billed extraction LLM call, with its outcome, provenance, write counts, and
- * the four-column token ledger. All four write handlers are null, so the engine
- * registers no create/edit/delete routes. The table carries no `deleted_at`, so
+ * one billed extraction pass, with its outcome, provenance, and write counts.
+ * Since RFC 106 the provider/model and per-call token spend live in the generic
+ * call log; this row links there via `llmRequestId` (refSlug `llm-request`), one
+ * click away. All four write handlers are null, so the engine registers no
+ * create/edit/delete routes. The table carries no `deleted_at`, so
  * `scope`/`includeDeleted` are ignored.
  *
- * The token and write-count columns are on the list (`inList = true`) so
- * per-student LLM spend is eyeballable; the secondary provenance columns are
- * detail-only. `failureCategory` is on the list too (a triage-at-a-glance
- * "what's failing" column, null on `applied` rows, RFC 101); `failureReason`'s
- * free-text diagnostic is detail-only. No edges.
+ * The write-count columns are on the list (`inList = true`); the secondary
+ * provenance columns are detail-only. `failureCategory` is on the list too (a
+ * triage-at-a-glance "what's failing" column, null on `applied` rows, RFC 101);
+ * `failureReason`'s free-text diagnostic is detail-only. No edges.
  */
 object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
   override val slug = "extraction-run"
@@ -38,10 +39,16 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
       AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
       AdminField("outcome", "Outcome", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("failureCategory", "Failure Category", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("modelResolved", "Model", FieldType.TEXT, editable = false, sensitive = false),
+      // BIGINT id — stays TEXT; links to the generic call log (RFC 106)
+      AdminField(
+        "llmRequestId",
+        "LLM Request ID",
+        FieldType.TEXT,
+        editable = false,
+        sensitive = false,
+        refSlug = "llm-request",
+      ),
       AdminField("claimsWritten", "Claims Written", FieldType.INT, editable = false, sensitive = false),
-      AdminField("inputTokens", "Input Tokens", FieldType.INT, editable = false, sensitive = false),
-      AdminField("outputTokens", "Output Tokens", FieldType.INT, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("convoId", "Convo ID", FieldType.UUID, editable = false, sensitive = false, inList = false, refSlug = "convo"),
       // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
@@ -63,11 +70,8 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
         inList = false,
         refSlug = "system-prompt",
       ),
-      AdminField("provider", "Provider", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("observationsWritten", "Observations Written", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("claimsSuperseded", "Claims Superseded", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("cacheReadTokens", "Cache Read Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("cacheWriteTokens", "Cache Write Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("failureReason", "Failure Reason", FieldType.TEXT, editable = false, sensitive = false, inList = false),
     )
 
@@ -113,19 +117,14 @@ object ExtractionRunsResource : AdminResource<ExtractionRun, ExtractionRunId> {
       "studentId" to row.studentId.value.toString(),
       "outcome" to row.outcome.value,
       "failureCategory" to cells.failureCategory,
-      "modelResolved" to (row.modelResolved ?: ""),
+      "llmRequestId" to row.llmRequestId.value.toString(),
       "claimsWritten" to cells.claimsWritten,
-      "inputTokens" to (row.inputTokens?.toString() ?: ""),
-      "outputTokens" to (row.outputTokens?.toString() ?: ""),
       "createdAt" to row.createdAt.toString(),
       "convoId" to row.convoId.value.toString(),
       "throughRequestId" to row.throughRequestId.value.toString(),
       "systemPromptId" to row.systemPromptId.value.toString(),
-      "provider" to row.provider,
       "observationsWritten" to cells.observationsWritten,
       "claimsSuperseded" to cells.claimsSuperseded,
-      "cacheReadTokens" to (row.cacheReadTokens?.toString() ?: ""),
-      "cacheWriteTokens" to (row.cacheWriteTokens?.toString() ?: ""),
       "failureReason" to cells.failureReason,
     )
   }

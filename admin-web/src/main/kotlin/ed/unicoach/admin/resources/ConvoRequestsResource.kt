@@ -9,22 +9,23 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ConvoTurn
+import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.SoftDeleteScope
 
 /**
- * The append-only `convo_requests` log (RFC 32), surfaced read-only (RFC 81):
- * one request paired with its 1:1 response, so the reply's content, stop reason,
- * token counts, and latency render on the request's detail page. The `ROW` is a
- * [ConvoTurn]; nothing foreign-keys a `convo_responses` row, so no separate
- * response resource exists. All four write handlers are null, so the engine
- * registers no create/edit/delete routes.
+ * The append-only `convo_requests` coaching-extension log (RFC 32/106), surfaced
+ * read-only (RFC 81): one coaching turn's identity and its link to the logged LLM
+ * call. Since RFC 106 the request I/O envelope (provider / model / params /
+ * content) and the reply (content / tokens / stop reason / latency) live in the
+ * generic call log; this page shows the coaching columns plus an `llmRequestId`
+ * link (refSlug `llm-request`) — the call detail is one click away. The `ROW` is a
+ * [ConvoTurn]; all four write handlers are null, so the engine registers no
+ * create/edit/delete routes.
  *
- * Response cells are blank when `row.response == null` (a mid-flight or failed
- * turn), and an individual response sub-field is blank when its own value is null
- * even though `row.response` is present — a transport-error turn carries a
- * non-null `row.response` with null `content` and null token counts. Each
- * nullable sub-field maps to `""` via `?.toString() ?: ""` (never `.toString()`
- * on null), so [cells] never NPEs; the render layer blank-suppresses the blanks.
+ * `responseStopReason` is a convenience at-a-glance column read from the joined
+ * call's terminal: blank when the call is absent (`row.call == null`, a mid-flight
+ * or crashed turn) or when the terminal is not `Completed` (a failure carries no
+ * stop reason). It maps to `""` via a safe cast, so [cells] never NPEs.
  */
 object ConvoRequestsResource : AdminResource<ConvoTurn, ConvoRequestId> {
   override val slug = "convo-request"
@@ -39,8 +40,11 @@ object ConvoRequestsResource : AdminResource<ConvoTurn, ConvoRequestId> {
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "convo-request"),
       AdminField("convoId", "Convo", FieldType.UUID, editable = false, sensitive = false, refSlug = "convo"),
       AdminField("createdAt", "Sent", FieldType.TIMESTAMP, editable = false, sensitive = false),
-      AdminField("provider", "Provider", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("modelRequested", "Model Requested", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("kind", "Kind", FieldType.TEXT, editable = false, sensitive = false),
+      // BIGINT id — stays TEXT; links to the generic call log (RFC 106) for the full I/O envelope.
+      AdminField("llmRequestId", "LLM Request ID", FieldType.TEXT, editable = false, sensitive = false, refSlug = "llm-request"),
+      AdminField("responseStopReason", "Response Stop Reason", FieldType.TEXT, editable = false, sensitive = false),
+      AdminField("turnId", "Turn", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField(
         "systemPromptId",
         "System Prompt",
@@ -50,25 +54,6 @@ object ConvoRequestsResource : AdminResource<ConvoTurn, ConvoRequestId> {
         inList = false,
         refSlug = "system-prompt",
       ),
-      AdminField("requestParams", "Request Params", FieldType.JSON, editable = false, sensitive = false, inList = false),
-      AdminField("content", "Request Content", FieldType.JSON, editable = false, sensitive = false, inList = false),
-      AdminField("responseStopReason", "Response Stop Reason", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("responseModelResolved", "Response Model", FieldType.TEXT, editable = false, sensitive = false, inList = false),
-      AdminField("responseInputTokens", "Input Tokens", FieldType.INT, editable = false, sensitive = false),
-      AdminField("responseOutputTokens", "Output Tokens", FieldType.INT, editable = false, sensitive = false),
-      AdminField("responseCacheReadTokens", "Cache Read Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("responseCacheWriteTokens", "Cache Write Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("responseLatencyMs", "Latency (ms)", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField(
-        "responseProviderRequestId",
-        "Provider Request ID",
-        FieldType.TEXT,
-        editable = false,
-        sensitive = false,
-        inList = false,
-      ),
-      AdminField("responseContent", "Response Content", FieldType.JSON, editable = false, sensitive = false, inList = false),
-      AdminField("responseCreatedAt", "Replied", FieldType.TIMESTAMP, editable = false, sensitive = false, inList = false),
     )
 
   override val edges = emptyList<AdminEdge>()
@@ -83,26 +68,18 @@ object ConvoRequestsResource : AdminResource<ConvoTurn, ConvoRequestId> {
 
   override fun cells(row: ConvoTurn): Map<String, String> {
     val request = row.request
-    val response = row.response
+    // The response side is the joined call's terminal. A stop reason exists only
+    // on a `Completed` terminal; a failure or an absent call leaves it blank.
+    val stopReason = (row.call?.response?.outcome as? LlmCallOutcome.Completed)?.stopReason ?: ""
     return mapOf(
       "id" to request.id.value.toString(),
       "convoId" to request.convoId.value.toString(),
       "createdAt" to request.createdAt.toString(),
-      "provider" to request.provider,
-      "modelRequested" to request.modelRequested,
+      "kind" to request.kind.value,
+      "llmRequestId" to request.llmRequestId.value.toString(),
+      "responseStopReason" to stopReason,
+      "turnId" to request.turnId.value.toString(),
       "systemPromptId" to request.systemPromptId.value.toString(),
-      "requestParams" to (request.requestParams?.toString() ?: ""),
-      "content" to request.content.toString(),
-      "responseStopReason" to (response?.stopReason ?: ""),
-      "responseModelResolved" to (response?.modelResolved ?: ""),
-      "responseInputTokens" to (response?.inputTokens?.toString() ?: ""),
-      "responseOutputTokens" to (response?.outputTokens?.toString() ?: ""),
-      "responseCacheReadTokens" to (response?.cacheReadTokens?.toString() ?: ""),
-      "responseCacheWriteTokens" to (response?.cacheWriteTokens?.toString() ?: ""),
-      "responseLatencyMs" to (response?.latencyMs?.toString() ?: ""),
-      "responseProviderRequestId" to (response?.providerRequestId ?: ""),
-      "responseContent" to (response?.content?.toString() ?: ""),
-      "responseCreatedAt" to (response?.createdAt?.toString() ?: ""),
     )
   }
 

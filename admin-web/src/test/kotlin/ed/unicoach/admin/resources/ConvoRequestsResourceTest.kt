@@ -8,9 +8,6 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -29,33 +26,31 @@ class ConvoRequestsResourceTest {
     return AdminTestSupport.cookieHeader(AdminTestSupport.login(email, "Password123!"))
   }
 
-  private val contentJson =
-    JsonArray(
-      listOf(
-        JsonObject(
-          mapOf(
-            "type" to JsonPrimitive("text"),
-            "text" to JsonPrimitive("REPLY_MARKER"),
-          ),
-        ),
-      ),
-    )
-
-  /** Seeds a convo with one request and, when requested, a paired response. Returns the request id string. */
+  /**
+   * Seeds a convo with one request whose owning `llm_requests` row is stamped and,
+   * when [withResponse], a completed `llm_responses` terminal is joined. Returns
+   * the ids the assertions need.
+   */
   private fun seedTurn(withResponse: Boolean): TurnIds {
     val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
     val student = AdminTestSupport.seedStudent(user.id)
     val convo = AdminTestSupport.seedConvo(student.id)
-    val req = AdminTestSupport.seedConvoRequest(convo.id)
+    val llmRequestId = AdminTestSupport.seedLlmRequest()
+    val req = AdminTestSupport.seedConvoRequest(convo.id, llmRequestId = llmRequestId)
     if (withResponse) {
-      AdminTestSupport.seedConvoResponse(req.id, convo.id, content = contentJson, stopReason = "end_turn")
+      AdminTestSupport.seedLlmResponse(llmRequestId)
     }
-    return TurnIds(requestId = req.id.value.toString(), convoId = convo.id.value.toString())
+    return TurnIds(
+      requestId = req.id.value.toString(),
+      convoId = convo.id.value.toString(),
+      llmRequestId = llmRequestId.value.toString(),
+    )
   }
 
   private data class TurnIds(
     val requestId: String,
     val convoId: String,
+    val llmRequestId: String,
   )
 
   @Test
@@ -79,7 +74,7 @@ class ConvoRequestsResourceTest {
     }
 
   @Test
-  fun `GET convo-request id renders request content and paired reply`() =
+  fun `GET convo-request id links to the logged call and shows the reply stop reason`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
@@ -88,13 +83,16 @@ class ConvoRequestsResourceTest {
       val detail = client().get("/convo-request/${turn.requestId}") { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.OK, detail.status)
       val body = detail.bodyAsText()
+      // The I/O envelope moved to the generic call log (RFC 106): the coaching row links there.
       assertTrue(
-        body.contains("<pre class=\"json-pretty\">"),
-        "Request/response content must render in a syntax-highlighted json-pretty <pre>",
+        body.contains("/llm-request/${turn.llmRequestId}"),
+        "The llmRequestId cell must link to the generic call log",
       )
-      assertTrue(body.contains("REPLY_MARKER"), "Response content must render")
-      assertTrue(body.contains("end_turn"), "Response stop reason must render")
-      assertTrue(body.contains("Input Tokens"), "Token cells must render")
+      assertTrue(body.contains("Response Stop Reason"), "The at-a-glance stop-reason row still renders")
+      assertTrue(body.contains("end_turn"), "The joined terminal's stop reason renders at a glance")
+      // The token / model / content columns moved to the linked call; they no longer render here.
+      assertFalse(body.contains("Input Tokens"), "Moved token columns must not render on the convo-request page")
+      assertFalse(body.contains("Request Content"), "Moved request-content column must not render here")
     }
 
   @Test
@@ -108,36 +106,8 @@ class ConvoRequestsResourceTest {
       assertEquals(HttpStatusCode.OK, detail.status, "A request without a response must still render")
       val body = detail.bodyAsText()
       assertTrue(body.contains("Response Stop Reason"), "Response field labels still render")
-    }
-
-  @Test
-  fun `GET convo-request id renders a transport-error turn`() =
-    testApplication {
-      application { with(AdminTestSupport) { installTestAdminModule() } }
-      val cookie = adminCookie()
-      val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
-      val student = AdminTestSupport.seedStudent(user.id)
-      val convo = AdminTestSupport.seedConvo(student.id)
-      val req = AdminTestSupport.seedConvoRequest(convo.id)
-      // A transport-error turn: present response row, null content, error stop, null tokens.
-      AdminTestSupport.seedConvoResponse(
-        requestId = req.id,
-        convoId = convo.id,
-        content = null,
-        stopReason = "error",
-        modelResolved = null,
-        inputTokens = null,
-        outputTokens = null,
-        cacheReadTokens = null,
-        cacheWriteTokens = null,
-        providerRequestId = null,
-        latencyMs = null,
-      )
-
-      val detail = client().get("/convo-request/${req.id.value}") { header(HttpHeaders.Cookie, cookie) }
-      assertEquals(HttpStatusCode.OK, detail.status, "A transport-error turn must render without crashing")
-      val body = detail.bodyAsText()
-      assertTrue(body.contains("error"), "The error stop-reason cell must render")
+      // No terminal yet: the at-a-glance stop reason is blank, and the call link still renders.
+      assertTrue(body.contains("/llm-request/${turn.llmRequestId}"), "The llmRequestId link renders even with no terminal")
     }
 
   @Test
@@ -185,7 +155,7 @@ class ConvoRequestsResourceTest {
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
-      val res = client().get("/convo-request/999999") { header(HttpHeaders.Cookie, cookie) }
+      val res = client().get("/convo-request/999999999") { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.NotFound, res.status)
     }
 

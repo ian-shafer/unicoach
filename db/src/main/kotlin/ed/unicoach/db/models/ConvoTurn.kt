@@ -1,13 +1,14 @@
 package ed.unicoach.db.models
 
 /**
- * The replay unit: one logged request paired with its response, if written.
- *
- * [response] is nullable because a request can exist with no response — the
- * first transaction (request) has committed but the second (response) has not
- * (provider in flight, or the response transaction never ran).
+ * The replay unit: one logged coaching request paired with its logged LLM call
+ * (RFC 106). [call] is nullable because the joined `llm_responses` row can be
+ * absent — the request committed but the terminal has not (provider in flight,
+ * or a crash before the response write). The response side of an exchange is the
+ * joined `LlmCall.response` (an `LlmResponse`); this replaces the former
+ * `ConvoResponse`.
  */
 data class ConvoTurn(
   val request: ConvoRequest,
-  val response: ConvoResponse?,
+  val call: LlmCall?,
 )

@@ -48,7 +48,7 @@ class ObservationsDaoTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE observations, claim_support, claims, extraction_runs, " +
-          "convos, convo_requests, convo_responses, convo_responses_raw, system_prompts, students, users CASCADE",
+          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
       )
       // Restore the migration-seeded prompts so a later cross-module suite (e.g.
       // rest-server) can still resolve them on the shared test DB.
@@ -105,17 +105,31 @@ class ObservationsDaoTest {
     return id
   }
 
+  private fun appendLlmRequest(): Long {
+    connection
+      .prepareStatement(
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+      ).use { stmt ->
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return rs.getLong("id")
+        }
+      }
+  }
+
   private fun appendRequest(convoId: ConvoId): ConvoRequestId {
     val promptId = createSystemPrompt()
+    val llmRequestId = appendLlmRequest()
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id)
-        VALUES (?, 'anthropic', 'claude-opus-4-8', ?, '[]'::jsonb, nextval('convo_turn_id_seq')) RETURNING id
+        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+        VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convoId.value)
         stmt.setObject(2, promptId)
+        stmt.setLong(3, llmRequestId)
         stmt.executeQuery().use { rs ->
           rs.next()
           return ConvoRequestId(rs.getLong("id"))

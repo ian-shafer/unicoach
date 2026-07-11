@@ -7,36 +7,32 @@ import ed.unicoach.db.models.ConvoName
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ConvoRequestKind
-import ed.unicoach.db.models.ConvoResponse
-import ed.unicoach.db.models.ConvoResponseId
-import ed.unicoach.db.models.ConvoResponseRaw
 import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ConvoTurnId
 import ed.unicoach.db.models.ConvoWithActivity
+import ed.unicoach.db.models.LlmCall
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
-import ed.unicoach.db.models.NewConvoResponse
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.UUID
 
 /**
- * Data-access layer over the coaching-conversation tables (RFC 32): `convos`,
- * `convo_requests`, `convo_responses`, `convo_responses_raw`.
+ * Data-access layer over the coaching-conversation tables (RFC 32): `convos`
+ * (the mutable entity) and `convo_requests` (the coaching-extension log). Since
+ * RFC 106 the request I/O and the response live in the generic LLM call log
+ * (`llm_requests` / `llm_responses` / `llm_responses_raw`); a convo's response
+ * is reached via `convo_requests.llm_request_id -> llm_responses` (1:1), so the
+ * turn reads join the call log and there is no `appendResponse` here — the
+ * response is written by `LlmCallLog`.
  *
  * Stateless `object`, one [SqlSession] per call, transaction boundaries owned by
  * the caller. Mutating methods carry no optimistic-concurrency guard because
  * `convos` has no `version` column (RFC 32 disabled versioning).
- *
- * A coaching turn writes the request row and the response (+ raw) rows in two
- * separate caller transactions; [appendRequest] and [appendResponse] are
- * deliberately distinct methods with no combined "write whole turn" method.
  */
 object ConvosDao :
   SoftDeleteFindable<Convo, ConvoId>,
@@ -77,18 +73,18 @@ object ConvosDao :
       }
     }
 
-  private fun mapRequest(rs: ResultSet): ConvoRequest =
+  private fun mapRequest(
+    rs: ResultSet,
+    columnPrefix: String = "",
+  ): ConvoRequest =
     ConvoRequest(
-      id = ConvoRequestId(rs.getLong("id")),
-      convoId = ConvoId(UUID.fromString(rs.getString("convo_id"))),
-      createdAt = rs.getInstant("created_at"),
-      provider = rs.getString("provider"),
-      modelRequested = rs.getString("model_requested"),
-      systemPromptId = SystemPromptId(UUID.fromString(rs.getString("system_prompt_id"))),
-      requestParams = rs.getJsonbOrNull("request_params") as JsonObject?,
-      content = Json.parseToJsonElement(rs.getString("content")),
-      kind = parseRequestKind(rs.getString("kind"), rs.getLong("id")),
-      turnId = ConvoTurnId(rs.getLong("turn_id")),
+      id = ConvoRequestId(rs.getLong("${columnPrefix}id")),
+      convoId = ConvoId(UUID.fromString(rs.getString("${columnPrefix}convo_id"))),
+      createdAt = rs.getInstant("${columnPrefix}created_at"),
+      systemPromptId = SystemPromptId(UUID.fromString(rs.getString("${columnPrefix}system_prompt_id"))),
+      llmRequestId = LlmRequestId(rs.getLong("${columnPrefix}llm_request_id")),
+      kind = parseRequestKind(rs.getString("${columnPrefix}kind"), rs.getLong("${columnPrefix}id")),
+      turnId = ConvoTurnId(rs.getLong("${columnPrefix}turn_id")),
     )
 
   /**
@@ -103,33 +99,6 @@ object ConvosDao :
   ): ConvoRequestKind =
     ConvoRequestKind.fromValue(value)
       ?: throw SQLException("Persisted convo_requests.kind is not a valid value for row id=[$rowId]: [$value]")
-
-  private fun mapResponse(
-    rs: ResultSet,
-    columnPrefix: String = "",
-  ): ConvoResponse =
-    ConvoResponse(
-      id = ConvoResponseId(rs.getLong("${columnPrefix}id")),
-      requestId = ConvoRequestId(rs.getLong("${columnPrefix}request_id")),
-      convoId = ConvoId(UUID.fromString(rs.getString("${columnPrefix}convo_id"))),
-      content = rs.getJsonbOrNull("${columnPrefix}content"),
-      modelResolved = rs.getString("${columnPrefix}model_resolved"),
-      stopReason = rs.getString("${columnPrefix}stop_reason"),
-      inputTokens = rs.getInt("${columnPrefix}input_tokens").takeUnless { rs.wasNull() },
-      outputTokens = rs.getInt("${columnPrefix}output_tokens").takeUnless { rs.wasNull() },
-      cacheReadTokens = rs.getInt("${columnPrefix}cache_read_tokens").takeUnless { rs.wasNull() },
-      cacheWriteTokens = rs.getInt("${columnPrefix}cache_write_tokens").takeUnless { rs.wasNull() },
-      providerRequestId = rs.getString("${columnPrefix}provider_request_id"),
-      latencyMs = rs.getInt("${columnPrefix}latency_ms").takeUnless { rs.wasNull() },
-      createdAt = rs.getInstant("${columnPrefix}created_at"),
-    )
-
-  private fun mapResponseRaw(rs: ResultSet): ConvoResponseRaw =
-    ConvoResponseRaw(
-      responseId = ConvoResponseId(rs.getLong("response_id")),
-      createdAt = rs.getInstant("created_at"),
-      payload = Json.parseToJsonElement(rs.getString("payload")),
-    )
 
   // ---------------------------------------------------------------------------
   // ArchiveScope predicate (fixed SQL fragment; no caller data)
@@ -438,6 +407,12 @@ object ConvosDao :
       map = { rs -> ConvoTurnId(rs.getLong("turn_id")) },
     )
 
+  /**
+   * Appends one `convo_requests` coaching-extension row: the coaching columns
+   * plus [NewConvoRequest.llmRequestId], the FK into the generic `llm_requests`
+   * call log the caller obtained from `LlmCallLog`. The request I/O envelope is
+   * written by `LlmCallLog`, not here.
+   */
   fun appendRequest(
     session: SqlSession,
     request: NewConvoRequest,
@@ -445,97 +420,23 @@ object ConvosDao :
     val sql =
       """
       INSERT INTO convo_requests (
-        convo_id, provider, model_requested, system_prompt_id, request_params, content, kind, turn_id
+        convo_id, system_prompt_id, llm_request_id, kind, turn_id
       )
-      VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?)
+      VALUES (?, ?, ?, ?, ?)
       RETURNING *
       """.trimIndent()
     return session.mutateReturning(
       sql,
       bind = { stmt ->
         stmt.setObject(1, request.convoId.value)
-        stmt.setString(2, request.provider)
-        stmt.setString(3, request.modelRequested)
-        stmt.setObject(4, request.systemPromptId.value)
-        stmt.setJsonbOrNull(5, request.requestParams)
-        stmt.setString(6, request.content.toString())
-        stmt.setString(7, request.kind.value)
-        stmt.setLong(8, request.turnId.value)
+        stmt.setObject(2, request.systemPromptId.value)
+        stmt.setLong(3, request.llmRequestId.value)
+        stmt.setString(4, request.kind.value)
+        stmt.setLong(5, request.turnId.value)
       },
-      map = ::mapRequest,
+      map = { mapRequest(it) },
       mapError = ::mapConvoError,
     )
-  }
-
-  /**
-   * Inserts the response row and, when [rawPayload] is non-null, the verbatim raw
-   * row keyed to it. Both inserts run inside the single transaction the caller
-   * provides, so the response and its raw sibling are atomic together. A null
-   * [rawPayload] is the transport-error turn (`stopReason = "error"`,
-   * `content = null`): only the response row is written.
-   */
-  fun appendResponse(
-    session: SqlSession,
-    response: NewConvoResponse,
-    rawPayload: JsonElement?,
-  ): Result<ConvoResponse> {
-    val sql =
-      """
-      INSERT INTO convo_responses (
-        request_id, convo_id, content, model_resolved, stop_reason,
-        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-        provider_request_id, latency_ms
-      )
-      VALUES (?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?)
-      RETURNING *
-      """.trimIndent()
-    val insertedResult =
-      session.mutateReturning(
-        sql,
-        bind = { stmt ->
-          stmt.setLong(1, response.requestId.value)
-          stmt.setObject(2, response.convoId.value)
-          stmt.setJsonbOrNull(3, response.content)
-          stmt.setStringOrNull(4, response.modelResolved)
-          stmt.setString(5, response.stopReason)
-          stmt.setIntOrNull(6, response.inputTokens)
-          stmt.setIntOrNull(7, response.outputTokens)
-          stmt.setIntOrNull(8, response.cacheReadTokens)
-          stmt.setIntOrNull(9, response.cacheWriteTokens)
-          stmt.setStringOrNull(10, response.providerRequestId)
-          stmt.setIntOrNull(11, response.latencyMs)
-        },
-        map = ::mapResponse,
-        mapError = ::mapConvoError,
-      )
-
-    val inserted = insertedResult.getOrElse { return Result.failure(it) }
-
-    if (rawPayload != null) {
-      return try {
-        insertRaw(session, inserted.id, rawPayload)
-        Result.success(inserted)
-      } catch (e: SQLException) {
-        Result.failure(mapConvoError(e))
-      } catch (e: Exception) {
-        Result.failure(mapDatabaseError(e))
-      }
-    }
-
-    return Result.success(inserted)
-  }
-
-  private fun insertRaw(
-    session: SqlSession,
-    responseId: ConvoResponseId,
-    payload: JsonElement,
-  ) {
-    val sql = "INSERT INTO convo_responses_raw (response_id, payload) VALUES (?, ?::jsonb)"
-    session.prepareStatement(sql).use { stmt ->
-      stmt.setLong(1, responseId.value)
-      stmt.setString(2, payload.toString())
-      stmt.executeUpdate()
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -543,9 +444,12 @@ object ConvosDao :
   // ---------------------------------------------------------------------------
 
   /**
-   * The shared turn projection: every `convo_requests` column aliased `req_*`
-   * and every LEFT-JOINed `convo_responses` column aliased `resp_*`, so [mapTurn]
-   * reads both halves from one row. Reused by the per-convo and global turn reads.
+   * The shared turn projection: the `convo_requests` coaching columns aliased
+   * `req_*`, plus the joined LLM call (`llm_requests` → `llm_responses` →
+   * `llm_responses_raw`) columns aliased via [LlmCallsDao.joinedCallColumns], so
+   * [mapTurn] reads the request and the whole `LlmCall` from one row. The
+   * response now lives in the generic call log (RFC 106), reached through
+   * `convo_requests.llm_request_id`. Reused by the per-convo and global turn reads.
    */
   private val turnSelect =
     """
@@ -553,29 +457,16 @@ object ConvosDao :
       r.id   AS req_id,
       r.convo_id AS req_convo_id,
       r.created_at AS req_created_at,
-      r.provider AS req_provider,
-      r.model_requested AS req_model_requested,
       r.system_prompt_id AS req_system_prompt_id,
-      r.request_params AS req_request_params,
-      r.content AS req_content,
+      r.llm_request_id AS req_llm_request_id,
       r.kind AS req_kind,
       r.turn_id AS req_turn_id,
-      resp.id AS resp_id,
-      resp.request_id AS resp_request_id,
-      resp.convo_id AS resp_convo_id,
-      resp.content AS resp_content,
-      resp.model_resolved AS resp_model_resolved,
-      resp.stop_reason AS resp_stop_reason,
-      resp.input_tokens AS resp_input_tokens,
-      resp.output_tokens AS resp_output_tokens,
-      resp.cache_read_tokens AS resp_cache_read_tokens,
-      resp.cache_write_tokens AS resp_cache_write_tokens,
-      resp.provider_request_id AS resp_provider_request_id,
-      resp.latency_ms AS resp_latency_ms,
-      resp.created_at AS resp_created_at
+      ${LlmCallsDao.joinedCallColumns("lreq", "lresp", "lraw")}
     FROM convo_requests r
     JOIN convos c ON c.id = r.convo_id
-    LEFT JOIN convo_responses resp ON resp.request_id = r.id
+    JOIN llm_requests lreq ON lreq.id = r.llm_request_id
+    LEFT JOIN llm_responses lresp ON lresp.request_id = lreq.id
+    LEFT JOIN llm_responses_raw lraw ON lraw.response_id = lresp.id
     """.trimIndent()
 
   fun listTurns(
@@ -672,18 +563,14 @@ object ConvosDao :
         id = ConvoRequestId(rs.getLong("req_id")),
         convoId = ConvoId(UUID.fromString(rs.getString("req_convo_id"))),
         createdAt = rs.getInstant("req_created_at"),
-        provider = rs.getString("req_provider"),
-        modelRequested = rs.getString("req_model_requested"),
         systemPromptId = SystemPromptId(UUID.fromString(rs.getString("req_system_prompt_id"))),
-        requestParams = rs.getJsonbOrNull("req_request_params") as JsonObject?,
-        content = Json.parseToJsonElement(rs.getString("req_content")),
+        llmRequestId = LlmRequestId(rs.getLong("req_llm_request_id")),
         kind = parseRequestKind(rs.getString("req_kind"), rs.getLong("req_id")),
         turnId = ConvoTurnId(rs.getLong("req_turn_id")),
       )
-    // resp_id is NULL when the LEFT JOIN found no response row.
-    rs.getLong("resp_id")
-    val response = if (rs.wasNull()) null else mapResponse(rs, "resp_")
-    return ConvoTurn(request, response)
+    // The request always joins a call (llm_request_id is NOT NULL); response/raw
+    // are null when their LEFT JOIN found no row.
+    return ConvoTurn(request, LlmCallsDao.mapCallColumns(rs))
   }
 
   /**
@@ -705,16 +592,6 @@ object ConvosDao :
       },
     )
 
-  fun findRawByResponseId(
-    session: SqlSession,
-    responseId: ConvoResponseId,
-  ): Result<ConvoResponseRaw> =
-    session.queryOne(
-      "SELECT * FROM convo_responses_raw WHERE response_id = ?",
-      bind = { it.setLong(1, responseId.value) },
-      map = ::mapResponseRaw,
-    )
-
   // ---------------------------------------------------------------------------
   // Error mapping
   // ---------------------------------------------------------------------------
@@ -733,8 +610,7 @@ object ConvosDao :
           message.contains("convos_student_id_fkey") -> NotFoundException("Owning student not found")
           message.contains("convo_requests_convo_id_fkey") -> NotFoundException("Convo not found")
           message.contains("convo_requests_system_prompt_id_fkey") -> NotFoundException("System prompt not found")
-          message.contains("convo_responses_request_id_fkey") -> NotFoundException("Request not found")
-          message.contains("convo_responses_convo_id_fkey") -> NotFoundException("Convo not found")
+          message.contains("convo_requests_llm_request_id_fkey") -> NotFoundException("LLM request not found")
           else -> NotFoundException()
         }
       }

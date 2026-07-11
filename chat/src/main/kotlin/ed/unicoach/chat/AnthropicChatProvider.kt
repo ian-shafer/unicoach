@@ -10,7 +10,6 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -106,19 +105,7 @@ class AnthropicChatProvider(
         put("tools", JsonArray(request.tools))
       }
       request.toolChoice?.let { put("tool_choice", it) }
-      put(
-        "messages",
-        buildJsonArray {
-          for (message in request.messages) {
-            add(
-              buildJsonObject {
-                put("role", if (message.role == ChatRole.USER) "user" else "assistant")
-                put("content", message.content)
-              },
-            )
-          }
-        },
-      )
+      put("messages", ChatMessage.serializeChatMessages(request.messages))
     }
 
   // --- Frame handling --------------------------------------------------------

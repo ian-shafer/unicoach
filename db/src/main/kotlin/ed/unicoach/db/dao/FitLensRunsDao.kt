@@ -4,6 +4,7 @@ import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.FitLensRun
 import ed.unicoach.db.models.FitLensRunId
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
@@ -31,22 +32,29 @@ object FitLensRunsDao :
     val failureReason: String?,
   )
 
-  private fun mapRun(rs: ResultSet): FitLensRun =
-    FitLensRun(
+  private fun mapRun(rs: ResultSet): FitLensRun {
+    // query_llm_request_id is NOT NULL by schema; getLong returns 0 on SQL NULL,
+    // so a null here means a corrupt/constraint-bypassed row. Throw rather than
+    // silently yield LlmRequestId(0), matching mapOutcome/parseFailureCategory's
+    // corrupt-row policy. reason_llm_request_id keeps its nullable handling below.
+    val queryLlmRequestId = rs.getLong("query_llm_request_id")
+    if (rs.wasNull()) {
+      throw SQLException(
+        "Persisted fit_lens_runs.query_llm_request_id is NULL for fit_lens_runs.id=[${rs.getLong("id")}]",
+      )
+    }
+    return FitLensRun(
       id = FitLensRunId(rs.getLong("id")),
       createdAt = rs.getInstant("created_at"),
       studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
       outcome = mapOutcome(rs),
       querySystemPromptId = SystemPromptId(UUID.fromString(rs.getString("query_system_prompt_id"))),
       reasonSystemPromptId = SystemPromptId(UUID.fromString(rs.getString("reason_system_prompt_id"))),
-      provider = rs.getString("provider"),
-      modelResolved = rs.getString("model_resolved"),
+      queryLlmRequestId = LlmRequestId(queryLlmRequestId),
+      reasonLlmRequestId = rs.getLong("reason_llm_request_id").takeUnless { rs.wasNull() }?.let(::LlmRequestId),
       matchesConsidered = rs.getInt("matches_considered").takeUnless { rs.wasNull() },
-      inputTokens = rs.getInt("input_tokens").takeUnless { rs.wasNull() },
-      outputTokens = rs.getInt("output_tokens").takeUnless { rs.wasNull() },
-      cacheReadTokens = rs.getInt("cache_read_tokens").takeUnless { rs.wasNull() },
-      cacheWriteTokens = rs.getInt("cache_write_tokens").takeUnless { rs.wasNull() },
     )
+  }
 
   /**
    * Reconstructs the [FitLensOutcome] ADT from the flat outcome/count/failure
@@ -119,14 +127,10 @@ object FitLensRunsDao :
           "outcome" to { stmt, i -> stmt.setString(i, input.outcome.value) },
           "query_system_prompt_id" to { stmt, i -> stmt.setObject(i, input.querySystemPromptId.value) },
           "reason_system_prompt_id" to { stmt, i -> stmt.setObject(i, input.reasonSystemPromptId.value) },
-          "provider" to { stmt, i -> stmt.setString(i, input.provider) },
-          "model_resolved" to { stmt, i -> stmt.setStringOrNull(i, input.modelResolved) },
+          "query_llm_request_id" to { stmt, i -> stmt.setLong(i, input.queryLlmRequestId.value) },
+          "reason_llm_request_id" to { stmt, i -> stmt.setLongOrNull(i, input.reasonLlmRequestId?.value) },
           "suggestions_written" to { stmt, i -> stmt.setInt(i, cols.suggestionsWritten) },
           "matches_considered" to { stmt, i -> stmt.setIntOrNull(i, input.matchesConsidered) },
-          "input_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.inputTokens) },
-          "output_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.outputTokens) },
-          "cache_read_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheReadTokens) },
-          "cache_write_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheWriteTokens) },
           "failure_category" to { stmt, i -> stmt.setStringOrNull(i, cols.failureCategory) },
           "failure_reason" to { stmt, i -> stmt.setStringOrNull(i, cols.failureReason) },
         ),
@@ -251,6 +255,8 @@ object FitLensRunsDao :
           message.contains("fit_lens_runs_student_id_fkey") -> NotFoundException("Owning student not found")
           message.contains("fit_lens_runs_query_system_prompt_id_fkey") -> NotFoundException("Query system prompt not found")
           message.contains("fit_lens_runs_reason_system_prompt_id_fkey") -> NotFoundException("Reason system prompt not found")
+          message.contains("fit_lens_runs_query_llm_request_id_fkey") -> NotFoundException("Query LLM request not found")
+          message.contains("fit_lens_runs_reason_llm_request_id_fkey") -> NotFoundException("Reason LLM request not found")
           else -> NotFoundException()
         }
       }

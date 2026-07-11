@@ -2,7 +2,6 @@ package ed.unicoach.coaching
 
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatMessage
-import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.ChatRole
@@ -26,9 +25,9 @@ import ed.unicoach.db.models.ConvoRequestKind
 import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.FitSuggestionForOpener
 import ed.unicoach.db.models.FitSuggestionId
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
-import ed.unicoach.db.models.NewConvoResponse
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
@@ -54,14 +53,17 @@ import org.slf4j.LoggerFactory
  * owned by another student is the not-found outcome — existence is never
  * leaked). Archived convos remain fetchable and writable.
  *
- * A turn is two transactions bracketing one un-transacted provider call (the
- * connection is never held across the stream): tx-1 validates, persists the
- * user request, and snapshots replay history; collecting [ReplyEvent] flow runs
- * the provider; tx-2 persists exactly one response row for the request.
+ * A turn brackets one un-transacted provider call (the connection is never held
+ * across the stream): tx-1 validates and snapshots replay history; the provider
+ * call flows through [LlmCallLog.recordStreaming], which logs the request, hands
+ * back the log-owned `llm_request_id`, and writes the terminal response row
+ * itself; this service stamps a `convo_requests` extension row carrying that id
+ * before collecting the [ReplyEvent] flow. The response side of the log is owned
+ * entirely by [LlmCallLog] (RFC 106); this service never writes a response row.
  */
 class CoachingService(
   private val database: Database,
-  private val chatProvider: ChatProvider,
+  private val llmCallLog: LlmCallLog,
   private val config: CoachingConfig,
   private val tools: ToolRegistry = ToolRegistry(emptyList()),
 ) {
@@ -231,20 +233,18 @@ class CoachingService(
       }
 
     return runCatching {
-      val preflight =
+      val prepared =
         database.withConnection { session ->
           val prompt = resolveSystemPrompt(session)
           val convo = ConvosDao.create(session, NewConvo(studentId, resolvedName)).getOrThrow()
-          val userTurn = appendUserTurn(session, convo.id, prompt.id, message)
           val messages = visibleHistory(session, convo.id) + ChatMessage.text(ChatRole.USER, message)
           // Next-session opener: compose open explicit commitments (RFC 93) and
           // open fit-lens suggestions (RFC 98) into the coach prompt so the coach
           // raises them naturally in its first reply.
           val pending = openExplicitCommitments(session, studentId)
           val pendingFits = openFitSuggestions(session, studentId)
-          Preflight(
+          Prepared(
             convo,
-            userTurn,
             prompt,
             composeSystem(prompt, pending, pendingFits),
             messages,
@@ -252,10 +252,11 @@ class CoachingService(
             pendingFits.map { it.id },
           )
         }
+      val opener = openUserTurn(prepared)
       StartConvoResult.Started(
-        convo = preflight.convo,
-        userTurn = preflight.userTurn,
-        reply = buildReplyFlow(preflight, isFirstTurn = true),
+        convo = prepared.convo,
+        userTurn = opener.request,
+        reply = buildReplyFlow(prepared, opener, isFirstTurn = true),
       )
     }
   }
@@ -271,36 +272,35 @@ class CoachingService(
     }
 
     return runCatching {
-      val preflight =
+      val prepared =
         database.withConnection { session ->
           val owned = loadOwned(session, convoId, studentId)
           if (owned == null) {
             null
           } else {
             val prompt = resolveSystemPrompt(session)
-            val userTurn = appendUserTurn(session, convoId, prompt.id, message)
             val messages = visibleHistory(session, convoId) + ChatMessage.text(ChatRole.USER, message)
             // postTurn never surfaces commitments or fit suggestions: only a new
             // conversation opens with reflection, so an insight is not re-raised
             // mid-conversation.
-            Preflight(owned, userTurn, prompt, prompt.body, messages, emptyList(), emptyList())
+            Prepared(owned, prompt, prompt.body, messages, emptyList(), emptyList())
           }
         }
-      if (preflight == null) {
+      if (prepared == null) {
         PostTurnResult.NotFound
       } else {
+        val opener = openUserTurn(prepared)
         PostTurnResult.Started(
-          convo = preflight.convo,
-          userTurn = preflight.userTurn,
-          reply = buildReplyFlow(preflight, isFirstTurn = false),
+          convo = prepared.convo,
+          userTurn = opener.request,
+          reply = buildReplyFlow(prepared, opener, isFirstTurn = false),
         )
       }
     }
   }
 
-  private class Preflight(
+  private class Prepared(
     val convo: Convo,
-    val userTurn: ConvoRequest,
     val prompt: SystemPrompt,
     // The outgoing system text: the prompt body, optionally with open explicit
     // commitments (RFC 93) composed in for the next-session opener.
@@ -314,6 +314,111 @@ class CoachingService(
     // surfaced on a successful terminal. Empty for postTurn and when none pending.
     val surfacedFitSuggestionIds: List<FitSuggestionId>,
   )
+
+  /**
+   * One provider call whose request has already been logged and whose
+   * `convo_requests` extension row has been stamped: the [request] row (carrying
+   * the log-owned `llm_request_id`, minted or shared `turn_id`, and `kind`) and
+   * the cold [events] flow from [LlmCallLog.recordStreaming] that, on collection,
+   * relays provider events and writes the terminal response row. The single unit
+   * both the opener and each tool continuation are built as.
+   */
+  private class OpenedCall(
+    val request: ConvoRequest,
+    val events: kotlinx.coroutines.flow.Flow<ChatEvent>,
+  )
+
+  /**
+   * Opens the turn's `kind = 'user'` call: logs the opener [ChatRequest] via
+   * [LlmCallLog.recordStreaming], mints a fresh `turn_id`, and stamps the opener
+   * `convo_requests` row referencing the returned `llm_request_id`. The row is
+   * written before the [OpenedCall.events] flow is collected (RFC 106), so the
+   * route can render the user message from [OpenedCall.request] up front.
+   */
+  private suspend fun openUserTurn(prepared: Prepared): OpenedCall {
+    val request = buildCallRequest(prepared, prepared.messages, forceNoTools = false)
+    val call = llmCallLog.recordStreaming(request) // commits the opener's llm_requests row
+    try {
+      val turnId = database.withConnection { session -> ConvosDao.nextTurnId(session).getOrThrow() }
+      val row = appendRequestRow(prepared, call.llmRequestId, turnId, ConvoRequestKind.USER)
+      return OpenedCall(row, call.events)
+    } catch (cancellation: kotlinx.coroutines.CancellationException) {
+      // The opener's request row is committed, but its cold events flow will
+      // never be collected — whether the client disconnected (cancellation) or a
+      // defect (e.g. a DB error on nextTurnId / appendRequestRow) interrupted us
+      // here, before buildReplyFlow ever runs. Mirror recordStreaming's own in-flow
+      // handler: write the missing response row now, where call.llmRequestId is in
+      // scope, then rethrow — otherwise the just-committed request would dangle with
+      // no llm_responses row.
+      llmCallLog.writeCancelledIfAbsent(call.llmRequestId)
+      throw cancellation
+    } catch (defect: Exception) {
+      // The request row is committed but its cold flow will never be collected;
+      // a defect (e.g. a DB error on appendRequestRow) interrupted us. Record the
+      // internal_error response so the request isn't orphaned, then rethrow.
+      llmCallLog.writeInternalErrorIfAbsent(call.llmRequestId, defect)
+      throw defect
+    }
+  }
+
+  /**
+   * Opens a `kind = 'tool_result'` continuation call for [messages]: logs the
+   * continuation [ChatRequest] via [LlmCallLog.recordStreaming] and stamps a
+   * `convo_requests` row sharing the excursion's [turnId] and referencing the
+   * returned `llm_request_id`.
+   */
+  private suspend fun openContinuation(
+    prepared: Prepared,
+    messages: List<ChatMessage>,
+    turnId: ed.unicoach.db.models.ConvoTurnId,
+    forceNoTools: Boolean,
+  ): OpenedCall {
+    val request = buildCallRequest(prepared, messages, forceNoTools)
+    val call = llmCallLog.recordStreaming(request) // commits the continuation's llm_requests row
+    try {
+      val row = appendRequestRow(prepared, call.llmRequestId, turnId, ConvoRequestKind.TOOL_RESULT)
+      return OpenedCall(row, call.events)
+    } catch (cancellation: kotlinx.coroutines.CancellationException) {
+      // The continuation's request row is committed, but its cold events flow is
+      // returned uncollected — an interruption in appendRequestRow (after the
+      // llm_requests commit, before collection begins) means the flow never runs
+      // and no response row is ever written for it, whether the client disconnected
+      // (cancellation) or a defect struck. Mirror recordStreaming's own in-flow
+      // handler: write the missing response row now, where call.llmRequestId is in
+      // scope, then rethrow — this closes the orphaned-continuation window
+      // buildReplyFlow's loop catch cannot (there currentCall still points at the
+      // previous, already-responded call).
+      llmCallLog.writeCancelledIfAbsent(call.llmRequestId)
+      throw cancellation
+    } catch (defect: Exception) {
+      // The request row is committed but its cold flow will never be collected;
+      // a defect (e.g. a DB error on appendRequestRow) interrupted us. Record the
+      // internal_error response so the request isn't orphaned, then rethrow.
+      llmCallLog.writeInternalErrorIfAbsent(call.llmRequestId, defect)
+      throw defect
+    }
+  }
+
+  /** Stamps one `convo_requests` extension row referencing [llmRequestId], in its own transaction. */
+  private suspend fun appendRequestRow(
+    prepared: Prepared,
+    llmRequestId: LlmRequestId,
+    turnId: ed.unicoach.db.models.ConvoTurnId,
+    kind: ConvoRequestKind,
+  ): ConvoRequest =
+    database.withConnection { session ->
+      ConvosDao
+        .appendRequest(
+          session,
+          NewConvoRequest(
+            convoId = prepared.convo.id,
+            systemPromptId = prepared.prompt.id,
+            llmRequestId = llmRequestId,
+            turnId = turnId,
+            kind = kind,
+          ),
+        ).getOrThrow()
+    }
 
   /**
    * The cold reply flow: the bounded chat tool-use loop (RFC 94). Collecting it
@@ -335,34 +440,38 @@ class CoachingService(
    * `tools = emptyList()`, forcing a text answer.
    */
   private fun buildReplyFlow(
-    preflight: Preflight,
+    prepared: Prepared,
+    opener: OpenedCall,
     isFirstTurn: Boolean,
   ): Flow<ReplyEvent> =
     flow {
-      val messages = preflight.messages.toMutableList()
-      // The request row whose response the current call persists: the user turn
-      // on the first call, a fresh tool_result continuation row thereafter.
-      var currentRequest = preflight.userTurn
+      val messages = prepared.messages.toMutableList()
+      // The already-opened call whose events this iteration collects: the opener
+      // on the first pass, a fresh tool_result continuation thereafter. Its
+      // request row and llm_request are already logged; LlmCallLog owns the
+      // response-row write when its events terminate.
+      var currentCall = opener
       var toolRounds = 0
       var succeeded = false
-      // Wall-clock start of the in-flight provider call, captured in the loop
-      // body so the outer provider-defect catch can record real elapsed time.
-      var iterationStart = System.currentTimeMillis()
 
       try {
         loop@ while (true) {
           val forceNoTools = toolRounds >= config.maxToolRounds
-          iterationStart = System.currentTimeMillis()
-          val call = runProviderCall(buildCallRequest(preflight, messages, forceNoTools)) { delta -> emit(ReplyEvent.Delta(delta)) }
+          val terminal = collectCall(currentCall.events) { delta -> emit(ReplyEvent.Delta(delta)) }
 
-          when (val persisted = persistCallResponse(preflight.convo.id, currentRequest, call.terminal, call.latencyMs)) {
-            is CallOutcome.Failed -> {
-              emit(persisted.event)
+          when (terminal) {
+            is ChatEvent.Rejected -> {
+              emit(failedEvent(retriable = false, reason = terminal.reason))
               break@loop
             }
 
-            is CallOutcome.Completed -> {
-              val chatResponse = persisted.chatResponse
+            is ChatEvent.TransientFailure -> {
+              emit(failedEvent(retriable = true, reason = terminal.reason))
+              break@loop
+            }
+
+            is ChatEvent.Completed -> {
+              val chatResponse = terminal.response
               val toolUses = dispatchableToolUses(chatResponse, forceNoTools)
 
               if (toolUses.isEmpty()) {
@@ -372,10 +481,16 @@ class CoachingService(
                 // mark them fulfilled against this convo. Bound to success — a
                 // failed turn soft-deletes the convo, so they stay open to
                 // re-surface next session.
-                markDisclosedCommitmentsFulfilled(preflight)
-                markSurfacedFitSuggestions(preflight)
+                markDisclosedCommitmentsFulfilled(prepared)
+                markSurfacedFitSuggestions(prepared)
                 succeeded = true
-                emit(ReplyEvent.Completed(persisted.response))
+                emit(
+                  ReplyEvent.Completed(
+                    convoRequest = currentCall.request,
+                    content = chatResponse.content,
+                    createdAt = currentCall.request.createdAt,
+                  ),
+                )
                 break@loop
               }
 
@@ -383,46 +498,44 @@ class CoachingService(
               // assistant's verbatim tool_use message and one tool_result answer.
               val toolResultContent = ConvoContent.blockArray(dispatchTools(toolUses))
               messages.appendToolRound(chatResponse.content, toolResultContent)
-              currentRequest = appendToolResultTurn(preflight, toolResultContent)
+              currentCall = openContinuation(prepared, messages, currentCall.request.turnId, toolRounds + 1 >= config.maxToolRounds)
               toolRounds++
             }
           }
         }
       } catch (cancellation: kotlinx.coroutines.CancellationException) {
-        // Client disconnected mid-loop: the in-flight provider call is cancelled
-        // cooperatively. Record the abandoned turn for the in-flight request iff
-        // no response row for it exists yet.
-        withContext(NonCancellable) {
-          persistAbandoned(preflight.convo.id, currentRequest)
-        }
+        // Client disconnected mid-loop. By the time this catch runs, currentCall's
+        // response row has always already been written, so there is nothing to
+        // repair here — only rethrow (after the finally's first-turn cleanup). The
+        // per-opened-call cancellation guarantee is owned at the source: openUserTurn
+        // and openContinuation each write their own request's cancelled row if a
+        // disconnect strikes after recordStreaming commits its llm_requests row but
+        // before its cold events flow is collected; and recordStreaming itself owns
+        // the in-flight write when the disconnect lands WHILE currentCall.events is
+        // being collected (its own NonCancellable catch). A writeCancelledIfAbsent
+        // for currentCall here would be dead: currentCall never points at an
+        // uncollected, unresponded request when this catch fires — the opener/
+        // continuation guard would have already handled that request before it ever
+        // became currentCall.
         throw cancellation
       } catch (defect: Exception) {
-        // A non-cancellation exception escaping the loop is a provider defect;
-        // the port contract says treat it as transient. Log the real defect here
-        // with its stack trace: the fallback persist below records for
-        // `currentRequest`, which in the rare tool_result-write-failure window is
-        // the already-answered prior request, so its own duplicate-insert failure
-        // would otherwise be the only thing logged, masking this root cause.
+        // A non-cancellation exception escaping the loop is a provider defect. Its
+        // response row is written by LlmCallLog as internal_error before the
+        // exception reaches here (the stream flow catches and records it); the port
+        // contract says treat it as transient to the client.
         logger.warn(
           "coach loop defect for convo=[{}] request=[{}]: [{}]",
-          preflight.convo.id.asString,
-          currentRequest.id.asString,
+          prepared.convo.id.asString,
+          currentCall.request.id.asString,
           defect.message,
           defect,
         )
-        val event =
-          persistCallResponse(
-            preflight.convo.id,
-            currentRequest,
-            SyntheticFailure(retriable = true, reason = "provider defect: ${defect.message}", providerRequestId = null),
-            latencyMs = (System.currentTimeMillis() - iterationStart).toInt(),
-          )
-        if (event is CallOutcome.Failed) emit(event.event)
+        emit(failedEvent(retriable = true, reason = "provider defect: ${defect.message}"))
       } finally {
         // Exchange-level first-turn cleanup: a first turn that never produced a
         // successful final response leaves no orphan convo behind.
         if (isFirstTurn && !succeeded) {
-          withContext(NonCancellable) { deleteConvoQuietly(preflight.convo.id) }
+          withContext(NonCancellable) { deleteConvoQuietly(prepared.convo.id) }
         }
       }
     }
@@ -433,13 +546,13 @@ class CoachingService(
    * answer; otherwise it advertises the full registry.
    */
   private fun buildCallRequest(
-    preflight: Preflight,
+    prepared: Prepared,
     messages: List<ChatMessage>,
     forceNoTools: Boolean,
   ): ChatRequest =
     ChatRequest(
       model = config.model,
-      system = preflight.system,
+      system = prepared.system,
       messages = messages,
       maxTokens = config.maxTokens,
       tools = if (forceNoTools) emptyList() else tools.definitions(),
@@ -461,16 +574,6 @@ class CoachingService(
       emptyList()
     }
 
-  /** Runs one provider call, streaming text deltas via [onDelta], and pairs the terminal with its measured latency. */
-  private suspend fun runProviderCall(
-    request: ChatRequest,
-    onDelta: suspend (String) -> Unit,
-  ): TimedTerminal {
-    val start = System.currentTimeMillis()
-    val terminal = collectTurn(request, onDelta)
-    return TimedTerminal(terminal, (System.currentTimeMillis() - start).toInt())
-  }
-
   /**
    * Extends the running message list for the next continuation call: the
    * assistant's verbatim [assistantContent] (carrying the `tool_use` blocks
@@ -484,111 +587,35 @@ class CoachingService(
     add(ChatMessage(ChatRole.USER, toolResultContent))
   }
 
-  /** Collects the provider stream, relaying text deltas via [onDelta], returning the terminal. */
-  private suspend fun collectTurn(
-    request: ChatRequest,
+  /**
+   * Collects one call's already-logged event flow (from [OpenedCall.events]),
+   * relaying text deltas via [onDelta] and returning the provider terminal. The
+   * response row is written by [LlmCallLog] when the flow terminates; this only
+   * reads the terminal to drive the loop. A stream that ends without a terminal
+   * is a provider-contract defect.
+   */
+  private suspend fun collectCall(
+    events: Flow<ChatEvent>,
     onDelta: suspend (String) -> Unit,
-  ): TurnTerminal {
-    var terminal: TurnTerminal? = null
-    chatProvider.stream(request).collect { event ->
+  ): ChatEvent.Terminal {
+    var terminal: ChatEvent.Terminal? = null
+    events.collect { event ->
       when (event) {
         is ChatEvent.ContentBlockDelta -> {
           val delta = event.delta
           if (delta is ContentDelta.Text) onDelta(delta.text)
         }
 
-        is ChatEvent.Completed -> {
-          terminal = CompletedTerminal(event.response, event.rawPayload)
-        }
-
-        is ChatEvent.Rejected -> {
-          terminal =
-            FailureTerminal(
-              retriable = false,
-              reason = event.reason,
-              providerRequestId = event.providerRequestId,
-              rawPayload = event.rawPayload,
-            )
-        }
-
-        is ChatEvent.TransientFailure -> {
-          terminal =
-            FailureTerminal(
-              retriable = true,
-              reason = event.reason,
-              providerRequestId = event.providerRequestId,
-              rawPayload = event.rawPayload,
-            )
+        is ChatEvent.Terminal -> {
+          terminal = event
         }
 
         else -> {}
       }
     }
     return terminal
-      ?: throw IllegalStateException("chat provider [${chatProvider.id}] stream completed without a terminal event")
+      ?: throw IllegalStateException("chat provider [${llmCallLog.providerId}] stream completed without a terminal event")
   }
-
-  /**
-   * Writes the response row for [requestRow] (this call's `convo_responses`
-   * pair) and classifies the outcome for the loop. A [CallOutcome.Completed]
-   * carries both the persisted row and the parsed [ChatResponse] (so the loop
-   * can read `stop_reason`/content without re-reading the DB); a failure
-   * (provider Rejected/Transient, synthetic defect, or a non-durable write)
-   * yields [CallOutcome.Failed]. This is the per-call recording point for every
-   * outcome — success or failure — so no billed call goes unrecorded.
-   */
-  private suspend fun persistCallResponse(
-    convoId: ConvoId,
-    requestRow: ConvoRequest,
-    terminal: TurnTerminal,
-    latencyMs: Int,
-  ): CallOutcome =
-    try {
-      database.withConnection { session ->
-        when (terminal) {
-          is CompletedTerminal -> {
-            val response =
-              ConvosDao
-                .appendResponse(
-                  session,
-                  completedRow(requestRow, terminal.response, latencyMs),
-                  terminal.rawPayload,
-                ).getOrThrow()
-            CallOutcome.Completed(response, terminal.response)
-          }
-
-          is FailureTerminal -> {
-            ConvosDao
-              .appendResponse(
-                session,
-                errorRow(requestRow, terminal.providerRequestId, latencyMs),
-                terminal.rawPayload,
-              ).getOrThrow()
-            CallOutcome.Failed(failedEvent(terminal.retriable, terminal.reason))
-          }
-
-          is SyntheticFailure -> {
-            ConvosDao
-              .appendResponse(
-                session,
-                errorRow(requestRow, terminal.providerRequestId, latencyMs),
-                null,
-              ).getOrThrow()
-            CallOutcome.Failed(failedEvent(terminal.retriable, terminal.reason))
-          }
-        }
-      }
-    } catch (e: Exception) {
-      // A reply that is not durable is never reported as success: listMessages
-      // could never show it. Log the loss (bracketed) and report transient.
-      logger.error(
-        "terminal persistence failed for convo=[{}] request=[{}]: [{}]",
-        convoId.asString,
-        requestRow.id.asString,
-        e.message,
-      )
-      CallOutcome.Failed(ReplyEvent.Failed(retriable = true, reason = COACH_UNAVAILABLE_REASON))
-    }
 
   /**
    * Dispatches every requested tool in order, answering each with one
@@ -640,62 +667,6 @@ class CoachingService(
       put("tool", name)
       put("failure", failureKind)
     }
-
-  /**
-   * Appends the tool_result continuation request row (`kind = tool_result`),
-   * carrying the identical `tool_result` block array that is sent as the next
-   * call's new input. Its envelope mirrors the user turn's; `request_params` is
-   * null (the tool set is static registry config, not per-request vendor params).
-   *
-   * It reuses the opener's `turn_id` (`preflight.userTurn.turnId`, surfaced by
-   * the opener's `RETURNING *`) — never re-minting — so every row of the
-   * excursion shares one turn_id and the visible-exchange projection and
-   * extraction window group them as one logical turn.
-   */
-  private suspend fun appendToolResultTurn(
-    preflight: Preflight,
-    content: JsonElement,
-  ): ConvoRequest =
-    database.withConnection { session ->
-      ConvosDao
-        .appendRequest(
-          session,
-          NewConvoRequest(
-            convoId = preflight.convo.id,
-            provider = chatProvider.id,
-            modelRequested = config.model,
-            systemPromptId = preflight.prompt.id,
-            requestParams = null,
-            content = content,
-            turnId = preflight.userTurn.turnId,
-            kind = ConvoRequestKind.TOOL_RESULT,
-          ),
-        ).getOrThrow()
-    }
-
-  /** NonCancellable finalizer write for an abandoned (client-disconnected) in-flight request. */
-  private suspend fun persistAbandoned(
-    convoId: ConvoId,
-    requestRow: ConvoRequest,
-  ) {
-    try {
-      database.withConnection { session ->
-        ConvosDao
-          .appendResponse(
-            session,
-            errorRow(requestRow, providerRequestId = null, latencyMs = null),
-            null,
-          ).getOrThrow()
-      }
-    } catch (e: Exception) {
-      logger.error(
-        "abandoned-turn persistence failed for convo=[{}] request=[{}]: [{}]",
-        convoId.asString,
-        requestRow.id.asString,
-        e.message,
-      )
-    }
-  }
 
   /** Soft-deletes the convo, swallowing (bracketed-logging) any failure — cleanup must not mask the turn outcome. */
   private suspend fun deleteConvoQuietly(convoId: ConvoId) {
@@ -800,11 +771,11 @@ class CoachingService(
    * commitments open to re-surface next session. Empty for postTurn and when
    * nothing was pending, so this is a no-op on the common path.
    */
-  private suspend fun markDisclosedCommitmentsFulfilled(preflight: Preflight) {
-    if (preflight.disclosedCommitmentIds.isEmpty()) return
+  private suspend fun markDisclosedCommitmentsFulfilled(prepared: Prepared) {
+    if (prepared.disclosedCommitmentIds.isEmpty()) return
     database.withConnection { session ->
-      for (commitmentId in preflight.disclosedCommitmentIds) {
-        CommitmentsDao.markFulfilled(session, commitmentId, preflight.convo.id).getOrThrow()
+      for (commitmentId in prepared.disclosedCommitmentIds) {
+        CommitmentsDao.markFulfilled(session, commitmentId, prepared.convo.id).getOrThrow()
       }
     }
   }
@@ -816,49 +787,22 @@ class CoachingService(
    * suggestions open to re-surface next session. Empty for postTurn and when
    * nothing was pending, so this is a no-op on the common path.
    */
-  private suspend fun markSurfacedFitSuggestions(preflight: Preflight) {
-    if (preflight.surfacedFitSuggestionIds.isEmpty()) return
+  private suspend fun markSurfacedFitSuggestions(prepared: Prepared) {
+    if (prepared.surfacedFitSuggestionIds.isEmpty()) return
     database.withConnection { session ->
-      for (suggestionId in preflight.surfacedFitSuggestionIds) {
-        FitSuggestionsDao.markSurfaced(session, suggestionId, preflight.convo.id).getOrThrow()
+      for (suggestionId in prepared.surfacedFitSuggestionIds) {
+        FitSuggestionsDao.markSurfaced(session, suggestionId, prepared.convo.id).getOrThrow()
       }
     }
-  }
-
-  /**
-   * Appends the `kind='user'` opener of a new logical turn, minting its
-   * `turn_id` once via [ConvosDao.nextTurnId]. The loop threads this same
-   * `turn_id` onto every `tool_result` continuation of the excursion (see
-   * [appendToolResultTurn]), so all rows of the turn share one value; it is never
-   * re-minted mid-excursion.
-   */
-  private fun appendUserTurn(
-    session: ed.unicoach.db.dao.SqlSession,
-    convoId: ConvoId,
-    systemPromptId: SystemPromptId,
-    message: String,
-  ): ConvoRequest {
-    val turnId = ConvosDao.nextTurnId(session).getOrThrow()
-    return ConvosDao
-      .appendRequest(
-        session,
-        NewConvoRequest(
-          convoId = convoId,
-          provider = chatProvider.id,
-          modelRequested = config.model,
-          systemPromptId = systemPromptId,
-          requestParams = null,
-          content = ConvoContent.userContent(message),
-          turnId = turnId,
-        ),
-      ).getOrThrow()
   }
 
   /**
    * Visible exchanges as ordered chat messages: USER then ASSISTANT per
    * exchange, text-only. Cross-turn replay stays text-only (thinking and tool
    * plumbing are not replayed); a tool excursion collapses to its user text and
-   * final answer via [ConvoProjection.visibleExchanges].
+   * final answer via [ConvoProjection.visibleExchanges]. Both content sides come
+   * from the joined generic call log (RFC 106): the user input from
+   * [VisibleExchange.userContent], the coach answer from [VisibleExchange.finalContent].
    */
   private fun visibleHistory(
     session: ed.unicoach.db.dao.SqlSession,
@@ -867,49 +811,11 @@ class CoachingService(
     val exchanges = ConvoProjection.visibleExchanges(ConvosDao.listTurns(session, convoId).getOrThrow())
     return buildList {
       for (exchange in exchanges) {
-        add(ChatMessage.text(ChatRole.USER, ConvoContent.renderText(exchange.userRequest.content)))
-        add(ChatMessage.text(ChatRole.ASSISTANT, ConvoContent.renderText(exchange.finalResponse.content ?: continue)))
+        add(ChatMessage.text(ChatRole.USER, ConvoContent.renderText(exchange.userContent)))
+        add(ChatMessage.text(ChatRole.ASSISTANT, ConvoContent.renderText(exchange.finalContent)))
       }
     }
   }
-
-  private fun completedRow(
-    requestRow: ConvoRequest,
-    response: ChatResponse,
-    latencyMs: Int,
-  ): NewConvoResponse =
-    NewConvoResponse(
-      requestId = requestRow.id,
-      convoId = requestRow.convoId,
-      content = response.content,
-      modelResolved = response.modelResolved,
-      stopReason = response.stopReason,
-      inputTokens = response.usage.inputTokens,
-      outputTokens = response.usage.outputTokens,
-      cacheReadTokens = response.usage.cacheReadTokens,
-      cacheWriteTokens = response.usage.cacheWriteTokens,
-      providerRequestId = response.providerRequestId,
-      latencyMs = latencyMs,
-    )
-
-  private fun errorRow(
-    requestRow: ConvoRequest,
-    providerRequestId: String?,
-    latencyMs: Int?,
-  ): NewConvoResponse =
-    NewConvoResponse(
-      requestId = requestRow.id,
-      convoId = requestRow.convoId,
-      content = null,
-      modelResolved = null,
-      stopReason = "error",
-      inputTokens = null,
-      outputTokens = null,
-      cacheReadTokens = null,
-      cacheWriteTokens = null,
-      providerRequestId = providerRequestId,
-      latencyMs = latencyMs,
-    )
 
   private fun failedEvent(
     retriable: Boolean,
@@ -941,51 +847,4 @@ class CoachingService(
   }
 
   private fun nameFieldError(error: ValidationError): FieldError = FieldError(NAME_FIELD, "Invalid name: $error")
-
-  // ---------------------------------------------------------------------------
-  // Internal terminal carriers
-  // ---------------------------------------------------------------------------
-
-  private sealed interface TurnTerminal
-
-  /** One provider call's terminal paired with its measured wall-clock latency. */
-  private class TimedTerminal(
-    val terminal: TurnTerminal,
-    val latencyMs: Int,
-  )
-
-  private class CompletedTerminal(
-    val response: ChatResponse,
-    val rawPayload: JsonElement,
-  ) : TurnTerminal
-
-  private class FailureTerminal(
-    val retriable: Boolean,
-    val reason: String,
-    val providerRequestId: String?,
-    val rawPayload: JsonElement?,
-  ) : TurnTerminal
-
-  private class SyntheticFailure(
-    val retriable: Boolean,
-    val reason: String,
-    val providerRequestId: String?,
-  ) : TurnTerminal
-
-  /**
-   * The classified outcome of one persisted provider call in the loop.
-   * [Completed] carries the persisted response row and the parsed [ChatResponse]
-   * (so the loop reads `stop_reason`/content without re-reading the DB);
-   * [Failed] carries the mapped terminal event.
-   */
-  private sealed interface CallOutcome {
-    data class Completed(
-      val response: ed.unicoach.db.models.ConvoResponse,
-      val chatResponse: ChatResponse,
-    ) : CallOutcome
-
-    data class Failed(
-      val event: ReplyEvent.Failed,
-    ) : CallOutcome
-  }
 }

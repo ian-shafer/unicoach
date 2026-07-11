@@ -139,7 +139,7 @@ class ConvoToolLoopRoutingTest {
             database,
             sessionConfig,
             requestSizeConfig,
-            fakeProvider,
+            ed.unicoach.coaching.LlmCallLog(fakeProvider, database),
             coachingConfig,
             clientKeyGateConfig,
             emailVerificationConfig,

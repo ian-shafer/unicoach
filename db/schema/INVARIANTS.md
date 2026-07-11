@@ -31,3 +31,4 @@ freshly-migrated one, so the schema stops being reproducible from this directory
 - [x] [RFC-82: Versioned Colleges](../../rfc/82-versioned-colleges.md)
 - [x] [RFC-91: College List](../../rfc/91-college-list.md)
 - [x] [RFC-93: Synthesis](../../rfc/93-synthesis.md)
+- [x] [RFC-106: Provider-agnostic LLM call log](../../rfc/106-provider-agnostic-llm-call-log.md)

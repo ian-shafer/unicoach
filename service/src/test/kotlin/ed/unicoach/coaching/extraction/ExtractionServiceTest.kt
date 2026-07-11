@@ -60,7 +60,7 @@ class ExtractionServiceTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE observations, claim_support, claims, extraction_runs, " +
-          "convos, convo_requests, convo_responses, convo_responses_raw, system_prompts, students, users CASCADE",
+          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
       )
     }
     // Re-seed BOTH migration-seeded prompts the truncate cleared. Leaving the
@@ -87,7 +87,8 @@ class ExtractionServiceTest {
           .getOrThrow(),
       ).getOrThrow()
 
-  private fun service(provider: ChatProvider): ExtractionService = ExtractionService(database, provider, config)
+  private fun service(provider: ChatProvider): ExtractionService =
+    ExtractionService(database, ed.unicoach.coaching.LlmCallLog(provider, database), config)
 
   /** A config pinning a prompt (name, version) that has no catalog row. */
   private val missingPromptConfig =
@@ -312,18 +313,23 @@ class ExtractionServiceTest {
     close: Boolean = true,
   ): Long {
     val pid = promptId()
+    // Since RFC 106 the request I/O envelope lives in the generic llm_requests
+    // call log; convo_requests carries only the FK. The projection lifts this
+    // turn's user input from the last role='user' message of llm_requests.content,
+    // so seed content as a single-user-message messages array.
+    val llmRequestId = appendLlmRequest("""[{"role":"user","content":[{"type":"text","text":${quote(text)}}]}]""")
     val requestId =
       connection
         .prepareStatement(
           """
-          INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id, created_at)
-          VALUES (?, 'anthropic', 'claude-opus-4-8', ?, ?::jsonb, ?, NOW() - (? || ' days')::interval)
+          INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, created_at)
+          VALUES (?, ?, ?, ?, NOW() - (? || ' days')::interval)
           RETURNING id
           """.trimIndent(),
         ).use { stmt ->
           stmt.setObject(1, convoId)
           stmt.setObject(2, pid)
-          stmt.setString(3, """[{"type":"text","text":${quote(text)}}]""")
+          stmt.setLong(3, llmRequestId)
           stmt.setLong(4, turnId)
           stmt.setString(5, utteredDaysAgo.toString())
           stmt.executeQuery().use { rs ->
@@ -331,7 +337,7 @@ class ExtractionServiceTest {
             rs.getLong("id")
           }
         }
-    if (close) appendResponse(convoId, requestId, "end_turn", "(coach answer)")
+    if (close) appendResponseForLlmRequest(llmRequestId, "end_turn", "(coach answer)")
     return requestId
   }
 
@@ -345,17 +351,19 @@ class ExtractionServiceTest {
     turnId: Long,
   ): Long {
     val pid = promptId()
+    val llmRequestId =
+      appendLlmRequest("""[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":${quote(text)}}]}]""")
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id, kind)
-        VALUES (?, 'anthropic', 'claude-opus-4-8', ?, ?::jsonb, ?, 'tool_result')
+        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, kind)
+        VALUES (?, ?, ?, ?, 'tool_result')
         RETURNING id
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convoId)
         stmt.setObject(2, pid)
-        stmt.setString(3, """[{"type":"tool_result","tool_use_id":"t","content":${quote(text)}}]""")
+        stmt.setLong(3, llmRequestId)
         stmt.setLong(4, turnId)
         stmt.executeQuery().use { rs ->
           rs.next()
@@ -363,6 +371,23 @@ class ExtractionServiceTest {
         }
       }
   }
+
+  /** Appends a generic llm_requests row with [contentJson] as its messages array, returns its id. */
+  private fun appendLlmRequest(contentJson: String): Long =
+    connection
+      .prepareStatement(
+        """
+        INSERT INTO llm_requests (provider, model_requested, system, content, max_tokens)
+        VALUES ('anthropic', 'claude-opus-4-8', 'be a good coach', ?::jsonb, 1024)
+        RETURNING id
+        """.trimIndent(),
+      ).use { stmt ->
+        stmt.setString(1, contentJson)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return rs.getLong("id")
+        }
+      }
 
   /** Reads back the turn_id of a persisted convo_requests row (for threading an excursion). */
   private fun turnIdOf(requestId: Long): Long =
@@ -374,27 +399,49 @@ class ExtractionServiceTest {
       }
     }
 
-  /** Appends a response row for [requestId] with the given stop_reason and coach text. */
+  /**
+   * Appends a completed `llm_responses` row for the convo_requests row [requestId],
+   * resolving its `llm_request_id` first (RFC 106 moved the response into the
+   * generic call log, reached via convo_requests.llm_request_id).
+   */
   private fun appendResponse(
     convoId: UUID,
     requestId: Long,
     stopReason: String,
     text: String,
   ) {
+    appendResponseForLlmRequest(llmRequestIdOf(requestId), stopReason, text)
+  }
+
+  /** Appends a completed `llm_responses` row directly for an llm_requests id. */
+  private fun appendResponseForLlmRequest(
+    llmRequestId: Long,
+    stopReason: String,
+    text: String,
+  ) {
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason)
-        VALUES (?, ?, ?::jsonb, 'm', ?)
+        INSERT INTO llm_responses (request_id, outcome, content, model_resolved, stop_reason, latency_ms)
+        VALUES (?, 'completed', ?::jsonb, 'm', ?, 0)
         """.trimIndent(),
       ).use { stmt ->
-        stmt.setLong(1, requestId)
-        stmt.setObject(2, convoId)
-        stmt.setString(3, """[{"type":"text","text":${quote(text)}}]""")
-        stmt.setString(4, stopReason)
+        stmt.setLong(1, llmRequestId)
+        stmt.setString(2, """[{"type":"text","text":${quote(text)}}]""")
+        stmt.setString(3, stopReason)
         stmt.executeUpdate()
       }
   }
+
+  /** Reads back the llm_request_id a convo_requests row references. */
+  private fun llmRequestIdOf(requestId: Long): Long =
+    connection.prepareStatement("SELECT llm_request_id FROM convo_requests WHERE id = ?").use { stmt ->
+      stmt.setLong(1, requestId)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getLong("llm_request_id")
+      }
+    }
 
   private fun quote(s: String): String = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
@@ -641,7 +688,8 @@ class ExtractionServiceTest {
       connection.createStatement().use { stmt ->
         stmt
           .executeQuery(
-            "SELECT outcome, input_tokens, output_tokens, failure_category, failure_reason FROM extraction_runs WHERE convo_id = '$convo'",
+            "SELECT er.outcome, resp.input_tokens, resp.output_tokens, er.failure_category, er.failure_reason " +
+              "FROM extraction_runs er JOIN llm_responses resp ON resp.request_id = er.llm_request_id WHERE er.convo_id = '$convo'",
           ).use { rs ->
             rs.next()
             assertEquals("failed", rs.getString("outcome"))
@@ -727,7 +775,8 @@ class ExtractionServiceTest {
       connection.createStatement().use { stmt ->
         stmt
           .executeQuery(
-            "SELECT outcome, input_tokens, output_tokens, failure_category, failure_reason FROM extraction_runs WHERE convo_id = '$convo'",
+            "SELECT er.outcome, resp.input_tokens, resp.output_tokens, er.failure_category, er.failure_reason " +
+              "FROM extraction_runs er JOIN llm_responses resp ON resp.request_id = er.llm_request_id WHERE er.convo_id = '$convo'",
           ).use { rs ->
             rs.next()
             assertEquals("failed", rs.getString("outcome"))
@@ -843,13 +892,17 @@ class ExtractionServiceTest {
       service(NoToolUseProvider(usage = TokenUsage(30, 0, 0, 0)))
         .extract(ConvoId(convo), ConvoRequestId(req2))
 
-      connection.prepareStatement("SELECT COALESCE(SUM(input_tokens),0) FROM extraction_runs WHERE student_id = ?").use { stmt ->
-        stmt.setObject(1, student)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          assertEquals(130, rs.getInt(1))
+      connection
+        .prepareStatement(
+          "SELECT COALESCE(SUM(resp.input_tokens),0) FROM extraction_runs er " +
+            "JOIN llm_responses resp ON resp.request_id = er.llm_request_id WHERE er.student_id = ?",
+        ).use { stmt ->
+          stmt.setObject(1, student)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals(130, rs.getInt(1))
+          }
         }
-      }
 
       connection
         .prepareStatement(
@@ -879,7 +932,12 @@ class ExtractionServiceTest {
       val req2 = appendUserTurn(convo, "turn two")
       val req3 = appendUserTurn(convo, "turn three")
 
-      val cappedService = ExtractionService(database, JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), cappedWindowConfig)
+      val cappedService =
+        ExtractionService(
+          database,
+          ed.unicoach.coaching.LlmCallLog(JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), database),
+          cappedWindowConfig,
+        )
 
       // Target req3 but cap=2: the OLDEST two turns (req1, req2) are distilled and
       // the watermark advances ONLY to req2 — req3 is left for a later pass, never
@@ -984,8 +1042,11 @@ class ExtractionServiceTest {
       // A config pinning a (name, version) with no catalog row → resolution fails
       // in the read phase, surfacing a transient failure with no run.
       val result =
-        ExtractionService(database, JsonProvider(jsonDoc = newClaimDoc(req, "hi")), missingPromptConfig)
-          .extract(ConvoId(convo), ConvoRequestId(req))
+        ExtractionService(
+          database,
+          ed.unicoach.coaching.LlmCallLog(JsonProvider(jsonDoc = newClaimDoc(req, "hi")), database),
+          missingPromptConfig,
+        ).extract(ConvoId(convo), ConvoRequestId(req))
       assertTrue(result is ExtractionResult.TransientFailure, "got $result")
       assertEquals(0L, watermark(convo))
       assertEquals(0, countWhere("extraction_runs", "convo_id", convo))
@@ -1048,7 +1109,12 @@ class ExtractionServiceTest {
       val plain2 = appendUserTurn(convo, "plain turn two", close = false)
       appendResponse(convo, plain2, "end_turn", "answer two")
 
-      val cappedService = ExtractionService(database, JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), cappedWindowConfig)
+      val cappedService =
+        ExtractionService(
+          database,
+          ed.unicoach.coaching.LlmCallLog(JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), database),
+          cappedWindowConfig,
+        )
 
       // First pass: target plain2, cap = 2 whole turns. The excursion is kept whole
       // (not split at exTool1) and plain1 is kept; the watermark lands on plain1
@@ -1126,7 +1192,12 @@ class ExtractionServiceTest {
       val exTool = appendToolResultTurn(convo, "(result)", exTurnId)
       appendResponse(convo, exTool, "end_turn", "Final answer.")
 
-      val cappedService = ExtractionService(database, JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), cappedWindowConfig)
+      val cappedService =
+        ExtractionService(
+          database,
+          ed.unicoach.coaching.LlmCallLog(JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), database),
+          cappedWindowConfig,
+        )
       val result = cappedService.extract(ConvoId(convo), ConvoRequestId(exTool))
       assertTrue(result is ExtractionResult.Success, "got $result")
       // Both whole turns distilled in one pass; watermark on the excursion's last row.

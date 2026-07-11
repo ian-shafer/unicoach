@@ -9,12 +9,12 @@ import ed.unicoach.auth.GoogleAuthConfig
 import ed.unicoach.auth.GoogleTokenVerifier
 import ed.unicoach.auth.GoogleTokenVerifierFactory
 import ed.unicoach.chat.ChatConfig
-import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.chat.ToolRegistry
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.CoachingService
 import ed.unicoach.coaching.CollegeChatTool
+import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.college.CollegeSearchService
@@ -82,11 +82,6 @@ fun startServer(
       .from(config)
       .getOrThrow()
 
-  val chatProvider =
-    ChatProviderFactory
-      .fromConfig(ChatConfig.from(config).getOrThrow())
-      .getOrThrow()
-
   val coachingConfig =
     CoachingConfig
       .from(config)
@@ -119,6 +114,16 @@ fun startServer(
 
   val database = Database(dbConfig)
 
+  // The raw ChatProvider is named only here, wrapped immediately in the
+  // LlmCallLog seam (RFC 106); no caller receives the pure provider.
+  val llmCallLog =
+    LlmCallLog(
+      ChatProviderFactory
+        .fromConfig(ChatConfig.from(config).getOrThrow())
+        .getOrThrow(),
+      database,
+    )
+
   val queueService = QueueService(database)
 
   val ignorePathPrefixes =
@@ -143,7 +148,7 @@ fun startServer(
         database,
         sessionConfig,
         requestSizeConfig,
-        chatProvider,
+        llmCallLog,
         coachingConfig,
         clientKeyGateConfig,
         emailVerificationConfig,
@@ -180,7 +185,7 @@ fun Application.appModule(
   database: Database,
   sessionConfig: SessionConfig,
   requestSizeConfig: RequestSizeConfig,
-  chatProvider: ChatProvider,
+  llmCallLog: LlmCallLog,
   coachingConfig: CoachingConfig,
   clientKeyGateConfig: ClientKeyGateConfig,
   emailVerificationConfig: EmailVerificationConfig,
@@ -211,7 +216,7 @@ fun Application.appModule(
         CollegeChatTool(CollegeSearchTool(CollegeSearchService(database))),
       ),
     )
-  val coachingService = CoachingService(database, chatProvider, coachingConfig, toolRegistry)
+  val coachingService = CoachingService(database, llmCallLog, coachingConfig, toolRegistry)
   val collegeListService = CollegeListService(database)
 
   configureEmailVerificationGate(authService, sessionConfig)

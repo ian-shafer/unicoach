@@ -2,15 +2,13 @@ package ed.unicoach.coaching.extraction
 
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatMessage
-import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatRole
-import ed.unicoach.chat.TokenUsage
-import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ConvoContent
 import ed.unicoach.coaching.ConvoProjection
 import ed.unicoach.coaching.ForcedToolInput
 import ed.unicoach.coaching.JsonParseFailure
+import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.ToolSchema
 import ed.unicoach.coaching.category
 import ed.unicoach.coaching.forcedToolChoice
@@ -38,6 +36,7 @@ import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ConvoTurn
 import ed.unicoach.db.models.ExtractionOutcome
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewExtractionRun
 import ed.unicoach.db.models.NewObservation
@@ -74,7 +73,7 @@ import kotlin.math.roundToInt
  */
 open class ExtractionService(
   private val database: Database,
-  private val chatProvider: ChatProvider,
+  private val llmCallLog: LlmCallLog,
   private val config: ExtractionConfig,
 ) {
   private val logger = LoggerFactory.getLogger(ExtractionService::class.java)
@@ -214,8 +213,12 @@ open class ExtractionService(
      */
     val isClosed: Boolean
       get() {
-        val tail = rows.maxByOrNull { it.request.id.value }?.response ?: return false
-        return tail.content != null && tail.stopReason != ConvoProjection.TOOL_USE_STOP_REASON
+        val tail = rows.maxByOrNull { it.request.id.value }?.call?.response ?: return false
+        // The turn is closed only on a completed, non-tool_use terminal; a
+        // tool_use call is mid-excursion, a failed/cancelled terminal (no
+        // Completed outcome) is not a final answer.
+        val outcome = tail.outcome as? ed.unicoach.db.models.LlmCallOutcome.Completed ?: return false
+        return outcome.stopReason != ConvoProjection.TOOL_USE_STOP_REASON
       }
   }
 
@@ -238,15 +241,20 @@ open class ExtractionService(
         toolChoice = forcedToolChoice(RECORD_EXTRACTION_TOOL_NAME),
       )
 
-    val terminal =
+    // LlmCallLog logs the request/response/raw and returns the classified terminal
+    // plus the log-owned llm_request_id the run row references (RFC 106). Provider
+    // trouble surfaces as a Rejected/TransientFailure terminal; a defect throwing
+    // from the flow is recorded as internal_error and rethrown to this catch.
+    val loggedCall =
       try {
-        chatProvider.chat(request)
+        llmCallLog.record(request)
       } catch (e: Exception) {
         logger.warn("extraction provider call failed for convo=[{}]", convoId.asString, e)
         return ExtractionResult.TransientFailure("provider call: ${e.message}", e)
       }
+    val llmRequestId = loggedCall.llmRequestId
 
-    return when (terminal) {
+    return when (val terminal = loggedCall.terminal) {
       // No billed, usable call: nothing to account, no run row.
       is ChatEvent.Rejected -> {
         ExtractionResult.TransientFailure("provider rejected: ${terminal.reason}")
@@ -257,8 +265,6 @@ open class ExtractionService(
       }
 
       is ChatEvent.Completed -> {
-        val usage = terminal.response.usage
-        val modelResolved = terminal.response.modelResolved
         // A Completed call is billed regardless of what the tool input contains.
         // The forced tool's input object is the payload; a missing tool_use block
         // is the tier-A analogue of an unparseable envelope.
@@ -274,12 +280,12 @@ open class ExtractionService(
               convoId.asString,
               parseResult.failure.toDisplay(),
             )
-            writeFailedRun(convoId, throughRequestId, window, parseResult.failure, usage, modelResolved)
+            writeFailedRun(convoId, throughRequestId, window, parseResult.failure, llmRequestId)
             ExtractionResult.TransientFailure("unusable extraction output: ${parseResult.failure.toDisplay()}")
           }
 
           is ParseResult.Parsed -> {
-            writePhase(convoId, throughRequestId, window, parseResult.output, usage, modelResolved)
+            writePhase(convoId, throughRequestId, window, parseResult.output, llmRequestId)
           }
         }
       }
@@ -300,8 +306,7 @@ open class ExtractionService(
     throughRequestId: ConvoRequestId,
     window: ReadPhase.Window,
     failure: JsonParseFailure,
-    usage: TokenUsage,
-    modelResolved: String?,
+    llmRequestId: LlmRequestId,
   ) {
     database.withConnection { session ->
       AdvisoryLockDao.lockStudent(session, window.studentId).getOrThrow()
@@ -316,12 +321,7 @@ open class ExtractionService(
             throughRequestId = throughRequestId,
             outcome = ExtractionOutcome.Failed(failure.category, failure.toDisplay()),
             systemPromptId = window.prompt.id,
-            provider = chatProvider.id,
-            modelResolved = modelResolved,
-            inputTokens = usage.inputTokens,
-            outputTokens = usage.outputTokens,
-            cacheReadTokens = usage.cacheReadTokens,
-            cacheWriteTokens = usage.cacheWriteTokens,
+            llmRequestId = llmRequestId,
           ),
         ).getOrThrow()
     }
@@ -332,8 +332,7 @@ open class ExtractionService(
     throughRequestId: ConvoRequestId,
     window: ReadPhase.Window,
     parsed: ParsedOutput,
-    usage: TokenUsage,
-    modelResolved: String?,
+    llmRequestId: LlmRequestId,
   ): ExtractionResult =
     try {
       database.withConnection { session ->
@@ -354,7 +353,7 @@ open class ExtractionService(
             .getOrThrow()
             .associateBy { it.id }
 
-        applyWrites(session, convoId, throughRequestId, window, parsed, freshActive, usage, modelResolved)
+        applyWrites(session, convoId, throughRequestId, window, parsed, freshActive, llmRequestId)
       }
     } catch (e: StaleSupersedeTargetException) {
       logger.warn(
@@ -381,8 +380,7 @@ open class ExtractionService(
     window: ReadPhase.Window,
     parsed: ParsedOutput,
     freshActive: Map<ClaimId, Claim>,
-    usage: TokenUsage,
-    modelResolved: String?,
+    llmRequestId: LlmRequestId,
   ): ExtractionResult {
     val validSourceIds = window.turns.map { it.request.id.value }.toSet()
 
@@ -470,12 +468,7 @@ open class ExtractionService(
               claimsSuperseded = claimsSuperseded,
             ),
           systemPromptId = window.prompt.id,
-          provider = chatProvider.id,
-          modelResolved = modelResolved,
-          inputTokens = usage.inputTokens,
-          outputTokens = usage.outputTokens,
-          cacheReadTokens = usage.cacheReadTokens,
-          cacheWriteTokens = usage.cacheWriteTokens,
+          llmRequestId = llmRequestId,
         ),
       ).getOrThrow()
 
@@ -548,8 +541,8 @@ open class ExtractionService(
         // the synthetic tool_result requests and tool_use responses inside the
         // window contribute nothing to the distilled transcript.
         for (exchange in ConvoProjection.visibleExchanges(window.turns)) {
-          appendLine("[userTurn id=${exchange.userRequest.id.value}] ${ConvoContent.renderText(exchange.userRequest.content)}")
-          appendLine("[coach] ${ConvoContent.renderText(exchange.finalResponse.content ?: kotlinx.serialization.json.JsonNull)}")
+          appendLine("[userTurn id=${exchange.userRequest.id.value}] ${ConvoContent.renderText(exchange.userContent)}")
+          appendLine("[coach] ${ConvoContent.renderText(exchange.finalContent)}")
         }
       }
     return listOf(ChatMessage.text(ChatRole.USER, transcript))

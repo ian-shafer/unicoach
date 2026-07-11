@@ -28,30 +28,46 @@ class FitLensRunsResourceTest {
     return AdminTestSupport.cookieHeader(AdminTestSupport.login(email, "Password123!"))
   }
 
-  /** A user/student plus one applied run; returns its id string. */
-  private fun seedRun(): String {
+  /** A user/student plus one applied run (two owning calls); returns its ids. */
+  private fun seedRun(): SeededRun {
     val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
     val student = AdminTestSupport.seedStudent(user.id)
-    return AdminTestSupport
-      .seedFitLensRun(student.id)
-      .id.value
-      .toString()
+    val queryLlmRequestId = AdminTestSupport.seedLlmRequest()
+    val reasonLlmRequestId = AdminTestSupport.seedLlmRequest()
+    val run =
+      AdminTestSupport.seedFitLensRun(
+        student.id,
+        queryLlmRequestId = queryLlmRequestId,
+        reasonLlmRequestId = reasonLlmRequestId,
+      )
+    return SeededRun(
+      runId = run.id.value.toString(),
+      queryLlmRequestId = queryLlmRequestId.value.toString(),
+      reasonLlmRequestId = reasonLlmRequestId.value.toString(),
+    )
   }
 
+  private data class SeededRun(
+    val runId: String,
+    val queryLlmRequestId: String,
+    val reasonLlmRequestId: String,
+  )
+
   @Test
-  fun `list shows a seeded row with token columns and the dashboard lists the nav entry`() =
+  fun `list shows a seeded row and the dashboard lists the nav entry`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
-      val runId = seedRun()
+      val runId = seedRun().runId
 
       val list = client().get("/fit-lens-run") { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.OK, list.status)
       val body = list.bodyAsText()
       assertTrue(body.contains(runId), "List must render the run row")
-      assertTrue(body.contains("Input Tokens"), "List must show the token columns (inList = true)")
+      // The token columns moved to the linked calls (RFC 106): they no longer render here.
+      assertFalse(body.contains("Input Tokens"), "List must not show the moved token columns")
       assertTrue(body.contains("Suggestions Written"), "List must show the suggestions-written column")
-      assertFalse(body.contains("Cache Read Tokens"), "List must omit inList=false token columns")
+      assertTrue(body.contains("Query LLM Request ID"), "List must show the query linked-call column")
 
       val dashboard = client().get("/") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
       assertTrue(dashboard.contains("/fit-lens-run"), "Dashboard must link to /fit-lens-run")
@@ -59,18 +75,26 @@ class FitLensRunsResourceTest {
     }
 
   @Test
-  fun `detail shows all fields including the inList=false provenance and cache token columns`() =
+  fun `detail links to both owning calls and no longer renders moved token columns`() =
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
-      val runId = seedRun()
+      val seeded = seedRun()
 
-      val detail = client().get("/fit-lens-run/$runId") { header(HttpHeaders.Cookie, cookie) }
+      val detail = client().get("/fit-lens-run/${seeded.runId}") { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.OK, detail.status)
       val body = detail.bodyAsText()
-      assertTrue(body.contains("Cache Read Tokens"), "Detail must render inList=false columns")
+      assertFalse(body.contains("Cache Read Tokens"), "Detail must not render the moved token columns")
       assertTrue(body.contains("Query Prompt ID"), "Detail must render provenance columns")
       assertTrue(body.contains("Reason Prompt ID"), "Detail must render both prompt pins")
+      assertTrue(
+        body.contains("/llm-request/${seeded.queryLlmRequestId}"),
+        "The queryLlmRequestId cell must link to the generic call log",
+      )
+      assertTrue(
+        body.contains("/llm-request/${seeded.reasonLlmRequestId}"),
+        "The reasonLlmRequestId cell must link to the generic call log",
+      )
     }
 
   @Test
@@ -78,7 +102,7 @@ class FitLensRunsResourceTest {
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
-      val runId = seedRun()
+      val runId = seedRun().runId
 
       assertEquals(HttpStatusCode.NotFound, client().get("/fit-lens-run/new") { header(HttpHeaders.Cookie, cookie) }.status)
       assertEquals(HttpStatusCode.NotFound, client().get("/fit-lens-run/$runId/edit") { header(HttpHeaders.Cookie, cookie) }.status)

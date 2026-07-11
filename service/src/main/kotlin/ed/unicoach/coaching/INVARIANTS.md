@@ -15,18 +15,43 @@ that reads as a model problem, not a code regression — re-introducing the
 unparseable-envelope failure class this design removes. The coupling is a
 write-path discipline, not type-enforced.
 
-## Every provider call in the tool-use loop records its own usage
+## Every `ChatProvider` call goes through `LlmCallLog`
 
-**Rule:** Each provider call the chat tool-use loop makes MUST persist its own
-`convo_responses` row (carrying that call's `TokenUsage`) before the loop makes
-the next call or returns — including tool-continuation calls, the forced
-no-tools cap call, and calls that fail. No billed call may be made without
-recording a response row.
+**Rule:** All LLM provider calls MUST be made through `LlmCallLog` (`record` /
+`recordStreaming`); no code outside a process composition root may hold or call
+a raw `ChatProvider`. Each composition root MUST construct the raw provider only
+to wrap it in `LlmCallLog`, and inject only the `LlmCallLog`.
 
-**Why:** The per-student token ledger and per-turn audit derive from
-`convo_responses`. A continuation billed without a row is spend that happened
-but was never recorded, silently understating student usage and losing the
-provenance of a turn that made multiple model calls.
+**Why:** The generic log is the sole record of every request/response/raw and
+the single token ledger. A direct `chatProvider.chat/stream` call bypasses it —
+silent, unrecorded spend and an unobservable call, exactly the gap this design
+closes. The coupling is a wiring discipline, not type-enforced (the port stays
+callable), so a refactor can reintroduce a bypass.
+
+## Every logged request gets a terminal response row
+
+**Rule:** Every `llm_requests` row `LlmCallLog` opens MUST get exactly one
+`llm_responses` row before the opening call returns or propagates — a joint
+discipline across the seam and its callers. (a) For a call whose stream is being
+collected, `LlmCallLog`'s own flow writes the terminal row (`completed` /
+`rejected` / `transient_failure`, or `cancelled` / `internal_error` on an
+interruption, under `NonCancellable`). (b) Because `recordStreaming` commits the
+request row eagerly and returns a **cold** flow, a caller that opens a streaming
+call (`CoachingService.openUserTurn` / `openContinuation`) MUST, if interrupted
+(cancellation _or_ a defect) before that flow is collected, write the missing
+row itself via `LlmCallLog.writeCancelledIfAbsent` /
+`writeInternalErrorIfAbsent`.
+
+**Why:** A dangling `llm_requests` with no `llm_responses` is indistinguishable
+from an in-flight call, a crash, and a silent drop, and understates token spend.
+The subtlety: `LlmCallLog` alone cannot guarantee this — its response-writing
+code lives inside a cold flow, so a request whose flow is never collected (an
+opener/continuation interrupted in the gap after the eager request-row commit)
+would be orphaned. The opener-side guards are therefore load-bearing, not
+redundant. With both halves, the only cause of a dangling request is a hard
+process crash. The guarantee is a write-path discipline (it deliberately races
+structured concurrency), not a DB constraint, so a refactor that removes either
+half can silently break it.
 
 ## All rows of one tool-use excursion share one `turn_id`
 

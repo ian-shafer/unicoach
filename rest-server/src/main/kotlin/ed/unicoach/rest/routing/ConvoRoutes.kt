@@ -19,7 +19,6 @@ import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ConvoRequestId
-import ed.unicoach.db.models.ConvoResponse
 import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.Student
 import ed.unicoach.db.models.User
@@ -153,13 +152,13 @@ class ConvoRouteHandler(
       is StartConvoResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
           is ReplyEvent.Completed -> {
-            enqueueExtraction(outcome.convo.id, terminal.response.requestId)
+            enqueueExtraction(outcome.convo.id, terminal.convoRequest.id)
             call.respond(
               HttpStatusCode.Created,
               CreateConversationResponse(
                 conversation = conversationOf(outcome.convo, lastActivityAt = outcome.userTurn.createdAt),
-                userMessage = userMessageOf(outcome.userTurn),
-                coachMessage = coachMessageOf(terminal.response),
+                userMessage = userMessageOf(outcome.userTurn, request.message),
+                coachMessage = coachMessageOf(terminal),
               ),
             )
           }
@@ -245,12 +244,12 @@ class ConvoRouteHandler(
       is PostTurnResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
           is ReplyEvent.Completed -> {
-            enqueueExtraction(outcome.convo.id, terminal.response.requestId)
+            enqueueExtraction(outcome.convo.id, terminal.convoRequest.id)
             call.respond(
               HttpStatusCode.Created,
               PostMessageResponse(
-                userMessage = userMessageOf(outcome.userTurn),
-                coachMessage = coachMessageOf(terminal.response),
+                userMessage = userMessageOf(outcome.userTurn, request.message),
+                coachMessage = coachMessageOf(terminal),
               ),
             )
           }
@@ -284,7 +283,7 @@ class ConvoRouteHandler(
             "conversation",
             ConversationCreatedEvent(
               conversation = conversationOf(outcome.convo, lastActivityAt = outcome.userTurn.createdAt),
-              userMessage = userMessageOf(outcome.userTurn),
+              userMessage = userMessageOf(outcome.userTurn, request.message),
             ),
           )
         }
@@ -309,7 +308,7 @@ class ConvoRouteHandler(
 
       is PostTurnResult.Started -> {
         streamReply(outcome.reply, outcome.convo.id) { writer ->
-          writeSseEvent(writer, "user_message", UserMessageEvent(userMessage = userMessageOf(outcome.userTurn)))
+          writeSseEvent(writer, "user_message", UserMessageEvent(userMessage = userMessageOf(outcome.userTurn, request.message)))
         }
       }
     }
@@ -337,8 +336,8 @@ class ConvoRouteHandler(
           }
 
           is ReplyEvent.Completed -> {
-            writeSseEvent(this, "message", MessageCompletedEvent(message = coachMessageOf(event.response)))
-            enqueueExtraction(convoId, event.response.requestId)
+            writeSseEvent(this, "message", MessageCompletedEvent(message = coachMessageOf(event)))
+            enqueueExtraction(convoId, event.convoRequest.id)
           }
 
           is ReplyEvent.Failed -> {
@@ -458,27 +457,43 @@ class ConvoRouteHandler(
       archivedAt = convo.archivedAt,
     )
 
-  private fun userMessageOf(request: ConvoRequest): Message =
+  /**
+   * The user message for a just-opened turn. Since RFC 106 the user's text is not
+   * stored on `convo_requests`; the route has it from the request body, so it is
+   * passed in as [text] and the id/createdAt come from the opener [request] row.
+   */
+  private fun userMessageOf(
+    request: ConvoRequest,
+    text: String,
+  ): Message =
     Message(
       id = "u_${request.id.value}",
       role = "user",
-      content = ConvoContent.renderText(request.content),
+      content = text,
       createdAt = request.createdAt,
     )
 
-  private fun coachMessageOf(response: ConvoResponse): Message =
+  /** The coach message for a completed reply terminal (RFC 106: content comes from the terminal, not a response row). */
+  private fun coachMessageOf(terminal: ReplyEvent.Completed): Message =
     Message(
-      id = "c_${response.id.value}",
+      id = "c_${terminal.convoRequest.id.value}",
       role = "coach",
-      content = ConvoContent.renderText(response.content ?: kotlinx.serialization.json.JsonNull),
-      createdAt = response.createdAt,
+      content = ConvoContent.renderText(terminal.content),
+      createdAt = terminal.createdAt,
     )
 
   private fun messagesOf(exchanges: List<ed.unicoach.coaching.VisibleExchange>): List<Message> =
     buildList {
       for (exchange in exchanges) {
-        add(userMessageOf(exchange.userRequest))
-        add(coachMessageOf(exchange.finalResponse))
+        add(userMessageOf(exchange.userRequest, ConvoContent.renderText(exchange.userContent)))
+        add(
+          Message(
+            id = "c_${exchange.finalResponse.requestId.value}",
+            role = "coach",
+            content = ConvoContent.renderText(exchange.finalContent),
+            createdAt = exchange.finalResponse.createdAt,
+          ),
+        )
       }
     }
 }

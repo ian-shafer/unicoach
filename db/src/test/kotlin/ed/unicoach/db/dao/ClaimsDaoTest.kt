@@ -53,7 +53,7 @@ class ClaimsDaoTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE observations, claim_support, claims, extraction_runs, " +
-          "convos, convo_requests, convo_responses, convo_responses_raw, system_prompts, students, users CASCADE",
+          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
       )
       // Restore the migration-seeded prompts for cross-module suites on the shared DB.
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")

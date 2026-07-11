@@ -6,6 +6,7 @@ import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRun
 import ed.unicoach.db.models.ExtractionRunId
 import ed.unicoach.db.models.JsonParseFailureCategory
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewExtractionRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
@@ -41,12 +42,7 @@ object ExtractionRunsDao :
       throughRequestId = ConvoRequestId(rs.getLong("through_request_id")),
       outcome = mapOutcome(rs),
       systemPromptId = SystemPromptId(UUID.fromString(rs.getString("system_prompt_id"))),
-      provider = rs.getString("provider"),
-      modelResolved = rs.getString("model_resolved"),
-      inputTokens = rs.getInt("input_tokens").takeUnless { rs.wasNull() },
-      outputTokens = rs.getInt("output_tokens").takeUnless { rs.wasNull() },
-      cacheReadTokens = rs.getInt("cache_read_tokens").takeUnless { rs.wasNull() },
-      cacheWriteTokens = rs.getInt("cache_write_tokens").takeUnless { rs.wasNull() },
+      llmRequestId = LlmRequestId(rs.getLong("llm_request_id")),
     )
 
   /**
@@ -128,15 +124,10 @@ object ExtractionRunsDao :
           "through_request_id" to { stmt, i -> stmt.setLong(i, input.throughRequestId.value) },
           "outcome" to { stmt, i -> stmt.setString(i, input.outcome.value) },
           "system_prompt_id" to { stmt, i -> stmt.setObject(i, input.systemPromptId.value) },
-          "provider" to { stmt, i -> stmt.setString(i, input.provider) },
-          "model_resolved" to { stmt, i -> stmt.setStringOrNull(i, input.modelResolved) },
+          "llm_request_id" to { stmt, i -> stmt.setLong(i, input.llmRequestId.value) },
           "observations_written" to { stmt, i -> stmt.setInt(i, cols.observationsWritten) },
           "claims_written" to { stmt, i -> stmt.setInt(i, cols.claimsWritten) },
           "claims_superseded" to { stmt, i -> stmt.setInt(i, cols.claimsSuperseded) },
-          "input_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.inputTokens) },
-          "output_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.outputTokens) },
-          "cache_read_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheReadTokens) },
-          "cache_write_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheWriteTokens) },
           "failure_category" to { stmt, i -> stmt.setStringOrNull(i, cols.failureCategory) },
           "failure_reason" to { stmt, i -> stmt.setStringOrNull(i, cols.failureReason) },
         ),
@@ -232,6 +223,7 @@ object ExtractionRunsDao :
           message.contains("extraction_runs_student_id_fkey") -> NotFoundException("Owning student not found")
           message.contains("extraction_runs_through_request_id_fkey") -> NotFoundException("Through request not found")
           message.contains("extraction_runs_system_prompt_id_fkey") -> NotFoundException("System prompt not found")
+          message.contains("extraction_runs_llm_request_id_fkey") -> NotFoundException("LLM request not found")
           else -> NotFoundException()
         }
       }

@@ -1,15 +1,16 @@
 package ed.unicoach.db.models
 
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-
+/**
+ * Insert input for the `convo_requests` coaching-extension log (RFC 106); omits
+ * the DB-generated id and `created_at`. Carries only the coaching columns plus
+ * [llmRequestId] — the FK into the generic `llm_requests` call log that holds
+ * the request I/O envelope. The caller obtains [llmRequestId] from
+ * `LlmCallLog.recordStreaming` before stamping this row.
+ */
 data class NewConvoRequest(
   val convoId: ConvoId,
-  val provider: String,
-  val modelRequested: String,
   val systemPromptId: SystemPromptId,
-  val requestParams: JsonObject?,
-  val content: JsonElement,
+  val llmRequestId: LlmRequestId,
   val turnId: ConvoTurnId,
   val kind: ConvoRequestKind = ConvoRequestKind.USER,
 )

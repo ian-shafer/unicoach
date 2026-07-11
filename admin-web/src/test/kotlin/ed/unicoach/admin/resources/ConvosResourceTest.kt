@@ -43,8 +43,9 @@ class ConvosResourceTest {
     val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
     val student = AdminTestSupport.seedStudent(user.id)
     val convo = AdminTestSupport.seedConvo(student.id, name)
-    val req = AdminTestSupport.seedConvoRequest(convo.id)
-    AdminTestSupport.seedConvoResponse(req.id, convo.id)
+    val llmRequestId = AdminTestSupport.seedLlmRequest()
+    val req = AdminTestSupport.seedConvoRequest(convo.id, llmRequestId = llmRequestId)
+    AdminTestSupport.seedLlmResponse(llmRequestId)
     return SeededConvo(
       convoId = convo.id.value.toString(),
       studentId = student.id.value.toString(),

@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.JsonParseFailureCategory
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewSynthesisRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SynthesisOutcome
@@ -38,12 +39,7 @@ object SynthesisRunsDao :
       studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
       outcome = mapOutcome(rs),
       systemPromptId = SystemPromptId(UUID.fromString(rs.getString("system_prompt_id"))),
-      provider = rs.getString("provider"),
-      modelResolved = rs.getString("model_resolved"),
-      inputTokens = rs.getInt("input_tokens").takeUnless { rs.wasNull() },
-      outputTokens = rs.getInt("output_tokens").takeUnless { rs.wasNull() },
-      cacheReadTokens = rs.getInt("cache_read_tokens").takeUnless { rs.wasNull() },
-      cacheWriteTokens = rs.getInt("cache_write_tokens").takeUnless { rs.wasNull() },
+      llmRequestId = LlmRequestId(rs.getLong("llm_request_id")),
     )
 
   /**
@@ -120,14 +116,9 @@ object SynthesisRunsDao :
           "student_id" to { stmt, i -> stmt.setObject(i, input.studentId.value) },
           "outcome" to { stmt, i -> stmt.setString(i, input.outcome.value) },
           "system_prompt_id" to { stmt, i -> stmt.setObject(i, input.systemPromptId.value) },
-          "provider" to { stmt, i -> stmt.setString(i, input.provider) },
-          "model_resolved" to { stmt, i -> stmt.setStringOrNull(i, input.modelResolved) },
+          "llm_request_id" to { stmt, i -> stmt.setLong(i, input.llmRequestId.value) },
           "commitments_written" to { stmt, i -> stmt.setInt(i, cols.commitmentsWritten) },
           "commitments_dropped" to { stmt, i -> stmt.setInt(i, cols.commitmentsDropped) },
-          "input_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.inputTokens) },
-          "output_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.outputTokens) },
-          "cache_read_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheReadTokens) },
-          "cache_write_tokens" to { stmt, i -> stmt.setIntOrNull(i, input.cacheWriteTokens) },
           "failure_category" to { stmt, i -> stmt.setStringOrNull(i, cols.failureCategory) },
           "failure_reason" to { stmt, i -> stmt.setStringOrNull(i, cols.failureReason) },
         ),
@@ -222,6 +213,7 @@ object SynthesisRunsDao :
         when {
           message.contains("synthesis_runs_student_id_fkey") -> NotFoundException("Owning student not found")
           message.contains("synthesis_runs_system_prompt_id_fkey") -> NotFoundException("System prompt not found")
+          message.contains("synthesis_runs_llm_request_id_fkey") -> NotFoundException("LLM request not found")
           else -> NotFoundException()
         }
       }

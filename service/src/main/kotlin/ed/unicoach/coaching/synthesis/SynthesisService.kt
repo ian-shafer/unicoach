@@ -2,13 +2,11 @@ package ed.unicoach.coaching.synthesis
 
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatMessage
-import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatRole
-import ed.unicoach.chat.TokenUsage
-import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ForcedToolInput
 import ed.unicoach.coaching.JsonParseFailure
+import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.ToolSchema
 import ed.unicoach.coaching.category
 import ed.unicoach.coaching.forcedToolChoice
@@ -31,6 +29,7 @@ import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.Commitment
 import ed.unicoach.db.models.CommitmentDisclosure
 import ed.unicoach.db.models.CommitmentLens
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewSynthesisRun
 import ed.unicoach.db.models.SoftDeleteScope
@@ -68,7 +67,7 @@ import java.time.Instant
  */
 class SynthesisService(
   private val database: Database,
-  private val chatProvider: ChatProvider,
+  private val llmCallLog: LlmCallLog,
   private val config: SynthesisConfig,
   private val clock: Clock = Clock.systemUTC(),
 ) {
@@ -163,15 +162,15 @@ class SynthesisService(
         toolChoice = forcedToolChoice(RECORD_SYNTHESIS_TOOL_NAME),
       )
 
-    val terminal =
+    val loggedCall =
       try {
-        chatProvider.chat(request)
+        llmCallLog.record(request)
       } catch (e: Exception) {
         logger.warn("synthesis provider call failed for student=[{}]", studentId.asString, e)
         return SynthesisResult.TransientFailure("provider call: ${e.message}", e)
       }
 
-    return when (terminal) {
+    return when (val terminal = loggedCall.terminal) {
       // No billed, usable call: nothing to account, no run row.
       is ChatEvent.Rejected -> {
         SynthesisResult.TransientFailure("provider rejected: ${terminal.reason}")
@@ -182,7 +181,7 @@ class SynthesisService(
       }
 
       is ChatEvent.Completed -> {
-        handleCompleted(studentId, ready, terminal)
+        handleCompleted(studentId, ready, terminal, loggedCall.llmRequestId)
       }
     }
   }
@@ -196,9 +195,8 @@ class SynthesisService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     terminal: ChatEvent.Completed,
+    llmRequestId: LlmRequestId,
   ): SynthesisResult {
-    val usage = terminal.response.usage
-    val modelResolved = terminal.response.modelResolved
     // A Completed call is billed regardless of what the tool input contains. The
     // forced tool's input object is the payload; a missing tool_use block is the
     // tier-A analogue of an unparseable envelope.
@@ -214,12 +212,12 @@ class SynthesisService(
           studentId.asString,
           parseResult.failure.toDisplay(),
         )
-        writeFailedRun(studentId, ready, parseResult.failure, usage, modelResolved)
+        writeFailedRun(studentId, ready, parseResult.failure, llmRequestId)
         SynthesisResult.TransientFailure("unusable synthesis output: ${parseResult.failure.toDisplay()}")
       }
 
       is ParseResult.Parsed -> {
-        writePhase(studentId, ready, parseResult.output, usage, modelResolved)
+        writePhase(studentId, ready, parseResult.output, llmRequestId)
       }
     }
   }
@@ -234,8 +232,7 @@ class SynthesisService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     failure: JsonParseFailure,
-    usage: TokenUsage,
-    modelResolved: String?,
+    llmRequestId: LlmRequestId,
   ) {
     try {
       database.withConnection { session ->
@@ -246,8 +243,7 @@ class SynthesisService(
           studentId,
           ready.prompt.id,
           SynthesisOutcome.Failed(failure.category, failure.toDisplay()),
-          usage,
-          modelResolved,
+          llmRequestId,
         )
       }
     } catch (e: Exception) {
@@ -261,8 +257,7 @@ class SynthesisService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     parsed: ParsedOutput,
-    usage: TokenUsage,
-    modelResolved: String?,
+    llmRequestId: LlmRequestId,
   ): SynthesisResult =
     try {
       database.withConnection { session ->
@@ -278,7 +273,7 @@ class SynthesisService(
         val freshActive = ClaimsDao.listActiveByStudent(session, studentId).getOrThrow()
         val activeIds = freshActive.map { it.id }.toSet()
 
-        applyWrites(session, studentId, ready, parsed, activeIds, usage, modelResolved)
+        applyWrites(session, studentId, ready, parsed, activeIds, llmRequestId)
       }
     } catch (e: Exception) {
       logger.warn("synthesis write phase failed for student=[{}]", studentId.asString, e)
@@ -297,8 +292,7 @@ class SynthesisService(
     ready: ReadPhase.Ready,
     parsed: ParsedOutput,
     activeIds: Set<ClaimId>,
-    usage: TokenUsage,
-    modelResolved: String?,
+    llmRequestId: LlmRequestId,
   ): SynthesisResult {
     val commitmentsWritten = createProposedCommitments(session, studentId, parsed, activeIds)
     val commitmentsDropped = staleDropOpenCommitments(session, ready.openCommitments, activeIds)
@@ -307,8 +301,7 @@ class SynthesisService(
       studentId,
       ready.prompt.id,
       SynthesisOutcome.Applied(commitmentsWritten, commitmentsDropped),
-      usage,
-      modelResolved,
+      llmRequestId,
     )
     return SynthesisResult.Success
   }
@@ -387,8 +380,7 @@ class SynthesisService(
     studentId: StudentId,
     systemPromptId: ed.unicoach.db.models.SystemPromptId,
     outcome: SynthesisOutcome,
-    usage: TokenUsage,
-    modelResolved: String?,
+    llmRequestId: LlmRequestId,
   ) {
     SynthesisRunsDao
       .append(
@@ -397,12 +389,7 @@ class SynthesisService(
           studentId = studentId,
           outcome = outcome,
           systemPromptId = systemPromptId,
-          provider = chatProvider.id,
-          modelResolved = modelResolved,
-          inputTokens = usage.inputTokens,
-          outputTokens = usage.outputTokens,
-          cacheReadTokens = usage.cacheReadTokens,
-          cacheWriteTokens = usage.cacheWriteTokens,
+          llmRequestId = llmRequestId,
         ),
       ).getOrThrow()
   }

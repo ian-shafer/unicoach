@@ -2,12 +2,10 @@ package ed.unicoach.coaching.fitlens
 
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatMessage
-import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatRole
-import ed.unicoach.chat.TokenUsage
-import ed.unicoach.chat.chat
 import ed.unicoach.coaching.ForcedToolInput
+import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.ToolSchema
 import ed.unicoach.coaching.forcedToolChoice
 import ed.unicoach.coaching.readForcedTool
@@ -29,6 +27,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.FitLensOutcome
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
 import ed.unicoach.db.models.SoftDeleteScope
@@ -63,7 +62,7 @@ import org.slf4j.LoggerFactory
  */
 class FitLensService(
   private val database: Database,
-  private val chatProvider: ChatProvider,
+  private val llmCallLog: LlmCallLog,
   private val collegeSearchService: CollegeSearchService,
   private val config: FitLensConfig,
 ) {
@@ -218,24 +217,23 @@ class FitLensService(
     ready: ReadPhase.Ready,
   ): FitLensResult {
     // LLM call #1 — formulate the CollegeQuery.
-    val queryCompleted =
+    val queryCall =
       when (val outcome = runChat(studentId, "formulate", buildQueryRequest(ready))) {
         is ChatOutcome.Bail -> return outcome.result
-        is ChatOutcome.Completed -> outcome.event
+        is ChatOutcome.Completed -> outcome
       }
-    val queryUsage = queryCompleted.response.usage
-    val modelResolved = queryCompleted.response.modelResolved
+    val queryLlmRequestId = queryCall.llmRequestId
 
     // The forced tool's input object is the payload; a missing tool_use block is
     // the tier-A analogue of an unparseable envelope.
     val queryParse =
-      when (val forced = readForcedTool(queryCompleted.response, RECORD_COLLEGE_QUERY_TOOL_NAME)) {
+      when (val forced = readForcedTool(queryCall.event.response, RECORD_COLLEGE_QUERY_TOOL_NAME)) {
         is ForcedToolInput.Absent -> QueryParse.Failure(FailureReason.QueryNoToolUse(studentId, forced.stopReason, forced.excerpt))
         is ForcedToolInput.Present -> parseQuery(studentId, forced.input)
       }
     val query =
       when (queryParse) {
-        is QueryParse.Failure -> return onQueryParseFailure(studentId, ready, queryParse, queryUsage, modelResolved)
+        is QueryParse.Failure -> return onQueryParseFailure(studentId, ready, queryParse, queryLlmRequestId)
         is QueryParse.Parsed -> queryParse.query
       }
 
@@ -247,34 +245,41 @@ class FitLensService(
         logger.warn("fit-lens retrieval failed for student=[{}]", studentId.asString, e)
         return FitLensResult.TransientFailure("retrieval: ${e.message}", e)
       }
-    if (matches.isEmpty()) return onZeroMatches(studentId, ready, queryUsage, modelResolved)
+    if (matches.isEmpty()) return onZeroMatches(studentId, ready, queryLlmRequestId)
 
     // LLM call #2 — reason over the real matches.
-    val reasonCompleted =
+    val reasonCall =
       when (val outcome = runChat(studentId, "reason", buildReasonRequest(ready, matches))) {
         is ChatOutcome.Bail -> return outcome.result
-        is ChatOutcome.Completed -> outcome.event
+        is ChatOutcome.Completed -> outcome
       }
-    // Both calls are billed on a completed pass: the run's token columns sum them.
-    val totalUsage = sumUsage(queryUsage, reasonCompleted.response.usage)
+    val reasonLlmRequestId = reasonCall.llmRequestId
     val matchIds = matches.map { it.id }.toSet()
 
     val reasonParse =
-      when (val forced = readForcedTool(reasonCompleted.response, RECORD_FIT_REASON_TOOL_NAME)) {
+      when (val forced = readForcedTool(reasonCall.event.response, RECORD_FIT_REASON_TOOL_NAME)) {
         is ForcedToolInput.Absent -> ReasonParse.Failure(FailureReason.ReasonNoToolUse(studentId, forced.stopReason, forced.excerpt))
         is ForcedToolInput.Present -> parseReason(studentId, forced.input, matchIds)
       }
     return when (reasonParse) {
       is ReasonParse.Failure -> {
-        onReasonParseFailure(studentId, ready, reasonParse, matches.size, totalUsage, modelResolved)
+        onReasonParseFailure(studentId, ready, reasonParse, matches.size, queryLlmRequestId, reasonLlmRequestId)
       }
 
       is ReasonParse.Empty -> {
-        onReasonEmpty(studentId, ready, matches.size, totalUsage, modelResolved)
+        onReasonEmpty(studentId, ready, matches.size, queryLlmRequestId, reasonLlmRequestId)
       }
 
       is ReasonParse.Chosen -> {
-        writePhase(studentId, ready, reasonParse.collegeId, reasonParse.rationale, matches.size, totalUsage, modelResolved)
+        writePhase(
+          studentId,
+          ready,
+          reasonParse.collegeId,
+          reasonParse.rationale,
+          matches.size,
+          queryLlmRequestId,
+          reasonLlmRequestId,
+        )
       }
     }
   }
@@ -291,17 +296,17 @@ class FitLensService(
     label: String,
     request: ChatRequest,
   ): ChatOutcome {
-    val event =
+    val loggedCall =
       try {
-        chatProvider.chat(request)
+        llmCallLog.record(request)
       } catch (e: Exception) {
         logger.warn("fit-lens [{}] call failed for student=[{}]", label, studentId.asString, e)
         return ChatOutcome.Bail(FitLensResult.TransientFailure("$label call: ${e.message}", e))
       }
-    return when (event) {
+    return when (val event = loggedCall.terminal) {
       is ChatEvent.Rejected -> ChatOutcome.Bail(FitLensResult.TransientFailure("$label rejected: ${event.reason}"))
       is ChatEvent.TransientFailure -> ChatOutcome.Bail(FitLensResult.TransientFailure("$label transient: ${event.reason}"))
-      is ChatEvent.Completed -> ChatOutcome.Completed(event)
+      is ChatEvent.Completed -> ChatOutcome.Completed(event, loggedCall.llmRequestId)
     }
   }
 
@@ -313,36 +318,43 @@ class FitLensService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     parsed: QueryParse.Failure,
-    queryUsage: TokenUsage,
-    modelResolved: String?,
+    queryLlmRequestId: LlmRequestId,
   ): FitLensResult {
     logger.warn(
       "unusable fit-lens CollegeQuery for student=[{}]: [{}]",
       studentId.asString,
       parsed.detail.toDisplay(),
     )
+    // Died before the reason call: only the query call is referenced.
     return writeFailedRun(
       studentId,
       ready,
       reason = parsed.detail,
       matchesConsidered = null,
-      usage = queryUsage,
-      modelResolved = modelResolved,
+      queryLlmRequestId = queryLlmRequestId,
+      reasonLlmRequestId = null,
     )
   }
 
   /**
    * Zero-match: a valid Skipped outcome (nothing novel to reason over). Tokens
    * spent, so an applied row with `suggestions_written = 0` advances freshness.
+   * Only the query call ran, so `reason_llm_request_id` stays null.
    */
   private suspend fun onZeroMatches(
     studentId: StudentId,
     ready: ReadPhase.Ready,
-    queryUsage: TokenUsage,
-    modelResolved: String?,
+    queryLlmRequestId: LlmRequestId,
   ): FitLensResult {
     val write =
-      writeAppliedRun(studentId, ready, suggestionsWritten = 0, matchesConsidered = 0, usage = queryUsage, modelResolved = modelResolved)
+      writeAppliedRun(
+        studentId,
+        ready,
+        suggestionsWritten = 0,
+        matchesConsidered = 0,
+        queryLlmRequestId = queryLlmRequestId,
+        reasonLlmRequestId = null,
+      )
     return write ?: FitLensResult.Skipped(SkipReason.ZeroSearchMatches(studentId))
   }
 
@@ -351,8 +363,8 @@ class FitLensService(
     ready: ReadPhase.Ready,
     parsed: ReasonParse.Failure,
     matchesConsidered: Int,
-    totalUsage: TokenUsage,
-    modelResolved: String?,
+    queryLlmRequestId: LlmRequestId,
+    reasonLlmRequestId: LlmRequestId,
   ): FitLensResult {
     logger.warn(
       "unusable fit-lens reason output for student=[{}]: [{}]",
@@ -364,8 +376,8 @@ class FitLensService(
       ready,
       reason = parsed.detail,
       matchesConsidered = matchesConsidered,
-      usage = totalUsage,
-      modelResolved = modelResolved,
+      queryLlmRequestId = queryLlmRequestId,
+      reasonLlmRequestId = reasonLlmRequestId,
     )
   }
 
@@ -374,8 +386,8 @@ class FitLensService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     matchesConsidered: Int,
-    totalUsage: TokenUsage,
-    modelResolved: String?,
+    queryLlmRequestId: LlmRequestId,
+    reasonLlmRequestId: LlmRequestId,
   ): FitLensResult {
     val write =
       writeAppliedRun(
@@ -383,8 +395,8 @@ class FitLensService(
         ready,
         suggestionsWritten = 0,
         matchesConsidered = matchesConsidered,
-        usage = totalUsage,
-        modelResolved = modelResolved,
+        queryLlmRequestId = queryLlmRequestId,
+        reasonLlmRequestId = reasonLlmRequestId,
       )
     return write ?: FitLensResult.Skipped(SkipReason.ReasonReturnedNoFit(studentId))
   }
@@ -399,8 +411,8 @@ class FitLensService(
     collegeId: CollegeId,
     rationale: String,
     matchesConsidered: Int,
-    usage: TokenUsage,
-    modelResolved: String?,
+    queryLlmRequestId: LlmRequestId,
+    reasonLlmRequestId: LlmRequestId,
   ): FitLensResult =
     try {
       database.withConnection { session ->
@@ -441,7 +453,15 @@ class FitLensService(
             }
           }
 
-        appendRun(session, studentId, ready, FitLensOutcome.Applied(suggestionsWritten), matchesConsidered, usage, modelResolved)
+        appendRun(
+          session,
+          studentId,
+          ready,
+          FitLensOutcome.Applied(suggestionsWritten),
+          matchesConsidered,
+          queryLlmRequestId,
+          reasonLlmRequestId,
+        )
         FitLensResult.Applied
       }
     } catch (e: Exception) {
@@ -461,13 +481,21 @@ class FitLensService(
     ready: ReadPhase.Ready,
     suggestionsWritten: Int,
     matchesConsidered: Int,
-    usage: TokenUsage,
-    modelResolved: String?,
+    queryLlmRequestId: LlmRequestId,
+    reasonLlmRequestId: LlmRequestId?,
   ): FitLensResult? =
     try {
       database.withConnection { session ->
         AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
-        appendRun(session, studentId, ready, FitLensOutcome.Applied(suggestionsWritten), matchesConsidered, usage, modelResolved)
+        appendRun(
+          session,
+          studentId,
+          ready,
+          FitLensOutcome.Applied(suggestionsWritten),
+          matchesConsidered,
+          queryLlmRequestId,
+          reasonLlmRequestId,
+        )
       }
       null
     } catch (e: Exception) {
@@ -490,8 +518,8 @@ class FitLensService(
     ready: ReadPhase.Ready,
     reason: FailureReason,
     matchesConsidered: Int?,
-    usage: TokenUsage,
-    modelResolved: String?,
+    queryLlmRequestId: LlmRequestId,
+    reasonLlmRequestId: LlmRequestId?,
   ): FitLensResult =
     try {
       database.withConnection { session ->
@@ -502,8 +530,8 @@ class FitLensService(
           ready,
           FitLensOutcome.Failed(reason.category, reason.toDisplay()),
           matchesConsidered,
-          usage,
-          modelResolved,
+          queryLlmRequestId,
+          reasonLlmRequestId,
         )
       }
       FitLensResult.Failed(reason)
@@ -518,8 +546,8 @@ class FitLensService(
     ready: ReadPhase.Ready,
     outcome: FitLensOutcome,
     matchesConsidered: Int?,
-    usage: TokenUsage,
-    modelResolved: String?,
+    queryLlmRequestId: LlmRequestId,
+    reasonLlmRequestId: LlmRequestId?,
   ) {
     FitLensRunsDao
       .append(
@@ -529,33 +557,12 @@ class FitLensService(
           outcome = outcome,
           querySystemPromptId = ready.queryPrompt.id,
           reasonSystemPromptId = ready.reasonPrompt.id,
-          provider = chatProvider.id,
-          modelResolved = modelResolved,
+          queryLlmRequestId = queryLlmRequestId,
+          reasonLlmRequestId = reasonLlmRequestId,
           matchesConsidered = matchesConsidered,
-          inputTokens = usage.inputTokens,
-          outputTokens = usage.outputTokens,
-          cacheReadTokens = usage.cacheReadTokens,
-          cacheWriteTokens = usage.cacheWriteTokens,
         ),
       ).getOrThrow()
   }
-
-  /** Sums two calls' token usage column-by-column, null-safe (null + n = n). */
-  private fun sumUsage(
-    a: TokenUsage,
-    b: TokenUsage,
-  ): TokenUsage =
-    TokenUsage(
-      inputTokens = sumNullable(a.inputTokens, b.inputTokens),
-      outputTokens = sumNullable(a.outputTokens, b.outputTokens),
-      cacheReadTokens = sumNullable(a.cacheReadTokens, b.cacheReadTokens),
-      cacheWriteTokens = sumNullable(a.cacheWriteTokens, b.cacheWriteTokens),
-    )
-
-  private fun sumNullable(
-    a: Int?,
-    b: Int?,
-  ): Int? = if (a == null && b == null) null else (a ?: 0) + (b ?: 0)
 
   // ---------------------------------------------------------------------------
   // Prompt assembly
@@ -746,10 +753,14 @@ class FitLensService(
   // Internal carriers
   // ---------------------------------------------------------------------------
 
-  /** The outcome of one LLM call: a billed [Completed] event, or a [Bail] that short-circuits [runPass]. */
+  /**
+   * The outcome of one LLM call: a billed [Completed] event carrying its
+   * log-owned [llmRequestId] (RFC 106), or a [Bail] that short-circuits [runPass].
+   */
   private sealed interface ChatOutcome {
     data class Completed(
       val event: ChatEvent.Completed,
+      val llmRequestId: LlmRequestId,
     ) : ChatOutcome
 
     data class Bail(

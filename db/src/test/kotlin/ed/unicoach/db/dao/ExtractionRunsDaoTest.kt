@@ -5,6 +5,7 @@ import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ExtractionOutcome
 import ed.unicoach.db.models.ExtractionRunId
 import ed.unicoach.db.models.JsonParseFailureCategory
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewExtractionRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
@@ -50,7 +51,7 @@ class ExtractionRunsDaoTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE observations, claim_support, claims, extraction_runs, " +
-          "convos, convo_requests, convo_responses, convo_responses_raw, system_prompts, students, users CASCADE",
+          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
       )
       // Restore the migration-seeded prompts for cross-module suites on the shared DB.
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
@@ -98,17 +99,31 @@ class ExtractionRunsDaoTest {
     return SystemPromptId(id)
   }
 
+  private fun appendLlmRequest(): Long {
+    connection
+      .prepareStatement(
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+      ).use { stmt ->
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return rs.getLong("id")
+        }
+      }
+  }
+
   private fun appendRequest(convoId: ConvoId): ConvoRequestId {
     val promptId = createSystemPrompt()
+    val llmRequestId = appendLlmRequest()
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id)
-        VALUES (?, 'anthropic', 'claude-opus-4-8', ?, '[]'::jsonb, nextval('convo_turn_id_seq')) RETURNING id
+        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+        VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convoId.value)
         stmt.setObject(2, promptId.value)
+        stmt.setLong(3, llmRequestId)
         stmt.executeQuery().use { rs ->
           rs.next()
           return ConvoRequestId(rs.getLong("id"))
@@ -141,11 +156,12 @@ class ExtractionRunsDaoTest {
   }
 
   @Test
-  fun `append records outcome, counts, provenance, and all four token columns`() {
+  fun `append records outcome, counts, provenance, and the llm_request reference`() {
     val student = createStudent()
     val convo = createConvo(student)
     val prompt = createSystemPrompt()
     val req = appendRequest(convo)
+    val llmRequestId = LlmRequestId(appendLlmRequest())
 
     val appended =
       ExtractionRunsDao
@@ -162,12 +178,7 @@ class ExtractionRunsDaoTest {
                 claimsSuperseded = 0,
               ),
             systemPromptId = prompt,
-            provider = "log",
-            modelResolved = "claude-sonnet-4-6",
-            inputTokens = 100,
-            outputTokens = 50,
-            cacheReadTokens = 10,
-            cacheWriteTokens = 5,
+            llmRequestId = llmRequestId,
           ),
         ).getOrThrow()
 
@@ -177,42 +188,49 @@ class ExtractionRunsDaoTest {
       appended.outcome,
     )
     assertEquals(prompt, appended.systemPromptId)
-    assertEquals("log", appended.provider)
-    assertEquals("claude-sonnet-4-6", appended.modelResolved)
-    assertEquals(100, appended.inputTokens)
-    assertEquals(50, appended.outputTokens)
-    assertEquals(10, appended.cacheReadTokens)
-    assertEquals(5, appended.cacheWriteTokens)
+    assertEquals(llmRequestId, appended.llmRequestId)
   }
 
   @Test
-  fun `per-student token sum aggregates across an applied and a failed row`() {
+  fun `an absent llm_request reference is rejected`() {
+    val student = createStudent()
+    val convo = createConvo(student)
+    val prompt = createSystemPrompt()
+    val req = appendRequest(convo)
+    val result =
+      ExtractionRunsDao.append(
+        session,
+        NewExtractionRun(
+          convoId = convo,
+          studentId = student,
+          throughRequestId = req,
+          outcome = applied(),
+          systemPromptId = prompt,
+          llmRequestId = LlmRequestId(999_999L),
+        ),
+      )
+    assertTrue(result.exceptionOrNull() is NotFoundException, "got ${result.exceptionOrNull()}")
+  }
+
+  @Test
+  fun `dummy token-sum removed`() {
+    // Token spend moved to llm_responses (RFC 106); the per-student ledger is the
+    // student_llm_token_usage view, covered in StudentLlmTokenUsageViewTest.
     val student = createStudent()
     val convo = createConvo(student)
     val prompt = createSystemPrompt()
     val r1 = appendRequest(convo)
-    val r2 = appendRequest(convo)
 
-    ExtractionRunsDao
-      .append(
-        session,
-        run(convo, student, prompt, r1, applied(), input = 100, output = 50),
-      ).getOrThrow()
-    ExtractionRunsDao
-      .append(
-        session,
-        run(convo, student, prompt, r2, failed(), input = 30, output = 0),
-      ).getOrThrow()
+    ExtractionRunsDao.append(session, run(convo, student, prompt, r1, applied())).getOrThrow()
 
     connection
       .prepareStatement(
-        "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o FROM extraction_runs WHERE student_id = ?",
+        "SELECT COUNT(*) AS c FROM extraction_runs WHERE student_id = ?",
       ).use { stmt ->
         stmt.setObject(1, student.value)
         stmt.executeQuery().use { rs ->
           rs.next()
-          assertEquals(130, rs.getInt("i"))
-          assertEquals(50, rs.getInt("o"))
+          assertEquals(1, rs.getInt("c"))
         }
       }
   }
@@ -248,7 +266,7 @@ class ExtractionRunsDaoTest {
   }
 
   @Test
-  fun `listByStudent returns the student's runs with token-and-count columns intact, bounded, excluding other students`() {
+  fun `listByStudent returns the student's runs with count columns intact, bounded, excluding other students`() {
     val student = createStudent()
     val other = createStudent()
     val convo = createConvo(student)
@@ -273,17 +291,12 @@ class ExtractionRunsDaoTest {
                 claimsSuperseded = 1,
               ),
             systemPromptId = prompt,
-            provider = "log",
-            modelResolved = "claude-sonnet-4-6",
-            inputTokens = 100,
-            outputTokens = 50,
-            cacheReadTokens = 10,
-            cacheWriteTokens = 5,
+            llmRequestId = LlmRequestId(appendLlmRequest()),
           ),
         ).getOrThrow()
     val failed =
       ExtractionRunsDao
-        .append(session, run(convo, student, prompt, r2, failed(), input = 30, output = 0))
+        .append(session, run(convo, student, prompt, r2, failed()))
         .getOrThrow()
     ExtractionRunsDao
       .append(session, run(otherConvo, other, prompt, rOther, applied()))
@@ -297,10 +310,6 @@ class ExtractionRunsDaoTest {
       ExtractionOutcome.Applied(observationsWritten = 3, claimsWritten = 2, claimsSuperseded = 1),
       appliedRow.outcome,
     )
-    assertEquals(100, appliedRow.inputTokens)
-    assertEquals(50, appliedRow.outputTokens)
-    assertEquals(10, appliedRow.cacheReadTokens)
-    assertEquals(5, appliedRow.cacheWriteTokens)
 
     // Bounded by limit/offset.
     assertEquals(listOf(applied.id), ExtractionRunsDao.listByStudent(session, student, 1, 0).getOrThrow().map { it.id })
@@ -318,14 +327,15 @@ class ExtractionRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider)
-            VALUES (?, ?, ?, 'bogus', ?, 'log')
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, llm_request_id)
+            VALUES (?, ?, ?, 'bogus', ?, ?)
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, convo.value)
             stmt.setObject(2, student.value)
             stmt.setLong(3, req.value)
             stmt.setObject(4, prompt.value)
+            stmt.setLong(5, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -376,8 +386,6 @@ class ExtractionRunsDaoTest {
     prompt: SystemPromptId,
     req: ConvoRequestId,
     outcome: ExtractionOutcome,
-    input: Int? = null,
-    output: Int? = null,
   ): NewExtractionRun =
     NewExtractionRun(
       convoId = convo,
@@ -385,10 +393,7 @@ class ExtractionRunsDaoTest {
       throughRequestId = req,
       outcome = outcome,
       systemPromptId = prompt,
-      provider = "log",
-      modelResolved = "m",
-      inputTokens = input,
-      outputTokens = output,
+      llmRequestId = LlmRequestId(appendLlmRequest()),
     )
 
   @Test
@@ -412,8 +417,7 @@ class ExtractionRunsDaoTest {
                 reason = "field [quote]=[missing or non-string]",
               ),
             systemPromptId = prompt,
-            provider = "log",
-            modelResolved = null,
+            llmRequestId = LlmRequestId(appendLlmRequest()),
           ),
         ).getOrThrow()
 
@@ -441,14 +445,15 @@ class ExtractionRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider)
-            VALUES (?, ?, ?, 'failed', ?, 'log')
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, llm_request_id)
+            VALUES (?, ?, ?, 'failed', ?, ?)
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, convo.value)
             stmt.setObject(2, student.value)
             stmt.setLong(3, req.value)
             stmt.setObject(4, prompt.value)
+            stmt.setLong(5, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -468,14 +473,15 @@ class ExtractionRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider, failure_category, failure_reason)
-            VALUES (?, ?, ?, 'applied', ?, 'log', 'malformed_json', 'should not be allowed')
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, llm_request_id, failure_category, failure_reason)
+            VALUES (?, ?, ?, 'applied', ?, ?, 'malformed_json', 'should not be allowed')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, convo.value)
             stmt.setObject(2, student.value)
             stmt.setLong(3, req.value)
             stmt.setObject(4, prompt.value)
+            stmt.setLong(5, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -496,14 +502,15 @@ class ExtractionRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider, failure_category)
-            VALUES (?, ?, ?, 'applied', ?, 'log', 'malformed_json')
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, llm_request_id, failure_category)
+            VALUES (?, ?, ?, 'applied', ?, ?, 'malformed_json')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, convo.value)
             stmt.setObject(2, student.value)
             stmt.setLong(3, req.value)
             stmt.setObject(4, prompt.value)
+            stmt.setLong(5, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -521,14 +528,15 @@ class ExtractionRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, provider, failure_category, failure_reason)
-            VALUES (?, ?, ?, 'failed', ?, 'log', 'bogus_category', 'x')
+            INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, llm_request_id, failure_category, failure_reason)
+            VALUES (?, ?, ?, 'failed', ?, ?, 'bogus_category', 'x')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, convo.value)
             stmt.setObject(2, student.value)
             stmt.setLong(3, req.value)
             stmt.setObject(4, prompt.value)
+            stmt.setLong(5, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -554,8 +562,7 @@ class ExtractionRunsDaoTest {
               reason = "x".repeat(2049),
             ),
           systemPromptId = prompt,
-          provider = "log",
-          modelResolved = null,
+          llmRequestId = LlmRequestId(appendLlmRequest()),
         ),
       )
     assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got ${result.exceptionOrNull()}")

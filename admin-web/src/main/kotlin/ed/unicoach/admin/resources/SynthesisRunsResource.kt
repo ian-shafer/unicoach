@@ -14,17 +14,17 @@ import ed.unicoach.db.models.SynthesisRunId
 
 /**
  * The append-only `synthesis_runs` log (RFC 93), surfaced read-only (RFC 77):
- * one billed synthesis LLM call, with its outcome, provenance, write/drop
- * counts, and the four-column token ledger. Mirrors [ExtractionRunsResource]:
- * all four write handlers are null, so the engine registers no
- * create/edit/delete routes. The table carries no `deleted_at`, so
- * `scope`/`includeDeleted` are ignored.
+ * one billed synthesis pass, with its outcome, provenance, and write/drop counts.
+ * Since RFC 106 the provider/model and per-call token spend live in the generic
+ * call log; this row links there via `llmRequestId` (refSlug `llm-request`).
+ * Mirrors [ExtractionRunsResource]: all four write handlers are null, so the
+ * engine registers no create/edit/delete routes. The table carries no
+ * `deleted_at`, so `scope`/`includeDeleted` are ignored.
  *
- * The token and count columns are on the list (`inList = true`) so per-student
- * LLM spend is eyeballable; the secondary provenance columns are detail-only.
- * `failureCategory` is on the list too (a triage-at-a-glance "what's failing"
- * column, null on `applied` rows, RFC 101); `failureReason`'s free-text
- * diagnostic is detail-only. No edges.
+ * The count columns are on the list (`inList = true`); the secondary provenance
+ * columns are detail-only. `failureCategory` is on the list too (a
+ * triage-at-a-glance "what's failing" column, null on `applied` rows, RFC 101);
+ * `failureReason`'s free-text diagnostic is detail-only. No edges.
  */
 object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
   override val slug = "synthesis-run"
@@ -39,11 +39,17 @@ object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
       AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
       AdminField("outcome", "Outcome", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("failureCategory", "Failure Category", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("modelResolved", "Model", FieldType.TEXT, editable = false, sensitive = false),
+      // BIGINT id — stays TEXT; links to the generic call log (RFC 106)
+      AdminField(
+        "llmRequestId",
+        "LLM Request ID",
+        FieldType.TEXT,
+        editable = false,
+        sensitive = false,
+        refSlug = "llm-request",
+      ),
       AdminField("commitmentsWritten", "Commitments Written", FieldType.INT, editable = false, sensitive = false),
       AdminField("commitmentsDropped", "Commitments Dropped", FieldType.INT, editable = false, sensitive = false),
-      AdminField("inputTokens", "Input Tokens", FieldType.INT, editable = false, sensitive = false),
-      AdminField("outputTokens", "Output Tokens", FieldType.INT, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField(
         "systemPromptId",
@@ -54,9 +60,6 @@ object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
         inList = false,
         refSlug = "system-prompt",
       ),
-      AdminField("provider", "Provider", FieldType.TEXT, editable = false, sensitive = false, inList = false),
-      AdminField("cacheReadTokens", "Cache Read Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("cacheWriteTokens", "Cache Write Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("failureReason", "Failure Reason", FieldType.TEXT, editable = false, sensitive = false, inList = false),
     )
 
@@ -100,16 +103,11 @@ object SynthesisRunsResource : AdminResource<SynthesisRun, SynthesisRunId> {
       "studentId" to row.studentId.value.toString(),
       "outcome" to row.outcome.value,
       "failureCategory" to cells.failureCategory,
-      "modelResolved" to (row.modelResolved ?: ""),
+      "llmRequestId" to row.llmRequestId.value.toString(),
       "commitmentsWritten" to cells.commitmentsWritten,
       "commitmentsDropped" to cells.commitmentsDropped,
-      "inputTokens" to (row.inputTokens?.toString() ?: ""),
-      "outputTokens" to (row.outputTokens?.toString() ?: ""),
       "createdAt" to row.createdAt.toString(),
       "systemPromptId" to row.systemPromptId.value.toString(),
-      "provider" to row.provider,
-      "cacheReadTokens" to (row.cacheReadTokens?.toString() ?: ""),
-      "cacheWriteTokens" to (row.cacheWriteTokens?.toString() ?: ""),
       "failureReason" to cells.failureReason,
     )
   }

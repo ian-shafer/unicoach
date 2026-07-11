@@ -63,7 +63,7 @@ class SynthesisHandlerTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE commitment_support, commitments, synthesis_runs, observations, claim_support, claims, extraction_runs, " +
-          "college_list_entries, colleges, convos, convo_requests, convo_responses, convo_responses_raw, " +
+          "college_list_entries, colleges, convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, " +
           "system_prompts, students, users CASCADE",
       )
       // Restore all migration-seeded prompts for cross-module suites on the shared DB.
@@ -87,7 +87,8 @@ class SynthesisHandlerTest {
           .getOrThrow(),
       ).getOrThrow()
 
-  private fun serviceWith(provider: ChatProvider): SynthesisService = SynthesisService(database, provider, config)
+  private fun serviceWith(provider: ChatProvider): SynthesisService =
+    SynthesisService(database, ed.unicoach.coaching.LlmCallLog(provider, database), config)
 
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()

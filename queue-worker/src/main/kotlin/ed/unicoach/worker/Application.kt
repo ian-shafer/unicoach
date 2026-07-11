@@ -4,6 +4,7 @@ import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.VerificationEmailRenderer
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
+import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionHandler
 import ed.unicoach.coaching.extraction.ExtractionService
@@ -71,18 +72,22 @@ fun main() {
 
       // The worker is the only place a ChatProvider is built for the LLM job
       // handlers; build it once when extraction (RFC 66), synthesis (RFC 93), or
-      // fit-lens (RFC 98) is enabled, then register each handler under its own switch.
+      // fit-lens (RFC 98) is enabled, wrap it in the LlmCallLog seam (RFC 106) so
+      // no handler receives the raw provider, then register each under its switch.
       if (extractionConfig.enabled || synthesisConfig.enabled || fitLensConfig.enabled) {
-        val chatProvider =
-          ChatProviderFactory
-            .fromConfig(ChatConfig.from(config).getOrThrow())
-            .getOrThrow()
+        val llmCallLog =
+          LlmCallLog(
+            ChatProviderFactory
+              .fromConfig(ChatConfig.from(config).getOrThrow())
+              .getOrThrow(),
+            database,
+          )
 
         if (extractionConfig.enabled) {
-          add(ExtractionHandler(ExtractionService(database, chatProvider, extractionConfig)))
+          add(ExtractionHandler(ExtractionService(database, llmCallLog, extractionConfig)))
         }
         if (synthesisConfig.enabled) {
-          add(SynthesisHandler(SynthesisService(database, chatProvider, synthesisConfig)))
+          add(SynthesisHandler(SynthesisService(database, llmCallLog, synthesisConfig)))
           // The daily dispatcher (RFC 97) is gated by the same switch as the
           // per-student handler, so the SYNTHESIS_SWEEP producer and the
           // SYNTHESIZE_STUDENT consumer are present together or absent together —
@@ -90,7 +95,7 @@ fun main() {
           add(SynthesisSweepHandler(database, QueueService(database, jobsDao)))
         }
         if (fitLensConfig.enabled) {
-          val fitLensService = FitLensService(database, chatProvider, CollegeSearchService(database), fitLensConfig)
+          val fitLensService = FitLensService(database, llmCallLog, CollegeSearchService(database), fitLensConfig)
           add(FitLensHandler(fitLensService))
           // The weekly dispatcher (RFC 98), gated by the same switch as the
           // per-student handler so the FIT_LENS_SWEEP producer and the FIT_LENS

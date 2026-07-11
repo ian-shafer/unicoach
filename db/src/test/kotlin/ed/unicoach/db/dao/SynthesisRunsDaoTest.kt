@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.JsonParseFailureCategory
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewSynthesisRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SynthesisOutcome
@@ -49,7 +50,7 @@ class SynthesisRunsDaoTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE commitment_support, commitments, synthesis_runs, observations, claim_support, claims, extraction_runs, " +
-          "convos, convo_requests, convo_responses, convo_responses_raw, system_prompts, students, users CASCADE",
+          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
       )
       // Restore all migration-seeded prompts for cross-module suites on the shared DB.
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
@@ -87,6 +88,18 @@ class SynthesisRunsDaoTest {
     return SystemPromptId(id)
   }
 
+  private fun appendLlmRequest(): Long {
+    connection
+      .prepareStatement(
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+      ).use { stmt ->
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return rs.getLong("id")
+        }
+      }
+  }
+
   /** A default `Applied` outcome, for cases that don't assert on the counts. */
   private fun applied(
     written: Int = 0,
@@ -100,17 +113,12 @@ class SynthesisRunsDaoTest {
     student: StudentId,
     prompt: SystemPromptId,
     outcome: SynthesisOutcome,
-    input: Int? = null,
-    output: Int? = null,
   ): NewSynthesisRun =
     NewSynthesisRun(
       studentId = student,
       outcome = outcome,
       systemPromptId = prompt,
-      provider = "log",
-      modelResolved = "m",
-      inputTokens = input,
-      outputTokens = output,
+      llmRequestId = LlmRequestId(appendLlmRequest()),
     )
 
   @Test
@@ -139,9 +147,10 @@ class SynthesisRunsDaoTest {
   }
 
   @Test
-  fun `append records outcome, counts, provenance, and all four token columns`() {
+  fun `append records outcome, counts, provenance, and the llm_request reference`() {
     val student = createStudent()
     val prompt = createSystemPrompt()
+    val llmRequestId = LlmRequestId(appendLlmRequest())
 
     val appended =
       SynthesisRunsDao
@@ -151,43 +160,36 @@ class SynthesisRunsDaoTest {
             studentId = student,
             outcome = SynthesisOutcome.Applied(commitmentsWritten = 2, commitmentsDropped = 1),
             systemPromptId = prompt,
-            provider = "log",
-            modelResolved = "claude-sonnet-4-6",
-            inputTokens = 100,
-            outputTokens = 50,
-            cacheReadTokens = 10,
-            cacheWriteTokens = 5,
+            llmRequestId = llmRequestId,
           ),
         ).getOrThrow()
 
     // The applied round-trip yields an Applied variant carrying the counts and no failure payload.
     assertEquals(SynthesisOutcome.Applied(commitmentsWritten = 2, commitmentsDropped = 1), appended.outcome)
     assertEquals(prompt, appended.systemPromptId)
-    assertEquals("log", appended.provider)
-    assertEquals("claude-sonnet-4-6", appended.modelResolved)
-    assertEquals(100, appended.inputTokens)
-    assertEquals(50, appended.outputTokens)
-    assertEquals(10, appended.cacheReadTokens)
-    assertEquals(5, appended.cacheWriteTokens)
+    assertEquals(llmRequestId, appended.llmRequestId)
   }
 
   @Test
-  fun `per-student token sum aggregates across an applied and a failed row`() {
+  fun `each appended run pins its own llm_request reference`() {
+    // Token spend moved to llm_responses (RFC 106); the per-student ledger is the
+    // student_llm_token_usage view, covered in StudentLlmTokenUsageViewTest. Here we
+    // only sanity-check that each run persists a distinct llm_request pin.
     val student = createStudent()
     val prompt = createSystemPrompt()
 
-    SynthesisRunsDao.append(session, run(student, prompt, applied(written = 1), input = 100, output = 50)).getOrThrow()
-    SynthesisRunsDao.append(session, run(student, prompt, failed(), input = 30, output = 0)).getOrThrow()
+    val a = SynthesisRunsDao.append(session, run(student, prompt, applied(written = 1))).getOrThrow()
+    val b = SynthesisRunsDao.append(session, run(student, prompt, failed())).getOrThrow()
+
+    assertTrue(a.llmRequestId.value != b.llmRequestId.value, "each run pins its own llm_request")
 
     connection
-      .prepareStatement(
-        "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o FROM synthesis_runs WHERE student_id = ?",
-      ).use { stmt ->
+      .prepareStatement("SELECT COUNT(*) AS c FROM synthesis_runs WHERE student_id = ?")
+      .use { stmt ->
         stmt.setObject(1, student.value)
         stmt.executeQuery().use { rs ->
           rs.next()
-          assertEquals(130, rs.getInt("i"))
-          assertEquals(50, rs.getInt("o"))
+          assertEquals(2, rs.getInt("c"))
         }
       }
   }
@@ -212,10 +214,11 @@ class SynthesisRunsDaoTest {
       runCatching {
         connection
           .prepareStatement(
-            "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, provider) VALUES (?, 'bogus', ?, 'log')",
+            "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'bogus', ?, ?)",
           ).use { stmt ->
             stmt.setObject(1, student.value)
             stmt.setObject(2, prompt.value)
+            stmt.setLong(3, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -263,8 +266,7 @@ class SynthesisRunsDaoTest {
                 reason = "field [lens]=[missing]",
               ),
             systemPromptId = prompt,
-            provider = "log",
-            modelResolved = null,
+            llmRequestId = LlmRequestId(appendLlmRequest()),
           ),
         ).getOrThrow()
 
@@ -289,10 +291,11 @@ class SynthesisRunsDaoTest {
       runCatching {
         connection
           .prepareStatement(
-            "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, provider) VALUES (?, 'failed', ?, 'log')",
+            "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'failed', ?, ?)",
           ).use { stmt ->
             stmt.setObject(1, student.value)
             stmt.setObject(2, prompt.value)
+            stmt.setLong(3, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -310,12 +313,13 @@ class SynthesisRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, provider, failure_category, failure_reason)
-            VALUES (?, 'applied', ?, 'log', 'malformed_json', 'should not be allowed')
+            INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id, failure_category, failure_reason)
+            VALUES (?, 'applied', ?, ?, 'malformed_json', 'should not be allowed')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, student.value)
             stmt.setObject(2, prompt.value)
+            stmt.setLong(3, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -334,12 +338,13 @@ class SynthesisRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, provider, failure_category)
-            VALUES (?, 'applied', ?, 'log', 'malformed_json')
+            INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id, failure_category)
+            VALUES (?, 'applied', ?, ?, 'malformed_json')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, student.value)
             stmt.setObject(2, prompt.value)
+            stmt.setLong(3, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -355,12 +360,13 @@ class SynthesisRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, provider, failure_category, failure_reason)
-            VALUES (?, 'failed', ?, 'log', 'bogus_category', 'x')
+            INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id, failure_category, failure_reason)
+            VALUES (?, 'failed', ?, ?, 'bogus_category', 'x')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, student.value)
             stmt.setObject(2, prompt.value)
+            stmt.setLong(3, appendLlmRequest())
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -382,8 +388,7 @@ class SynthesisRunsDaoTest {
               reason = "x".repeat(2049),
             ),
           systemPromptId = prompt,
-          provider = "log",
-          modelResolved = null,
+          llmRequestId = LlmRequestId(appendLlmRequest()),
         ),
       )
     assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got ${result.exceptionOrNull()}")

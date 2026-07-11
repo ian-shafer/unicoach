@@ -28,7 +28,11 @@ import ed.unicoach.db.models.NewCommitment
 import ed.unicoach.db.models.NewFitSuggestion
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -52,6 +56,7 @@ import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.util.UUID
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -90,7 +95,8 @@ class CoachingServiceTest {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
       stmt.execute(
-        "TRUNCATE TABLE commitment_support, commitments, fit_suggestions, convos, convo_requests, convo_responses, convo_responses_raw, " +
+        "TRUNCATE TABLE commitment_support, commitments, fit_suggestions, convos, convo_requests, " +
+          "llm_requests, llm_responses, llm_responses_raw, " +
           "claims, colleges, system_prompts, students, users CASCADE",
       )
     }
@@ -115,7 +121,8 @@ class CoachingServiceTest {
           .getOrThrow(),
       ).getOrThrow()
 
-  private fun service(provider: ChatProvider = LogOnlyChatProvider()): CoachingService = CoachingService(database, provider, config)
+  private fun service(provider: ChatProvider = LogOnlyChatProvider()): CoachingService =
+    CoachingService(database, LlmCallLog(provider, database), config)
 
   /** A config with the RFC 93 opener injection disabled. */
   private val noSurfaceConfig =
@@ -130,7 +137,8 @@ class CoachingServiceTest {
           ),
       ).getOrThrow()
 
-  private fun noSurfaceService(provider: ChatProvider): CoachingService = CoachingService(database, provider, noSurfaceConfig)
+  private fun noSurfaceService(provider: ChatProvider): CoachingService =
+    CoachingService(database, LlmCallLog(provider, database), noSurfaceConfig)
 
   /** A config with the RFC 98 fit-lens opener contribution disabled (commitments still on). */
   private val noSurfaceFitConfig =
@@ -145,7 +153,8 @@ class CoachingServiceTest {
           ),
       ).getOrThrow()
 
-  private fun noSurfaceFitService(provider: ChatProvider): CoachingService = CoachingService(database, provider, noSurfaceFitConfig)
+  private fun noSurfaceFitService(provider: ChatProvider): CoachingService =
+    CoachingService(database, LlmCallLog(provider, database), noSurfaceFitConfig)
 
   private var unitIdCounter = 800000
 
@@ -345,7 +354,104 @@ class CoachingServiceTest {
     provider: ChatProvider,
     tools: ed.unicoach.chat.ToolRegistry,
     cfg: CoachingConfig = config,
-  ): CoachingService = CoachingService(database, provider, cfg, tools)
+  ): CoachingService = CoachingService(database, LlmCallLog(provider, database), cfg, tools)
+
+  /**
+   * A dispatcher over [Dispatchers.IO] that can PARK exactly one dispatched block
+   * on a latch — the deterministic seam for the mid-tool-loop cancellation gap
+   * (RFC 106 Case B). The real Postgres runs underneath every block; the gate only
+   * controls *when* one block is allowed to run.
+   *
+   * When [armOnce] is set, the next dispatched block is captured (not run):
+   * [parked] completes so the test knows the guarded window is open, and the block
+   * is held until [release] is completed. This lets the test cancel the collecting
+   * coroutine while the continuation's `appendRequestRow` transaction is parked —
+   * after `LlmCallLog.recordStreaming` committed the continuation's `llm_requests`
+   * row (on the ungated DB) but before its cold events flow is ever collected —
+   * exactly the orphaned-continuation window the opener/continuation guard closes.
+   */
+  private class GatedDispatcher : CoroutineDispatcher() {
+    // While < 0 the gate is disarmed. When armed to N >= 0 it parks the (N+1)-th
+    // dispatched block: e.g. arm(0) parks the very next dispatch; arm(1) lets one
+    // dispatch through and parks the one after it.
+    @Volatile
+    private var skipsRemaining: Int = -1
+
+    val parked = CompletableDeferred<Unit>()
+    val release = CompletableDeferred<Unit>()
+
+    /** Arm the gate so the [skip]-th subsequent dispatch (0 = the next one) is parked. */
+    fun arm(skip: Int) {
+      skipsRemaining = skip
+    }
+
+    @Synchronized
+    private fun claimPark(): Boolean {
+      if (skipsRemaining < 0) return false
+      if (skipsRemaining == 0) {
+        skipsRemaining = -1
+        return true
+      }
+      skipsRemaining -= 1
+      return false
+    }
+
+    override fun dispatch(
+      context: CoroutineContext,
+      block: Runnable,
+    ) {
+      if (claimPark()) {
+        // Capture this one block and hold it until released, off the IO threads so
+        // as not to starve the pool. Signal the test that the window is open.
+        Thread {
+          parked.complete(Unit)
+          runBlocking { release.await() }
+          Dispatchers.IO.dispatch(context, block)
+        }.apply { isDaemon = true }.start()
+      } else {
+        Dispatchers.IO.dispatch(context, block)
+      }
+    }
+  }
+
+  /**
+   * Builds a service whose OWN `database` runs on [gate] (so its `appendRequestRow`
+   * transaction can be parked) while `LlmCallLog` keeps the ungated real [database]
+   * (so the continuation's `llm_requests` row commits normally). Both point at the
+   * same Postgres, so rows written through either are visible to the assertions.
+   */
+  private fun gatedServiceWith(
+    provider: ChatProvider,
+    tools: ed.unicoach.chat.ToolRegistry,
+    gate: GatedDispatcher,
+    cfg: CoachingConfig = config,
+  ): CoachingService = gatedServiceAndDb(provider, tools, gate, cfg).first
+
+  /**
+   * Like [gatedServiceWith], but also returns the gated [Database] so a defect-path
+   * test can [Database.close] it while the target `appendRequestRow` transaction is
+   * parked — the next connection acquisition then throws a non-cancellation
+   * `SQLException`, reproducing a transient DB failure on the `convo_requests`
+   * INSERT AFTER `LlmCallLog` (on the ungated real [database]) committed the
+   * `llm_requests` row. This is the throw-mode of the same seam the cancellation
+   * Case B tests use, targeting the identical post-commit window.
+   */
+  private fun gatedServiceAndDb(
+    provider: ChatProvider,
+    tools: ed.unicoach.chat.ToolRegistry,
+    gate: GatedDispatcher,
+    cfg: CoachingConfig = config,
+  ): Pair<CoachingService, Database> {
+    val dbConfig =
+      DatabaseConfig
+        .from(
+          ed.unicoach.common.config.AppConfig
+            .load("common.conf", "db.conf", "service.conf")
+            .getOrThrow(),
+        ).getOrThrow()
+    val gatedDatabase = Database(dbConfig, gate)
+    return CoachingService(gatedDatabase, LlmCallLog(provider, database), cfg, tools) to gatedDatabase
+  }
 
   private fun rejected(payload: JsonElement? = null) =
     ChatEvent.Rejected(reason = "bad request", providerRequestId = "req_rej", rawPayload = payload)
@@ -372,6 +478,26 @@ class CoachingServiceTest {
         return rs.getInt(1)
       }
     }
+  }
+
+  /**
+   * Count of `llm_responses` rows for a convo's requests. Since RFC 106 the
+   * response lives in the generic call log, reached via
+   * `convo_requests.llm_request_id`, so a per-convo response count is this join,
+   * not a `convo_responses.convo_id` filter.
+   */
+  private fun countResponses(convoId: ConvoId): Int {
+    connection
+      .prepareStatement(
+        "SELECT COUNT(*) FROM llm_responses resp " +
+          "JOIN convo_requests r ON r.llm_request_id = resp.request_id WHERE r.convo_id = ?",
+      ).use { stmt ->
+        stmt.setObject(1, convoId.value)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return rs.getInt(1)
+        }
+      }
   }
 
   private fun countConvos(convoId: ConvoId): Int {
@@ -404,13 +530,20 @@ class CoachingServiceTest {
     return out
   }
 
-  /** Response (stop_reason, output_tokens) pairs for a convo, in id order. */
+  /**
+   * Response (stop_reason, output_tokens) pairs for a convo, in id order. Since
+   * RFC 106 the response lives in the generic call log, reached via
+   * `convo_requests.llm_request_id -> llm_responses`. A completed response carries
+   * a `stop_reason`; a failure carries none, so its `stop_reason` reads as
+   * `outcome` (e.g. `transient_failure`) — the failing-turn rows the callers here
+   * only ever assert on completed shapes.
+   */
   private fun responseRows(convoId: ConvoId): List<Pair<String, Int?>> {
     val out = mutableListOf<Pair<String, Int?>>()
     connection
       .prepareStatement(
-        "SELECT resp.stop_reason AS sr, resp.output_tokens AS ot FROM convo_responses resp " +
-          "JOIN convo_requests r ON r.id = resp.request_id WHERE r.convo_id = ? ORDER BY resp.id",
+        "SELECT COALESCE(resp.stop_reason, resp.outcome) AS sr, resp.output_tokens AS ot FROM llm_responses resp " +
+          "JOIN convo_requests r ON r.llm_request_id = resp.request_id WHERE r.convo_id = ? ORDER BY resp.id",
       ).use { stmt ->
         stmt.setObject(1, convoId.value)
         stmt.executeQuery().use { rs ->
@@ -423,8 +556,14 @@ class CoachingServiceTest {
     return out
   }
 
-  private fun countRaw(): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM convo_responses_raw").use { stmt ->
+  /** Total `llm_requests` rows in the DB (single-convo Case B tests truncate between runs). */
+  private fun countAllLlmRequests(): Int = countAll("llm_requests")
+
+  /** Total `llm_responses` rows in the DB. */
+  private fun countAllLlmResponses(): Int = countAll("llm_responses")
+
+  private fun countAll(table: String): Int {
+    connection.prepareStatement("SELECT COUNT(*) FROM $table").use { stmt ->
       stmt.executeQuery().use { rs ->
         rs.next()
         return rs.getInt(1)
@@ -432,12 +571,30 @@ class CoachingServiceTest {
     }
   }
 
-  /** Raw rows attached to error responses (stop_reason='error'); isolates failing-turn raws from the seed's success raw. */
+  /** Every `llm_responses.outcome` in id order. */
+  private fun allResponseOutcomes(): List<String> {
+    val out = mutableListOf<String>()
+    connection.prepareStatement("SELECT outcome FROM llm_responses ORDER BY id").use { stmt ->
+      stmt.executeQuery().use { rs -> while (rs.next()) out.add(rs.getString("outcome")) }
+    }
+    return out
+  }
+
+  private fun countRaw(): Int {
+    connection.prepareStatement("SELECT COUNT(*) FROM llm_responses_raw").use { stmt ->
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        return rs.getInt(1)
+      }
+    }
+  }
+
+  /** Raw rows attached to failed responses; isolates failing-turn raws from the seed's completed raw. */
   private fun countErrorRaw(): Int {
     connection
       .prepareStatement(
-        "SELECT COUNT(*) FROM convo_responses_raw raw " +
-          "JOIN convo_responses r ON r.id = raw.response_id WHERE r.stop_reason = 'error'",
+        "SELECT COUNT(*) FROM llm_responses_raw raw " +
+          "JOIN llm_responses r ON r.id = raw.response_id WHERE r.outcome <> 'completed'",
       ).use { stmt ->
         stmt.executeQuery().use { rs ->
           rs.next()
@@ -463,19 +620,20 @@ class CoachingServiceTest {
       val convoId = started.convo.id
       assertEquals(1, countConvos(convoId))
       assertEquals(1, countRows("convo_requests", convoId))
-      assertEquals(1, countRows("convo_responses", convoId))
+      assertEquals(1, countResponses(convoId))
       assertEquals(1, countRaw())
 
-      // request provenance
+      // request provenance: the coaching row's system prompt, and the joined
+      // generic call log's provider/model (RFC 106 moved those off convo_requests).
       val turns = ConvosDao.listTurns(sqlSession, convoId).getOrThrow()
-      val request = turns.single().request
-      assertEquals("log", request.provider)
-      assertEquals(config.model, request.modelRequested)
+      val turn = turns.single()
+      assertEquals("log", turn.call!!.request.provider)
+      assertEquals(config.model, turn.call!!.request.modelRequested)
       val promptId = coachV1PromptId()
-      assertEquals(promptId, request.systemPromptId.value)
+      assertEquals(promptId, turn.request.systemPromptId.value)
 
       // delta concatenation == persisted coach content
-      assertEquals(ConvoContent.renderText(terminal.response.content!!), deltaText(events))
+      assertEquals(ConvoContent.renderText(terminal.content), deltaText(events))
     }
 
   private fun coachV1PromptId(): UUID {
@@ -568,7 +726,7 @@ class CoachingServiceTest {
 
       // error row persisted with content null
       assertEquals(2, countRows("convo_requests", convoId))
-      assertEquals(2, countRows("convo_responses", convoId))
+      assertEquals(2, countResponses(convoId))
 
       // listTurns omits the failed turn; next replay omits it
       val visible = service().listTurns(student, convoId).getOrThrow()
@@ -630,7 +788,7 @@ class CoachingServiceTest {
       val events = drain((service(ThrowingProvider()).postTurn(student, convoId, "x").getOrThrow() as PostTurnResult.Started).reply)
       val terminal = terminalOf(events)
       assertTrue(terminal is ReplyEvent.Failed && terminal.retriable)
-      assertEquals(2, countRows("convo_responses", convoId))
+      assertEquals(2, countResponses(convoId))
     }
 
   @Test
@@ -658,7 +816,7 @@ class CoachingServiceTest {
       job.join()
       assertTrue(!sawCompleted, "Completed must not be observed after cancellation")
       // The NonCancellable finalizer wrote an error response row for the request.
-      assertEquals(2, countRows("convo_responses", convoId))
+      assertEquals(2, countResponses(convoId))
     }
 
   @Test
@@ -708,7 +866,7 @@ class CoachingServiceTest {
               """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9", surfaceCommitments=true, surfaceFitSuggestions=true, maxToolRounds=8 }""",
             ),
           ).getOrThrow()
-      val svc = CoachingService(database, LogOnlyChatProvider(), badConfig)
+      val svc = CoachingService(database, LlmCallLog(LogOnlyChatProvider(), database), badConfig)
       val result = svc.startConvo(student, "hi", null)
       assertTrue(result.isFailure)
       assertTrue(result.exceptionOrNull() is IllegalStateException, "got ${result.exceptionOrNull()}")
@@ -791,8 +949,7 @@ class CoachingServiceTest {
       val events = drain(started.reply)
       assertTrue(terminalOf(events) is ReplyEvent.Completed)
       val turn = ConvosDao.listTurns(sqlSession, started.convo.id).getOrThrow().single()
-      val latency = turn.response!!.latencyMs
-      assertNotNull(latency)
+      val latency = turn.call!!.response!!.latencyMs
       assertTrue(latency >= 0)
     }
 
@@ -804,23 +961,25 @@ class CoachingServiceTest {
       drain(started.reply)
       val convoId = started.convo.id
 
-      // Pre-flight commits the user request row; capture it via Started.userTurn.
+      // Pre-flight commits the user request row (and its llm_requests row); capture
+      // the log-owned llm_request_id via Started.userTurn.
       val post =
         service(
           ScriptedProvider(deltas = listOf("ok"), terminal = completedTerminal("ok")),
         ).postTurn(student, convoId, "x").getOrThrow() as PostTurnResult.Started
-      val requestId = post.userTurn.id.value
+      val llmRequestId = post.userTurn.llmRequestId.value
 
-      // Inject a fault: a pre-existing response row for the SAME request_id. The
-      // request_id UNIQUE constraint makes the service's tx-2 insert fail, so a
-      // non-durable reply must surface as Failed(retriable=true), never Completed.
+      // Inject a fault: a pre-existing llm_responses row for the SAME llm_request_id.
+      // The request_id UNIQUE constraint on llm_responses makes LlmCallLog's terminal
+      // response write fail, so a non-durable reply must surface as
+      // Failed(retriable=true), never Completed (RFC 106 moved the response into the
+      // generic call log).
       connection
         .prepareStatement(
-          "INSERT INTO convo_responses (request_id, convo_id, content, model_resolved, stop_reason) " +
-            "VALUES (?, ?, '[{\"type\":\"text\",\"text\":\"pre\"}]'::jsonb, 'm', 'end_turn')",
+          "INSERT INTO llm_responses (request_id, outcome, content, model_resolved, stop_reason, latency_ms) " +
+            "VALUES (?, 'completed', '[{\"type\":\"text\",\"text\":\"pre\"}]'::jsonb, 'm', 'end_turn', 0)",
         ).use { stmt ->
-          stmt.setLong(1, requestId)
-          stmt.setObject(2, convoId.value)
+          stmt.setLong(1, llmRequestId)
           stmt.executeUpdate()
         }
 
@@ -1041,7 +1200,305 @@ class CoachingServiceTest {
       assertEquals(2, ids.size)
       assertEquals(ids[0], ids[1])
       assertEquals(json("""{"states":["CA"]}""") as JsonObject, tool.inputs.single())
-      assertEquals("here you go", ConvoContent.renderText(terminal.response.content!!))
+      assertEquals("here you go", ConvoContent.renderText(terminal.content))
+    }
+
+  // ---------------------------------------------------------------------------
+  // Mid-tool-loop cancellation (RFC 106).
+  //
+  // A continuation's llm_requests row is committed by openContinuation (via
+  // recordStreaming) before its cold events flow is collected. A client disconnect
+  // can land in two sub-cases:
+  //
+  //   * Case A — disconnect WHILE the continuation's flow is being collected: the
+  //     in-flight provider stream cancels cooperatively and LlmCallLog.recordStreaming's
+  //     OWN catch writes the cancelled response row (under NonCancellable). The
+  //     `... (Case A)` test below exercises this: the continuation flow reaches
+  //     awaitCancellation() — i.e. its body IS running under collection — when the
+  //     collector is cancelled.
+  //
+  //   * Case B — disconnect in the openContinuation -> collectCall GAP, after
+  //     recordStreaming commits the continuation's llm_requests row but before its
+  //     cold flow is ever collected. The row would dangle unless the opener/
+  //     continuation guard writes its cancelled response. This window is now
+  //     covered deterministically by the two `Case B - ...` tests above, which use
+  //     the GatedDispatcher to park the continuation's / opener's appendRequestRow
+  //     transaction and cancel the collector while it is parked — reproducing the
+  //     exact gap. The continuation Case B test FAILS if the openContinuation guard
+  //     is removed (the continuation request is left with no llm_responses row),
+  //     which is the red -> green proof that the guard closes the orphan window.
+  //     The idempotency of writeCancelledIfAbsent (so Case A's already-written row
+  //     is never doubled) is additionally covered by LlmCallLogTest.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A ChatTool that, on execute, arms [gate] so the CoachingService transaction
+   * dispatched *next* — the continuation's `appendRequestRow` — is parked, then
+   * awaits [dispatched] before returning. Executing the tool is the last step
+   * before `openContinuation`, so arming here targets exactly the continuation's
+   * request-row write (its `llm_requests` row is committed by `recordStreaming` on
+   * the ungated DB just before).
+   */
+  private class GateArmingTool(
+    override val name: String,
+    private val gate: GatedDispatcher,
+  ) : ed.unicoach.chat.ChatTool {
+    override val definition = buildJsonObject { put("name", name) }
+
+    override suspend fun execute(input: JsonObject): JsonObject {
+      // Executing the tool is the last step before openContinuation, whose first
+      // gated transaction (after recordStreaming commits the continuation's
+      // llm_requests row on the ungated DB) is appendRequestRow. Park that one.
+      gate.arm(0)
+      return buildJsonObject { put("count", 0) }
+    }
+  }
+
+  @Test
+  fun `Case B - cancelling in the openContinuation gap writes the continuation's cancelled row (fails without the guard)`() =
+    runBlocking {
+      // Case B, deterministic: a disconnect lands in the openContinuation ->
+      // collectCall GAP — after recordStreaming commits the continuation's
+      // llm_requests row but before its cold events flow is ever collected. The
+      // GatedDispatcher parks the continuation's appendRequestRow transaction so the
+      // collector can be cancelled while parked in exactly that window; the
+      // openContinuation guard (FIX 1) must write the continuation's cancelled row.
+      // Without that guard the continuation's request dangles with no llm_responses
+      // row — the orphan this test proves is closed.
+      val student = createStudent()
+      val gate = GatedDispatcher()
+      // Call 0 returns tool_use; the tool arms the gate; the continuation (call 1)
+      // is never collected because the collector is cancelled in the parked window.
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("search_colleges" to "{}"), completedTerminal("unreached")),
+        )
+      val started =
+        gatedServiceWith(provider, registry(GateArmingTool("search_colleges", gate)), gate)
+          .startConvo(student, "colleges?", null)
+          .getOrThrow() as StartConvoResult.Started
+      val convoId = started.convo.id
+
+      val collector = launch { started.reply.collect { } }
+
+      // Wait until the continuation's appendRequestRow transaction is parked (its
+      // llm_requests row is already committed), then cancel the collector so the
+      // continuation's cold flow is never collected.
+      gate.parked.await()
+      collector.cancel()
+      // Let the parked transaction resume; on resume withContext observes the
+      // cancellation and the openContinuation guard runs.
+      gate.release.complete(Unit)
+      collector.join()
+
+      // Two llm_requests rows were committed: the opener and the continuation. The
+      // continuation's appendRequestRow (convo_requests) transaction was parked and
+      // rolled back on cancellation, so the continuation llm_requests row is NOT
+      // reachable through convo_requests — it is exactly the orphan the guard must
+      // still give a response row. Assert on the generic call log directly.
+      assertEquals(2, countAllLlmRequests(), "opener + continuation llm_requests rows both committed")
+      // Every llm_requests row has exactly one llm_responses row: the opener's
+      // tool_use completion + the continuation's guard-written cancelled row.
+      assertEquals(2, countAllLlmResponses(), "every llm_requests row has exactly one llm_responses row — no orphan")
+      assertEquals(
+        listOf("completed", "cancelled"),
+        allResponseOutcomes(),
+        "opener completed (tool_use); the orphaned continuation got its cancelled row from the guard",
+      )
+      // The convo itself shows only the opener request row (the continuation's
+      // convo_requests row rolled back with its parked transaction).
+      assertEquals(listOf("user"), requestKinds(convoId), "only the opener convo_requests row survives the cancelled continuation")
+    }
+
+  @Test
+  fun `Case B - cancelling in the openUserTurn gap writes the opener's cancelled row`() =
+    runBlocking {
+      // The openUserTurn analogue: the opener's llm_requests row is committed by
+      // recordStreaming, then the gate parks its appendRequestRow (here the
+      // nextTurnId transaction is the first gated dispatch after arming). Cancelling
+      // in that window must leave the opener's request with exactly one cancelled
+      // response row (openUserTurn's guard, FIX 1), not a dangling request.
+      val student = createStudent()
+      val gate = GatedDispatcher()
+      // Arm the gate at the moment startConvo hands back the reply flow, so the very
+      // first gated CoachingService transaction inside openUserTurn (nextTurnId /
+      // appendRequestRow) is parked.
+      val provider = ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"))
+      val svc = gatedServiceWith(provider, registry(), gate)
+
+      // openUserTurn runs inside startConvo. The gated CoachingService transactions
+      // are, in order: (1) startConvo's prep block, (2) openUserTurn's nextTurnId —
+      // the first gated transaction AFTER recordStreaming commits the opener's
+      // llm_requests row. Park that second one so the opener's request row is
+      // already committed but its cold flow is never collected.
+      gate.arm(1)
+      val opener =
+        launch {
+          runCatching { svc.startConvo(student, "colleges?", null) }
+        }
+
+      gate.parked.await()
+      opener.cancel()
+      gate.release.complete(Unit)
+      opener.join()
+
+      // Exactly one opener llm_requests row, with exactly one cancelled response.
+      assertEquals(1, countAllLlmRequests(), "the opener llm_requests row is committed")
+      assertEquals(1, countAllLlmResponses(), "the opener's request has exactly one llm_responses row")
+      assertEquals(listOf("cancelled"), allResponseOutcomes(), "the opener's sole response is cancelled")
+    }
+
+  // ---------------------------------------------------------------------------
+  // Defect path (RFC 106): a NON-cancellation exception in the post-commit
+  // convo_requests write. openUserTurn / openContinuation each committed their
+  // llm_requests row via recordStreaming; if the following appendRequestRow (or
+  // nextTurnId) transaction throws a plain exception — e.g. a transient DB error —
+  // the cold events flow is never collected, so the just-committed request would
+  // dangle unless the opener's catch(defect) writes its internal_error response.
+  //
+  // Deterministic seam (throw-mode of the Case B gate): the gate parks the target
+  // transaction AFTER recordStreaming committed the llm_requests row on the ungated
+  // LlmCallLog DB but BEFORE the gated DB's connection is acquired; the test closes
+  // the gated Database while parked, so on release the connection acquisition throws
+  // a non-cancellation SQLException — the transient DB failure this path guards.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a defect in the openContinuation gap writes the continuation's internal_error row (fails without the guard)`() =
+    runBlocking {
+      // A non-cancellation exception lands in the openContinuation -> collectCall
+      // gap. GatedDispatcher parks the continuation's appendRequestRow transaction
+      // (its llm_requests row is already committed on the ungated DB); closing the
+      // gated Database while parked makes the resumed transaction throw a plain
+      // SQLException. openContinuation's catch(defect) (ITEM 2) must write the
+      // continuation's internal_error row. Without that guard the continuation's
+      // request dangles with no llm_responses row — the orphan this test proves closed.
+      val student = createStudent()
+      val gate = GatedDispatcher()
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("search_colleges" to "{}"), completedTerminal("unreached")),
+        )
+      val (svc, gatedDb) = gatedServiceAndDb(provider, registry(GateArmingTool("search_colleges", gate)), gate)
+      val started = svc.startConvo(student, "colleges?", null).getOrThrow() as StartConvoResult.Started
+      val convoId = started.convo.id
+
+      // The reply flow drives the loop: the opener completes with tool_use, the tool
+      // arms the gate, and the continuation's appendRequestRow is parked. The defect
+      // surfaces to buildReplyFlow's outer catch(defect) as a failedEvent, so the
+      // collector completes normally (no cancellation).
+      val collector = launch { started.reply.collect { } }
+
+      // Wait until the continuation's appendRequestRow transaction is parked (its
+      // llm_requests row is already committed), then close the gated Database so its
+      // connection acquisition throws on resume.
+      gate.parked.await()
+      gatedDb.close()
+      gate.release.complete(Unit)
+      collector.join()
+
+      // Two llm_requests rows were committed: the opener and the continuation. The
+      // continuation's appendRequestRow threw and rolled back, so the continuation
+      // llm_requests row is NOT reachable through convo_requests — exactly the orphan
+      // the guard must still give a response row. Assert on the generic call log.
+      assertEquals(2, countAllLlmRequests(), "opener + continuation llm_requests rows both committed")
+      assertEquals(2, countAllLlmResponses(), "every llm_requests row has exactly one llm_responses row — no orphan")
+      assertEquals(
+        listOf("completed", "internal_error"),
+        allResponseOutcomes(),
+        "opener completed (tool_use); the orphaned continuation got its internal_error row from the guard",
+      )
+      // Only the opener request row survives (the continuation's convo_requests row
+      // rolled back with its failed transaction).
+      assertEquals(listOf("user"), requestKinds(convoId), "only the opener convo_requests row survives the failed continuation")
+    }
+
+  @Test
+  fun `a defect in the openUserTurn gap writes the opener's internal_error row`() =
+    runBlocking {
+      // The openUserTurn analogue: the opener's llm_requests row is committed by
+      // recordStreaming, then the gate parks its nextTurnId transaction (the first
+      // gated dispatch after arming). Closing the gated Database while parked makes
+      // the resumed transaction throw a plain SQLException; openUserTurn's
+      // catch(defect) (ITEM 2) must leave the opener's request with exactly one
+      // internal_error response row, not a dangling request.
+      val student = createStudent()
+      val gate = GatedDispatcher()
+      val provider = ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"))
+      val (svc, gatedDb) = gatedServiceAndDb(provider, registry(), gate)
+
+      // The gated CoachingService transactions in order: (1) startConvo's prep block,
+      // (2) openUserTurn's nextTurnId — the first gated transaction AFTER recordStreaming
+      // commits the opener's llm_requests row. Park that second one.
+      gate.arm(1)
+      val opener =
+        launch {
+          runCatching { svc.startConvo(student, "colleges?", null) }
+        }
+
+      gate.parked.await()
+      gatedDb.close()
+      gate.release.complete(Unit)
+      opener.join()
+
+      // Exactly one opener llm_requests row, with exactly one internal_error response.
+      assertEquals(1, countAllLlmRequests(), "the opener llm_requests row is committed")
+      assertEquals(1, countAllLlmResponses(), "the opener's request has exactly one llm_responses row")
+      assertEquals(listOf("internal_error"), allResponseOutcomes(), "the opener's sole response is internal_error")
+    }
+
+  @Test
+  fun `cancelling a tool continuation writes exactly one cancelled row for its request (Case A)`() =
+    runBlocking {
+      // Case A: call 0 returns a tool_use terminal, so a continuation is opened via
+      // openContinuation — committing the continuation's llm_requests row. The
+      // continuation's flow is then collected and reaches awaitCancellation(); the
+      // client disconnects WHILE it is outstanding, so recordStreaming's own catch
+      // writes the cancelled row. The continuation's request must not dangle: it
+      // gets exactly one cancelled llm_responses row.
+      val student = createStudent()
+      val tool = SpyTool("search_colleges", result = json("""{"count":0}""") as JsonObject)
+      // Call 1 (the continuation) hangs after signalling it has been reached, so
+      // the collector can be cancelled while the continuation is outstanding.
+      val continuationReached = CompletableDeferred<Unit>()
+      val provider =
+        object : ChatProvider {
+          override val id = "log"
+          private var call = 0
+
+          override fun stream(request: ChatRequest): Flow<ChatEvent> =
+            flow {
+              val n = call++
+              if (n == 0) {
+                emit(toolUseTerminal("search_colleges" to "{}"))
+              } else {
+                // Continuation call: signal, then hang until cancelled.
+                continuationReached.complete(Unit)
+                awaitCancellation()
+              }
+            }
+        }
+
+      val started =
+        serviceWith(provider, registry(tool)).startConvo(student, "colleges?", null).getOrThrow() as StartConvoResult.Started
+      val convoId = started.convo.id
+
+      val collector =
+        launch {
+          started.reply.collect { }
+        }
+      continuationReached.await()
+      collector.cancel()
+      collector.join()
+
+      // Two request rows (user opener + tool_result continuation), and every
+      // request has exactly one response — no dangling continuation request.
+      assertEquals(listOf("user", "tool_result"), requestKinds(convoId))
+      val outcomes = responseRows(convoId).map { it.first }
+      assertEquals(2, outcomes.size, "one response per request, no dangling request")
+      // The opener completed with tool_use; the continuation was cancelled.
+      assertEquals(listOf("tool_use", "cancelled"), outcomes)
+      assertEquals(2, countResponses(convoId), "exactly one llm_responses row per convo_requests row")
     }
 
   @Test
@@ -1348,7 +1805,7 @@ class CoachingServiceTest {
         serviceWith(provider, registry(realTool)).startConvo(student, "biology colleges?", null).getOrThrow() as StartConvoResult.Started
       val terminal = terminalOf(drain(started.reply))
       assertTrue(terminal is ReplyEvent.Completed)
-      assertEquals("no biology matches yet", ConvoContent.renderText(terminal.response.content!!))
+      assertEquals("no biology matches yet", ConvoContent.renderText(terminal.content))
 
       // The continuation's tool_result carries the real serialized search result JSON.
       val resultText =

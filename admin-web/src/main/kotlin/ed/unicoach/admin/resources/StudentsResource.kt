@@ -411,12 +411,12 @@ class StudentsResource(
         .getOrElse { return Result.failure(it) }
     val columns =
       listOf(
-        // BIGINT id — stays TEXT; UUID compaction (RFC 83) applies to UUID columns only
+        // BIGINT ids — stay TEXT; UUID compaction (RFC 83) applies to UUID columns only.
+        // The model / token columns moved to the linked call (RFC 106); the LLM Request
+        // column links to the generic call log where they now render.
         EdgePanel.Table.Column("ID", refSlug = "extraction-run"),
         EdgePanel.Table.Column("Outcome"),
-        EdgePanel.Table.Column("Model"),
-        EdgePanel.Table.Column("Input Tokens"),
-        EdgePanel.Table.Column("Output Tokens"),
+        EdgePanel.Table.Column("LLM Request", refSlug = "llm-request"),
         EdgePanel.Table.Column("Created", FieldType.TIMESTAMP),
       )
     val rows =
@@ -426,9 +426,7 @@ class StudentsResource(
             listOf(
               r.id.value.toString(),
               r.outcome.value,
-              r.modelResolved ?: "",
-              r.inputTokens?.toString() ?: "",
-              r.outputTokens?.toString() ?: "",
+              r.llmRequestId.value.toString(),
               r.createdAt.toString(),
             ),
         )

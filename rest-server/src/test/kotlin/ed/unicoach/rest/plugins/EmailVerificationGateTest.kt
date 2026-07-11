@@ -426,7 +426,7 @@ private fun io.ktor.server.application.Application.moduleWith(
     database,
     sessionConfig,
     requestSizeConfig,
-    chatProvider,
+    ed.unicoach.coaching.LlmCallLog(chatProvider, database),
     coachingConfig,
     clientKeyGateConfig,
     emailVerificationConfig,

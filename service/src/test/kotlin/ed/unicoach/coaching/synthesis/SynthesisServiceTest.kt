@@ -78,7 +78,7 @@ class SynthesisServiceTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE commitment_support, commitments, synthesis_runs, observations, claim_support, claims, extraction_runs, " +
-          "college_list_entries, colleges, convos, convo_requests, convo_responses, convo_responses_raw, " +
+          "college_list_entries, colleges, convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, " +
           "system_prompts, students, users CASCADE",
       )
       // Restore all migration-seeded prompts for cross-module suites on the shared DB.
@@ -107,7 +107,7 @@ class SynthesisServiceTest {
     provider: ChatProvider,
     cfg: SynthesisConfig = config,
     clock: Clock = fixedClock,
-  ): SynthesisService = SynthesisService(database, provider, cfg, clock)
+  ): SynthesisService = SynthesisService(database, ed.unicoach.coaching.LlmCallLog(provider, database), cfg, clock)
 
   private fun configWith(overrides: String): SynthesisConfig =
     SynthesisConfig
@@ -334,7 +334,8 @@ class SynthesisServiceTest {
 
       connection
         .prepareStatement(
-          "SELECT outcome, commitments_written, input_tokens, output_tokens FROM synthesis_runs WHERE student_id = ?",
+          "SELECT sr.outcome, sr.commitments_written, resp.input_tokens, resp.output_tokens FROM synthesis_runs sr " +
+            "JOIN llm_responses resp ON resp.request_id = sr.llm_request_id WHERE sr.student_id = ?",
         ).use { stmt ->
           stmt.setObject(1, student.value)
           stmt.executeQuery().use { rs ->
@@ -559,7 +560,8 @@ class SynthesisServiceTest {
       )
       connection
         .prepareStatement(
-          "SELECT outcome, input_tokens, output_tokens, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ?",
+          "SELECT sr.outcome, resp.input_tokens, resp.output_tokens, sr.failure_category, sr.failure_reason FROM synthesis_runs sr " +
+            "JOIN llm_responses resp ON resp.request_id = sr.llm_request_id WHERE sr.student_id = ?",
         ).use { stmt ->
           stmt.setObject(1, student.value)
           stmt.executeQuery().use { rs ->
@@ -649,7 +651,8 @@ class SynthesisServiceTest {
       )
       connection
         .prepareStatement(
-          "SELECT outcome, input_tokens, output_tokens, failure_category, failure_reason FROM synthesis_runs WHERE student_id = ?",
+          "SELECT sr.outcome, resp.input_tokens, resp.output_tokens, sr.failure_category, sr.failure_reason FROM synthesis_runs sr " +
+            "JOIN llm_responses resp ON resp.request_id = sr.llm_request_id WHERE sr.student_id = ?",
         ).use { stmt ->
           stmt.setObject(1, student.value)
           stmt.executeQuery().use { rs ->
@@ -690,16 +693,20 @@ class SynthesisServiceTest {
           .getOrThrow(),
         "a failed parse must not advance the freshness marker",
       )
-      connection.prepareStatement("SELECT outcome, input_tokens, output_tokens FROM synthesis_runs WHERE student_id = ?").use { stmt ->
-        stmt.setObject(1, student.value)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "a failed synthesis_runs row must exist")
-          assertEquals("failed", rs.getString("outcome"))
-          assertEquals(17, rs.getInt("input_tokens"))
-          assertEquals(23, rs.getInt("output_tokens"))
-          assertTrue(!rs.next(), "exactly one run row")
+      connection
+        .prepareStatement(
+          "SELECT sr.outcome, resp.input_tokens, resp.output_tokens FROM synthesis_runs sr " +
+            "JOIN llm_responses resp ON resp.request_id = sr.llm_request_id WHERE sr.student_id = ?",
+        ).use { stmt ->
+          stmt.setObject(1, student.value)
+          stmt.executeQuery().use { rs ->
+            assertTrue(rs.next(), "a failed synthesis_runs row must exist")
+            assertEquals("failed", rs.getString("outcome"))
+            assertEquals(17, rs.getInt("input_tokens"))
+            assertEquals(23, rs.getInt("output_tokens"))
+            assertTrue(!rs.next(), "exactly one run row")
+          }
         }
-      }
     }
   }
 
@@ -772,13 +779,17 @@ class SynthesisServiceTest {
       createClaim(student, "fresh belief")
       service(NoToolUseProvider(usage = TokenUsage(30, 0, 0, 0))).synthesize(student)
 
-      connection.prepareStatement("SELECT COALESCE(SUM(input_tokens),0) FROM synthesis_runs WHERE student_id = ?").use { stmt ->
-        stmt.setObject(1, student.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          assertEquals(130, rs.getInt(1))
+      connection
+        .prepareStatement(
+          "SELECT COALESCE(SUM(resp.input_tokens),0) FROM synthesis_runs sr " +
+            "JOIN llm_responses resp ON resp.request_id = sr.llm_request_id WHERE sr.student_id = ?",
+        ).use { stmt ->
+          stmt.setObject(1, student.value)
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals(130, rs.getInt(1))
+          }
         }
-      }
 
       connection
         .prepareStatement(

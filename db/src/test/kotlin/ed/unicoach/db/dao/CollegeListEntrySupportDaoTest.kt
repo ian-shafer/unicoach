@@ -53,7 +53,7 @@ class CollegeListEntrySupportDaoTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE observations, college_list_entry_support, college_list_entries, " +
-          "convos, convo_requests, convo_responses, convo_responses_raw, system_prompts, students, users, colleges CASCADE",
+          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users, colleges CASCADE",
       )
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
@@ -138,15 +138,26 @@ class CollegeListEntrySupportDaoTest {
       stmt.setString(2, "p${promptCounter++}")
       stmt.executeUpdate()
     }
+    val llmRequestId =
+      connection
+        .prepareStatement(
+          "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+        ).use { stmt ->
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            rs.getLong("id")
+          }
+        }
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id)
-        VALUES (?, 'anthropic', 'claude-opus-4-8', ?, '[]'::jsonb, nextval('convo_turn_id_seq')) RETURNING id
+        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+        VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convoId.value)
         stmt.setObject(2, promptId)
+        stmt.setLong(3, llmRequestId)
         stmt.executeQuery().use { rs ->
           rs.next()
           return ConvoRequestId(rs.getLong("id"))

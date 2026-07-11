@@ -2,6 +2,7 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
@@ -14,6 +15,7 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -46,7 +48,9 @@ class FitLensRunsDaoTest {
   fun resetDatabase() {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
-      stmt.execute("TRUNCATE TABLE fit_lens_runs, system_prompts, students, users CASCADE")
+      stmt.execute(
+        "TRUNCATE TABLE fit_lens_runs, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
+      )
     }
   }
 
@@ -80,6 +84,18 @@ class FitLensRunsDaoTest {
     return SystemPromptId(id)
   }
 
+  private fun appendLlmRequest(): Long {
+    connection
+      .prepareStatement(
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+      ).use { stmt ->
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return rs.getLong("id")
+        }
+      }
+  }
+
   /** A default `Applied` outcome, for cases that don't assert on the suggestions count. */
   private fun applied(suggestionsWritten: Int = 0): FitLensOutcome.Applied = FitLensOutcome.Applied(suggestionsWritten = suggestionsWritten)
 
@@ -92,8 +108,7 @@ class FitLensRunsDaoTest {
     queryPrompt: SystemPromptId,
     reasonPrompt: SystemPromptId,
     matchesConsidered: Int? = 0,
-    input: Int? = 100,
-    output: Int? = 50,
+    reasonCallMade: Boolean = true,
   ) = FitLensRunsDao
     .append(
       session,
@@ -102,29 +117,26 @@ class FitLensRunsDaoTest {
         outcome = outcome,
         querySystemPromptId = queryPrompt,
         reasonSystemPromptId = reasonPrompt,
-        provider = "log",
-        modelResolved = "claude-sonnet-4-6",
+        queryLlmRequestId = LlmRequestId(appendLlmRequest()),
+        reasonLlmRequestId = if (reasonCallMade) LlmRequestId(appendLlmRequest()) else null,
         matchesConsidered = matchesConsidered,
-        inputTokens = input,
-        outputTokens = output,
-        cacheReadTokens = 0,
-        cacheWriteTokens = 0,
       ),
     ).getOrThrow()
 
   @Test
-  fun `append persists applied and failed rows with summed tokens and both prompt pins`() {
+  fun `append persists applied and failed rows with both call pins and both prompt pins`() {
     val student = createStudent()
     val queryPrompt = createPrompt("fit_lens_query")
     val reasonPrompt = createPrompt("fit_lens_reason")
 
-    val applied = append(student, applied(suggestionsWritten = 1), queryPrompt, reasonPrompt, input = 300, output = 120)
+    val applied = append(student, applied(suggestionsWritten = 1), queryPrompt, reasonPrompt)
     // The applied round-trip yields an Applied variant carrying the suggestions count.
     assertEquals(FitLensOutcome.Applied(suggestionsWritten = 1), applied.outcome)
     assertEquals(queryPrompt, applied.querySystemPromptId)
     assertEquals(reasonPrompt, applied.reasonSystemPromptId)
-    assertEquals(300, applied.inputTokens)
-    assertEquals(120, applied.outputTokens)
+    // A full pass makes both calls; both call pins round-trip (RFC 106).
+    assertNotNull(applied.queryLlmRequestId, "the query call is pinned on a full pass")
+    assertNotNull(applied.reasonLlmRequestId, "the reason call is pinned on a full pass")
 
     val failed =
       append(
@@ -136,6 +148,8 @@ class FitLensRunsDaoTest {
         queryPrompt,
         reasonPrompt,
         matchesConsidered = null,
+        // A query call that bails before the reason call leaves reason_llm_request_id null.
+        reasonCallMade = false,
       )
     // The Failed outcome round-trips through mapRun to an equal Failed variant;
     // matches_considered stays a flat field, null when the retrieve never ran.
@@ -147,6 +161,8 @@ class FitLensRunsDaoTest {
       failed.outcome,
     )
     assertNull(failed.matchesConsidered, "matches_considered is null when the retrieve never ran")
+    assertNotNull(failed.queryLlmRequestId, "the query call is pinned even on a bailed pass")
+    assertNull(failed.reasonLlmRequestId, "reason_llm_request_id is null when the pass bails before the reason call")
   }
 
   @Test
@@ -200,18 +216,23 @@ class FitLensRunsDaoTest {
     val queryPrompt = createPrompt("fit_lens_query")
     val reasonPrompt = createPrompt("fit_lens_reason")
 
+    // query_llm_request_id is NOT NULL (RFC 106), so seed a real call id — the row
+    // is otherwise valid and the pairing CHECK is what must reject it.
+    val queryRequestId = appendLlmRequest()
+
     val categoryOnly =
       runCatching {
         connection
           .prepareStatement(
             """
-            INSERT INTO fit_lens_runs (student_id, outcome, query_system_prompt_id, reason_system_prompt_id, provider, failure_category)
-            VALUES (?, 'applied', ?, ?, 'log', 'malformed_output')
+            INSERT INTO fit_lens_runs (student_id, outcome, query_system_prompt_id, reason_system_prompt_id, query_llm_request_id, failure_category)
+            VALUES (?, 'applied', ?, ?, ?, 'malformed_output')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, student.value)
             stmt.setObject(2, queryPrompt.value)
             stmt.setObject(3, reasonPrompt.value)
+            stmt.setLong(4, queryRequestId)
             stmt.executeUpdate()
           }
       }.exceptionOrNull()
@@ -222,13 +243,14 @@ class FitLensRunsDaoTest {
         connection
           .prepareStatement(
             """
-            INSERT INTO fit_lens_runs (student_id, outcome, query_system_prompt_id, reason_system_prompt_id, provider, failure_reason)
-            VALUES (?, 'applied', ?, ?, 'log', 'orphaned reason')
+            INSERT INTO fit_lens_runs (student_id, outcome, query_system_prompt_id, reason_system_prompt_id, query_llm_request_id, failure_reason)
+            VALUES (?, 'applied', ?, ?, ?, 'orphaned reason')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, student.value)
             stmt.setObject(2, queryPrompt.value)
             stmt.setObject(3, reasonPrompt.value)
+            stmt.setLong(4, queryRequestId)
             stmt.executeUpdate()
           }
       }.exceptionOrNull()

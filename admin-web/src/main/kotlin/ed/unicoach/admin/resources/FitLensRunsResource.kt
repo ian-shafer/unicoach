@@ -14,18 +14,20 @@ import ed.unicoach.db.models.SoftDeleteScope
 
 /**
  * The append-only `fit_lens_runs` log (RFC 98), surfaced read-only (RFC 77): one
- * completed fit-lens pass, with its outcome, provenance (two prompt pins,
- * provider/model), suggestion/matches counts, and the four-column token ledger
- * (summing the pass's two billed calls). Mirrors [SynthesisRunsResource]: all
- * four write handlers are null, so the engine registers no create/edit/delete
- * routes. The table carries no `deleted_at`, so `scope`/`includeDeleted` are
- * ignored.
+ * completed fit-lens pass, with its outcome, provenance (two prompt pins), and
+ * suggestion/matches counts. Since RFC 106 the provider/model and per-call token
+ * spend live in the generic call log; a pass makes up to two billed calls, linked
+ * via `queryLlmRequestId` and `reasonLlmRequestId` (both refSlug `llm-request`;
+ * `query` is always present, `reason` blank when the pass bailed before the
+ * reason call). Mirrors
+ * [SynthesisRunsResource]: all four write handlers are null, so the engine
+ * registers no create/edit/delete routes. The table carries no `deleted_at`, so
+ * `scope`/`includeDeleted` are ignored.
  *
- * The token and count columns are on the list (`inList = true`) so per-student
- * LLM spend is eyeballable; the secondary provenance columns are detail-only.
- * `failureCategory` is on the list too (a triage-at-a-glance "what's failing"
- * column, null on `applied` rows); `failureReason`'s free-text diagnostic is
- * detail-only. No edges.
+ * The count columns are on the list (`inList = true`); the secondary provenance
+ * columns are detail-only. `failureCategory` is on the list too (a
+ * triage-at-a-glance "what's failing" column, null on `applied` rows);
+ * `failureReason`'s free-text diagnostic is detail-only. No edges.
  */
 object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
   override val slug = "fit-lens-run"
@@ -40,11 +42,26 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
       AdminField("studentId", "Student ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "student"),
       AdminField("outcome", "Outcome", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("failureCategory", "Failure Category", FieldType.TEXT, editable = false, sensitive = false),
-      AdminField("modelResolved", "Model", FieldType.TEXT, editable = false, sensitive = false),
+      // BIGINT ids — stay TEXT; link to the generic call log (RFC 106). A pass makes
+      // up to two calls; `reason` is blank when the pass bailed before the reason call.
+      AdminField(
+        "queryLlmRequestId",
+        "Query LLM Request ID",
+        FieldType.TEXT,
+        editable = false,
+        sensitive = false,
+        refSlug = "llm-request",
+      ),
+      AdminField(
+        "reasonLlmRequestId",
+        "Reason LLM Request ID",
+        FieldType.TEXT,
+        editable = false,
+        sensitive = false,
+        refSlug = "llm-request",
+      ),
       AdminField("suggestionsWritten", "Suggestions Written", FieldType.INT, editable = false, sensitive = false),
       AdminField("matchesConsidered", "Matches Considered", FieldType.INT, editable = false, sensitive = false),
-      AdminField("inputTokens", "Input Tokens", FieldType.INT, editable = false, sensitive = false),
-      AdminField("outputTokens", "Output Tokens", FieldType.INT, editable = false, sensitive = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField(
         "querySystemPromptId",
@@ -64,9 +81,6 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
         inList = false,
         refSlug = "system-prompt",
       ),
-      AdminField("provider", "Provider", FieldType.TEXT, editable = false, sensitive = false, inList = false),
-      AdminField("cacheReadTokens", "Cache Read Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("cacheWriteTokens", "Cache Write Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("failureReason", "Failure Reason", FieldType.TEXT, editable = false, sensitive = false, inList = false),
     )
 
@@ -109,17 +123,13 @@ object FitLensRunsResource : AdminResource<FitLensRun, FitLensRunId> {
       "studentId" to row.studentId.value.toString(),
       "outcome" to row.outcome.value,
       "failureCategory" to cells.failureCategory,
-      "modelResolved" to (row.modelResolved ?: ""),
+      "queryLlmRequestId" to row.queryLlmRequestId.value.toString(),
+      "reasonLlmRequestId" to (row.reasonLlmRequestId?.value?.toString() ?: ""),
       "suggestionsWritten" to cells.suggestionsWritten,
       "matchesConsidered" to (row.matchesConsidered?.toString() ?: ""),
-      "inputTokens" to (row.inputTokens?.toString() ?: ""),
-      "outputTokens" to (row.outputTokens?.toString() ?: ""),
       "createdAt" to row.createdAt.toString(),
       "querySystemPromptId" to row.querySystemPromptId.value.toString(),
       "reasonSystemPromptId" to row.reasonSystemPromptId.value.toString(),
-      "provider" to row.provider,
-      "cacheReadTokens" to (row.cacheReadTokens?.toString() ?: ""),
-      "cacheWriteTokens" to (row.cacheWriteTokens?.toString() ?: ""),
       "failureReason" to cells.failureReason,
     )
   }

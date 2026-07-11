@@ -5,11 +5,13 @@ import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoName
 import ed.unicoach.db.models.ConvoRequestKind
-import ed.unicoach.db.models.ConvoResponseId
 import ed.unicoach.db.models.ConvoTurnId
+import ed.unicoach.db.models.LlmCallOutcome
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
-import ed.unicoach.db.models.NewConvoResponse
+import ed.unicoach.db.models.NewLlmRequest
+import ed.unicoach.db.models.NewLlmResponse
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPromptId
@@ -64,7 +66,7 @@ class ConvosDaoTest {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
       stmt.execute(
-        "TRUNCATE TABLE convos, convo_requests, convo_responses, convo_responses_raw, system_prompts, students, users CASCADE",
+        "TRUNCATE TABLE convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
       )
     }
   }
@@ -123,22 +125,38 @@ class ConvosDaoTest {
 
   private fun obj(block: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit): JsonObject = buildJsonObject(block)
 
+  /** Appends a generic `llm_requests` row and returns its id (the FK a convo_requests row references). */
+  private fun appendLlmRequest(): LlmRequestId =
+    LlmCallsDao
+      .appendRequest(
+        session,
+        NewLlmRequest(
+          provider = "anthropic",
+          modelRequested = "claude-opus-4-8",
+          system = "be a good coach",
+          content =
+            json(
+              """[{"role":"user","content":[{"type":"text","text":"hello"}]}]""",
+            ).let { it as kotlinx.serialization.json.JsonArray },
+          maxTokens = 1024,
+          tools = null,
+          toolChoice = null,
+          params = obj { put("temperature", 0.7) },
+        ),
+      ).getOrThrow()
+      .id
+
   private fun newRequest(
     convoId: ConvoId,
-    provider: String = "anthropic",
     systemPromptId: SystemPromptId = createSystemPrompt(),
-    requestParams: JsonObject? = obj { put("temperature", 0.7) },
-    content: JsonElement = json("""[{"type":"text","text":"hello"}]"""),
+    llmRequestId: LlmRequestId = appendLlmRequest(),
     kind: ConvoRequestKind = ConvoRequestKind.USER,
     turnId: ConvoTurnId = ConvosDao.nextTurnId(session).getOrThrow(),
   ): NewConvoRequest =
     NewConvoRequest(
       convoId = convoId,
-      provider = provider,
-      modelRequested = "claude-opus-4-8",
       systemPromptId = systemPromptId,
-      requestParams = requestParams,
-      content = content,
+      llmRequestId = llmRequestId,
       turnId = turnId,
       kind = kind,
     )
@@ -146,27 +164,32 @@ class ConvosDaoTest {
   private fun appendRequestFor(convoId: ConvoId): ed.unicoach.db.models.ConvoRequest =
     ConvosDao.appendRequest(session, newRequest(convoId)).getOrThrow()
 
-  private fun successResponse(
-    requestId: ed.unicoach.db.models.ConvoRequestId,
-    convoId: ConvoId,
-    content: JsonElement? = json("""[{"type":"text","text":"hi there"}]"""),
-    stopReason: String = "end_turn",
-    modelResolved: String? = "claude-opus-4-8",
-    inputTokens: Int? = 10,
-  ): NewConvoResponse =
-    NewConvoResponse(
-      requestId = requestId,
-      convoId = convoId,
-      content = content,
-      modelResolved = modelResolved,
-      stopReason = stopReason,
-      inputTokens = inputTokens,
-      outputTokens = 20,
-      cacheReadTokens = 0,
-      cacheWriteTokens = 0,
-      providerRequestId = "req_abc",
-      latencyMs = 123,
-    )
+  /** Writes a completed `llm_responses` row (+ raw when [raw] is non-null) for [llmRequestId], so the turn read joins a response. */
+  private fun appendCompletedResponse(
+    llmRequestId: LlmRequestId,
+    raw: JsonElement? = null,
+  ) {
+    LlmCallsDao
+      .appendResponse(
+        session,
+        NewLlmResponse(
+          requestId = llmRequestId,
+          outcome =
+            LlmCallOutcome.Completed(
+              content = json("""[{"type":"text","text":"hi there"}]"""),
+              modelResolved = "claude-opus-4-8",
+              stopReason = "end_turn",
+            ),
+          providerRequestId = "req_abc",
+          inputTokens = 10,
+          outputTokens = 20,
+          cacheReadTokens = 0,
+          cacheWriteTokens = 0,
+          latencyMs = 123,
+        ),
+        rawPayload = raw,
+      ).getOrThrow()
+  }
 
   // ---------------------------------------------------------------------------
   // Convo entity
@@ -330,33 +353,19 @@ class ConvosDaoTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `appendRequest inserts a row and round-trips content and request_params JSON`() {
+  fun `appendRequest inserts a coaching row referencing its logged call`() {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val content = json("""[{"type":"text","text":"hello world"}]""")
-    val params = obj { put("temperature", 0.5) }
     val promptId = createSystemPrompt()
+    val llmRequestId = appendLlmRequest()
     val request =
       ConvosDao
-        .appendRequest(session, newRequest(convo.id, systemPromptId = promptId, requestParams = params, content = content))
+        .appendRequest(session, newRequest(convo.id, systemPromptId = promptId, llmRequestId = llmRequestId))
         .getOrThrow()
 
-    assertEquals(content, request.content)
-    assertEquals(params, request.requestParams)
     assertEquals(convo.id, request.convoId)
-    assertEquals("anthropic", request.provider)
     assertEquals(promptId, request.systemPromptId)
-  }
-
-  @Test
-  fun `appendRequest accepts a null request_params`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val request =
-      ConvosDao
-        .appendRequest(session, newRequest(convo.id, requestParams = null))
-        .getOrThrow()
-    assertNull(request.requestParams)
+    assertEquals(llmRequestId, request.llmRequestId)
   }
 
   @Test
@@ -366,21 +375,11 @@ class ConvosDaoTest {
   }
 
   @Test
-  fun `appendRequest with content over 1 MiB returns ConstraintViolationException`() {
+  fun `appendRequest with an absent llm_request returns NotFoundException`() {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val big = "x".repeat(1_048_577)
-    val content = json("""[{"type":"text","text":${Json.encodeToString(kotlinx.serialization.json.JsonPrimitive(big))}}]""")
-    val result = ConvosDao.appendRequest(session, newRequest(convo.id, content = content))
-    assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got $result")
-  }
-
-  @Test
-  fun `appendRequest with a non-allowlisted provider returns ConstraintViolationException`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val result = ConvosDao.appendRequest(session, newRequest(convo.id, provider = "openai"))
-    assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got $result")
+    val result = ConvosDao.appendRequest(session, newRequest(convo.id, llmRequestId = LlmRequestId(999_999L)))
+    assertTrue(result.exceptionOrNull() is NotFoundException, "got $result")
   }
 
   @Test
@@ -404,16 +403,18 @@ class ConvosDaoTest {
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     // A row inserted without an explicit kind column takes the DEFAULT 'user'.
     val promptId = createSystemPrompt()
+    val llmRequestId = appendLlmRequest()
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id)
-        VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, nextval('convo_turn_id_seq'))
+        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+        VALUES (?, ?, ?, nextval('convo_turn_id_seq'))
         RETURNING id
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convo.id.value)
         stmt.setObject(2, promptId.value)
+        stmt.setLong(3, llmRequestId.value)
         stmt.executeQuery().use { rs ->
           assertTrue(rs.next())
           val requestId =
@@ -430,17 +431,19 @@ class ConvosDaoTest {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     val promptId = createSystemPrompt()
+    val llmRequestId = appendLlmRequest()
     val failure =
       assertFailsWith<java.sql.SQLException> {
         connection
           .prepareStatement(
             """
-            INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, kind, turn_id)
-            VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, 'bogus', nextval('convo_turn_id_seq'))
+            INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, kind, turn_id)
+            VALUES (?, ?, ?, 'bogus', nextval('convo_turn_id_seq'))
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, convo.id.value)
             stmt.setObject(2, promptId.value)
+            stmt.setLong(3, llmRequestId.value)
             stmt.executeUpdate()
           }
       }
@@ -505,17 +508,19 @@ class ConvosDaoTest {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     val promptId = createSystemPrompt()
+    val llmRequestId = appendLlmRequest()
     val failure =
       assertFailsWith<java.sql.SQLException> {
         connection
           .prepareStatement(
             """
-            INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, kind)
-            VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, 'user')
+            INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, kind)
+            VALUES (?, ?, ?, 'user')
             """.trimIndent(),
           ).use { stmt ->
             stmt.setObject(1, convo.id.value)
             stmt.setObject(2, promptId.value)
+            stmt.setLong(3, llmRequestId.value)
             stmt.executeUpdate()
           }
       }
@@ -533,159 +538,27 @@ class ConvosDaoTest {
     assertTrue(a.value < b.value && b.value < c.value, "expected strictly increasing turn ids, got $a $b $c")
   }
 
-  @Test
-  fun `appendResponse with a raw payload writes both the response and the raw row`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val request = appendRequestFor(convo.id)
-    val raw = json("""{"id":"msg_1","role":"assistant"}""")
-    val response = ConvosDao.appendResponse(session, successResponse(request.id, convo.id), raw).getOrThrow()
-
-    val storedRaw = ConvosDao.findRawByResponseId(session, response.id).getOrThrow()
-    assertEquals(raw, storedRaw.payload)
-    assertEquals(response.id, storedRaw.responseId)
-  }
-
-  @Test
-  fun `appendResponse without a raw payload writes only the response row`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val request = appendRequestFor(convo.id)
-    val response =
-      ConvosDao
-        .appendResponse(
-          session,
-          successResponse(request.id, convo.id, content = null, stopReason = "error", modelResolved = null),
-          rawPayload = null,
-        ).getOrThrow()
-
-    assertNull(response.content)
-    assertEquals("error", response.stopReason)
-    assertTrue(ConvosDao.findRawByResponseId(session, response.id).exceptionOrNull() is NotFoundException)
-  }
-
-  @Test
-  fun `appendResponse a second time for the same request_id returns ConstraintViolationException`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val request = appendRequestFor(convo.id)
-    ConvosDao.appendResponse(session, successResponse(request.id, convo.id), rawPayload = null).getOrThrow()
-    val second = ConvosDao.appendResponse(session, successResponse(request.id, convo.id), rawPayload = null)
-    assertTrue(second.exceptionOrNull() is ConstraintViolationException, "got $second")
-  }
-
-  @Test
-  fun `appendResponse with null content and a non-error stop_reason returns ConstraintViolationException`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val request = appendRequestFor(convo.id)
-    val result =
-      ConvosDao.appendResponse(
-        session,
-        successResponse(request.id, convo.id, content = null, stopReason = "end_turn", modelResolved = null),
-        rawPayload = null,
-      )
-    assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got $result")
-  }
-
-  @Test
-  fun `appendResponse with an absent request returns NotFoundException`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val result =
-      ConvosDao.appendResponse(
-        session,
-        successResponse(
-          ed.unicoach.db.models
-            .ConvoRequestId(999_999L),
-          convo.id,
-        ),
-        rawPayload = null,
-      )
-    assertTrue(result.exceptionOrNull() is NotFoundException, "got $result")
-  }
-
-  @Test
-  fun `appendResponse with a negative token count returns ConstraintViolationException`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val request = appendRequestFor(convo.id)
-    val result =
-      ConvosDao.appendResponse(
-        session,
-        successResponse(request.id, convo.id, inputTokens = -1),
-        rawPayload = null,
-      )
-    assertTrue(result.exceptionOrNull() is ConstraintViolationException, "got $result")
-  }
-
-  @Test
-  fun `appendResponse writes the response and its raw row atomically within a caller transaction`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val request = appendRequestFor(convo.id)
-    val raw = json("""{"id":"msg_atomic"}""")
-
-    connection.autoCommit = false
-    try {
-      val response = ConvosDao.appendResponse(session, successResponse(request.id, convo.id), raw).getOrThrow()
-      connection.commit()
-
-      assertTrue(ConvosDao.findRawByResponseId(session, response.id).isSuccess)
-      assertEquals(1, countResponses(request.id))
-    } finally {
-      connection.autoCommit = true
-    }
-  }
-
-  @Test
-  fun `appendResponse and its raw insert commit or roll back together in the caller transaction`() {
-    val student = createStudent()
-    val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
-    val request = appendRequestFor(convo.id)
-
-    // appendResponse runs the response insert and the raw insert inside the one
-    // transaction the caller provides. If the raw insert fails the whole turn
-    // must unwind, leaving no orphaned response row. We can't provoke a raw PK
-    // collision from outside (a fresh response always gets a fresh, unoccupied
-    // id, and the log triggers forbid deleting a response to reuse it), so we
-    // prove the equivalent transactional binding directly: a successful
-    // appendResponse followed by a caller rollback must erase both rows together.
-    connection.autoCommit = false
-    try {
-      val response = ConvosDao.appendResponse(session, successResponse(request.id, convo.id), json("""{"r":1}""")).getOrThrow()
-      assertEquals(1, countResponses(request.id))
-      assertTrue(ConvosDao.findRawByResponseId(session, response.id).isSuccess)
-      connection.rollback()
-    } finally {
-      connection.autoCommit = true
-    }
-
-    assertEquals(0, countResponses(request.id))
-    assertTrue(ConvosDao.listTurns(session, convo.id, SoftDeleteScope.ALL).getOrThrow().all { it.response == null })
-  }
-
   // ---------------------------------------------------------------------------
-  // Logs — read
+  // Logs — read (the response now lives in the joined llm_responses)
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `listTurns returns turns ordered by created_at then id, each request paired with its response`() {
+  fun `listTurns returns turns ordered by created_at then id, each request paired with its joined call response`() {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     val r1 = appendRequestFor(convo.id)
-    ConvosDao.appendResponse(session, successResponse(r1.id, convo.id), rawPayload = null).getOrThrow()
+    appendCompletedResponse(r1.llmRequestId)
     val r2 = appendRequestFor(convo.id)
-    ConvosDao.appendResponse(session, successResponse(r2.id, convo.id), rawPayload = null).getOrThrow()
+    appendCompletedResponse(r2.llmRequestId)
 
     val turns = ConvosDao.listTurns(session, convo.id).getOrThrow()
     assertEquals(listOf(r1.id, r2.id), turns.map { it.request.id })
-    assertTrue(turns.all { it.response != null })
-    assertEquals(r1.id, turns[0].response!!.requestId)
+    assertTrue(turns.all { it.call?.response != null })
+    assertEquals(r1.llmRequestId, turns[0].call!!.response!!.requestId)
   }
 
   @Test
-  fun `listTurns yields a null response for a request whose response has not been written`() {
+  fun `listTurns yields a null call response for a request whose response has not been written`() {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     val r1 = appendRequestFor(convo.id)
@@ -693,7 +566,9 @@ class ConvosDaoTest {
     val turns = ConvosDao.listTurns(session, convo.id).getOrThrow()
     assertEquals(1, turns.size)
     assertEquals(r1.id, turns[0].request.id)
-    assertNull(turns[0].response)
+    // The request always joins its llm_requests row; the response is absent.
+    assertNotNull(turns[0].call)
+    assertNull(turns[0].call!!.response)
   }
 
   @Test
@@ -789,34 +664,15 @@ class ConvosDaoTest {
   }
 
   @Test
-  fun `findRawByResponseId returns the stored payload`() {
+  fun `listTurns joins the raw payload when the completed call carries one`() {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     val request = appendRequestFor(convo.id)
     val raw = json("""{"verbatim":true}""")
-    val response = ConvosDao.appendResponse(session, successResponse(request.id, convo.id), raw).getOrThrow()
+    appendCompletedResponse(request.llmRequestId, raw)
 
-    assertEquals(raw, ConvosDao.findRawByResponseId(session, response.id).getOrThrow().payload)
-  }
-
-  @Test
-  fun `findRawByResponseId returns NotFoundException for an absent response id`() {
-    val result = ConvosDao.findRawByResponseId(session, ConvoResponseId(999_999L))
-    assertTrue(result.exceptionOrNull() is NotFoundException, "got $result")
-  }
-
-  // ---------------------------------------------------------------------------
-  // Raw SQL helpers for atomicity tests
-  // ---------------------------------------------------------------------------
-
-  private fun countResponses(requestId: ed.unicoach.db.models.ConvoRequestId): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM convo_responses WHERE request_id = ?").use { stmt ->
-      stmt.setLong(1, requestId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
+    val turn = ConvosDao.findTurnByRequestId(session, request.id, SoftDeleteScope.ACTIVE).getOrThrow()
+    assertEquals(raw, turn.call!!.raw!!.payload)
   }
 
   // ---------------------------------------------------------------------------
@@ -844,16 +700,18 @@ class ConvosDaoTest {
     createdAtIso: String,
   ) {
     val promptId = createSystemPrompt()
+    val llmRequestId = appendLlmRequest()
     connection
       .prepareStatement(
         """
-        INSERT INTO convo_requests (convo_id, provider, model_requested, system_prompt_id, content, turn_id, created_at)
-        VALUES (?, 'log', 'claude-sonnet-4-6', ?, '[{"type":"text","text":"hi"}]'::jsonb, nextval('convo_turn_id_seq'), ?::timestamptz)
+        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, created_at)
+        VALUES (?, ?, ?, nextval('convo_turn_id_seq'), ?::timestamptz)
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, convoId.value)
         stmt.setObject(2, promptId.value)
-        stmt.setString(3, createdAtIso)
+        stmt.setLong(3, llmRequestId.value)
+        stmt.setString(4, createdAtIso)
         stmt.executeUpdate()
       }
   }
@@ -1078,7 +936,7 @@ class ConvosDaoTest {
 
     val turns = ConvosDao.listTurns(session, SoftDeleteScope.ALL, 50, 0).getOrThrow()
     val turn = turns.first { it.request.id == request.id }
-    assertNull(turn.response)
+    assertNull(turn.call!!.response)
   }
 
   @Test
@@ -1093,27 +951,29 @@ class ConvosDaoTest {
   }
 
   @Test
-  fun `findTurnByRequestId returns request and paired response`() {
+  fun `findTurnByRequestId returns request and paired call response`() {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     val request = appendRequestFor(convo.id)
-    ConvosDao.appendResponse(session, successResponse(request.id, convo.id), rawPayload = null).getOrThrow()
+    appendCompletedResponse(request.llmRequestId)
 
     val turn = ConvosDao.findTurnByRequestId(session, request.id, SoftDeleteScope.ALL).getOrThrow()
     assertEquals(request.id, turn.request.id)
-    assertNotNull(turn.response)
-    assertEquals("end_turn", turn.response.stopReason)
+    assertNotNull(turn.call!!.response)
+    val outcome = turn.call!!.response!!.outcome
+    assertTrue(outcome is LlmCallOutcome.Completed)
+    assertEquals("end_turn", outcome.stopReason)
   }
 
   @Test
-  fun `findTurnByRequestId returns null response when none exists`() {
+  fun `findTurnByRequestId returns null call response when none exists`() {
     val student = createStudent()
     val convo = ConvosDao.create(session, newConvo(student)).getOrThrow()
     val request = appendRequestFor(convo.id)
 
     val turn = ConvosDao.findTurnByRequestId(session, request.id, SoftDeleteScope.ALL).getOrThrow()
     assertEquals(request.id, turn.request.id)
-    assertNull(turn.response)
+    assertNull(turn.call!!.response)
   }
 
   @Test

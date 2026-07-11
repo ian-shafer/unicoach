@@ -301,6 +301,14 @@ internal fun PreparedStatement.setIntOrNull(
   if (value != null) setInt(index, value) else setNull(index, Types.INTEGER)
 }
 
+/** Binds a nullable Long, NULL as `Types.BIGINT`. */
+internal fun PreparedStatement.setLongOrNull(
+  index: Int,
+  value: Long?,
+) {
+  if (value != null) setLong(index, value) else setNull(index, Types.BIGINT)
+}
+
 /** Binds a nullable [JsonElement] into a `?::jsonb` slot, NULL as `Types.OTHER`. */
 internal fun PreparedStatement.setJsonbOrNull(
   index: Int,

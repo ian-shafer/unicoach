@@ -49,7 +49,7 @@ class ExtractionHandlerTest {
   /** A stub service returning a fixed result, recording the call args. */
   private inner class StubService(
     private val result: ExtractionResult,
-  ) : ExtractionService(database, LogOnlyChatProvider(), extractionConfig) {
+  ) : ExtractionService(database, ed.unicoach.coaching.LlmCallLog(LogOnlyChatProvider(), database), extractionConfig) {
     var lastConvoId: ConvoId? = null
     var lastThrough: ConvoRequestId? = null
 

@@ -92,7 +92,7 @@ class FitLensHandlerTest {
       ).getOrThrow()
 
   private fun serviceWith(provider: ChatProvider): FitLensService =
-    FitLensService(database, provider, CollegeSearchService(database), config)
+    FitLensService(database, ed.unicoach.coaching.LlmCallLog(provider, database), CollegeSearchService(database), config)
 
   private var unitIdCounter = 500000
 

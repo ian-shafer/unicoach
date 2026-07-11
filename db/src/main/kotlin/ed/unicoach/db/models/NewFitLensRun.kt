@@ -2,24 +2,21 @@ package ed.unicoach.db.models
 
 /**
  * Insert input for the `fit_lens_runs` log (RFC 98); omits the DB-generated id
- * and `created_at`. [outcome] is the sealed [FitLensOutcome] ADT (RFC 101): an
- * `Applied` carries [FitLensOutcome.Applied.suggestionsWritten], a `Failed` the
- * failure category/reason — an `applied`-with-a-reason or a `failed`-with-a-count
- * cannot be constructed. The four token fields sum the pass's two billed calls
- * and are nullable (recorded when the provider reports usage); [matchesConsidered]
- * is null only when the retrieve never ran. Both vary independently of the
- * outcome, so they stay flat top-level fields.
+ * and `created_at`. [outcome] is the sealed [FitLensOutcome] ADT (RFC 101).
+ * A pass makes up to two billed calls, referenced by [queryLlmRequestId] and
+ * [reasonLlmRequestId] (RFC 106). Every write path always has a query call (the
+ * query call is made before any run row is written), so [queryLlmRequestId] is
+ * non-null; only [reasonLlmRequestId] is nullable — it stays null when the pass
+ * bails before the reason call (a Rejected/TransientFailure query call, or a
+ * zero-match retrieve). [matchesConsidered] is null only when the retrieve never
+ * ran.
  */
 data class NewFitLensRun(
   val studentId: StudentId,
   val outcome: FitLensOutcome,
   val querySystemPromptId: SystemPromptId,
   val reasonSystemPromptId: SystemPromptId,
-  val provider: String,
-  val modelResolved: String?,
+  val queryLlmRequestId: LlmRequestId,
+  val reasonLlmRequestId: LlmRequestId?,
   val matchesConsidered: Int? = null,
-  val inputTokens: Int? = null,
-  val outputTokens: Int? = null,
-  val cacheReadTokens: Int? = null,
-  val cacheWriteTokens: Int? = null,
 )

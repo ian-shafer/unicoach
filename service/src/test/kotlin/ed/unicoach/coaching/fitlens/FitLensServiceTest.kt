@@ -23,6 +23,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
+import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeListEntry
@@ -81,8 +82,8 @@ class FitLensServiceTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE fit_suggestions, fit_lens_runs, commitment_support, commitments, synthesis_runs, observations, " +
-          "claim_support, claims, college_list_entries, colleges, convos, convo_requests, convo_responses, convo_responses_raw, " +
-          "system_prompts, students, users CASCADE",
+          "claim_support, claims, college_list_entries, colleges, convos, convo_requests, " +
+          "llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
       )
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_query', 'v1', 'formulate a query')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_reason', 'v1', 'reason over matches')")
@@ -114,7 +115,7 @@ class FitLensServiceTest {
   private fun service(
     provider: ChatProvider,
     cfg: FitLensConfig = config,
-  ): FitLensService = FitLensService(database, provider, CollegeSearchService(database), cfg)
+  ): FitLensService = FitLensService(database, ed.unicoach.coaching.LlmCallLog(provider, database), CollegeSearchService(database), cfg)
 
   // ---------------------------------------------------------------------------
   // Fakes
@@ -232,6 +233,23 @@ class FitLensServiceTest {
       ).getOrThrow()
       .id
 
+  /**
+   * Inserts one minimal `llm_requests` row and returns its id. Used to satisfy
+   * the non-null `NewFitLensRun.queryLlmRequestId` (and its NOT NULL FK) when a
+   * test seeds a prior run row directly rather than driving a full pass.
+   */
+  private fun seedLlmRequestId(): LlmRequestId =
+    connection
+      .prepareStatement(
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
+          "VALUES ('log', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+      ).use { stmt ->
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          LlmRequestId(rs.getLong("id"))
+        }
+      }
+
   private fun suggestionRows(studentId: StudentId): Int =
     connection.prepareStatement("SELECT COUNT(*) FROM fit_suggestions WHERE student_id = ?").use { stmt ->
       stmt.setObject(1, studentId.value)
@@ -251,6 +269,30 @@ class FitLensServiceTest {
     }
 
   private fun latestRun(studentId: StudentId) = FitLensRunsDao.listByStudent(session, studentId, limit = 10, offset = 0).getOrThrow().last()
+
+  /**
+   * Summed (input, output) tokens across a fit-lens run's two linked calls. Since
+   * RFC 106 the per-call spend lives on the generic llm_responses rows the run
+   * references via query_llm_request_id / reason_llm_request_id, not on the run
+   * row itself.
+   */
+  private fun runTokens(run: ed.unicoach.db.models.FitLensRun): Pair<Int, Int> {
+    val ids = listOfNotNull(run.queryLlmRequestId, run.reasonLlmRequestId).map { it.value }
+    if (ids.isEmpty()) return 0 to 0
+    val inList = ids.joinToString(",")
+    connection
+      .createStatement()
+      .use { stmt ->
+        stmt
+          .executeQuery(
+            "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o " +
+              "FROM llm_responses WHERE request_id IN ($inList)",
+          ).use { rs ->
+            rs.next()
+            return rs.getInt("i") to rs.getInt("o")
+          }
+      }
+  }
 
   private fun reasonDoc(collegeId: CollegeId): String = """{"collegeId":"${collegeId.asString}","rationale":"you would love it here"}"""
 
@@ -281,8 +323,9 @@ class FitLensServiceTest {
       assertEquals(1, suggestionRows(student), "one open suggestion written")
       val run = latestRun(student)
       assertEquals(FitLensOutcome.Applied(suggestionsWritten = 1), run.outcome)
-      assertEquals(300, run.inputTokens, "tokens summed across both calls")
-      assertEquals(100, run.outputTokens, "tokens summed across both calls")
+      val (inputTokens, outputTokens) = runTokens(run)
+      assertEquals(300, inputTokens, "tokens summed across both calls")
+      assertEquals(100, outputTokens, "tokens summed across both calls")
       assertEquals(
         "open",
         FitSuggestionsDao
@@ -366,8 +409,8 @@ class FitLensServiceTest {
             outcome = FitLensOutcome.Applied(suggestionsWritten = 0),
             querySystemPromptId = queryPromptId(),
             reasonSystemPromptId = reasonPromptId(),
-            provider = "log",
-            modelResolved = "m",
+            queryLlmRequestId = seedLlmRequestId(),
+            reasonLlmRequestId = null,
             matchesConsidered = 0,
           ),
         ).getOrThrow()
@@ -395,8 +438,8 @@ class FitLensServiceTest {
               outcome = FitLensOutcome.Failed(FitLensFailureCategory.MALFORMED_OUTPUT, "test failure"),
               querySystemPromptId = queryPromptId(),
               reasonSystemPromptId = reasonPromptId(),
-              provider = "log",
-              modelResolved = "m",
+              queryLlmRequestId = seedLlmRequestId(),
+              reasonLlmRequestId = null,
               matchesConsidered = null,
             ),
           ).getOrThrow()
