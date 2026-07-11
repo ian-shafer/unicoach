@@ -53,18 +53,6 @@ class EmailSendHandlerTest {
     }
   }
 
-  private class FakeProvider(
-    private val outcome: ProviderResult,
-    override val id: String = "fake",
-  ) : EmailProvider {
-    var captured: OutboundEmail? = null
-
-    override suspend fun send(email: OutboundEmail): ProviderResult {
-      captured = email
-      return outcome
-    }
-  }
-
   // A fixed-copy renderer standing in for VerificationEmailRenderer; the handler
   // only depends on the EmailTemplateRenderer port, not the service/auth impl.
   private class StubVerificationRenderer(
@@ -144,7 +132,7 @@ class EmailSendHandlerTest {
   @Test
   fun `valid job sends, records SENT, returns Success`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val result = handler(provider).execute(verificationPayload(token = "link-token"))
 
       assertEquals(JobResult.Success, result)
@@ -160,7 +148,7 @@ class EmailSendHandlerTest {
   @Test
   fun `permanent rejection records REJECTED and returns PermanentFailure naming recipient and template`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Rejected("bad recipient"))
+      val provider = FakeEmailProvider(ProviderResult.Rejected("bad recipient"))
       val result = handler(provider).execute(verificationPayload(to = "user@example.com"))
 
       val failure = assertIs<JobResult.PermanentFailure>(result, "Expected PermanentFailure, got $result")
@@ -177,7 +165,7 @@ class EmailSendHandlerTest {
   @Test
   fun `transient failure returns RetriableFailure and writes no row`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.TransientFailure("timeout"))
+      val provider = FakeEmailProvider(ProviderResult.TransientFailure("timeout"))
       val result = handler(provider).execute(verificationPayload())
 
       assertTrue(result is JobResult.RetriableFailure, "Expected RetriableFailure, got $result")
@@ -187,7 +175,7 @@ class EmailSendHandlerTest {
   @Test
   fun `malformed payload returns PermanentFailure`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       // A JsonObject missing the required `template`/`to` fields.
       val malformed = JsonObject(mapOf("nonsense" to JsonPrimitive("x")))
       val result = handler(provider).execute(malformed)
@@ -200,7 +188,7 @@ class EmailSendHandlerTest {
   @Test
   fun `unresolvable template returns PermanentFailure carrying to and template context`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val result =
         handler(provider, renderers = emptyList()).execute(verificationPayload(to = "user@example.com"))
 
@@ -215,7 +203,7 @@ class EmailSendHandlerTest {
   @Test
   fun `invalid recipient returns PermanentFailure preserving the ValidationError ADT`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val result = handler(provider).execute(verificationPayload(to = "not-an-email"))
 
       val failure = assertIs<JobResult.PermanentFailure>(result, "Expected PermanentFailure, got $result")
@@ -244,7 +232,7 @@ class EmailSendHandlerTest {
               RenderValidationException("verification subject", ed.unicoach.common.models.ValidationError.Blank),
             )
         }
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val result =
         handler(provider, renderers = listOf(failingRenderer)).execute(verificationPayload(to = "user@example.com"))
 
@@ -270,7 +258,7 @@ class EmailSendHandlerTest {
           override fun render(context: JsonObject): Result<RenderedEmail> =
             Result.failure(IllegalArgumentException("cannot deserialize context"))
         }
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       // A context with an unexpected shape — the sentinel field must survive to the log.
       val payload =
         EmailJobPayload(
@@ -300,7 +288,7 @@ class EmailSendHandlerTest {
       // classification contract: an unmarked throwable surfaces as a thrown
       // exception from execute(), which the worker turns into RetriableFailure.
       val poisoned = Database(dbConfig).also { it.close() }
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
 
       val thrown =
         runCatching { handler(provider, db = poisoned).execute(verificationPayload()) }.exceptionOrNull()

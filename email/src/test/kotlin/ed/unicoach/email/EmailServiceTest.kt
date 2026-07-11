@@ -61,18 +61,6 @@ class EmailServiceTest {
 
   private fun body(value: String): EmailBody = (EmailBody.create(value) as ValidationResult.Valid).value
 
-  private class FakeProvider(
-    private val outcome: ProviderResult,
-    override val id: String = "fake",
-  ) : EmailProvider {
-    var captured: OutboundEmail? = null
-
-    override suspend fun send(email: OutboundEmail): ProviderResult {
-      captured = email
-      return outcome
-    }
-  }
-
   private fun config(defaultFrom: String = "noreply@uni.coach") =
     EmailConfig
       .from(
@@ -116,7 +104,7 @@ class EmailServiceTest {
   @Test
   fun `provider Sent writes exactly one SENT row and returns success`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val service = EmailService(database, provider, config())
 
       val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
@@ -135,7 +123,7 @@ class EmailServiceTest {
   @Test
   fun `provider Rejected writes exactly one REJECTED row and returns a permanent failure`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Rejected("bad recipient"))
+      val provider = FakeEmailProvider(ProviderResult.Rejected("bad recipient"))
       val service = EmailService(database, provider, config())
 
       val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
@@ -153,7 +141,7 @@ class EmailServiceTest {
   @Test
   fun `provider TransientFailure writes no row and returns a transient failure`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.TransientFailure("timeout"))
+      val provider = FakeEmailProvider(ProviderResult.TransientFailure("timeout"))
       val service = EmailService(database, provider, config())
 
       val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
@@ -166,7 +154,7 @@ class EmailServiceTest {
   @Test
   fun `invalid defaultFrom fails permanently without invoking the provider or writing a row`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val service = EmailService(database, provider, config(defaultFrom = "not-an-email"))
 
       val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
@@ -181,7 +169,7 @@ class EmailServiceTest {
   fun `ledger insert failure after a Sent outcome propagates the DAO cause unaltered`() =
     runTest {
       val poisoned = Database(dbConfig).also { it.close() }
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val service = EmailService(poisoned, provider, config())
 
       val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
@@ -195,7 +183,7 @@ class EmailServiceTest {
   @Test
   fun `fake provider captures the outbound email with the configured from and pass-through fields`() =
     runTest {
-      val provider = FakeProvider(ProviderResult.Sent("pm-1"))
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val service = EmailService(database, provider, config())
 
       service.send(address("to@example.com"), subject("Subject line"), body("Body text"))

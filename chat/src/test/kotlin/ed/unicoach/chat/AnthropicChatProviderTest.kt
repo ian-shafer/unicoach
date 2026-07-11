@@ -2,7 +2,6 @@ package ed.unicoach.chat
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onCompletion
@@ -260,7 +259,7 @@ class AnthropicChatProviderTest {
   @Test
   fun `the request body maps ChatRequest`() =
     runTest {
-      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      val captured = ScriptedAnthropicTransport.of(AnthropicTestFixtures.canonicalTextReplay)
       AnthropicChatProvider(captured, AutoCloseable {}).use { it.stream(request).toList() }
       val body = captured.body!!
 
@@ -293,7 +292,7 @@ class AnthropicChatProviderTest {
             },
           )
         }
-      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      val captured = ScriptedAnthropicTransport.of(AnthropicTestFixtures.canonicalTextReplay)
       AnthropicChatProvider(captured, AutoCloseable {}).use {
         it.stream(request.copy(messages = listOf(ChatMessage(ChatRole.USER, toolResult)))).toList()
       }
@@ -316,7 +315,7 @@ class AnthropicChatProviderTest {
     runTest {
       val toolA = kotlinx.serialization.json.buildJsonObject { put("name", JsonPrimitive("alpha")) }
       val toolB = kotlinx.serialization.json.buildJsonObject { put("name", JsonPrimitive("beta")) }
-      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      val captured = ScriptedAnthropicTransport.of(AnthropicTestFixtures.canonicalTextReplay)
       AnthropicChatProvider(captured, AutoCloseable {}).use {
         it.stream(request.copy(tools = listOf(toolA, toolB))).toList()
       }
@@ -329,7 +328,7 @@ class AnthropicChatProviderTest {
   @Test
   fun `tools key is omitted when empty`() =
     runTest {
-      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      val captured = ScriptedAnthropicTransport.of(AnthropicTestFixtures.canonicalTextReplay)
       AnthropicChatProvider(captured, AutoCloseable {}).use { it.stream(request).toList() }
       assertNull(captured.body!!["tools"])
     }
@@ -337,7 +336,7 @@ class AnthropicChatProviderTest {
   @Test
   fun `system is omitted when null`() =
     runTest {
-      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      val captured = ScriptedAnthropicTransport.of(AnthropicTestFixtures.canonicalTextReplay)
       AnthropicChatProvider(captured, AutoCloseable {}).use {
         it.stream(request.copy(system = null)).toList()
       }
@@ -354,7 +353,7 @@ class AnthropicChatProviderTest {
           put("max_tokens", kotlinx.serialization.json.JsonPrimitive(1))
           put("stream", kotlinx.serialization.json.JsonPrimitive(false))
         }
-      val captured = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      val captured = ScriptedAnthropicTransport.of(AnthropicTestFixtures.canonicalTextReplay)
       AnthropicChatProvider(captured, AutoCloseable {}).use {
         it.stream(request.copy(params = params)).toList()
       }
@@ -591,7 +590,15 @@ class AnthropicChatProviderTest {
   @Test
   fun `the flow is cold`() =
     runTest {
-      val transport = CapturingTransport(AnthropicTestFixtures.canonicalTextReplay)
+      // Cold flow: re-collecting re-invokes the transport, so a two-collection
+      // test needs a two-response script (the fake is strict on exhaustion).
+      val transport =
+        ScriptedAnthropicTransport(
+          listOf(
+            Replay(AnthropicTestFixtures.canonicalTextReplay),
+            Replay(AnthropicTestFixtures.canonicalTextReplay),
+          ),
+        )
       val provider = AnthropicChatProvider(transport, AutoCloseable {})
       val flow = provider.stream(request)
 
@@ -605,7 +612,7 @@ class AnthropicChatProviderTest {
   @Test
   fun `close closes the injected resource`() {
     var closed = false
-    val provider = AnthropicChatProvider(FakeTransport(Replay(emptyList())), AutoCloseable { closed = true })
+    val provider = AnthropicChatProvider(ScriptedAnthropicTransport(listOf(Replay(emptyList()))), AutoCloseable { closed = true })
 
     provider.close()
 
@@ -613,43 +620,19 @@ class AnthropicChatProviderTest {
   }
 
   // --- helpers ---------------------------------------------------------------
+  // Replay and the scripted/capturing transport fake live in this module's
+  // testFixtures (RFC 107), shared with the rest-server integration tests.
 
   private suspend fun collect(events: List<AnthropicTransportEvent>): List<ChatEvent> = collect(Replay(events))
 
   private suspend fun collect(replay: Replay): List<ChatEvent> = provider(replay).use { it.stream(request).toList() }
 
-  private fun provider(replay: Replay): AnthropicChatProvider = AnthropicChatProvider(FakeTransport(replay), AutoCloseable {})
-
-  // A recorded transport sequence: events to emit, optionally followed by a
-  // thrown exception (HTTP/IO failures originate as a thrown exception from the
-  // transport flow).
-  private data class Replay(
-    val events: List<AnthropicTransportEvent>,
-    val throwing: Throwable? = null,
-  )
+  private fun provider(replay: Replay): AnthropicChatProvider =
+    AnthropicChatProvider(
+      ScriptedAnthropicTransport(listOf(replay)),
+      AutoCloseable {
+      },
+    )
 
   private fun throwingReplay(error: Throwable): Replay = Replay(emptyList(), error)
-
-  private class FakeTransport(
-    private val replay: Replay,
-  ) : AnthropicStreamTransport {
-    override fun stream(body: JsonObject): Flow<AnthropicTransportEvent> =
-      flow {
-        for (event in replay.events) emit(event)
-        replay.throwing?.let { throw it }
-      }
-  }
-
-  private class CapturingTransport(
-    private val events: List<AnthropicTransportEvent>,
-  ) : AnthropicStreamTransport {
-    var body: JsonObject? = null
-    var calls = 0
-
-    override fun stream(body: JsonObject): Flow<AnthropicTransportEvent> {
-      this.body = body
-      calls++
-      return flow { for (event in events) emit(event) }
-    }
-  }
 }

@@ -33,6 +33,10 @@ dependencies {
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.ktor.server.test.host)
+  // Transport-seam fakes and recorded wire captures shared from the provider
+  // modules, so the end-to-end tests drive the real providers (RFC 107).
+  testImplementation(testFixtures(project(":chat")))
+  testImplementation(testFixtures(project(":email")))
 }
 
 tasks.withType<Test> {

@@ -179,12 +179,4 @@ class SesEmailProviderTest {
   private fun subject(value: String): EmailSubject = (EmailSubject.create(value) as ValidationResult.Valid).value
 
   private fun body(value: String): EmailBody = (EmailBody.create(value) as ValidationResult.Valid).value
-
-  private class NoopCloseable : AutoCloseable {
-    var closed = false
-
-    override fun close() {
-      closed = true
-    }
-  }
 }

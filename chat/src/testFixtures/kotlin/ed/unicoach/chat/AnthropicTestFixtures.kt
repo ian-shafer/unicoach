@@ -5,6 +5,11 @@ package ed.unicoach.chat
 // agree on the wire shape. Each `*SseBody` is the raw SSE text a 200 response
 // carries; each `*Frames` is the equivalent Frame list the transport would emit
 // after Opened. The two are kept in lockstep by hand.
+//
+// Fidelity guard: every recorded stream here is a byte-faithful copy of the
+// Anthropic Messages streaming protocol, and each `*SseBody` decodes cleanly
+// through the real KtorAnthropicStreamTransport parser (KtorAnthropicStreamTransportTest).
+// That is what keeps these captures honest — they are not loose approximations.
 object AnthropicTestFixtures {
   // The `request-id` response header value used across transport fixtures.
   const val REQUEST_ID = "req_canonical_001"
@@ -94,6 +99,40 @@ object AnthropicTestFixtures {
       frame("message_stop", """{"type":"message_stop"}"""),
     )
 
+  // --- search_colleges tool_use stream (chat tool loop) ----------------------
+  // A tool_use block naming `search_colleges` — a tool the real ToolRegistry
+  // serves — whose accumulated input is `{"cipPrefix":"26"}`. stop_reason is
+  // tool_use, so the coaching loop dispatches the tool and makes a continuation
+  // call (served by a second scripted replay).
+  val searchCollegesToolUseFrames =
+    listOf(
+      frame(
+        "message_start",
+        """{"type":"message_start","message":{"id":"$MESSAGE_ID","type":"message","role":"assistant","model":"$MODEL","content":[],"stop_reason":null,"usage":{"input_tokens":40,"output_tokens":1}}}""",
+      ),
+      frame(
+        "content_block_start",
+        """{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_search_01","name":"search_colleges","input":{}}}""",
+      ),
+      frame(
+        "content_block_delta",
+        """{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"cipPrefix\":"}}""",
+      ),
+      frame(
+        "content_block_delta",
+        """{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"26\"}"}}""",
+      ),
+      frame("content_block_stop", """{"type":"content_block_stop","index":0}"""),
+      frame(
+        "message_delta",
+        """{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":18}}""",
+      ),
+      frame("message_stop", """{"type":"message_stop"}"""),
+    )
+
+  // The search_colleges tool_use as a full transport replay (Opened first).
+  val searchCollegesToolUseReplay = listOf(opened()) + searchCollegesToolUseFrames
+
   // --- thinking + signature stream ------------------------------------------
   val thinkingFrames =
     listOf(
@@ -117,6 +156,41 @@ object AnthropicTestFixtures {
       frame(
         "message_delta",
         """{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}""",
+      ),
+      frame("message_stop", """{"type":"message_stop"}"""),
+    )
+
+  // A single-tool_use recorded stream for an arbitrary forced tool: opens a
+  // tool_use block named [toolName] and streams [inputJson] (a complete JSON
+  // object) as one input_json_delta, closing with stop_reason tool_use. Used to
+  // build the forced-tool extraction/synthesis captures whose input must match
+  // each tool's input_schema (authored from the tool's parse code).
+  fun forcedToolReplay(
+    toolName: String,
+    inputJson: String,
+    inputTokens: Int = 200,
+    outputTokens: Int = 120,
+  ): List<AnthropicTransportEvent> =
+    listOf(
+      opened(),
+      frame(
+        "message_start",
+        """{"type":"message_start","message":{"id":"$MESSAGE_ID","type":"message","role":"assistant","model":"$MODEL","content":[],"stop_reason":null,"usage":{"input_tokens":$inputTokens,"output_tokens":1}}}""",
+      ),
+      frame(
+        "content_block_start",
+        """{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_forced_01","name":"$toolName","input":{}}}""",
+      ),
+      frame(
+        "content_block_delta",
+        """{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":${JsonStringEscaping.quote(
+          inputJson,
+        )}}}""",
+      ),
+      frame("content_block_stop", """{"type":"content_block_stop","index":0}"""),
+      frame(
+        "message_delta",
+        """{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":$outputTokens}}""",
       ),
       frame("message_stop", """{"type":"message_stop"}"""),
     )
@@ -151,4 +225,15 @@ object AnthropicTestFixtures {
         append('\n')
       }
     }
+}
+
+// Minimal JSON string escaping for embedding a partial_json payload verbatim
+// inside a recorded SSE frame's data (the real input_json_delta carries the
+// tool input as a JSON-encoded string). Reuses kotlinx-serialization so the
+// escaping matches the wire, rather than hand-rolling it.
+private object JsonStringEscaping {
+  fun quote(raw: String): String =
+    kotlinx.serialization.json
+      .JsonPrimitive(raw)
+      .toString()
 }

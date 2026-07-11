@@ -1,6 +1,7 @@
 plugins {
   alias(libs.plugins.kotlin.jvm)
   alias(libs.plugins.kotlin.serialization)
+  `java-test-fixtures`
 }
 
 dependencies {
@@ -11,6 +12,12 @@ dependencies {
   implementation(libs.slf4j.api)
   implementation(libs.aws.sesv2)
   compileOnly(libs.postgresql)
+
+  // Shared SesSendOperation-seam fakes and recorded SES shapes (RFC 107). The
+  // testFixtures source set does not inherit main's `implementation` deps, so it
+  // declares the ones the fakes reference directly.
+  testFixturesImplementation(libs.aws.sesv2)
+  testFixturesImplementation(libs.kotlinx.coroutines.core)
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)
