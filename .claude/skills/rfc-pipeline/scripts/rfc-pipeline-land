@@ -48,13 +48,36 @@ if ! git -C "$CODEBASE_ROOT" diff --quiet HEAD || ! git -C "$CODEBASE_ROOT" diff
   fatal "Worktree [$CODEBASE_ROOT] has uncommitted changes; commit the final two commits before landing."
 fi
 
-if ! git -C "$ORIGINAL_CHECKOUT" merge --ff-only "$PIPELINE_BRANCH" >/dev/null 2>&1; then
+# Fast-forward BASE_BRANCH to the pipeline tip, wherever it lives. Never rely on
+# the original checkout's *current* branch: concurrent work may have switched it
+# off BASE_BRANCH, and `merge --ff-only` would then silently advance the wrong
+# branch. Verify the fast-forward, then target BASE_BRANCH explicitly.
+if ! git -C "$ORIGINAL_CHECKOUT" merge-base --is-ancestor "$BASE_BRANCH" "$PIPELINE_BRANCH"; then
   fatal "Cannot fast-forward [$BASE_BRANCH] onto [$PIPELINE_BRANCH] — base has advanced. Open a PR or rebase the branch instead; worktree left intact."
 fi
-log-info "Fast-forwarded [$BASE_BRANCH] onto [$PIPELINE_BRANCH]."
+
+# Which worktree, if any, has BASE_BRANCH checked out?
+base_worktree="$(git -C "$ORIGINAL_CHECKOUT" worktree list --porcelain |
+  awk -v b="refs/heads/$BASE_BRANCH" '/^worktree /{wt=$2} /^branch /{if ($2==b) print wt}')"
+
+if [ -n "$base_worktree" ]; then
+  # Checked out somewhere: fast-forward it in place (must be clean, or we would
+  # clobber uncommitted work / leave a dirty index).
+  if ! git -C "$base_worktree" diff --quiet HEAD || ! git -C "$base_worktree" diff --cached --quiet; then
+    fatal "[$BASE_BRANCH] is checked out with uncommitted changes in [$base_worktree]; cannot land. Resolve there, or switch it off [$BASE_BRANCH]."
+  fi
+  git -C "$base_worktree" merge --ff-only "$PIPELINE_BRANCH" >/dev/null
+else
+  # Not checked out anywhere: move the ref directly (fast-forward verified above).
+  git -C "$ORIGINAL_CHECKOUT" branch -f "$BASE_BRANCH" "$PIPELINE_BRANCH"
+fi
+log-info "Fast-forwarded [$BASE_BRANCH] to [$(git -C "$ORIGINAL_CHECKOUT" rev-parse --short "$PIPELINE_BRANCH")]."
 
 git -C "$ORIGINAL_CHECKOUT" worktree remove "$CODEBASE_ROOT"
 log-info "Removed worktree [$CODEBASE_ROOT]."
 
-git -C "$ORIGINAL_CHECKOUT" branch -d "$PIPELINE_BRANCH"
+# BASE_BRANCH now contains the pipeline tip, so the branch is fully merged. Use
+# -D (not -d): -d's merged check is relative to the current HEAD, which is no
+# longer guaranteed to be BASE_BRANCH; the merge into BASE_BRANCH was just done.
+git -C "$ORIGINAL_CHECKOUT" branch -D "$PIPELINE_BRANCH"
 log-info "Deleted merged branch [$PIPELINE_BRANCH]. Run wound down."
