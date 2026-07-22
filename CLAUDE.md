@@ -39,23 +39,36 @@ nix develop -c git commit ...
 
 A bare `git commit` is refused early by the hook with a message telling you to
 use the dev shell — the commit is blocked (your changes are not lost), so re-run
-it via `nix develop -c git commit` rather than reaching for `--no-verify`.
+it via `nix develop -c git commit`.
 
-**Carve-out — rfc-pipeline WIP checkpoints skip the hook.** The one place
-`--no-verify` is sanctioned is the `/rfc-pipeline` orchestrator's throwaway
-checkpoint commits, made via
-`.claude/skills/rfc-pipeline/scripts/rfc-pipeline-checkpoint`. Those commits
-exist only as restore points and are squashed away before anything lands, so
-running the full gate on each is pure waste; the script encapsulates the
-`--no-verify` (keeping the flag out of the orchestrator's Bash command). Of the
-pipeline's two **final** commits — the ones the Architect actually lands — the
-**code** commit goes through `nix develop -c git commit` and the full hook; its
-`bin/test check` is the run's final gate, and the same hook run also validates
-the RFC markdown (`deno fmt --check` covers the whole working tree). The **RFC
-doc** commit therefore lands with `--no-verify`, since re-running the full
-`bin/test check` on a tree the hook already validated is pure waste. That is the
-extent of the carve-out: WIP checkpoints, plus the single RFC-doc final commit.
-Do not reach for `--no-verify` anywhere else.
+**The gate protects `main`, not every commit.** The full hook is **required on
+whatever lands on `main`** — a direct commit to `main`, or the tip of a branch
+about to be fast-forwarded in. Commits that are only ever intermediate — WIP on
+a work branch, one step of an operator-driven fix loop — may skip it with
+`--no-verify`. A Gradle run spent on a commit that will be squashed away, or
+that nobody will ever ship from, buys nothing.
+
+Note the phrasing: it is what **reaches** `main` that must be verified, not
+literally a commit whose parent is `main`. A fast-forward makes branch commits
+part of `main`'s history without any of them being a "commit to `main`", so the
+branch tip is what has to have passed.
+
+**Skipping the hook moves the responsibility; it does not remove it.** The agent
+that changed the code is responsible for testing it — run
+`nix develop -c bin/test <module> -f` and report the real executed counts — and
+an orchestrator committing someone else's work records what that agent reported.
+A branch arriving at `main` with the gate never having run is the failure this
+rule exists to prevent.
+
+**`rfc-pipeline` is an instance of this rule, not an exception to it.** Its
+throwaway checkpoints commit via
+`.claude/skills/rfc-pipeline/scripts/rfc-pipeline-checkpoint`, which
+encapsulates the `--no-verify` (keeping the flag out of the orchestrator's Bash
+command); they are squashed away before anything lands. Of its two **final**
+commits, the **code** commit goes through `nix develop -c git commit` and the
+full hook — that run is the branch's gate, and the same run's `deno fmt --check`
+covers the whole working tree including the RFC markdown — so the **RFC doc**
+commit that follows lands with `--no-verify` against an already-validated tree.
 
 ## Running tests
 
