@@ -68,6 +68,8 @@ finding against the **RFC**, and the repair belongs in `## Tests`.
 ## Findings
 
 - **<one-line title>**
+  - **Assessment**: 20-40 words — your case for why this matters, in your own
+    voice.
   - **RFC says**: the test spec verbatim.
   - **Code does**: `<file>:<line>` — one sentence on what goes unverified (or
     "no such test").

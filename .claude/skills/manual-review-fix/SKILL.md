@@ -67,6 +67,11 @@ lens reads as "found nothing" when it in fact never ran.
 
 Each finding MUST carry:
 
+- a **20–40 word assessment** — the reviewer's own case for why this matters, in
+  its own voice. Not a restatement of the rule, not a description of the code:
+  the argument. This is the first thing the operator reads and usually the only
+  thing they need to decide, and it is the single clearest artifact for judging
+  whether a lens reasons well;
 - a **detailed description** — what is wrong, where, and why it matters;
 - **at least two options**, each containing the **actual code** to apply, not a
   description of it, presented in **descending preference order**;
@@ -184,10 +189,19 @@ scored down for something it never did.
 
 ### Presenting a finding
 
-Three blocks and nothing else. Tier 0:
+**Print the finding in the response body, then open the decision prompt.** Never
+inside it. A picker's fields are a short header and a few words per option;
+routing a finding through one compresses the reviewer's case to a sentence and
+throws the rest away. The dialog carries the **choice** — accept / reject /
+revise the RFC — and nothing else. Everything the operator reads to make that
+choice is above it, in full.
+
+Four blocks, in this order. Tier 0:
 
 ```
-**<id>** <one-line title>
+**<id>** <one-line title> — `<skill>`
+
+> <the reviewer's 20–40 word assessment, verbatim>
 
 - **RFC says** — <verbatim excerpt>
 - **Code does** — `<file>:<line>`, the offending lines, one sentence on what is
@@ -197,9 +211,22 @@ Three blocks and nothing else. Tier 0:
 
 Tiers 1–3 drop **RFC says**; **Code does** carries the subject.
 
-No preamble, no restating the rule the lens enforces, no summary of what the
-reviewer was checking, no assessment of whether it is a good catch. The
-reviewer's words and the operator's decision, with nothing in between.
+The **assessment leads** and is blockquoted, because it is the reviewer arguing
+its case and that argument is what the operator is really judging — both about
+the code now and about the lens across the run. Quote it **verbatim**. Never
+rewrite, trim, or improve it: a polished assessment the orchestrator authored
+tells you nothing about the skill that produced it, and this run exists to
+measure exactly that.
+
+An assessment shorter than 20 words has not made an argument; longer than 40 is
+the verbosity this format exists to prevent. Present an out-of-range one **as
+written** and note the length — that is a `finding-unusable` signal about the
+reviewer, not a formatting job for the orchestrator.
+
+Beyond these four blocks: no preamble, no restating the rule the lens enforces,
+no summary of what the reviewer was checking, no verdict on whether it is a good
+catch. The reviewer's words and the operator's decision, with nothing in
+between.
 
 The per-skill ledgers (step, declaration, traceability, test) stay in the
 findings file. They are coverage accounting, not findings — surface a ledger

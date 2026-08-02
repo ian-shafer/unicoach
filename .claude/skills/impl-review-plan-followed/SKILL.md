@@ -58,6 +58,8 @@ reached cannot be mistaken for a step that passed.
 ## Findings
 
 - **<one-line title>**
+  - **Assessment**: 20-40 words — your case for why this matters, in your own
+    voice.
   - **RFC says**: the plan step verbatim.
   - **Code does**: `<file>:<line>` — one sentence on what is missing or
     different (or "no evidence in the diff").

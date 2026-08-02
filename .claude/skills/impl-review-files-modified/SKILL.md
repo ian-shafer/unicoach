@@ -50,6 +50,8 @@ that does not resolve is itself a finding.
 ## Findings
 
 - **<one-line title>**
+  - **Assessment**: 20-40 words — your case for why this matters, in your own
+    voice.
   - **RFC says**: the `## Files Modified` entry verbatim (or "not listed").
   - **Code does**: `<path>` — one sentence on which direction it breaks.
   - **Options**:
