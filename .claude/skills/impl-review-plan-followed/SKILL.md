@@ -57,11 +57,11 @@ reached cannot be mistaken for a step that passed.
 
 ## Findings
 
-- [Severity] **Finding description**: which step, which column failed, and why
-  it matters.
-  - **Subject**: the plan step verbatim, and the corresponding code (or its
-    absence).
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
+- **<one-line title>**
+  - **RFC says**: the plan step verbatim.
+  - **Code does**: `<file>:<line>` — one sentence on what is missing or
+    different (or "no evidence in the diff").
+  - **Options**:
+    1. **(RECOMMENDED)** the literal change — one-line reason.
+    2. the literal change. _(2..n in descending preference)_
 ```

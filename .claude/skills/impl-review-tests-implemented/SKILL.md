@@ -67,10 +67,11 @@ finding against the **RFC**, and the repair belongs in `## Tests`.
 
 ## Findings
 
-- [Severity] **Finding description**: which case, which column failed, and what
-  goes unverified as a result.
-  - **Subject**: the RFC test spec verbatim, and the test code.
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
+- **<one-line title>**
+  - **RFC says**: the test spec verbatim.
+  - **Code does**: `<file>:<line>` — one sentence on what goes unverified (or
+    "no such test").
+  - **Options**:
+    1. **(RECOMMENDED)** the literal change — one-line reason.
+    2. the literal change. _(2..n in descending preference)_
 ```

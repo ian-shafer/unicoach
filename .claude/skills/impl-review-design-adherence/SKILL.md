@@ -61,10 +61,10 @@ from the code in any of those four areas is a scope failure, not a nit.
 
 ## Findings
 
-- [Severity] **Finding description**: which declaration, how it deviates, and
-  what depends on the specified form.
-  - **Subject**: the RFC declaration verbatim, and the code as written.
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
+- **<one-line title>**
+  - **RFC says**: the declaration verbatim.
+  - **Code does**: `<file>:<line>` — one sentence on how it deviates.
+  - **Options**:
+    1. **(RECOMMENDED)** the literal change — one-line reason.
+    2. the literal change. _(2..n in descending preference)_
 ```

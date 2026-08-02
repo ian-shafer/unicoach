@@ -181,6 +181,47 @@ touched its subject's file and line range. If so, mark it
 stale finding the operator can see is data; one you suppressed is a reviewer
 scored down for something it never did.
 
+### Presenting a finding
+
+Three blocks and nothing else. Tier 0:
+
+```
+**<id>** <one-line title>
+
+- **RFC says** — <verbatim excerpt>
+- **Code does** — `<file>:<line>`, the offending lines, one sentence on what is
+  wrong
+- **Options** — ranked; 1 is **(RECOMMENDED)** with a one-line reason
+```
+
+Tiers 1–3 drop **RFC says**; **Code does** carries the subject.
+
+No preamble, no restating the rule the lens enforces, no summary of what the
+reviewer was checking, no assessment of whether it is a good catch. The
+reviewer's words and the operator's decision, with nothing in between.
+
+The per-skill ledgers (step, declaration, traceability, test) stay in the
+findings file. They are coverage accounting, not findings — surface a ledger
+only when it has a row that is not a pass, since only then does it change
+anything.
+
+### Orchestrator commentary
+
+**Default silent.** This is not "be brief" — it is a gate. Speak only when what
+you would say changes the decision or its scope. Four triggers:
+
+- **The recommended option will not build, or is wrong.** Say what breaks.
+- **Two findings conflict.** Name both ids and the lines they contend for.
+- **The pattern recurs outside the subject.** Grep, and report the count and
+  where. Fixing one site and fixing all of them are different decisions, and the
+  operator cannot make the second one without the number.
+- **Something egregious sits in the diff but outside every lens's scope.**
+  Report it once, then drop it.
+
+Everything else — context, rationale, agreement, restating the finding in your
+own words, noting that you checked something — is noise, and it dilutes the four
+signals above until they stop being read. Stay silent.
+
 The operator chooses one of:
 
 ### Accept

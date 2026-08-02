@@ -49,10 +49,10 @@ that does not resolve is itself a finding.
 
 ## Findings
 
-- [Severity] **Finding description**: which file, which direction, and why it
-  matters.
-  - **Subject**: the relevant `## Files Modified` lines and the actual paths.
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
+- **<one-line title>**
+  - **RFC says**: the `## Files Modified` entry verbatim (or "not listed").
+  - **Code does**: `<path>` — one sentence on which direction it breaks.
+  - **Options**:
+    1. **(RECOMMENDED)** the literal change — one-line reason.
+    2. the literal change. _(2..n in descending preference)_
 ```

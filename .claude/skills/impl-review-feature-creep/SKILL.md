@@ -68,10 +68,10 @@ Incidental edits with no structural effect — a moved import, a formatting chan
 
 ## Findings
 
-- [Severity] **Finding description**: which change, and why nothing in the RFC
-  mandates it.
-  - **Subject**: the code as written.
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
+- **<one-line title>**
+  - **RFC says**: nothing — name the sections you searched.
+  - **Code does**: `<file>:<line>` — one sentence on what was added.
+  - **Options**:
+    1. **(RECOMMENDED)** the literal change — one-line reason.
+    2. the literal change. _(2..n in descending preference)_
 ```
