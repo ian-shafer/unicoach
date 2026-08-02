@@ -53,7 +53,7 @@ that does not resolve is itself a finding.
   - **Assessment**: 20-40 words — your case for why this matters, in your own
     voice.
   - **RFC says**: the `## Files Modified` entry verbatim (or "not listed").
-  - **Code does**: `<path>` — one sentence on which direction it breaks.
+  - **Code**: `<path>` — one sentence on which direction it breaks.
   - **Options**:
     1. **(RECOMMENDED)** the literal change — one-line reason.
     2. the literal change. _(2..n in descending preference)_

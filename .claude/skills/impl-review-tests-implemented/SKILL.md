@@ -71,8 +71,8 @@ finding against the **RFC**, and the repair belongs in `## Tests`.
   - **Assessment**: 20-40 words — your case for why this matters, in your own
     voice.
   - **RFC says**: the test spec verbatim.
-  - **Code does**: `<file>:<line>` — one sentence on what goes unverified (or
-    "no such test").
+  - **Code**: `<file>:<line>` — one sentence on what goes unverified (or "no
+    such test").
   - **Options**:
     1. **(RECOMMENDED)** the literal change — one-line reason.
     2. the literal change. _(2..n in descending preference)_

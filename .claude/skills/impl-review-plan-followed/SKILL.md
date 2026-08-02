@@ -61,8 +61,8 @@ reached cannot be mistaken for a step that passed.
   - **Assessment**: 20-40 words — your case for why this matters, in your own
     voice.
   - **RFC says**: the plan step verbatim.
-  - **Code does**: `<file>:<line>` — one sentence on what is missing or
-    different (or "no evidence in the diff").
+  - **Code**: `<file>:<line>` — one sentence on what is missing or different (or
+    "no evidence in the diff").
   - **Options**:
     1. **(RECOMMENDED)** the literal change — one-line reason.
     2. the literal change. _(2..n in descending preference)_

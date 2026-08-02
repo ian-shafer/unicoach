@@ -65,7 +65,7 @@ from the code in any of those four areas is a scope failure, not a nit.
   - **Assessment**: 20-40 words — your case for why this matters, in your own
     voice.
   - **RFC says**: the declaration verbatim.
-  - **Code does**: `<file>:<line>` — one sentence on how it deviates.
+  - **Code**: `<file>:<line>` — one sentence on how it deviates.
   - **Options**:
     1. **(RECOMMENDED)** the literal change — one-line reason.
     2. the literal change. _(2..n in descending preference)_

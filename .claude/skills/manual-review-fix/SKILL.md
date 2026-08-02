@@ -204,12 +204,12 @@ Four blocks, in this order. Tier 0:
 > <the reviewer's 20–40 word assessment, verbatim>
 
 - **RFC says** — <verbatim excerpt>
-- **Code does** — `<file>:<line>`, the offending lines, one sentence on what is
+- **Code** — `<file>:<line>`, the offending lines, one sentence on what is
   wrong
 - **Options** — ranked; 1 is **(RECOMMENDED)** with a one-line reason
 ```
 
-Tiers 1–3 drop **RFC says**; **Code does** carries the subject.
+Tiers 1–3 drop **RFC says**; **Code** carries the subject.
 
 The **assessment leads** and is blockquoted, because it is the reviewer arguing
 its case and that argument is what the operator is really judging — both about

@@ -72,7 +72,7 @@ Incidental edits with no structural effect — a moved import, a formatting chan
   - **Assessment**: 20-40 words — your case for why this matters, in your own
     voice.
   - **RFC says**: nothing — name the sections you searched.
-  - **Code does**: `<file>:<line>` — one sentence on what was added.
+  - **Code**: `<file>:<line>` — one sentence on what was added.
   - **Options**:
     1. **(RECOMMENDED)** the literal change — one-line reason.
     2. the literal change. _(2..n in descending preference)_
