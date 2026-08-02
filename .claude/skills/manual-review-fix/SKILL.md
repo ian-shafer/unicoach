@@ -231,12 +231,20 @@ The operator chooses one of:
 
 ### Accept
 
-1. `git worktree add ../<repo>-fix-<id> -b fix/<id> <E>`.
-2. Spawn the **Fixer** there, in a fresh context, one finding at a time — never
-   a batch. Pass the finding **verbatim**: description, all options, the
-   recommendation, the subject. Do not paraphrase, re-order, or "clarify" it.
+1. **The operator picks the option to apply.** Option 1 is the default — offer
+   it as such and take silence or "yes" to mean it. Any other choice is an
+   **override**, and step 5 acts on that.
+2. `git worktree add ../<repo>-fix-<id> -b fix/<id> <E>`.
+3. Spawn the **Fixer** there, in a fresh context, one finding at a time — never
+   a batch. Pass the finding **verbatim**: description, all options in their
+   original order, the subject. Do not paraphrase, re-order, or "clarify" it.
    Handing the fixer your restatement rather than the reviewer's own words
    destroys the attribution this run exists to produce.
+
+   **Name the chosen option explicitly** — "apply Option 2" — rather than
+   handing over the list and leaving the fixer to infer it. All options still
+   travel with the finding so the fixer can see what was rejected and why, but
+   which one to apply is the operator's decision, not the fixer's.
 
    The prompt MUST state that the fixer:
    - works only in its own worktree, and **must not commit**;
@@ -246,7 +254,7 @@ The operator chooses one of:
      concurrent runs safe. If there is nothing to run, it says so explicitly
      rather than staying silent.
 
-3. **Show the diff. Always, in full, colorized.** The operator MUST NOT be asked
+4. **Show the diff. Always, in full, colorized.** The operator MUST NOT be asked
    to keep or discard without seeing it. `git diff <E>` in that worktree plus
    any untracked files, presented inside a fenced **`diff`** block so every
    added and removed line is syntax-highlighted:
@@ -269,7 +277,7 @@ The operator chooses one of:
    reported no verification, say so plainly: an unverified fix may still be
    kept, but not by accident.
 
-4. The operator **keeps or discards** the fix.
+5. The operator **keeps or discards** the fix.
    - _keep_: commit it in the worktree —
      `nix develop -c git commit --no-verify -am "<id>: <title>"` with trailers
      naming the reviewer, the option applied, and what was verified. The branch
@@ -282,9 +290,28 @@ The operator chooses one of:
      with extra notes, passed verbatim to a fresh fixer context alongside the
      original finding.
 
+6. **If the operator overrode Option 1, that is a skill signal — spend it.** The
+   finding was right and its options were right; the reviewer simply ranked them
+   wrong. That is a defect no rejection class covers, because nothing was
+   rejected, and it is invisible unless captured at the moment of the override.
+
+   Run the same short conversation as **Reject** below, proposing class
+   `ranking-wrong`, and ask the one question that decides the edit: **was Option
+   1 wrong here, or wrong generally?** Locally wrong is context this codebase
+   happens to impose and warrants no edit; generally wrong means the reviewer's
+   preference criteria are miscalibrated and the skill should change.
+
+   As with `correct-declined`, **record it either way**. A single override is
+   weak evidence; the same lens overridden across several runs is a reviewer
+   recommending the wrong thing by default, which is worse than a noisy rule —
+   it is a rule the fixer will follow.
+
 Record the outcome distinctly: `kept`, `discarded-fix-fault` (the finding was
 sound, the fix was not), or `discarded-finding-fault` (implementing it revealed
 the finding was wrong). These are different evidence and must not be collapsed.
+Record `option_applied` and `overrode_recommendation` on every accepted finding,
+including the ones that took Option 1 — an override rate is only readable
+against the total.
 
 ### Reject
 
@@ -308,13 +335,19 @@ orchestrator**, whose only job is to decide whether the reviewer should change.
    | `rule-wrong`       | the rule itself is bad, here and generally             | yes     |
    | `misapplied`       | rule is sound, should not have fired on this subject   | yes     |
    | `finding-unusable` | rule may be right; options/subject/`file:line` are not | yes     |
+   | `ranking-wrong`    | finding and options right; Option 1 was the wrong pick | yes     |
    | `correct-declined` | fired correctly; declined on scope, timing, trade-off  | no      |
    | `duplicate`        | another finding already covers it                      | no      |
 
-   The three `yes` classes want **different edits** — `rule-wrong` changes the
+   `ranking-wrong` arrives from **Accept** step 6, not from a rejection — it is
+   listed here because it uses this same conversation and prompt.
+
+   The four `yes` classes want **different edits** — `rule-wrong` changes the
    criteria, `misapplied` changes scoping and exceptions, `finding-unusable`
-   changes the output contract. Naming the class is most of the work of the
-   `/skill-update` session, so do not skip it and let that session re-derive it.
+   changes the output contract, `ranking-wrong` changes the preference criteria
+   that decide which option gets recommended. Naming the class is most of the
+   work of the `/skill-update` session, so do not skip it and let that session
+   re-derive it.
 
 3. **Record the outcome in the ledger either way**, with the class and the
    operator's reason **verbatim**. This is not bookkeeping: a lens rejected five
@@ -361,10 +394,12 @@ finding `rfc-revision`. The RFC change re-enters through the normal pipeline,
 not through this loop.
 
 Record every outcome as a line in `<scratch>/ledger.jsonl`:
-`{"id","skill","tier","outcome","class","reason","skill_update"}` — `class` and
-`reason` set for rejections (see **Reject**), `skill_update` a boolean recording
-whether one was actually requested. This is the only durable record of what the
-operator decided, and the evaluation dataset this run produced.
+`{"id","skill","tier","outcome","option_applied","overrode_recommendation","class","reason","skill_update"}`
+— `option_applied` and `overrode_recommendation` on every accepted finding
+(Option 1 included, so an override rate has a denominator); `class` and `reason`
+on rejections and on overrides; `skill_update` a boolean recording whether one
+was actually requested. This is the only durable record of what the operator
+decided, and the evaluation dataset this run produced.
 
 ## Phase 3 — Integration
 
