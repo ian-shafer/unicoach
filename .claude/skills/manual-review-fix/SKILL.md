@@ -246,11 +246,28 @@ The operator chooses one of:
      concurrent runs safe. If there is nothing to run, it says so explicitly
      rather than staying silent.
 
-3. Show the operator the **diff and the test result together** — `git diff <E>`
-   in that worktree plus any untracked files, in full, followed by the fixer's
-   verbatim test report. Never the diff alone. If the fixer reported no
-   verification, say so plainly: an unverified fix may still be accepted, but
-   not by accident.
+3. **Show the diff. Always, in full, colorized.** The operator MUST NOT be asked
+   to keep or discard without seeing it. `git diff <E>` in that worktree plus
+   any untracked files, presented inside a fenced **`diff`** block so every
+   added and removed line is syntax-highlighted:
+
+   ````
+   ```diff
+   <the complete output>
+   ```
+   ````
+
+   Never a prose description of the diff, never an excerpt, never "the change is
+   straightforward." The diff is the thing being decided on.
+
+   Fence it as `diff` — do **not** reach for `git diff --color=always`. Its ANSI
+   escapes are not rendered in the chat stream and arrive as visual garbage;
+   markdown fencing is what actually colorizes here.
+
+   Immediately after the diff, the fixer's **verbatim test report** — both
+   inform the same decision, so never one without the other. If the fixer
+   reported no verification, say so plainly: an unverified fix may still be
+   kept, but not by accident.
 
 4. The operator **keeps or discards** the fix.
    - _keep_: commit it in the worktree —
@@ -388,6 +405,7 @@ itself, and it never re-runs Tiers 1–3.
 - Paraphrase a finding when handing it to a fixer.
 - Advance an iteration the operator did not ask for.
 - Apply more than one finding per fixer context.
+- Ask for a keep/discard decision without showing the full colorized diff.
 - Build a fix anywhere but its own worktree off `E`.
 - Report a verdict for a lens that did not run.
 - Let the integration tip reach `main` without the full gate having run on it.
