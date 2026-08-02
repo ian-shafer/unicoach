@@ -35,8 +35,9 @@ the following principle. Do not review for other concerns outside this scope.
 - **Logged ≠ visible:** a faithfully-logged root cause still hidden by redaction
   (e.g. `os.Logger` `<private>`) maintains no visibility. Diagnostic, non-secret
   detail must be `privacy: .public` (or the platform equivalent).
-- **Actionable:** for each finding give ≥2 resolution options, recommend one,
-  and include a short snippet.
+- **Actionable:** for each finding give ≥2 resolution options in descending
+  preference — **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and
+  carrying the reason it beats the rest — and include a short snippet.
 
 ## 📝 Examples
 
@@ -103,7 +104,7 @@ Output your findings clearly and concisely. Group your findings by severity
 ## Findings
 
 - [Severity] **Finding description**: Explanation of why it violates the rule.
-  - **Option 1**: ...
+  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
   - **Option 2**: ...
-  - **Recommendation**: ...
+  - **Option n**: ... _(descending preference)_
 ```

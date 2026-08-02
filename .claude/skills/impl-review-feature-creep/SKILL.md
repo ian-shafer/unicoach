@@ -48,8 +48,10 @@ Incidental edits with no structural effect — a moved import, a formatting chan
 - **Not every untraceable change should be reverted.** Amending the RFC is a
   legitimate repair when the addition is genuinely required. Recommend whichever
   you believe, and say why.
-- **Provide Actionable Options:** For each finding, provide at least 2 distinct
-  resolution options, and explicitly recommend one.
+- **Rank your options:** provide at least 2 distinct resolution options in
+  **preference order**. Option 1 is the one you recommend, labelled
+  `(RECOMMENDED)` and carrying the reason; Options 2..n follow in descending
+  preference. Never leave the reader to infer which you meant.
 - **Quote the subject:** the code, and the RFC text you searched.
 
 ## 📋 Output Format
@@ -69,7 +71,7 @@ Incidental edits with no structural effect — a moved import, a formatting chan
 - [Severity] **Finding description**: which change, and why nothing in the RFC
   mandates it.
   - **Subject**: the code as written.
-  - **Option 1**: ...
+  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
   - **Option 2**: ...
-  - **Recommendation**: ...
+  - **Option n**: ... _(descending preference)_
 ```

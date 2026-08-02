@@ -68,17 +68,28 @@ Each finding MUST carry:
 
 - a **detailed description** — what is wrong, where, and why it matters;
 - **at least two options**, each containing the **actual code** to apply, not a
-  description of it;
-- exactly one option marked **recommended**, with the reason;
+  description of it, presented in **descending preference order**;
+- **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and carrying the
+  reason it beats the rest;
 - the **subject** — the exact lines the reviewer was looking at.
 
-The subject is not optional. Without it, at `/skill-update` time a rule that is
-simply wrong cannot be told apart from a rule misapplied to one case, and those
-want opposite edits.
+**The ordering is the recommendation.** Every reviewer must rank, not just list.
+A separate "Recommendation: B" line is not acceptable — it can name an option
+that does not exist, and it lets a reviewer dodge the ranking for options 2..n,
+which is exactly the judgement the operator is reading the finding for. Option 1
+is what the fixer applies by default, so a reviewer that will not commit to a
+first choice has not finished its job.
 
-A finding missing options, a recommendation, or a subject is incomplete: present
-it marked `⚠ incomplete` rather than dropping or repairing it. Incompleteness is
-itself a reviewer defect worth recording.
+The subject is not optional either. Without it, at `/skill-update` time a rule
+that is simply wrong cannot be told apart from a rule misapplied to one case,
+and those want opposite edits.
+
+A finding with fewer than two options, with options that are not ranked, or with
+no subject is incomplete: present it marked `⚠ incomplete` rather than dropping
+or repairing it. **Never supply the missing ranking yourself** — an
+orchestrator-invented recommendation is indistinguishable from the reviewer's
+own at triage time, and it would silently launder a reviewer defect into a clean
+finding. Incompleteness is a first-class result worth recording.
 
 ## Depth-1 Fan-out Invariant (normative)
 
@@ -94,10 +105,20 @@ there is nothing to gain by backgrounding it and a stalled fan-out to lose.
 
 ## Phase 1 — Fan-out
 
-One fan-out, against `E`, covering every tier at once. Findings are triaged in
-tier order (Phase 2), but reviewing is cheap, read-only, and parallel, so there
-is no reason to serialise it — and reviewing every lens against the identical
-tree is what makes the results comparable.
+**One fan-out per tier, and only when that tier's turn arrives.** Fan out Tier
+0, triage it to completion (Phase 2), then fan out Tier 1, and so on. Never
+spawn a later tier's leaves before the current tier's triage is done.
+
+Every tier is still reviewed against **`E`**, unchanged — accepted fixes live on
+their own branches and integrate only in Phase 3, so nothing has landed and the
+input is identical whenever a leaf runs. Spawning late costs no comparability.
+
+What it buys: a Tier 0 finding can send the operator back to `/rfc-design`, and
+the resulting implementation change invalidates every code-lens verdict taken
+against the old tree. Fanning out all 39 up front spends 34 leaf reviews on a
+tree that is about to be replaced. Tier 0 gates the rest for the same reason it
+is triaged first — it asks whether this is even the right implementation to be
+reviewing.
 
 1. **Build the shared review context, once**, to `<scratch>/review-context.md`:
    the `<base>...E` diff, plus the full contents of every changed **non-test**
@@ -113,10 +134,13 @@ tree is what makes the results comparable.
    `design-review-*`, `code-review-*`, excluding `*-chain` — and check each
    against [`tiers.md`](tiers.md). A discovered skill missing from the manifest
    **halts the run**; report it and ask the operator which tier it belongs in.
-   Report the resolved set and its tier counts before spawning.
+   Do this **once**, up front, so a manifest gap fails before any leaf is spent.
+   Report the resolved set and its per-tier counts.
 
-3. **Spawn one leaf per skill**, at most 10 in flight, refilling as each
-   finishes.
+3. **Spawn one leaf per skill in the current tier only** — never a later tier —
+   at most 10 in flight, refilling as each finishes. Name the tier and its skill
+   count in chat before spawning, so an over-wide fan-out is visible immediately
+   rather than after 39 agents are running.
    - **subagent_type**: `code-reviewer` (or `design-reviewer` for the design
      lenses) — read-only, model-pinned. Tier 0 skills also use `code-reviewer`;
      they read the RFC and the tree and write nothing.
@@ -143,9 +167,13 @@ only signal.
 
 ## Phase 2 — Triage
 
-Walk the tiers in manifest order: **0, then 1, 2, 3**. Within a tier, order is
-yours. Present findings **one at a time**, never a batch, never a summary table
-of several.
+Walk the tiers in manifest order: **0, then 1, 2, 3**. Phases 1 and 2 interleave
+— fan out a tier, triage it to completion, then return to Phase 1 for the next
+tier. Within a tier, order is yours. Present findings **one at a time**, never a
+batch, never a summary table of several.
+
+If Tier 0 triage sends the operator back to `/rfc-design`, **stop here**. Do not
+fan out Tier 1 against an implementation that is about to change.
 
 Before presenting a finding, check whether any already-accepted fix branch
 touched its subject's file and line range. If so, mark it

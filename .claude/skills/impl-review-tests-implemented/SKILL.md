@@ -46,8 +46,10 @@ finding against the **RFC**, and the repair belongs in `## Tests`.
 
 - **Adversarial Posture:** A test whose name matches the RFC's wording is not
   evidence it asserts the RFC's behaviour. Read the body.
-- **Provide Actionable Options:** For each finding, provide at least 2 distinct
-  resolution options, and explicitly recommend one.
+- **Rank your options:** provide at least 2 distinct resolution options in
+  **preference order**. Option 1 is the one you recommend, labelled
+  `(RECOMMENDED)` and carrying the reason; Options 2..n follow in descending
+  preference. Never leave the reader to infer which you meant.
 - **Quote the subject:** the RFC's test spec, and the test code (or its
   absence).
 
@@ -68,7 +70,7 @@ finding against the **RFC**, and the repair belongs in `## Tests`.
 - [Severity] **Finding description**: which case, which column failed, and what
   goes unverified as a result.
   - **Subject**: the RFC test spec verbatim, and the test code.
-  - **Option 1**: ...
+  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
   - **Option 2**: ...
-  - **Recommendation**: ...
+  - **Option n**: ... _(descending preference)_
 ```

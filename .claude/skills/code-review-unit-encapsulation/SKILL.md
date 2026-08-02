@@ -40,7 +40,9 @@ the following principle. Do not review for other concerns outside this scope.
   Demand that these be transitioned to a strong domain type unless doing so
   objectively degrades code clarity.
 - **Provide Actionable Options:** For each violation found, you MUST provide at
-  least 2 distinct resolution options, and explicitly recommend one.
+  least 2 distinct resolution options, and rank them in descending preference:
+  **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and carrying the
+  reason it beats the rest.
 - **Code Examples:** When pointing out a flaw, include short code snippets
   demonstrating the violation.
 
@@ -123,7 +125,7 @@ Output your findings clearly and concisely. Group your findings by severity
 ## Findings
 
 - [Severity] **Finding description**: Explanation of why it violates the rule.
-  - **Option 1**: ...
+  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
   - **Option 2**: ...
-  - **Recommendation**: ...
+  - **Option n**: ... _(descending preference)_
 ```

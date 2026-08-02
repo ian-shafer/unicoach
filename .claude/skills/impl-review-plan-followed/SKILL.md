@@ -36,8 +36,10 @@ reached cannot be mistaken for a step that passed.
   step 4." Either the work is there or it is not.
 - **Deviations are findings, not verdicts.** State what the plan said, what the
   code does, and what the gap costs. Recommend, do not decide.
-- **Provide Actionable Options:** For each finding, provide at least 2 distinct
-  resolution options, and explicitly recommend one.
+- **Rank your options:** provide at least 2 distinct resolution options in
+  **preference order**. Option 1 is the one you recommend, labelled
+  `(RECOMMENDED)` and carrying the reason; Options 2..n follow in descending
+  preference. Never leave the reader to infer which you meant.
 - **Quote the subject:** include the plan step verbatim alongside the code.
 
 ## 📋 Output Format
@@ -59,7 +61,7 @@ reached cannot be mistaken for a step that passed.
   it matters.
   - **Subject**: the plan step verbatim, and the corresponding code (or its
     absence).
-  - **Option 1**: ...
+  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
   - **Option 2**: ...
-  - **Recommendation**: ...
+  - **Option n**: ... _(descending preference)_
 ```

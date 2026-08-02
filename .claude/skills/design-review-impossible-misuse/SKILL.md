@@ -74,7 +74,7 @@ goodAnchor: Anchor = { type: 'SELECTION', selection: mySelection, doc: null, };
   If the answer is yes at compile-time, flag it.
 - **Provide Actionable Options**: For every violation found, you MUST provide at
   least 2 distinct structural options (discriminated unions, explicit
-  constructors, sealed classes) and explicitly recommend one.
+  constructors, sealed classes) and rank them in descending preference: **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and carrying the reason it beats the rest.
 
 ## 📋 Output Format
 
@@ -87,7 +87,7 @@ goodAnchor: Anchor = { type: 'SELECTION', selection: mySelection, doc: null, };
 
 - [Severity] **Finding description**: Explanation of why invalid compile-time
   states can be represented.
-  - **Option 1**: ...
+  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
   - **Option 2**: ...
-  - **Recommendation**: ...
+  - **Option n**: ... _(descending preference)_
 ````

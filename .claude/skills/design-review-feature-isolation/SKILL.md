@@ -148,7 +148,8 @@ NOT NULL, RetryCount INT64 NOT NULL, ) PRIMARY KEY (CommentId); ```
   by this field?"_ If yes, flag it.
 - **Provide Actionable Options**: For every violation found, you MUST provide at
   least 2 distinct structural resolution options (using the patterns above) and
-  recommend one.
+  rank them in descending preference: **Option 1 is the recommendation**,
+  labelled `(RECOMMENDED)` and carrying the reason it beats the rest.
 
 ## 📋 Output Format
 
@@ -163,7 +164,7 @@ Group your findings by severity (Critical, Major, Minor, Nit).
 
 - [Severity] **Finding description**: Explanation of why it violates the
   Principle of Least Surprise.
-  - **Option 1**: ...
+  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
   - **Option 2**: ...
-  - **Recommendation**: ...
+  - **Option n**: ... _(descending preference)_
 ````

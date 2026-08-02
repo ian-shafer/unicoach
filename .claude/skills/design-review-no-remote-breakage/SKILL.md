@@ -134,3 +134,33 @@ fun `error-code table in docs matches ErrorCode enum`() { … }
 # changes the limit, this constant is what breaks.
 MAX_SANDBOX_RECIPIENTS=50
 ```
+
+## 🎯 Review Guidelines
+
+- **Adversarial Posture:** Actively hunt for couplings that hold only by
+  convention. Do not give the author the benefit of the doubt.
+- **Name the owner and the breakage:** for each finding, say which artifact owns
+  the value and what silently breaks when that owner changes it.
+- **Rank your options:** provide at least 2 distinct resolution options in
+  **preference order**. Option 1 is the one you recommend, labelled
+  `(RECOMMENDED)` and carrying the reason; Options 2..n follow in descending
+  preference. Prefer derive > enforce > reference > document-the-coupling, and
+  say why the rung you chose is the highest one reachable here.
+
+## 📋 Output Format
+
+Group your findings by severity (Critical, Major, Minor, Nit).
+
+```markdown
+# Review Report: No Remote Breakage
+
+**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
+
+## Findings
+
+- [Severity] **Finding description**: which artifact owns the value, and what
+  breaks silently when it changes.
+  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
+  - **Option 2**: ...
+  - **Option n**: ... _(descending preference)_
+```
