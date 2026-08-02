@@ -5,9 +5,10 @@ description: >-
   reviewer skills themselves. Fans out every reviewer skill against one fixed
   commit, presents findings to the operator one at a time in tier order, builds
   each accepted fix in its own worktree off that same commit, and integrates them
-  at the end. A rejected finding is evidence against its reviewer and routes to
-  /skill-update. Use when a user asks to manually review and fix an
-  implementation, or invokes /manual-review-fix.
+  at the end. A rejected finding opens a short conversation that classifies the
+  rejection and decides whether the reviewer itself should change. Use when a
+  user asks to manually review and fix an implementation, or invokes
+  /manual-review-fix.
 ---
 
 # Manual Review / Fix
@@ -222,6 +223,10 @@ Everything else — context, rationale, agreement, restating the finding in your
 own words, noting that you checked something — is noise, and it dilutes the four
 signals above until they stop being read. Stay silent.
 
+The gate governs commentary _on findings_. It does not cover the rejection
+conversation in **Reject** below, which is a defined step with its own budget:
+one question and one proposed class.
+
 The operator chooses one of:
 
 ### Accept
@@ -266,28 +271,69 @@ the finding was wrong). These are different evidence and must not be collapsed.
 
 ### Reject
 
-The finding is wrong. Nothing is built.
+The operator declines the finding. Nothing is built.
 
-This is the primary output of the run, so spend it immediately, while the
-operator's reasoning is fresh. Print this block for them to paste into a **new
-conversation** — do not run `/skill-update` inline; it is a full interactive
-editing session and would swamp the triage queue:
+**A rejection is not automatically a skill defect.** A rule can be correct, fire
+correctly, and still be declined — the change is out of scope for now, or it
+loses to a deliberate trade-off. Emitting a `/skill-update` prompt for every
+rejection wastes interactive sessions on skills that are working, and worse, it
+teaches the skill to stop reporting things the operator merely deferred.
 
-```
-Invoke /skill-update on skill <reviewer skill>.
+So the rejection opens a **short conversation, held here with the
+orchestrator**, whose only job is to decide whether the reviewer should change.
 
-Verbatim finding:
-<the finding, in full — description, options, recommendation>
+1. **Ask once, briefly:** why is this being declined? One question, not an
+   interview. The queue is waiting.
+2. **Classify, and say which you think it is** — the operator corrects you:
 
-Subject (the code the finding was raised against):
-<the exact lines, quoted>
+   | Class              | Meaning                                                | Update? |
+   | ------------------ | ------------------------------------------------------ | ------- |
+   | `rule-wrong`       | the rule itself is bad, here and generally             | yes     |
+   | `misapplied`       | rule is sound, should not have fired on this subject   | yes     |
+   | `finding-unusable` | rule may be right; options/subject/`file:line` are not | yes     |
+   | `correct-declined` | fired correctly; declined on scope, timing, trade-off  | no      |
+   | `duplicate`        | another finding already covers it                      | no      |
 
-Why it was rejected:
-<the operator's reason, verbatim>
-```
+   The three `yes` classes want **different edits** — `rule-wrong` changes the
+   criteria, `misapplied` changes scoping and exceptions, `finding-unusable`
+   changes the output contract. Naming the class is most of the work of the
+   `/skill-update` session, so do not skip it and let that session re-derive it.
 
-Then **continue triaging**. Do not wait for them to finish; the queue keeps
-moving and they return when they return.
+3. **Record the outcome in the ledger either way**, with the class and the
+   operator's reason **verbatim**. This is not bookkeeping: a lens rejected five
+   times as `correct-declined` across five runs is a real signal — the rule may
+   be right and still not worth its noise — and that pattern is invisible unless
+   every rejection is recorded, including the ones that changed nothing today.
+   Likewise repeated `duplicate` against the same pair of lenses is evidence
+   they overlap.
+
+4. **Only when the class calls for an update**, print this block for the
+   operator to paste into a **new conversation**. Do not run `/skill-update`
+   inline — it is a full interactive editing session and would swamp the queue:
+
+   ```
+   Invoke /skill-update on skill <reviewer skill>.
+
+   Rejection class: <rule-wrong | misapplied | finding-unusable>
+
+   Verbatim finding:
+   <the finding, in full — all options, in their original order>
+
+   Subject (the code the finding was raised against):
+   <the exact lines, quoted>
+
+   Why it was rejected:
+   <the operator's reason, verbatim>
+   ```
+
+Then **continue triaging** — do not wait for them to finish the skill edit.
+
+**When the class is genuinely unclear, record and move on.** A ledger line is
+cheap and keeps the evidence; an unnecessary `/skill-update` session costs the
+operator real time and risks editing a skill that was right. But never talk the
+operator out of an update they want — the orchestrator proposes a class, the
+operator decides it, and this step exists to inform that decision, not to make
+it.
 
 ### Revise the RFC — Tier 0 only
 
@@ -298,8 +344,10 @@ finding `rfc-revision`. The RFC change re-enters through the normal pipeline,
 not through this loop.
 
 Record every outcome as a line in `<scratch>/ledger.jsonl`:
-`{"id","skill","tier","outcome","notes"}`. This is the only durable record of
-what the operator decided, and the evaluation dataset this run produced.
+`{"id","skill","tier","outcome","class","reason","skill_update"}` — `class` and
+`reason` set for rejections (see **Reject**), `skill_update` a boolean recording
+whether one was actually requested. This is the only durable record of what the
+operator decided, and the evaluation dataset this run produced.
 
 ## Phase 3 — Integration
 
