@@ -3,12 +3,12 @@ name: manual-review-fix
 description: >-
   Human-in-the-loop review and repair of an implementation, built to evaluate the
   reviewer skills themselves. Fans out every reviewer skill against one fixed
-  commit, presents findings to the operator one at a time in tier order, builds
-  each accepted fix in its own worktree off that same commit, and integrates them
-  at the end. A rejected finding opens a short conversation that classifies the
-  rejection and decides whether the reviewer itself should change. Use when a
-  user asks to manually review and fix an implementation, or invokes
-  /manual-review-fix.
+  base per tier, presents findings to the operator one at a time in tier order,
+  builds each accepted fix in its own worktree off that base, and integrates the
+  tier before the next one runs. A rejected finding opens a short conversation
+  that classifies the rejection and decides whether the reviewer itself should
+  change. Use when a user asks to manually review and fix an implementation, or
+  invokes /manual-review-fix.
 ---
 
 # Manual Review / Fix
@@ -24,17 +24,20 @@ its own.
 | **orchestrator** | this skill; dispatches, presents, isolates, and integrates |
 
 **Purpose.** This process exists to **evaluate the reviewer skills**. Repairing
-the code is the by-product. Every design choice below — one fixed commit, one
-finding at a time, one worktree per fix, verbatim hand-off — is there so that a
-bad outcome is attributable to exactly one reviewer.
+the code is the by-product. Every design choice below — one shared base per
+tier, one finding at a time, one worktree per fix, verbatim hand-off — is there
+so that a bad outcome is attributable to exactly one reviewer.
 
 ## Invocation Parameters
 
 - **Target**: the RFC under review (e.g. `rfc/107-e2e-tests.md`). Tier 0 needs
   it; the code lenses do not.
-- **Evaluated Commit** (`E`): the SHA whose tree is reviewed and off which every
-  fix is built. Defaults to `HEAD`.
-- **Base Revision**: what the change is measured against. Defaults to `main`.
+- **Evaluated Commit** (`E`): the implementation under review. Defaults to
+  `HEAD`. It is where the run starts, not what every tier reviews — see **Tier
+  base** below.
+- **Base Revision**: what the change is measured against in the diff shown to
+  reviewers. Defaults to `main`, and stays fixed for the whole run so every tier
+  sees the full change rather than only the previous tier's repairs.
 - **Fixer**: the skill or prompt that applies an accepted finding. Defaults to
   `/rfc-impl-fix`.
 - **Scratch Dir** _(optional)_: defaults to `.scratch/manual-review-fix/<E>/`.
@@ -83,6 +86,38 @@ What this skill adds on top of that contract:
   launders a reviewer defect into a clean finding — destroying the one
   measurement this run exists to take.
 
+## Tier base (`T`) — the run's moving reference point
+
+A tier is reviewed against, and its fixes are branched from, the **tier base
+`T`**: the current integration tip. `T` starts at `E` and advances once per
+tier, when that tier's accepted fixes are integrated (**Phase 3**).
+
+```
+T₀ = E  →  Tier 0 reviewed, fixed, integrated  →  T₁
+T₁      →  Tier 1 reviewed, fixed, integrated  →  T₂   … and so on
+```
+
+**Review target, fix base, and integration tip are the same commit within a
+tier.** That single rule is what makes the tier ordering earn its keep: Tier 3's
+naming lenses see the code as Tier 1's restructuring left it, so they never
+raise a finding about a method that no longer exists, and a fix is never
+authored against a base that has already moved.
+
+It also removes two mechanisms this skill used to need. There is nothing
+**stale** to flag, because no finding is ever computed against an outdated tree.
+And cross-tier cherry-pick conflicts disappear, leaving only within-tier ones —
+which are the interesting kind, since they mean two reviewers in the same tier
+disagree about the same lines.
+
+**The trade, stated plainly.** Later tiers judge code that fixers partly wrote
+rather than the pristine implementation, so cross-tier comparability of the
+review input is weaker. That is accepted: the alternative confound is worse — a
+lens firing on code an earlier fix already repaired looks like a false positive
+and gets the lens scored down for a finding that was correct when written.
+Judging what actually exists is the more honest measurement. Attribution is
+untouched either way: within a tier every fix still branches from the same `T`,
+one finding per worktree.
+
 ## Depth-1 Fan-out Invariant (normative)
 
 This skill spawns one leaf per reviewer, so it **MUST run inline in the
@@ -97,30 +132,32 @@ there is nothing to gain by backgrounding it and a stalled fan-out to lose.
 
 ## Phase 1 — Fan-out
 
-**One fan-out per tier, and only when that tier's turn arrives.** Fan out Tier
-0, triage it to completion (Phase 2), then fan out Tier 1, and so on. Never
-spawn a later tier's leaves before the current tier's triage is done.
+**One fan-out per tier, against that tier's base `T`, and only when its turn
+arrives.** Fan out Tier 0, triage it (Phase 2), integrate it (Phase 3) to
+advance `T`, then fan out Tier 1 against the new `T`, and so on. Never spawn a
+later tier's leaves before the current tier has been triaged and integrated —
+they would be reviewing a tree that is about to change under them.
 
-Every tier is still reviewed against **`E`**, unchanged — accepted fixes live on
-their own branches and integrate only in Phase 3, so nothing has landed and the
-input is identical whenever a leaf runs. Spawning late costs no comparability.
+Fanning out all 39 up front is doubly wrong: it spends 34 leaf reviews against a
+tree the earlier tiers are about to modify, and a Tier 0 finding can send the
+operator back to `/rfc-design`, discarding the implementation those reviews
+judged. Tier 0 gates the rest for the same reason it is triaged first — it asks
+whether this is even the right implementation to be reviewing.
 
-What it buys: a Tier 0 finding can send the operator back to `/rfc-design`, and
-the resulting implementation change invalidates every code-lens verdict taken
-against the old tree. Fanning out all 39 up front spends 34 leaf reviews on a
-tree that is about to be replaced. Tier 0 gates the rest for the same reason it
-is triaged first — it asks whether this is even the right implementation to be
-reviewing.
+1. **Build the review context for this tier** at
+   `<scratch>/tier-<n>/review-context.md`: the `<base>...T` diff, plus the full
+   contents of every changed **non-test** file inlined whole and labelled by
+   path. Name changed test files and any oversized file in a "named — `Read` on
+   demand" list instead of inlining them.
 
-1. **Build the shared review context, once**, to `<scratch>/review-context.md`:
-   the `<base>...E` diff, plus the full contents of every changed **non-test**
-   file inlined whole and labelled by path. Name changed test files and any
-   oversized file in a "named — `Read` on demand" list instead of inlining them.
-   Write-once, skip-if-present.
+   **One file per tier, not one per run.** `T` moves between tiers, so a context
+   built for Tier 0 describes code Tier 1 no longer sees. Write-once **within**
+   a tier (so an interrupted fan-out resumes against the same evidence); rebuilt
+   from scratch for the next one.
 
    This file is the **evidence**, not an optimisation. It is what lets a silent
    lens be told apart from a lens that never looked, and it is the subject you
-   hand to `/skill-update` later. Every leaf reads it.
+   hand to `/skill-update` later. Every leaf in the tier reads it.
 
 2. **Resolve the skill set.** Discover live skills by glob — `impl-review-*`,
    `design-review-*`, `code-review-*`, excluding `*-chain` — and check each
@@ -160,19 +197,18 @@ only signal.
 
 ## Phase 2 — Triage
 
-Walk the tiers in manifest order: **0, then 1, 2, 3**. Phases 1 and 2 interleave
-— fan out a tier, triage it to completion, then return to Phase 1 for the next
-tier. Within a tier, order is yours. Present findings **one at a time**, never a
+Walk the tiers in manifest order: **0, then 1, 2, 3**. All three phases
+interleave — fan out a tier (Phase 1), triage it to completion, integrate it
+(Phase 3), then return to Phase 1 for the next tier against the advanced `T`.
+Within a tier, order is yours. Present findings **one at a time**, never a
 batch, never a summary table of several.
 
 If Tier 0 triage sends the operator back to `/rfc-design`, **stop here**. Do not
 fan out Tier 1 against an implementation that is about to change.
 
-Before presenting a finding, check whether any already-accepted fix branch
-touched its subject's file and line range. If so, mark it
-`⚠ subject modified by <finding-id>` and show what changed. Do not drop it — a
-stale finding the operator can see is data; one you suppressed is a reviewer
-scored down for something it never did.
+No staleness check is needed. Every finding in a tier was computed against that
+tier's `T`, and nothing has been integrated since — so no finding can be about
+code another fix already changed.
 
 ### Presenting a finding
 
@@ -248,7 +284,8 @@ The operator chooses one of:
 1. **The operator picks the option to apply.** Option 1 is the default — offer
    it as such and take silence or "yes" to mean it. Any other choice is an
    **override**, and step 5 acts on that.
-2. `git worktree add ../<repo>-fix-<id> -b fix/<id> <E>`.
+2. `git worktree add ../<repo>-fix-<id> -b fix/<id> <T>` — this tier's base, not
+   `E`.
 3. Spawn the **Fixer** there, in a fresh context, one finding at a time — never
    a batch. Pass the finding **verbatim**: description, all options in their
    original order, the subject. Do not paraphrase, re-order, or "clarify" it.
@@ -269,7 +306,7 @@ The operator chooses one of:
      rather than staying silent.
 
 4. **Show the diff. Always, in full, colorized.** The operator MUST NOT be asked
-   to keep or discard without seeing it. `git diff <E>` in that worktree plus
+   to keep or discard without seeing it. `git diff <T>` in that worktree plus
    any untracked files, presented inside a fenced **`diff`** block so every
    added and removed line is syntax-highlighted:
 
@@ -299,7 +336,7 @@ The operator chooses one of:
      CLAUDE.md; the branch tip is gated in Phase 3.)
    - _discard_: `git worktree remove --force` and delete the branch. Nothing to
      roll back — the fix never touched the main tree, which is the point of
-     building off `E`.
+     building off `T` in a worktree.
    - On discard, offer a **retry**: the operator may re-run the same finding
      with extra notes, passed verbatim to a fresh fixer context alongside the
      original finding.
@@ -415,34 +452,48 @@ on rejections and on overrides; `skill_update` a boolean recording whether one
 was actually requested. This is the only durable record of what the operator
 decided, and the evaluation dataset this run produced.
 
-## Phase 3 — Integration
+## Phase 3 — Integration (once per tier)
 
-Once triage is done:
+Runs at the **end of every tier**, as soon as its triage is complete — not once
+at the end of the run. Its output is the next tier's base.
 
-1. Branch `integration` at `E`.
-2. **Cherry-pick each kept fix in acceptance order** — which is tier order, so
-   structural fixes land before the nits that rebase onto them. A 3-line rename
-   conflicting with an extraction that already landed is trivial; the reverse is
-   not.
-3. **A conflict is a finding, not a chore.** Two accepted fixes contending for
-   the same lines means two reviewers disagree about that code. Present both
-   hunks to the operator, let them resolve it, and record it in the ledger as a
-   conflict between the two skills. That is a result this run was built to
-   produce.
-4. **Gate the tip**: `nix develop -c bin/format -c` and
+1. **Cherry-pick this tier's kept fixes onto `integration`**, in acceptance
+   order. (On Tier 0, first branch `integration` at `E`.) Only this tier's fixes
+   are in flight; earlier tiers are already in.
+2. **A conflict is a finding, not a chore.** Two fixes from the same tier
+   contending for the same lines means two reviewers disagree about that code.
+   Present both hunks, let the operator resolve it, and record it in the ledger
+   as a conflict between the two skills. That is a result this run was built to
+   produce — and per-tier integration is what isolates it, since a conflict here
+   can only be lens-versus-lens, never an artefact of a base that moved.
+3. **Gate the tip**: `nix develop -c bin/format -c` and
    `nix develop -c bin/test check`. Report the real counts.
 
    Per-branch greens do not imply a green integration — two fixes can merge
    cleanly and still be jointly wrong (one extracts a helper, another edits code
    that no longer exists there). This run is what catches that.
 
-5. Remove the fix worktrees and delete the merged branches.
+   **A red gate blocks the next tier.** Do not fan out against a base that does
+   not build: every finding it produced would be suspect. Resolve it with the
+   operator — discard the offending fix, or fix forward — then re-gate.
+
+4. Remove this tier's fix worktrees and delete the merged branches.
+5. **Advance `T`** to the integration tip and record it. That commit is what the
+   next tier is reviewed against and branches from.
+
+Gating four times rather than once costs four suite runs, and buys attribution:
+a breakage is localised to the tier that introduced it, instead of surfacing at
+the end against the union of every fix in the run.
 
 ## Phase 4 — Confirmation
 
-Re-run the **Tier 0** skills once against the integration tip. Five read-only
-skills; it catches a fix that did not actually satisfy the check it was raised
-against.
+After the last tier has been integrated, re-run the **Tier 0** skills once
+against the final tip. Five read-only skills; it catches a fix that did not
+actually satisfy the check it was raised against.
+
+Tier 0 ran first, so Tiers 1–3 have since rewritten code it passed — a
+restructuring fix can break RFC conformance without any lens in its own tier
+noticing. This pass is the only thing that looks again.
 
 If something re-fires, return to Phase 2 triage for those findings. The operator
 decides whether to act. **This is a check, not a loop** — it does not re-run
@@ -455,7 +506,8 @@ itself, and it never re-runs Tiers 1–3.
 - Advance an iteration the operator did not ask for.
 - Apply more than one finding per fixer context.
 - Ask for a keep/discard decision without showing the full colorized diff.
-- Build a fix anywhere but its own worktree off `E`.
+- Build a fix anywhere but its own worktree off the current tier base `T`.
+- Fan out a tier before the previous one is triaged, integrated, and green.
 - Report a verdict for a lens that did not run.
 - Let the integration tip reach `main` without the full gate having run on it.
 - Edit a reviewer skill itself — that is `/skill-update`, with the operator
