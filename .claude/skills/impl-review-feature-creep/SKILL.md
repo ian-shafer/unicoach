@@ -54,26 +54,20 @@ Incidental edits with no structural effect — a moved import, a formatting chan
   preference. Never leave the reader to infer which you meant.
 - **Quote the subject:** the code, and the RFC text you searched.
 
-## 📋 Output Format
+## 📋 Ledger
 
-```markdown
-# Review Report: Feature Creep
-
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
-
-## Traceability Ledger
+Emit a **Traceability Ledger** above the findings — every structural change and
+the RFC line it traces to.
 
 | Structural change | Traced to |
 | ----------------- | --------- |
 
-## Findings
+## 📋 Output
 
-- **<one-line title>**
-  - **Assessment**: 20-40 words — your case for why this matters, in your own
-    voice.
-  - **RFC says**: nothing — name the sections you searched.
-  - **Code**: `<file>:<line>` — one sentence on what was added.
-  - **Options**:
-    1. **(RECOMMENDED)** the literal change — one-line reason.
-    2. the literal change. _(2..n in descending preference)_
-```
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).
+
+Lens-specific fields:
+
+- **RFC says**: nothing — name the sections you searched.
+- **Code**: `<file>:<line>` — one sentence on what was added.

@@ -47,26 +47,21 @@ from the code in any of those four areas is a scope failure, not a nit.
   preference. Never leave the reader to infer which you meant.
 - **Quote the subject:** the RFC declaration verbatim, beside the code.
 
-## 📋 Output Format
+## 📋 Ledger
 
-```markdown
-# Review Report: Detailed Design Adherence
-
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
-
-## Declaration Ledger
+Emit a **Declaration Ledger** above the findings — every declaration you
+checked, including the ones that matched, so one you never reached cannot be
+mistaken for one that passed.
 
 | Declaration | Present | Named | Shaped |
 | ----------- | ------- | ----- | ------ |
 
-## Findings
+## 📋 Output
 
-- **<one-line title>**
-  - **Assessment**: 20-40 words — your case for why this matters, in your own
-    voice.
-  - **RFC says**: the declaration verbatim.
-  - **Code**: `<file>:<line>` — one sentence on how it deviates.
-  - **Options**:
-    1. **(RECOMMENDED)** the literal change — one-line reason.
-    2. the literal change. _(2..n in descending preference)_
-```
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).
+
+Lens-specific fields:
+
+- **RFC says**: the declaration verbatim.
+- **Code**: `<file>:<line>` — one sentence on how it deviates.

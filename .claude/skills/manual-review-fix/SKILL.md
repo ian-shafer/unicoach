@@ -65,37 +65,23 @@ lens reads as "found nothing" when it in fact never ran.
 
 ## The finding contract
 
-Each finding MUST carry:
+The shape of a finding — assessment, `RFC says`, `Code`, ranked options — is
+defined once in [`findings-output.template.md`](../findings-output.template.md),
+and the leaf prompts point there. It is not restated here: it is identical for
+all 39 reviewers, so a second copy is a value with two owners that will drift.
 
-- a **20–40 word assessment** — the reviewer's own case for why this matters, in
-  its own voice. Not a restatement of the rule, not a description of the code:
-  the argument. This is the first thing the operator reads and usually the only
-  thing they need to decide, and it is the single clearest artifact for judging
-  whether a lens reasons well;
-- a **detailed description** — what is wrong, where, and why it matters;
-- **at least two options**, each containing the **actual code** to apply, not a
-  description of it, presented in **descending preference order**;
-- **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and carrying the
-  reason it beats the rest;
-- the **subject** — the exact lines the reviewer was looking at.
+What this skill adds on top of that contract:
 
-**The ordering is the recommendation.** Every reviewer must rank, not just list.
-A separate "Recommendation: B" line is not acceptable — it can name an option
-that does not exist, and it lets a reviewer dodge the ranking for options 2..n,
-which is exactly the judgement the operator is reading the finding for. Option 1
-is what the fixer applies by default, so a reviewer that will not commit to a
-first choice has not finished its job.
-
-The subject is not optional either. Without it, at `/skill-update` time a rule
-that is simply wrong cannot be told apart from a rule misapplied to one case,
-and those want opposite edits.
-
-A finding with fewer than two options, with options that are not ranked, or with
-no subject is incomplete: present it marked `⚠ incomplete` rather than dropping
-or repairing it. **Never supply the missing ranking yourself** — an
-orchestrator-invented recommendation is indistinguishable from the reviewer's
-own at triage time, and it would silently launder a reviewer defect into a clean
-finding. Incompleteness is a first-class result worth recording.
+- **`file:line` is mandatory.** A finding whose subject cannot be located is not
+  triageable, and at `/skill-update` time a rule that is simply wrong cannot be
+  told apart from a rule misapplied to one case — those want opposite edits.
+- **Incompleteness is a result, not a repair job.** A finding with fewer than
+  two options, unranked options, a missing subject, or an out-of-range
+  assessment is presented **as written**, marked `⚠ incomplete`, and recorded.
+- **Never fill a gap yourself.** An orchestrator-supplied ranking, subject, or
+  assessment is indistinguishable from the reviewer's own at triage time, so it
+  launders a reviewer defect into a clean finding — destroying the one
+  measurement this run exists to take.
 
 ## Depth-1 Fan-out Invariant (normative)
 
@@ -153,9 +139,10 @@ reviewing.
    - **description**: `[manual-review-fix] <skill>`
    - **run_in_background**: `true`
    - **prompt**: names the one skill to invoke, `<scratch>/review-context.md` to
-     read, the Target RFC (Tier 0 only), the finding contract above, and the
-     write path `<scratch>/findings/<skill>.md`. State that it writes that one
-     file, writes it **before** replying in chat, and changes nothing else.
+     read, the Target RFC (Tier 0 only), an instruction to emit findings per
+     `.claude/skills/findings-output.template.md`, and the write path
+     `<scratch>/findings/<skill>.md`. State that it writes that one file, writes
+     it **before** replying in chat, and changes nothing else.
 
 4. **Drain to completion. Do not kill the fan-out mid-flight.** A leaf that
    exceeds a generous budget gets one replacement; if that also produces no

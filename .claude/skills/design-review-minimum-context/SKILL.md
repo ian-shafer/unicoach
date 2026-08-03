@@ -105,26 +105,10 @@ if (task.syncStatus === SyncStatus.PENDING) { triggerTaskRetry(); } ```
   this single interface or line of code, can they fully understand what state it
   represents without looking at any other file or documentation?"_ If not, flag
   it.
-- **Provide Actionable Options**: For every violation found, you MUST provide at
-  least 2 distinct structural options (using explicit enums, state unions, or
-  separate data parameters) and rank them in descending preference: **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and carrying the reason it beats the rest.
-- **Lead with your assessment:** every finding opens with a **20-40 word** case, in your own voice, for why it matters. Not a restatement of the rule and not a description of the code — the argument. It is the first thing the operator reads and often the only thing they need.
 
-## 📋 Output Format
 
-Group your findings by severity (Critical, Major, Minor, Nit).
+## 📋 Output
 
-```markdown
-# Review Report: The Principle of Minimum Context
-
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
-
-## Findings
-
-- [Severity] **Finding description**: Explanation of why it requires global
-  memory or implicit parsing.
-  - **Assessment**: 20-40 words — your case for why this matters.
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).
 ````

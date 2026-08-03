@@ -53,27 +53,21 @@ finding against the **RFC**, and the repair belongs in `## Tests`.
 - **Quote the subject:** the RFC's test spec, and the test code (or its
   absence).
 
-## 📋 Output Format
+## 📋 Ledger
 
-```markdown
-# Review Report: Tests Implemented
-
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
-
-## Test Ledger
+Emit a **Test Ledger** above the findings — every RFC test case, including the
+ones that passed.
 
 | RFC test case | Exists | Asserts as specified | Registered |
 | ------------- | ------ | -------------------- | ---------- |
 
-## Findings
+## 📋 Output
 
-- **<one-line title>**
-  - **Assessment**: 20-40 words — your case for why this matters, in your own
-    voice.
-  - **RFC says**: the test spec verbatim.
-  - **Code**: `<file>:<line>` — one sentence on what goes unverified (or "no
-    such test").
-  - **Options**:
-    1. **(RECOMMENDED)** the literal change — one-line reason.
-    2. the literal change. _(2..n in descending preference)_
-```
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).
+
+Lens-specific fields:
+
+- **RFC says**: the test spec verbatim.
+- **Code**: `<file>:<line>` — one sentence on what goes unverified (or "no such
+  test").

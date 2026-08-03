@@ -40,21 +40,12 @@ that does not resolve is itself a finding.
 - **Quote the subject:** include the RFC's list and the actual paths in
   question.
 
-## 📋 Output Format
+## 📋 Output
 
-```markdown
-# Review Report: Files Modified Isolation
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).
 
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
+Lens-specific fields:
 
-## Findings
-
-- **<one-line title>**
-  - **Assessment**: 20-40 words — your case for why this matters, in your own
-    voice.
-  - **RFC says**: the `## Files Modified` entry verbatim (or "not listed").
-  - **Code**: `<path>` — one sentence on which direction it breaks.
-  - **Options**:
-    1. **(RECOMMENDED)** the literal change — one-line reason.
-    2. the literal change. _(2..n in descending preference)_
-```
+- **RFC says**: the `## Files Modified` entry verbatim (or "not listed").
+- **Code**: `<path>` — one sentence on which direction it breaks.

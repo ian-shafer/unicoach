@@ -105,32 +105,10 @@ controller.setThreads(threads);``
 - **Adversarial Posture:** Actively hunt for loops, API mapping utilities, batch
   operations, bulk updates, and data parsing blocks. Check if error handling
   behaves inconsistently or halts execution mid-way.
-- **Provide Actionable Options:** For each violation found, you MUST provide at
-  least 2 distinct resolution options, and rank them in descending preference:
-  **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and carrying the
-  reason it beats the rest.
 - **Code Examples:** When pointing out a flaw, include short code snippets
   demonstrating the violation.
-- **Lead with your assessment:** every finding opens with a **20-40 word** case,
-  in your own voice, for why it matters. Not a restatement of the rule and not a
-  description of the code — the argument. It is the first thing the operator
-  reads and often the only thing they need.
 
-## 📋 Output Format
+## 📋 Output
 
-Output your findings clearly and concisely. Group your findings by severity
-(Critical, Major, Minor, Nit).
-
-```markdown
-# Review Report: Best Effort vs. All-or-Nothing Processing
-
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
-
-## Findings
-
-- [Severity] **Finding description**: Explanation of why it violates the rule.
-  - **Assessment**: 20-40 words — your case for why this matters.
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
-```
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).

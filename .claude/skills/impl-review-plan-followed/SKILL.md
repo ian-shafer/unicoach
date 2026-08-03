@@ -42,28 +42,21 @@ reached cannot be mistaken for a step that passed.
   preference. Never leave the reader to infer which you meant.
 - **Quote the subject:** include the plan step verbatim alongside the code.
 
-## 📋 Output Format
+## 📋 Ledger
 
-```markdown
-# Review Report: Implementation Plan Followed
-
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
-
-## Step Ledger
+Emit a **Step Ledger** above the findings — every plan step, including the ones
+that passed.
 
 | Step | Executed | As written | Verified |
 | ---- | -------- | ---------- | -------- |
-| 1    | ✅       | ✅         | ✅       |
 
-## Findings
+## 📋 Output
 
-- **<one-line title>**
-  - **Assessment**: 20-40 words — your case for why this matters, in your own
-    voice.
-  - **RFC says**: the plan step verbatim.
-  - **Code**: `<file>:<line>` — one sentence on what is missing or different (or
-    "no evidence in the diff").
-  - **Options**:
-    1. **(RECOMMENDED)** the literal change — one-line reason.
-    2. the literal change. _(2..n in descending preference)_
-```
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).
+
+Lens-specific fields:
+
+- **RFC says**: the plan step verbatim.
+- **Code**: `<file>:<line>` — one sentence on what is missing or different (or
+  "no evidence in the diff").

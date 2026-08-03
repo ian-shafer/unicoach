@@ -39,16 +39,8 @@ the following principle. Do not review for other concerns outside this scope.
   with units (e.g., `timeoutMs: Long`, `sizeBytes: Long`, `priceCents: Int`).
   Demand that these be transitioned to a strong domain type unless doing so
   objectively degrades code clarity.
-- **Provide Actionable Options:** For each violation found, you MUST provide at
-  least 2 distinct resolution options, and rank them in descending preference:
-  **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and carrying the
-  reason it beats the rest.
 - **Code Examples:** When pointing out a flaw, include short code snippets
   demonstrating the violation.
-- **Lead with your assessment:** every finding opens with a **20-40 word** case,
-  in your own voice, for why it matters. Not a restatement of the rule and not a
-  description of the code — the argument. It is the first thing the operator
-  reads and often the only thing they need.
 
 ## 📝 Examples
 
@@ -116,21 +108,7 @@ Do not raise findings for any of the following:
   string wrapper) — consistent with the "do not over-engineer" guideline above.
 - **Test fixtures** using literal primitive values for setup.
 
-## 📋 Output Format
+## 📋 Output
 
-Output your findings clearly and concisely. Group your findings by severity
-(Critical, Major, Minor, Nit).
-
-```markdown
-# Review Report: Unit Encapsulation
-
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
-
-## Findings
-
-- [Severity] **Finding description**: Explanation of why it violates the rule.
-  - **Assessment**: 20-40 words — your case for why this matters.
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
-```
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).

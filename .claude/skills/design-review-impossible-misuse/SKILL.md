@@ -62,7 +62,7 @@ null } | { type: 'DOC'; selection: null; doc: DocAnchor };
 Representing both or neither will result in a compilation error! const
 goodAnchor: Anchor = { type: 'SELECTION', selection: mySelection, doc: null, };
 
-````
+```
 ## 🎯 Review Guidelines
 
 - **Adversarial Posture**: Actively inspect interfaces, class constructor
@@ -72,24 +72,10 @@ goodAnchor: Anchor = { type: 'SELECTION', selection: mySelection, doc: null, };
 - **The Impossible Invariant Test**: Ask yourself: _"Can a developer instantiate
   or serialize this class in an invalid, conflicting, or uninitialized state?"_
   If the answer is yes at compile-time, flag it.
-- **Provide Actionable Options**: For every violation found, you MUST provide at
-  least 2 distinct structural options (discriminated unions, explicit
-  constructors, sealed classes) and rank them in descending preference: **Option 1 is the recommendation**, labelled `(RECOMMENDED)` and carrying the reason it beats the rest.
-- **Lead with your assessment:** every finding opens with a **20-40 word** case, in your own voice, for why it matters. Not a restatement of the rule and not a description of the code — the argument. It is the first thing the operator reads and often the only thing they need.
 
-## 📋 Output Format
 
-```markdown
-# Review Report: Designing Against Impossible Misuse
+## 📋 Output
 
-**Verdict:** 🟢 APPROVED / 🔴 REVISION REQUIRED
-
-## Findings
-
-- [Severity] **Finding description**: Explanation of why invalid compile-time
-  states can be represented.
-  - **Assessment**: 20-40 words — your case for why this matters.
-  - **Option 1 (RECOMMENDED)**: the literal change to apply — and why this one.
-  - **Option 2**: ...
-  - **Option n**: ... _(descending preference)_
-````
+Follow the output instructions in your prompt. If it gives none, use
+[`findings-output.template.md`](../findings-output.template.md).
+```
