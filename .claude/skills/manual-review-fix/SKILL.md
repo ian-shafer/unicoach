@@ -40,7 +40,8 @@ so that a bad outcome is attributable to exactly one reviewer.
   sees the full change rather than only the previous tier's repairs.
 - **Fixer**: the skill or prompt that applies an accepted finding. Defaults to
   `/rfc-impl-fix`.
-- **Scratch Dir** _(optional)_: defaults to `.scratch/manual-review-fix/<E>/`.
+- **Scratch Dir** _(optional)_: defaults to
+  `.scratch/manual-review-fix/<run-id>/`.
 
 If Target or `E` cannot be resolved, stop and ask.
 
@@ -85,6 +86,41 @@ What this skill adds on top of that contract:
   assessment is indistinguishable from the reviewer's own at triage time, so it
   launders a reviewer defect into a clean finding — destroying the one
   measurement this run exists to take.
+
+## Worktrees, branches & cleanup
+
+This run creates one git worktree per accepted finding, and it may be invoked
+from a linked worktree that a concurrent `rfc-pipeline` owns. **Everything it
+creates is namespaced to the run, and nothing is ever deleted by pattern.**
+
+**Run id** = `<source>-<Eshort>`, where `<source>` is the basename of the
+directory this run was invoked from and `<Eshort>` is `E`'s short SHA — e.g.
+`unicoach-rfc-107-a1b2c3d`. The source basename alone is not enough: the same
+worktree hosts more than one run over time.
+
+| Artefact           | Name                                              |
+| ------------------ | ------------------------------------------------- |
+| fix worktrees      | `<sibling-of-source>/<run-id>-fixes/<finding-id>` |
+| fix branches       | `fix/<run-id>/<finding-id>`                       |
+| integration branch | `integration/<run-id>`                            |
+| scratch            | `.scratch/manual-review-fix/<run-id>/`            |
+| manifest           | `<scratch>/worktrees.jsonl`                       |
+
+All fix worktrees for a run live under **one parent directory**, so an abandoned
+run is one directory to remove rather than a dozen scattered siblings.
+
+**The manifest is what cleanup reads — not the names.** Append
+`{"finding_id","path","branch"}` the moment a worktree is created, before the
+fixer is spawned. Names are for humans reading `git worktree list`; the manifest
+is the authority, because a run killed mid-flight leaves worktrees whose owner
+cannot otherwise be established.
+
+**Teardown removes only what this run's manifest lists**, then
+`git worktree prune`. Never remove a worktree or delete a branch because its
+name matches a pattern — a concurrent `rfc-pipeline` or a second
+`/manual-review-fix` owns worktrees that look just like yours, and a pattern
+delete takes their in-flight work with it. If something looks orphaned but is
+not in the manifest, report it and leave it alone.
 
 ## Tier base (`T`) — the run's moving reference point
 
@@ -284,8 +320,16 @@ The operator chooses one of:
 1. **The operator picks the option to apply.** Option 1 is the default — offer
    it as such and take silence or "yes" to mean it. Any other choice is an
    **override**, and step 5 acts on that.
-2. `git worktree add ../<repo>-fix-<id> -b fix/<id> <T>` — this tier's base, not
-   `E`.
+2. Create the worktree at this tier's base — **not** `E` — and record it in the
+   manifest **before** spawning anything:
+
+   ```sh
+   git worktree add <run-fixes-dir>/<id> -b fix/<run-id>/<id> <T>
+   ```
+
+   Append `{"finding_id","path","branch"}` to `<scratch>/worktrees.jsonl` now,
+   not after the fixer returns. A fixer that hangs must still leave a cleanable
+   trace.
 3. Spawn the **Fixer** there, in a fresh context, one finding at a time — never
    a batch. Pass the finding **verbatim**: description, all options in their
    original order, the subject. Do not paraphrase, re-order, or "clarify" it.
@@ -340,9 +384,10 @@ The operator chooses one of:
      naming the reviewer, the option applied, and what was verified. The branch
      waits for Phase 3. (Intermediate commits on a work branch skip the hook per
      CLAUDE.md; the branch tip is gated in Phase 3.)
-   - _discard_: `git worktree remove --force` and delete the branch. Nothing to
-     roll back — the fix never touched the main tree, which is the point of
-     building off `T` in a worktree.
+   - _discard_: `git worktree remove --force` that worktree, delete its branch,
+     and mark the manifest line discarded. Nothing to roll back — the fix never
+     touched the main tree, which is the point of building off `T` in a
+     worktree.
    - On discard, offer a **retry**: the operator may re-run the same finding
      with extra notes, passed verbatim to a fresh fixer context alongside the
      original finding.
@@ -463,8 +508,8 @@ decided, and the evaluation dataset this run produced.
 Runs at the **end of every tier**, as soon as its triage is complete — not once
 at the end of the run. Its output is the next tier's base.
 
-1. **Cherry-pick this tier's kept fixes onto `integration`**, in acceptance
-   order. (On Tier 0, first branch `integration` at `E`.) Only this tier's fixes
+1. **Cherry-pick this tier's kept fixes onto `integration/<run-id>`**, in
+   acceptance order. (On Tier 0, first branch it at `E`.) Only this tier's fixes
    are in flight; earlier tiers are already in.
 2. **A conflict is a finding, not a chore.** Two fixes from the same tier
    contending for the same lines means two reviewers disagree about that code.
@@ -483,7 +528,10 @@ at the end of the run. Its output is the next tier's base.
    not build: every finding it produced would be suspect. Resolve it with the
    operator — discard the offending fix, or fix forward — then re-gate.
 
-4. Remove this tier's fix worktrees and delete the merged branches.
+4. **Tear down this tier's worktrees — from the manifest, never by pattern.**
+   For each manifest line belonging to this tier: `git worktree remove` its
+   path, delete its branch, mark the line torn down. Then `git worktree prune`.
+   Leave anything not in the manifest alone and say so.
 5. **Advance `T`** to the integration tip and record it. That commit is what the
    next tier is reviewed against and branches from.
 
@@ -505,6 +553,29 @@ If something re-fires, return to Phase 2 triage for those findings. The operator
 decides whether to act. **This is a check, not a loop** — it does not re-run
 itself, and it never re-runs Tiers 1–3.
 
+## Cleaning up an abandoned run
+
+A run killed mid-tier leaves fix worktrees, their branches, and an
+`integration/<run-id>` branch behind. Everything needed to clean it up is in
+`<scratch>/worktrees.jsonl`, which survives because `.scratch/` is gitignored
+and never reset by this skill.
+
+To wind one down — the operator's call, never automatic:
+
+1. Read the manifest. Report each entry and whether its path still exists.
+2. `git worktree remove` each listed path (`--force` if the fixer left changes),
+   delete each listed branch, then `git worktree prune`.
+3. Delete `integration/<run-id>` only once the operator confirms nothing on it
+   is wanted — it may hold whole tiers of accepted, gated work.
+4. Leave `<scratch>/` in place unless asked. It is the run's ledger, and it is
+   the evaluation output this whole process exists to produce.
+
+**Never clean up by pattern** — not `git worktree list | grep fix`, not
+`git branch -D 'fix/*'`. A concurrent `rfc-pipeline` and a second
+`/manual-review-fix` create worktrees that look exactly like these, and their
+work is live. If a worktree looks orphaned but appears in no manifest, report it
+and stop.
+
 ## What this skill never does
 
 - Filter, rank, or summarise findings.
@@ -514,6 +585,8 @@ itself, and it never re-runs Tiers 1–3.
 - Ask for a keep/discard decision without showing the full colorized diff.
 - Build a fix anywhere but its own worktree off the current tier base `T`.
 - Fan out a tier before the previous one is triaged, integrated, and green.
+- Create a worktree or branch outside this run's namespace, or remove one that
+  is not in this run's manifest.
 - Report a verdict for a lens that did not run.
 - Let the integration tip reach `main` without the full gate having run on it.
 - Edit a reviewer skill itself — that is `/skill-update`, with the operator
