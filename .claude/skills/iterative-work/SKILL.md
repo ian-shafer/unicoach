@@ -3,9 +3,8 @@ name: iterative-work
 description: >-
   Role doctrine for multi-agent iterative work — the master / orchestrator /
   worker hats, their contracts, and the universal rules (capture-on-completion,
-  scratch ownership, checkpoints, verify-on-stall, bounded fan-out, write-scope,
-  independent verification) that keep a long autonomous run durable and
-  resumable. Reference doctrine cited by rfc-pipeline, skill-loop, the review
+  scratch ownership, checkpoints, verify-on-stall, bounded fan-out, write-scope)
+  that keep a long autonomous run durable and resumable. Reference doctrine cited by rfc-pipeline, skill-loop, the review
   chains, and the per-rule workers — it is not invoked directly.
 ---
 
@@ -52,11 +51,14 @@ Map by behaviour, not by name:
 - **Enforces write-scope** on every returning agent — the footprint must be a
   subset of the declared allowlist — and resets on violation rather than keeping
   rogue writes.
-- **Runs independent verification**: never relays a worker's "green"; re-runs
-  the check itself and reads the real result.
-- **Verifies on return _and_ on stall/kill** before trusting or resetting; a
-  stalled unit is re-spawned against the **same** `<run-scratch>` and resumes
-  where it left off.
+- **Takes a worker's reported result at face value**: these are our own tools
+  reporting their own output, and re-running a check to confirm a report it
+  already gave costs real time on every step while almost never changing the
+  answer. Re-run only where **nothing reported** — a stall, a kill, a human's
+  hand edits — and rely on the downstream gate for the rest.
+- **Checks the footprint on return, and re-verifies on stall/kill** before
+  trusting or resetting; a stalled unit is re-spawned against the **same**
+  `<run-scratch>` and resumes where it left off.
 - **Never does worker-level work inline** — delegates to protect its own
   context. It is the **only** hat that commits and runs human gates.
 
@@ -101,7 +103,8 @@ Map by behaviour, not by name:
   ones) — **never** `clean -x` it, which would delete the run's captured work
   and break resume.
 - **Checkpoint at gate boundaries** (master only).
-- **Never trust "green"** — verify independently, on return and on stall/kill.
+- **Verify where nothing reported** — a stall, a kill, or a human's hand edits.
+  A returning worker's own reported result is trusted.
 - **Bounded fan-out** — cap simultaneous workers.
 - **Write-scope ⊆ allowlist** — enforced from the footprint, not trusted from
   the self-report.

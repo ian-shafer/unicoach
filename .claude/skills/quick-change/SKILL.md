@@ -60,11 +60,13 @@ because the change is built in its own worktree, off the committed `main` ref.
    but do **not** edit the file itself; it is human-gated. If the change affects
    an invariant, tell the user rather than editing it. Never create a SPEC.md —
    this codebase does not use them.
-3. Run the affected tests through the harness, forcing a real run:
-   `nix develop -c bin/test <module> -f`. Confirm tests actually executed ("N
-   executed", not an all-cache no-op). For non-Kotlin changes (docs, scripts),
-   run whatever check exercises them (`deno fmt --check`, executing the script's
-   own tests, etc.).
+3. Run the suite through the harness: `nix develop -c bin/test` — the whole
+   thing, unscoped, per CLAUDE.md. Report the executed count as the record of
+   what actually ran. A low count is not by itself a problem — Gradle no-ops
+   what the change did not invalidate — but a count of zero after a Kotlin edit
+   means something is wrong with the inputs, not that the change is safe. For
+   non-Kotlin changes (docs, scripts), run whatever check exercises them
+   (`deno fmt --check`, executing the script's own tests, etc.).
 
 ## Phase 3 — Review
 

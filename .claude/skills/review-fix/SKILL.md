@@ -118,8 +118,8 @@ Repeat until the operator chooses none:
    all options and the recommendation, plus the Target. The prompt MUST state:
    - it **must not commit** — committing is the orchestrator's job, and only
      once the operator has said so;
-   - it **owns verification** — after applying the fix it runs the tests
-     covering what it changed (`nix develop -c bin/test <module> -f`) and
+   - it **owns verification** — after applying the fix it runs
+     `nix develop -c bin/test` (the whole suite, unscoped, per CLAUDE.md) and
      reports the real executed counts. If the target has nothing to run — an
      RFC, a doc — it says so explicitly rather than staying silent.
 7. **The fixer applies the finding** and reports what it changed and what it

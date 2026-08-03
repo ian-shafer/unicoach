@@ -83,6 +83,23 @@ nix develop -c bin/test rest-server           # one module
 nix develop -c bin/test rest-server --tests "ed.unicoach.rest.AuthRoutingTest"
 ```
 
+**Default to the full suite. Do not scope by module, and do not pass `-f`.**
+
+Naming a module is a guess at the blast radius of a change, and the guess is
+routinely wrong — a `:db` edit breaks a `:rest-server` test and the scoped run
+reports green. Gradle already knows the real answer from the dependency graph
+and its input hashes, so `bin/test` with no argument executes exactly the tasks
+the change actually invalidated and no-ops the rest. **Let the cache do the
+scoping.** The executed count is the evidence of what ran.
+
+Passing `-f` forces everything to re-run and so throws that incrementality away.
+Reach for it only when an input Gradle does not model may have changed — a
+schema migration or `.env` value with no accompanying Kotlin change — or when
+hunting a flake. Both are exceptions; neither is the default.
+
+The narrower forms above stay available for tight iteration while debugging one
+test. They are not what you verify a change with.
+
 `bin/test` recreates the **local test database** on every run
 (`db-reset (drop →
 create → migrate)`) — expected, non-destructive to anything

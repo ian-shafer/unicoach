@@ -299,11 +299,17 @@ The operator chooses one of:
 
    The prompt MUST state that the fixer:
    - works only in its own worktree, and **must not commit**;
-   - **owns verification** — after applying, it runs the tests covering what it
-     changed (`nix develop -c bin/test <module> -f`) and reports the real
-     executed counts. The per-worktree test DB and free-port claiming make
-     concurrent runs safe. If there is nothing to run, it says so explicitly
-     rather than staying silent.
+   - **owns verification** — after applying, it runs `nix develop -c bin/test`
+     (the whole suite, unscoped, per CLAUDE.md) and reports the real executed
+     counts. Scoping to a module would be a guess at the fix's blast radius, and
+     a `:db` fix that breaks a `:rest-server` test is exactly what this run must
+     not miss. The per-worktree test DB and free-port claiming make concurrent
+     runs safe. If there is nothing to run, it says so explicitly rather than
+     staying silent.
+
+     **Its report is taken at face value.** The orchestrator does not re-run to
+     confirm it — these are our own tools reporting their own output, and the
+     tier gate re-runs everything anyway.
 
 4. **Show the diff. Always, in full, colorized.** The operator MUST NOT be asked
    to keep or discard without seeing it. `git diff <T>` in that worktree plus

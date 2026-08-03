@@ -112,9 +112,11 @@ anything new, find the closest existing home for the principle and sharpen _it_:
    `shell-scripts` — whichever apply) and every touched directory's
    **INVARIANTS.md**. Do not edit `INVARIANTS.md` — it is human-gated; if the
    fix would affect an invariant, tell the user.
-3. Run the affected tests through the harness, forcing a real run:
-   `nix develop -c bin/test <module> -f`. For non-Kotlin targets, run whatever
-   check exercises them (`deno fmt --check`, the script's own tests, etc.).
+3. Run the suite through the harness: `nix develop -c bin/test` — the whole
+   thing, unscoped, per CLAUDE.md. Gradle executes what the change invalidated
+   and no-ops the rest, which is both faster than it sounds and wider than any
+   module you would have named. For non-Kotlin targets, run whatever check
+   exercises them (`deno fmt --check`, the script's own tests, etc.).
 
 ## Phase 5 — Verify & land
 

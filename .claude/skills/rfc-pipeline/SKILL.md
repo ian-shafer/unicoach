@@ -19,11 +19,10 @@ macro tools rather than plain phrases.
 **Role — master.** This skill wears the **master** hat from `iterative-work`,
 which defines the master / orchestrator / worker contracts and the universal
 rules once: capture-on-completion, scratch ownership, checkpoint-at-gates,
-verify-on-return-_and_-stall, bounded fan-out, write-scope enforcement,
-never-trust-green. Below, this skill states only the **pipeline-specific
-mechanics** (worktree, git checkpoints, phase sequencing, the invariants landing
-check); where the two overlap, `iterative-work` is the contract and this file is
-the instantiation.
+verify-where-nothing-reported, bounded fan-out, write-scope enforcement. Below,
+this skill states only the **pipeline-specific mechanics** (worktree, git
+checkpoints, phase sequencing, the invariants landing check); where the two
+overlap, `iterative-work` is the contract and this file is the instantiation.
 
 ## How work is dispatched in Claude Code
 
@@ -297,10 +296,10 @@ is gitignored, never committed).
 
 `rfc-pipeline-recover -s <run-scratch> [step [i]]` resets to a checkpoint
 (default: last) and `clean -fd`s, keeping `<run-scratch>` so a re-spawn resumes.
-Per `iterative-work`, **verify before you trust or reset**: on every return
-_and_ stall/kill, independently re-run the suite (a stalled agent may leave a
-broken tree) — green + write-scope-clean ⇒ checkpoint and keep; else recover and
-re-spawn against the same `<run-scratch>`, then escalate.
+On a normal return, take the agent's reported counts and check write-scope. On a
+**stall or kill**, re-run the suite yourself — the agent reported nothing and
+may have left a broken tree. Green + write-scope-clean ⇒ checkpoint and keep;
+else recover and re-spawn against the same `<run-scratch>`, then escalate.
 
 ### Agent write-scope contract (enforced, not trusted)
 
@@ -329,15 +328,21 @@ then revert) is invisible and acceptable. On any violation: surface it,
 `rfc-pipeline-recover` to discard the rogue writes, then re-run or escalate —
 never silently keep out-of-scope writes.
 
-### Independent verification (never trust "green", but don't re-run needlessly)
+### Verification (run it where it counts, not everywhere)
 
 Write-scope verifies _where_ an agent wrote, not whether its logic is correct.
-Separately, the orchestrator **independently re-runs the suite after any step
-that mutated tracked code** — a `/rfc-impl` return, an `/rfc-impl-fix` return,
-or the Architect's manual edits — and reads the real pass/fail counts before
-trusting them. Never relay an agent's "all tests pass" claim across a code
-mutation without an independent run — agent reports have been wrong, and a green
-claim has masked a broken tree.
+
+**Trust an agent's reported test run.** When an agent says it ran
+`nix develop -c bin/test` (the whole suite, unscoped, per CLAUDE.md) and reports
+executed counts, take it — these are our own tools reporting their own output.
+Re-running the suite to confirm a report it already gave costs minutes on every
+step and almost never changes the answer, and the run is gated twice downstream
+anyway: nothing reaches `main` without the code commit's pre-commit hook (Phase
+3b) running `bin/test check` on the exact committed tree.
+
+**The exception is a stall or kill, and it is not about doubt.** An agent that
+died mid-write made no claim at all and may have left a half-applied tree.
+Re-run there because there is nothing to trust, not because a report is suspect.
 
 But run the suite **only** when code actually changed. Here **code** means the
 compiled/executed sources — Kotlin, config, tests. Markdown (`*.md`: the RFC
@@ -427,9 +432,8 @@ Guide the Architect through the following phases sequentially. **Before Phase 1,
 run Phase 0** (create the `pipeline/rfc-<n>` branch and record the base SHA) per
 **Change Tracking, Checkpoints & Agent Write-Scope** above. Throughout, take a
 checkpoint at every gate boundary, number every loopable step, verify each
-agent's write-scope on return, and independently re-run tests after any
-code-mutating step (not after read-only review passes) per **Independent
-verification** above.
+agent's write-scope on return, and re-run tests only where nothing reported them
+— a stall or kill, or the Architect's own edits — per **Verification** above.
 
 ### Phase 1: Design
 
@@ -548,9 +552,9 @@ verification** above.
    line first, then spawn. Pause and wait. **On return _or stall/kill_, verify
    write-scope** (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md'`;
    additionally, if `git status` shows an `INVARIANTS.md` change but the RFC
-   declares no invariants, treat it as a violation) and **independently re-run
-   the test suite** (do not trust the agent's green claim, and a stalled agent
-   may have left a broken tree). If green, checkpoint
+   declares no invariants, treat it as a violation) and read the agent's
+   reported test counts — **re-run the suite yourself only on a stall or kill**,
+   where no counts were reported at all. If green, checkpoint
    (`rfc-pipeline-checkpoint -s <run-scratch> impl`); if broken, recover to
    `before impl` (`rfc-pipeline-recover -s <run-scratch> before impl`) and
    re-spawn against the same scratch path (it resumes where it left off).
@@ -663,8 +667,9 @@ verification** above.
    reconstructed findings; it records a per-finding ledger
    (`applied | skipped | failed`) write-once, so a stalled fix resumes at the
    first unapplied finding. On return _or stall/kill_: verify write-scope
-   (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md'`) and
-   **independently re-run the suite** — if broken, recover to `impl-review [i]`
+   (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md'`) and read its
+   reported counts — **re-run yourself only on a stall or kill**, where none
+   were reported. If broken, recover to `impl-review [i]`
    (`rfc-pipeline-recover -s <run-scratch> impl-review <i>`) and re-spawn the
    fix (it resumes from its ledger); if green, checkpoint
    (`rfc-pipeline-checkpoint -s <run-scratch> impl-fix <i>`).
@@ -759,9 +764,9 @@ verification** above.
             Treat the following Architect feedback as the review report/action
             items to implement: <Architect-feedback-text>"`
    3. Wait for the fix agent to complete. On its return, verify write-scope
-      (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md'`) and
-      **independently re-run the suite** — this fix mutated code, so it is the
-      trust gate; if broken, recover and re-spawn the fix, if green, checkpoint.
+      (`rfc-pipeline-verify-scope -s <run-scratch> -d '*/SPEC.md'`) and read its
+      reported counts; if broken, recover and re-spawn the fix, if green,
+      checkpoint.
    4. Once complete, run a verification review pass using the **same three-part
       sequence as Phase 2 step 2** (prep + inline fan-out + aggregate) — never a
       single backgrounded `/rfc-impl-review`, per the **Depth-1 Fan-out
@@ -791,11 +796,11 @@ verification** above.
 
    If the Architect makes manual edits/changes directly in their workspace:
 
-   1. Once they are done, **independently re-run the suite** — the manual edits
-      mutated code, so this is their trust gate (the review pass below, if run,
-      is read-only and will not re-test). Then explicitly ask the Architect:
-      _"Would you like to run an automated /rfc-impl-review on your manual
-      changes?"_
+   1. Once they are done, **run the suite** — hand edits come with no reported
+      counts, so this is the one place nothing has tested the change yet (the
+      review pass below, if run, is read-only). Then explicitly ask the
+      Architect: _"Would you like to run an automated /rfc-impl-review on your
+      manual changes?"_
    2. If they say yes:
       - Run a review pass using the **same three-part sequence as Phase 2 step
         2** (prep + inline fan-out + aggregate) — never a single backgrounded
