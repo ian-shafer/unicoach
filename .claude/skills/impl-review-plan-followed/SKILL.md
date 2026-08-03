@@ -58,5 +58,5 @@ Follow the output instructions in your prompt. If it gives none, use
 Lens-specific fields:
 
 - **RFC says**: the plan step verbatim.
-- **Code**: `<file>:<line>` — one sentence on what is missing or different (or
-  "no evidence in the diff").
+- **Code**: `<file>:<line>` then a fenced `kotlin` excerpt, then one sentence on
+  what is missing or different (or "no evidence in the diff").

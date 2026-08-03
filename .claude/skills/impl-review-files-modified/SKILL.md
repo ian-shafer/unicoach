@@ -48,4 +48,6 @@ Follow the output instructions in your prompt. If it gives none, use
 Lens-specific fields:
 
 - **RFC says**: the `## Files Modified` entry verbatim (or "not listed").
-- **Code**: `<path>` — one sentence on which direction it breaks.
+- **Code**: `<path>` and one sentence on which direction it breaks. This lens
+  finds files, not lines, so there is nothing to excerpt — omit the fenced block
+  rather than padding it with an arbitrary snippet.

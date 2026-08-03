@@ -70,4 +70,5 @@ Follow the output instructions in your prompt. If it gives none, use
 Lens-specific fields:
 
 - **RFC says**: nothing — name the sections you searched.
-- **Code**: `<file>:<line>` — one sentence on what was added.
+- **Code**: `<file>:<line>` then a fenced `kotlin` excerpt, then one sentence on
+  what was added.

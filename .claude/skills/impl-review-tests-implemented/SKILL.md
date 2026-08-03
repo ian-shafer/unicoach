@@ -69,5 +69,5 @@ Follow the output instructions in your prompt. If it gives none, use
 Lens-specific fields:
 
 - **RFC says**: the test spec verbatim.
-- **Code**: `<file>:<line>` — one sentence on what goes unverified (or "no such
-  test").
+- **Code**: `<file>:<line>` then a fenced `kotlin` excerpt, then one sentence on
+  what goes unverified (or "no such test").

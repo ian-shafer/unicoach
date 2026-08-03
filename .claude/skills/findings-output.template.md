@@ -16,24 +16,38 @@ fallback when a prompt says nothing, and what a standalone invocation gets.
 
 ## Template
 
-```markdown
+````markdown
 # Review Report: <lens name>
 
 **Verdict:** 🟢 PASS / 🔴 FAIL / ⚪ N/A
 
 ## Findings
 
-- **<one-line title>**
-  - **Assessment**: 20–40 words — your case for why this matters, in your own
-    voice.
-  - **RFC says**: the verbatim excerpt _(RFC-conformance lenses only; omit
-    otherwise)_.
-  - **Code**: `<file>:<line>` — the offending lines, one sentence on what is
-    wrong.
-  - **Options**:
-    1. **(RECOMMENDED)** the literal change to apply — one-line reason.
-    2. the literal change. _(2..n in descending preference)_
+### <one-line title>
+
+<20–40 word assessment — your case for why this matters, in your own voice.>
+
+**RFC says** — <the verbatim excerpt> _(RFC-conformance lenses only; omit
+otherwise)_
+
+**Code** — `<file>:<line>`
+
+```<lang>
+<the offending lines, verbatim>
 ```
+
+<one sentence on what is wrong>
+
+**Options**
+
+1. **(RECOMMENDED)** — <one-line reason>
+
+   ```<lang>
+   <the literal replacement>
+   ```
+
+2. <as above, 2..n in descending preference>
+````
 
 Emit `**Verdict:** 🟢 PASS` with no findings when the lens is satisfied, and
 `⚪ N/A` when it does not apply to this change. Never stay silent — a lens that
@@ -46,10 +60,19 @@ returns nothing is indistinguishable from one that never ran.
   reader needs, and it is the clearest evidence of whether the lens reasons
   well. Under 20 words has not made an argument; over 40 is the verbosity this
   format exists to prevent.
-- **Code** — `file:line` always. A finding whose subject cannot be located is
-  not actionable.
+- **Code** — `file:line` always; a finding whose subject cannot be located is
+  not actionable. **Put the offending lines in a fenced block, never inline in a
+  sentence.** Prose studded with backticked fragments is unreadable at exactly
+  the moment the reader is trying to see the code, and it loses the indentation
+  and line structure that make the defect visible. Tag the fence with the
+  language inferred from the file extension — `kotlin`, `sql`, `swift`, `bash`,
+  `yaml`, `markdown` — so it actually highlights; an untagged fence renders as
+  grey text. When a finding spans two sites, repeat the `file:line` + fence pair
+  rather than merging them into one block.
 - **Options** — at least two, each carrying the **actual code**, not a
-  description of it, ordered by descending preference. **Option 1 is the
+  description of it, ordered by descending preference. Fence the replacement the
+  same way whenever it is more than a short fragment: an option is something a
+  fixer applies verbatim, so it has to be readable as code. **Option 1 is the
   recommendation**; there is no separate recommendation line, because one can
   name an option that does not exist and it lets the ranking of 2..n go
   unstated. Option 1 is what a fixer applies by default, so a lens that will not

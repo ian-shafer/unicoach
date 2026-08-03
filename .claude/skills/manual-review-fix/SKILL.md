@@ -257,18 +257,45 @@ choice is above it, in full.
 
 Four blocks, in this order. Tier 0:
 
-```
+````
 **<id>** <one-line title> — `<skill>`
 
 > <the reviewer's 20–40 word assessment, verbatim>
 
-- **RFC says** — <verbatim excerpt>
-- **Code** — `<file>:<line>`, the offending lines, one sentence on what is
-  wrong
-- **Options** — ranked; 1 is **(RECOMMENDED)** with a one-line reason
+**RFC says** — <verbatim excerpt>
+
+**Code** — `<file>:<line>`
+
+```<lang>
+<the offending lines, verbatim>
 ```
 
+<one sentence on what is wrong>
+
+**Options**
+
+1. **(RECOMMENDED)** — <one-line reason>
+
+   ```<lang>
+   <the literal replacement>
+   ```
+
+2. <2..n in descending preference>
+````
+
 Tiers 1–3 drop **RFC says**; **Code** carries the subject.
+
+**Code goes in a fenced, language-tagged block — never inline in a sentence.**
+`file:line` labels it; the code itself sits in a fence tagged from the file
+extension (`kotlin`, `sql`, `swift`, `bash`, `yaml`) so it is syntax
+highlighted. A paragraph studded with backticked fragments is unreadable at the
+one moment the operator is trying to read code, and it destroys the indentation
+and line breaks that make the defect visible. Fence an option's replacement the
+same way whenever it is more than a short fragment.
+
+When a finding names two sites — the usual shape for a duplication or
+abstraction lens — give each its own `file:line` label and its own fence.
+Merging them into one block implies a contiguity that is not there.
 
 The **assessment leads** and is blockquoted, because it is the reviewer arguing
 its case and that argument is what the operator is really judging — both about

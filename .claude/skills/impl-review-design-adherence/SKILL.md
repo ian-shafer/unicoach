@@ -64,4 +64,5 @@ Follow the output instructions in your prompt. If it gives none, use
 Lens-specific fields:
 
 - **RFC says**: the declaration verbatim.
-- **Code**: `<file>:<line>` — one sentence on how it deviates.
+- **Code**: `<file>:<line>` then a fenced `kotlin` excerpt, then one sentence on
+  how it deviates.
