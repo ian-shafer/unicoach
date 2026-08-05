@@ -2,6 +2,7 @@ package ed.unicoach.admin.render
 
 import ed.unicoach.admin.DisplayConfig
 import ed.unicoach.admin.engine.FieldType
+import ed.unicoach.common.money.Nanodollars
 import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
 import kotlinx.html.a
@@ -97,6 +98,12 @@ private val cellRenderLog = LoggerFactory.getLogger("ed.unicoach.admin.CellRende
  * - [FieldType.UUID]: a compacted UUID id (RFC 83) — an ellipsis plus the last
  *   [AdminDisplay.idTailChars] characters, with the full value carried in a hover
  *   `title` and a click-to-copy button. A blank value renders nothing.
+ * - [FieldType.CURRENCY_NANO_USD]: the stored nano-dollar (1e-9 USD) integer
+ *   (RFC 108) formatted as human-readable USD at 6 decimal places, carrying the
+ *   raw nano-dollar integer as a hover `title`. A blank value renders nothing; a
+ *   value that does not parse as a non-negative `Long`, or otherwise fails to
+ *   format, is logged at WARN and surfaced as raw text (defensive — never
+ *   throws), mirroring [renderTimestampValue].
  * - all other types: the raw text.
  */
 fun FlowContent.renderValue(
@@ -110,8 +117,39 @@ fun FlowContent.renderValue(
     FieldType.BOOL -> renderBoolValue(value, display)
     FieldType.JSON -> renderJsonValue(value)
     FieldType.UUID -> renderIdValue(value, display)
+    FieldType.CURRENCY_NANO_USD -> renderCurrencyValue(value)
     FieldType.TEXT, FieldType.MULTILINE, FieldType.INT, FieldType.ENUM -> +value
   }
+}
+
+/**
+ * The shared "parse the cell string or fall back to raw text" skeleton every
+ * typed cell body ([renderJsonValue], [renderTimestampValue],
+ * [renderCurrencyValue]) delegates to, so the WARN-and-fallback shape is
+ * written once rather than re-derived per type. [parse] attempts to turn
+ * [value] into a [T], returning a failed [Result] carrying the root-cause
+ * [Throwable] rather than collapsing it to `null` — the caller wraps a
+ * throwing step in `runCatching { ... }` (or synthesizes a descriptive
+ * [Throwable] for a non-throwing rejection, as [renderCurrencyValue]'s
+ * not-a-number case does) so this helper's WARN carries the exact cause. On
+ * failure, logs a WARN naming [typeLabel], the raw [value], and the cause,
+ * then renders [value] as-is. Otherwise dispatches the parsed [T] to [render]
+ * for the type's actual markup. Defensive by construction — never throws,
+ * regardless of what [parse] rejects.
+ */
+private fun <T> FlowContent.renderParsedOrRaw(
+  value: String,
+  typeLabel: String,
+  parse: (String) -> Result<T>,
+  render: FlowContent.(T) -> Unit,
+) {
+  parse(value).fold(
+    onSuccess = { parsed -> render(parsed) },
+    onFailure = { cause ->
+      cellRenderLog.warn("Unparseable {} value rendered as raw text: [{}]", typeLabel, value, cause)
+      +value
+    },
+  )
 }
 
 /**
@@ -119,18 +157,17 @@ fun FlowContent.renderValue(
  * syntax-highlighted tree inside a `pre.json-pretty` element. The `<pre>` wraps to
  * the available width (see `Layout.STYLES`), and each token — key, string, number,
  * boolean, null, punctuation — carries a `json-*` class for coloring. A value that
- * does not parse as JSON is logged at WARN and surfaced as raw text (defensive —
- * never throws, emits no `<pre>`), mirroring the [renderTimestampValue] fallback.
+ * does not parse as JSON is logged at WARN and surfaced as raw text via
+ * [renderParsedOrRaw] (defensive — never throws, emits no `<pre>`).
  */
 private fun FlowContent.renderJsonValue(value: String) {
-  val root =
-    runCatching { Json.parseToJsonElement(value) }
-      .getOrElse { error ->
-        cellRenderLog.warn("Unparseable JSON value rendered as raw text: [{}]", value, error)
-        +value
-        return
-      }
-  pre("json-pretty") { renderJsonElement(root, "") }
+  renderParsedOrRaw(
+    value,
+    "JSON",
+    parse = { runCatching { Json.parseToJsonElement(it) } },
+  ) { root ->
+    pre("json-pretty") { renderJsonElement(root, "") }
+  }
 }
 
 /**
@@ -276,26 +313,58 @@ private fun FlowContent.renderIdValue(
  * in [AdminDisplay.zone], carrying the same instant as a full ISO-8601 offset
  * datetime in [AdminDisplay.zone] ([TITLE_FORMAT]) as a hover `title`. A value
  * that does not parse as an [Instant] is logged at WARN and surfaced as raw text
- * (defensive — never throws).
+ * via [renderParsedOrRaw] (defensive — never throws).
  */
 private fun FlowContent.renderTimestampValue(
   value: String,
   display: AdminDisplay,
 ) {
-  val parsed = runCatching { Instant.parse(value) }
-  val instant = parsed.getOrNull()
-  if (instant == null) {
-    cellRenderLog.warn(
-      "Unparseable TIMESTAMP value rendered as raw text: [{}]",
-      value,
-      parsed.exceptionOrNull(),
-    )
-    +value
-  } else {
+  renderParsedOrRaw(
+    value,
+    "TIMESTAMP",
+    parse = { runCatching { Instant.parse(it) } },
+  ) { instant ->
     val zoned = instant.atZone(display.zone)
     span {
       title = TITLE_FORMAT.format(zoned)
       +DATE_FORMAT.format(zoned)
+    }
+  }
+}
+
+/**
+ * The parsed, ready-to-render form of a [FieldType.CURRENCY_NANO_USD] cell: the
+ * validated [Nanodollars] (for the hover `title`) alongside its
+ * already-formatted USD string (for the visible text) — carried together since
+ * [renderParsedOrRaw]'s `render` step needs both. Keeps [Nanodollars] itself
+ * through to render rather than re-carrying its raw `Long`, mirroring how
+ * [renderTimestampValue] keeps [Instant] through to its own `render` step.
+ */
+private data class ParsedCurrency(
+  val nanodollars: Nanodollars,
+  val usd: String,
+)
+
+/**
+ * The [FieldType.CURRENCY_NANO_USD] body: the stored nano-dollar integer
+ * formatted as USD at 6 decimal places, with the raw integer as a hover
+ * `title`. A value that does not parse as a `Long`, or parses negative and so
+ * fails [Nanodollars]'s non-negative guard, is logged at WARN and surfaced as
+ * raw text via [renderParsedOrRaw] (defensive — never throws).
+ */
+private fun FlowContent.renderCurrencyValue(value: String) {
+  renderParsedOrRaw(
+    value,
+    "CURRENCY_NANO_USD",
+    parse = { raw ->
+      raw.toLongOrNull()?.let { rawNanodollars ->
+        runCatching { Nanodollars.of(rawNanodollars) }.map { ParsedCurrency(it, it.toUsdString()) }
+      } ?: Result.failure(NumberFormatException("not a Long: [$raw]"))
+    },
+  ) { parsed ->
+    span {
+      title = "${parsed.nanodollars.value} nano-USD"
+      +parsed.usd
     }
   }
 }

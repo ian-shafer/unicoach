@@ -309,6 +309,14 @@ internal fun PreparedStatement.setLongOrNull(
   if (value != null) setLong(index, value) else setNull(index, Types.BIGINT)
 }
 
+/** Binds a nullable Boolean, NULL as `Types.BOOLEAN`. */
+internal fun PreparedStatement.setBooleanOrNull(
+  index: Int,
+  value: Boolean?,
+) {
+  if (value != null) setBoolean(index, value) else setNull(index, Types.BOOLEAN)
+}
+
 /** Binds a nullable [JsonElement] into a `?::jsonb` slot, NULL as `Types.OTHER`. */
 internal fun PreparedStatement.setJsonbOrNull(
   index: Int,

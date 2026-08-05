@@ -19,6 +19,16 @@ enum class FieldType {
    * compacted.
    */
   UUID,
+
+  /**
+   * A nano-dollar (1e-9 USD) integer value (RFC 108), rendered as
+   * human-readable USD at 6 decimal places with the raw nano-dollar integer
+   * carried in a hover `title` — the same raw-value-in/formatted-display-out
+   * convention as [TIMESTAMP]. Exact via [java.math.BigDecimal]; a value that
+   * does not parse as a `Long` renders as raw text (defensive, mirrors
+   * [TIMESTAMP]'s parse-failure fallback).
+   */
+  CURRENCY_NANO_USD,
 }
 
 /**

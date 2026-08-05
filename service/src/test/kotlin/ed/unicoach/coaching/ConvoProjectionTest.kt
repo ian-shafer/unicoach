@@ -89,6 +89,7 @@ class ConvoProjectionTest {
       outputTokens = null,
       cacheReadTokens = null,
       cacheWriteTokens = null,
+      cost = null,
       latencyMs = 0,
     )
 

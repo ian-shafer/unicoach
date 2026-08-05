@@ -15,6 +15,7 @@ import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.CoachingService
 import ed.unicoach.coaching.CollegeChatTool
 import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.LlmPriceBook
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.college.CollegeSearchService
@@ -114,6 +115,18 @@ fun startServer(
 
   val database = Database(dbConfig)
 
+  // The frozen-cost price book (RFC 108). Built beside the sibling *Config.from
+  // calls; requireExplicitlyPriced fails boot if the wired coaching model has no
+  // explicit entry (an env override to an unpriced id), rather than silently
+  // metering it at the default rate.
+  val priceBook =
+    LlmPriceBook
+      .from(config)
+      .getOrThrow()
+  priceBook
+    .requireExplicitlyPriced(listOf(coachingConfig.model))
+    .getOrThrow()
+
   // The raw ChatProvider is named only here, wrapped immediately in the
   // LlmCallLog seam (RFC 106); no caller receives the pure provider.
   val llmCallLog =
@@ -122,6 +135,7 @@ fun startServer(
         .fromConfig(ChatConfig.from(config).getOrThrow())
         .getOrThrow(),
       database,
+      priceBook,
     )
 
   val queueService = QueueService(database)

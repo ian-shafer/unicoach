@@ -1,5 +1,7 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.money.Nanodollars
+import ed.unicoach.db.models.FrozenCost
 import ed.unicoach.db.models.LlmCall
 import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.LlmFailureKind
@@ -97,6 +99,8 @@ object LlmCallsDao {
     $respAlias.output_tokens AS ${JOINED_RESPONSE_PREFIX}output_tokens,
     $respAlias.cache_read_tokens AS ${JOINED_RESPONSE_PREFIX}cache_read_tokens,
     $respAlias.cache_write_tokens AS ${JOINED_RESPONSE_PREFIX}cache_write_tokens,
+    $respAlias.cost_nanodollars AS ${JOINED_RESPONSE_PREFIX}cost_nanodollars,
+    $respAlias.cost_is_estimated AS ${JOINED_RESPONSE_PREFIX}cost_is_estimated,
     $respAlias.latency_ms AS ${JOINED_RESPONSE_PREFIX}latency_ms,
     $rawAlias.response_id AS ${JOINED_RAW_PREFIX}response_id,
     $rawAlias.created_at AS ${JOINED_RAW_PREFIX}created_at,
@@ -134,6 +138,10 @@ object LlmCallsDao {
       outputTokens = rs.getInt("${columnPrefix}output_tokens").takeUnless { rs.wasNull() },
       cacheReadTokens = rs.getInt("${columnPrefix}cache_read_tokens").takeUnless { rs.wasNull() },
       cacheWriteTokens = rs.getInt("${columnPrefix}cache_write_tokens").takeUnless { rs.wasNull() },
+      cost =
+        rs.getLong("${columnPrefix}cost_nanodollars").takeUnless { rs.wasNull() }?.let { nanodollars ->
+          FrozenCost(nanodollars = Nanodollars.of(nanodollars), estimated = rs.getBoolean("${columnPrefix}cost_is_estimated"))
+        },
       latencyMs = rs.getInt("${columnPrefix}latency_ms"),
     )
 
@@ -263,9 +271,10 @@ object LlmCallsDao {
       INSERT INTO llm_responses (
         request_id, outcome, content, model_resolved, stop_reason,
         provider_request_id, reason,
-        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        cost_nanodollars, cost_is_estimated, latency_ms
       )
-      VALUES (?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       RETURNING *
       """.trimIndent()
     val insertedResult =
@@ -283,7 +292,9 @@ object LlmCallsDao {
           stmt.setIntOrNull(9, input.outputTokens)
           stmt.setIntOrNull(10, input.cacheReadTokens)
           stmt.setIntOrNull(11, input.cacheWriteTokens)
-          stmt.setInt(12, input.latencyMs)
+          stmt.setLongOrNull(12, input.cost?.nanodollars?.value)
+          stmt.setBooleanOrNull(13, input.cost?.estimated)
+          stmt.setInt(14, input.latencyMs)
         },
         map = { mapResponse(it) },
         mapError = ::mapCallError,

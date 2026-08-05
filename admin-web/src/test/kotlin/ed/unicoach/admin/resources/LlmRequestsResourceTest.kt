@@ -1,7 +1,9 @@
 package ed.unicoach.admin.resources
 
 import ed.unicoach.admin.AdminTestSupport
+import ed.unicoach.common.money.Nanodollars
 import ed.unicoach.db.dao.LlmCallsDao
+import ed.unicoach.db.models.FrozenCost
 import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.LlmRequestId
 import io.ktor.client.request.get
@@ -86,6 +88,39 @@ class LlmRequestsResourceTest {
       assertTrue(body.contains("222"), "Output tokens must render")
       assertTrue(body.contains("456"), "Latency must render")
       assertTrue(body.contains("completed"), "Outcome must render")
+    }
+
+  @Test
+  fun `call detail renders the frozen cost as dollars, nano-dollars, and the estimated flag`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val llmRequestId = AdminTestSupport.seedLlmRequest()
+      AdminTestSupport.seedLlmResponse(
+        llmRequestId,
+        cost = FrozenCost(nanodollars = Nanodollars.of(3_000_000), estimated = false),
+      )
+
+      val id = llmRequestId.value.toString()
+      val body = client().get("/llm-request/$id") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(body.contains("0.003000"), "costNanodollars must render as USD (nano-dollars / 1e9 at 6 dp)")
+      assertTrue(body.contains("3000000"), "the raw nano-dollar integer must render in the hover title")
+      assertTrue(body.contains("Cost Estimated"), "the estimated-flag field label must render")
+    }
+
+  @Test
+  fun `call detail renders a NULL-cost call with blank cost fields, without error`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val llmRequestId = AdminTestSupport.seedLlmRequest()
+      AdminTestSupport.seedLlmResponse(llmRequestId, cost = null)
+
+      val id = llmRequestId.value.toString()
+      val detail = client().get("/llm-request/$id") { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, detail.status, "a NULL-cost call must render without error")
+      val body = detail.bodyAsText()
+      assertTrue(body.contains("Cost (USD)"), "the cost field label still renders (blank cell)")
     }
 
   @Test

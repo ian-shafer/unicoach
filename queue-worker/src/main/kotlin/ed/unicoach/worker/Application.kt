@@ -5,6 +5,7 @@ import ed.unicoach.auth.VerificationEmailRenderer
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.LlmPriceBook
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionHandler
 import ed.unicoach.coaching.extraction.ExtractionService
@@ -52,6 +53,12 @@ fun main() {
   val synthesisConfig = SynthesisConfig.from(config).getOrThrow()
   val fitLensConfig = FitLensConfig.from(config).getOrThrow()
 
+  // The frozen-cost price book (RFC 108). Built OUTSIDE the enabled-pass gate so
+  // a malformed llmPricing block fails boot even when every LLM pass is disabled;
+  // the explicit-pricing check on the enabled models runs inside the gate below,
+  // where the enabled subset is known.
+  val priceBook = LlmPriceBook.from(config).getOrThrow()
+
   // The worker is the sole transmitter of outbound email (RFC 96), so it is the
   // only process that constructs an EmailProvider/EmailService. verifyUrlBase
   // derives from service.conf, already loaded here.
@@ -75,12 +82,18 @@ fun main() {
       // fit-lens (RFC 98) is enabled, wrap it in the LlmCallLog seam (RFC 106) so
       // no handler receives the raw provider, then register each under its switch.
       if (extractionConfig.enabled || synthesisConfig.enabled || fitLensConfig.enabled) {
+        // Only the enabled passes' models must be explicitly priced; an env
+        // override to an unpriced id fails boot rather than metering at the
+        // default rate (RFC 108).
+        priceBook.requireExplicitlyPriced(enabledModels(extractionConfig, synthesisConfig, fitLensConfig)).getOrThrow()
+
         val llmCallLog =
           LlmCallLog(
             ChatProviderFactory
               .fromConfig(ChatConfig.from(config).getOrThrow())
               .getOrThrow(),
             database,
+            priceBook,
           )
 
         if (extractionConfig.enabled) {
@@ -123,3 +136,16 @@ fun main() {
     database.close()
   }
 }
+
+// Which LLM models are currently enabled, across the extraction, synthesis, and
+// fit-lens passes — the subset that must be explicitly priced (RFC 108).
+private fun enabledModels(
+  extraction: ExtractionConfig,
+  synthesis: SynthesisConfig,
+  fitLens: FitLensConfig,
+): List<String> =
+  buildList {
+    if (extraction.enabled) add(extraction.model)
+    if (synthesis.enabled) add(synthesis.model)
+    if (fitLens.enabled) add(fitLens.model)
+  }

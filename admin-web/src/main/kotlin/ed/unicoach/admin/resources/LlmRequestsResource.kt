@@ -82,6 +82,12 @@ object LlmRequestsResource : AdminResource<LlmCall, LlmRequestId> {
       AdminField("modelResolved", "Model Resolved", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("cacheReadTokens", "Cache Read Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("cacheWriteTokens", "Cache Write Tokens", FieldType.INT, editable = false, sensitive = false, inList = false),
+      // Frozen per-call cost (RFC 108). Detail-only (the list is at its column
+      // budget). costIsEstimated qualifies the cost; both blank on a call with
+      // no frozen cost. Rendered as USD via CURRENCY_NANO_USD (the raw
+      // nano-dollar integer surfaces in the cell's hover title).
+      AdminField("costNanodollars", "Cost (USD)", FieldType.CURRENCY_NANO_USD, editable = false, sensitive = false, inList = false),
+      AdminField("costIsEstimated", "Cost Estimated", FieldType.BOOL, editable = false, sensitive = false, inList = false),
       AdminField(
         "providerRequestId",
         "Provider Request ID",
@@ -156,6 +162,14 @@ object LlmRequestsResource : AdminResource<LlmCall, LlmRequestId> {
       "modelResolved" to outcomeCells.modelResolved,
       "cacheReadTokens" to (response?.cacheReadTokens?.toString() ?: ""),
       "cacheWriteTokens" to (response?.cacheWriteTokens?.toString() ?: ""),
+      "costNanodollars" to (
+        response
+          ?.cost
+          ?.nanodollars
+          ?.value
+          ?.toString() ?: ""
+      ),
+      "costIsEstimated" to (response?.cost?.estimated?.toString() ?: ""),
       "providerRequestId" to (response?.providerRequestId ?: ""),
       "reason" to outcomeCells.reason,
       "rawPayload" to (row.raw?.payload?.toString() ?: ""),

@@ -1,5 +1,8 @@
 package ed.unicoach.coaching
 
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatMessage
 import ed.unicoach.chat.ChatProvider
@@ -41,6 +44,9 @@ class LlmCallLogTest {
     private lateinit var connection: Connection
     private lateinit var database: Database
 
+    /** The real service.conf price book (RFC 108): "claude-sonnet-4-6" priced, everything else default. */
+    private lateinit var priceBook: LlmPriceBook
+
     @JvmStatic
     @BeforeAll
     fun setupAll() {
@@ -50,6 +56,7 @@ class LlmCallLogTest {
           .getOrThrow()
       val dbConfig = DatabaseConfig.from(config).getOrThrow()
       database = Database(dbConfig)
+      priceBook = LlmPriceBook.from(config).getOrThrow()
       connection = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
     }
 
@@ -84,12 +91,15 @@ class LlmCallLogTest {
       maxTokens = 1024,
     )
 
-  private fun completed(text: String = "hi"): ChatEvent.Completed =
+  private fun completed(
+    text: String = "hi",
+    modelResolved: String = "claude-sonnet-4-6-99",
+  ): ChatEvent.Completed =
     ChatEvent.Completed(
       response =
         ChatResponse(
           content = json("""[{"type":"text","text":"$text"}]"""),
-          modelResolved = "claude-sonnet-4-6-99",
+          modelResolved = modelResolved,
           stopReason = "end_turn",
           usage = TokenUsage(inputTokens = 3, outputTokens = 5, cacheReadTokens = 1, cacheWriteTokens = 0),
           providerRequestId = "req_123",
@@ -135,8 +145,9 @@ class LlmCallLogTest {
 
   private fun log(
     provider: ChatProvider,
+    priceBook: LlmPriceBook = LlmPriceBook.EMPTY,
     nanoTime: () -> Long = System::nanoTime,
-  ): LlmCallLog = LlmCallLog(provider, database, nanoTime)
+  ): LlmCallLog = LlmCallLog(provider, database, priceBook, nanoTime = nanoTime)
 
   private fun responseRowCount(): Int =
     connection.createStatement().use { st ->
@@ -376,5 +387,94 @@ class LlmCallLogTest {
       log(ScriptedProvider(terminal = completed())).record(request)
       log(ScriptedProvider(terminal = ChatEvent.Rejected("x", null, null))).record(request)
       assertEquals(2, responseRowCount())
+    }
+
+  // ---------------------------------------------------------------------------
+  // Frozen cost (RFC 108)
+  // ---------------------------------------------------------------------------
+
+  /** Captures WARNs the [exercise] emits via a root-logger [ListAppender]. */
+  private fun captureWarns(exercise: () -> Unit): List<String> {
+    val root = org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as Logger
+    val appender = ListAppender<ILoggingEvent>().apply { start() }
+    root.addAppender(appender)
+    try {
+      exercise()
+    } finally {
+      root.detachAppender(appender)
+    }
+    return appender.list.filter { it.level.levelStr == "WARN" }.map { it.formattedMessage }
+  }
+
+  @Test
+  fun `a completed call freezes the price book cost with estimated false`() =
+    runBlocking {
+      // TokenUsage(3,5,1,0) @ claude-sonnet-4-6 (input 3000, output 15000, cacheRead 300 nano/token):
+      // 3*3000 + 5*15000 + 1*300 = 84_300.
+      val logged = log(ScriptedProvider(terminal = completed(modelResolved = "claude-sonnet-4-6")), priceBook).record(request)
+      val resp = LlmCallsDao.findCallByRequestId(session, logged.llmRequestId).getOrThrow().response!!
+      assertEquals(84_300L, resp.cost?.nanodollars?.value)
+      assertEquals(false, resp.cost?.estimated)
+      // Tokens and cost agree on the same row.
+      assertEquals(3, resp.inputTokens)
+    }
+
+  @Test
+  fun `cost keys on the resolved model, not the requested model`() =
+    runBlocking {
+      // Direction 1: request an UNPRICED model, resolve to the PRICED one. Cost is
+      // the resolved model's — proving the key is model_resolved, not model_requested.
+      val unpricedRequest = request.copy(model = "claude-sonnet-4-6-unpriced-request")
+      val forward =
+        log(ScriptedProvider(terminal = completed(modelResolved = "claude-sonnet-4-6")), priceBook).record(unpricedRequest)
+      val forwardResp = LlmCallsDao.findCallByRequestId(session, forward.llmRequestId).getOrThrow().response!!
+      assertEquals(84_300L, forwardResp.cost?.nanodollars?.value)
+      assertEquals(false, forwardResp.cost?.estimated)
+
+      // Mirror: request the PRICED model, resolve to an UNKNOWN one. Cost falls back
+      // to the default rate, estimated = true (also the unknown-resolved-model case).
+      // default rates: input 10000, output 50000, cacheRead 1000 → 3*10000+5*50000+1*1000 = 281_000.
+      val mirror =
+        log(ScriptedProvider(terminal = completed(modelResolved = "claude-sonnet-4-6-unknown-resolved")), priceBook).record(request)
+      val mirrorResp = LlmCallsDao.findCallByRequestId(session, mirror.llmRequestId).getOrThrow().response!!
+      assertEquals(281_000L, mirrorResp.cost?.nanodollars?.value)
+      assertEquals(true, mirrorResp.cost?.estimated)
+    }
+
+  @Test
+  fun `an unrecognized resolved model WARNs naming the model`() =
+    runBlocking {
+      val warns =
+        captureWarns {
+          runBlocking {
+            log(ScriptedProvider(terminal = completed(modelResolved = "claude-sonnet-4-6-unknown-resolved")), priceBook).record(request)
+          }
+        }
+      assertTrue(
+        warns.any { it.contains("claude-sonnet-4-6-unknown-resolved") },
+        "the default-priced write must WARN naming the unrecognized model_resolved, got: $warns",
+      )
+    }
+
+  @Test
+  fun `a failure terminal freezes cost NULL, not zero`() =
+    runBlocking {
+      val terminal = ChatEvent.Rejected(reason = "bad request", providerRequestId = null, rawPayload = null)
+      val logged = log(ScriptedProvider(terminal = terminal), priceBook).record(request)
+      val resp = LlmCallsDao.findCallByRequestId(session, logged.llmRequestId).getOrThrow().response!!
+      assertNull(resp.cost)
+    }
+
+  @Test
+  fun `a repair write freezes cost 0`() =
+    runBlocking {
+      val requestId =
+        database.withConnection { s ->
+          LlmCallsDao.appendRequest(s, newRequestOf("log")).getOrThrow().id
+        }
+      log(ScriptedProvider(terminal = completed(modelResolved = "claude-sonnet-4-6")), priceBook).writeCancelledIfAbsent(requestId)
+      val resp = LlmCallsDao.findCallByRequestId(session, requestId).getOrThrow().response!!
+      assertEquals(0L, resp.cost?.nanodollars?.value, "a never-ran repair provably spent nothing")
+      assertEquals(false, resp.cost?.estimated)
     }
 }

@@ -44,6 +44,7 @@ import ed.unicoach.db.models.ExtractionRun
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.FitLensRun
 import ed.unicoach.db.models.FitSuggestion
+import ed.unicoach.db.models.FrozenCost
 import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewClaim
@@ -288,6 +289,7 @@ object AdminTestSupport {
     outputTokens: Int? = 50,
     cacheReadTokens: Int? = 0,
     cacheWriteTokens: Int? = 0,
+    cost: FrozenCost? = null,
     latencyMs: Int = 123,
     rawPayload: kotlinx.serialization.json.JsonElement? = JsonArray(emptyList()),
   ) = runBlocking {
@@ -303,6 +305,7 @@ object AdminTestSupport {
             outputTokens = outputTokens,
             cacheReadTokens = cacheReadTokens,
             cacheWriteTokens = cacheWriteTokens,
+            cost = cost,
             latencyMs = latencyMs,
           ),
           rawPayload = rawPayload,

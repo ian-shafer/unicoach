@@ -1,5 +1,6 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.common.money.Nanodollars
 import java.time.Instant
 
 /**
@@ -8,9 +9,13 @@ import java.time.Instant
  * [outcome] is the sealed [LlmCallOutcome] ADT — a `Completed` carries
  * content/model/stop-reason, a `Failed` the kind + reason. The four token
  * columns and [providerRequestId] are orthogonal to the outcome (a failed or
- * cancelled call can still carry partial usage), so they stay flat; [latencyMs]
- * is always recorded. The DAO reconstructs [outcome] from the flat `outcome`
- * column plus its dependent columns.
+ * cancelled call can still carry partial usage), so they stay flat.
+ * [cost] is the frozen dollar cost of this call (RFC 108) as a single
+ * [FrozenCost] — nanodollars and whether it was priced at the default rate
+ * never disagree, so they are carried as one nullable value rather than an
+ * independently-nullable pair; it is `null` on a call whose cost could not be
+ * computed. [latencyMs] is always recorded. The DAO reconstructs [outcome] from
+ * the flat `outcome` column plus its dependent columns.
  */
 data class LlmResponse(
   override val id: LlmResponseId,
@@ -22,6 +27,7 @@ data class LlmResponse(
   val outputTokens: Int?,
   val cacheReadTokens: Int?,
   val cacheWriteTokens: Int?,
+  val cost: FrozenCost?,
   val latencyMs: Int,
 ) : Identifiable<LlmResponseId>,
   Created

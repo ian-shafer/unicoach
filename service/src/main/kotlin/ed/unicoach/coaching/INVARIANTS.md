@@ -53,6 +53,25 @@ process crash. The guarantee is a write-path discipline (it deliberately races
 structured concurrency), not a DB constraint, so a refactor that removes either
 half can silently break it.
 
+## Per-call cost is frozen at the write boundary
+
+**Rule:** A call's `cost_nanodollars` MUST be computed at an `LlmCallLog` write
+site from the price book in effect then, and MUST NOT be recomputed or
+backfilled from the current price book afterward. A cost that cannot be computed
+— the call's token usage is unknown — MUST freeze `NULL`; `0` MUST be written
+only for a call that provably spent nothing.
+
+**Why:** The meter gates a live session — spend-to-date is read on every request
+to decide whether coaching may continue — so if a past call's cost can change, a
+rate rise silently inflates every prior call and locks students out of coaching
+they already earned, with no change in their behavior and no way for support to
+explain it. Freezing makes what a student has "spent" depend only on what they
+did, not on what a provider later charged. The same logic forbids the softer
+failure: writing `0` where spend is merely unknown reads a billed call as free,
+where `NULL` keeps that gap visible and countable (`uncostedCalls`). The
+append-only guard blocks a same-row rewrite, but a re-derivation writing a _new_
+aggregate elsewhere is not DB-preventable — this is a write-path discipline.
+
 ## All rows of one tool-use excursion share one `turn_id`
 
 **Rule:** Every `convo_requests` row of one logical user turn — the

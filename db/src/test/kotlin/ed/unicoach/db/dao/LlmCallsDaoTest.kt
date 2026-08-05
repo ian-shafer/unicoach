@@ -1,5 +1,7 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.money.Nanodollars
+import ed.unicoach.db.models.FrozenCost
 import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.LlmFailureKind
 import ed.unicoach.db.models.LlmRequestId
@@ -112,6 +114,23 @@ class LlmCallsDaoTest {
       stopReason = "end_turn",
     )
 
+  /** A minimal completed [NewLlmResponse] whose only varying inputs are the request id and the two cost fields. */
+  private fun newResponse(
+    requestId: LlmRequestId,
+    cost: FrozenCost?,
+  ): NewLlmResponse =
+    NewLlmResponse(
+      requestId = requestId,
+      outcome = completed(),
+      providerRequestId = null,
+      inputTokens = null,
+      outputTokens = null,
+      cacheReadTokens = null,
+      cacheWriteTokens = null,
+      cost = cost,
+      latencyMs = 1,
+    )
+
   @Test
   fun `appendRequest round-trips the full envelope byte-equal`() {
     val appended = LlmCallsDao.appendRequest(session, newRequest()).getOrThrow()
@@ -195,6 +214,7 @@ class LlmCallsDaoTest {
             outputTokens = 20,
             cacheReadTokens = 5,
             cacheWriteTokens = 0,
+            cost = null,
             latencyMs = 1500,
           ),
           rawPayload = raw,
@@ -225,6 +245,7 @@ class LlmCallsDaoTest {
             outputTokens = null,
             cacheReadTokens = null,
             cacheWriteTokens = null,
+            cost = null,
             latencyMs = 42,
           ),
           rawPayload = null,
@@ -253,6 +274,7 @@ class LlmCallsDaoTest {
               outputTokens = null,
               cacheReadTokens = null,
               cacheWriteTokens = null,
+              cost = null,
               latencyMs = 1,
             ),
             rawPayload = null,
@@ -343,13 +365,13 @@ class LlmCallsDaoTest {
     LlmCallsDao
       .appendResponse(
         session,
-        NewLlmResponse(req.id, completed(), null, null, null, null, null, 1),
+        newResponse(req.id, cost = null),
         rawPayload = null,
       ).getOrThrow()
     val second =
       LlmCallsDao.appendResponse(
         session,
-        NewLlmResponse(req.id, completed(), null, null, null, null, null, 1),
+        newResponse(req.id, cost = null),
         rawPayload = null,
       )
     assertTrue(second.exceptionOrNull() is ConstraintViolationException, "got ${second.exceptionOrNull()}")
@@ -375,7 +397,7 @@ class LlmCallsDaoTest {
     LlmCallsDao
       .appendResponse(
         session,
-        NewLlmResponse(r1.id, completed(), null, null, null, null, null, 1),
+        newResponse(r1.id, cost = null),
         rawPayload = buildJsonObject { put("x", 1) },
       ).getOrThrow()
     val r2 = LlmCallsDao.appendRequest(session, newRequest()).getOrThrow()
@@ -397,7 +419,7 @@ class LlmCallsDaoTest {
       LlmCallsDao
         .appendResponse(
           session,
-          NewLlmResponse(req.id, completed(), null, null, null, null, null, 1),
+          newResponse(req.id, cost = null),
           rawPayload = buildJsonObject { put("x", 1) },
         ).getOrThrow()
 
@@ -414,5 +436,90 @@ class LlmCallsDaoTest {
       val ex = runCatching { connection.createStatement().use { it.execute(sql) } }.exceptionOrNull()
       assertTrue(ex is java.sql.SQLException && ex.sqlState == "P0001", "for [$sql] got $ex")
     }
+  }
+
+  @Test
+  fun `cost columns round-trip on the response`() {
+    // A priced call: both cost columns persist and read back (RFC 108).
+    val reqPriced = LlmCallsDao.appendRequest(session, newRequest()).getOrThrow()
+    val priced =
+      LlmCallsDao
+        .appendResponse(
+          session,
+          newResponse(reqPriced.id, cost = FrozenCost(nanodollars = Nanodollars.of(4200L), estimated = false)),
+          rawPayload = null,
+        ).getOrThrow()
+    assertEquals(4200L, priced.cost?.nanodollars?.value)
+    assertEquals(false, priced.cost?.estimated)
+    val fetchedPriced = LlmCallsDao.findCallByRequestId(session, reqPriced.id).getOrThrow().response!!
+    assertEquals(4200L, fetchedPriced.cost?.nanodollars?.value)
+    assertEquals(false, fetchedPriced.cost?.estimated)
+
+    // An uncosted call: both columns read back null.
+    val reqNull = LlmCallsDao.appendRequest(session, newRequest()).getOrThrow()
+    LlmCallsDao
+      .appendResponse(session, newResponse(reqNull.id, cost = null), rawPayload = null)
+      .getOrThrow()
+    val fetchedNull = LlmCallsDao.findCallByRequestId(session, reqNull.id).getOrThrow().response!!
+    assertNull(fetchedNull.cost)
+
+    // The estimated flag round-trips true.
+    val reqEst = LlmCallsDao.appendRequest(session, newRequest()).getOrThrow()
+    LlmCallsDao
+      .appendResponse(
+        session,
+        newResponse(reqEst.id, cost = FrozenCost(nanodollars = Nanodollars.of(999L), estimated = true)),
+        rawPayload = null,
+      ).getOrThrow()
+    assertEquals(
+      true,
+      LlmCallsDao
+        .findCallByRequestId(session, reqEst.id)
+        .getOrThrow()
+        .response!!
+        .cost
+        ?.estimated,
+    )
+  }
+
+  /**
+   * Runs a raw `llm_responses` INSERT with the given cost-column [tail] appended to
+   * a minimal `rejected` row (cost columns are orthogonal to the outcome, so a
+   * short failure row exercises the cost CHECKs), binding `?` = the request id.
+   * Returns any thrown exception.
+   */
+  private fun rawCostInsert(
+    requestId: LlmRequestId,
+    columns: String,
+    values: String,
+  ): Throwable? =
+    runCatching {
+      val sql =
+        "INSERT INTO llm_responses (request_id, outcome, reason, latency_ms, $columns) " +
+          "VALUES (?, 'rejected', 'r', 5, $values)"
+      connection.prepareStatement(sql).use { stmt ->
+        stmt.setLong(1, requestId.value)
+        stmt.executeUpdate()
+      }
+    }.exceptionOrNull()
+
+  @Test
+  fun `negative cost is rejected by the non-negative CHECK`() {
+    val req = LlmCallsDao.appendRequest(session, newRequest()).getOrThrow()
+    val ex = rawCostInsert(req.id, "cost_nanodollars, cost_is_estimated", "-1, false")
+    assertTrue(ex is java.sql.SQLException && ex.sqlState == "23514", "got $ex")
+  }
+
+  @Test
+  fun `cost and its estimated flag must be present together`() {
+    // A cost with no estimated flag, and an estimated flag with no cost, each
+    // violate llm_responses_cost_estimated_check.
+    val reqA = LlmCallsDao.appendRequest(session, newRequest()).getOrThrow()
+    val costNoFlag = rawCostInsert(reqA.id, "cost_nanodollars", "100")
+    assertTrue(costNoFlag is java.sql.SQLException && costNoFlag.sqlState == "23514", "got $costNoFlag")
+
+    val reqB = LlmCallsDao.appendRequest(session, newRequest()).getOrThrow()
+    val flagNoCost = rawCostInsert(reqB.id, "cost_is_estimated", "false")
+    assertTrue(flagNoCost is java.sql.SQLException && flagNoCost.sqlState == "23514", "got $flagNoCost")
   }
 }

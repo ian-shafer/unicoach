@@ -380,4 +380,34 @@ class CellRenderTest {
     val html = render { renderValue(uuid, FieldType.UUID, custom) }
     assertTrue(html.contains("…" + uuid.takeLast(12)), "Expected the last 12 chars, got: $html")
   }
+
+  @Test
+  fun `currency value renders as USD with the raw nanodollar integer as a hover title`() {
+    val html = render { renderValue("3000000", FieldType.CURRENCY_NANO_USD, display) }
+    assertTrue(html.contains("0.003000"), "Expected the formatted USD amount, got: $html")
+    assertTrue(html.contains("title=\"3000000 nano-USD\""), "Expected the raw nanodollar title, got: $html")
+  }
+
+  @Test
+  fun `blank currency value renders nothing`() {
+    val html = render { renderValue("", FieldType.CURRENCY_NANO_USD, display) }
+    assertEquals("<div></div>", html.trim())
+  }
+
+  @Test
+  fun `non-numeric currency value renders the raw text without throwing`() {
+    val html = render { renderValue("not-a-number", FieldType.CURRENCY_NANO_USD, display) }
+    assertTrue(html.contains("not-a-number"), "Expected raw text fallback, got: $html")
+    assertFalse(html.contains("title="), "Unparseable currency must not emit a hover title, got: $html")
+  }
+
+  @Test
+  fun `negative currency value renders the raw text without throwing`() {
+    // Nanodollars.of enforces a non-negative invariant; a stored value that
+    // parses as a negative Long must degrade to the raw-text fallback rather
+    // than propagate that constructor's IllegalArgumentException.
+    val html = render { renderValue("-1", FieldType.CURRENCY_NANO_USD, display) }
+    assertTrue(html.contains("-1"), "Expected raw text fallback, got: $html")
+    assertFalse(html.contains("title="), "Unparseable currency must not emit a hover title, got: $html")
+  }
 }

@@ -185,6 +185,7 @@ class ConvosDaoTest {
           outputTokens = 20,
           cacheReadTokens = 0,
           cacheWriteTokens = 0,
+          cost = null,
           latencyMs = 123,
         ),
         rawPayload = raw,

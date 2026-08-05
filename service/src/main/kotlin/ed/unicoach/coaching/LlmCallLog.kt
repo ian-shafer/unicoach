@@ -5,9 +5,11 @@ import ed.unicoach.chat.ChatMessage
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.TokenUsage
+import ed.unicoach.common.money.Nanodollars
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.LlmCallsDao
+import ed.unicoach.db.models.FrozenCost
 import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.LlmFailureKind
 import ed.unicoach.db.models.LlmRequestId
@@ -50,9 +52,12 @@ import kotlinx.serialization.json.JsonElement
 class LlmCallLog(
   private val provider: ChatProvider,
   private val database: Database,
+  private val priceBook: LlmPriceBook = LlmPriceBook.EMPTY,
   private val nanoTime: () -> Long = System::nanoTime,
 ) {
   companion object {
+    private val log = org.slf4j.LoggerFactory.getLogger(LlmCallLog::class.java)
+
     /** The canonical reason recorded for a cancellation (no ChatEvent terminal carries one). */
     const val CANCELLED_REASON = "client disconnected before terminal"
 
@@ -226,6 +231,11 @@ class LlmCallLog(
               outputTokens = null,
               cacheReadTokens = null,
               cacheWriteTokens = null,
+              // The provider call never ran (both callers repair an opener whose cold
+              // flow will never be collected), so nothing was billed: cost 0 is a true,
+              // exactly-measured statement, and it keeps routine mid-tool-loop
+              // disconnects out of the uncostedCalls signal (RFC 108).
+              cost = FrozenCost(nanodollars = Nanodollars.of(0), estimated = false),
               // latency_ms = 0 is the true provider streaming duration for a call
               // whose stream was never collected (the provider call never ran); the
               // outcome disambiguates this from a genuinely instant completed call.
@@ -285,6 +295,8 @@ class LlmCallLog(
     start: Long,
   ) {
     val latencyMs = ((nanoTime() - start) / 1_000_000).toInt()
+    val frozenCost = costOf(outcome, usage)
+    warnIfEstimatedDefault(outcome, frozenCost)
     database.withConnection { session ->
       LlmCallsDao
         .appendResponse(
@@ -297,10 +309,48 @@ class LlmCallLog(
             outputTokens = usage?.outputTokens,
             cacheReadTokens = usage?.cacheReadTokens,
             cacheWriteTokens = usage?.cacheWriteTokens,
+            cost = frozenCost,
             latencyMs = latencyMs,
           ),
           rawPayload = rawPayload,
         ).getOrThrow()
+    }
+  }
+
+  /**
+   * Freezes this call's dollar cost from the [priceBook] in effect now (RFC 108),
+   * or `null` when it cannot be computed. A cost exists only on the `Completed`
+   * arm — the sole arm carrying both a resolved model and (possibly) [usage];
+   * every failure/cancellation/defect arm reaches here with `usage = null` and
+   * no resolved model, so its cost freezes `NULL`. On a `Completed` whose
+   * `usage` is present, [LlmPriceBook.costOf] still returns `null` when a base
+   * token count is unreported (an unquantifiable billed call → `uncostedCalls`).
+   * Pure: no side effects. See [warnIfEstimatedDefault] for the estimated-model
+   * observability signal.
+   */
+  private fun costOf(
+    outcome: LlmCallOutcome,
+    usage: TokenUsage?,
+  ): FrozenCost? =
+    when (outcome) {
+      is LlmCallOutcome.Completed -> usage?.let { priceBook.costOf(outcome.modelResolved, it) }
+      is LlmCallOutcome.Failed -> null
+    }
+
+  /**
+   * WARNs once, naming the unrecognized model, when [cost] was priced at the
+   * price book's default rate — the sole detection path for a provider-side
+   * rename that would otherwise silently over-charge every student's meter.
+   */
+  private fun warnIfEstimatedDefault(
+    outcome: LlmCallOutcome,
+    cost: FrozenCost?,
+  ) {
+    if (cost?.estimated == true && outcome is LlmCallOutcome.Completed) {
+      log.warn(
+        "Priced LLM call at the default rate: resolved model [{}] is absent from the price book (cost is an estimate).",
+        outcome.modelResolved,
+      )
     }
   }
 
