@@ -40,12 +40,12 @@ when spent ≥ allowed).
 The metering substrate already exists. RFC 106 landed a provider-agnostic call
 log — `llm_requests` (carries `model_requested`), `llm_responses` (carries
 `model_resolved` + `input_tokens` / `output_tokens` / `cache_read_tokens` /
-`cache_write_tokens` + `outcome`), both append-only — and a
-`student_llm_token_usage` view that attributes token spend to `student_id`
-across all four call owners (`convo_requests → convos`, `extraction_runs`,
-`synthesis_runs`, `fit_lens_runs`). A standing invariant already guarantees
-every token on a student is recorded at the call boundary, including
-failed/retried calls.
+`cache_write_tokens` + `outcome`), both append-only — and a per-student
+token-attribution view across all four call owners (`convo_requests → convos`,
+`extraction_runs`, `synthesis_runs`, `fit_lens_runs`); RFC 108 has since lowered
+that view to the per-call `student_llm_cost` spine read by `StudentLlmCostDao`.
+A standing invariant already guarantees every token on a student is recorded at
+the call boundary, including failed/retried calls.
 
 What is missing is **dollars** and **a time window**:
 
@@ -55,7 +55,7 @@ What is missing is **dollars** and **a time window**:
   effect then, so historical cost is immutable even as prices change. It is a
   new column on the response row (or its sibling), not a second ledger — the log
   stays the single source of spend truth.
-- **Period-windowed aggregation.** The existing view is lifetime-cumulative.
+- **Period-windowed aggregation.** The original view was lifetime-cumulative.
   Budget enforcement needs both: **lifetime** cost (free-tier meter) and cost
   **within `[period_start, period_end)`** (subscription meter), summed from
   `llm_responses.created_at`.
@@ -216,12 +216,12 @@ Status axis:
 Slugs are the stable handles; `rfc/NN-*.md` numbers are assigned at design time
 and backfilled here.
 
-| slug                  | description                                                                                                                                                                              | status  | rfc |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | --- |
-| `llm-cost-ledger`     | extend the RFC 106 call log with per-call dollar cost (`model → price` table, cost frozen at the write boundary) and a period-windowed per-student cost read; completes `token-ledger`   | planned | —   |
-| `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `COACHING_BUDGET_EXHAUSTED` (402), background passes → skip | planned | —   |
-| `subscriptions-apple` | StoreKit 2 purchase + App Store Server API verification + `subscriptions` table + Notifications V2 webhook (queue-processed) + `productId → y × price` budget mapping                    | planned | —   |
-| `paywall-ios`         | iOS paywall + block screen + subscribe flow + Restore Purchases + `UserAuthState` gate; abstract "coaching used" usage bar (percentage, never dollars)                                   | planned | —   |
+| slug                  | description                                                                                                                                                                              | status      | rfc |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
+| `llm-cost-ledger`     | extend the RFC 106 call log with per-call dollar cost (`model → price` table, cost frozen at the write boundary) and a period-windowed per-student cost read; completes `token-ledger`   | implemented | 108 |
+| `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `COACHING_BUDGET_EXHAUSTED` (402), background passes → skip | planned     | —   |
+| `subscriptions-apple` | StoreKit 2 purchase + App Store Server API verification + `subscriptions` table + Notifications V2 webhook (queue-processed) + `productId → y × price` budget mapping                    | planned     | —   |
+| `paywall-ios`         | iOS paywall + block screen + subscribe flow + Restore Purchases + `UserAuthState` gate; abstract "coaching used" usage bar (percentage, never dollars)                                   | planned     | —   |
 
 ## Dependency tree
 
@@ -295,8 +295,9 @@ cost and a period-windowed per-student cost read — a model→price table (per-
 input/output/cache-read/cache-write); per-call cost computed and frozen at the
 LlmCallLog write boundary (price-at-time-of-call); a per-student cost read
 exposing both a lifetime total (free-tier meter) and a [period_start,
-period_end) windowed total (subscription meter), extending or replacing the
-student_llm_token_usage view as fits.
+period_end) windowed total (subscription meter). As landed: the lifetime token
+view was replaced by the per-call `student_llm_cost` spine, read by the new
+`StudentLlmCostDao` (lifetime + windowed).
 Already landed (build on these): none — first node. RFC 106 is in place.
 Out of scope: the budget gate/enforcement, subscriptions, StoreKit, iOS. Backend
 only.
