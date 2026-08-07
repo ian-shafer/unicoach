@@ -63,9 +63,8 @@ description: Opinionated philosophical constraints to apply when writing code.
   fails loudly on divergence), or REFERENCED without restating it. This is a
   strong default, not a strict invariant: unenforced coupling is occasionally
   unavoidable — then it must be a considered decision, documented at the
-  coupling site naming what it depends on and what breaks (and, if the guarantee
-  is durable and critical, recorded in the directory's INVARIANTS.md). Applies
-  to every artifact in the repository — code, config, comments, docs.
+  coupling site naming what it depends on and what breaks. Applies to every
+  artifact in the repository — code, config, comments, docs.
 - **Target Scale Restraints**: De-prioritize Load Engineering: Assume a maximum
   peak load of 1 query per second (QPS) unless otherwise specified. YAGNI
   Enforcement: Do not introduce caching layers, message buses, or async

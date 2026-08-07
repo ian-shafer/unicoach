@@ -124,34 +124,26 @@ that.
 
 ## Invariants
 
-A documented directory may carry a sibling **`INVARIANTS.md`** — prescriptive
-only. It records the **few** durable guarantees that must remain true as the
-code evolves (typically 0–5; **often none, in which case the file is simply
-absent**), each as a **Rule** plus a **Why**. A true invariant is prescriptive,
-not type-enforced, breaks something real if violated, and is specific to this
-directory — most "musts" do **not** qualify. It is **human-gated** (kept small
-and reviewed).
-
-Invariants originate at **RFC design time**: when a design introduces or changes
-a durable guarantee, the RFC states it in an explicit **Invariants** section
-(rule + why + target directory), the human reviews it as part of the RFC, and
-`/rfc-impl` copies it into the target directory's `INVARIANTS.md` alongside the
-code change. There is no separate sync or distillation step.
+**Retired 2026-08-06 (Ian's call).** Directories used to also carry a
+durable-guarantee **`INVARIANTS.md`** — 0–5 Rule + Why statements, declared in
+an RFC's `## Invariants` section (human-reviewed at RFC approval) and landed by
+`/rfc-impl` alongside the code. The mechanism added ceremony that mostly
+confused the LLM rather than preventing real defects. No RFC declares one going
+forward, and `/rfc-impl` no longer lands them. Existing `INVARIANTS.md` files
+are left in place as historical documentation — unmaintained, unverified, at
+most a hint — read the code instead. `rfc/INVARIANTS.md` is the one exception:
+it isn't a code guarantee, it's the RFC-immutability rule itself, cited under
+**RFCs** above.
 
 Historical note: directories used to also carry a descriptive, LLM-managed
 `SPEC.md`. Those were removed — read the code instead. Older RFCs may reference
 `SPEC.md` files; that is no different from an RFC referencing a code file that
 was subsequently deleted.
 
-Treat `INVARIANTS.md` as reviewed intent, not proof: the **code + applied
-migrations remain the source of truth**. When a file and the code disagree, the
-code wins.
-
-The repo-root [`ASYNC_WORK.md`](ASYNC_WORK.md) is a sibling of the per-directory
-`INVARIANTS.md` files: it records the few cross-cutting rules for async-capable
-work (queue-by-default, and a required enqueue as part of the request
-transaction) that govern every request-handling surface rather than one
-directory (RFC 96).
+The repo-root [`ASYNC_WORK.md`](ASYNC_WORK.md) predates this retirement and
+stands on its own: it records the few cross-cutting rules for async-capable work
+(queue-by-default, and a required enqueue as part of the request transaction)
+that govern every request-handling surface rather than one directory (RFC 96).
 
 ## Transient pipeline output
 

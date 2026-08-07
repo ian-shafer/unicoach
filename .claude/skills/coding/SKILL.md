@@ -97,15 +97,28 @@ description: Global baseline philosophies for programming safety and data integr
   hardcode magic numbers, lengths, or system constraints deep inside function
   bodies. Extract these values to function parameters, constants, or config
   passed into constructors.
+- **Reuse hardened primitives**: Strongly prefer reusing a correct,
+  already-available implementation of a notoriously-hard primitive —
+  randomness/UUIDs, cryptography and hashing, parsers and serializers (JSON,
+  HTTP, shell, CSV, date/time), and encoding/escaping (shell quoting, URL/HTML
+  escaping, base64) — over hand-rolling one. Hand-rolled versions are subtly
+  incomplete: they handle the obvious cases (a backslash, a quote) and silently
+  mangle the rest (control characters, non-ASCII, nested quotes), producing
+  malformed output only on the inputs no one tested. Reach for the library the
+  environment already ships; hand-roll only with a stated reason (no correct
+  implementation is reachable).
 - **Semantic Output Streams (Error and Fatal Routing)**: NEVER pipe echo
   directly to >&2 inside script execution logic for error messages. You MUST
   utilize the globally integrated log-error "My Message" method defined in
   bin/functions explicitly for all error payloads. For errors that immediately
   terminal the script, you MUST use the fatal "My Message" method.
-- **Single Level of Abstraction**: Decompose procedural logic so that each
-  function operates at exactly one level of abstraction. High-level
-  orchestrators (like `when` blocks) must strictly delegate to focused private
-  executors rather than mixing inline logic.
+- **Single Level of Abstraction**: Decompose procedural logic so that every code
+  block — a script's top-level body, a function, a method, a class — operates at
+  exactly one level of abstraction. High-level orchestrators (a `when` block, a
+  service method, or a script's main flow) must read as a short sequence of
+  same-level named steps and strictly delegate detail to focused executors, so a
+  reader grasps the whole shape at a glance and descends into a named step only
+  for detail. Applies recursively, at every level.
 - **Use Standard Verbs**: Function names should be limited to domain nouns
   (e.g., "user", "session") and standard, recognizable verbs like create,
   decrypt, delete, encrypt, execute, generate, get, handle, list, map, set, or

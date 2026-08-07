@@ -69,21 +69,8 @@ Verify the RFC contains these exact required headers:
 - `## Executive Summary`
 - `## Detailed Design`
 - `## Tests`
-- `## Invariants`
 - `## Implementation Plan`
 - `## Files Modified`
-
-For `## Invariants`, verify the mechanics: each declared invariant carries a
-**Rule**, a **Why**, and a **target directory**; when any are declared, the
-`Implementation Plan` includes the step landing them in each target directory's
-`INVARIANTS.md` and `Files Modified` lists those paths (flag broken linkage as
-`Major`). On substance, invariants are the Architect's call — they were stated
-by the human, and the human generally wants what they asked for. Review as an
-advisor, not a gatekeeper: use breadth of knowledge to flag an invariant that
-conflicts with an existing directory invariant or with the design itself, to
-sharpen ambiguous wording, or to suggest (as `Minor`) a durable guarantee the
-design plainly introduces but the section omits. `None.` is the common, correct
-content.
 
 Extra sections are permitted **only if they do not duplicate required-section
 content**. In particular, flag a standalone `Decisions`, `Rationale`,

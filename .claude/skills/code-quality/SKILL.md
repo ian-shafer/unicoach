@@ -71,11 +71,6 @@ of both the codified lesson and the code fix.
    - **Generative idiom** — guidance the generator reads while writing, not
      cleanly checkable → a baseline skill (`coding`, `kotlin-coding`,
      `general-design`, etc.).
-   - **Durable guarantee (invariant)** — a rule that must stay true as the code
-     evolves. Invariants are **human-gated** and originate at RFC design time
-     (see CLAUDE.md), so this loop does not write `INVARIANTS.md` directly:
-     propose the invariant to the user and route it through `/rfc-pipeline` so
-     it lands with the human review it requires.
 
 ## Phase 3 — Codify (update-first)
 
@@ -85,8 +80,8 @@ anything new, find the closest existing home for the principle and sharpen _it_:
 1. **Search first.** Look across the quality infrastructure for something that
    already owns this concern — an existing review lens (`code-review-*` /
    `design-review-*`), a baseline guidance skill (`coding`, `kotlin-coding`,
-   `general-design`), a process/orchestration skill, or a directory's
-   `INVARIANTS.md`. Grep the skills for adjacent language.
+   `general-design`), or a process/orchestration skill. Grep the skills for
+   adjacent language.
 2. **Update when one fits.** Extend the existing artifact: tighten its criteria,
    add the new ❌/✅ example, or broaden its scope. One principle per skill —
    keep the SRP; do not bundle unrelated rules into an existing lens just
@@ -109,9 +104,7 @@ anything new, find the closest existing home for the principle and sharpen _it_:
 1. Apply the pattern to the **named target only**. Do not sweep siblings here —
    the codebase-wide application is Phase 6.
 2. Honor the baseline skills (`coding`, `kotlin-coding`, `general-design`,
-   `shell-scripts` — whichever apply) and every touched directory's
-   **INVARIANTS.md**. Do not edit `INVARIANTS.md` — it is human-gated; if the
-   fix would affect an invariant, tell the user.
+   `shell-scripts` — whichever apply).
 3. Run the suite through the harness: `nix develop -c bin/test` — the whole
    thing, unscoped, per CLAUDE.md. Gradle executes what the change invalidated
    and no-ops the rest, which is both faster than it sounds and wider than any

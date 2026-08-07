@@ -2,7 +2,7 @@
 name: design-review-no-remote-breakage
 description: Reviews changes to ensure nothing in them can be silently broken by a change elsewhere — every dependency on something another artifact owns is derived, enforced, or referenced, and the rare unavoidable coupling is a considered, documented decision. Applies to code, configuration, and documentation alike.
 implementation_summary: >
-  **No Remote Breakage**: Do not write anything that a change elsewhere can silently break. Statically compiled code is the model: rename a function and every caller fails the build — breakage there is impossible to miss, so nobody worries about it. Seek guarantees of that strength everywhere else. Any dependency on something another artifact owns — a constant, count, default, list of members, format, port, path, ordering, behavior — must be DERIVED from the owner (import, compute, generate), ENFORCED (a test or build check that fails loudly on divergence), or REFERENCED without restating it. This is a strong default, not a strict invariant: unenforced coupling is occasionally unavoidable — then it must be a considered decision, documented at the coupling site naming what it depends on and what breaks (and, if the guarantee is durable and critical, recorded in the directory's INVARIANTS.md). Applies to every artifact in the repository — code, config, comments, docs.
+  **No Remote Breakage**: Do not write anything that a change elsewhere can silently break. Statically compiled code is the model: rename a function and every caller fails the build — breakage there is impossible to miss, so nobody worries about it. Seek guarantees of that strength everywhere else. Any dependency on something another artifact owns — a constant, count, default, list of members, format, port, path, ordering, behavior — must be DERIVED from the owner (import, compute, generate), ENFORCED (a test or build check that fails loudly on divergence), or REFERENCED without restating it. This is a strong default, not a strict invariant: unenforced coupling is occasionally unavoidable — then it must be a considered decision, documented at the coupling site naming what it depends on and what breaks. Applies to every artifact in the repository — code, config, comments, docs.
 ---
 
 # 🔍 Design Review: No Remote Breakage
@@ -54,10 +54,9 @@ in order of preference:
 Sometimes unenforced coupling is genuinely unavoidable — no shared source to
 derive from, no seam to test across. Then it must be a **considered decision,
 made visible**: document it at the coupling site (a comment naming the owner it
-depends on and what breaks when the owner changes), and if the guarantee is
-durable and critical, record it in the directory's `INVARIANTS.md`. What this
-review rejects is not the coupling itself but the **undocumented, unconsidered**
-copy — fragility nobody chose.
+depends on and what breaks when the owner changes). What this review rejects is
+not the coupling itself but the **undocumented, unconsidered** copy — fragility
+nobody chose.
 
 ### 3. What This Catches
 
@@ -95,11 +94,11 @@ copy — fragility nobody chose.
 ```markdown
 <!-- README.md -->
 
-This is the directory's one invariant — see INVARIANTS.md.
+There are three supported auth providers — see AuthProvider.kt.
 ```
 
-The count "one" is owned by `INVARIANTS.md`. The moment a second invariant lands
-there, this sentence is silently wrong.
+The count "three" is owned by `AuthProvider.kt`. The moment a fourth provider
+lands there, this sentence is silently wrong.
 
 ```kotlin
 // EmailConfig.kt — the public-web port is owned by public-web's config

@@ -56,10 +56,7 @@ because the change is built in its own worktree, off the committed `main` ref.
 
 1. Make the change, honoring the baseline skills (`coding`, `kotlin-coding`,
    `general-design`, `shell-scripts` — whichever apply to the touched files).
-2. Read every touched directory's **INVARIANTS.md** and keep its rules true —
-   but do **not** edit the file itself; it is human-gated. If the change affects
-   an invariant, tell the user rather than editing it. Never create a SPEC.md —
-   this codebase does not use them.
+2. Never create a SPEC.md — this codebase does not use them.
 3. Run the suite through the harness: `nix develop -c bin/test` — the whole
    thing, unscoped, per CLAUDE.md. Report the executed count as the record of
    what actually ran. A low count is not by itself a problem — Gradle no-ops

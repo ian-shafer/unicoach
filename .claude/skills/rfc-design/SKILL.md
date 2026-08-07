@@ -26,9 +26,8 @@ feature in the codebase.
 - **Supersede committed RFCs, never revise them** (the immutability rule — see
   `rfc/INVARIANTS.md`). Do NOT treat an earlier RFC's design as a fixed
   constraint to defend: designs still evolve, but the mechanism is a NEW,
-  higher-numbered RFC that carries the change into the code and, if a durable
-  guarantee changes, `INVARIANTS.md`. The only editable RFC is the uncommitted
-  draft you are writing.
+  higher-numbered RFC that carries the change into the code. The only editable
+  RFC is the uncommitted draft you are writing.
 - **Referencing other RFCs is fine when it adds value and understanding**, but
   design against the contract _as it lives in the code_ — a committed RFC is a
   point-in-time record that may already be stale. Older RFCs may cite
@@ -45,11 +44,6 @@ feature in the codebase.
   table definition is often the easier, declarative way to read that same
   applied state. When an RFC and the code disagree, the code wins; the design
   MUST follow current reality and note the divergence explicitly.
-- **Read every touched directory's `INVARIANTS.md` before designing changes
-  there.** Where a directory carries one, its few rules are human-reviewed
-  durable guarantees; a design that would violate one must either change or
-  explicitly declare the change in its own Invariants section (superseding the
-  rule is a human decision made at RFC review).
 - **Living Draft**: During the interview phases, you MUST maintain a 'living
   draft' of the RFC using artifacts or code blocks so the architect can see the
   state accumulating as you converse.
@@ -152,22 +146,11 @@ generate "fluff" or filler content just to fulfill a requirement.
   Handling/Edge Cases, and Dependencies.
 - `## Tests`: Covers what must be tested and how. This should be detailed and it
   should spec out every individual test that will be implemented.
-- `## Invariants`: The durable guarantees this design introduces or changes,
-  each as a **Rule** (one sentence, prescriptive), a **Why** (what breaks if
-  violated), and the **target directory** whose `INVARIANTS.md` will carry it. A
-  true invariant is prescriptive, not type-enforced, breaks something real if
-  violated, and is directory-specific — most "musts" do NOT qualify, so this
-  section is usually `None.` The Architect's approval of the RFC is the human
-  gate for these rules; implementation copies them into the target directories'
-  `INVARIANTS.md` (light stylistic editing is fine; the meaning must not
-  change).
 - `## Implementation Plan`: An ordered, step-by-step, detailed plan for how this
   RFC will be implemented. The coding agent will follow these steps exactly when
   it implements. Each step must represent an atomic, sequential, and locally
   verifiable unit of work. Each step must include a list of verification
-  commands to prove correctness. If the RFC's `Invariants` section declares any
-  invariants, the plan MUST include a step that adds each one to its target
-  directory's `INVARIANTS.md`.
+  commands to prove correctness.
 - `## Files Modified`: EVERY file that will be modified in the implementation
   phase must be listed. If a file is not listed in this section, it CAN NOT be
   modified in the implementation. Because implementing agents are strictly
@@ -175,9 +158,7 @@ generate "fluff" or filler content just to fulfill a requirement.
   generating this list. Actively search the codebase for routing files,
   dependency injection modules, configuration files, and test fixtures that will
   inevitably need to be updated. All files listed MUST use exact paths relative
-  to the project root to avoid ambiguity. If the `Invariants` section declares
-  any invariants, list each target directory's `INVARIANTS.md` here; do NOT list
-  an `INVARIANTS.md` the RFC declares nothing for.
+  to the project root to avoid ambiguity.
 
 ## The RFC Authoring Process
 

@@ -3,11 +3,12 @@
 Durable, cross-cutting rules for asynchronous work. These govern every
 request-handling surface (`rest-server`, `admin-web`, and future ones) rather
 than a single directory, so they live here at the repo root rather than in a
-per-directory `INVARIANTS.md`. They complement, and do not contradict, the
-`rest/routing/INVARIANTS.md` rule for best-effort side-effects: that rule
-governs _recoverable_ fire-and-forget work (extraction); these govern
-async-capable work in general, and _required_ side-effects (email) in
-particular.
+per-directory `INVARIANTS.md` (the per-directory mechanism is retired — see
+CLAUDE.md — but the existing files, including the one cited below, remain in
+place). They complement, and do not contradict, the `rest/routing/INVARIANTS.md`
+rule for best-effort side-effects: that rule governs _recoverable_
+fire-and-forget work (extraction); these govern async-capable work in general,
+and _required_ side-effects (email) in particular.
 
 Each is prescriptive and human-gated. Treat this file as reviewed intent, not
 proof: the code + applied migrations remain the source of truth.
