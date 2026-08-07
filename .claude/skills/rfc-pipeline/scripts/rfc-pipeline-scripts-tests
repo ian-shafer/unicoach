@@ -330,4 +330,116 @@ assert_success "land succeeds with no manual-review-fix scratch to archive" \
   fail_test "land fabricated an archive dir when there was nothing to archive"
 pass_test "land creates no archive dir when there is nothing to archive"
 
+echo ""
+echo "==== rfc-pipeline-record ===="
+
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+
+assert_success "record writes a new key" \
+  "$SCRIPTS/rfc-pipeline-record" -s "$scratch" RFC_NAME "Email verification"
+grep -q "^RFC_NAME=" "$scratch/state" || fail_test "RFC_NAME not written to the state file"
+pass_test "record persists the key in the state file"
+
+# The state file is `source`d by pl_load_state — a value with spaces must
+# survive that round-trip, and must not break the scripts that load state.
+loaded="$(source "$scratch/state" && echo "$RFC_NAME")"
+[ "$loaded" = "Email verification" ] || fail_test "sourced RFC_NAME mismatch: [$loaded]"
+pass_test "a spaced value round-trips through source"
+assert_success "scripts still load state after a spaced record (checkpoint smoke)" \
+  "$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" smoke
+
+"$SCRIPTS/rfc-pipeline-record" -s "$scratch" RFC_NAME "Renamed title"
+[ "$(grep -c '^RFC_NAME=' "$scratch/state")" -eq 1 ] || fail_test "re-record duplicated the key"
+loaded="$(source "$scratch/state" && echo "$RFC_NAME")"
+[ "$loaded" = "Renamed title" ] || fail_test "re-record did not replace the value: [$loaded]"
+pass_test "re-recording a key replaces its value without duplication"
+
+assert_failure "record refuses a claim-owned key" \
+  "$SCRIPTS/rfc-pipeline-record" -s "$scratch" BASE_SHA deadbeef
+assert_failure "record refuses a malformed (non-UPPER_SNAKE_CASE) key" \
+  "$SCRIPTS/rfc-pipeline-record" -s "$scratch" rfc_name x
+
+echo ""
+echo "==== rfc-pipeline-status ===="
+
+repo="$(fresh_repo)"
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^RUNS=0$" <<< "$out" || fail_test "expected RUNS=0 with no live runs"
+pass_test "status reports zero runs on a repo with no pipelines"
+
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^RUNS=1$" <<< "$out" || fail_test "expected RUNS=1 after claim"
+grep -q "^RFC_NUM=1$" <<< "$out" || fail_test "status did not include the run state"
+grep -q "^WORKTREE_DIRTY=false$" <<< "$out" || fail_test "fresh worktree reported dirty"
+grep -q "^LAST_CHECKPOINT_STEP=NONE$" <<< "$out" || fail_test "empty ledger not reported as NONE"
+grep -q "^RFC_FILE_DETECTED=NONE$" <<< "$out" || fail_test "expected no RFC file detected yet"
+pass_test "status reports a fresh claim's baseline facts"
+
+# Status runs from inside a pipeline worktree too (resolves the main checkout).
+out="$(cd "$root" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^RUNS=1$" <<< "$out" || fail_test "status from inside a worktree missed the run"
+pass_test "status works from inside a pipeline worktree"
+
+echo "draft" > "$root/rfc/1-thing.md"
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^RFC_FILE_DETECTED=rfc/1-thing.md$" <<< "$out" || fail_test "drafted RFC file not detected"
+grep -q "^WORKTREE_DIRTY=true$" <<< "$out" || fail_test "dirty worktree not detected"
+pass_test "status detects the drafted RFC file and a dirty tree"
+
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" design-review 1 >/dev/null
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^LAST_CHECKPOINT_STEP=design-review$" <<< "$out" || fail_test "last checkpoint step wrong"
+grep -q "^LAST_CHECKPOINT_I=1$" <<< "$out" || fail_test "last checkpoint counter wrong"
+grep -q "^LAST_CHECKPOINT_REACHABLE=true$" <<< "$out" || fail_test "live checkpoint reported unreachable"
+grep -q "^COMMITS_AHEAD_OF_BASE=1$" <<< "$out" || fail_test "commits-ahead count wrong"
+grep -q "^NON_CHECKPOINT_COMMITS=0$" <<< "$out" || fail_test "a checkpoint counted as non-checkpoint"
+pass_test "status reports the last checkpoint and the branch's commit shape"
+
+git -C "$root" branch "integration/$(basename "$root")-abc1234"
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^INTEGRATION_BRANCHES=integration/$(basename "$root")-abc1234$" <<< "$out" ||
+  fail_test "integration branch not surfaced"
+pass_test "status surfaces a waiting integration branch"
+git -C "$root" branch -D "integration/$(basename "$root")-abc1234" >/dev/null
+
+"$SCRIPTS/rfc-pipeline-squash" -s "$scratch"
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^HEAD_AT_BASE=true$" <<< "$out" || fail_test "post-squash HEAD_AT_BASE wrong"
+grep -q "^LAST_CHECKPOINT_REACHABLE=false$" <<< "$out" ||
+  fail_test "squashed-away checkpoint still reported reachable"
+pass_test "status flags the post-squash shape"
+
+git -C "$root" commit -qm "Real final commit"
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^NON_CHECKPOINT_COMMITS=1$" <<< "$out" || fail_test "final commit not counted"
+grep -q "^HEAD_AT_BASE=false$" <<< "$out" || fail_test "HEAD_AT_BASE stuck after the final commit"
+pass_test "status counts the Architect's final (non-checkpoint) commits"
+
+state2="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+[ "$(state_val "$state2" RFC_NUM)" = "2" ] || fail_test "second claim expected n=2"
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status")"
+grep -q "^RUNS=2$" <<< "$out" || fail_test "expected two live runs"
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status" -n 1)"
+grep -q "^RUNS=1$" <<< "$out" || fail_test "-n filter reported the wrong count"
+grep -q "^RFC_NUM=1$" <<< "$out" || fail_test "-n 1 did not select run 1"
+if grep -q "^RFC_NUM=2$" <<< "$out"; then fail_test "-n 1 leaked run 2's block"; fi
+pass_test "status -n filters to a single run"
+
+# A stale run whose recorded base commit no longer exists (history rewritten
+# since the claim) must be reported, not crash the range facts.
+scratch2="$(state_val "$state2" RUN_SCRATCH)"
+awk -F= 'BEGIN{OFS="="} $1=="BASE_SHA"{$2="0123456789abcdef0123456789abcdef01234567"} 1' \
+  "$scratch2/state" > "$scratch2/state.tmp" && mv "$scratch2/state.tmp" "$scratch2/state"
+out="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-status" -n 2)"
+grep -q "^BASE_SHA_RESOLVES=false$" <<< "$out" || fail_test "unresolvable base SHA not flagged"
+grep -q "^COMMITS_AHEAD_OF_BASE=NONE$" <<< "$out" || fail_test "range fact not NONE on a stale base"
+grep -q "^NON_CHECKPOINT_COMMITS=NONE$" <<< "$out" || fail_test "range fact not NONE on a stale base"
+pass_test "status flags a stale run whose base commit is gone"
+
 end_tests

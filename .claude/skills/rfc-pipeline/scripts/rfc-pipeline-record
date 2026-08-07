@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rfc-pipeline-record -s run-scratch KEY VALUE
+
+Upsert one KEY=VALUE fact into the run state file. Facts the orchestrator
+derives mid-run — RFC_NAME (the Sentence-case title from Phase 1) and RFC_FILE
+(the drafted rfc/<n>-*.md path) — die with the conversation unless persisted
+here; recording them is what lets a later session resume the run from disk
+alone (see the SKILL.md Startup section).
+
+VALUE is written shell-quoted, so values with spaces survive the `source` that
+loads the state. Re-recording a KEY replaces its previous value.
+
+Keys owned by rfc-pipeline-claim (RFC_NUM, BASE_SHA, CODEBASE_ROOT,
+RUN_SCRATCH, ORIGINAL_CHECKOUT, PIPELINE_BRANCH, BASE_BRANCH) are refused —
+rewriting one would corrupt the run's identity.
+
+Arguments:
+  KEY:    UPPER_SNAKE_CASE fact name (must match ^[A-Z][A-Z0-9_]*$)
+  VALUE:  the value to record
+
+Options:
+  -s run-scratch   The run-scratch dir holding this run's state (required).
+  -h               Help.
+EOF
+  exit "$exit_code"
+}
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+  s) RUN_SCRATCH="$OPTARG" ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[ -n "$RUN_SCRATCH" ] || help "Missing required -s run-scratch."
+if [ "$#" -ne 2 ]; then
+  help "Expected KEY VALUE, got [$#] argument(s)."
+fi
+
+KEY="$1"
+VALUE="$2"
+
+if ! [[ "$KEY" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+  help "Key [$KEY] must be UPPER_SNAKE_CASE (matching ^[A-Z][A-Z0-9_]*$)."
+fi
+
+for claim_key in RFC_NUM BASE_SHA CODEBASE_ROOT RUN_SCRATCH ORIGINAL_CHECKOUT PIPELINE_BRANCH BASE_BRANCH; do
+  if [ "$KEY" = "$claim_key" ]; then
+    fatal "Key [$KEY] is owned by rfc-pipeline-claim; refusing to rewrite it."
+  fi
+done
+
+pl_load_state "$RUN_SCRATCH"
+
+state_file="$(pl_state_file "$RUN_SCRATCH")"
+tmp_file="${state_file}.tmp"
+# Drop any previous value for KEY, keep everything else. `|| true` guards the
+# (impossible in practice) case of the filter emptying the file under `set -e`.
+grep -v "^${KEY}=" "$state_file" > "$tmp_file" || true
+printf '%s=%q\n' "$KEY" "$VALUE" >> "$tmp_file"
+mv "$tmp_file" "$state_file"
+log-info "Recorded [$KEY] in [$state_file]."

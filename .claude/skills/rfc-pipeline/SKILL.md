@@ -4,7 +4,9 @@ description: >-
   A master macro skill that orchestrates the entire lifecycle of an RFC from
   design to the final commits. It runs autonomous phases as background agents
   to isolate contexts and prevent context bloat, and delegates interactive
-  phases to separate conversations.
+  phases to separate conversations. Restartable at any point: on invocation it
+  reads the on-disk run state (rfc-pipeline-status) and can resume any live
+  run at the right phase without being told where it left off.
 ---
 
 # RFC Pipeline Master Skill
@@ -195,15 +197,17 @@ skill. They target the worktree internally and track all SHAs in the run's
 state + checkpoint ledger, so the orchestrator never hand-runs git or tracks
 SHAs in its context. Run each with `-h` for its full contract.
 
-| Script (all but `claim` take `-s <run-scratch>`)     | Owns                                                      |
-| ---------------------------------------------------- | --------------------------------------------------------- |
-| `rfc-pipeline-claim`                                 | Phase 0 claim; prints the run state on stdout             |
-| `rfc-pipeline-checkpoint <step> [i]`                 | `--no-verify` WIP checkpoint + ledger row; prints the SHA |
-| `rfc-pipeline-verify-scope [-d glob]… [allow-glob…]` | write-scope assertion (subset / deny / clean)             |
-| `rfc-pipeline-recover [step [i] \| sha]`             | `reset --hard` to a checkpoint + `clean -fd`              |
-| `rfc-pipeline-squash`                                | `reset --soft <base>` to collapse WIP history             |
-| `rfc-pipeline-adopt <branch>`                        | ff-merge `<branch>` onto the pipeline branch, delete it   |
-| `rfc-pipeline-land`                                  | ff-merge, remove worktree, delete branch                  |
+| Script (all take `-s <run-scratch>` except `claim` and `status`) | Owns                                                      |
+| ---------------------------------------------------------------- | --------------------------------------------------------- |
+| `rfc-pipeline-claim`                                             | Phase 0 claim; prints the run state on stdout             |
+| `rfc-pipeline-status [-n n]`                                     | read-only: live runs + per-run resume facts (**Startup**) |
+| `rfc-pipeline-record KEY VALUE`                                  | upsert one mid-run fact (`RFC_NAME`, `RFC_FILE`) in state |
+| `rfc-pipeline-checkpoint <step> [i]`                             | `--no-verify` WIP checkpoint + ledger row; prints the SHA |
+| `rfc-pipeline-verify-scope [-d glob]… [allow-glob…]`             | write-scope assertion (subset / deny / clean)             |
+| `rfc-pipeline-recover [step [i] \| sha]`                         | `reset --hard` to a checkpoint + `clean -fd`              |
+| `rfc-pipeline-squash`                                            | `reset --soft <base>` to collapse WIP history             |
+| `rfc-pipeline-adopt <branch>`                                    | ff-merge `<branch>` onto the pipeline branch, delete it   |
+| `rfc-pipeline-land`                                              | ff-merge, remove worktree, delete branch                  |
 
 `--no-verify` lives in `rfc-pipeline-checkpoint` (fast WIP commits, and the flag
 stays out of the classifier-inspected Bash string) and in **one** of the
@@ -378,6 +382,77 @@ run precedes it.
   commits (RFC doc via `--no-verify`; code through the full hook — see Phase 3a
   for why one hook run covers both).
 
+## Startup: Fresh Run or Resume
+
+A pipeline run's full state lives on disk — the worktree, the `pipeline/rfc-<n>`
+branch, the run-scratch state file, and the checkpoint ledger — never only in
+this conversation. Any `rfc-pipeline` session can therefore pick up any run at
+any point, with no hand-fed recovery instructions. **On every invocation, before
+anything else, run `rfc-pipeline-status`** (from the original checkout or any
+worktree — it resolves the main checkout itself) and decide:
+
+- **The Architect described a new feature** → fresh run: Phase 0 onward.
+  Concurrent pipelines are supported, so a new brief starts a new run even while
+  other runs are live.
+- **The Architect asked to resume, or named an existing run/RFC number** →
+  resume per below. Never re-run Phase 0 on a resume — the claim already
+  happened, and `rfc-pipeline-claim` would claim a NEW number.
+- **Live runs exist and the intent is ambiguous** → list them (`RFC_NUM`,
+  `RFC_NAME`, last checkpoint) and ask which to resume, or whether to start
+  fresh.
+
+A listed run showing `STATE=missing` or `BASE_SHA_RESOLVES=false` is stale
+debris (a hand-made worktree, or a claim whose base history was rewritten), not
+a resumable run — surface it to the Architect as a teardown candidate
+(`git worktree remove` + branch delete, their call), never auto-resume it.
+
+### Resume procedure
+
+Reconstruct everything from disk, not from any prior conversation:
+
+1. **Load the run**: `rfc-pipeline-status -n <n>` prints the state file
+   (including `RFC_NAME` / `RFC_FILE`, persisted in Phase 1 via
+   `rfc-pipeline-record`) plus the derived facts the table below reads. The full
+   ledger at `<run-scratch>/checkpoints.log` is the authoritative record of
+   which gates were passed.
+2. **Session name**: ask the Architect to run
+   `/rename [rfc-pipeline] rfc/<n> <rfc-name>` (best-effort cosmetics, as
+   always). If `RFC_NAME` was never recorded (a run predating it, or a crash
+   before Phase 1 recorded it), re-derive it from the RFC file's H1 and record
+   it now.
+3. **Counters continue, never reset**: the next `[i]` for any loopable step is
+   one past that step's highest `i` anywhere in the ledger.
+4. **Dispatched work from the dead session**: every background agent died with
+   it; an operator-launched conversation may still be live or may have finished.
+   The table tells you which case you are in where git can tell; where it
+   cannot, ask the operator — that is a status question, not a recovery
+   instruction.
+5. **Re-enter the state machine** at the point the facts imply, then proceed
+   exactly as that phase's normal text prescribes — checkpoints, write-scope,
+   verification and all.
+
+| Observed facts                                                                                                         | Resume at                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RFC_FILE` unset and `RFC_FILE_DETECTED=NONE`                                                                          | Phase 1 step 1 — re-issue the design-conversation block (ask first whether one is already open).                                                                                                                                                             |
+| Last checkpoint `before design-review [i]`; commits after it (`LAST_CHECKPOINT_SHA` ≠ `HEAD_SHA`, reachable)           | The review pass ran (`/review-fix` commits accepted findings): verify by checkpoint diff, take `after design-review <i>`, → Phase 1 step 3.                                                                                                                  |
+| Last checkpoint `before design-review [i]`; HEAD still at it                                                           | Ask the operator whether the `/review-fix` conversation is open or done; if abandoned, re-issue the same block for pass `<i>`.                                                                                                                               |
+| Last checkpoint `after design-review [i]`                                                                              | Phase 1 step 3 (Architect design gate).                                                                                                                                                                                                                      |
+| Last checkpoint `before impl`                                                                                          | The impl agent is gone — a stall/kill by definition: verify write-scope and run the suite yourself; green ⇒ checkpoint `impl` and continue; broken ⇒ `rfc-pipeline-recover` to `before impl` and re-spawn against the same scratch.                          |
+| Last checkpoint `impl`                                                                                                 | Phase 2 step 2 (dispatch `/manual-review-fix`; `<i>` per rule 3).                                                                                                                                                                                            |
+| Last checkpoint `before manual-review-fix [i]`; `INTEGRATION_BRANCHES` lists `integration/<run-id>` for that SHA's `E` | The review conversation completed: merge back (adopt + checkpoint), → Phase 2 step 3.                                                                                                                                                                        |
+| Last checkpoint `before manual-review-fix [i]`; no matching integration branch                                         | Ask the operator whether that conversation is live; if abandoned, re-issue the same block (same `E` — that checkpoint's SHA).                                                                                                                                |
+| Last checkpoint `manual-review-fix [i]`, `review-fix [i]`, or `architect-review [i]`                                   | Phase 2 step 3 (Architect Implementation Review) — its entry checkpoint and diff regenerate the context the old session lost.                                                                                                                                |
+| `LAST_CHECKPOINT_REACHABLE=false`, or `HEAD_AT_BASE=true` with staged changes                                          | Phase 3 already began — the squash dropped the checkpoint history. `NON_CHECKPOINT_COMMITS=0` ⇒ 3a (format, regenerate the two commit messages); `1` ⇒ one final commit exists — confirm which with the Architect; `2` and clean ⇒ 3b (`rfc-pipeline-land`). |
+| The run's worktree no longer exists (`RUNS` lists no such run)                                                         | Nothing to resume — the run landed (or was torn down). Check `git log` on the base branch.                                                                                                                                                                   |
+
+One caveat on `LAST_CHECKPOINT_REACHABLE=false`: a crash between
+`rfc-pipeline-recover` and the re-checkpoint that normally follows it produces
+the same signal without a squash. `NON_CHECKPOINT_COMMITS` disambiguates —
+recovery lands on a checkpoint commit (`0`, with an unstaged/clean tree), while
+Phase 3 trees carry staged changes or the Architect's real commits. If the facts
+still conflict, show the Architect
+`git -C "<codebase-root>" log <base-sha>..HEAD` and decide together.
+
 ## 🗺️ Lifecycle State Machine
 
 ```mermaid
@@ -421,10 +496,12 @@ stateDiagram-v2
 
 Guide the Architect through the following phases sequentially. **Before Phase 1,
 run Phase 0** (create the `pipeline/rfc-<n>` branch and record the base SHA) per
-**Change Tracking, Checkpoints & Agent Write-Scope** above. Throughout, take a
-checkpoint at every gate boundary, number every loopable step, verify each
-agent's write-scope on return, and re-run tests only where nothing reported them
-— a stall or kill, or the Architect's own edits — per **Verification** above.
+**Change Tracking, Checkpoints & Agent Write-Scope** above — fresh runs only: a
+resume re-enters mid-machine per **Startup: Fresh Run or Resume** and never
+re-claims. Throughout, take a checkpoint at every gate boundary, number every
+loopable step, verify each agent's write-scope on return, and re-run tests only
+where nothing reported them — a stall or kill, or the Architect's own edits —
+per **Verification** above.
 
 ### Phase 1: Design
 
@@ -435,7 +512,9 @@ agent's write-scope on return, and re-run tests only where nothing reported them
    - From the Architect's `<brief-description>`, derive `<rfc-name>` (a short
      Sentence-case title, e.g. `Email verification`) and record it in
      orchestrator state alongside `<n>`; it names every session in this run per
-     **Session Naming** above.
+     **Session Naming** above. Persist it to the run state too —
+     `rfc-pipeline-record -s <run-scratch> RFC_NAME '<rfc-name>'` — so a resumed
+     session recovers it from disk (**Startup** above).
    - Now that both `<n>` and `<rfc-name>` are known, **ask the Architect to name
      this orchestrator session** by running
      `/rename [rfc-pipeline] rfc/<n>
@@ -464,7 +543,10 @@ agent's write-scope on return, and re-run tests only where nothing reported them
      ```
    - Instruct them to return to this conversation and provide the target file
      path (e.g., `rfc/<rfc-file>.md`) once the draft is successfully written.
-   - Pause and wait for the Architect's input.
+   - Pause and wait for the Architect's input. When they return with the path,
+     persist it:
+     `rfc-pipeline-record -s <run-scratch> RFC_FILE
+     rfc/<rfc-file>.md`.
 
 2. **Design Review & Fix (operator-launched separate conversation)**:
    `/review-fix` replaces the old autonomous review loop. The reviewer is

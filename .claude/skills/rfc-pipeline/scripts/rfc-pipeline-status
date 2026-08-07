@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rfc-pipeline-status [-n rfc-num]
+
+Read-only resume entrypoint: enumerate this repo's live pipeline runs (the
+worktrees matching <repo>-rfc-N) and print each run's recorded state plus the
+derived facts a resuming orchestrator needs. Prints facts only — the resume
+table in the rfc-pipeline SKILL.md owns their interpretation.
+
+May be run from the original checkout or any worktree; it resolves the main
+checkout itself. Always exits 0; `RUNS=0` means nothing is live.
+
+Output: a `RUNS=<count>` line, then one blank-line-separated KEY=value block
+per run:
+  <state file verbatim>       RFC_NUM, CODEBASE_ROOT, … plus recorded keys
+  STATE=missing               instead of the above, if the state file is gone
+  RFC_FILE_DETECTED           first rfc/<n>-*.md in the worktree, or NONE
+  WORKTREE_DIRTY              true if any uncommitted or untracked paths
+  LAST_CHECKPOINT_STEP/_I/_SHA  last ledger row, or NONE
+  LAST_CHECKPOINT_REACHABLE   is that SHA an ancestor of HEAD (false after a
+                              squash dropped the checkpoint history)
+  CHECKPOINTS                 ledger row count
+  HEAD_SHA                    the pipeline branch's current tip
+  HEAD_AT_BASE                true when HEAD == BASE_SHA (post-squash shape)
+  BASE_SHA_RESOLVES           false when the recorded base commit no longer
+                              exists (a stale run from a rewritten history);
+                              the two range facts below are then NONE
+  COMMITS_AHEAD_OF_BASE       commits on the pipeline branch since BASE_SHA
+  NON_CHECKPOINT_COMMITS      of those, commits NOT authored by
+                              rfc-pipeline-checkpoint (adopted integration
+                              commits, or Phase 3's final commits)
+  INTEGRATION_BRANCHES        integration/<worktree-basename>-* branches, or
+                              NONE (present = a /manual-review-fix run
+                              completed and awaits merge-back)
+
+Options:
+  -n rfc-num   Print only the run claimed as rfc-<rfc-num>.
+  -h           Help.
+EOF
+  exit "$exit_code"
+}
+
+RFC_NUM_FILTER=""
+while getopts ":n:h" opt; do
+  case "$opt" in
+  n) RFC_NUM_FILTER="$OPTARG" ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [ "$#" -ne 0 ]; then
+  help "rfc-pipeline-status takes no positional arguments."
+fi
+
+# The main worktree is always listed first by `git worktree list`, so this
+# resolves the original checkout even when run from inside a pipeline worktree.
+ORIGINAL_CHECKOUT="$(git worktree list --porcelain |
+  awk '/^worktree /{sub(/^worktree /, ""); print; exit}')"
+REPO_NAME="$(basename "$ORIGINAL_CHECKOUT")"
+
+worktrees="$(git -C "$ORIGINAL_CHECKOUT" worktree list --porcelain |
+  awk '/^worktree /{sub(/^worktree /, ""); print}' |
+  grep -E "/${REPO_NAME}-rfc-[0-9]+$" || true)"
+
+if [ -n "$RFC_NUM_FILTER" ] && [ -n "$worktrees" ]; then
+  worktrees="$(grep -E "/${REPO_NAME}-rfc-${RFC_NUM_FILTER}$" <<< "$worktrees" || true)"
+fi
+
+run_count=0
+[ -n "$worktrees" ] && run_count="$(wc -l <<< "$worktrees" | tr -d ' ')"
+echo "RUNS=${run_count}"
+
+[ -n "$worktrees" ] || exit 0
+
+# Subshell body on purpose: sourcing one run's state file must not leak into
+# the next run's block.
+emit_run() (
+  local worktree="$1"
+  local n="${worktree##*-rfc-}"
+  local run_scratch="$worktree/.scratch/rfc-${n}"
+  local state_file
+  state_file="$(pl_state_file "$run_scratch")"
+
+  echo ""
+  if [ ! -f "$state_file" ]; then
+    echo "RFC_NUM=${n}"
+    echo "CODEBASE_ROOT=${worktree}"
+    echo "STATE=missing"
+    return
+  fi
+  cat "$state_file"
+  # shellcheck source=/dev/null
+  source "$state_file"
+
+  local rfc_file_detected="" candidate
+  for candidate in "$worktree/rfc/${n}"-*.md; do
+    [ -e "$candidate" ] || continue
+    rfc_file_detected="rfc/$(basename "$candidate")"
+    break
+  done
+  echo "RFC_FILE_DETECTED=${rfc_file_detected:-NONE}"
+
+  local dirty=false
+  [ -n "$(git -C "$worktree" status --porcelain)" ] && dirty=true
+  echo "WORKTREE_DIRTY=${dirty}"
+
+  local ledger
+  ledger="$(pl_ledger_file "$run_scratch")"
+  if [ -s "$ledger" ]; then
+    local last_row last_sha
+    last_row="$(tail -n 1 "$ledger")"
+    last_sha="$(cut -f1 <<< "$last_row")"
+    echo "LAST_CHECKPOINT_STEP=$(cut -f2 <<< "$last_row")"
+    echo "LAST_CHECKPOINT_I=$(cut -f3 <<< "$last_row")"
+    echo "LAST_CHECKPOINT_SHA=${last_sha}"
+    local reachable=false
+    # stderr silenced: after a squash (+ gc) the SHA may not even resolve any
+    # more, which for this fact simply means "not reachable".
+    if git -C "$worktree" merge-base --is-ancestor "$last_sha" HEAD 2>/dev/null; then
+      reachable=true
+    fi
+    echo "LAST_CHECKPOINT_REACHABLE=${reachable}"
+    echo "CHECKPOINTS=$(wc -l < "$ledger" | tr -d ' ')"
+  else
+    echo "LAST_CHECKPOINT_STEP=NONE"
+    echo "LAST_CHECKPOINT_I="
+    echo "LAST_CHECKPOINT_SHA=NONE"
+    echo "LAST_CHECKPOINT_REACHABLE="
+    echo "CHECKPOINTS=0"
+  fi
+
+  local head_sha
+  head_sha="$(git -C "$worktree" rev-parse HEAD)"
+  echo "HEAD_SHA=${head_sha}"
+  local head_at_base=false
+  [ "$head_sha" = "$BASE_SHA" ] && head_at_base=true
+  echo "HEAD_AT_BASE=${head_at_base}"
+
+  local base_resolves=true
+  # stderr silenced: this is a pure existence probe — a stale run whose base
+  # commit was rewritten away simply reports BASE_SHA_RESOLVES=false.
+  if ! git -C "$worktree" cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+    base_resolves=false
+  fi
+  echo "BASE_SHA_RESOLVES=${base_resolves}"
+
+  if [ "$base_resolves" = true ]; then
+    echo "COMMITS_AHEAD_OF_BASE=$(git -C "$worktree" rev-list --count "${BASE_SHA}..HEAD")"
+    local non_checkpoint_commits
+    # grep -c prints its count even when it exits 1 on zero matches; `|| true`
+    # keeps that benign exit away from `set -e`.
+    non_checkpoint_commits="$(git -C "$worktree" log --format=%s "${BASE_SHA}..HEAD" |
+      grep -cv "^pipeline(rfc-${n}): " || true)"
+    echo "NON_CHECKPOINT_COMMITS=${non_checkpoint_commits}"
+  else
+    echo "COMMITS_AHEAD_OF_BASE=NONE"
+    echo "NON_CHECKPOINT_COMMITS=NONE"
+  fi
+
+  local integration_branches
+  integration_branches="$(git -C "$worktree" branch --list "integration/$(basename "$worktree")-*" \
+    --format='%(refname:short)' | paste -sd ' ' -)"
+  echo "INTEGRATION_BRANCHES=${integration_branches:-NONE}"
+)
+
+while IFS= read -r worktree; do
+  emit_run "$worktree"
+done <<< "$worktrees"
