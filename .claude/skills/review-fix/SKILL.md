@@ -5,9 +5,11 @@ description: >-
   working tree). Runs a supplied list of reviewer skills against the target,
   each in its own context window, shows the operator every finding, and applies
   the ones the operator picks — one at a time, in a fresh context, each
-  reversible. Closes by feeding rejected findings into a skill-update pass so a
-  reviewer that produced a bad finding gets fixed. Use when a user asks to
-  review-and-fix a target with a human in the loop, or invokes /review-fix.
+  reversible. After triage the operator may elect another full review pass
+  against the updated target, as many times as they like. Closes by feeding
+  rejected findings into a skill-update pass so a reviewer that produced a bad
+  finding gets fixed. Use when a user asks to review-and-fix a target with a
+  human in the loop, or invokes /review-fix.
 ---
 
 # Review / Fix
@@ -63,8 +65,9 @@ A reviewer returns zero or more findings. Each finding MUST carry:
 A finding missing options or a recommendation is incomplete: present it to the
 operator marked `⚠ incomplete` rather than dropping or repairing it.
 
-Each reviewer writes its findings to `<scratch>/findings/<reviewer>.md`,
-write-once, as markdown:
+Each reviewer writes its findings to `<scratch>/pass-<p>/findings/<reviewer>.md`
+— `<p>` is the review-pass counter, starting at 1 (see Phase 3) — write-once, as
+markdown:
 
 ```markdown
 ---
@@ -93,8 +96,8 @@ findings: <integer count>
    - **run_in_background**: `true`
    - **prompt**: name the reviewer skill to invoke, the Target, the finding
      contract above, and the exact output path
-     `<scratch>/findings/<reviewer>.md`. State that the agent writes that one
-     file and changes nothing else.
+     `<scratch>/pass-<p>/findings/<reviewer>.md`. State that the agent writes
+     that one file and changes nothing else.
 3. Wait for all reviewers. Do not begin Phase 2 early.
 
    If a reviewer never returns, **record what happened** — which reviewer, how
@@ -104,6 +107,10 @@ findings: <integer count>
    the only signal.
 4. Assign every finding a stable id `<reviewer-shortname>.<n>` and present the
    full set to the operator, grouped by reviewer, with each description intact.
+   `<n>` is monotonic per reviewer **across the whole run, never reset by a new
+   pass** — if pass 1's last finding was `<reviewer>.4`, pass 2's first is
+   `<reviewer>.5` — so an id names a unique finding no matter which pass raised
+   it.
 
 ## Phase 2 — Find / fix loop
 
@@ -145,8 +152,9 @@ Repeat until the operator chooses none:
      CLAUDE.md's rule that the gate protects what reaches `main`. The fixer
      already ran the tests; the commit records what it ran. **The branch tip
      still has to pass the full gate before it lands** — run
-     `nix develop -c bin/format -c` and `nix develop -c bin/test check` once at
-     the end of the loop, and tell the operator the result.
+     `nix develop -c bin/format -c` and `nix develop -c bin/test check` once,
+     after the operator declines a further pass (Phase 3), and tell the operator
+     the result.
    - _rollback_: `git reset --hard HEAD && git clean -fd`. Use `-fd`, never
      `-fdx`: the run's scratch is gitignored and must survive the rollback.
 10. **On rollback, offer a retry.** The operator may re-run the same finding
@@ -157,15 +165,31 @@ Repeat until the operator chooses none:
 12. Return to step 5.
 
 Record each outcome as a line in `<scratch>/ledger.jsonl`:
-`{"id","reviewer","outcome","notes"}`. This is the only durable record of what
-the operator decided and is what Phase 3 reads.
+`{"id","reviewer","pass","outcome","notes"}`. This is the only durable record of
+what the operator decided and is what Phase 4 reads.
 
-## Phase 3 — Skill update loop
+## Phase 3 — Another pass?
+
+When the operator leaves the find/fix loop, ask exactly one question: **run
+another full review pass against the now-updated target?**
+
+- **Yes**: increment the pass counter `<p>` (the initial fan-out was pass 1) and
+  re-enter Phase 1 — fresh reviewer contexts, findings written to
+  `<scratch>/pass-<p>/findings/`, finding numbers continuing monotonically. Then
+  Phase 2 runs again over the new findings, and this question is asked again.
+- **No**: proceed to Phase 4.
+
+There is no cap and no autonomous exit condition — the loop runs exactly as many
+passes as the operator asks for, and per the prime directive the orchestrator
+never starts one on its own.
+
+## Phase 4 — Skill update loop
 
 A finding the operator rolled back, or declined outright, is evidence about the
 **reviewer**, not the target. This phase spends it.
 
-1. Present the findings again, annotated with their Phase 2 outcomes.
+1. Present the findings again — every pass's — annotated with their find/fix
+   outcomes.
 2. **Operator selects** a finding whose reviewer should change, or none to
    finish.
 3. The orchestrator **cannot run this itself** — `/skill-update` is interactive

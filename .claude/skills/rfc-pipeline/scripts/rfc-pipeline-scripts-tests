@@ -118,7 +118,7 @@ root="$(state_val "$state" CODEBASE_ROOT)"
 scratch="$(state_val "$state" RUN_SCRATCH)"
 before="$(git -C "$root" rev-list --count HEAD)"
 echo "change" > "$root/rfc/draft.md"
-sha="$("$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" review-loop 1)"
+sha="$("$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" design-review 1)"
 after="$(git -C "$root" rev-list --count HEAD)"
 [ "$after" -eq "$((before + 1))" ] || fail_test "checkpoint did not add a commit"
 pass_test "checkpoint commits the worktree"
@@ -126,7 +126,7 @@ pass_test "checkpoint commits the worktree"
 pass_test "checkpoint prints the new commit SHA"
 grep -q "$sha" "$scratch/checkpoints.log" || fail_test "checkpoint not appended to ledger"
 pass_test "checkpoint appends to the ledger"
-git -C "$root" log -1 --pretty=%s | grep -q 'pipeline(rfc-1): review-loop \[1\]' ||
+git -C "$root" log -1 --pretty=%s | grep -q 'pipeline(rfc-1): design-review \[1\]' ||
   fail_test "checkpoint message format wrong"
 pass_test "checkpoint uses the pipeline(rfc-n): step [i] message"
 
@@ -193,11 +193,11 @@ state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
 root="$(state_val "$state" CODEBASE_ROOT)"
 scratch="$(state_val "$state" RUN_SCRATCH)"
 echo "a" > "$root/rfc/a.md"
-"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" review-loop 1 >/dev/null
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" design-review 1 >/dev/null
 echo "b" > "$root/rfc/b.md"
-"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" review-loop 2 >/dev/null
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" design-review 2 >/dev/null
 echo "scratch survives" > "$scratch/marker.txt"
-"$SCRIPTS/rfc-pipeline-recover" -s "$scratch" review-loop 1 >/dev/null
+"$SCRIPTS/rfc-pipeline-recover" -s "$scratch" design-review 1 >/dev/null
 [ -f "$root/rfc/a.md" ] || fail_test "recover lost the checkpointed file a.md"
 [ ! -f "$root/rfc/b.md" ] || fail_test "recover did not roll back b.md"
 pass_test "recover resets to a named checkpoint"
@@ -213,7 +213,7 @@ root="$(state_val "$state" CODEBASE_ROOT)"
 scratch="$(state_val "$state" RUN_SCRATCH)"
 base="$(state_val "$state" BASE_SHA)"
 echo "1" > "$root/rfc/one.md"
-"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" review-loop 1 >/dev/null
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" design-review 1 >/dev/null
 echo "2" > "$root/rfc/two.md"
 "$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl >/dev/null
 "$SCRIPTS/rfc-pipeline-squash" -s "$scratch"

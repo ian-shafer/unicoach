@@ -105,7 +105,7 @@ run_scratch="$worktree_path/.scratch/rfc-${n}"
 # Scaffold the run-scratch layout (the master-owned capture layer). Directories
 # only — per-artifact files are write-once by the agents that own them.
 mkdir -p \
-  "$run_scratch/phase1/review-loop" \
+  "$run_scratch/phase1" \
   "$run_scratch/phase2/impl" \
   "$run_scratch/phase2/impl-review" \
   "$run_scratch/phase2/impl-fix"

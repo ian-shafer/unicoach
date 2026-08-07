@@ -112,9 +112,7 @@ Evaluate depth across these axes and flag the listed anti-patterns:
   timeouts must be specified. Flag vague "returns error" statements — demand
   specific error codes and failure modes.
 - **Dependencies**: All services and libraries must be listed with their purpose
-  and identified as new or existing. **You MUST perform a web search** to verify
-  the latest stable release of every listed dependency. Flag outdated versions
-  as `Minor` or `Major` based on criticality and version deviation.
+  and identified as new or existing.
 
 ### 5. Tests
 
