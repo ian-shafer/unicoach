@@ -222,4 +222,112 @@ pass_test "squash resets HEAD to the base SHA"
 git -C "$root" diff --cached --quiet && fail_test "squash lost the staged changes"
 pass_test "squash preserves the working changes (staged)"
 
+echo ""
+echo "==== rfc-pipeline-adopt ===="
+
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+
+echo "1" > "$root/rfc/one.md"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl > /dev/null
+pipeline_sha="$(git -C "$root" rev-parse HEAD)"
+
+# Build a target branch that is a linear descendant of the pipeline tip — the
+# shape /manual-review-fix's integration/<run-id> branch is in.
+git -C "$root" checkout -q -b adopt-target
+echo "2" > "$root/rfc/two.md"
+git -C "$root" add -A
+git -C "$root" commit -qm "integration commit"
+target_sha="$(git -C "$root" rev-parse HEAD)"
+git -C "$root" checkout -q pipeline/rfc-1
+
+assert_success "adopt fast-forwards the pipeline branch onto the target" \
+  "$SCRIPTS/rfc-pipeline-adopt" -s "$scratch" adopt-target
+[ "$(git -C "$root" rev-parse HEAD)" = "$target_sha" ] || fail_test "adopt did not fast-forward to the target's tip"
+pass_test "adopt lands on the target branch's tip"
+git -C "$root" rev-parse --verify adopt-target > /dev/null 2>&1 && fail_test "adopt left the merged branch behind"
+pass_test "adopt deletes the merged branch"
+
+# Dirty tree refuses, untouched.
+git -C "$root" branch some-branch
+echo "dirty" > "$root/dirty.txt"
+assert_failure "adopt refuses when the pipeline worktree is dirty" \
+  "$SCRIPTS/rfc-pipeline-adopt" -s "$scratch" some-branch
+rm -f "$root/dirty.txt"
+
+# Nonexistent branch refuses.
+assert_failure "adopt refuses a nonexistent branch" \
+  "$SCRIPTS/rfc-pipeline-adopt" -s "$scratch" no-such-branch
+
+# A target that is BEHIND the pipeline tip (the pipeline advanced past it, or
+# it names the wrong run) is not a fast-forward — refuse, touch nothing.
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+
+echo "1" > "$root/rfc/one.md"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl > /dev/null
+git -C "$root" branch stale-target
+echo "2" > "$root/rfc/two.md"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl-review 1 > /dev/null
+
+assert_failure "adopt refuses a target that is not ahead of the pipeline tip" \
+  "$SCRIPTS/rfc-pipeline-adopt" -s "$scratch" stale-target
+[ "$(git -C "$root" rev-parse HEAD)" = "$(git -C "$root" rev-parse pipeline/rfc-1)" ] ||
+  fail_test "a failed adopt should never move HEAD"
+pass_test "failed adopt leaves the pipeline branch untouched"
+git -C "$root" rev-parse --verify stale-target > /dev/null 2>&1 ||
+  fail_test "failed adopt deleted the target branch"
+pass_test "failed adopt leaves the target branch untouched"
+
+echo ""
+echo "==== rfc-pipeline-land ===="
+
+repo="$(fresh_repo)"
+state="$(cd "$repo" && "$SCRIPTS/rfc-pipeline-claim")"
+root="$(state_val "$state" CODEBASE_ROOT)"
+scratch="$(state_val "$state" RUN_SCRATCH)"
+orig="$(state_val "$state" ORIGINAL_CHECKOUT)"
+
+echo "landed" > "$root/rfc/landed.md"
+"$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl > /dev/null
+pipeline_sha="$(git -C "$root" rev-parse HEAD)"
+
+# Seed a /manual-review-fix scratch dir so the archive step has something to
+# preserve — this is the evaluation data the whole handover exists to protect.
+mkdir -p "$root/.scratch/manual-review-fix/testrun-abc123"
+echo '{"id":"t.1"}' > "$root/.scratch/manual-review-fix/testrun-abc123/ledger.jsonl"
+
+assert_success "land fast-forwards main and tears down the worktree" \
+  "$SCRIPTS/rfc-pipeline-land" -s "$scratch"
+
+[ "$(git -C "$orig" rev-parse main)" = "$pipeline_sha" ] ||
+  fail_test "land did not fast-forward main to the pipeline tip"
+pass_test "land fast-forwards main to the pipeline tip"
+[ -d "$root" ] && fail_test "land left the worktree directory behind"
+pass_test "land removes the worktree"
+git -C "$orig" rev-parse --verify pipeline/rfc-1 > /dev/null 2>&1 &&
+  fail_test "land left the merged pipeline branch behind"
+pass_test "land deletes the merged pipeline branch"
+
+archived="$orig/.scratch/manual-review-fix-archive/rfc-1/testrun-abc123/ledger.jsonl"
+[ -f "$archived" ] || fail_test "land did not archive the manual-review-fix scratch dir"
+grep -q 't.1' "$archived" || fail_test "archived manual-review-fix scratch is missing its content"
+pass_test "land archives /manual-review-fix's scratch dir before deleting the worktree"
+
+# A run that never used /manual-review-fix has nothing to archive — land must
+# neither fail nor fabricate an empty archive dir.
+repo2="$(fresh_repo)"
+state2="$(cd "$repo2" && "$SCRIPTS/rfc-pipeline-claim")"
+scratch2="$(state_val "$state2" RUN_SCRATCH)"
+orig2="$(state_val "$state2" ORIGINAL_CHECKOUT)"
+assert_success "land succeeds with no manual-review-fix scratch to archive" \
+  "$SCRIPTS/rfc-pipeline-land" -s "$scratch2"
+[ -d "$orig2/.scratch/manual-review-fix-archive" ] &&
+  fail_test "land fabricated an archive dir when there was nothing to archive"
+pass_test "land creates no archive dir when there is nothing to archive"
+
 end_tests

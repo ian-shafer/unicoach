@@ -73,6 +73,19 @@ else
 fi
 log-info "Fast-forwarded [$BASE_BRANCH] to [$(git -C "$ORIGINAL_CHECKOUT" rev-parse --short "$PIPELINE_BRANCH")]."
 
+# Archive /manual-review-fix's evaluation output (ledger, findings, worktree
+# manifest) before the worktree that holds it is removed below. It lives under
+# gitignored `.scratch/`, so nothing else preserves it once the worktree is
+# gone — and it's the whole reason that process exists. Only present on a run
+# that actually used /manual-review-fix; absent otherwise.
+mrf_scratch="$CODEBASE_ROOT/.scratch/manual-review-fix"
+if [ -d "$mrf_scratch" ]; then
+  archive_dir="$ORIGINAL_CHECKOUT/.scratch/manual-review-fix-archive/rfc-${RFC_NUM}"
+  mkdir -p "$archive_dir"
+  cp -R "$mrf_scratch/." "$archive_dir/"
+  log-info "Archived [$mrf_scratch] to [$archive_dir]."
+fi
+
 git -C "$ORIGINAL_CHECKOUT" worktree remove "$CODEBASE_ROOT"
 log-info "Removed worktree [$CODEBASE_ROOT]."
 

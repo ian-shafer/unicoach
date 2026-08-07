@@ -139,13 +139,7 @@ specific harness defect and stays next to the fan-out machinery it constrains.
      file (a prior run's bounded give-up, see step 4) is not a completed
      verdict; a resume MAY re-attempt that lens. This lets an interrupted chain
      resume cheaply while still retrying lenses that never produced a real
-     verdict. Note, too, that the caller (e.g. `rfc-impl-review` Phase 2d) may
-     drop a carry-forward **sentinel** at `[Skill Name].json` here — a small
-     marker pointing at a prior pass whose verdict is still trusted. Treat a
-     sentinel as already-done: do **not** re-spawn that lens, count it as
-     present in the step-5 completeness check, and list it in the compiled
-     report as carried-forward (not a failure). Full resolution to the
-     referenced verdict happens at the caller's aggregation.
+     verdict.
 4. **Drain the Batch Queue**: Keep refilling per step 3 — dispatching the next
    skill each time a slot frees — until every discovered skill has run, then
    wait for the final in-flight leaves to finish. Each leaf has written its own

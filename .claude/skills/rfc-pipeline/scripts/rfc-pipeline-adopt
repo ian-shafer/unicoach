@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/rfc-pipeline-lib"
+
+help() {
+  local exit_code=0
+  if [ "$#" -gt 0 ]; then
+    log-info "$1"
+    exit_code=1
+  fi
+  cat << 'EOF'
+rfc-pipeline-adopt -s run-scratch <branch>
+
+Fast-forward the pipeline branch (checked out in the pipeline worktree) onto
+<branch>, then delete <branch>. Used to merge back a `/manual-review-fix` run's
+`integration/<run-id>` branch, which is built as a linear descendant of the
+pipeline branch's tip but is never itself merged into it.
+
+Refuses, touching nothing, if the pipeline worktree has uncommitted changes, if
+<branch> does not exist, or if the pipeline branch's current tip is not an
+ancestor of <branch> (a real fast-forward isn't possible — resolve manually).
+
+Options:
+  -s run-scratch   The run-scratch dir holding this run's state (required).
+  -h               Help.
+EOF
+  exit "$exit_code"
+}
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+  s) RUN_SCRATCH="$OPTARG" ;;
+  h) help ;;
+  \?) help "unknown option [-$OPTARG]" ;;
+  :) help "option -$OPTARG requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+[ -n "$RUN_SCRATCH" ] || help "Missing required -s run-scratch."
+if [ "$#" -ne 1 ]; then
+  help "Expected exactly one <branch> argument, got [$#]."
+fi
+BRANCH="$1"
+
+pl_load_state "$RUN_SCRATCH"
+
+# `status --porcelain` (not `diff`) so an untracked file is caught too — unlike
+# `rfc-pipeline-land`, there is no later `git worktree remove` here to catch it.
+if [ -n "$(git -C "$CODEBASE_ROOT" status --porcelain)" ]; then
+  fatal "Pipeline worktree [$CODEBASE_ROOT] has uncommitted changes; commit or recover before adopting [$BRANCH]."
+fi
+
+if ! git -C "$CODEBASE_ROOT" rev-parse --verify "refs/heads/$BRANCH" > /dev/null 2>&1; then
+  fatal "Branch [$BRANCH] does not exist in [$CODEBASE_ROOT]."
+fi
+
+if ! git -C "$CODEBASE_ROOT" merge-base --is-ancestor HEAD "$BRANCH"; then
+  fatal "Cannot fast-forward onto [$BRANCH] — the pipeline branch's current tip is not its ancestor. Resolve with the operator; nothing was touched."
+fi
+
+git -C "$CODEBASE_ROOT" merge --ff-only "$BRANCH" > /dev/null
+log-info "Fast-forwarded pipeline branch to [$(git -C "$CODEBASE_ROOT" rev-parse --short HEAD)]."
+
+# Safe to delete now: the branch's commits are all reachable from HEAD after
+# the fast-forward above, so -D drops only the ref, not any history.
+git -C "$CODEBASE_ROOT" branch -D "$BRANCH"
+log-info "Deleted merged branch [$BRANCH]."
