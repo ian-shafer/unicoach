@@ -134,22 +134,26 @@ Verify:
 
 ### 7. Files Modified
 
-Verify:
+`## Files Modified` states the change's **expected scope** — non-exhaustive by
+convention. Verify it is grounded, not that it is complete:
 
-- All paths are exact, relative to the project root.
+- All listed paths are exact, relative to the project root.
 - Files listed as **new** do not already exist.
 - Files listed as **modified** or **deleted** already exist.
-- Use search tools to check for missing dependencies or configurations. Do not
-  take the RFC's claims at face value.
-- **IMPORTANT**: Any time the `Files Modified` section is missing a required
-  file or includes an extraneous file, list it as a `Minor` finding.
+- Use search tools to check that the stated scope covers where the design
+  actually lands. Do not take the RFC's claims at face value.
+- **IMPORTANT**: An entire area the design clearly implies but the scope never
+  mentions — a routing surface, a DI module, a configuration family — is a
+  `Minor` finding. Do not flag individual unlisted files within an area the
+  scope already names, and do not flag listed files that may go unchanged: the
+  list is a scope statement, not a manifest.
 
 ### 8. Completeness Check (Semantic Cross-Referencing)
 
 Go beyond bullet-point mapping. Evaluate sufficiency and logical consistency:
 
-- **Design → Files**: Are the files in `Files Modified` actually sufficient to
-  implement the design? Flag logically required files that are missing (e.g.,
+- **Design → Files**: Does `Files Modified`'s stated scope cover where the
+  design actually lands? Flag implied areas it never mentions (e.g.,
   configuration, client libraries, routing modules) as a `Minor` finding.
 - **Design → Tests**: Every edge case in `Detailed Design` (e.g., "retries on
   timeout") must have a corresponding test case in `Tests`.

@@ -1,8 +1,8 @@
 ---
 name: rfc-impl-review
 description: >-
-  Reviews completed RFC implementations to ensure they strictly modified the
-  specified files, implemented the exact scope without feature creep, and adhered
+  Reviews completed RFC implementations to ensure they stayed within the RFC's
+  stated file scope, implemented the exact scope without feature creep, and adhered
   to core coding and design philosophies. Acts as a master orchestrator delegating
   to code-review-chain and design-review-chain.
 ---
@@ -31,7 +31,7 @@ The review is composed of two stages with fixed ownership, so an orchestrator
 can get **both** context isolation **and** depth-1 leaves:
 
 - **Stage A — Scope & Context Prep (delegatable).** Phases 1, 2, 2b
-  (files-modified isolation, scope/feature-creep check, test-completeness +
+  (files-modified scope, scope/feature-creep check, test-completeness +
   guard-branch exercise) **plus** construction of the shared review-context file
   `<scratch>/review-context.md` (the `<base>...HEAD` diff plus each changed
   file's contents, write-once / skip-if-present). Stage A reads every changed
@@ -71,9 +71,10 @@ depth-0 and the leaves are depth-1 automatically.
 
 You MUST execute the review by following these exact phases sequentially:
 
-### Phase 1. Files Modified Isolation Check
+### Phase 1. Files Modified Scope Check
 
-Validate that the code changes did not spill over into unrelated files.
+Validate that the code changes did not spill wildly outside the RFC's stated
+scope.
 
 - Establish the **changed-file set** to review: the files that differ between
   the base revision and the implementation tip, via
@@ -83,10 +84,13 @@ Validate that the code changes did not spill over into unrelated files.
   implementation is uncommitted in the working tree (so `<base>...HEAD` is
   empty), fall back to `git status --porcelain`. Carry this set forward as the
   review target for Phase 3.
-- Compare that changed-file set against the `Files Modified` section of the RFC:
-  any file in one but not the other is a discrepancy to report.
-- If an extraneous file was modified, clearly identify it as an isolation
-  failure.
+- Compare that changed-file set against the `Files Modified` section of the RFC,
+  read as the change's **expected scope** — modules/directories plus key files,
+  explicitly non-exhaustive, never an exact manifest. Report any file that lands
+  **wildly outside** it: an unrelated subsystem, a surface no fair reading of
+  the design implies work on. An unlisted file inside or adjacent to the stated
+  scope is not a discrepancy, and a listed file left unchanged is not one
+  either.
 - **SPEC.md Creation Ban:** Any created `SPEC.md` (this codebase does not use
   them) is an automatic isolation failure the implementor must revert.
 
@@ -207,10 +211,10 @@ provided below.
 
 ## 📝 1. Scope & Boundary Checks
 
-**Files Modified Isolation Check:**
+**Files Modified Scope Check:**
 
 - **Result:** ✅ PASS / ❌ FAIL
-- **Discrepancies:** _(If FAIL, list the extraneous or missing files. If PASS,
+- **Discrepancies:** _(If FAIL, list the wildly-out-of-scope files. If PASS,
   state "None")_
 
 **Implementation Scope Check:**

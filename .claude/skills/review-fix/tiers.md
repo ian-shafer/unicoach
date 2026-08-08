@@ -19,13 +19,13 @@ not "is this code good?" A finding here often means the **RFC** is wrong rather
 than the code, so this tier is the only one whose triage offers the _revise the
 RFC_ outcome.
 
-| Skill                           | Anchor                                        |
-| ------------------------------- | --------------------------------------------- |
-| `impl-review-files-modified`    | `## Files Modified` vs the actual changed set |
-| `impl-review-plan-followed`     | `## Implementation Plan` steps executed       |
-| `impl-review-design-adherence`  | `## Detailed Design` declarations verbatim    |
-| `impl-review-feature-creep`     | traceability back to an RFC mandate           |
-| `impl-review-tests-implemented` | `## Tests` cases mapped to real tests         |
+| Skill                           | Anchor                                     |
+| ------------------------------- | ------------------------------------------ |
+| `impl-review-files-modified`    | changes wildly outside `## Files Modified` |
+| `impl-review-plan-followed`     | `## Implementation Plan` steps executed    |
+| `impl-review-design-adherence`  | `## Detailed Design` declarations verbatim |
+| `impl-review-feature-creep`     | traceability back to an RFC mandate        |
+| `impl-review-tests-implemented` | `## Tests` cases mapped to real tests      |
 
 ## Tier 1 — multi-file / structural
 

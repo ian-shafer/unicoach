@@ -151,14 +151,18 @@ generate "fluff" or filler content just to fulfill a requirement.
   it implements. Each step must represent an atomic, sequential, and locally
   verifiable unit of work. Each step must include a list of verification
   commands to prove correctness.
-- `## Files Modified`: EVERY file that will be modified in the implementation
-  phase must be listed. If a file is not listed in this section, it CAN NOT be
-  modified in the implementation. Because implementing agents are strictly
-  forbidden from touching unlisted files, you must be exhaustively paranoid when
-  generating this list. Actively search the codebase for routing files,
-  dependency injection modules, configuration files, and test fixtures that will
-  inevitably need to be updated. All files listed MUST use exact paths relative
-  to the project root to avoid ambiguity.
+- `## Files Modified`: the change's **expected scope**, explicitly
+  non-exhaustive — the modules/directories the implementation lands in, plus the
+  key files within them. It orients the implementer and anchors the reviewers'
+  scope check; it does not enumerate every touched file, and the implementation
+  may touch unlisted files where sound engineering requires it. The check it
+  feeds asks whether a change landed **wildly outside** this stated scope, never
+  whether the sets match exactly. Ground it in the real codebase: actively
+  search for the routing files, dependency-injection modules, configuration
+  files, and test fixtures the design implies, and name the areas they live in —
+  a scope written from imagination is the defect this section exists to prevent.
+  Listed paths MUST be exact and relative to the project root to avoid
+  ambiguity.
 
 ## The RFC Authoring Process
 
