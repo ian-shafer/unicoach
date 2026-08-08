@@ -35,5 +35,30 @@ value class Nanodollars private constructor(
     private const val USD_DISPLAY_SCALE = 6
 
     fun of(value: Long): Nanodollars = Nanodollars(value)
+
+    /**
+     * The exact value of [amount] × 10^[scaleDigits], as nano-dollars. This is
+     * the one place the "reject rather than round" money policy lives: readers
+     * of a decimal money amount differ only in the scale that carries their
+     * unit to nano-dollars (`$` → 9, `$`/MTok → 3), never in the policy itself.
+     *
+     * Throws [IllegalArgumentException] when [amount] is negative, or when the
+     * scaled amount is not a whole number of nano-dollars (or overflows the
+     * [Long] ledger unit) — an imprecise amount is never silently rounded. The
+     * message names only what this function knows, the amount and the scale;
+     * naming what the amount WAS — a config key, a field — is the caller's
+     * concept, so callers wrap this to add that context.
+     */
+    fun fromExactDecimal(
+      amount: BigDecimal,
+      scaleDigits: Int,
+    ): Nanodollars {
+      require(amount.signum() >= 0) { "must be non-negative, got [$amount]" }
+      return try {
+        of(amount.movePointRight(scaleDigits).toBigIntegerExact().longValueExact())
+      } catch (e: ArithmeticException) {
+        throw IllegalArgumentException("[$amount] scaled by 10^[$scaleDigits] has no exact nano-dollar form", e)
+      }
+    }
   }
 }

@@ -16,6 +16,8 @@ import ed.unicoach.coaching.CoachingService
 import ed.unicoach.coaching.CollegeChatTool
 import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.LlmPriceBook
+import ed.unicoach.coaching.budget.BudgetConfig
+import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.college.CollegeSearchService
@@ -90,6 +92,11 @@ fun startServer(
 
   val extractionConfig =
     ExtractionConfig
+      .from(config)
+      .getOrThrow()
+
+  val budgetConfig =
+    BudgetConfig
       .from(config)
       .getOrThrow()
 
@@ -170,6 +177,7 @@ fun startServer(
         queueService,
         extractionConfig,
         requestLoggingConfig,
+        budgetConfig,
       )
 
       install(SessionExpiryPlugin) {
@@ -207,6 +215,7 @@ fun Application.appModule(
   queueService: QueueService,
   extractionConfig: ExtractionConfig,
   requestLoggingConfig: RequestLoggingConfig,
+  budgetConfig: BudgetConfig,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
@@ -230,7 +239,10 @@ fun Application.appModule(
         CollegeChatTool(CollegeSearchTool(CollegeSearchService(database))),
       ),
     )
-  val coachingService = CoachingService(database, llmCallLog, coachingConfig, toolRegistry)
+  // One BudgetService serves both the chat gate and the usage endpoint, so the
+  // verdict a student is blocked on is the verdict their usage bar renders.
+  val budgetService = BudgetService(database, budgetConfig)
+  val coachingService = CoachingService(database, llmCallLog, coachingConfig, budgetService, toolRegistry)
   val collegeListService = CollegeListService(database)
 
   configureEmailVerificationGate(authService, sessionConfig)
@@ -245,5 +257,6 @@ fun Application.appModule(
     queueService,
     extractionConfig,
     collegeListService,
+    budgetService,
   )
 }

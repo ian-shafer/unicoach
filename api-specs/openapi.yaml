@@ -749,6 +749,42 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/students/me/coaching-usage:
+    get:
+      summary: Read the caller's coaching usage
+      description: >
+        The abstract coaching meter for the caller's student: how much of the
+        free allowance is used, and whether coaching is currently blocked. It
+        reports no dollars, token counts, or provider names by design.
+      operationId: getCoachingUsage
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The caller's coaching usage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoachingUsageResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The caller has no student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/conversations:
     post:
       summary: Start a conversation with its first message
@@ -786,6 +822,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: The student's coaching allowance is exhausted (code coaching_budget_exhausted)
           content:
             application/json:
               schema:
@@ -874,6 +916,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: The student's coaching allowance is exhausted (code coaching_budget_exhausted)
           content:
             application/json:
               schema:
@@ -1077,6 +1125,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: The student's coaching allowance is exhausted (code coaching_budget_exhausted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such conversation owned by the caller
           content:
@@ -1134,6 +1188,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '402':
+          description: The student's coaching allowance is exhausted (code coaching_budget_exhausted)
           content:
             application/json:
               schema:
@@ -1399,6 +1459,26 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PublicCollegeListEntry'
+    CoachingUsageResponse:
+      type: object
+      required: [usage]
+      properties:
+        usage:
+          $ref: '#/components/schemas/CoachingUsage'
+    CoachingUsage:
+      type: object
+      required: [usedPercent, exhausted]
+      properties:
+        usedPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Share of the free allowance already used, floored and capped.
+        exhausted:
+          type: boolean
+          description: >
+            Whether coaching is currently blocked. Equivalent to usedPercent == 100,
+            carried explicitly so a client never re-derives the block condition.
     Conversation:
       type: object
       required: [id, name, createdAt, updatedAt]

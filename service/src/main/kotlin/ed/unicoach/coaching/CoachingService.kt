@@ -7,6 +7,8 @@ import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.ChatRole
 import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.ToolRegistry
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.budget.BudgetVerdict
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
@@ -60,11 +62,19 @@ import org.slf4j.LoggerFactory
  * itself; this service stamps a `convo_requests` extension row carrying that id
  * before collecting the [ReplyEvent] flow. The response side of the log is owned
  * entirely by [LlmCallLog] (RFC 106); this service never writes a response row.
+ *
+ * The unit of budget admission is the TURN, not the individual provider call
+ * (RFC 109): [budgetService] is consulted once in each turn's pre-flight
+ * transaction — the last point where the outcome can still be a sealed variant
+ * with nothing persisted — and an admitted turn then runs to its terminal without
+ * being re-gated, so a half-answered turn is never stranded for spend already made.
+ * The parameter is undefaulted: a root cannot ship an ungated coach by omission.
  */
 class CoachingService(
   private val database: Database,
   private val llmCallLog: LlmCallLog,
   private val config: CoachingConfig,
+  private val budgetService: BudgetService,
   private val tools: ToolRegistry = ToolRegistry(emptyList()),
 ) {
   private val logger = LoggerFactory.getLogger(CoachingService::class.java)
@@ -233,8 +243,20 @@ class CoachingService(
       }
 
     return runCatching {
-      val prepared =
+      val preFlight: PreFlight<StartConvoResult> =
         database.withConnection { session ->
+          // Budget first, before ConvosDao.create: a refused turn leaves no convo
+          // row, no convo_requests row, and no llm_requests row behind.
+          when (val verdict = budgetService.verdict(session, studentId).getOrThrow()) {
+            is BudgetVerdict.Exhausted -> {
+              return@withConnection PreFlight.Refused(StartConvoResult.BudgetExhausted(verdict.entitlement))
+            }
+
+            // Not dead: this arm is what makes the `when` exhaustive, so a third
+            // BudgetVerdict would fail to compile here instead of falling through
+            // as "allowed to spend". Do not collapse it back to an `is` check.
+            BudgetVerdict.Entitled -> {}
+          }
           val prompt = resolveSystemPrompt(session)
           val convo = ConvosDao.create(session, NewConvo(studentId, resolvedName)).getOrThrow()
           val messages = visibleHistory(session, convo.id) + ChatMessage.text(ChatRole.USER, message)
@@ -243,21 +265,31 @@ class CoachingService(
           // raises them naturally in its first reply.
           val pending = openExplicitCommitments(session, studentId)
           val pendingFits = openFitSuggestions(session, studentId)
-          Prepared(
-            convo,
-            prompt,
-            composeSystem(prompt, pending, pendingFits),
-            messages,
-            pending.map { it.id },
-            pendingFits.map { it.id },
+          PreFlight.Ready(
+            Prepared(
+              convo,
+              prompt,
+              composeSystem(prompt, pending, pendingFits),
+              messages,
+              pending.map { it.id },
+              pendingFits.map { it.id },
+            ),
           )
         }
-      val opener = openUserTurn(prepared)
-      StartConvoResult.Started(
-        convo = prepared.convo,
-        userTurn = opener.request,
-        reply = buildReplyFlow(prepared, opener, isFirstTurn = true),
-      )
+      when (preFlight) {
+        is PreFlight.Refused -> {
+          preFlight.result
+        }
+
+        is PreFlight.Ready -> {
+          val opener = openUserTurn(preFlight.prepared)
+          StartConvoResult.Started(
+            convo = preFlight.prepared.convo,
+            userTurn = opener.request,
+            reply = buildReplyFlow(preFlight.prepared, opener, isFirstTurn = true),
+          )
+        }
+      }
     }
   }
 
@@ -272,31 +304,63 @@ class CoachingService(
     }
 
     return runCatching {
-      val prepared =
+      val preFlight: PreFlight<PostTurnResult> =
         database.withConnection { session ->
-          val owned = loadOwned(session, convoId, studentId)
-          if (owned == null) {
-            null
-          } else {
-            val prompt = resolveSystemPrompt(session)
-            val messages = visibleHistory(session, convoId) + ChatMessage.text(ChatRole.USER, message)
-            // postTurn never surfaces commitments or fit suggestions: only a new
-            // conversation opens with reflection, so an insight is not re-raised
-            // mid-conversation.
-            Prepared(owned, prompt, prompt.body, messages, emptyList(), emptyList())
+          // Ownership outranks budget: a missing, soft-deleted, or foreign convo
+          // stays NotFound, so only an owned convo can learn its student's budget
+          // state.
+          val owned =
+            loadOwned(session, convoId, studentId)
+              ?: return@withConnection PreFlight.Refused(PostTurnResult.NotFound)
+          when (val verdict = budgetService.verdict(session, studentId).getOrThrow()) {
+            is BudgetVerdict.Exhausted -> {
+              return@withConnection PreFlight.Refused(PostTurnResult.BudgetExhausted(verdict.entitlement))
+            }
+
+            // Not dead: this arm is what makes the `when` exhaustive, so a third
+            // BudgetVerdict would fail to compile here instead of falling through
+            // as "allowed to spend". Do not collapse it back to an `is` check.
+            BudgetVerdict.Entitled -> {}
           }
+          val prompt = resolveSystemPrompt(session)
+          val messages = visibleHistory(session, convoId) + ChatMessage.text(ChatRole.USER, message)
+          // postTurn never surfaces commitments or fit suggestions: only a new
+          // conversation opens with reflection, so an insight is not re-raised
+          // mid-conversation.
+          PreFlight.Ready(Prepared(owned, prompt, prompt.body, messages, emptyList(), emptyList()))
         }
-      if (prepared == null) {
-        PostTurnResult.NotFound
-      } else {
-        val opener = openUserTurn(prepared)
-        PostTurnResult.Started(
-          convo = prepared.convo,
-          userTurn = opener.request,
-          reply = buildReplyFlow(prepared, opener, isFirstTurn = false),
-        )
+      when (preFlight) {
+        is PreFlight.Refused -> {
+          preFlight.result
+        }
+
+        is PreFlight.Ready -> {
+          val opener = openUserTurn(preFlight.prepared)
+          PostTurnResult.Started(
+            convo = preFlight.prepared.convo,
+            userTurn = opener.request,
+            reply = buildReplyFlow(preFlight.prepared, opener, isFirstTurn = false),
+          )
+        }
       }
     }
+  }
+
+  /**
+   * What a turn's synchronous pre-flight transaction decided: either the turn is
+   * [Ready] to run, or the pre-flight already [Refused] it and carries the exact
+   * caller-facing outcome ([StartConvoResult] or [PostTurnResult]). Each method's
+   * refusals are then just its own result type's arms, so neither path needs a
+   * null standing in for one of several distinct reasons.
+   */
+  private sealed interface PreFlight<out R> {
+    class Ready(
+      val prepared: Prepared,
+    ) : PreFlight<Nothing>
+
+    class Refused<R>(
+      val result: R,
+    ) : PreFlight<R>
   }
 
   private class Prepared(

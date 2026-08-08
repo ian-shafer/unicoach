@@ -5,6 +5,7 @@ import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.TokenUsage
+import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -91,8 +92,17 @@ class FitLensHandlerTest {
           .getOrThrow(),
       ).getOrThrow()
 
+  /** These cases are about the handler's payload/result mapping, not the gate. */
+  private val generousBudget = generousBudgetService(database)
+
   private fun serviceWith(provider: ChatProvider): FitLensService =
-    FitLensService(database, ed.unicoach.coaching.LlmCallLog(provider, database), CollegeSearchService(database), config)
+    FitLensService(
+      database,
+      ed.unicoach.coaching.LlmCallLog(provider, database),
+      CollegeSearchService(database),
+      config,
+      generousBudget,
+    )
 
   private var unitIdCounter = 500000
 

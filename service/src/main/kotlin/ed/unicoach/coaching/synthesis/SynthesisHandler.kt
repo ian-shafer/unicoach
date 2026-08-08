@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.synthesis
 
+import ed.unicoach.coaching.budget.budgetSkipMessage
 import ed.unicoach.common.json.deserialize
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.queue.JobHandler
@@ -49,8 +50,20 @@ class SynthesisHandler(
     }
 
     return when (val result = synthesisService.synthesize(studentId)) {
-      is SynthesisResult.Success -> JobResult.Success
-      is SynthesisResult.TransientFailure -> JobResult.RetriableFailure(result.message, result.cause)
+      is SynthesisResult.Success -> {
+        JobResult.Success
+      }
+
+      // Terminal success rather than a failure, and logged rather than recorded:
+      // see [budgetSkipMessage] for why.
+      is SynthesisResult.SkippedBudgetExhausted -> {
+        logger.info(budgetSkipMessage("synthesis", result.studentId, result.entitlement))
+        JobResult.Success
+      }
+
+      is SynthesisResult.TransientFailure -> {
+        JobResult.RetriableFailure(result.message, result.cause)
+      }
     }
   }
 }

@@ -15,15 +15,15 @@ import ed.unicoach.coaching.PostTurnResult
 import ed.unicoach.coaching.ReplyEvent
 import ed.unicoach.coaching.StartConvoResult
 import ed.unicoach.coaching.UpdateConvoResult
+import ed.unicoach.coaching.budget.Entitlement
+import ed.unicoach.coaching.budget.budgetSkipMessage
 import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.db.models.ConvoRequestId
 import ed.unicoach.db.models.ConvoWithActivity
-import ed.unicoach.db.models.Student
-import ed.unicoach.db.models.User
+import ed.unicoach.db.models.StudentId
 import ed.unicoach.rest.auth.SessionConfig
-import ed.unicoach.rest.auth.resolveCaller
 import ed.unicoach.rest.models.Conversation
 import ed.unicoach.rest.models.ConversationCreatedEvent
 import ed.unicoach.rest.models.ConversationListResponse
@@ -67,13 +67,13 @@ import java.time.Instant
 import java.util.UUID
 
 class ConvoRouteHandler(
-  private val authService: AuthService,
-  private val studentService: StudentService,
+  authService: AuthService,
+  studentService: StudentService,
   private val coachingService: CoachingService,
-  private val sessionConfig: SessionConfig,
+  sessionConfig: SessionConfig,
   private val queueService: ed.unicoach.queue.QueueService,
   private val extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
-) {
+) : CallerResolution by SessionCallerResolution(authService, studentService, sessionConfig) {
   private val logger = org.slf4j.LoggerFactory.getLogger(ConvoRouteHandler::class.java)
 
   // SSE mapper: like configureSerialization but INDENT_OUTPUT must be off (a
@@ -114,18 +114,6 @@ class ConvoRouteHandler(
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Caller resolution
-  // ---------------------------------------------------------------------------
-
-  private suspend fun RoutingContext.resolveUser(): User? = call.resolveCaller(authService, sessionConfig)?.user
-
-  private suspend fun RoutingContext.resolveStudent(user: User): Student? = studentService.getStudentForUser(user.id).getOrThrow()
-
-  private suspend fun RoutingContext.respondUnauthorized() {
-    call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
-  }
-
   private suspend fun RoutingContext.respondNotFound() {
     call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.NOT_FOUND, "No such conversation"))
   }
@@ -147,6 +135,10 @@ class ConvoRouteHandler(
     when (val outcome = coachingService.startConvo(student.id, request.message, request.name).getOrThrow()) {
       is StartConvoResult.ValidationFailure -> {
         call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
+      }
+
+      is StartConvoResult.BudgetExhausted -> {
+        respondBudgetExhausted(student.id, outcome.entitlement)
       }
 
       is StartConvoResult.Started -> {
@@ -241,6 +233,10 @@ class ConvoRouteHandler(
         respondNotFound()
       }
 
+      is PostTurnResult.BudgetExhausted -> {
+        respondBudgetExhausted(student.id, outcome.entitlement)
+      }
+
       is PostTurnResult.Started -> {
         when (val terminal = drain(outcome.reply)) {
           is ReplyEvent.Completed -> {
@@ -276,6 +272,10 @@ class ConvoRouteHandler(
         call.respond(HttpStatusCode.BadRequest, validationError(outcome.fieldErrors))
       }
 
+      is StartConvoResult.BudgetExhausted -> {
+        respondBudgetExhausted(student.id, outcome.entitlement)
+      }
+
       is StartConvoResult.Started -> {
         streamReply(outcome.reply, outcome.convo.id) { writer ->
           writeSseEvent(
@@ -304,6 +304,10 @@ class ConvoRouteHandler(
 
       PostTurnResult.NotFound -> {
         respondNotFound()
+      }
+
+      is PostTurnResult.BudgetExhausted -> {
+        respondBudgetExhausted(student.id, outcome.entitlement)
       }
 
       is PostTurnResult.Started -> {
@@ -362,8 +366,27 @@ class ConvoRouteHandler(
   // Outcome → HTTP helpers
   // ---------------------------------------------------------------------------
 
-  private suspend fun RoutingContext.respondStudentProfileRequired() {
-    call.respond(HttpStatusCode.Conflict, ErrorResponse(ErrorCode.STUDENT_PROFILE_REQUIRED, "A student profile is required"))
+  /**
+   * The coaching allowance is spent (RFC 109). The SSE handlers reach this from
+   * the turn pre-flight, before `respondBytesWriter` opens the stream, so both
+   * the plain and the streaming endpoint answer with this same plain-JSON 402 —
+   * never a mid-stream error frame. The body names no dollars, tokens, or
+   * provider.
+   *
+   * The deciding [Entitlement] goes to the log instead, through the same
+   * [budgetSkipMessage] the background passes use: a chat refusal writes no run
+   * row either, so this line is the operator's only "why was this student
+   * blocked" trace — and chat is the pass that produces the most of them.
+   */
+  private suspend fun RoutingContext.respondBudgetExhausted(
+    studentId: StudentId,
+    entitlement: Entitlement,
+  ) {
+    logger.info(budgetSkipMessage("chat", studentId, entitlement))
+    call.respond(
+      HttpStatusCode.PaymentRequired,
+      ErrorResponse(ErrorCode.COACHING_BUDGET_EXHAUSTED, "Coaching allowance exhausted"),
+    )
   }
 
   private suspend fun RoutingContext.respondValidationFailed(

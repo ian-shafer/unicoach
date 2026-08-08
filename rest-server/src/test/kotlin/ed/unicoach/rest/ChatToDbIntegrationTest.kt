@@ -8,6 +8,7 @@ import ed.unicoach.chat.Replay
 import ed.unicoach.chat.ScriptedAnthropicTransport
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
@@ -116,6 +117,7 @@ class ChatToDbIntegrationTest {
             queueService,
             extractionDisabled,
             requestLoggingConfig,
+            BudgetConfig.from(config).getOrThrow(),
           )
         }
       server.start(wait = false)

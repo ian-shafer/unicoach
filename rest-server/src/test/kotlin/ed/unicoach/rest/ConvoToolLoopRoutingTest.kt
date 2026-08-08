@@ -8,6 +8,7 @@ import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
@@ -147,6 +148,7 @@ class ConvoToolLoopRoutingTest {
             queueService,
             extractionConfig,
             requestLoggingConfig,
+            BudgetConfig.from(config).getOrThrow(),
           )
         }
       server.start(wait = false)

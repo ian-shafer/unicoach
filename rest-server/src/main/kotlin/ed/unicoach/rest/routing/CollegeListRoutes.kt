@@ -12,11 +12,8 @@ import ed.unicoach.db.models.CollegeListEntryId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.Observation
 import ed.unicoach.db.models.ObservationId
-import ed.unicoach.db.models.Student
-import ed.unicoach.db.models.User
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.auth.SessionConfig
-import ed.unicoach.rest.auth.resolveCaller
 import ed.unicoach.rest.models.CollegeListEntryResponse
 import ed.unicoach.rest.models.CollegeListResponse
 import ed.unicoach.rest.models.CreateCollegeListEntryRequest
@@ -41,11 +38,11 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 
 class CollegeListRouteHandler(
-  private val authService: AuthService,
-  private val studentService: StudentService,
+  authService: AuthService,
+  studentService: StudentService,
   private val collegeListService: CollegeListService,
-  private val sessionConfig: SessionConfig,
-) {
+  sessionConfig: SessionConfig,
+) : CallerResolution by SessionCallerResolution(authService, studentService, sessionConfig) {
   fun registerRoutes(route: Route) {
     route.route("/api/v1/students/me/college-list") {
       route("") {
@@ -60,22 +57,6 @@ class CollegeListRouteHandler(
         rejectUnsupportedMethods(HttpMethod.Get, HttpMethod.Patch, HttpMethod.Delete)
       }
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Caller resolution
-  // ---------------------------------------------------------------------------
-
-  private suspend fun RoutingContext.resolveUser(): User? = call.resolveCaller(authService, sessionConfig)?.user
-
-  private suspend fun RoutingContext.resolveStudent(user: User): Student? = studentService.getStudentForUser(user.id).getOrThrow()
-
-  private suspend fun RoutingContext.respondUnauthorized() {
-    call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
-  }
-
-  private suspend fun RoutingContext.respondStudentProfileRequired() {
-    call.respond(HttpStatusCode.Conflict, ErrorResponse(ErrorCode.STUDENT_PROFILE_REQUIRED, "A student profile is required"))
   }
 
   private suspend fun RoutingContext.respondNotFound(

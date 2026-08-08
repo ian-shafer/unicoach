@@ -9,6 +9,7 @@ import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
@@ -153,6 +154,7 @@ class ConvoExtractionEnqueueTest {
             queueService,
             enabledConfig,
             requestLoggingConfig,
+            BudgetConfig.from(config).getOrThrow(),
           )
         }
       enabledServer.start(wait = false)
@@ -179,6 +181,7 @@ class ConvoExtractionEnqueueTest {
             queueService,
             disabledConfig,
             requestLoggingConfig,
+            BudgetConfig.from(config).getOrThrow(),
           )
         }
       disabledServer.start(wait = false)

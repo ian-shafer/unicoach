@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.fitlens
 
+import ed.unicoach.coaching.budget.Entitlement
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.StudentId
@@ -56,6 +57,16 @@ sealed interface SkipReason {
     override val studentId: StudentId,
   ) : SkipReason
 
+  /**
+   * The student's lifetime coaching allowance is spent (RFC 109). Carries the
+   * [entitlement] the skip was decided on so the logged line states spent
+   * against allowance.
+   */
+  data class BudgetExhausted(
+    override val studentId: StudentId,
+    val entitlement: Entitlement,
+  ) : SkipReason
+
   data class StudentSoftDeleted(
     override val studentId: StudentId,
   ) : SkipReason
@@ -96,6 +107,12 @@ fun SkipReason.toDisplay(): String =
 
     is SkipReason.StudentSoftDeleted -> {
       "student soft-deleted (student=${studentId.asString})"
+    }
+
+    is SkipReason.BudgetExhausted -> {
+      "coaching budget exhausted " +
+        "(spent=${entitlement.spent.toUsdString()} of allowance=${entitlement.allowance.toUsdString()} USD) " +
+        "(student=${studentId.asString})"
     }
 
     is SkipReason.BelowMinClaimsFloor -> {

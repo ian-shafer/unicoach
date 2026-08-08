@@ -39,10 +39,6 @@ private fun toPublicStudent(student: Student): PublicStudent =
     updatedAt = student.updatedAt,
   )
 
-private suspend fun RoutingContext.respondUnauthorized() {
-  call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Not authenticated"))
-}
-
 private suspend fun RoutingContext.respondStudentNotFound() {
   call.respond(HttpStatusCode.NotFound, ErrorResponse(ErrorCode.STUDENT_NOT_FOUND, "No student profile for the current user"))
 }
@@ -55,7 +51,7 @@ class StudentRouteHandler(
   private val authService: AuthService,
   private val studentService: StudentService,
   private val sessionConfig: SessionConfig,
-) {
+) : CallerResolution by SessionCallerResolution(authService, studentService, sessionConfig) {
   fun registerRoutes(route: Route) {
     route.route("/api/v1/students") {
       route("") {
@@ -70,8 +66,6 @@ class StudentRouteHandler(
       }
     }
   }
-
-  private suspend fun RoutingContext.resolveUser(): User? = call.resolveCaller(authService, sessionConfig)?.user
 
   private suspend fun RoutingContext.handleCreate() {
     val user = resolveUser()

@@ -1,10 +1,14 @@
 package ed.unicoach.coaching.extraction
 
 import ed.unicoach.chat.LogOnlyChatProvider
+import ed.unicoach.coaching.budget.Entitlement
+import ed.unicoach.coaching.budget.testBudgetService
+import ed.unicoach.common.money.Nanodollars
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequestId
+import ed.unicoach.db.models.StudentId
 import ed.unicoach.queue.JobResult
 import ed.unicoach.queue.JobType
 import kotlinx.coroutines.runBlocking
@@ -46,10 +50,21 @@ class ExtractionHandlerTest {
           .getOrThrow(),
       ).getOrThrow()
 
+  /**
+   * The stub never reaches its read phase, so the allowance it is wired with is
+   * immaterial — but the parameter is undefaulted, so it must still be stated.
+   */
+  private val budgetService = testBudgetService(database, freeAllowanceUsd = "5.00")
+
   /** A stub service returning a fixed result, recording the call args. */
   private inner class StubService(
     private val result: ExtractionResult,
-  ) : ExtractionService(database, ed.unicoach.coaching.LlmCallLog(LogOnlyChatProvider(), database), extractionConfig) {
+  ) : ExtractionService(
+      database,
+      ed.unicoach.coaching.LlmCallLog(LogOnlyChatProvider(), database),
+      extractionConfig,
+      budgetService,
+    ) {
     var lastConvoId: ConvoId? = null
     var lastThrough: ConvoRequestId? = null
 
@@ -119,6 +134,27 @@ class ExtractionHandlerTest {
       assertTrue(result is JobResult.RetriableFailure, "got $result")
       assertEquals("boom", result.message)
       assertEquals(cause, result.cause)
+    }
+
+  @Test
+  fun `a budget skip returns Success, so the job neither retries nor dead-letters`() =
+    runBlocking {
+      val studentId = StudentId(UUID.randomUUID())
+      val stub =
+        StubService(
+          ExtractionResult.SkippedBudgetExhausted(
+            studentId,
+            Entitlement(spent = Nanodollars.of(5_000_000_000), allowance = Nanodollars.of(5_000_000_000)),
+          ),
+        )
+      val handler = ExtractionHandler(stub)
+      val payload =
+        buildJsonObject {
+          put("convoId", UUID.randomUUID().toString())
+          put("throughRequestId", 3L)
+        }
+
+      assertEquals(JobResult.Success, handler.execute(payload), "retrying cannot restore an allowance")
     }
 
   @Test

@@ -3,6 +3,9 @@ package ed.unicoach.coaching.synthesis
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.budget.exhaustedBudgetService
+import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimsDao
@@ -87,8 +90,15 @@ class SynthesisHandlerTest {
           .getOrThrow(),
       ).getOrThrow()
 
-  private fun serviceWith(provider: ChatProvider): SynthesisService =
-    SynthesisService(database, ed.unicoach.coaching.LlmCallLog(provider, database), config)
+  /** These cases are about the handler's payload/result mapping, not the gate. */
+  private val generousBudget = generousBudgetService(database)
+
+  private val exhaustedBudget = exhaustedBudgetService(database)
+
+  private fun serviceWith(
+    provider: ChatProvider,
+    budget: BudgetService = generousBudget,
+  ): SynthesisService = SynthesisService(database, ed.unicoach.coaching.LlmCallLog(provider, database), config, budget)
 
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
@@ -167,6 +177,19 @@ class SynthesisHandlerTest {
 
       val result = handler.execute(payload)
       assertTrue(result is JobResult.RetriableFailure, "got $result")
+    }
+
+  @Test
+  fun `a budget skip returns Success, so the job neither retries nor dead-letters`() =
+    runBlocking {
+      // A student with a fresh active claim would otherwise run the pass; the
+      // exhausted allowance turns it into a named skip inside the read phase.
+      val student = createStudent()
+      createClaim(student)
+      val handler = SynthesisHandler(serviceWith(RejectingProvider(), budget = exhaustedBudget))
+      val payload = buildJsonObject { put("studentId", student.value.toString()) }
+
+      assertEquals(JobResult.Success, handler.execute(payload), "retrying cannot restore an allowance")
     }
 
   @Test

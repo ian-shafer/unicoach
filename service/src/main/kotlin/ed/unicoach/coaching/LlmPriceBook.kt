@@ -101,7 +101,11 @@ class LlmPriceBook private constructor(
   }
 
   companion object {
-    private val THOUSAND = BigDecimal(1000)
+    /**
+     * `$`/MTok → nano-dollars per token: `× 1e9` nano-dollars to the dollar,
+     * `÷ 1e6` tokens to the MTok, so `× 10^3` net.
+     */
+    private const val NANO_PER_TOKEN_SCALE_DIGITS = 3
 
     /** No prices, no default; every [costOf] returns null. The cost-agnostic constructor default. */
     val EMPTY: LlmPriceBook = LlmPriceBook(emptyMap(), null)
@@ -129,37 +133,36 @@ class LlmPriceBook private constructor(
 
     private fun modelPrice(rates: Config): ModelPrice =
       ModelPrice(
-        inputNanoPerToken = nanoPerToken(rates, "input"),
-        outputNanoPerToken = nanoPerToken(rates, "output"),
-        cacheReadNanoPerToken = nanoPerToken(rates, "cacheRead"),
-        cacheWriteNanoPerToken = nanoPerToken(rates, "cacheWrite"),
+        inputNanoPerToken = parseNanoPerToken(rates, "input"),
+        outputNanoPerToken = parseNanoPerToken(rates, "output"),
+        cacheReadNanoPerToken = parseNanoPerToken(rates, "cacheRead"),
+        cacheWriteNanoPerToken = parseNanoPerToken(rates, "cacheWrite"),
       )
 
     /**
-     * Converts one `$per_MTok` rate at [key] to integer nano-dollars per token
-     * (`× 1000`). The rate's exact decimal is taken from its original text (not a
-     * lossy binary double), so `toBigIntegerExact` throws — surfacing as
-     * [Result.failure] — when the rate is finer than a tenth of a cent per MTok.
-     * A negative rate is rejected explicitly here (before it ever reaches
-     * [Nanodollars]'s own non-negative guard) so the failure names the offending
-     * rate [key].
+     * Converts one `$per_MTok` rate at [key] to integer nano-dollars per token.
+     * The rate's exact decimal is taken from its original text (not a lossy
+     * binary double), and [Nanodollars.fromExactDecimal] applies the shared
+     * reject-rather-than-round policy to it.
+     *
+     * Both steps sit inside the same catch, so EVERY way this can fail — text
+     * that is not a decimal at all ([BigDecimal]'s own `NumberFormatException`,
+     * which names neither), as much as a negative or too-fine rate — surfaces
+     * out of [from] as a [Result.failure] naming the offending [key], its raw
+     * text, and this reader's unit.
      */
-    private fun nanoPerToken(
+    private fun parseNanoPerToken(
       rates: Config,
       key: String,
     ): Nanodollars {
-      val rate = BigDecimal(rates.getValue(key).unwrapped().toString())
-      require(rate.signum() >= 0) { "llmPricing rate [$key] must be non-negative, got [$rate]" }
-      val nanoPerMTok = rate.multiply(THOUSAND)
-      return try {
-        Nanodollars.of(nanoPerMTok.toBigIntegerExact().longValueExact())
-      } catch (e: ArithmeticException) {
-        throw IllegalArgumentException(
-          "llmPricing rate [$key] = [$rate] has no exact nano-dollar-per-token form " +
-            "(finer than a tenth of a cent per MTok)",
-          e,
-        )
-      }
+      val raw = rates.getValue(key).unwrapped().toString()
+      return runCatching { Nanodollars.fromExactDecimal(BigDecimal(raw), NANO_PER_TOKEN_SCALE_DIGITS) }
+        .getOrElse {
+          throw IllegalArgumentException(
+            "llmPricing rate [$key] = [$raw] (\$/MTok, no finer than a tenth of a cent per MTok): [${it.message}]",
+            it,
+          )
+        }
     }
   }
 }

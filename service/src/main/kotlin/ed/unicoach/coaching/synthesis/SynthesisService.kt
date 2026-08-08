@@ -8,6 +8,9 @@ import ed.unicoach.coaching.ForcedToolInput
 import ed.unicoach.coaching.JsonParseFailure
 import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.ToolSchema
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.budget.BudgetVerdict
+import ed.unicoach.coaching.budget.Entitlement
 import ed.unicoach.coaching.category
 import ed.unicoach.coaching.forcedToolChoice
 import ed.unicoach.coaching.readForcedTool
@@ -64,11 +67,16 @@ import java.time.Instant
  * override a method. [clock] is the sole date input the pass needs (the timing
  * lens reasons over "today"); the freshness gate and every lifecycle timestamp
  * are DB-clocked through `NOW()` defaults and `lastAppliedAt`.
+ *
+ * [budgetService] gates the pass (RFC 109): an exhausted student's pass skips in
+ * the read phase, spending nothing and writing no run row. The parameter is
+ * undefaulted so a root cannot wire an ungated pass by omission.
  */
 class SynthesisService(
   private val database: Database,
   private val llmCallLog: LlmCallLog,
   private val config: SynthesisConfig,
+  private val budgetService: BudgetService,
   private val clock: Clock = Clock.systemUTC(),
 ) {
   private val logger = LoggerFactory.getLogger(SynthesisService::class.java)
@@ -87,8 +95,17 @@ class SynthesisService(
       }
 
     return when (readout) {
-      is ReadPhase.NoOp -> SynthesisResult.Success
-      is ReadPhase.Ready -> runLlmAndWrite(studentId, readout)
+      is ReadPhase.NoOp -> {
+        SynthesisResult.Success
+      }
+
+      is ReadPhase.BudgetExhausted -> {
+        SynthesisResult.SkippedBudgetExhausted(readout.studentId, readout.entitlement)
+      }
+
+      is ReadPhase.Ready -> {
+        runLlmAndWrite(studentId, readout)
+      }
     }
   }
 
@@ -108,6 +125,22 @@ class SynthesisService(
       if (student.deletedAt != null) return@withConnection ReadPhase.NoOp
 
       AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
+
+      // Budget gate (RFC 109), taken under the lock so the verdict is consistent
+      // with the pass it guards, and before any further read. A skip is a named
+      // outcome, distinct from the anonymous NoOp: nothing to reflect on and
+      // blocked from reflecting are different answers to "why did this student's
+      // synthesis stop running".
+      when (val verdict = budgetService.verdict(session, studentId).getOrThrow()) {
+        is BudgetVerdict.Exhausted -> {
+          return@withConnection ReadPhase.BudgetExhausted(studentId, verdict.entitlement)
+        }
+
+        // Not dead: this arm is what makes the `when` exhaustive, so a third
+        // BudgetVerdict would fail to compile here instead of falling through as
+        // "allowed to spend". Do not collapse it back to an `is` check.
+        BudgetVerdict.Entitled -> {}
+      }
 
       val lastAppliedAt = SynthesisRunsDao.lastAppliedAt(session, studentId).getOrThrow()
 
@@ -525,6 +558,11 @@ class SynthesisService(
 
   private sealed interface ReadPhase {
     data object NoOp : ReadPhase
+
+    data class BudgetExhausted(
+      val studentId: StudentId,
+      val entitlement: Entitlement,
+    ) : ReadPhase
 
     data class Ready(
       val student: Student,

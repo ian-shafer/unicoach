@@ -6,6 +6,9 @@ import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.ContentBlocks
 import ed.unicoach.chat.TokenUsage
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.budget.exhaustedBudgetService
+import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimsDao
@@ -103,11 +106,16 @@ class SynthesisServiceTest {
 
   private val fixedClock: Clock = Clock.fixed(Instant.parse("2027-01-15T00:00:00Z"), ZoneOffset.UTC)
 
+  private val generousBudget = generousBudgetService(database)
+
+  private val exhaustedBudget = exhaustedBudgetService(database)
+
   private fun service(
     provider: ChatProvider,
     cfg: SynthesisConfig = config,
     clock: Clock = fixedClock,
-  ): SynthesisService = SynthesisService(database, ed.unicoach.coaching.LlmCallLog(provider, database), cfg, clock)
+    budget: BudgetService = generousBudget,
+  ): SynthesisService = SynthesisService(database, ed.unicoach.coaching.LlmCallLog(provider, database), cfg, budget, clock)
 
   private fun configWith(overrides: String): SynthesisConfig =
     SynthesisConfig
@@ -853,5 +861,41 @@ class SynthesisServiceTest {
       assertTrue(result is SynthesisResult.Success, "lost-race pass returns Success, got $result")
       // The interleaved pass added exactly one applied run; the lost-race pass wrote none.
       assertEquals(runsAfterFirst + 1, runRows(student))
+    }
+
+  // ---------------------------------------------------------------------------
+  // Budget gate (RFC 109)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `an exhausted student's pass skips by name, spending nothing and writing no run`() =
+    runBlocking {
+      val student = createStudent()
+      createClaim(student, "wants to study CS")
+      val llmRequestsBefore = countAllLlmRequests()
+
+      val result =
+        service(JsonProvider(jsonDoc = gapDoc()), budget = exhaustedBudget).synthesize(student)
+
+      assertTrue(result is SynthesisResult.SkippedBudgetExhausted, "got $result")
+      assertEquals(student, result.studentId, "the skip names the student it was decided for")
+      assertTrue(result.entitlement.exhausted)
+      assertEquals(llmRequestsBefore, countAllLlmRequests(), "a skipped pass makes no provider call")
+      assertEquals(0, runRows(student), "a pre-LLM skip writes no run row")
+      assertEquals(
+        null,
+        ed.unicoach.db.dao.SynthesisRunsDao
+          .lastAppliedAt(sqlSession, student)
+          .getOrThrow(),
+        "the freshness marker is untouched",
+      )
+    }
+
+  private fun countAllLlmRequests(): Int =
+    connection.prepareStatement("SELECT COUNT(*) FROM llm_requests").use { stmt ->
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getInt(1)
+      }
     }
 }

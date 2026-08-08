@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import ed.unicoach.rest.routing.AuthRouteHandler
+import ed.unicoach.rest.routing.CoachingUsageRouteHandler
 import ed.unicoach.rest.routing.CollegeListRouteHandler
 import ed.unicoach.rest.routing.ConvoRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
@@ -37,6 +38,7 @@ fun Application.configureRouting(
   queueService: ed.unicoach.queue.QueueService,
   extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
   collegeListService: ed.unicoach.coaching.collegelist.CollegeListService,
+  budgetService: ed.unicoach.coaching.budget.BudgetService,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
@@ -44,6 +46,8 @@ fun Application.configureRouting(
     ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)
   val collegeListRouteHandler =
     CollegeListRouteHandler(authService, studentService, collegeListService, sessionConfig)
+  val coachingUsageRouteHandler =
+    CoachingUsageRouteHandler(authService, studentService, budgetService, sessionConfig)
   routing {
     route("/healthz") {
       get {
@@ -58,5 +62,6 @@ fun Application.configureRouting(
     studentRouteHandler.registerRoutes(this)
     convoRouteHandler.registerRoutes(this)
     collegeListRouteHandler.registerRoutes(this)
+    coachingUsageRouteHandler.registerRoutes(this)
   }
 }

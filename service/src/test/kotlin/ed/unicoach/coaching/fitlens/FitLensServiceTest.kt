@@ -5,6 +5,9 @@ import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.TokenUsage
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.budget.exhaustedBudgetService
+import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -112,10 +115,16 @@ class FitLensServiceTest {
           .withFallback(baseConfig),
       ).getOrThrow()
 
+  private val generousBudget = generousBudgetService(database)
+
+  private val exhaustedBudget = exhaustedBudgetService(database)
+
   private fun service(
     provider: ChatProvider,
     cfg: FitLensConfig = config,
-  ): FitLensService = FitLensService(database, ed.unicoach.coaching.LlmCallLog(provider, database), CollegeSearchService(database), cfg)
+    budget: BudgetService = generousBudget,
+  ): FitLensService =
+    FitLensService(database, ed.unicoach.coaching.LlmCallLog(provider, database), CollegeSearchService(database), cfg, budget)
 
   // ---------------------------------------------------------------------------
   // Fakes
@@ -391,6 +400,31 @@ class FitLensServiceTest {
       assertTrue(result is FitLensResult.Skipped, "Expected Skipped, got: $result")
       assertEquals(0, provider.requests.size, "no LLM call is made below the minClaims floor")
       assertEquals(0, runRows(student), "no run row written for a pre-LLM skip")
+    }
+
+  @Test
+  fun `budget gate - an exhausted student skips by name with no LLM call and no run`() =
+    runBlocking {
+      val student = createStudent()
+      // Enough signal to clear every other pre-LLM gate, so only the budget can
+      // be what stopped the pass.
+      createClaims(student, 5)
+      createCollege()
+
+      val provider = scripted("""{"states":["CA"]}""")
+      val result = service(provider, budget = exhaustedBudget).discover(student)
+
+      assertTrue(result is FitLensResult.Skipped, "Expected Skipped, got: $result")
+      val reason = result.reason
+      assertTrue(reason is SkipReason.BudgetExhausted, "Expected a named budget skip, got: $reason")
+      assertEquals(student, reason.studentId)
+      assertTrue(reason.entitlement.exhausted)
+      assertEquals(0, provider.requests.size, "an exhausted student's pass makes neither LLM call")
+      assertEquals(0, runRows(student), "no run row written for a pre-LLM skip")
+      assertTrue(
+        reason.toDisplay().contains("coaching budget exhausted") && reason.toDisplay().contains("0.000000"),
+        "the display line states spent against allowance, got: ${reason.toDisplay()}",
+      )
     }
 
   @Test

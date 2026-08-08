@@ -7,6 +7,8 @@ import ed.unicoach.chat.ChatRole
 import ed.unicoach.coaching.ForcedToolInput
 import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.ToolSchema
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.budget.BudgetVerdict
 import ed.unicoach.coaching.forcedToolChoice
 import ed.unicoach.coaching.readForcedTool
 import ed.unicoach.college.CollegeSearchService
@@ -59,12 +61,18 @@ import org.slf4j.LoggerFactory
  *
  * [CollegeSearchService] is constructor-injected (a thin orchestrator over
  * [Database]), not built internally.
+ *
+ * [budgetService] gates the pass (RFC 109): an exhausted student's pass skips in
+ * the read phase with a named [SkipReason], spending nothing on either call and
+ * writing no run row. The parameter is undefaulted so a root cannot wire an
+ * ungated pass by omission.
  */
 class FitLensService(
   private val database: Database,
   private val llmCallLog: LlmCallLog,
   private val collegeSearchService: CollegeSearchService,
   private val config: FitLensConfig,
+  private val budgetService: BudgetService,
 ) {
   private val logger = LoggerFactory.getLogger(FitLensService::class.java)
 
@@ -154,6 +162,20 @@ class FitLensService(
       if (student.deletedAt != null) return@withConnection ReadPhase.Skip(SkipReason.StudentSoftDeleted(studentId))
 
       AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
+
+      // Budget gate (RFC 109), taken under the lock so the verdict is consistent
+      // with the pass it guards, and ahead of every other gate: an exhausted
+      // student is blocked from spending regardless of how much signal they have.
+      when (val verdict = budgetService.verdict(session, studentId).getOrThrow()) {
+        is BudgetVerdict.Exhausted -> {
+          return@withConnection ReadPhase.Skip(SkipReason.BudgetExhausted(studentId, verdict.entitlement))
+        }
+
+        // Not dead: this arm is what makes the `when` exhaustive, so a third
+        // BudgetVerdict would fail to compile here instead of falling through as
+        // "allowed to spend". Do not collapse it back to an `is` check.
+        BudgetVerdict.Entitled -> {}
+      }
 
       val activeClaims = ClaimsDao.listActiveByStudent(session, studentId).getOrThrow()
       // minClaims floor: too little signal to search on.

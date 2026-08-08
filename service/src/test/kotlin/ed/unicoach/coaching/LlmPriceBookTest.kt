@@ -136,6 +136,27 @@ class LlmPriceBookTest {
   }
 
   @Test
+  fun `from rejects a rate that is not a number, naming the key and the raw text`() {
+    // A typo, a currency symbol, an unresolved substitution: the text never
+    // reaches Nanodollars, so only the reader's own wrapper can say what broke.
+    val result =
+      bookFrom(
+        """
+        llmPricing {
+          models { "m" { input = "3..00", output = 15.00, cacheRead = 0.30, cacheWrite = 3.75 } }
+          default { input = 10.00, output = 50.00, cacheRead = 1.00, cacheWrite = 12.50 }
+        }
+        """.trimIndent(),
+      )
+    assertTrue(result.isFailure, "a rate that is not a decimal must fail the load")
+    val message = result.exceptionOrNull()?.message
+    assertTrue(
+      message?.contains("input") == true && message.contains("3..00"),
+      "the failure must name the offending rate key and value, got: $message",
+    )
+  }
+
+  @Test
   fun `from rejects a negative rate`() {
     val result =
       bookFrom(

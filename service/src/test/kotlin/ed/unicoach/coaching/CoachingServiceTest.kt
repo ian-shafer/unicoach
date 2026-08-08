@@ -8,6 +8,8 @@ import ed.unicoach.chat.ChatRole
 import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.LogOnlyChatProvider
 import ed.unicoach.chat.TokenUsage
+import ed.unicoach.coaching.budget.exhaustedBudgetService
+import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CommitmentsDao
@@ -121,8 +123,16 @@ class CoachingServiceTest {
           .getOrThrow(),
       ).getOrThrow()
 
+  private val generousBudget = generousBudgetService(database)
+
+  private val exhaustedBudget = exhaustedBudgetService(database)
+
   private fun service(provider: ChatProvider = LogOnlyChatProvider()): CoachingService =
-    CoachingService(database, LlmCallLog(provider, database), config)
+    CoachingService(database, LlmCallLog(provider, database), config, generousBudget)
+
+  /** The same service as [service], but with every student's allowance already spent. */
+  private fun exhaustedService(provider: ChatProvider = LogOnlyChatProvider()): CoachingService =
+    CoachingService(database, LlmCallLog(provider, database), config, exhaustedBudget)
 
   /** A config with the RFC 93 opener injection disabled. */
   private val noSurfaceConfig =
@@ -138,7 +148,7 @@ class CoachingServiceTest {
       ).getOrThrow()
 
   private fun noSurfaceService(provider: ChatProvider): CoachingService =
-    CoachingService(database, LlmCallLog(provider, database), noSurfaceConfig)
+    CoachingService(database, LlmCallLog(provider, database), noSurfaceConfig, generousBudget)
 
   /** A config with the RFC 98 fit-lens opener contribution disabled (commitments still on). */
   private val noSurfaceFitConfig =
@@ -154,7 +164,7 @@ class CoachingServiceTest {
       ).getOrThrow()
 
   private fun noSurfaceFitService(provider: ChatProvider): CoachingService =
-    CoachingService(database, LlmCallLog(provider, database), noSurfaceFitConfig)
+    CoachingService(database, LlmCallLog(provider, database), noSurfaceFitConfig, generousBudget)
 
   private var unitIdCounter = 800000
 
@@ -354,7 +364,7 @@ class CoachingServiceTest {
     provider: ChatProvider,
     tools: ed.unicoach.chat.ToolRegistry,
     cfg: CoachingConfig = config,
-  ): CoachingService = CoachingService(database, LlmCallLog(provider, database), cfg, tools)
+  ): CoachingService = CoachingService(database, LlmCallLog(provider, database), cfg, generousBudget, tools)
 
   /**
    * A dispatcher over [Dispatchers.IO] that can PARK exactly one dispatched block
@@ -450,7 +460,7 @@ class CoachingServiceTest {
             .getOrThrow(),
         ).getOrThrow()
     val gatedDatabase = Database(dbConfig, gate)
-    return CoachingService(gatedDatabase, LlmCallLog(provider, database), cfg, tools) to gatedDatabase
+    return CoachingService(gatedDatabase, LlmCallLog(provider, database), cfg, generousBudget, tools) to gatedDatabase
   }
 
   private fun rejected(payload: JsonElement? = null) =
@@ -866,10 +876,63 @@ class CoachingServiceTest {
               """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9", surfaceCommitments=true, surfaceFitSuggestions=true, maxToolRounds=8 }""",
             ),
           ).getOrThrow()
-      val svc = CoachingService(database, LlmCallLog(LogOnlyChatProvider(), database), badConfig)
+      val svc = CoachingService(database, LlmCallLog(LogOnlyChatProvider(), database), badConfig, generousBudget)
       val result = svc.startConvo(student, "hi", null)
       assertTrue(result.isFailure)
       assertTrue(result.exceptionOrNull() is IllegalStateException, "got ${result.exceptionOrNull()}")
+    }
+
+  // ===========================================================================
+  // Budget gate (RFC 109)
+  // ===========================================================================
+
+  @Test
+  fun `startConvo is refused when the budget is exhausted, before anything is persisted`() =
+    runBlocking {
+      val student = createStudent()
+
+      val result = exhaustedService().startConvo(student, "hello", null).getOrThrow()
+
+      assertTrue(result is StartConvoResult.BudgetExhausted, "got [$result]")
+      assertTrue(result.entitlement.exhausted, "the refusal carries the entitlement it was decided on")
+      assertEquals(0, countAll("convos"), "a refused turn leaves no convo row")
+      assertEquals(0, countAll("convo_requests"), "a refused turn leaves no convo_requests row")
+      assertEquals(0, countAllLlmRequests(), "a refused turn never reaches the provider")
+    }
+
+  @Test
+  fun `postTurn is refused when the budget is exhausted, writing no new rows`() =
+    runBlocking {
+      val student = createStudent()
+      val started = service().startConvo(student, "hello", null).getOrThrow()
+      assertTrue(started is StartConvoResult.Started)
+      started.reply.toList()
+      val convoRequestsAfterFirstTurn = countAll("convo_requests")
+      val llmRequestsAfterFirstTurn = countAllLlmRequests()
+
+      val result = exhaustedService().postTurn(student, started.convo.id, "and again").getOrThrow()
+
+      assertTrue(result is PostTurnResult.BudgetExhausted, "got [$result]")
+      assertTrue(result.entitlement.exhausted, "the refusal carries the entitlement it was decided on")
+      assertEquals(convoRequestsAfterFirstTurn, countAll("convo_requests"), "no new convo_requests row")
+      assertEquals(llmRequestsAfterFirstTurn, countAllLlmRequests(), "no new llm_requests row")
+    }
+
+  @Test
+  fun `ownership outranks budget — a foreign convo stays NotFound`() =
+    runBlocking {
+      val owner = createStudent()
+      val stranger = createStudent()
+      val started = service().startConvo(owner, "hello", null).getOrThrow()
+      assertTrue(started is StartConvoResult.Started)
+      started.reply.toList()
+
+      val result = exhaustedService().postTurn(stranger, started.convo.id, "let me in").getOrThrow()
+
+      assertTrue(
+        result is PostTurnResult.NotFound,
+        "a convo the caller does not own must not leak its owner's budget state, got [$result]",
+      )
     }
 
   // ===========================================================================

@@ -6,6 +6,7 @@ import ed.unicoach.auth.VerificationEmailRenderer
 import ed.unicoach.chat.AnthropicChatProvider
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
@@ -115,6 +116,7 @@ class EmailSendE2eTest {
             queueService,
             extractionConfig,
             requestLoggingConfig,
+            BudgetConfig.from(config).getOrThrow(),
           )
         }
 

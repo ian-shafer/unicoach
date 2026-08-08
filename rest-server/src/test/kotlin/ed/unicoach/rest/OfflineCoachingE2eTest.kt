@@ -7,6 +7,8 @@ import ed.unicoach.chat.Replay
 import ed.unicoach.chat.ScriptedAnthropicTransport
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.budget.BudgetConfig
+import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionHandler
 import ed.unicoach.coaching.extraction.ExtractionService
@@ -81,6 +83,13 @@ class OfflineCoachingE2eTest {
     private lateinit var workerDatabase: Database
     private lateinit var extractionConfig: ExtractionConfig
     private lateinit var synthesisConfig: SynthesisConfig
+
+    /**
+     * The worker-side budget gate (RFC 109). e2e students spend far below the
+     * packaged allowance, so the real config admits every pass here — the gate's
+     * refusals are pinned in CoachingBudgetRoutingTest.
+     */
+    private lateinit var workerBudgetService: BudgetService
     private val chatTransport = SwappableAnthropicTransport()
     private var port: Int = 0
 
@@ -127,6 +136,7 @@ class OfflineCoachingE2eTest {
               .withFallback(config),
           ).getOrThrow()
       synthesisConfig = SynthesisConfig.from(config).getOrThrow()
+      workerBudgetService = BudgetService(workerDatabase, BudgetConfig.from(config).getOrThrow())
 
       // Real provider over the fake seam, wrapped by the real LlmCallLog (RFC 106).
       val llmCallLog = LlmCallLog(AnthropicChatProvider(chatTransport, AutoCloseable {}), database)
@@ -146,6 +156,7 @@ class OfflineCoachingE2eTest {
             queueService,
             extractionConfig,
             requestLoggingConfig,
+            BudgetConfig.from(config).getOrThrow(),
           )
         }
       server.start(wait = false)
@@ -287,6 +298,7 @@ class OfflineCoachingE2eTest {
         workerDatabase,
         LlmCallLog(AnthropicChatProvider(ScriptedAnthropicTransport.of(replay), AutoCloseable {}), workerDatabase),
         extractionConfig,
+        workerBudgetService,
       ),
     )
 
@@ -344,6 +356,7 @@ class OfflineCoachingE2eTest {
           workerDatabase,
           LlmCallLog(AnthropicChatProvider(ScriptedAnthropicTransport.of(synthReplay), AutoCloseable {}), workerDatabase),
           synthesisConfig,
+          workerBudgetService,
         ),
       )
     runWorkerUntil(synthHandler) {
@@ -383,6 +396,7 @@ class OfflineCoachingE2eTest {
           workerDatabase,
           LlmCallLog(AnthropicChatProvider(ScriptedAnthropicTransport(throwingReplay), AutoCloseable {}), workerDatabase),
           extractionConfig,
+          workerBudgetService,
         ),
       )
     runWorkerUntil(handler) {

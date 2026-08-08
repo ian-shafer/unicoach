@@ -7,6 +7,7 @@ import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ContentDelta
 import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -110,6 +111,7 @@ class ConvoStreamErrorRoutingTest {
             queueService,
             extractionConfig,
             requestLoggingConfig,
+            BudgetConfig.from(config).getOrThrow(),
           )
         }
       testServer.start(wait = false)

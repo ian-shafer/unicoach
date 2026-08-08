@@ -1,6 +1,7 @@
 package ed.unicoach.rest.plugins
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -434,5 +435,6 @@ private fun io.ktor.server.application.Application.moduleWith(
     queueService,
     extractionConfig,
     requestLoggingConfig,
+    BudgetConfig.from(config).getOrThrow(),
   )
 }

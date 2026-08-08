@@ -25,6 +25,10 @@ enum class ErrorCode(
   COACH_UNAVAILABLE("coach_unavailable"),
   COACH_FAILED("coach_failed"),
 
+  // Coaching budget gate (RFC 109). The brief's UPPERCASE spelling is realizable
+  // only as this Kotlin constant; the wire string is lowercase like every other.
+  COACHING_BUDGET_EXHAUSTED("coaching_budget_exhausted"),
+
   // Student family — normalized from UPPERCASE by RFC 69.
   // VALIDATION_ERROR is a legacy synonym of VALIDATION_FAILED, kept distinct
   // here (casing-only change); a future RFC unifies the two.

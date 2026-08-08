@@ -10,6 +10,9 @@ import ed.unicoach.coaching.ForcedToolInput
 import ed.unicoach.coaching.JsonParseFailure
 import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.ToolSchema
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.budget.BudgetVerdict
+import ed.unicoach.coaching.budget.Entitlement
 import ed.unicoach.coaching.category
 import ed.unicoach.coaching.forcedToolChoice
 import ed.unicoach.coaching.readForcedTool
@@ -70,11 +73,17 @@ import kotlin.math.roundToInt
  * `through_request_id`) makes at-least-once delivery idempotent for the
  * conversation's stream; the student lock serializes shared claim writes across
  * concurrent same-student passes.
+ *
+ * [budgetService] gates the pass for the convo's student (RFC 109): an exhausted
+ * student's pass skips in the read phase, spending nothing and writing no run
+ * row. The parameter is undefaulted so a root cannot wire an ungated pass by
+ * omission.
  */
 open class ExtractionService(
   private val database: Database,
   private val llmCallLog: LlmCallLog,
   private val config: ExtractionConfig,
+  private val budgetService: BudgetService,
 ) {
   private val logger = LoggerFactory.getLogger(ExtractionService::class.java)
 
@@ -95,12 +104,20 @@ open class ExtractionService(
       }
 
     return when (readout) {
-      is ReadPhase.NoOp -> ExtractionResult.Success
+      is ReadPhase.NoOp -> {
+        ExtractionResult.Success
+      }
+
+      is ReadPhase.BudgetExhausted -> {
+        ExtractionResult.SkippedBudgetExhausted(readout.studentId, readout.entitlement)
+      }
 
       // The window carries the effective through-request id: when the safety cap
       // trimmed the range, this is the last distilled turn, not the requested
       // target, so the watermark advances only over what was distilled.
-      is ReadPhase.Window -> runLlmAndWrite(convoId, readout.throughRequestId, readout)
+      is ReadPhase.Window -> {
+        runLlmAndWrite(convoId, readout.throughRequestId, readout)
+      }
     }
   }
 
@@ -119,6 +136,21 @@ open class ExtractionService(
 
       val studentId = convo.studentId
       AdvisoryLockDao.lockStudent(session, studentId).getOrThrow()
+
+      // Budget gate (RFC 109), taken under the lock so the verdict is consistent
+      // with the pass it guards, and before any further read. A skip is a named
+      // outcome, distinct from the anonymous NoOp: nothing to do and blocked from
+      // doing it are different answers to "why did this student stop extracting".
+      when (val verdict = budgetService.verdict(session, studentId).getOrThrow()) {
+        is BudgetVerdict.Exhausted -> {
+          return@withConnection ReadPhase.BudgetExhausted(studentId, verdict.entitlement)
+        }
+
+        // Not dead: this arm is what makes the `when` exhaustive, so a third
+        // BudgetVerdict would fail to compile here instead of falling through as
+        // "allowed to spend". Do not collapse it back to an `is` check.
+        BudgetVerdict.Entitled -> {}
+      }
 
       val watermark = ExtractionRunsDao.watermark(session, convoId).getOrThrow()
       if (throughRequestId.value <= watermark) return@withConnection ReadPhase.NoOp
@@ -684,6 +716,11 @@ open class ExtractionService(
 
   private sealed interface ReadPhase {
     data object NoOp : ReadPhase
+
+    data class BudgetExhausted(
+      val studentId: StudentId,
+      val entitlement: Entitlement,
+    ) : ReadPhase
 
     data class Window(
       val studentId: StudentId,

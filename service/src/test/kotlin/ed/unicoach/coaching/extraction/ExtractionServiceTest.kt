@@ -5,6 +5,8 @@ import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
 import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.TokenUsage
+import ed.unicoach.coaching.budget.exhaustedBudgetService
+import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
@@ -87,8 +89,16 @@ class ExtractionServiceTest {
           .getOrThrow(),
       ).getOrThrow()
 
+  private val generousBudget = generousBudgetService(database)
+
+  private val exhaustedBudget = exhaustedBudgetService(database)
+
   private fun service(provider: ChatProvider): ExtractionService =
-    ExtractionService(database, ed.unicoach.coaching.LlmCallLog(provider, database), config)
+    ExtractionService(database, ed.unicoach.coaching.LlmCallLog(provider, database), config, generousBudget)
+
+  /** The same service as [service], but with every student's allowance already spent. */
+  private fun exhaustedService(provider: ChatProvider): ExtractionService =
+    ExtractionService(database, ed.unicoach.coaching.LlmCallLog(provider, database), config, exhaustedBudget)
 
   /** A config pinning a prompt (name, version) that has no catalog row. */
   private val missingPromptConfig =
@@ -937,6 +947,7 @@ class ExtractionServiceTest {
           database,
           ed.unicoach.coaching.LlmCallLog(JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), database),
           cappedWindowConfig,
+          generousBudget,
         )
 
       // Target req3 but cap=2: the OLDEST two turns (req1, req2) are distilled and
@@ -1046,6 +1057,7 @@ class ExtractionServiceTest {
           database,
           ed.unicoach.coaching.LlmCallLog(JsonProvider(jsonDoc = newClaimDoc(req, "hi")), database),
           missingPromptConfig,
+          generousBudget,
         ).extract(ConvoId(convo), ConvoRequestId(req))
       assertTrue(result is ExtractionResult.TransientFailure, "got $result")
       assertEquals(0L, watermark(convo))
@@ -1114,6 +1126,7 @@ class ExtractionServiceTest {
           database,
           ed.unicoach.coaching.LlmCallLog(JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), database),
           cappedWindowConfig,
+          generousBudget,
         )
 
       // First pass: target plain2, cap = 2 whole turns. The excursion is kept whole
@@ -1197,12 +1210,46 @@ class ExtractionServiceTest {
           database,
           ed.unicoach.coaching.LlmCallLog(JsonProvider(jsonDoc = """{"observations":[],"claims":[]}"""), database),
           cappedWindowConfig,
+          generousBudget,
         )
       val result = cappedService.extract(ConvoId(convo), ConvoRequestId(exTool))
       assertTrue(result is ExtractionResult.Success, "got $result")
       // Both whole turns distilled in one pass; watermark on the excursion's last row.
       assertEquals(exTool, watermark(convo))
       assertEquals(1, countWhere("extraction_runs", "convo_id", convo))
+    }
+
+  // ---------------------------------------------------------------------------
+  // Budget gate (RFC 109)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `an exhausted student's pass skips by name, spending nothing and writing no run`() =
+    runBlocking {
+      val student = createStudent()
+      val convo = createConvo(student)
+      val req = appendUserTurn(convo, "I want to study computer science")
+      val llmRequestsBefore = countAllLlmRequests()
+
+      val result =
+        exhaustedService(JsonProvider(jsonDoc = newClaimDoc(req, "I want to study computer science")))
+          .extract(ConvoId(convo), ConvoRequestId(req))
+
+      assertTrue(result is ExtractionResult.SkippedBudgetExhausted, "got $result")
+      assertEquals(student, result.studentId.value, "the skip names the student it was decided for")
+      assertTrue(result.entitlement.exhausted)
+      assertEquals(llmRequestsBefore, countAllLlmRequests(), "a skipped pass makes no provider call")
+      assertEquals(0, countWhere("extraction_runs", "convo_id", convo), "a pre-LLM skip writes no run row")
+      assertEquals(0L, watermark(convo), "the watermark does not advance over turns that were never distilled")
+      assertEquals(0, countObservations(student))
+    }
+
+  private fun countAllLlmRequests(): Int =
+    connection.prepareStatement("SELECT COUNT(*) FROM llm_requests").use { stmt ->
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getInt(1)
+      }
     }
 
   private fun renderTranscript(message: ed.unicoach.chat.ChatMessage): String =

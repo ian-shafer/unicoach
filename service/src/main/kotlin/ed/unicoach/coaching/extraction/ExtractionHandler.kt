@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.extraction
 
+import ed.unicoach.coaching.budget.budgetSkipMessage
 import ed.unicoach.common.json.deserialize
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.ConvoRequestId
@@ -52,8 +53,20 @@ class ExtractionHandler(
     }
 
     return when (val result = extractionService.extract(convoId, throughRequestId)) {
-      is ExtractionResult.Success -> JobResult.Success
-      is ExtractionResult.TransientFailure -> JobResult.RetriableFailure(result.message, result.cause)
+      is ExtractionResult.Success -> {
+        JobResult.Success
+      }
+
+      // Terminal success rather than a failure, and logged rather than recorded:
+      // see [budgetSkipMessage] for why.
+      is ExtractionResult.SkippedBudgetExhausted -> {
+        logger.info(budgetSkipMessage("extraction", result.studentId, result.entitlement))
+        JobResult.Success
+      }
+
+      is ExtractionResult.TransientFailure -> {
+        JobResult.RetriableFailure(result.message, result.cause)
+      }
     }
   }
 }

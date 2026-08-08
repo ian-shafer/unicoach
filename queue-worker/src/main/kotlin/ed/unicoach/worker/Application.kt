@@ -6,6 +6,8 @@ import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.LlmPriceBook
+import ed.unicoach.coaching.budget.BudgetConfig
+import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionHandler
 import ed.unicoach.coaching.extraction.ExtractionService
@@ -53,6 +55,12 @@ fun main() {
   val synthesisConfig = SynthesisConfig.from(config).getOrThrow()
   val fitLensConfig = FitLensConfig.from(config).getOrThrow()
 
+  // One BudgetService for all three passes (RFC 109): they gate on the same
+  // lifetime meter against the same allowance, so a student blocked from one is
+  // blocked from all. Built beside the sibling configs, OUTSIDE the enabled-pass
+  // gate, so a malformed budget block fails boot even when every pass is off.
+  val budgetService = BudgetService(database, BudgetConfig.from(config).getOrThrow())
+
   // The frozen-cost price book (RFC 108). Built OUTSIDE the enabled-pass gate so
   // a malformed llmPricing block fails boot even when every LLM pass is disabled;
   // the explicit-pricing check on the enabled models runs inside the gate below,
@@ -97,10 +105,10 @@ fun main() {
           )
 
         if (extractionConfig.enabled) {
-          add(ExtractionHandler(ExtractionService(database, llmCallLog, extractionConfig)))
+          add(ExtractionHandler(ExtractionService(database, llmCallLog, extractionConfig, budgetService)))
         }
         if (synthesisConfig.enabled) {
-          add(SynthesisHandler(SynthesisService(database, llmCallLog, synthesisConfig)))
+          add(SynthesisHandler(SynthesisService(database, llmCallLog, synthesisConfig, budgetService)))
           // The daily dispatcher (RFC 97) is gated by the same switch as the
           // per-student handler, so the SYNTHESIS_SWEEP producer and the
           // SYNTHESIZE_STUDENT consumer are present together or absent together —
@@ -108,7 +116,7 @@ fun main() {
           add(SynthesisSweepHandler(database, QueueService(database, jobsDao)))
         }
         if (fitLensConfig.enabled) {
-          val fitLensService = FitLensService(database, llmCallLog, CollegeSearchService(database), fitLensConfig)
+          val fitLensService = FitLensService(database, llmCallLog, CollegeSearchService(database), fitLensConfig, budgetService)
           add(FitLensHandler(fitLensService))
           // The weekly dispatcher (RFC 98), gated by the same switch as the
           // per-student handler so the FIT_LENS_SWEEP producer and the FIT_LENS
