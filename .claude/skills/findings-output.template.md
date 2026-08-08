@@ -77,3 +77,10 @@ returns nothing is indistinguishable from one that never ran.
   name an option that does not exist and it lets the ranking of 2..n go
   unstated. Option 1 is what a fixer applies by default, so a lens that will not
   commit to a first choice has not finished its job.
+- **Option code is production code.** An option is applied verbatim, so its code
+  must already meet the standard the whole review suite enforces: author it
+  under `/coding` and `/general-design`, and mirror the modeling conventions
+  visible in the files under review. A lens is narrow in what it **flags**; it
+  gets no narrowness exemption in what it **writes**. This does not widen any
+  verdict: finding violations of other lenses stays out of scope — this rule
+  governs only the code the lens authors itself.

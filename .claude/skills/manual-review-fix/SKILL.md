@@ -381,6 +381,14 @@ The operator chooses one of:
      **Its report is taken at face value.** The orchestrator does not re-run to
      confirm it — these are our own tools reporting their own output, and the
      tier gate re-runs everything anyway.
+   - authors under `/coding` and `/general-design`. If the chosen option's
+     snippet conflicts with that guidance, the fixer implements the option's
+     **intent** in the conforming shape and **flags the conflict in its report**
+     — never silently, and never by switching to a different option. The
+     divergence is reviewer telemetry: it is the same miscalibration
+     `ranking-wrong` captures, surfaced before the operator has to catch it in
+     the diff, and the operator still sees the full diff and keeps or discards
+     as always.
 
 4. **Show the diff. Always, in full, colorized.** The operator MUST NOT be asked
    to keep or discard without seeing it. `git diff <T>` in that worktree plus
