@@ -216,12 +216,12 @@ Status axis:
 Slugs are the stable handles; `rfc/NN-*.md` numbers are assigned at design time
 and backfilled here.
 
-| slug                  | description                                                                                                                                                                              | status      | rfc |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
-| `llm-cost-ledger`     | extend the RFC 106 call log with per-call dollar cost (`model → price` table, cost frozen at the write boundary) and a period-windowed per-student cost read; completes `token-ledger`   | implemented | 108 |
-| `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `COACHING_BUDGET_EXHAUSTED` (402), background passes → skip | planned     | —   |
-| `subscriptions-apple` | StoreKit 2 purchase + App Store Server API verification + `subscriptions` table + Notifications V2 webhook (queue-processed) + `productId → y × price` budget mapping                    | planned     | —   |
-| `paywall-ios`         | iOS paywall + block screen + subscribe flow + Restore Purchases + `UserAuthState` gate; abstract "coaching used" usage bar (percentage, never dollars)                                   | planned     | —   |
+| slug                  | description                                                                                                                                                                                    | status      | rfc |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
+| `llm-cost-ledger`     | extend the RFC 106 call log with per-call dollar cost (`model → price` table, cost frozen at the write boundary) and a period-windowed per-student cost read; completes `token-ledger`         | implemented | 108 |
+| `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `coaching_budget_exhausted` (402), background passes → named skip | implemented | 109 |
+| `subscriptions-apple` | StoreKit 2 purchase + App Store Server API verification + `subscriptions` table + Notifications V2 webhook (queue-processed) + `productId → y × price` budget mapping                          | planned     | —   |
+| `paywall-ios`         | iOS paywall + block screen + subscribe flow + Restore Purchases + `UserAuthState` gate; abstract "coaching used" usage bar (percentage, never dollars)                                         | planned     | —   |
 
 ## Dependency tree
 
@@ -324,6 +324,17 @@ live chat refused with COACHING_BUDGET_EXHAUSTED (HTTP 402), background passes
 returning the abstract usage percentage. FREE_ALLOWANCE_USD is config. Free-tier
 only: every student blocks at $N with no purchase path yet — that is the
 intended end state of this node.
+As landed: the wire error code is lowercase `coaching_budget_exhausted` (RFC 69
+forbids UPPERCASE wire codes; the UPPERCASE spelling survives only as the Kotlin
+`ErrorCode` constant). The usage endpoint is
+`GET /api/v1/students/me/coaching-usage`, following the student-scoped resource
+convention. `BudgetService.entitlement` has two overloads — an in-transaction
+form for the four gates and a suspend form for the route — both returning the
+shared `Entitlement` (spent, allowance, exhausted, usedPercent). The background
+skips are NAMED result arms, not anonymous no-ops:
+`ExtractionResult.SkippedBudgetExhausted`,
+`SynthesisResult.SkippedBudgetExhausted`, and
+`FitLensResult.Skipped(SkipReason.BudgetExhausted)`.
 Already landed (build on these): llm-cost-ledger (per-call cost + lifetime and
 windowed per-student cost reads).
 Out of scope: subscriptions, StoreKit verify/webhook, the subscribed entitlement
@@ -352,8 +363,12 @@ worker handler for renew / cancel / refund / grace / revoke; wire the SUBSCRIBED
 entitlement branch (period_cost < y × plan_price) into budget-gate. Prefer to
 split into a verify-path RFC and a Notifications-V2 webhook RFC, run in that
 order.
-Already landed (build on these): llm-cost-ledger; budget-gate (free-tier hard
-block + coaching-usage read).
+Already landed (build on these): llm-cost-ledger (`StudentLlmCostDao.lifetimeCost`
++ the still-unused `windowedCost`, the subscription meter this node consumes);
+budget-gate — `BudgetService` (two `entitlement` overloads) over `BudgetConfig`'s
+`budget.freeAllowanceUsd`, the shared `Entitlement` verdict, the four call-site
+gates, and `GET /api/v1/students/me/coaching-usage`. The subscribed branch
+extends `BudgetService`/`Entitlement` here; budget-gate pre-built nothing for it.
 Out of scope: the iOS StoreKit purchase UI and paywall. Backend only.
 Prerequisite: the App Store Connect sandbox artifacts must already exist — the
 auto-renewable subscription products (each productId mapped to a budget), the
@@ -377,10 +392,13 @@ source of intent (model, design principles, node breakdown).
 Design and implement one node: paywall-ios.
 Scope: iOS StoreKit 2 purchase (product fetch, Product.purchase(), transaction
 listener, POST the signed transaction to /api/v1/subscriptions/verify, Restore
-Purchases); the paywall / block screen surfaced from the COACHING_BUDGET_EXHAUSTED
+Purchases); the paywall / block screen surfaced from the `coaching_budget_exhausted`
 402 (a modal on the chat action, or a UserAuthState gate state modeled on RFC
-72's verificationRequired); subscribe entry points; and the abstract "coaching
-used" usage bar consuming GET /api/v1/coaching-usage/me (percentage, never
+72's verificationRequired) — the 402 is returned by all four turn endpoints,
+including the two SSE ones, as plain JSON before any stream opens; subscribe
+entry points; and the abstract "coaching used" usage bar consuming
+GET /api/v1/students/me/coaching-usage, which answers
+`{"usage": {"usedPercent": 0-100, "exhausted": bool}}` (percentage, never
 dollars). Prefer to split into a StoreKit-purchase slice and the paywall UI, run
 in that order.
 Already landed (build on these): llm-cost-ledger; budget-gate; subscriptions-apple
