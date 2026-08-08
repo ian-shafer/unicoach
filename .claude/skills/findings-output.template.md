@@ -11,8 +11,8 @@ dependents that drift apart silently. It has, twice.
 
 **Precedence.** A caller's prompt may specify its own output instructions, and
 those **win** — `code-review-chain` asks its leaves for a bare Verdict plus
-Reasoning, `/manual-review-fix` asks for the blocks below. This file is the
-fallback when a prompt says nothing, and what a standalone invocation gets.
+Reasoning, `/review-fix` asks for the blocks below. This file is the fallback
+when a prompt says nothing, and what a standalone invocation gets.
 
 ## Template
 

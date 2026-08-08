@@ -1,226 +1,706 @@
 ---
 name: review-fix
 description: >-
-  Operator-driven review and repair loop for any target (an RFC, a commit, a
-  working tree). Runs a supplied list of reviewer skills against the target,
-  each in its own context window, shows the operator every finding, and applies
-  the ones the operator picks — one at a time, in a fresh context, each
-  reversible. After triage the operator may elect another full review pass
-  against the updated target, as many times as they like. Closes by feeding
-  rejected findings into a skill-update pass so a reviewer that produced a bad
-  finding gets fixed. Use when a user asks to review-and-fix a target with a
-  human in the loop, or invokes /review-fix.
+  Review and repair of an implementation, in two modes. Auto (the default)
+  applies every complete finding's recommended option unattended — streaming
+  every finding, diff, and test report so the operator can step in at any
+  moment — and halts only where a default would bury a real disagreement.
+  Manual is the original human-in-the-loop triage, built to evaluate the
+  reviewer skills themselves. Both modes fan out every reviewer skill against
+  one fixed base per tier, build each accepted fix in its own worktree off that
+  base, and integrate the tier before the next one runs. Use when a user asks
+  to review and fix an implementation, or invokes /review-fix.
 ---
 
 # Review / Fix
 
-A generic orchestrator. It moves messages between four roles and makes no
-judgements of its own.
+An orchestrator. It moves messages between four roles and makes no judgements of
+its own.
 
-| Role             | Who                                                         |
-| ---------------- | ----------------------------------------------------------- |
-| **operator**     | the human; the only party that decides anything             |
-| **reviewer**     | a skill that inspects the target and returns findings       |
-| **fixer**        | a skill that applies one finding to the target              |
-| **orchestrator** | this skill; dispatches, presents, snapshots, and rolls back |
+| Role             | Who                                                        |
+| ---------------- | ---------------------------------------------------------- |
+| **operator**     | the human; decides everything in manual mode               |
+| **reviewer**     | a skill that inspects the target and returns findings      |
+| **fixer**        | a skill or prompt that applies one finding                 |
+| **orchestrator** | this skill; dispatches, presents, isolates, and integrates |
+
+In **manual** mode the operator decides every outcome. In **auto** mode (the
+default) a stated policy — see **Auto mode** below — stands in for the operator
+at each decision point, and the operator may step in at any moment.
+
+**Purpose.** In manual mode this process exists to **evaluate the reviewer
+skills**; repairing the code is the by-product. Auto mode inverts that trade —
+the repair is the point, throughput over per-finding judgment — but keeps the
+attribution machinery intact (one shared base per tier, one finding at a time,
+one worktree per fix, verbatim hand-off, the ledger), so a bad outcome is still
+attributable to exactly one reviewer and a retro-triage can still evaluate the
+reviewers after the fact.
 
 ## Invocation Parameters
 
-- **Reviewers**: the reviewer skills to run (a list, or a glob such as
-  `code-review-*`).
-- **Fixer**: exactly one fixer skill.
-- **Target**: what is under review — an RFC path, a commit SHA, a file set.
-- **Scratch Dir** _(optional)_: run-scoped working directory. Defaults to
-  `.scratch/review-fix/<timestamp>/`.
+- **Mode**: `auto` (default) or `manual`. Auto applies the policy in **Auto
+  mode** below at every decision point; manual asks the operator, as the phase
+  sections describe.
+- **Target**: the RFC under review (e.g. `rfc/107-e2e-tests.md`). Tier 0 needs
+  it; the code lenses do not.
+- **Evaluated Commit** (`E`): the implementation under review. Defaults to
+  `HEAD`. It is where the run starts, not what every tier reviews — see **Tier
+  base** below.
+- **Base Revision**: what the change is measured against in the diff shown to
+  reviewers. Defaults to `main`, and stays fixed for the whole run so every tier
+  sees the full change rather than only the previous tier's repairs.
+- **Fixer**: the skill or prompt that applies an accepted finding. Defaults to
+  `/rfc-impl-fix`.
+- **Scratch Dir** _(optional)_: defaults to `.scratch/review-fix/<run-id>/`.
 
-If any of Reviewers, Fixer, or Target is missing, stop and ask the operator.
+If Target or `E` cannot be resolved, stop and ask.
 
-## Precondition — start from a clean tree
+## Preconditions
 
-`HEAD` is the rollback point, so the working tree **MUST be clean before Phase
-2**. If it is not, stop and ask the operator to commit or stash first. Never
-commit or stash their pre-existing work to clear the way — those changes are not
-this run's to move.
+`E` must be a real commit — every fix branches from it, so it cannot be a dirty
+working tree. If the tree has uncommitted changes, stop and ask the operator to
+commit them; that commit becomes `E`. Never commit or stash their work yourself.
 
-## Prime directive — never filter
+## Prime directives
 
-The orchestrator **MUST present every finding every reviewer returned**, in the
-reviewer's own words. It does not rank, merge, summarise, drop, or judge
-relevance — not for scope, not for severity, not for apparent value. Deciding
-what matters is the operator's job and the only reason this skill exists. A
-finding the orchestrator quietly discards is a reviewer defect nobody can see.
+**Never filter.** Present every finding every reviewer returned, in the
+reviewer's own words. Do not rank, merge, summarise, drop, or judge relevance.
+Deciding what matters is the operator's job in manual mode and the stated
+policy's in auto — never the orchestrator's. A finding the orchestrator quietly
+discards is a reviewer defect nobody can see — and this run's entire output is
+the record of which reviewers produce defects. Auto mode does not filter either:
+every finding is presented in full, then applied or recorded as an open item —
+never silently dropped.
 
-Likewise the orchestrator **never loops on its own**. Every iteration is entered
-because the operator chose to enter it.
+**Never loop unasked.** Every iteration is entered because the operator chose to
+enter it. There is no pass/fail gate that re-runs anything on its own.
+
+**Never let a lens vanish.** Every discovered skill ends the run with a verdict
+file — real or `NOT RUN` — and every `NOT RUN` is reported as such. An omitted
+lens reads as "found nothing" when it in fact never ran.
 
 ## The finding contract
 
-A reviewer returns zero or more findings. Each finding MUST carry:
+The shape of a finding — assessment, `RFC says`, `Code`, ranked options — is
+defined once in [`findings-output.template.md`](../findings-output.template.md),
+and the leaf prompts point there. It is not restated here: it is identical for
+all 39 reviewers, so a second copy is a value with two owners that will drift.
 
-- a **detailed description** of the issue — what is wrong and why it matters;
-- **at least two options** to resolve it, each containing the **actual code or
-  RFC text** to apply, not a description of it;
-- exactly one option marked **recommended**, with the reason.
+What this skill adds on top of that contract:
 
-A finding missing options or a recommendation is incomplete: present it to the
-operator marked `⚠ incomplete` rather than dropping or repairing it.
+- **`file:line` is mandatory.** A finding whose subject cannot be located is not
+  triageable, and at `/skill-update` time a rule that is simply wrong cannot be
+  told apart from a rule misapplied to one case — those want opposite edits.
+- **Incompleteness is a result, not a repair job.** A finding with fewer than
+  two options, unranked options, a missing subject, or an out-of-range
+  assessment is presented **as written**, marked `⚠ incomplete`, and recorded.
+- **Never fill a gap yourself.** An orchestrator-supplied ranking, subject, or
+  assessment is indistinguishable from the reviewer's own at triage time, so it
+  launders a reviewer defect into a clean finding — destroying the one
+  measurement this run exists to take.
 
-Each reviewer writes its findings to `<scratch>/pass-<p>/findings/<reviewer>.md`
-— `<p>` is the review-pass counter, starting at 1 (see Phase 3) — write-once, as
-markdown:
+## Auto mode — the policy
 
-```markdown
----
-reviewer: <skill name>
-target: <target>
-findings: <integer count>
----
+Auto is the default. It runs the same phases with the same machinery; the only
+difference is who decides. Each manual decision point maps to a stated policy:
 
-## 1. <one-line title>
+| Decision (manual)                 | Auto policy                                                                                                                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Accept / reject / revise-RFC      | Accept every **complete** finding                                                                                                              |
+| Which option to apply             | Option 1, always — the reviewer's recommendation                                                                                               |
+| Keep / discard after diff + tests | Keep on green (or an explicit "nothing to run"); on red, one retry handing the fixer the failure output, then discard as `discarded-fix-fault` |
+| Within-tier cherry-pick conflict  | **Halt** — present both hunks and wait for the operator                                                                                        |
+| Red tier gate                     | Discard the implicated fix and re-gate; still red → **halt**                                                                                   |
+| Phase 4 re-fires                  | Report only — listed as open items, never re-triaged                                                                                           |
 
-**Description:** <what is wrong, where, and why it matters>
+**What auto never applies.** A `⚠ incomplete` finding has no valid recommended
+option to take, and inventing one is banned above; likewise a Tier 0 finding
+whose recommendation is to revise the RFC cannot be auto-applied. Both are
+presented as usual, recorded, and carried to the final report as **open items**.
 
-**Option A:** <the literal replacement code or text>
+**The two halts are the only ones.** Everything else completes with a default —
+that completion is the mode's whole promise. A halt is not a failure: a
+within-tier conflict means two reviewers disagree about the same lines, and a
+gate that stays red after discarding the implicated fix means the tier's fixes
+are jointly wrong. Both are exactly the results this process exists to surface,
+and defaulting through them would bury them.
 
-**Option B:** <the literal replacement code or text>
+**Everything still streams.** Auto prints every finding, every full colorized
+diff, and every verbatim test report exactly as manual mode does — it just does
+not wait for an answer. It states each decision as it takes it
+(`auto: accept,
+Option 1` … `auto: keep — 412 tests green`). This is what makes
+stepping in informed rather than blind.
 
-**Recommended:** A — <why>
+**Stepping in.** The operator may interrupt at any moment. The interrupted
+finding gets full manual treatment — accept with a chosen option, reject with
+the classification conversation, `/skill-update` prompt and all — and then
+"continue auto" resumes the policy from the next finding. The reverse works too:
+a manual run may switch to auto mid-run and finish the remainder under the
+policy.
+
+**The ledger tells the modes apart.** Every ledger line carries
+`decided_by: operator | auto`. An auto decision is not evidence about the
+reviewer the way an operator decision is, and the two must never blur: the final
+report separates them, and a retro-triage of the auto-applied findings — walking
+the ledger after the fact and feeding rejections to `/skill-update` — is how an
+auto run still evaluates the reviewers when nobody was watching.
+
+**The final report** closes every auto run: per tier, findings found / applied /
+discarded with the `decided_by` split; the open items (`⚠ incomplete` findings,
+rfc-revision recommendations, Phase 4 re-fires); and any halts and how the
+operator resolved them.
+
+## Worktrees, branches & cleanup
+
+This run creates one git worktree per accepted finding, and it may be invoked
+from a linked worktree that a concurrent `rfc-pipeline` owns. **Everything it
+creates is namespaced to the run, and nothing is ever deleted by pattern.**
+
+**Run id** = `<source>-<Eshort>`, where `<source>` is the basename of the
+directory this run was invoked from and `<Eshort>` is `E`'s short SHA — e.g.
+`unicoach-rfc-107-a1b2c3d`. The source basename alone is not enough: the same
+worktree hosts more than one run over time.
+
+| Artefact           | Name                                              |
+| ------------------ | ------------------------------------------------- |
+| fix worktrees      | `<sibling-of-source>/<run-id>-fixes/<finding-id>` |
+| fix branches       | `fix/<run-id>/<finding-id>`                       |
+| integration branch | `integration/<run-id>`                            |
+| scratch            | `.scratch/review-fix/<run-id>/`                   |
+| manifest           | `<scratch>/worktrees.jsonl`                       |
+
+All fix worktrees for a run live under **one parent directory**, so an abandoned
+run is one directory to remove rather than a dozen scattered siblings.
+
+**The manifest is what cleanup reads — not the names.** Append
+`{"finding_id","path","branch"}` the moment a worktree is created, before the
+fixer is spawned. Names are for humans reading `git worktree list`; the manifest
+is the authority, because a run killed mid-flight leaves worktrees whose owner
+cannot otherwise be established.
+
+**Teardown removes only what this run's manifest lists**, then
+`git worktree prune`. Never remove a worktree or delete a branch because its
+name matches a pattern — a concurrent `rfc-pipeline` or a second `/review-fix`
+owns worktrees that look just like yours, and a pattern delete takes their
+in-flight work with it. If something looks orphaned but is not in the manifest,
+report it and leave it alone.
+
+## Tier base (`T`) — the run's moving reference point
+
+A tier is reviewed against, and its fixes are branched from, the **tier base
+`T`**: the current integration tip. `T` starts at `E` and advances once per
+tier, when that tier's accepted fixes are integrated (**Phase 3**).
+
+```
+T₀ = E  →  Tier 0 reviewed, fixed, integrated  →  T₁
+T₁      →  Tier 1 reviewed, fixed, integrated  →  T₂   … and so on
 ```
 
-## Phase 1 — Review
+**Review target, fix base, and integration tip are the same commit within a
+tier.** That single rule is what makes the tier ordering earn its keep: Tier 3's
+naming lenses see the code as Tier 1's restructuring left it, so they never
+raise a finding about a method that no longer exists, and a fix is never
+authored against a base that has already moved.
 
-1. Resolve the reviewer list. Report the resolved set to the operator before
-   spawning, so a mistyped glob is caught before the fan-out.
-2. Spawn **one background agent per reviewer**, each a fresh context window.
-   - **description**: `[review-fix] <reviewer>`
+It also removes two mechanisms this skill used to need. There is nothing
+**stale** to flag, because no finding is ever computed against an outdated tree.
+And cross-tier cherry-pick conflicts disappear, leaving only within-tier ones —
+which are the interesting kind, since they mean two reviewers in the same tier
+disagree about the same lines.
+
+**The trade, stated plainly.** Later tiers judge code that fixers partly wrote
+rather than the pristine implementation, so cross-tier comparability of the
+review input is weaker. That is accepted: the alternative confound is worse — a
+lens firing on code an earlier fix already repaired looks like a false positive
+and gets the lens scored down for a finding that was correct when written.
+Judging what actually exists is the more honest measurement. Attribution is
+untouched either way: within a tier every fix still branches from the same `T`,
+one finding per worktree.
+
+## Depth-1 Fan-out Invariant (normative)
+
+This skill spawns one leaf per reviewer, so it **MUST run inline in the
+top-level session** — invoked with the `Skill` tool from the conversation
+itself, never from inside a background subagent (an `Agent`-tool task). One
+`Agent` hop above the fan-out makes every leaf a **grandchild**, which the
+Claude Code harness reaps unreliably: a finished leaf can sit at `running`
+indefinitely.
+
+This binds in **both modes** — auto changes who decides, not where the leaves
+are spawned from. An auto run must still be launched as a top-level
+conversation, never as a background agent; the operator pastes the prompt and
+walks away, which is not the same thing as backgrounding it.
+
+## Phase 1 — Fan-out
+
+**One fan-out per tier, against that tier's base `T`, and only when its turn
+arrives.** Fan out Tier 0, triage it (Phase 2), integrate it (Phase 3) to
+advance `T`, then fan out Tier 1 against the new `T`, and so on. Never spawn a
+later tier's leaves before the current tier has been triaged and integrated —
+they would be reviewing a tree that is about to change under them.
+
+Fanning out all 39 up front is doubly wrong: it spends 34 leaf reviews against a
+tree the earlier tiers are about to modify, and a Tier 0 finding can send the
+operator back to `/rfc-design`, discarding the implementation those reviews
+judged. Tier 0 gates the rest for the same reason it is triaged first — it asks
+whether this is even the right implementation to be reviewing.
+
+1. **Build the review context for this tier** at
+   `<scratch>/tier-<n>/review-context.md`: the `<base>...T` diff, plus the full
+   contents of every changed **non-test** file inlined whole and labelled by
+   path. Name changed test files and any oversized file in a "named — `Read` on
+   demand" list instead of inlining them.
+
+   **One file per tier, not one per run.** `T` moves between tiers, so a context
+   built for Tier 0 describes code Tier 1 no longer sees. Write-once **within**
+   a tier (so an interrupted fan-out resumes against the same evidence); rebuilt
+   from scratch for the next one.
+
+   This file is the **evidence**, not an optimisation. It is what lets a silent
+   lens be told apart from a lens that never looked, and it is the subject you
+   hand to `/skill-update` later. Every leaf in the tier reads it.
+
+2. **Resolve the skill set.** Discover live skills by glob — `impl-review-*`,
+   `design-review-*`, `code-review-*`, excluding `*-chain` — and check each
+   against [`tiers.md`](tiers.md). A discovered skill missing from the manifest
+   **halts the run**; report it and ask the operator which tier it belongs in.
+   Do this **once**, up front, so a manifest gap fails before any leaf is spent.
+   Report the resolved set and its per-tier counts.
+
+3. **Spawn one leaf per skill in the current tier only** — never a later tier —
+   at most 10 in flight, refilling as each finishes. Name the tier and its skill
+   count in chat before spawning, so an over-wide fan-out is visible immediately
+   rather than after 39 agents are running.
+   - **subagent_type**: `code-reviewer` (or `design-reviewer` for the design
+     lenses) — read-only, model-pinned. Tier 0 skills also use `code-reviewer`;
+     they read the RFC and the tree and write nothing.
+   - **description**: `[review-fix] <skill>`
    - **run_in_background**: `true`
-   - **prompt**: name the reviewer skill to invoke, the Target, the finding
-     contract above, and the exact output path
-     `<scratch>/pass-<p>/findings/<reviewer>.md`. State that the agent writes
-     that one file and changes nothing else.
-3. Wait for all reviewers. Do not begin Phase 2 early.
+   - **prompt**: names the one skill to invoke, `<scratch>/review-context.md` to
+     read, the Target RFC (Tier 0 only), an instruction to emit findings per
+     `.claude/skills/findings-output.template.md`, and the write path
+     `<scratch>/findings/<skill>.md`. State that it writes that one file, writes
+     it **before** replying in chat, and changes nothing else.
 
-   If a reviewer never returns, **record what happened** — which reviewer, how
-   long, whether its findings file was written — and tell the operator. Do not
-   silently retry or restructure the fan-out around it. A stall is the evidence
-   for diagnosing the harness's task-reaping behaviour; suppressing it destroys
-   the only signal.
-4. Assign every finding a stable id `<reviewer-shortname>.<n>` and present the
-   full set to the operator, grouped by reviewer, with each description intact.
-   `<n>` is monotonic per reviewer **across the whole run, never reset by a new
-   pass** — if pass 1's last finding was `<reviewer>.4`, pass 2's first is
-   `<reviewer>.5` — so an id names a unique finding no matter which pass raised
-   it.
+4. **Drain to completion. Do not kill the fan-out mid-flight.** A leaf that
+   exceeds a generous budget gets one replacement; if that also produces no
+   file, write its file yourself with `NOT RUN` and the reason. Never retry
+   further and never re-run the whole fan-out — completed leaf files are
+   write-once and are kept.
 
-## Phase 2 — Find / fix loop
+5. **Assert completeness**, then assign every finding a stable id
+   `<skill-shortname>.<n>`.
 
-Repeat until the operator chooses none:
+If a leaf stalls, **record what happened** — which skill, how long, whether its
+file appeared — and tell the operator. Do not silently retry or restructure
+around it; a stall is evidence about the harness and suppressing it destroys the
+only signal.
 
-5. **Operator selects** one finding by id, or none to leave the loop.
-6. **Dispatch the fixer.** `HEAD` is the last accepted state, so no snapshot is
-   needed — the tree is clean and git already holds the rollback point.
+## Phase 2 — Triage
 
-   Spawn the fixer as a **background agent in a fresh context window**, one
-   finding at a time — never a batch. Pass the finding **verbatim**, including
-   all options and the recommendation, plus the Target. The prompt MUST state:
-   - it **must not commit** — committing is the orchestrator's job, and only
-     once the operator has said so;
-   - it **owns verification** — after applying the fix it runs
-     `nix develop -c bin/test` (the whole suite, unscoped, per CLAUDE.md) and
-     reports the real executed counts. If the target has nothing to run — an
-     RFC, a doc — it says so explicitly rather than staying silent.
-7. **The fixer applies the finding** and reports what it changed and what it
-   ran.
-8. **Show the operator the diff and the test result together** — `git diff HEAD`
-   plus any new untracked files, in full, followed by the fixer's verbatim test
-   report. Both inform the same decision, so never present the diff alone. If
-   the fixer reported no verification, say so plainly: an unverified fix is a
-   thing the operator may still accept, but not by accident.
-9. **Operator chooses keep or rollback.**
-   - _keep_: commit it — one commit per accepted finding, so history reads as
-     the operator's decisions:
+Walk the tiers in manifest order: **0, then 1, 2, 3**. All three phases
+interleave — fan out a tier (Phase 1), triage it to completion, integrate it
+(Phase 3), then return to Phase 1 for the next tier against the advanced `T`.
+Within a tier, order is yours. Present findings **one at a time**, never a
+batch, never a summary table of several.
 
-     ```sh
-     nix develop -c git commit --no-verify -am "<finding id>: <finding title>
+**Auto mode walks this same phase unchanged in everything but the wait**: each
+finding is presented in full exactly as below, then instead of opening the
+decision prompt the orchestrator states the policy decision (**Auto mode**
+above) and proceeds. The Reject and Revise-the-RFC paths arise only when the
+operator steps in.
 
-     Reviewer: <reviewer skill>
-     Applied: <the option that was applied>
-     Verified: <what the fixer ran, and its executed counts>"
-     ```
+If Tier 0 triage sends the operator back to `/rfc-design`, **stop here**. Do not
+fan out Tier 1 against an implementation that is about to change.
 
-     These are intermediate commits on a work branch, so they skip the hook per
-     CLAUDE.md's rule that the gate protects what reaches `main`. The fixer
-     already ran the tests; the commit records what it ran. **The branch tip
-     still has to pass the full gate before it lands** — run
-     `nix develop -c bin/format -c` and `nix develop -c bin/test check` once,
-     after the operator declines a further pass (Phase 3), and tell the operator
-     the result.
-   - _rollback_: `git reset --hard HEAD && git clean -fd`. Use `-fd`, never
-     `-fdx`: the run's scratch is gitignored and must survive the rollback.
-10. **On rollback, offer a retry.** The operator may re-run the same finding
-    with additional notes; pass those notes verbatim to a fresh fixer context
-    alongside the original finding. A retry re-enters step 6.
-11. **Mark the outcome** — `kept`, `rolled-back`, or
-    `rolled-back-reviewer-fault` — and present the remaining findings.
-12. Return to step 5.
+No staleness check is needed. Every finding in a tier was computed against that
+tier's `T`, and nothing has been integrated since — so no finding can be about
+code another fix already changed.
 
-Record each outcome as a line in `<scratch>/ledger.jsonl`:
-`{"id","reviewer","pass","outcome","notes"}`. This is the only durable record of
-what the operator decided and is what Phase 4 reads.
+### Presenting a finding
 
-## Phase 3 — Another pass?
+**Print the finding in the response body, then open the decision prompt.** Never
+inside it. A picker's fields are a short header and a few words per option;
+routing a finding through one compresses the reviewer's case to a sentence and
+throws the rest away. The dialog carries the **choice** — accept / reject /
+revise the RFC — and nothing else. Everything the operator reads to make that
+choice is above it, in full.
 
-When the operator leaves the find/fix loop, ask exactly one question: **run
-another full review pass against the now-updated target?**
+Four blocks, in this order. Tier 0:
 
-- **Yes**: increment the pass counter `<p>` (the initial fan-out was pass 1) and
-  re-enter Phase 1 — fresh reviewer contexts, findings written to
-  `<scratch>/pass-<p>/findings/`, finding numbers continuing monotonically. Then
-  Phase 2 runs again over the new findings, and this question is asked again.
-- **No**: proceed to Phase 4.
+````
+**<id>** <one-line title> — `<skill>`
 
-There is no cap and no autonomous exit condition — the loop runs exactly as many
-passes as the operator asks for, and per the prime directive the orchestrator
-never starts one on its own.
+> <the reviewer's 20–40 word assessment, verbatim>
 
-## Phase 4 — Skill update loop
+**RFC says** — <verbatim excerpt>
 
-A finding the operator rolled back, or declined outright, is evidence about the
-**reviewer**, not the target. This phase spends it.
+**Code** — `<file>:<line>`
 
-1. Present the findings again — every pass's — annotated with their find/fix
-   outcomes.
-2. **Operator selects** a finding whose reviewer should change, or none to
-   finish.
-3. The orchestrator **cannot run this itself** — `/skill-update` is interactive
-   and needs a clean context. Print the exact prompt for the operator to paste
-   into a **new conversation**:
+```<lang>
+<the offending lines, verbatim>
+```
+
+<one sentence on what is wrong>
+
+**Options**
+
+1. **(RECOMMENDED)** — <one-line reason>
+
+   ```<lang>
+   <the literal replacement>
+   ```
+
+2. <2..n in descending preference>
+````
+
+Tiers 1–3 drop **RFC says**; **Code** carries the subject.
+
+**Code goes in a fenced, language-tagged block — never inline in a sentence.**
+`file:line` labels it; the code itself sits in a fence tagged from the file
+extension (`kotlin`, `sql`, `swift`, `bash`, `yaml`) so it is syntax
+highlighted. A paragraph studded with backticked fragments is unreadable at the
+one moment the operator is trying to read code, and it destroys the indentation
+and line breaks that make the defect visible. Fence an option's replacement the
+same way whenever it is more than a short fragment.
+
+When a finding names two sites — the usual shape for a duplication or
+abstraction lens — give each its own `file:line` label and its own fence.
+Merging them into one block implies a contiguity that is not there.
+
+The **assessment leads** and is blockquoted, because it is the reviewer arguing
+its case and that argument is what the operator is really judging — both about
+the code now and about the lens across the run. Quote it **verbatim**. Never
+rewrite, trim, or improve it: a polished assessment the orchestrator authored
+tells you nothing about the skill that produced it, and this run exists to
+measure exactly that.
+
+An assessment shorter than 20 words has not made an argument; longer than 40 is
+the verbosity this format exists to prevent. Present an out-of-range one **as
+written** and note the length — that is a `finding-unusable` signal about the
+reviewer, not a formatting job for the orchestrator.
+
+Beyond these four blocks: no preamble, no restating the rule the lens enforces,
+no summary of what the reviewer was checking, no verdict on whether it is a good
+catch. The reviewer's words and the operator's decision, with nothing in
+between.
+
+The per-skill ledgers (step, declaration, traceability, test) stay in the
+findings file. They are coverage accounting, not findings — surface a ledger
+only when it has a row that is not a pass, since only then does it change
+anything.
+
+### Orchestrator commentary
+
+**Default silent.** This is not "be brief" — it is a gate. Speak only when what
+you would say changes the decision or its scope. Four triggers:
+
+- **The recommended option will not build, or is wrong.** Say what breaks.
+- **Two findings conflict.** Name both ids and the lines they contend for.
+- **The pattern recurs outside the subject.** Grep, and report the count and
+  where. Fixing one site and fixing all of them are different decisions, and the
+  operator cannot make the second one without the number.
+- **Something egregious sits in the diff but outside every lens's scope.**
+  Report it once, then drop it.
+
+Everything else — context, rationale, agreement, restating the finding in your
+own words, noting that you checked something — is noise, and it dilutes the four
+signals above until they stop being read. Stay silent.
+
+The gate governs commentary _on findings_. It does not cover the rejection
+conversation in **Reject** below, which is a defined step with its own budget:
+one question and one proposed class.
+
+The operator chooses one of:
+
+### Accept
+
+1. **The operator picks the option to apply.** Option 1 is the default — offer
+   it as such and take silence or "yes" to mean it. Any other choice is an
+   **override**, and step 5 acts on that.
+2. Create the worktree at this tier's base — **not** `E` — and record it in the
+   manifest **before** spawning anything:
+
+   ```sh
+   git worktree add <run-fixes-dir>/<id> -b fix/<run-id>/<id> <T>
+   ```
+
+   Append `{"finding_id","path","branch"}` to `<scratch>/worktrees.jsonl` now,
+   not after the fixer returns. A fixer that hangs must still leave a cleanable
+   trace.
+3. Spawn the **Fixer** there, in a fresh context, one finding at a time — never
+   a batch. Pass the finding **verbatim**: description, all options in their
+   original order, the subject. Do not paraphrase, re-order, or "clarify" it.
+   Handing the fixer your restatement rather than the reviewer's own words
+   destroys the attribution this run exists to produce.
+
+   **Name the chosen option explicitly** — "apply Option 2" — rather than
+   handing over the list and leaving the fixer to infer it. All options still
+   travel with the finding so the fixer can see what was rejected and why, but
+   which one to apply is the operator's decision, not the fixer's.
+
+   The prompt MUST state that the fixer:
+   - works only in its own worktree, and **must not commit**;
+   - **owns verification** — after applying, it runs `nix develop -c bin/test`
+     (the whole suite, unscoped, per CLAUDE.md) and reports the real executed
+     counts. Scoping to a module would be a guess at the fix's blast radius, and
+     a `:db` fix that breaks a `:rest-server` test is exactly what this run must
+     not miss. The per-worktree test DB and free-port claiming make concurrent
+     runs safe. If there is nothing to run, it says so explicitly rather than
+     staying silent.
+
+     **Its report is taken at face value.** The orchestrator does not re-run to
+     confirm it — these are our own tools reporting their own output, and the
+     tier gate re-runs everything anyway.
+   - authors under `/coding` and `/general-design`. If the chosen option's
+     snippet conflicts with that guidance, the fixer implements the option's
+     **intent** in the conforming shape and **flags the conflict in its report**
+     — never silently, and never by switching to a different option. The
+     divergence is reviewer telemetry: it is the same miscalibration
+     `ranking-wrong` captures, surfaced before the operator has to catch it in
+     the diff, and the operator still sees the full diff and keeps or discards
+     as always.
+
+4. **Show the diff. Always, in full, colorized.** The operator MUST NOT be asked
+   to keep or discard without seeing it. `git diff <T>` in that worktree plus
+   any untracked files, presented inside a fenced **`diff`** block so every
+   added and removed line is syntax-highlighted:
+
+   ````
+   ```diff
+   <the complete output>
+   ```
+   ````
+
+   Never a prose description of the diff, never an excerpt, never "the change is
+   straightforward." The diff is the thing being decided on.
+
+   Fence it as `diff` — do **not** reach for `git diff --color=always`. Its ANSI
+   escapes are not rendered in the chat stream and arrive as visual garbage;
+   markdown fencing is what actually colorizes here.
+
+   Immediately after the diff, the fixer's **verbatim test report** — both
+   inform the same decision, so never one without the other. If the fixer
+   reported no verification, say so plainly: an unverified fix may still be
+   kept, but not by accident.
+
+5. The operator **keeps or discards** the fix.
+   - _keep_: commit it in the worktree —
+     `nix develop -c git commit --no-verify -am "<id>: <title>"` with trailers
+     naming the reviewer, the option applied, and what was verified. The branch
+     waits for Phase 3. (Intermediate commits on a work branch skip the hook per
+     CLAUDE.md; the branch tip is gated in Phase 3.)
+   - _discard_: `git worktree remove --force` that worktree, delete its branch,
+     and mark the manifest line discarded. Nothing to roll back — the fix never
+     touched the main tree, which is the point of building off `T` in a
+     worktree.
+   - On discard, offer a **retry**: the operator may re-run the same finding
+     with extra notes, passed verbatim to a fresh fixer context alongside the
+     original finding.
+
+6. **If the operator overrode Option 1, that is a skill signal — spend it.** The
+   finding was right and its options were right; the reviewer simply ranked them
+   wrong. That is a defect no rejection class covers, because nothing was
+   rejected, and it is invisible unless captured at the moment of the override.
+
+   Run the same short conversation as **Reject** below, proposing class
+   `ranking-wrong`, and ask the one question that decides the edit: **was Option
+   1 wrong here, or wrong generally?** Locally wrong is context this codebase
+   happens to impose and warrants no edit; generally wrong means the reviewer's
+   preference criteria are miscalibrated and the skill should change.
+
+   As with `correct-declined`, **record it either way**. A single override is
+   weak evidence; the same lens overridden across several runs is a reviewer
+   recommending the wrong thing by default, which is worse than a noisy rule —
+   it is a rule the fixer will follow.
+
+Record the outcome distinctly: `kept`, `discarded-fix-fault` (the finding was
+sound, the fix was not), or `discarded-finding-fault` (implementing it revealed
+the finding was wrong). These are different evidence and must not be collapsed.
+Record `option_applied` and `overrode_recommendation` on every accepted finding,
+including the ones that took Option 1 — an override rate is only readable
+against the total.
+
+### Reject
+
+The operator declines the finding. Nothing is built.
+
+**A rejection is not automatically a skill defect.** A rule can be correct, fire
+correctly, and still be declined — the change is out of scope for now, or it
+loses to a deliberate trade-off. Emitting a `/skill-update` prompt for every
+rejection wastes interactive sessions on skills that are working, and worse, it
+teaches the skill to stop reporting things the operator merely deferred.
+
+So the rejection opens a **short conversation, held here with the
+orchestrator**, whose only job is to decide whether the reviewer should change.
+
+1. **Ask once, briefly:** why is this being declined? One question, not an
+   interview. The queue is waiting.
+2. **Classify, and say which you think it is** — the operator corrects you:
+
+   | Class              | Meaning                                                | Update? |
+   | ------------------ | ------------------------------------------------------ | ------- |
+   | `rule-wrong`       | the rule itself is bad, here and generally             | yes     |
+   | `misapplied`       | rule is sound, should not have fired on this subject   | yes     |
+   | `finding-unusable` | rule may be right; options/subject/`file:line` are not | yes     |
+   | `ranking-wrong`    | finding and options right; Option 1 was the wrong pick | yes     |
+   | `correct-declined` | fired correctly; declined on scope, timing, trade-off  | no      |
+   | `duplicate`        | another finding already covers it                      | no      |
+
+   `ranking-wrong` arrives from **Accept** step 6, not from a rejection — it is
+   listed here because it uses this same conversation and prompt.
+
+   The four `yes` classes want **different edits** — `rule-wrong` changes the
+   criteria, `misapplied` changes scoping and exceptions, `finding-unusable`
+   changes the output contract, `ranking-wrong` changes the preference criteria
+   that decide which option gets recommended. Naming the class is most of the
+   work of the `/skill-update` session, so do not skip it and let that session
+   re-derive it.
+
+3. **Record the outcome in the ledger either way**, with the class and the
+   operator's reason **verbatim**. This is not bookkeeping: a lens rejected five
+   times as `correct-declined` across five runs is a real signal — the rule may
+   be right and still not worth its noise — and that pattern is invisible unless
+   every rejection is recorded, including the ones that changed nothing today.
+   Likewise repeated `duplicate` against the same pair of lenses is evidence
+   they overlap.
+
+4. **Only when the class calls for an update**, print this block for the
+   operator to paste into a **new conversation**. Do not run `/skill-update`
+   inline — it is a full interactive editing session and would swamp the queue:
 
    ```
    Invoke /skill-update on skill <reviewer skill>.
 
-   Verbatim finding:
-   <the finding, in full — description, options, recommendation>
+   Rejection class: <rule-wrong | misapplied | finding-unusable>
 
-   Subject (the code or text the finding was raised against):
-   <the exact lines from the target, quoted>
+   Verbatim finding:
+   <the finding, in full — all options, in their original order>
+
+   Subject (the code the finding was raised against):
+   <the exact lines, quoted>
+
+   Why it was rejected:
+   <the operator's reason, verbatim>
    ```
 
-   Include the **subject**. Without the text the reviewer was looking at, a rule
-   that is simply wrong cannot be told apart from a rule misapplied to this one
-   case — and those want opposite edits.
+Then **continue triaging** — do not wait for them to finish the skill edit.
 
-4. `/skill-update` discusses the change with the operator and edits the skill.
-5. The operator returns here and asks for the remaining findings.
-6. Return to step 2.
+**When the class is genuinely unclear, record and move on.** A ledger line is
+cheap and keeps the evidence; an unnecessary `/skill-update` session costs the
+operator real time and risks editing a skill that was right. But never talk the
+operator out of an update they want — the orchestrator proposes a class, the
+operator decides it, and this step exists to inform that decision, not to make
+it.
+
+### Revise the RFC — Tier 0 only
+
+A Tier 0 finding often means the RFC is wrong, not the code: a "missing feature"
+may be a spec the implementation correctly declined to invent. When the operator
+says so, hand them the `/rfc-design` prompt for a new conversation, and mark the
+finding `rfc-revision`. The RFC change re-enters through the normal pipeline,
+not through this loop.
+
+Record every outcome as a line in `<scratch>/ledger.jsonl`:
+`{"id","skill","tier","outcome","decided_by","option_applied","overrode_recommendation","class","reason","skill_update"}`
+— `decided_by` (`operator` | `auto`) on every line, so the two kinds of evidence
+never blur; `option_applied` and `overrode_recommendation` on every accepted
+finding (Option 1 included, so an override rate has a denominator); `class` and
+`reason` on rejections and on overrides; `skill_update` a boolean recording
+whether one was actually requested. This is the only durable record of what was
+decided, and the evaluation dataset this run produced.
+
+## Phase 3 — Integration (once per tier)
+
+Runs at the **end of every tier**, as soon as its triage is complete — not once
+at the end of the run. Its output is the next tier's base.
+
+1. **Cherry-pick this tier's kept fixes onto `integration/<run-id>`**, in
+   acceptance order. (On Tier 0, first branch it at `E`.) Only this tier's fixes
+   are in flight; earlier tiers are already in.
+2. **A conflict is a finding, not a chore.** Two fixes from the same tier
+   contending for the same lines means two reviewers disagree about that code.
+   Present both hunks, let the operator resolve it, and record it in the ledger
+   as a conflict between the two skills. That is a result this run was built to
+   produce — and per-tier integration is what isolates it, since a conflict here
+   can only be lens-versus-lens, never an artefact of a base that moved. **This
+   is one of auto mode's two halts**: auto presents both hunks and waits here
+   exactly as manual does.
+3. **Gate the tip**: `nix develop -c bin/format -c` and
+   `nix develop -c bin/test check`. Report the real counts.
+
+   Per-branch greens do not imply a green integration — two fixes can merge
+   cleanly and still be jointly wrong (one extracts a helper, another edits code
+   that no longer exists there). This run is what catches that.
+
+   **A red gate blocks the next tier.** Do not fan out against a base that does
+   not build: every finding it produced would be suspect. Resolve it with the
+   operator — discard the offending fix, or fix forward — then re-gate. In auto
+   mode: discard the implicated fix and re-gate once; if the gate is still red,
+   **halt** — auto's second and last halt — and resolve with the operator.
+
+4. **Tear down this tier's worktrees — from the manifest, never by pattern.**
+   For each manifest line belonging to this tier: `git worktree remove` its
+   path, delete its branch, mark the line torn down. Then `git worktree prune`.
+   Leave anything not in the manifest alone and say so.
+5. **Advance `T`** to the integration tip and record it. That commit is what the
+   next tier is reviewed against and branches from.
+
+Gating four times rather than once costs four suite runs, and buys attribution:
+a breakage is localised to the tier that introduced it, instead of surfacing at
+the end against the union of every fix in the run.
+
+## Phase 4 — Confirmation
+
+After the last tier has been integrated, re-run the **Tier 0** skills once
+against the final tip. Five read-only skills; it catches a fix that did not
+actually satisfy the check it was raised against.
+
+Tier 0 ran first, so Tiers 1–3 have since rewritten code it passed — a
+restructuring fix can break RFC conformance without any lens in its own tier
+noticing. This pass is the only thing that looks again.
+
+If something re-fires, return to Phase 2 triage for those findings. The operator
+decides whether to act. **This is a check, not a loop** — it does not re-run
+itself, and it never re-runs Tiers 1–3. In auto mode a re-fire is **report
+only**: it becomes an open item in the final report, and triage is not
+re-entered.
+
+## Cleaning up an abandoned run
+
+A run killed mid-tier leaves fix worktrees, their branches, and an
+`integration/<run-id>` branch behind. Everything needed to clean it up is in
+`<scratch>/worktrees.jsonl`, which survives because `.scratch/` is gitignored
+and never reset by this skill.
+
+To wind one down — the operator's call, never automatic:
+
+1. Read the manifest. Report each entry and whether its path still exists.
+2. `git worktree remove` each listed path (`--force` if the fixer left changes),
+   delete each listed branch, then `git worktree prune`.
+3. Delete `integration/<run-id>` only once the operator confirms nothing on it
+   is wanted — it may hold whole tiers of accepted, gated work.
+4. Leave `<scratch>/` in place unless asked. It is the run's ledger, and it is
+   the evaluation output this whole process exists to produce.
+
+**Never clean up by pattern** — not `git worktree list | grep fix`, not
+`git branch -D 'fix/*'`. A concurrent `rfc-pipeline` and a second `/review-fix`
+create worktrees that look exactly like these, and their work is live. If a
+worktree looks orphaned but appears in no manifest, report it and stop.
 
 ## What this skill never does
 
 - Filter, rank, or summarise findings.
+- Paraphrase a finding when handing it to a fixer.
 - Advance an iteration the operator did not ask for.
 - Apply more than one finding per fixer context.
-- Commit anything the operator has not accepted.
-- Let the branch reach `main` without the full gate having run on its tip.
-- Touch the operator's pre-existing uncommitted work.
+- Ask for a keep/discard decision without showing the full colorized diff.
+- Build a fix anywhere but its own worktree off the current tier base `T`.
+- Fan out a tier before the previous one is triaged, integrated, and green.
+- Create a worktree or branch outside this run's namespace, or remove one that
+  is not in this run's manifest.
+- Report a verdict for a lens that did not run.
+- Let the integration tip reach `main` without the full gate having run on it.
 - Edit a reviewer skill itself — that is `/skill-update`, with the operator
   present.

@@ -235,7 +235,7 @@ echo "1" > "$root/rfc/one.md"
 pipeline_sha="$(git -C "$root" rev-parse HEAD)"
 
 # Build a target branch that is a linear descendant of the pipeline tip — the
-# shape /manual-review-fix's integration/<run-id> branch is in.
+# shape /review-fix's integration/<run-id> branch is in.
 git -C "$root" checkout -q -b adopt-target
 echo "2" > "$root/rfc/two.md"
 git -C "$root" add -A
@@ -296,10 +296,14 @@ echo "landed" > "$root/rfc/landed.md"
 "$SCRIPTS/rfc-pipeline-checkpoint" -s "$scratch" impl > /dev/null
 pipeline_sha="$(git -C "$root" rev-parse HEAD)"
 
-# Seed a /manual-review-fix scratch dir so the archive step has something to
+# Seed a /review-fix scratch dir so the archive step has something to
 # preserve — this is the evaluation data the whole handover exists to protect.
-mkdir -p "$root/.scratch/manual-review-fix/testrun-abc123"
-echo '{"id":"t.1"}' > "$root/.scratch/manual-review-fix/testrun-abc123/ledger.jsonl"
+# Also seed the skill's pre-rename dir name to prove a legacy run's output is
+# archived the same way.
+mkdir -p "$root/.scratch/review-fix/testrun-abc123"
+echo '{"id":"t.1"}' > "$root/.scratch/review-fix/testrun-abc123/ledger.jsonl"
+mkdir -p "$root/.scratch/manual-review-fix/legacyrun-def456"
+echo '{"id":"t.2"}' > "$root/.scratch/manual-review-fix/legacyrun-def456/ledger.jsonl"
 
 assert_success "land fast-forwards main and tears down the worktree" \
   "$SCRIPTS/rfc-pipeline-land" -s "$scratch"
@@ -313,20 +317,25 @@ git -C "$orig" rev-parse --verify pipeline/rfc-1 > /dev/null 2>&1 &&
   fail_test "land left the merged pipeline branch behind"
 pass_test "land deletes the merged pipeline branch"
 
-archived="$orig/.scratch/manual-review-fix-archive/rfc-1/testrun-abc123/ledger.jsonl"
-[ -f "$archived" ] || fail_test "land did not archive the manual-review-fix scratch dir"
-grep -q 't.1' "$archived" || fail_test "archived manual-review-fix scratch is missing its content"
-pass_test "land archives /manual-review-fix's scratch dir before deleting the worktree"
+archived="$orig/.scratch/review-fix-archive/rfc-1/testrun-abc123/ledger.jsonl"
+[ -f "$archived" ] || fail_test "land did not archive the review-fix scratch dir"
+grep -q 't.1' "$archived" || fail_test "archived review-fix scratch is missing its content"
+pass_test "land archives /review-fix's scratch dir before deleting the worktree"
 
-# A run that never used /manual-review-fix has nothing to archive — land must
+legacy_archived="$orig/.scratch/manual-review-fix-archive/rfc-1/legacyrun-def456/ledger.jsonl"
+[ -f "$legacy_archived" ] || fail_test "land did not archive the legacy manual-review-fix scratch dir"
+grep -q 't.2' "$legacy_archived" || fail_test "archived legacy scratch is missing its content"
+pass_test "land archives a legacy manual-review-fix scratch dir too"
+
+# A run that never used /review-fix has nothing to archive — land must
 # neither fail nor fabricate an empty archive dir.
 repo2="$(fresh_repo)"
 state2="$(cd "$repo2" && "$SCRIPTS/rfc-pipeline-claim")"
 scratch2="$(state_val "$state2" RUN_SCRATCH)"
 orig2="$(state_val "$state2" ORIGINAL_CHECKOUT)"
-assert_success "land succeeds with no manual-review-fix scratch to archive" \
+assert_success "land succeeds with no review-fix scratch to archive" \
   "$SCRIPTS/rfc-pipeline-land" -s "$scratch2"
-[ -d "$orig2/.scratch/manual-review-fix-archive" ] &&
+{ [ -d "$orig2/.scratch/review-fix-archive" ] || [ -d "$orig2/.scratch/manual-review-fix-archive" ]; } &&
   fail_test "land fabricated an archive dir when there was nothing to archive"
 pass_test "land creates no archive dir when there is nothing to archive"
 

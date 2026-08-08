@@ -12,7 +12,7 @@ help() {
 rfc-pipeline-adopt -s run-scratch <branch>
 
 Fast-forward the pipeline branch (checked out in the pipeline worktree) onto
-<branch>, then delete <branch>. Used to merge back a `/manual-review-fix` run's
+<branch>, then delete <branch>. Used to merge back a `/review-fix` run's
 `integration/<run-id>` branch, which is built as a linear descendant of the
 pipeline branch's tip but is never itself merged into it.
 

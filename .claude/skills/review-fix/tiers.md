@@ -1,14 +1,13 @@
 # Review tier manifest
 
-Ordered groups for `/manual-review-fix`. Every reviewer skill is assigned to
-exactly one tier by the **blast radius of the change its findings induce** — not
-by how important the rule is. Tiers are triaged in order, so a structural
-finding is decided before the nits that its fix might delete.
+Ordered groups for `/review-fix`. Every reviewer skill is assigned to exactly
+one tier by the **blast radius of the change its findings induce** — not by how
+important the rule is. Tiers are triaged in order, so a structural finding is
+decided before the nits that its fix might delete.
 
-This file is the source of ordering. `/manual-review-fix` discovers the live
-skill set by glob and **asserts every discovered skill appears here** — an
-unlisted skill halts the run rather than being silently dropped. Add a skill,
-add a row.
+This file is the source of ordering. `/review-fix` discovers the live skill set
+by glob and **asserts every discovered skill appears here** — an unlisted skill
+halts the run rather than being silently dropped. Add a skill, add a row.
 
 Move a skill between tiers freely; the tier is a judgement about typical fix
 size and the operator's is better than the author's.

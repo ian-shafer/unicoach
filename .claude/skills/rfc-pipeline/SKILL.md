@@ -2,21 +2,29 @@
 name: rfc-pipeline
 description: >-
   A master macro skill that orchestrates the entire lifecycle of an RFC from
-  design to the final commits. It runs autonomous phases as background agents
-  to isolate contexts and prevent context bloat, and delegates interactive
-  phases to separate conversations. Restartable at any point: on invocation it
-  reads the on-disk run state (rfc-pipeline-status) and can resume any live
-  run at the right phase without being told where it left off.
+  design to landing on the base branch. A per-run Mode knob (auto by default;
+  manual on request) sets how the two review conversations behave: in auto they
+  apply every reviewer's recommended option themselves, the Architect's
+  interactive involvement is the design conversation plus a one-by-one RFC
+  walkthrough, and everything after the design phase returns — implementation,
+  the implementation review, the final commits, and the land — runs unattended.
+  Restartable at any point: on invocation it reads the on-disk run state
+  (rfc-pipeline-status) and can resume any live run at the right phase without
+  being told where it left off.
 ---
 
 # RFC Pipeline Master Skill
 
 This skill acts as the master orchestrator for the entire RFC-driven development
 lifecycle. It manages the state machine, spawns background agents to run
-autonomous loops, and guides the human Architect through interactive phases in
-strict sequential order. All skill references in this master orchestrator are
-prefixed with a slash (e.g., `/rfc-design`) to indicate they are executable
-macro tools rather than plain phrases.
+autonomous phases, and delegates interactive work to separate conversations in
+strict sequential order. The Architect's interactive involvement is front-loaded
+into Phase 1 — the design conversation, then the design review whose auto mode
+ends with a one-by-one RFC walkthrough; **returning from that review is the
+approval**, and from that point the pipeline proceeds through implementation,
+review, commits, and landing without asking again. All skill references in this
+master orchestrator are prefixed with a slash (e.g., `/rfc-design`) to indicate
+they are executable macro tools rather than plain phrases.
 
 **Role — master.** This skill wears the **master** hat from `iterative-work`,
 which defines the master / orchestrator / worker contracts and the universal
@@ -26,32 +34,48 @@ this skill states only the **pipeline-specific mechanics** (worktree, git
 checkpoints, phase sequencing); where the two overlap, `iterative-work` is the
 contract and this file is the instantiation.
 
+## The Review Mode knob
+
+One per-run setting, `auto` (default) or `manual`, chosen at kickoff — the
+Architect says "manual mode" to flip it; otherwise assume auto — and recorded
+immediately after the Phase 0 claim
+(`rfc-pipeline-record -s <run-scratch> REVIEW_MODE <auto|manual>`) so a resumed
+session recovers it. It is passed verbatim as `Mode:` in both review dispatch
+prompts (Phase 1's `/rfc-review-fix` and Phase 2's `/review-fix`) and controls
+nothing else: **the pipeline's own flow is identical in both modes** — same
+phases, same checkpoints, same automatic commits and landing at the end. The
+knob only decides what happens inside the two review conversations: auto applies
+every recommended option itself (Phase 1 closing with the RFC walkthrough; Phase
+2 hands-off apart from its two defined halts), while manual is the full
+per-finding operator triage.
+
 ## How work is dispatched in Claude Code
 
 Three dispatch mechanisms, chosen by the phase's shape:
 
 - **Single-shot autonomous work → background agents.** Work that runs once with
-  no human interaction — implementation (`/rfc-impl`) and fix passes
-  (`/rfc-impl-fix`) — is spawned with the **`Agent` tool** using
-  `run_in_background: true`. The harness re-invokes this orchestrator with the
-  agent's final report when it finishes, so you can spawn, then continue once
-  notified — no polling required.
+  no human interaction — implementation (`/rfc-impl`) — is spawned with the
+  **`Agent` tool** using `run_in_background: true`. The harness re-invokes this
+  orchestrator with the agent's final report when it finishes, so you can spawn,
+  then continue once notified — no polling required.
 - **Interactive design → an operator-launched separate conversation.** Design
   needs live back-and-forth with the Architect, which a background agent cannot
   do. Same mechanism as the reviews below (copy-pasteable prompt, new
   conversation, pause and wait), but here the human genuinely participates.
-- **Operator-triaged reviews → an operator-launched separate conversation.**
-  Both reviews replace old autonomous loops: Phase 1's design review is
-  `/review-fix` (Reviewers: `rfc-design-review`; Fixer: `rfc-design`), and Phase
-  2's implementation review is `/manual-review-fix`. Each is dispatched this
-  same way for **two independent** reasons, not one: each fans out one
-  background leaf per reviewer skill (and one per accepted fix), so the Depth-1
-  Fan-out Invariant demands a top-level session; and the triage is deeply
-  interactive — full findings, full colorized diffs, per-finding conversations
-  with the operator (across up to 39 reviewers and 4 tiers in Phase 2) — so
-  neither is context-light enough to run inline here. Same mechanism as the rest
-  of this list: copy-pasteable prompt, new conversation, pause and wait for the
-  operator's summary.
+- **The two reviews → operator-launched separate conversations.** Phase 1's
+  design review is `/rfc-review-fix` (Reviewers: `rfc-design-review`; Fixer:
+  `rfc-design`) and Phase 2's implementation review is `/review-fix`. Each is
+  dispatched this way for **two independent** reasons, not one: each fans out
+  one background leaf per reviewer skill (and one per fix), so the Depth-1
+  Fan-out Invariant demands a top-level session — **in auto mode too**; and each
+  is too context-heavy to run inline here (full findings, full colorized diffs,
+  and in manual mode per-finding conversations across up to 39 reviewers and 4
+  tiers). In auto mode the conversation runs itself once launched —
+  paste-and-go, with the operator stepping in only for Phase 1's RFC walkthrough
+  or a defined Phase 2 halt — but it is still a top-level session the operator
+  opens, never a background agent. Same mechanism as the rest of this list:
+  copy-pasteable prompt, new conversation, pause and wait for the operator's
+  summary.
 
 The stated reason for pushing design and review work into a separate
 conversation is _"to keep my context window clean so I can stay focused on my
@@ -75,25 +99,22 @@ context; otherwise spawn a fresh agent per phase.
 
 **Review-agent model policy.** This pipeline is heavyweight and its reviews are
 adversarial, so **run it on a capable session model.** The review
-_orchestrators_ — Phase 1's `/review-fix` (RFC design review) and Phase 2's
-`/manual-review-fix` (implementation review) — are **not** pinned; each runs in
-its own operator-launched conversation and inherits whatever session model that
-conversation uses, so neither goes stale as models change. The model pins in
-this pipeline are confined to **non-adversarial** work where the mid tier is
-cheaper without costing correctness reasoning: the **leaf** reviewers —
-`/manual-review-fix`'s own per-tier fan-out, same as the code-review and
-design-review chains it fans out to — held to a mid tier via the `code-reviewer`
-and `design-reviewer` agent definitions in `.claude/agents/`. Those `model:`
-pins are the places to revisit if the model lineup ever reshuffles. The
-adversarial review orchestrators above stay on the session model on purpose.
+_orchestrators_ — Phase 1's `/rfc-review-fix` and Phase 2's `/review-fix` — are
+**not** pinned; each runs in its own operator-launched conversation and inherits
+whatever session model that conversation uses, so neither goes stale as models
+change. The model pins in this pipeline are confined to **non-adversarial** work
+where the mid tier is cheaper without costing correctness reasoning: the
+**leaf** reviewers — `/review-fix`'s own per-tier fan-out, same as the
+code-review and design-review chains it fans out to — held to a mid tier via the
+`code-reviewer` and `design-reviewer` agent definitions in `.claude/agents/`.
+Those `model:` pins are the places to revisit if the model lineup ever
+reshuffles. The adversarial review orchestrators above stay on the session model
+on purpose.
 
-Phase 2's implementation review is owned end-to-end by `/manual-review-fix`,
-including its own shared review-context materialization (per tier), its own
-per-lens fan-out, and its own tier-by-tier triage. Phase 1's design review is
-likewise owned end-to-end by `/review-fix` — reviewer fan-out, per-finding
-fixes, operator-elected further passes. The pipeline dispatches each as a single
-unit (see **Depth-1 Fan-out Invariant** above) and does not reach into their
-internals.
+Each review is owned end-to-end by its skill — reviewer fan-out, fixes, per-tier
+integration (`/review-fix`), the walkthrough (`/rfc-review-fix` in auto). The
+pipeline dispatches each as a single unit (see **Depth-1 Fan-out Invariant**
+below) and does not reach into their internals.
 
 ## Critical Behaviours
 
@@ -110,18 +131,18 @@ internals.
   implementation review) inline in this conversation. Dispatch them per the
   mechanisms above — background agents for single-shot autonomous work, a
   copy-pasteable new-conversation prompt for interactive design and the two
-  operator-triaged reviews.
-
-- **Depth-1 Fan-out Invariant**: `/review-fix` (Phase 1) and
-  `/manual-review-fix` (Phase 2) each spawn one background leaf per reviewer
-  skill (and per fix), so each MUST execute in a **top-level session** so every
-  leaf is a **depth-1** child. Neither may be invoked from inside a background
-  subagent (an `Agent`-tool task), because that makes the leaves
-  **grandchildren**, which the Claude Code harness task layer reaps unreliably
-  (a finished leaf can stay `running` indefinitely — the defect RFC 75 works
-  around). The pipeline satisfies this for both the same way: an
-  **operator-launched new conversation** — a fresh top-level session — never
-  inline in this orchestrator and never backgrounded.
+  reviews.
+- **Depth-1 Fan-out Invariant**: `/rfc-review-fix` (Phase 1) and `/review-fix`
+  (Phase 2) each spawn one background leaf per reviewer skill (and per fix), so
+  each MUST execute in a **top-level session** so every leaf is a **depth-1**
+  child. Neither may be invoked from inside a background subagent (an
+  `Agent`-tool task), because that makes the leaves **grandchildren**, which the
+  Claude Code harness task layer reaps unreliably (a finished leaf can stay
+  `running` indefinitely — the defect RFC 75 works around). Auto mode does not
+  relax this — it changes who decides inside the conversation, not where the
+  leaves are spawned from. The pipeline satisfies it for both reviews the same
+  way: an **operator-launched new conversation** — a fresh top-level session —
+  never inline in this orchestrator and never backgrounded.
 - **Transparency before spawning**: Immediately before spawning any background
   agent, print one line in the chat stream naming the agent and its task, e.g.
   `Spawning agent "[rfc-impl] rfc/<n> <rfc-name>": <one-line task summary>`.
@@ -145,10 +166,9 @@ by RFC:
 - `<skill-name>` is the skill that session **runs**, without the leading slash.
   - This orchestrator's **own** session is `rfc-pipeline`.
   - The operator-launched separate conversations are `rfc-design` (interactive
-    design), `review-fix` (Phase 1 design review), and `manual-review-fix`
-    (Phase 2 implementation review).
-  - Each background agent uses the actual sub-skill it invokes (`rfc-impl`,
-    `rfc-impl-fix`).
+    design), `rfc-review-fix` (Phase 1 design review), and `review-fix` (Phase 2
+    implementation review).
+  - Each background agent uses the actual sub-skill it invokes (`rfc-impl`).
 - `<n>` is this run's RFC number, claimed in Phase 0.
 - `<rfc-name>` is a short, human-readable title for the RFC in Sentence case,
   derived from the RFC's H1 / brief description (e.g. `69-email-verification.md`
@@ -172,8 +192,8 @@ How each session gets its name depends on who owns it:
   field — the task/session name the harness surfaces. The orchestrator sets it
   directly; no human step.
 - **Operator-launched child conversations** (the interactive design conversation
-  and the `review-fix` / `manual-review-fix` review conversations). These too
-  are sessions whose model cannot rename itself, so auto-titling will be wrong.
+  and the `rfc-review-fix` / `review-fix` review conversations). These too are
+  sessions whose model cannot rename itself, so auto-titling will be wrong.
   Instruct the Architect to run `/rename [<skill-name>] rfc/<n> <rfc-name>` **as
   the first message** in the new conversation (or launch it with `claude -n`),
   before running the skill.
@@ -201,23 +221,23 @@ SHAs in its context. Run each with `-h` for its full contract.
 | ---------------------------------------------------------------- | --------------------------------------------------------- |
 | `rfc-pipeline-claim`                                             | Phase 0 claim; prints the run state on stdout             |
 | `rfc-pipeline-status [-n n]`                                     | read-only: live runs + per-run resume facts (**Startup**) |
-| `rfc-pipeline-record KEY VALUE`                                  | upsert one mid-run fact (`RFC_NAME`, `RFC_FILE`) in state |
+| `rfc-pipeline-record KEY VALUE`                                  | upsert one mid-run fact (`RFC_NAME`, `REVIEW_MODE`, …)    |
 | `rfc-pipeline-checkpoint <step> [i]`                             | `--no-verify` WIP checkpoint + ledger row; prints the SHA |
 | `rfc-pipeline-verify-scope [-d glob]… [allow-glob…]`             | write-scope assertion (subset / deny / clean)             |
 | `rfc-pipeline-recover [step [i] \| sha]`                         | `reset --hard` to a checkpoint + `clean -fd`              |
 | `rfc-pipeline-squash`                                            | `reset --soft <base>` to collapse WIP history             |
 | `rfc-pipeline-adopt <branch>`                                    | ff-merge `<branch>` onto the pipeline branch, delete it   |
-| `rfc-pipeline-land`                                              | ff-merge, remove worktree, delete branch                  |
+| `rfc-pipeline-land`                                              | ff-merge, remove worktree, archive scratch, delete branch |
 
 `--no-verify` lives in `rfc-pipeline-checkpoint` (fast WIP commits, and the flag
-stays out of the classifier-inspected Bash string) and in **one** of the
-Architect's two final commits: the **code** commit runs the full pre-commit hook
-— its `bin/test check` is the run's final independent gate, and the same hook
-run also covers ktlint, `deno fmt --check` over the whole working tree (RFC
-markdown included), and the staged-spec fuzz — so the **RFC-doc** commit is made
-with `--no-verify` rather than paying for a second, identical `bin/test check`
-over a tree the hook already validated (see Phase 3a). Any bare `git …` below
-means `git -C "<codebase-root>" …`.
+stays out of the classifier-inspected Bash string) and in **one** of the two
+final commits: the **code** commit runs the full pre-commit hook — its
+`bin/test check` is the run's final independent gate, and the same hook run also
+covers ktlint, `deno fmt --check` over the whole working tree (RFC markdown
+included), and the staged-spec fuzz — so the **RFC-doc** commit is made with
+`--no-verify` rather than paying for a second, identical `bin/test check` over a
+tree the hook already validated (see Phase 3a). Any bare `git …` below means
+`git -C "<codebase-root>" …`.
 
 ### Phase 0 — pipeline worktree (before Phase 1)
 
@@ -227,7 +247,9 @@ means `git -C "<codebase-root>" …`.
 **Capture its stdout** (the run state: `RFC_NUM`, `CODEBASE_ROOT`, `BASE_SHA`,
 `RUN_SCRATCH`, …) — it parameterizes the rest of the run. Set `<codebase-root>`
 to `CODEBASE_ROOT`; all pipeline work happens there, never touching the default
-branch or original checkout until Phase 3.
+branch or original checkout until Phase 3. Then record the run's Review Mode
+(`rfc-pipeline-record -s <run-scratch> REVIEW_MODE <auto|manual>` — auto unless
+the Architect asked otherwise, per **The Review Mode knob** above).
 
 Why a script: a concurrent pipeline claims its number by creating the
 `pipeline/rfc-<n>` branch+worktree **before** committing any RFC file, so `<n>`
@@ -245,16 +267,15 @@ skip-if-present, gitignored, survives recovery resets). Layout:
 
 ```
 <run-scratch>/
-  phase1/design-review-<i>/…                       # /review-fix scratch: pass-<p>/findings/, ledger.jsonl
+  phase1/design-review-<i>/…    # /rfc-review-fix scratch: pass-<p>/findings/, ledger.jsonl
   phase2/impl/…
-  phase2/review-fix/<label>-[i]/ledger.jsonl       # Architect Implementation Review loop-backs only (Phase 2 step 3): applied | skipped | failed
 ```
 
-`/manual-review-fix`'s own evaluation output lives **outside** `<run-scratch>`
-entirely — at `<codebase-root>/.scratch/manual-review-fix/<run-id>/`, a sibling
-of `.scratch/rfc-<n>/` under the same worktree, because it is that skill's
-durable output, not this pipeline's WIP. `rfc-pipeline-land` archives it before
-the worktree is removed (Phase 3b).
+`/review-fix`'s own evaluation output lives **outside** `<run-scratch>` entirely
+— at `<codebase-root>/.scratch/review-fix/<run-id>/`, a sibling of
+`.scratch/rfc-<n>/` under the same worktree, because it is that skill's durable
+output, not this pipeline's WIP. `rfc-pipeline-land` archives it before the
+worktree is removed (Phase 3b).
 
 ### Checkpoints
 
@@ -262,16 +283,16 @@ the worktree is removed (Phase 3b).
 worktree at a gate boundary. Policy:
 
 - **Checkpoint at every gate boundary**: immediately before and after each
-  subagent spawn, and before each Architect review. Never checkpoint while an
-  agent is mid-write — the snapshot must be consistent.
+  dispatch (background spawn or operator-launched conversation). Never
+  checkpoint while an agent is mid-write — the snapshot must be consistent.
 - **Number every loopable step.** Any step the state machine can repeat —
-  `design-review`, `manual-review-fix`, `review-fix`, `architect-review` —
-  carries a monotonic `[i]` counter. Counters are **monotonic per step-type
-  across the whole run and never reused**: if the Architect loops back and
-  re-runs reviews, they continue `[4] [5] …`, they do not reset. A number
-  therefore identifies a unique moment. Non-loop steps omit the counter.
+  `design-review`, `review-fix` — carries a monotonic `[i]` counter. Counters
+  are **monotonic per step-type across the whole run and never reused**: if the
+  Architect loops the design back and the review re-runs, the next pass
+  continues `[2] [3] …`, it does not reset. A number therefore identifies a
+  unique moment. Non-loop steps omit the counter.
 
-### Diffs for the Architect walkthrough
+### Diffs from checkpoints
 
 Resolve checkpoint SHAs from the ledger by step name (base SHA from state), then
 plain git:
@@ -281,8 +302,9 @@ git -C "<codebase-root>" diff <prev-sha> <this-sha> -- rfc/<rfc-file>.md   # one
 git -C "<codebase-root>" diff <base-sha> HEAD                              # cumulative
 ```
 
-Build walkthroughs and `.scratch/implementation_diff.md` from these (`.scratch/`
-is gitignored, never committed).
+Phase 1's write-scope verification and Phase 3's commit messages and completion
+report are built from these. Anything written under `.scratch/` is gitignored
+and never committed.
 
 ### Recovery
 
@@ -295,42 +317,44 @@ else recover and re-spawn against the same `<run-scratch>`, then escalate.
 
 ### Agent write-scope contract (enforced, not trusted)
 
-Agent and operator-run-loop self-reports are not authoritative. The tree is at a
-clean checkpoint before every dispatch (background spawn or operator-launched
-loop), so on return its `git status` is the **exact** footprint. The
-orchestrator asserts that footprint against the declared scope with
-`rfc-pipeline-verify-scope` (exit 0 = within scope; exit 1 = violation with the
-offending paths on stderr):
+Agent and review-conversation self-reports are not authoritative. The tree is at
+a clean checkpoint before every dispatch, so on return its `git status` (or,
+where the dispatched unit commits, its checkpoint diff) is the **exact**
+footprint. The orchestrator asserts that footprint against the declared scope
+with `rfc-pipeline-verify-scope` (exit 0 = within scope; exit 1 = violation with
+the offending paths on stderr):
 
-| Agent                        | May write (tracked) | `rfc-pipeline-verify-scope -s <run-scratch> …`  |
-| ---------------------------- | ------------------- | ----------------------------------------------- |
-| `/review-fix` (Phase 1)      | `rfc/<rfc-file>.md` | not `verify-scope` — checkpoint diff; see below |
-| `/rfc-impl`, `/rfc-impl-fix` | code, tests, config | `-d '*/SPEC.md'` (SPEC.md Creation Ban)         |
+| Dispatched unit             | May write (tracked) | Checked with                                    |
+| --------------------------- | ------------------- | ----------------------------------------------- |
+| `/rfc-review-fix` (Phase 1) | `rfc/<rfc-file>.md` | not `verify-scope` — checkpoint diff; see below |
+| `/rfc-impl`                 | code, tests, config | `verify-scope -d '*/SPEC.md'` (SPEC.md ban)     |
+| `/review-fix` (Phase 2)     | code, tests, config | neither — its own per-tier gates; see below     |
 
 `SPEC.md` files no longer exist in this codebase; the deny glob stops an agent
 from reintroducing one.
 
-**`/review-fix` (Phase 1) is not checked with `rfc-pipeline-verify-scope`
-either** — it commits each accepted finding on the pipeline branch, so on return
-`git status` is clean and the check would silently no-op. Verify its footprint
-by diffing instead:
+**`/rfc-review-fix` (Phase 1) is not checked with `rfc-pipeline-verify-scope`**
+— it commits each applied finding (and each walkthrough edit) on the pipeline
+branch, so on return the tree is clean and the check would silently no-op.
+Verify its footprint by diffing instead:
 `git -C "<codebase-root>" diff --name-only <before-sha> HEAD` (resolve
 `before design-review [i]` from the ledger) must list only `rfc/<rfc-file>.md`;
-anything else ⇒ recover to that checkpoint and escalate. Its per-finding,
-operator-reviewed diffs are the finer-grained enforcement, exactly as in Phase
-2.
+anything else ⇒ recover to that checkpoint and escalate.
 
-**`/manual-review-fix` (Phase 2) is never checked with
-`rfc-pipeline-verify-scope`.** It works entirely in its own sibling worktrees
-and merges back with a fast-forward (`rfc-pipeline-adopt`), so by the time the
-pipeline looks at `<codebase-root>` again the tree is clean — `git status` on a
-clean fast-forward has nothing to show, and the check would silently no-op
-rather than actually verify anything. Its own per-finding, operator-reviewed
-diff (shown before every keep decision, across all four tiers) is the
-write-scope enforcement for that phase — finer-grained than this table's
-allowlists ever were. On a violation from any of the rows above: surface it,
-`rfc-pipeline-recover` to discard the rogue writes, then re-run or escalate —
-never silently keep out-of-scope writes.
+**`/review-fix` (Phase 2) is never checked with `rfc-pipeline-verify-scope`.**
+It works entirely in its own sibling worktrees and merges back with a
+fast-forward (`rfc-pipeline-adopt`), so by the time the pipeline looks at
+`<codebase-root>` again the tree is clean — the check would silently no-op
+rather than actually verify anything. Its own per-finding diff (streamed in
+auto, decided-on in manual) and per-tier integration gates are the enforcement
+for that phase — finer-grained than a path allowlist ever was. Do not invoke it,
+and do not try to make it watch `/review-fix`'s own sibling fix-worktrees or
+`fix/*` / `integration/*` branches — it never sees them anyway (`git status` is
+worktree-local), so nothing needs excluding by name.
+
+On a violation from any of the rows above: surface it, `rfc-pipeline-recover` to
+discard the rogue writes, then re-run or escalate — never silently keep
+out-of-scope writes.
 
 ### Verification (run it where it counts, not everywhere)
 
@@ -342,7 +366,7 @@ executed counts, take it — these are our own tools reporting their own output.
 Re-running the suite to confirm a report it already gave costs minutes on every
 step and almost never changes the answer, and the run is gated twice downstream
 anyway: nothing reaches `main` without the code commit's pre-commit hook (Phase
-3b) running `bin/test check` on the exact committed tree.
+3a) running `bin/test check` on the exact committed tree.
 
 **The exception is a stall or kill, and it is not about doubt.** An agent that
 died mid-write made no claim at all and may have left a half-applied tree.
@@ -351,11 +375,11 @@ Re-run there because there is nothing to trust, not because a report is suspect.
 But run the suite **only** when code actually changed. Here **code** means the
 compiled/executed sources — Kotlin, config, tests. Markdown (`*.md`: the RFC
 doc, skills) is **documentation, not code**: a Markdown-only change needs
-formatting (`bin/format`), never a suite run. So an `/rfc-impl` or
-`/rfc-impl-fix` return that touched Kotlin/config/tests re-runs the suite; an
-RFC edit that touched only Markdown does not.
+formatting (`bin/format`), never a suite run. So an `/rfc-impl` return that
+touched Kotlin/config/tests re-runs the suite on a stall; the Phase 1 RFC
+review, which touches only Markdown, never does.
 
-**`/manual-review-fix` (Phase 2) is exempt from this section's re-run policy
+**`/review-fix` (Phase 2) is exempt from this section's re-run policy
 entirely.** It gates its own integration tip at the end of every tier
 (`nix develop -c bin/format -c` + `bin/test check`, per its own Phase 3), so by
 the time its merge-back reaches the pipeline the tree has already been tested
@@ -378,9 +402,9 @@ run precedes it.
 
 `rfc-pipeline-squash -s <run-scratch>` resets `--soft` to the base SHA (worktree
 
-- index preserved, WIP history dropped). The Architect then makes the two final
-  commits (RFC doc via `--no-verify`; code through the full hook — see Phase 3a
-  for why one hook run covers both).
+- index preserved, WIP history dropped). The orchestrator then makes the two
+  final commits itself (RFC doc via `--no-verify`; code through the full hook —
+  see Phase 3a for why one hook run covers both).
 
 ## Startup: Fresh Run or Resume
 
@@ -411,10 +435,12 @@ a resumable run — surface it to the Architect as a teardown candidate
 Reconstruct everything from disk, not from any prior conversation:
 
 1. **Load the run**: `rfc-pipeline-status -n <n>` prints the state file
-   (including `RFC_NAME` / `RFC_FILE`, persisted in Phase 1 via
-   `rfc-pipeline-record`) plus the derived facts the table below reads. The full
-   ledger at `<run-scratch>/checkpoints.log` is the authoritative record of
-   which gates were passed.
+   (including `RFC_NAME` / `RFC_FILE` / `REVIEW_MODE` / `DESIGN_APPROVED`,
+   persisted via `rfc-pipeline-record`) plus the derived facts the table below
+   reads. The full ledger at `<run-scratch>/checkpoints.log` is the
+   authoritative record of which gates were passed. If `REVIEW_MODE` was never
+   recorded (a run predating it), it is `manual` — the old behavior — unless the
+   Architect says otherwise.
 2. **Session name**: ask the Architect to run
    `/rename [rfc-pipeline] rfc/<n> <rfc-name>` (best-effort cosmetics, as
    always). If `RFC_NAME` was never recorded (a run predating it, or a crash
@@ -429,29 +455,38 @@ Reconstruct everything from disk, not from any prior conversation:
    instruction.
 5. **Re-enter the state machine** at the point the facts imply, then proceed
    exactly as that phase's normal text prescribes — checkpoints, write-scope,
-   verification and all.
+   verification and all. If `DESIGN_APPROVED` is recorded, everything from Phase
+   2 on proceeds without re-asking the Architect anything.
 
-| Observed facts                                                                                                         | Resume at                                                                                                                                                                                                                                                    |
-| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `RFC_FILE` unset and `RFC_FILE_DETECTED=NONE`                                                                          | Phase 1 step 1 — re-issue the design-conversation block (ask first whether one is already open).                                                                                                                                                             |
-| Last checkpoint `before design-review [i]`; commits after it (`LAST_CHECKPOINT_SHA` ≠ `HEAD_SHA`, reachable)           | The review pass ran (`/review-fix` commits accepted findings): verify by checkpoint diff, take `after design-review <i>`, → Phase 1 step 3.                                                                                                                  |
-| Last checkpoint `before design-review [i]`; HEAD still at it                                                           | Ask the operator whether the `/review-fix` conversation is open or done; if abandoned, re-issue the same block for pass `<i>`.                                                                                                                               |
-| Last checkpoint `after design-review [i]`                                                                              | Phase 1 step 3 (Architect design gate).                                                                                                                                                                                                                      |
-| Last checkpoint `before impl`                                                                                          | The impl agent is gone — a stall/kill by definition: verify write-scope and run the suite yourself; green ⇒ checkpoint `impl` and continue; broken ⇒ `rfc-pipeline-recover` to `before impl` and re-spawn against the same scratch.                          |
-| Last checkpoint `impl`                                                                                                 | Phase 2 step 2 (dispatch `/manual-review-fix`; `<i>` per rule 3).                                                                                                                                                                                            |
-| Last checkpoint `before manual-review-fix [i]`; `INTEGRATION_BRANCHES` lists `integration/<run-id>` for that SHA's `E` | The review conversation completed: merge back (adopt + checkpoint), → Phase 2 step 3.                                                                                                                                                                        |
-| Last checkpoint `before manual-review-fix [i]`; no matching integration branch                                         | Ask the operator whether that conversation is live; if abandoned, re-issue the same block (same `E` — that checkpoint's SHA).                                                                                                                                |
-| Last checkpoint `manual-review-fix [i]`, `review-fix [i]`, or `architect-review [i]`                                   | Phase 2 step 3 (Architect Implementation Review) — its entry checkpoint and diff regenerate the context the old session lost.                                                                                                                                |
-| `LAST_CHECKPOINT_REACHABLE=false`, or `HEAD_AT_BASE=true` with staged changes                                          | Phase 3 already began — the squash dropped the checkpoint history. `NON_CHECKPOINT_COMMITS=0` ⇒ 3a (format, regenerate the two commit messages); `1` ⇒ one final commit exists — confirm which with the Architect; `2` and clean ⇒ 3b (`rfc-pipeline-land`). |
-| The run's worktree no longer exists (`RUNS` lists no such run)                                                         | Nothing to resume — the run landed (or was torn down). Check `git log` on the base branch.                                                                                                                                                                   |
+| Observed facts                                                                                                  | Resume at                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RFC_FILE` unset and `RFC_FILE_DETECTED=NONE`                                                                   | Phase 1 step 1 — re-issue the design-conversation block (ask first whether one is already open).                                                                                                                                                                                                     |
+| Last checkpoint `before design-review [i]`; commits after it (`LAST_CHECKPOINT_SHA` ≠ `HEAD_SHA`, reachable)    | The review conversation ran (`/rfc-review-fix` commits applied findings and walkthrough edits). Ask the operator whether it finished — the walkthrough may still be open. Once confirmed done: verify by checkpoint diff, checkpoint `after design-review <i>`, record `DESIGN_APPROVED`, → Phase 2. |
+| Last checkpoint `before design-review [i]`; HEAD still at it                                                    | Ask the operator whether the `/rfc-review-fix` conversation is open or done; if abandoned, re-issue the same block for pass `<i>`.                                                                                                                                                                   |
+| Last checkpoint `after design-review [i]`                                                                       | The return already happened, and returning is approval — if `DESIGN_APPROVED` is somehow unset (a crash between checkpoint and record), record it now. → Phase 2 step 1.                                                                                                                             |
+| Last checkpoint `before impl`                                                                                   | The impl agent is gone — a stall/kill by definition: verify write-scope and run the suite yourself; green ⇒ checkpoint `impl` and continue; broken ⇒ `rfc-pipeline-recover` to `before impl` and re-spawn against the same scratch.                                                                  |
+| Last checkpoint `impl`                                                                                          | Phase 2 step 2 (dispatch `/review-fix`; `<i>` per rule 3).                                                                                                                                                                                                                                           |
+| Last checkpoint `before review-fix [i]`; `INTEGRATION_BRANCHES` lists `integration/<run-id>` for that SHA's `E` | The review conversation completed: merge back (adopt + checkpoint), → Phase 3.                                                                                                                                                                                                                       |
+| Last checkpoint `before review-fix [i]`; no matching integration branch                                         | Ask the operator whether that conversation is live; if abandoned, re-issue the same block (same `E` — that checkpoint's SHA).                                                                                                                                                                        |
+| Last checkpoint `review-fix [i]`                                                                                | Phase 3.                                                                                                                                                                                                                                                                                             |
+| `LAST_CHECKPOINT_REACHABLE=false`, or `HEAD_AT_BASE=true` with staged changes                                   | Phase 3 already began — the squash dropped the checkpoint history. `NON_CHECKPOINT_COMMITS=0` ⇒ redo 3a from the squashed state (format, regenerate messages, commit); `1` ⇒ one final commit exists — read `git log` to see which, make the other; `2` and clean ⇒ 3b (`rfc-pipeline-land`).        |
+| The run's worktree no longer exists (`RUNS` lists no such run)                                                  | Nothing to resume — the run landed (or was torn down). Check `git log` on the base branch.                                                                                                                                                                                                           |
 
 One caveat on `LAST_CHECKPOINT_REACHABLE=false`: a crash between
 `rfc-pipeline-recover` and the re-checkpoint that normally follows it produces
 the same signal without a squash. `NON_CHECKPOINT_COMMITS` disambiguates —
 recovery lands on a checkpoint commit (`0`, with an unstaged/clean tree), while
-Phase 3 trees carry staged changes or the Architect's real commits. If the facts
-still conflict, show the Architect
-`git -C "<codebase-root>" log <base-sha>..HEAD` and decide together.
+Phase 3 trees carry staged changes or the final commits. If the facts still
+conflict, show the Architect `git -C "<codebase-root>" log <base-sha>..HEAD` and
+decide together.
+
+Runs claimed before this version of the pipeline may carry legacy checkpoint
+names — `before/after manual-review-fix [i]`, `architect-review [i]`, or the old
+Phase 2 loop-back meaning of `review-fix [i]`. Do not force them into the table
+above: surface the ledger to the Architect and decide the re-entry point
+together (`rfc-pipeline-adopt` still merges a completed legacy
+`integration/<run-id>` branch, and `rfc-pipeline-land` still archives a legacy
+`.scratch/manual-review-fix/` dir).
 
 ## 🗺️ Lifecycle State Machine
 
@@ -461,47 +496,40 @@ stateDiagram-v2
 
     state Phase1_Design {
         [*] --> Design_Drafting : "Copy-paste prompt"
-        Design_Drafting --> Design_Review_Fix : "Draft written; operator runs /review-fix"
-        Design_Review_Fix --> Design_Review_Fix : "Operator elects another pass"
-        Design_Review_Fix --> Architect_Design_Gate : "All findings triaged; no further pass"
-        Architect_Design_Gate --> Design_Drafting : "Architect requests changes"
-        Architect_Design_Gate --> [*] : "Architect Approved"
+        Design_Drafting --> Design_Review : "Draft written; operator runs /rfc-review-fix"
+        Design_Review --> Design_Drafting : "Operator requests substantial design rework"
+        Design_Review --> [*] : "Operator returns (auto: walkthrough done) = approval"
     }
 
-    Phase1_Design --> Phase2_Impl : "Architect Approved"
+    Phase1_Design --> Phase2_Impl : "DESIGN_APPROVED recorded; no further prompts"
 
     state Phase2_Impl {
         [*] --> Autonomous_Impl : "Spawn /rfc-impl"
-        Autonomous_Impl --> Manual_Review_Fix : "Checkpoint (= E); operator runs /manual-review-fix"
-        Manual_Review_Fix --> Merge_Back : "All tiers triaged + Phase 4 confirmed"
-        Merge_Back --> Architect_Review_Gate : "rfc-pipeline-adopt integration/<run-id>"
-
-        state Architect_Review_Gate {
-            [*] --> Ask_Done
-            Ask_Done --> Make_Change : "Something still needs to change"
-            Make_Change --> Recheck : "RFC refine, ad hoc /rfc-impl-fix, or manual edit; checkpoint = new E"
-            Recheck --> Ask_Done : "Targeted lens check, or a fresh /manual-review-fix run"
-        }
+        Autonomous_Impl --> Review_Fix : "Checkpoint (= E); operator pastes /review-fix prompt"
+        Review_Fix --> Merge_Back : "All tiers integrated + Phase 4 confirmed"
+        Merge_Back --> [*] : "rfc-pipeline-adopt integration/<run-id>"
     }
 
-    Ask_Done --> Phase3_Commit : "Done"
+    Phase2_Impl --> Phase3_Commit
 
     state Phase3_Commit {
-        [*] --> Commit_Generation
-        Commit_Generation --> [*] : "Architect commits code"
+        [*] --> Squash_Format
+        Squash_Format --> Final_Commits : "Code commit through full hook; RFC doc --no-verify"
+        Final_Commits --> Land : "rfc-pipeline-land"
+        Land --> [*] : "Completion report to the Architect"
     }
 ```
 
 ## The Pipeline Lifecycle
 
-Guide the Architect through the following phases sequentially. **Before Phase 1,
-run Phase 0** (create the `pipeline/rfc-<n>` branch and record the base SHA) per
-**Change Tracking, Checkpoints & Agent Write-Scope** above — fresh runs only: a
-resume re-enters mid-machine per **Startup: Fresh Run or Resume** and never
-re-claims. Throughout, take a checkpoint at every gate boundary, number every
-loopable step, verify each agent's write-scope on return, and re-run tests only
-where nothing reported them — a stall or kill, or the Architect's own edits —
-per **Verification** above.
+Guide the Architect through Phase 1, then run Phases 2–3 without asking for
+further decisions. **Before Phase 1, run Phase 0** (create the
+`pipeline/rfc-<n>` branch, record the base SHA and `REVIEW_MODE`) per **Change
+Tracking, Checkpoints & Agent Write-Scope** above — fresh runs only: a resume
+re-enters mid-machine per **Startup: Fresh Run or Resume** and never re-claims.
+Throughout, take a checkpoint at every gate boundary, number every loopable
+step, verify each dispatched unit's write-scope on return, and re-run tests only
+where nothing reported them — a stall or kill — per **Verification** above.
 
 ### Phase 1: Design
 
@@ -548,66 +576,61 @@ per **Verification** above.
      `rfc-pipeline-record -s <run-scratch> RFC_FILE
      rfc/<rfc-file>.md`.
 
-2. **Design Review & Fix (operator-launched separate conversation)**:
-   `/review-fix` replaces the old autonomous review loop. The reviewer is
-   `rfc-design-review`, the fixer is `rfc-design`, and the operator triages
-   every finding — there is no autonomous PASS gate: the review ends when the
-   operator has triaged all findings and declines a further pass, and the
-   operator may run as many passes as they like. Per the **Depth-1 Fan-out
-   Invariant** it must run in a top-level session, and its triage is interactive
-   — so it is dispatched like `/rfc-design`: a copy-pasteable prompt for a **new
-   conversation**, never inline, never backgrounded. This step is loopable
-   (Architect Review below can send you back here), so it carries an `[i]`
+2. **Design Review & Fix (operator-launched separate conversation)**: Phase 1's
+   review is `/rfc-review-fix` — in auto mode (the default) it applies every
+   recommended option itself and then walks the Architect through the RFC
+   changes one by one, diff hunk plus ≤60 words each, applying their edits on
+   the spot; in manual mode the Architect triages every finding. Per the
+   **Depth-1 Fan-out Invariant** it must run in a top-level session, so it is
+   dispatched like `/rfc-design`: a copy-pasteable prompt for a **new
+   conversation**, never inline, never backgrounded. This step is loopable (the
+   Architect may send the design back for rework), so it carries an `[i]`
    counter — first entry is `<i> = 1`.
 
    Checkpoint first
    (`rfc-pipeline-checkpoint -s <run-scratch> before design-review <i>`). Then
    give the operator this copy-pasteable block, substituting `<n>`,
-   `<rfc-name>`, `<codebase-root>`, `<rfc-file>`, and `<i>`:
+   `<rfc-name>`, `<codebase-root>`, `<rfc-file>`, `<i>`, and `<mode>` (the run's
+   `REVIEW_MODE`):
 
    ```
-   /rename [review-fix] rfc/<n> <rfc-name>
+   /rename [rfc-review-fix] rfc/<n> <rfc-name>
    ```
 
    then, as the next message:
 
    ```
-   Invoke /review-fix in <codebase-root> with Reviewers: rfc-design-review; Fixer: rfc-design; Target: rfc/<rfc-file>.md; Scratch Dir: <run-scratch>/phase1/design-review-<i>/. The target is an RFC (Markdown only), so fixes have no test suite to run. When the operator has triaged every finding and declined a further pass, report back a summary of every change made to the RFC.
+   Invoke /rfc-review-fix in <codebase-root> with Mode: <mode>; Reviewers: rfc-design-review; Fixer: rfc-design; Target: rfc/<rfc-file>.md; Scratch Dir: <run-scratch>/phase1/design-review-<i>/. The target is Markdown only, so fixes have no test suite to run. When the run completes — in auto mode that includes the walkthrough — report back a summary of every change made to the RFC.
    ```
 
-   Pause and wait for the operator to return the summary. `/review-fix` commits
-   each accepted finding, so on return the tree is clean and
+   Tell the Architect plainly: **returning here with that summary is the
+   approval.** In auto mode the walkthrough inside that conversation is where
+   they read and shape every RFC change; once they come back, this pipeline
+   proceeds through implementation, review, commit, and landing on the base
+   branch without asking anything further, and its next substantial message is
+   the completion report. Pause and wait.
+
+3. **On the operator's return**: `/rfc-review-fix` commits each applied finding
+   and walkthrough edit, so on return the tree is clean and
    `rfc-pipeline-verify-scope` would no-op — **verify by checkpoint diff
    instead**, per the write-scope table above:
    `git -C "<codebase-root>" diff --name-only <before-sha> HEAD` must list only
    `rfc/<rfc-file>.md`; anything else ⇒
    `rfc-pipeline-recover -s <run-scratch> before design-review <i>` and
-   escalate. Then checkpoint the result
+   escalate. Then checkpoint
    (`rfc-pipeline-checkpoint -s <run-scratch> after design-review <i>`) and
-   present the summary to the Architect.
+   record the approval —
+   `rfc-pipeline-record -s <run-scratch> DESIGN_APPROVED <after-sha>` — so a
+   resumed session never re-asks.
 
-3. **Architect Review**:
-
-   - To prevent automatic progression when reviews modify the RFC, the Master
-     Orchestrator MUST NOT proceed directly to Phase 2.
-   - **Verifying Diffs**: Diff the two design-review checkpoints to capture
-     exactly what the review changed. Resolve `before design-review [i]` and
-     `after design-review [i]` to SHAs from the ledger
-     (`<run-scratch>/checkpoints.log`), then
-     `git -C "<codebase-root>" diff <before-sha> <after-sha> -- rfc/<rfc-file>.md`.
-     Because the RFC is committed in the checkpoint, a plain `git diff` against
-     the working tree alone would miss it — diff the checkpoints.
-   - **Walk-through**: Present a clear, structured line-by-line markdown diff of
-     all additions and deletions made to the RFC to the Architect.
-   - **Decisive Action**: Explicitly ask the Architect: _"Are you satisfied with
-     these RFC design updates? Please reply 'yes' or 'approve' to authorize
-     Phase 2: Implementation. If you would like to make further modifications to
-     the design first, please specify them and I will give you a prompt to pass
-     them to /rfc-design in a new conversation."_
-   - **Loop Back**: If the Architect specifies changes or is unsatisfied, guide
-     them to refine the RFC text and then loop back to **Step 2 (Design Review &
-     Fix)** to re-verify the design. Do NOT spawn implementation until explicit
-     approval is gained in this step.
+   If the Architect instead reports that the design needs substantial rework
+   (not walkthrough-sized edits — those already happened in the conversation),
+   route it: hand them the `/rfc-design` refine prompt
+   (`/rename [rfc-design] rfc/<n> <rfc-name>`, then
+   `Run /rfc-design to refine the design of the existing RFC:
+   rfc/<rfc-file>.md. Discuss the following updates: <Architect-inputs>`),
+   wait for their return, then loop back to **Step 2** with `<i> + 1`. Otherwise
+   proceed **immediately** to Phase 2 — no further confirmation.
 
 ### Phase 2: Implementation
 
@@ -637,42 +660,46 @@ per **Verification** above.
    re-spawn against the same scratch path (it resumes where it left off).
 
 2. **Implementation Review & Fix (operator-launched separate conversation).**
-   `/manual-review-fix` replaces the old autonomous review-and-fix loop. Per the
-   **Depth-1 Fan-out Invariant** it must run in a top-level session, and per
-   **How work is dispatched** its triage is too interactive to run inline here —
-   so it is dispatched exactly like `/rfc-design` and Phase 1's `/review-fix`: a
-   copy-pasteable prompt for a **new conversation**, never inline, never
-   backgrounded. This step is itself loopable (step 3 below can send you back
-   here for a broad re-check), so it carries the same kind of `[i]` counter as
-   `design-review` — first entry is `<i> = 1`.
+   Phase 2's review is `/review-fix` — in auto mode (the default) it applies
+   every recommended option itself, tier by tier, halting only on its two
+   defined halt points (a within-tier conflict, or a tier gate that stays red
+   after discarding the implicated fix); in manual mode the operator triages
+   every finding. There is **no code walkthrough — by design**: the Architect
+   reviews the RFC, not the implementation diffs. Per the **Depth-1 Fan-out
+   Invariant** it must run in a top-level session, so it is dispatched exactly
+   like Phase 1's review: a copy-pasteable prompt for a **new conversation**,
+   never inline, never backgrounded. The step carries an `[i]` counter — first
+   entry is `<i> = 1`.
 
    Checkpoint first
-   (`rfc-pipeline-checkpoint -s <run-scratch> before manual-review-fix <i>`) —
-   this checkpoint's SHA **is** the run's `E` (Evaluated Commit): the commit
-   `/manual-review-fix` reviews, and every fix branches from.
+   (`rfc-pipeline-checkpoint -s <run-scratch> before review-fix <i>`) — this
+   checkpoint's SHA **is** the run's `E` (Evaluated Commit): the commit
+   `/review-fix` reviews, and every fix branches from.
 
    Give the operator this copy-pasteable block, substituting `<n>`,
-   `<rfc-name>`, `<codebase-root>`, `<rfc-file>`, and `<E>` (the checkpoint SHA
-   just taken):
+   `<rfc-name>`, `<codebase-root>`, `<rfc-file>`, `<mode>`, and `<E>` (the
+   checkpoint SHA just taken):
 
    ```
-   /rename [manual-review-fix] rfc/<n> <rfc-name>
+   /rename [review-fix] rfc/<n> <rfc-name>
    ```
 
    then, as the next message:
 
    ```
-   Invoke /manual-review-fix on Target rfc/<rfc-file>.md in <codebase-root>, Evaluated Commit E = <E>, Base Revision = <base-sha>. Use the default Fixer (/rfc-impl-fix) and the default Scratch Dir. When every tier is triaged, integrated, and Phase 4 confirmed, report back the final ledger summary and confirm the run completed.
+   Invoke /review-fix on Target rfc/<rfc-file>.md in <codebase-root> with Mode: <mode>, Evaluated Commit E = <E>, Base Revision = <base-sha>. Use the default Fixer (/rfc-impl-fix) and the default Scratch Dir. When every tier is integrated and Phase 4 confirmed, report back the final ledger summary — open items included — and confirm the run completed.
    ```
 
-   Pause and wait for the operator to return the summary.
+   In auto mode, tell the operator this conversation runs itself once pasted;
+   they need only return when it reports completion (or resolve a halt if one
+   fires). Pause and wait for the summary.
 
-   **Merge back, once the operator returns.** `/manual-review-fix` leaves its
-   result on `integration/<run-id>` — a branch, never a merge into the pipeline
-   branch; merging it back is this orchestrator's job. Compute `<run-id>`
-   yourself (`<source>-<Eshort>`: `<source>` is `<codebase-root>`'s basename,
-   `<Eshort>` is `<E>`'s short SHA — both already known, no need to wait on the
-   operator for it), then:
+   **Merge back, once the operator returns.** `/review-fix` leaves its result on
+   `integration/<run-id>` — a branch, never a merge into the pipeline branch;
+   merging it back is this orchestrator's job. Compute `<run-id>` yourself
+   (`<source>-<Eshort>`: `<source>` is `<codebase-root>`'s basename, `<Eshort>`
+   is `<E>`'s short SHA — both already known, no need to wait on the operator
+   for it), then:
 
    1. `rfc-pipeline-adopt -s <run-scratch> integration/<run-id>` — fast-forwards
       the pipeline branch onto the integration tip and deletes the merged
@@ -680,81 +707,32 @@ per **Verification** above.
       ancestor of the integration branch; resolve that with the operator before
       retrying.
    2. Checkpoint the result
-      (`rfc-pipeline-checkpoint -s <run-scratch> manual-review-fix <i>`).
+      (`rfc-pipeline-checkpoint -s <run-scratch> review-fix <i>`).
 
-   **No `rfc-pipeline-verify-scope` here — by design, not by omission.** See the
-   write-scope table and **Verification** above for why: the tree is clean
-   immediately after a fast-forward, so the check would silently no-op, and
-   `/manual-review-fix`'s own per-finding operator-reviewed diff already covers
-   this phase at a finer grain. Do not invoke it, and do not try to make it
-   watch `/manual-review-fix`'s own sibling fix-worktrees or `fix/*` /
-   `integration/*` branches — it never sees them anyway (`git status` is
-   worktree-local), so nothing needs excluding by name.
+   Carry the review's reported **open items** (incomplete findings, rfc-revision
+   recommendations, Phase 4 re-fires) forward — they belong in the Phase 3
+   completion report.
 
    **The scratch survives, but not inside the worktree.**
-   `.scratch/manual-review-fix/<run-id>/` — the ledger, the ranking overrides,
-   every finding — is the evaluation output the whole process exists to produce,
-   and it lives inside `<codebase-root>`, which `rfc-pipeline-land` deletes in
-   Phase 3b. `rfc-pipeline-land` archives it to the original checkout before
-   removing the worktree (see Phase 3b) — nothing to do here, but do not
-   `rm -rf` or otherwise clean up that directory yourself.
+   `.scratch/review-fix/<run-id>/` — the ledger, every finding — is the run's
+   durable evaluation output, and it lives inside `<codebase-root>`, which
+   `rfc-pipeline-land` deletes in Phase 3b. `rfc-pipeline-land` archives it to
+   the original checkout before removing the worktree (see Phase 3b) — nothing
+   to do here, but do not `rm -rf` or otherwise clean up that directory
+   yourself.
 
-3. **Architect Implementation Review**: Once `/manual-review-fix` Phase 4 has
-   confirmed (or sooner, if the Architect wants to look before that), present
-   the current implementation state.
+   Then proceed **directly to Phase 3** — no Architect review of the
+   implementation, no walkthrough artifact, no confirmation prompt.
 
-   - **Immediate Checkpoint**: Take an `architect-review [i]` checkpoint at the
-     start of this step every time it is entered
-     (`rfc-pipeline-checkpoint -s <run-scratch> architect-review <i>`). This is
-     the clean reference point for the diff below and for a loop-back.
-   - Generate a persistent artifact `.scratch/implementation_diff.md` from
-     `git -C "<codebase-root>" diff <base-sha> HEAD`. This artifact MUST contain
-     a structured walkthrough AND the **actual code diff blocks** (in standard
-     `git diff` format) showing every line that was added, modified, or deleted.
-   - Ask the Architect: is this done, or does something still need to change?
+### Phase 3: Commit & Land
 
-   **Done** → proceed to Phase 3.
+#### 3a. Squash, format, and make the two final commits
 
-   **Something still needs to change** — an RFC gap no Tier 0 lens caught, a fix
-   that missed the mark, or the Architect's own manual edit. All three are
-   handled the same way, because all three produce a new `E`:
-
-   1. **Make the change.**
-      - RFC gap: hand the Architect the same `/rfc-design` new-conversation
-        prompt Phase 1 uses (`/rename [rfc-design] rfc/<n> <rfc-name>`, then
-        `Run /rfc-design to refine the design of the existing RFC:
-        rfc/<rfc-file>.md. Discuss the following updates: <Architect-inputs>`),
-        substituting this run's `<n>` / `<rfc-name>` / `<codebase-root>`. Pause
-        and wait for them to return.
-      - Free-form feedback that isn't from any lens: spawn a background
-        `/rfc-impl-fix` pass — **subagent_type**: `general-purpose`,
-        **description**: `[rfc-impl-fix] rfc/<n> <rfc-name>`,
-        **run_in_background**: `true`, scratch sub-path
-        `<run-scratch>/phase2/review-fix/architect-[i]/` (per-finding ledger,
-        write-once, skip-if-present on re-entry), write-scope code/tests/config
-        (`-d '*/SPEC.md'`), Architect feedback as the action items. On return,
-        verify write-scope and read its reported counts; if broken, recover and
-        re-spawn, if green, checkpoint.
-      - Manual edit: let the Architect edit directly in `<codebase-root>`, then
-        **run the suite yourself** — a hand edit comes with no reported counts,
-        so this is the one place nothing has tested the change yet.
-   2. Checkpoint the result — this is the new `E`.
-      (`rfc-pipeline-checkpoint -s <run-scratch> review-fix <i>`)
-   3. **Decide the re-check scope with the Architect.**
-      - **Narrow** (the Architect's own small tweak, or a fix scoped to one or
-        two lenses): invoke just the relevant `code-review-*` /
-        `design-review-*` skill(s) directly, inline, no fan-out.
-      - **Broad, or any RFC refinement**: spin up a fresh `/manual-review-fix`
-        run against the new `E` — same dispatch as step 2 above. It gets its own
-        `<run-id>` (a new `<Eshort>`), so it cannot collide with the first run's
-        worktrees, branches, or scratch. Decide with the Architect whether every
-        tier needs to re-run or only the tiers plausible for what changed.
-   4. Loop back to the top of this step.
-
-### Phase 3: Commit
-
-#### 3a. Commit Message Generation & Code Approval
-
+- **Compose the completion-report material first.** The worktree — including
+  `<run-scratch>` and `.scratch/review-fix/<run-id>/` — is deleted at landing
+  (the latter is archived, but read it now while the paths are fresh): the Phase
+  1 findings/walkthrough ledger, the Phase 2 per-tier ledger with its
+  `decided_by` split, the open items, and the reported test counts.
 - **Squash the pipeline checkpoints**: collapse all WIP checkpoints into a clean
   staging state with `rfc-pipeline-squash -s <run-scratch>` (resets `--soft` to
   the recorded base SHA; working tree and index preserved, only the WIP history
@@ -765,40 +743,54 @@ per **Verification** above.
   commit's hook formatting checks (ktlint, `deno fmt --check`) pass on the first
   try instead of blocking the commit on a formatting nit.
 - Ingest the final workspace diff (`git -C "<codebase-root>" diff <base-sha>` /
-  `git -C "<codebase-root>" status`).
-- Generate and provide two formatted commit messages for the Architect to
-  copy-paste (following the repository's commit guidelines): one for the
-  new/updated RFC markdown document, and one for the actual code implementation.
+  `git -C "<codebase-root>" status`) and write two commit messages following the
+  repository's commit guidelines: one for the new/updated RFC markdown document,
+  and one for the actual code implementation.
 - **Commit protocol — one hook run, not two.** The whole change is on disk in
   the working tree throughout both commits, so a single `bin/test check` (run by
-  the hook) validates the suite against the working tree. Instruct the Architect
-  to:
+  the hook) validates the suite against the working tree. The orchestrator makes
+  both commits itself, in `<codebase-root>`:
   1. Commit the **code** **through the full hook** via
-     `nix develop -c git
-     commit`. This stages the code — including
+     `nix develop -c git commit`. This stages the code — including
      `api-specs/openapi.yaml` if it changed, so the staged-spec fuzz gate fires
      correctly — and its `bin/test check` **is** the run's final independent
-     test gate. If the hook fails, the tree is intact; fix and retry.
+     test gate. If the hook fails on a formatting nit, re-run
+     `nix develop -c bin/format` and retry once. If it fails on tests, **stop**:
+     the tree is intact — report the failure output and the run's state to the
+     Architect and wait. This is the one place after Phase 1 where the pipeline
+     stops for a human.
   2. Commit the **RFC markdown doc** with `--no-verify`
      (`nix develop -c git commit --no-verify`). It is Markdown-only
      (documentation, not code) and already formatted by `bin/format` above, so
      it needs no suite run — a second full `bin/test check` here would be pure
      waste. Order of the two commits does not matter; only the code commit needs
      the hook.
-- Instruct them to verify everything locally and commit once they approve. Wait
-  for their confirmation that both commits exist.
 
-#### 3b. Land the branch & tear down the worktree
+#### 3b. Land the branch, tear down the worktree, report
 
-Once the Architect confirms the commits exist on `pipeline/rfc-<n>` (inside the
-worktree), run `rfc-pipeline-land -s <run-scratch>`.
+Once both commits exist on `pipeline/rfc-<n>` (inside the worktree), run
+`rfc-pipeline-land -s <run-scratch>`.
 
 It runs the teardown from the original checkout: fast-forward the base branch
-onto `pipeline/rfc-<n>`, archive `.scratch/manual-review-fix/` (if this run used
-`/manual-review-fix`) to
-`<original-checkout>/.scratch/manual-review-fix-archive/rfc-<n>/`,
+onto `pipeline/rfc-<n>`, archive `.scratch/review-fix/` (and any legacy
+`.scratch/manual-review-fix/`) to the original checkout's `.scratch/`,
 `git worktree remove`, and delete the merged branch. It refuses if the worktree
 still has uncommitted changes (a safety check, not an obstacle to force past)
 and stops cleanly if the fast-forward is not possible because the base advanced
-— open a PR or rebase the branch instead. After removal the run is fully wound
-down and another pipeline may take its place.
+— open a PR or rebase the branch instead. After it succeeds, **verify the
+land**: `git rev-parse <base-branch>` in the original checkout must equal the
+pipeline tip that carried the two final commits.
+
+Close the run with the **completion report** — the Architect's first substantial
+message since Phase 1, so it must stand alone:
+
+- RFC number, name, and the two landed commit SHAs with a `--stat` summary.
+- Implementation summary: what `/rfc-impl` built, its reported test counts.
+- Review summary: Phase 1 findings applied/skipped and walkthrough edits; Phase
+  2 per tier — findings found / applied / discarded, with the `decided_by`
+  split, and any halts and how they were resolved.
+- **Open items**: everything the reviews declined to decide (incomplete
+  findings, rfc-revision recommendations, Phase 4 re-fires) — the list the
+  Architect may want to act on later.
+- Where the full detail lives: the landed commits on the base branch, and the
+  archived scratch at `.scratch/review-fix-archive/rfc-<n>/`.

@@ -39,7 +39,7 @@ per run:
                               rfc-pipeline-checkpoint (adopted integration
                               commits, or Phase 3's final commits)
   INTEGRATION_BRANCHES        integration/<worktree-basename>-* branches, or
-                              NONE (present = a /manual-review-fix run
+                              NONE (present = a /review-fix run
                               completed and awaits merge-back)
 
 Options:
