@@ -41,4 +41,13 @@ resource "aws_instance" "app" {
   tags = {
     Name = local.name_prefix
   }
+
+  # The AMI lookup above is most_recent, so every upstream AL2023 release would
+  # otherwise force instance replacement (downtime + fresh cloud-init) on the
+  # next apply. Ignore AMI drift: routine plans stay no-op, and an intentional
+  # refresh is `tofu apply -replace=aws_instance.app`, which rebuilds on the
+  # then-latest AMI.
+  lifecycle {
+    ignore_changes = [ami]
+  }
 }
