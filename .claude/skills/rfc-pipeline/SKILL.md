@@ -8,6 +8,8 @@ description: >-
   interactive involvement is the design conversation plus a one-by-one RFC
   walkthrough, and everything after the design phase returns — implementation,
   the implementation review, the final commits, and the land — runs unattended.
+  Optional per-run model knobs (IMPL_MODEL, REVIEW_MODEL) choose the backend
+  model the implementation agent and the two review loops run on.
   Restartable at any point: on invocation it reads the on-disk run state
   (rfc-pipeline-status) and can resume any live run at the right phase without
   being told where it left off.
@@ -48,6 +50,43 @@ knob only decides what happens inside the two review conversations: auto applies
 every recommended option itself (Phase 1 closing with the RFC walkthrough; Phase
 2 hands-off apart from its two defined halts), while manual is the full
 per-finding operator triage.
+
+## The model knobs
+
+Two more per-run settings, both optional, normally chosen at kickoff alongside
+the Review Mode — but the Architect may set or change either one in any later
+prompt, and it takes effect as long as it lands before its application point:
+`IMPL_MODEL` before the `/rfc-impl` spawn, `REVIEW_MODEL` before the review
+block it should shape is issued. Record a knob the moment it is stated
+(`rfc-pipeline-record -s <run-scratch> IMPL_MODEL <model>` and/or
+`REVIEW_MODEL <model>` — record only the ones the Architect set, re-record on
+change) so a resumed session recovers it. Values are harness model aliases
+(`sonnet`, `opus`, `haiku`); each value must be valid both as the `Agent` tool's
+`model` parameter and as a `/model` argument, since both mechanisms carry it.
+**Unset means inherit**: no `model` parameter on spawns, no `/model` line in the
+copy-paste blocks — exactly the pre-knob behavior, and what a legacy run without
+the keys resumes as.
+
+- **`IMPL_MODEL`** steers the implementation: it is passed as the `Agent` tool's
+  `model` parameter on the `/rfc-impl` spawn (Phase 2 step 1), including any
+  re-spawn after a recovery.
+- **`REVIEW_MODEL`** steers both review loops, through both mechanisms at once:
+  - **Conversation model.** When set, each review block (Phase 1 step 2 and
+    Phase 2 step 2) gains a `/model <review-model>` message right after the
+    `/rename`, setting the session model of that operator-launched conversation.
+    Everything **unpinned** spawned inside inherits it — `/rfc-review-fix`'s
+    reviewer leaves and fixers, and `/review-fix`'s fixers.
+  - **Pinned leaves.** `/review-fix`'s per-tier leaf reviewers are pinned to a
+    mid tier by the `code-reviewer` / `design-reviewer` agent defs, and a pin
+    beats session-model inheritance. So the Phase 2 dispatch prompt also carries
+    `Model: <review-model>`, which `/review-fix` places as the explicit `model`
+    parameter on every agent it spawns — the explicit parameter is what
+    overrides the pins for that run. (Phase 1 needs no such parameter:
+    `/rfc-review-fix` spawns nothing pinned, so the `/model` line alone covers
+    it.)
+
+Like the Review Mode, the knobs change nothing about the pipeline's own flow —
+same phases, same checkpoints, same gates.
 
 ## How work is dispatched in Claude Code
 
@@ -102,14 +141,17 @@ adversarial, so **run it on a capable session model.** The review
 _orchestrators_ — Phase 1's `/rfc-review-fix` and Phase 2's `/review-fix` — are
 **not** pinned; each runs in its own operator-launched conversation and inherits
 whatever session model that conversation uses, so neither goes stale as models
-change. The model pins in this pipeline are confined to **non-adversarial** work
-where the mid tier is cheaper without costing correctness reasoning: the
-**leaf** reviewers — `/review-fix`'s own per-tier fan-out, same as the
-code-review and design-review chains it fans out to — held to a mid tier via the
-`code-reviewer` and `design-reviewer` agent definitions in `.claude/agents/`.
-Those `model:` pins are the places to revisit if the model lineup ever
-reshuffles. The adversarial review orchestrators above stay on the session model
-on purpose.
+change. That session model is where `REVIEW_MODEL`'s `/model` line lands when
+the knob is set (**The model knobs** above); with the knob unset the operator's
+own choice stands. The model pins in this pipeline are confined to
+**non-adversarial** work where the mid tier is cheaper without costing
+correctness reasoning: the **leaf** reviewers — `/review-fix`'s own per-tier
+fan-out, same as the code-review and design-review chains it fans out to — held
+to a mid tier via the `code-reviewer` and `design-reviewer` agent definitions in
+`.claude/agents/`. Those `model:` pins are the **default, not a ceiling**: a run
+with `REVIEW_MODEL` set overrides them for its own leaves via `/review-fix`'s
+`Model:` parameter, and the pins remain the places to revisit if the model
+lineup ever reshuffles.
 
 Each review is owned end-to-end by its skill — reviewer fan-out, fixes, per-tier
 integration (`/review-fix`), the walkthrough (`/rfc-review-fix` in auto). The
@@ -249,7 +291,9 @@ tree the hook already validated (see Phase 3a). Any bare `git …` below means
 to `CODEBASE_ROOT`; all pipeline work happens there, never touching the default
 branch or original checkout until Phase 3. Then record the run's Review Mode
 (`rfc-pipeline-record -s <run-scratch> REVIEW_MODE <auto|manual>` — auto unless
-the Architect asked otherwise, per **The Review Mode knob** above).
+the Architect asked otherwise, per **The Review Mode knob** above) and any model
+knobs the Architect set (`IMPL_MODEL` / `REVIEW_MODEL`, per **The model knobs**
+above — an unset knob is simply not recorded).
 
 Why a script: a concurrent pipeline claims its number by creating the
 `pipeline/rfc-<n>` branch+worktree **before** committing any RFC file, so `<n>`
@@ -435,12 +479,14 @@ a resumable run — surface it to the Architect as a teardown candidate
 Reconstruct everything from disk, not from any prior conversation:
 
 1. **Load the run**: `rfc-pipeline-status -n <n>` prints the state file
-   (including `RFC_NAME` / `RFC_FILE` / `REVIEW_MODE` / `DESIGN_APPROVED`,
-   persisted via `rfc-pipeline-record`) plus the derived facts the table below
-   reads. The full ledger at `<run-scratch>/checkpoints.log` is the
-   authoritative record of which gates were passed. If `REVIEW_MODE` was never
-   recorded (a run predating it), it is `manual` — the old behavior — unless the
-   Architect says otherwise.
+   (including `RFC_NAME` / `RFC_FILE` / `REVIEW_MODE` / `IMPL_MODEL` /
+   `REVIEW_MODEL` / `DESIGN_APPROVED`, persisted via `rfc-pipeline-record`) plus
+   the derived facts the table below reads. The full ledger at
+   `<run-scratch>/checkpoints.log` is the authoritative record of which gates
+   were passed. If `REVIEW_MODE` was never recorded (a run predating it), it is
+   `manual` — the old behavior — unless the Architect says otherwise. An absent
+   `IMPL_MODEL` / `REVIEW_MODEL` means inherit — the pre-knob behavior, never a
+   value to invent.
 2. **Session name**: ask the Architect to run
    `/rename [rfc-pipeline] rfc/<n> <rfc-name>` (best-effort cosmetics, as
    always). If `RFC_NAME` was never recorded (a run predating it, or a crash
@@ -597,6 +643,14 @@ where nothing reported them — a stall or kill — per **Verification** above.
    /rename [rfc-review-fix] rfc/<n> <rfc-name>
    ```
 
+   then — only when the run has a `REVIEW_MODEL` — as its own message (this sets
+   the conversation's session model, which its reviewer and fixer agents
+   inherit):
+
+   ```
+   /model <review-model>
+   ```
+
    then, as the next message:
 
    ```
@@ -640,6 +694,9 @@ where nothing reported them — a stall or kill — per **Verification** above.
    - **subagent_type**: `general-purpose`
    - **description**: `[rfc-impl] rfc/<n> <rfc-name>`
    - **run_in_background**: `true`
+   - **model**: the run's `IMPL_MODEL`, when recorded — omit the parameter
+     entirely when unset (the agent then inherits this session's model). The
+     same applies to any re-spawn after a recovery.
    - **prompt**:
      `"Invoke the /rfc-impl skill on RFC rfc/<rfc-file>.md to
         execute the implementation plan. The codebase root is <codebase-root>.
@@ -677,17 +734,26 @@ where nothing reported them — a stall or kill — per **Verification** above.
    `/review-fix` reviews, and every fix branches from.
 
    Give the operator this copy-pasteable block, substituting `<n>`,
-   `<rfc-name>`, `<codebase-root>`, `<rfc-file>`, `<mode>`, and `<E>` (the
-   checkpoint SHA just taken):
+   `<rfc-name>`, `<codebase-root>`, `<rfc-file>`, `<mode>`, `<E>` (the
+   checkpoint SHA just taken), and — when the run has one — `<review-model>`:
 
    ```
    /rename [review-fix] rfc/<n> <rfc-name>
    ```
 
-   then, as the next message:
+   then — only when the run has a `REVIEW_MODEL` — as its own message (this sets
+   the conversation's session model, which its fixer agents inherit):
 
    ```
-   Invoke /review-fix on Target rfc/<rfc-file>.md in <codebase-root> with Mode: <mode>, Evaluated Commit E = <E>, Base Revision = <base-sha>. Use the default Fixer (/rfc-impl-fix) and the default Scratch Dir. When every tier is integrated and Phase 4 confirmed, report back the final ledger summary — open items included — and confirm the run completed.
+   /model <review-model>
+   ```
+
+   then, as the next message (drop the `Model:` clause when `REVIEW_MODEL` is
+   unset — it is what overrides the pinned leaf reviewers, per **The model
+   knobs**):
+
+   ```
+   Invoke /review-fix on Target rfc/<rfc-file>.md in <codebase-root> with Mode: <mode>, Model: <review-model>, Evaluated Commit E = <E>, Base Revision = <base-sha>. Use the default Fixer (/rfc-impl-fix) and the default Scratch Dir. When every tier is integrated and Phase 4 confirmed, report back the final ledger summary — open items included — and confirm the run completed.
    ```
 
    In auto mode, tell the operator this conversation runs itself once pasted;

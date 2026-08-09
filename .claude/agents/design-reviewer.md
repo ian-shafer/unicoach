@@ -4,7 +4,7 @@ description: >-
   Reviewer for a single design-review-* micro-skill. Applies a specific, narrow lens to a
   review target. Returns a PASS / FAIL status with reasoning.
   The only write operation should be to write its verdict and reasoning to the scratch directory.
-model: sonnet # mid tier: cheap, high-fan-out leaf reviews — the only model pin for design review
+model: sonnet # default mid tier for cheap, high-fan-out leaf reviews; an explicit model param on the spawn (/review-fix's Model) overrides it
 tools: Read, Grep, Glob, Bash, Write, Skill
 ---
 

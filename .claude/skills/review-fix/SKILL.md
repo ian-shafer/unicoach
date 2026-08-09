@@ -51,6 +51,13 @@ reviewers after the fact.
   sees the full change rather than only the previous tier's repairs.
 - **Fixer**: the skill or prompt that applies an accepted finding. Defaults to
   `/rfc-impl-fix`.
+- **Model** _(optional)_: a harness model alias (`sonnet`, `opus`, `haiku`).
+  When given, it is passed as the explicit `model` parameter on **every agent
+  this run spawns** — reviewer leaves (where the explicit parameter overrides
+  the `code-reviewer` / `design-reviewer` agent-def pins), fixers, and the Phase
+  4 confirmation leaves alike. When absent, spawns carry no `model` parameter:
+  leaves fall back to their agent-def pins and fixers inherit the session model
+  — the pre-knob behavior.
 - **Scratch Dir** _(optional)_: defaults to `.scratch/review-fix/<run-id>/`.
 
 If Target or `E` cannot be resolved, stop and ask.
@@ -266,15 +273,19 @@ whether this is even the right implementation to be reviewing.
    against [`tiers.md`](tiers.md). A discovered skill missing from the manifest
    **halts the run**; report it and ask the operator which tier it belongs in.
    Do this **once**, up front, so a manifest gap fails before any leaf is spent.
-   Report the resolved set and its per-tier counts.
+   Report the resolved set, its per-tier counts, and the run's **Model** (or
+   that spawns inherit the defaults) — a ledger read later needs to know which
+   model produced the findings.
 
 3. **Spawn one leaf per skill in the current tier only** — never a later tier —
    at most 10 in flight, refilling as each finishes. Name the tier and its skill
    count in chat before spawning, so an over-wide fan-out is visible immediately
    rather than after 39 agents are running.
    - **subagent_type**: `code-reviewer` (or `design-reviewer` for the design
-     lenses) — read-only, model-pinned. Tier 0 skills also use `code-reviewer`;
-     they read the RFC and the tree and write nothing.
+     lenses) — read-only, model-pinned by default. Tier 0 skills also use
+     `code-reviewer`; they read the RFC and the tree and write nothing.
+   - **model**: the run's **Model**, when given — the explicit parameter is what
+     overrides the agent-def pin. Omit when Model is unset.
    - **description**: `[review-fix] <skill>`
    - **run_in_background**: `true`
    - **prompt**: names the one skill to invoke, `<scratch>/review-context.md` to
@@ -430,7 +441,8 @@ The operator chooses one of:
    not after the fixer returns. A fixer that hangs must still leave a cleanable
    trace.
 3. Spawn the **Fixer** there, in a fresh context, one finding at a time — never
-   a batch. Pass the finding **verbatim**: description, all options in their
+   a batch — with the run's **Model** as the spawn's `model` parameter when one
+   was given. Pass the finding **verbatim**: description, all options in their
    original order, the subject. Do not paraphrase, re-order, or "clarify" it.
    Handing the fixer your restatement rather than the reviewer's own words
    destroys the attribution this run exists to produce.
