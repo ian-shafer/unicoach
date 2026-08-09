@@ -216,12 +216,14 @@ Status axis:
 Slugs are the stable handles; `rfc/NN-*.md` numbers are assigned at design time
 and backfilled here.
 
-| slug                  | description                                                                                                                                                                                    | status      | rfc |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
-| `llm-cost-ledger`     | extend the RFC 106 call log with per-call dollar cost (`model → price` table, cost frozen at the write boundary) and a period-windowed per-student cost read; completes `token-ledger`         | implemented | 108 |
-| `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `coaching_budget_exhausted` (402), background passes → named skip | implemented | 109 |
-| `subscriptions-apple` | StoreKit 2 purchase + App Store Server API verification + `subscriptions` table + Notifications V2 webhook (queue-processed) + `productId → y × price` budget mapping                          | planned     | —   |
-| `paywall-ios`         | iOS paywall + block screen + subscribe flow + Restore Purchases + `UserAuthState` gate; abstract "coaching used" usage bar (percentage, never dollars)                                         | planned     | —   |
+| slug                  | description                                                                                                                                                                                                                                                                  | status      | rfc |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
+| `llm-cost-ledger`     | extend the RFC 106 call log with per-call dollar cost (`model → price` table, cost frozen at the write boundary) and a period-windowed per-student cost read; completes `token-ledger`                                                                                       | implemented | 108 |
+| `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `coaching_budget_exhausted` (402), background passes → named skip                                                                               | implemented | 109 |
+| `subscriptions-apple` | split at design time (RFC 110) into the two rows below: a verify-path slice and a Notifications-V2 webhook slice                                                                                                                                                             | split       | —   |
+| — verify path         | `subscriptions` table (versioned) + `SubscriptionsDao`; `POST /api/v1/subscriptions/verify` via the App Store Server API (`:appstore` module); `SubscriptionPlans` (`productId → y × price`); subscribed `Entitlement` branch (basis/resetsAt); `resetsAt` on coaching-usage | implemented | 110 |
+| — webhook             | App Store Server Notifications V2 webhook (Apple-signed JWS auth, x5c verification, queue-processed) updating the same `subscriptions` row; retires the re-post-to-`/verify` renewal-refresh gap                                                                             | planned     | —   |
+| `paywall-ios`         | iOS paywall + block screen + subscribe flow + Restore Purchases + `UserAuthState` gate; abstract "coaching used" usage bar (percentage, never dollars)                                                                                                                       | planned     | —   |
 
 ## Dependency tree
 
@@ -345,7 +347,10 @@ prompts to reflect what actually landed (renamed artifacts, node splits, scope
 shifts).
 ```
 
-**3 — `subscriptions-apple`** (backend; may split into verify-path + webhook):
+**3 — `subscriptions-apple`**: split at design time (RFC 110) into the verify
+path (landed) and the Notifications-V2 webhook (pending, below).
+
+**3b — `subscriptions-apple` webhook** (backend):
 
 ```
 /rfc-pipeline
@@ -354,25 +359,32 @@ Feature: cost-metered paid subscriptions.
 North-star brief: features/paid-subscriptions.md — read it first; it is the
 source of intent (model, design principles, node breakdown).
 
-Design and implement one node: subscriptions-apple.
-Scope: a subscriptions table + DAO; POST /api/v1/subscriptions/verify validating
-the StoreKit 2 signed transaction (JWS) via the App Store Server API and mapping
-productId → (y × price) budget; an App Store Server Notifications V2 webhook
-(Apple-signed, no session cookie) enqueued onto the queue and applied by a
-worker handler for renew / cancel / refund / grace / revoke; wire the SUBSCRIBED
-entitlement branch (period_cost < y × plan_price) into budget-gate. Prefer to
-split into a verify-path RFC and a Notifications-V2 webhook RFC, run in that
-order.
-Already landed (build on these): llm-cost-ledger (`StudentLlmCostDao.lifetimeCost`
-+ the still-unused `windowedCost`, the subscription meter this node consumes);
-budget-gate — `BudgetService` (two `entitlement` overloads) over `BudgetConfig`'s
-`budget.freeAllowanceUsd`, the shared `Entitlement` verdict, the four call-site
-gates, and `GET /api/v1/students/me/coaching-usage`. The subscribed branch
-extends `BudgetService`/`Entitlement` here; budget-gate pre-built nothing for it.
+Design and implement one node: the subscriptions-apple Notifications-V2 webhook
+(the second slice of the RFC 110 node split).
+Scope: an App Store Server Notifications V2 endpoint — Apple-authenticated (the
+notification's JWS signature with real x5c certificate-chain verification, no
+session cookie) — that enqueues onto the existing queue inside the request
+transaction (ASYNC_WORK.md) and is applied by a worker handler for renew /
+cancel / refund / grace / revoke. It updates the SAME `subscriptions` row
+through `SubscriptionsDao.findByOriginalTransactionId`/`upsert` (the status
+vocabulary — active/expired/billing_retry/grace/revoked — already spans these
+events), and retires the renewal-staleness gap where a renewal reaches the
+server only by the app re-posting `/verify`.
+Already landed (build on these, RFC 110): the versioned `subscriptions` table +
+`SubscriptionsDao` (upsert with state-distinct + ownership guards, findCurrent,
+findByOriginalTransactionId); the `:appstore` module (`AppStoreConfig`,
+decode-only `AppleJws` — the webhook adds the x5c-VERIFYING sibling beside it;
+nothing may route an inbound Apple-signed payload through the decode-only
+path — `AppStoreAuthTokens`, `AppStoreTransport`/`KtorAppStoreTransport`,
+`AppStoreServerApi`, testFixtures with a scripted transport + signed-JWS
+builders); `POST /api/v1/subscriptions/verify` (`SubscriptionService`);
+`SubscriptionPlans` (service.conf `subscriptions` block); the subscribed
+`Entitlement` branch in `BudgetService` (basis/resetsAt — rollover is the
+window read, no reset event). The `APP_STORE_*` config/SSM keys exist
+(appstore.conf, infra/ssm.tf).
 Out of scope: the iOS StoreKit purchase UI and paywall. Backend only.
-Prerequisite: the App Store Connect sandbox artifacts must already exist — the
-auto-renewable subscription products (each productId mapped to a budget), the
-App Store Server API key, and the Notifications V2 endpoint URL.
+Prerequisite: the Paid Apps agreement must be active and the Notifications V2
+endpoint URL configured in App Store Connect.
 When done: return to features/paid-subscriptions.md — mark this node implemented
 in the living index (with its RFC number) and update the still-pending kickoff
 prompts to reflect what actually landed (renamed artifacts, node splits, scope
@@ -398,12 +410,26 @@ Purchases); the paywall / block screen surfaced from the `coaching_budget_exhaus
 including the two SSE ones, as plain JSON before any stream opens; subscribe
 entry points; and the abstract "coaching used" usage bar consuming
 GET /api/v1/students/me/coaching-usage, which answers
-`{"usage": {"usedPercent": 0-100, "exhausted": bool}}` (percentage, never
-dollars). Prefer to split into a StoreKit-purchase slice and the paywall UI, run
-in that order.
-Already landed (build on these): llm-cost-ledger; budget-gate; subscriptions-apple
-(verify endpoint, webhook, subscribed entitlement branch).
-Out of scope: nothing further — this is the last node.
+`{"usage": {"usedPercent": 0-100, "exhausted": bool, "resetsAt": ISO-8601|null}}`
+(percentage, never dollars; resetsAt is the subscription period's end, null on
+the free tier — the "budget spent, resets on ⟨date⟩" date). Prefer to split
+into a StoreKit-purchase slice and the paywall UI, run in that order.
+As landed by RFC 110: POST /api/v1/subscriptions/verify takes
+`{"signedTransaction": "<JWS>"}` and answers 200
+`{"subscription": {"status", "productId", "currentPeriodEnd"}}`, 400
+validation_failed, 404 subscription_not_found (e.g. a sandbox receipt against
+the production API — App Review's case; the conventional production→sandbox
+404-fallback was deliberately NOT built server-side and is this node's concern
+if needed), 409 subscription_owned_by_other_account (the first verifier owns
+the originalTransactionId), 503 service_unavailable (Apple unreachable /
+credentials unconfigured). Re-posting /verify is the idempotent refresh path —
+until the webhook slice lands, it is also how a renewal reaches the server, so
+the app should re-verify on launch/foreground while subscribed. One plan is
+configured: coach.uni.UnicoachiOS.monthly10 (SubscriptionPlans, service.conf).
+Already landed (build on these): llm-cost-ledger; budget-gate;
+subscriptions-apple verify path (RFC 110). The Notifications-V2 webhook slice
+may land before or after this node; nothing here depends on it.
+Out of scope: nothing further beyond the webhook slice.
 iOS/Swift: bin/test check does NOT compile Swift, so the pipeline gate is a false
 green here — verify with xcodebuild (scheme UnicoachiOS) before landing.
 When done: return to features/paid-subscriptions.md — mark this node implemented
