@@ -118,6 +118,8 @@ class ChatToDbIntegrationTest {
             extractionDisabled,
             requestLoggingConfig,
             BudgetConfig.from(config).getOrThrow(),
+            offlineAppStoreServerApi(),
+            subscriptionPlansFrom(config),
           )
         }
       server.start(wait = false)

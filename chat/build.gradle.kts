@@ -13,6 +13,7 @@ dependencies {
   // Shared transport-seam fakes and recorded wire captures (RFC 107). The
   // testFixtures source set does not inherit main's `implementation` deps, so
   // the fake declares its own: it references Flow and JsonObject directly.
+  testFixturesImplementation(testFixtures(project(":common")))
   testFixturesImplementation(libs.kotlinx.coroutines.core)
   testFixturesImplementation(libs.kotlinx.serialization.json)
 

@@ -137,6 +137,8 @@ class CoachingBudgetRoutingTest {
               .getOrThrow(),
             RequestLoggingConfig.from(config).getOrThrow(),
             budgetConfig,
+            offlineAppStoreServerApi(),
+            subscriptionPlansFrom(config),
           )
         }
       testServer.start(wait = false)
@@ -461,6 +463,19 @@ class CoachingBudgetRoutingTest {
       val (usedPercent, exhausted) = response.usage()
       assertEquals(0, usedPercent)
       assertFalse(exhausted)
+    }
+
+  @Test
+  fun `usage carries a null resetsAt on the free tier — the lifetime allowance never resets`() =
+    runBlocking {
+      val caller = registerStudent()
+
+      val response = getUsage(caller.cookie)
+
+      assertEquals(HttpStatusCode.OK, response.status)
+      val usage = mapper.readTree(response.bodyAsText()).get("usage")
+      assertTrue(usage.has("resetsAt"), "the widened response names the field even when null")
+      assertTrue(usage.get("resetsAt").isNull)
     }
 
   @Test

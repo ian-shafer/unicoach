@@ -136,7 +136,12 @@ class OfflineCoachingE2eTest {
               .withFallback(config),
           ).getOrThrow()
       synthesisConfig = SynthesisConfig.from(config).getOrThrow()
-      workerBudgetService = BudgetService(workerDatabase, BudgetConfig.from(config).getOrThrow())
+      workerBudgetService =
+        BudgetService(
+          workerDatabase,
+          BudgetConfig.from(config).getOrThrow(),
+          subscriptionPlansFrom(config),
+        )
 
       // Real provider over the fake seam, wrapped by the real LlmCallLog (RFC 106).
       val llmCallLog = LlmCallLog(AnthropicChatProvider(chatTransport, AutoCloseable {}), database)
@@ -157,6 +162,8 @@ class OfflineCoachingE2eTest {
             extractionConfig,
             requestLoggingConfig,
             BudgetConfig.from(config).getOrThrow(),
+            offlineAppStoreServerApi(),
+            subscriptionPlansFrom(config),
           )
         }
       server.start(wait = false)

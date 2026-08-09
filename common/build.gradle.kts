@@ -2,6 +2,9 @@ plugins {
   alias(libs.plugins.kotlin.jvm)
   alias(libs.plugins.kotlin.serialization)
   `java-library`
+  // Domain-agnostic test primitives shared with the provider modules' own
+  // testFixtures (e.g. ScriptedQueue, the strict scripted-transport mechanic).
+  `java-test-fixtures`
 }
 
 dependencies {

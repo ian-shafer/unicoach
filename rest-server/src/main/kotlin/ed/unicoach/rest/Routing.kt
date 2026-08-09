@@ -5,6 +5,7 @@ import ed.unicoach.rest.routing.CoachingUsageRouteHandler
 import ed.unicoach.rest.routing.CollegeListRouteHandler
 import ed.unicoach.rest.routing.ConvoRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
+import ed.unicoach.rest.routing.SubscriptionRouteHandler
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -39,6 +40,7 @@ fun Application.configureRouting(
   extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
   collegeListService: ed.unicoach.coaching.collegelist.CollegeListService,
   budgetService: ed.unicoach.coaching.budget.BudgetService,
+  subscriptionService: ed.unicoach.subscriptions.SubscriptionService,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
@@ -48,6 +50,8 @@ fun Application.configureRouting(
     CollegeListRouteHandler(authService, studentService, collegeListService, sessionConfig)
   val coachingUsageRouteHandler =
     CoachingUsageRouteHandler(authService, studentService, budgetService, sessionConfig)
+  val subscriptionRouteHandler =
+    SubscriptionRouteHandler(authService, studentService, subscriptionService, sessionConfig)
   routing {
     route("/healthz") {
       get {
@@ -63,5 +67,6 @@ fun Application.configureRouting(
     convoRouteHandler.registerRoutes(this)
     collegeListRouteHandler.registerRoutes(this)
     coachingUsageRouteHandler.registerRoutes(this)
+    subscriptionRouteHandler.registerRoutes(this)
   }
 }

@@ -29,10 +29,18 @@ locals {
     DATABASE_USER = var.app_db_user
   }
 
-  # SecureString secrets the operator seeds out-of-band.
+  # SecureString secrets the operator seeds out-of-band. The App Store Server
+  # API credential (RFC 110) is three keys seeded as one unit once the Paid Apps
+  # agreement activates — issuer and key id are identifiers, not secrets, but
+  # keeping the trio atomic and out of the committed tree beats splitting it.
+  # APP_STORE_PRIVATE_KEY is the .p8 body as ONE-LINE base64 PKCS#8 (PEM
+  # header/footer/newlines stripped): grep -v 'PRIVATE KEY' AuthKey_<KEYID>.p8 | tr -d '\n'
   ssm_out_of_band_secrets = [
     "DATABASE_PASSWORD",
     "CHAT_ANTHROPIC_API_KEY",
+    "APP_STORE_ISSUER_ID",
+    "APP_STORE_KEY_ID",
+    "APP_STORE_PRIVATE_KEY",
   ]
 }
 

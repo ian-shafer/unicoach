@@ -85,7 +85,11 @@ class BudgetConfigTest {
     val config = configFrom("budget { freeAllowanceUsd = 92233720.00 }").getOrThrow()
     assertEquals(92_233_720_000_000_000L, config.freeAllowance.value)
     assertTrue(
-      Entitlement(spent = Nanodollars.of(config.freeAllowance.value - 1), allowance = config.freeAllowance).usedPercent
+      Entitlement(
+        spent = Nanodollars.of(config.freeAllowance.value - 1),
+        allowance = config.freeAllowance,
+        basis = EntitlementBasis.FreeAllowance,
+      ).usedPercent
         in 0..100,
       "the largest allowance config accepts must still compute a percentage",
     )

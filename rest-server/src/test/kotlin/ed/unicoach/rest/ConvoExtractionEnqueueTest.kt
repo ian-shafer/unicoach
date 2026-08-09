@@ -155,6 +155,8 @@ class ConvoExtractionEnqueueTest {
             enabledConfig,
             requestLoggingConfig,
             BudgetConfig.from(config).getOrThrow(),
+            offlineAppStoreServerApi(),
+            subscriptionPlansFrom(config),
           )
         }
       enabledServer.start(wait = false)
@@ -182,6 +184,8 @@ class ConvoExtractionEnqueueTest {
             disabledConfig,
             requestLoggingConfig,
             BudgetConfig.from(config).getOrThrow(),
+            offlineAppStoreServerApi(),
+            subscriptionPlansFrom(config),
           )
         }
       disabledServer.start(wait = false)

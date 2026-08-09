@@ -436,5 +436,7 @@ private fun io.ktor.server.application.Application.moduleWith(
     extractionConfig,
     requestLoggingConfig,
     BudgetConfig.from(config).getOrThrow(),
+    ed.unicoach.rest.offlineAppStoreServerApi(),
+    ed.unicoach.rest.subscriptionPlansFrom(config),
   )
 }

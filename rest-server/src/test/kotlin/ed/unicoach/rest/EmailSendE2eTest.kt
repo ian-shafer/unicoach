@@ -117,6 +117,8 @@ class EmailSendE2eTest {
             extractionConfig,
             requestLoggingConfig,
             BudgetConfig.from(config).getOrThrow(),
+            offlineAppStoreServerApi(),
+            subscriptionPlansFrom(config),
           )
         }
 

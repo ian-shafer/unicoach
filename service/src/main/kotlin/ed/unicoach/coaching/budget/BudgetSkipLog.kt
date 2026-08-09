@@ -21,6 +21,18 @@ fun budgetSkipMessage(
   passName: String,
   studentId: StudentId,
   entitlement: Entitlement,
-): String =
-  "Skipping [$passName] for student=[${studentId.asString}]: coaching budget exhausted " +
-    "(spent=[${entitlement.spent.toUsdString()}] of allowance=[${entitlement.allowance.toUsdString()}] USD)"
+): String {
+  // The operator-facing name of each basis, spelled out here rather than
+  // reflected off the type, so renaming the Kotlin declaration cannot silently
+  // rewrite what operators grep for. Exhaustive: a third basis fails this build.
+  val basis =
+    when (entitlement.basis) {
+      is EntitlementBasis.FreeAllowance -> "free_allowance"
+      is EntitlementBasis.Subscription -> "subscription"
+    }
+  // The operator's answer to "blocked until when": a subscription meter resets
+  // at its period_end; the lifetime free allowance never resets.
+  val resetsAt = entitlement.resetsAt?.let { ", resets at [$it]" } ?: ""
+  return "Skipping [$passName] for student=[${studentId.asString}]: coaching budget exhausted " +
+    "(basis=[$basis], spent=[${entitlement.spent.toUsdString()}] of allowance=[${entitlement.allowance.toUsdString()}] USD$resetsAt)"
+}

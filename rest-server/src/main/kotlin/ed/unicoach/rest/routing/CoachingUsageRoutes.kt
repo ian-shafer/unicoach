@@ -44,7 +44,13 @@ class CoachingUsageRouteHandler(
     val entitlement = budgetService.entitlement(student.id).getOrThrow()
     call.respond(
       HttpStatusCode.OK,
-      CoachingUsageResponse(CoachingUsage(usedPercent = entitlement.usedPercent, exhausted = entitlement.exhausted)),
+      CoachingUsageResponse(
+        CoachingUsage(
+          usedPercent = entitlement.usedPercent,
+          exhausted = entitlement.exhausted,
+          resetsAt = entitlement.resetsAt,
+        ),
+      ),
     )
   }
 }

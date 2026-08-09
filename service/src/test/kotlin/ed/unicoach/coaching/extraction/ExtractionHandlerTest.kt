@@ -144,7 +144,11 @@ class ExtractionHandlerTest {
         StubService(
           ExtractionResult.SkippedBudgetExhausted(
             studentId,
-            Entitlement(spent = Nanodollars.of(5_000_000_000), allowance = Nanodollars.of(5_000_000_000)),
+            Entitlement(
+              spent = Nanodollars.of(5_000_000_000),
+              allowance = Nanodollars.of(5_000_000_000),
+              basis = ed.unicoach.coaching.budget.EntitlementBasis.FreeAllowance,
+            ),
           ),
         )
       val handler = ExtractionHandler(stub)

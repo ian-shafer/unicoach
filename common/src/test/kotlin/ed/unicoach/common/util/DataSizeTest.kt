@@ -22,6 +22,17 @@ class DataSizeTest {
   }
 
   @Test
+  fun `ofKibibytes multiplies by 1024`() {
+    assertEquals(16384, DataSize.ofKibibytes(16).bytes)
+    assertEquals(0, DataSize.ofKibibytes(0).bytes)
+  }
+
+  @Test
+  fun `ofKibibytes rejects a negative count`() {
+    assertFailsWith<IllegalArgumentException> { DataSize.ofKibibytes(-1) }
+  }
+
+  @Test
   fun `equal byte counts compare equal`() {
     assertEquals(DataSize.ofBytes(1024), DataSize.ofBytes(1024))
     assertNotEquals(DataSize.ofBytes(1024), DataSize.ofBytes(2048))

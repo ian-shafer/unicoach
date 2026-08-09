@@ -112,6 +112,8 @@ class ConvoStreamErrorRoutingTest {
             extractionConfig,
             requestLoggingConfig,
             BudgetConfig.from(config).getOrThrow(),
+            offlineAppStoreServerApi(),
+            subscriptionPlansFrom(config),
           )
         }
       testServer.start(wait = false)

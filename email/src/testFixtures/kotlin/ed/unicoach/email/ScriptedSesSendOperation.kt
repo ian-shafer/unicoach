@@ -9,6 +9,7 @@ import aws.sdk.kotlin.services.sesv2.model.SendEmailRequest
 import aws.sdk.kotlin.services.sesv2.model.SendEmailResponse
 import aws.sdk.kotlin.services.sesv2.model.SendingPausedException
 import aws.sdk.kotlin.services.sesv2.model.TooManyRequestsException
+import ed.unicoach.testing.ScriptedQueue
 
 // One recorded SES outcome: what the transport seam returns or throws for a
 // single send(). The shapes are the real sesv2 SDK types the production
@@ -36,8 +37,9 @@ sealed interface SesOutcome {
  * unexpected extra send fails the test loudly.
  */
 class ScriptedSesSendOperation(
-  private val outcomes: List<SesOutcome>,
+  outcomes: List<SesOutcome>,
 ) : SesSendOperation {
+  private val queue = ScriptedQueue(outcomes, "ScriptedSesSendOperation.send()")
   private val captured = mutableListOf<SendEmailRequest>()
 
   /** Requests received, one per `send()` call, in call order. */
@@ -58,12 +60,11 @@ class ScriptedSesSendOperation(
     }
 
   override suspend fun send(request: SendEmailRequest): SendEmailResponse {
-    val index = captured.size
-    check(index < outcomes.size) {
-      "ScriptedSesSendOperation exhausted: unexpected send() call #${index + 1}, script has ${outcomes.size}"
-    }
+    // Dequeue before recording so an unscripted call leaves [requests] holding
+    // only the calls the script actually answered.
+    val outcome = queue.next()
     captured.add(request)
-    return when (val outcome = outcomes[index]) {
+    return when (outcome) {
       is SesOutcome.Response -> outcome.response
       is SesOutcome.Throw -> throw outcome.error
     }

@@ -149,6 +149,8 @@ class ConvoToolLoopRoutingTest {
             extractionConfig,
             requestLoggingConfig,
             BudgetConfig.from(config).getOrThrow(),
+            offlineAppStoreServerApi(),
+            subscriptionPlansFrom(config),
           )
         }
       server.start(wait = false)

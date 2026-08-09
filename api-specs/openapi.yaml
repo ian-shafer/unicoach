@@ -785,6 +785,86 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/subscriptions/verify:
+    post:
+      summary: Verify an Apple subscription purchase
+      description: >
+        The app posts the StoreKit 2 signed transaction (JWS); the backend uses
+        it only as a lookup key, fetches the authoritative subscription state
+        from the App Store Server API, and records it as the caller's
+        subscription. Re-posting is the idempotent refresh path — until the
+        Notifications V2 webhook exists it is also how a renewal reaches the
+        server. Non-entitling statuses (expired, revoked, ...) still record and
+        answer 200 — the row reflects Apple truth; entitlement is the budget
+        gate's concern.
+      operationId: verifySubscription
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscriptionVerifyRequest'
+      responses:
+        '200':
+          description: The subscription was verified and recorded (or refreshed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionVerifyResponse'
+        '400':
+          description: >
+            Blank, oversized, or undecodable signedTransaction, or one carrying
+            no usable transactionId claim (code validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Email not verified (code email_not_verified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: >
+            The App Store knows no such transaction in this environment (code
+            subscription_not_found)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            The caller has no student profile (code student_profile_required),
+            or the subscription is bound to another account (code
+            subscription_owned_by_other_account)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >
+            Subscription verification is temporarily unavailable (App Store
+            unreachable or credentials not configured; code service_unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/conversations:
     post:
       summary: Start a conversation with its first message
@@ -1467,18 +1547,56 @@ components:
           $ref: '#/components/schemas/CoachingUsage'
     CoachingUsage:
       type: object
-      required: [usedPercent, exhausted]
+      required: [usedPercent, exhausted, resetsAt]
       properties:
         usedPercent:
           type: integer
           minimum: 0
           maximum: 100
-          description: Share of the free allowance already used, floored and capped.
+          description: Share of the current allowance already used, floored and capped.
         exhausted:
           type: boolean
           description: >
             Whether coaching is currently blocked. Equivalent to usedPercent == 100,
             carried explicitly so a client never re-derives the block condition.
+        resetsAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            When the meter resets — the subscription period's end. Null on the
+            free tier, whose lifetime allowance never resets.
+    SubscriptionVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [signedTransaction]
+      properties:
+        signedTransaction:
+          type: string
+          minLength: 1
+          maxLength: 16384
+          description: The StoreKit 2 signed transaction (JWS) as received from Product.purchase().
+    SubscriptionVerifyResponse:
+      type: object
+      required: [subscription]
+      properties:
+        subscription:
+          $ref: '#/components/schemas/SubscriptionView'
+    SubscriptionView:
+      type: object
+      required: [status, productId, currentPeriodEnd]
+      properties:
+        status:
+          type: string
+          enum: [active, expired, billing_retry, grace, revoked]
+          description: The recorded subscription status (Apple's status, snake_cased).
+        productId:
+          type: string
+          maxLength: 255
+        currentPeriodEnd:
+          type: string
+          format: date-time
+          description: The current entitlement window's end — also the usage meter's reset date.
     Conversation:
       type: object
       required: [id, name, createdAt, updatedAt]

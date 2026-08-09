@@ -1,5 +1,8 @@
 package ed.unicoach.rest
 
+import ed.unicoach.appstore.AppStoreConfig
+import ed.unicoach.appstore.AppStoreServerApi
+import ed.unicoach.appstore.AppStoreServerApiFactory
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.DbEmailVerifier
 import ed.unicoach.auth.EmailVerificationConfig
@@ -36,6 +39,8 @@ import ed.unicoach.rest.plugins.configureEmailVerificationGate
 import ed.unicoach.rest.plugins.configureRequestSizeLimit
 import ed.unicoach.rest.plugins.configureSerialization
 import ed.unicoach.rest.plugins.configureStatusPages
+import ed.unicoach.subscriptions.SubscriptionPlans
+import ed.unicoach.subscriptions.SubscriptionService
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import ed.unicoach.web.common.logging.RequestLoggingConfig
@@ -62,7 +67,7 @@ fun startServer(
 ): EmbeddedServer<*, *> {
   val config =
     AppConfig
-      .load("common.conf", "db.conf", "service.conf", "chat.conf", "rest-server.conf", "queue.conf")
+      .load("common.conf", "db.conf", "service.conf", "chat.conf", "appstore.conf", "rest-server.conf", "queue.conf")
       .getOrThrow()
 
   val dbConfig =
@@ -147,50 +152,81 @@ fun startServer(
 
   val queueService = QueueService(database)
 
-  val ignorePathPrefixes =
-    config
-      .getStringList("sessionExpiry.ignorePathPrefixes")
-      .toSet()
+  // The App Store Server API client (RFC 110): the factory owns its Ktor client's
+  // construction, this root owns the client's lifetime — closed on
+  // ApplicationStopped, mirroring the chat client. Null credentials are a valid
+  // unconfigured state — verify answers 503.
+  val appStore =
+    AppStoreServerApiFactory.fromConfig(
+      AppStoreConfig
+        .from(config)
+        .getOrThrow(),
+    )
 
-  val hostStr = config.getString("server.host")
-  val portInt = port ?: config.getInt("server.port")
-
+  // Everything from here until Netty is bound can still throw — a rejected
+  // subscriptions/server config, or a port already taken — and the
+  // ApplicationStopped hook that closes the client only becomes live once the
+  // module below has loaded. So the client's cleanup travels with its
+  // allocation rather than depending on a hook registered further down: any
+  // failure in the rest of the boot closes it here. Closing twice (this path
+  // plus a hook that did fire) is harmless — HttpClient.close is idempotent.
   val server =
-    embeddedServer(Netty, port = portInt, host = hostStr) {
-      val applicationConfig = environment.config as? MapApplicationConfig
-      applicationConfig?.apply {
-      }
+    runCatching {
+      val subscriptionPlans =
+        SubscriptionPlans
+          .from(config)
+          .getOrThrow()
 
-      environment.monitor.subscribe(ApplicationStopped) {
-        database.close()
-      }
+      val ignorePathPrefixes =
+        config
+          .getStringList("sessionExpiry.ignorePathPrefixes")
+          .toSet()
 
-      appModule(
-        database,
-        sessionConfig,
-        requestSizeConfig,
-        llmCallLog,
-        coachingConfig,
-        clientKeyGateConfig,
-        emailVerificationConfig,
-        googleTokenVerifier,
-        queueService,
-        extractionConfig,
-        requestLoggingConfig,
-        budgetConfig,
-      )
+      val hostStr = config.getString("server.host")
+      val portInt = port ?: config.getInt("server.port")
 
-      install(SessionExpiryPlugin) {
-        this.sessionConfig = sessionConfig
-        this.queueService = queueService
-        this.ignorePathPrefixes = ignorePathPrefixes
-      }
-    }
+      val server =
+        embeddedServer(Netty, port = portInt, host = hostStr) {
+          val applicationConfig = environment.config as? MapApplicationConfig
+          applicationConfig?.apply {
+          }
 
-  // Start non-blocking and wait for Netty to bind.
-  server.start(wait = false)
-  @Suppress("DEPRECATION")
-  kotlinx.coroutines.runBlocking { server.engine.resolvedConnectors() }
+          environment.monitor.subscribe(ApplicationStopped) {
+            appStore.client.close()
+            database.close()
+          }
+
+          appModule(
+            database,
+            sessionConfig,
+            requestSizeConfig,
+            llmCallLog,
+            coachingConfig,
+            clientKeyGateConfig,
+            emailVerificationConfig,
+            googleTokenVerifier,
+            queueService,
+            extractionConfig,
+            requestLoggingConfig,
+            budgetConfig,
+            appStore.api,
+            subscriptionPlans,
+          )
+
+          install(SessionExpiryPlugin) {
+            this.sessionConfig = sessionConfig
+            this.queueService = queueService
+            this.ignorePathPrefixes = ignorePathPrefixes
+          }
+        }
+
+      // Start non-blocking and wait for Netty to bind.
+      server.start(wait = false)
+      @Suppress("DEPRECATION")
+      kotlinx.coroutines.runBlocking { server.engine.resolvedConnectors() }
+      server
+    }.onFailure { appStore.client.close() }
+      .getOrThrow()
 
   if (wait) {
     Thread.currentThread().join()
@@ -216,6 +252,8 @@ fun Application.appModule(
   extractionConfig: ExtractionConfig,
   requestLoggingConfig: RequestLoggingConfig,
   budgetConfig: BudgetConfig,
+  appStoreServerApi: AppStoreServerApi,
+  subscriptionPlans: SubscriptionPlans,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
@@ -241,9 +279,10 @@ fun Application.appModule(
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the
   // verdict a student is blocked on is the verdict their usage bar renders.
-  val budgetService = BudgetService(database, budgetConfig)
+  val budgetService = BudgetService(database, budgetConfig, subscriptionPlans)
   val coachingService = CoachingService(database, llmCallLog, coachingConfig, budgetService, toolRegistry)
   val collegeListService = CollegeListService(database)
+  val subscriptionService = SubscriptionService(database, appStoreServerApi, subscriptionPlans)
 
   configureEmailVerificationGate(authService, sessionConfig)
 
@@ -258,5 +297,6 @@ fun Application.appModule(
     extractionConfig,
     collegeListService,
     budgetService,
+    subscriptionService,
   )
 }

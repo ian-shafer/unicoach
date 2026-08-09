@@ -50,4 +50,8 @@ enum class ErrorCode(
   // Google SSO
   ACCOUNT_DISABLED("account_disabled"),
   SERVICE_UNAVAILABLE("service_unavailable"),
+
+  // Apple subscription verify (RFC 110)
+  SUBSCRIPTION_NOT_FOUND("subscription_not_found"),
+  SUBSCRIPTION_OWNED_BY_OTHER_ACCOUNT("subscription_owned_by_other_account"),
 }

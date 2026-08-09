@@ -33,6 +33,7 @@ import ed.unicoach.queue.JobHandler
 import ed.unicoach.queue.QueueConfig
 import ed.unicoach.queue.QueueService
 import ed.unicoach.queue.QueueWorker
+import ed.unicoach.subscriptions.SubscriptionPlans
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration.Companion.seconds
@@ -56,10 +57,17 @@ fun main() {
   val fitLensConfig = FitLensConfig.from(config).getOrThrow()
 
   // One BudgetService for all three passes (RFC 109): they gate on the same
-  // lifetime meter against the same allowance, so a student blocked from one is
-  // blocked from all. Built beside the sibling configs, OUTSIDE the enabled-pass
-  // gate, so a malformed budget block fails boot even when every pass is off.
-  val budgetService = BudgetService(database, BudgetConfig.from(config).getOrThrow())
+  // meter against the same allowance, so a student blocked from one is blocked
+  // from all. SubscriptionPlans (RFC 110) rides beside BudgetConfig so the
+  // worker's gate reads the same subscribed branch as the chat gate. Built
+  // beside the sibling configs, OUTSIDE the enabled-pass gate, so a malformed
+  // budget or plans block fails boot even when every pass is off.
+  val budgetService =
+    BudgetService(
+      database,
+      BudgetConfig.from(config).getOrThrow(),
+      SubscriptionPlans.from(config).getOrThrow(),
+    )
 
   // The frozen-cost price book (RFC 108). Built OUTSIDE the enabled-pass gate so
   // a malformed llmPricing block fails boot even when every LLM pass is disabled;

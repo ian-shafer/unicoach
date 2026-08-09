@@ -1,5 +1,6 @@
 package ed.unicoach.common.money
 
+import com.typesafe.config.Config
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -34,7 +35,25 @@ value class Nanodollars private constructor(
   companion object {
     private const val USD_DISPLAY_SCALE = 6
 
+    /** USD → nano-dollars: 1e9 nano-dollars to the dollar. */
+    private const val USD_SCALE_DIGITS = 9
+
     fun of(value: Long): Nanodollars = Nanodollars(value)
+
+    /**
+     * The largest amount a percentage-of-allowance can be computed for
+     * (≈`$92.2M`). That arithmetic multiplies the SPEND by 100 on the branch
+     * where the spend is still under the allowance, so bounding the allowance by
+     * this is what keeps `spent × 100` inside a [Long].
+     *
+     * Every reader of a percentage-checked USD amount bounds against this one
+     * value rather than re-deriving `Long.MAX_VALUE / 100`, so no two of them can
+     * drift apart. The consumer of the bound — `Entitlement.usedPercent` in the
+     * service's budget domain — restates the guard at the arithmetic itself and
+     * is pinned to this ceiling by `BudgetConfigTest`; a change to that formula
+     * has to change this constant with it.
+     */
+    val MAX_FOR_PERCENTAGE: Nanodollars = of(Long.MAX_VALUE / 100)
 
     /**
      * The exact value of [amount] × 10^[scaleDigits], as nano-dollars. This is
@@ -59,6 +78,44 @@ value class Nanodollars private constructor(
       } catch (e: ArithmeticException) {
         throw IllegalArgumentException("[$amount] scaled by 10^[$scaleDigits] has no exact nano-dollar form", e)
       }
+    }
+
+    /**
+     * The exact USD [amount] as nano-dollars. The dollar scale lives here, so a
+     * reader of a USD amount never restates it — the `$`/MTok reader and this one
+     * differ in their unit alone, and each names it once.
+     */
+    fun fromExactUsd(amount: BigDecimal): Nanodollars = fromExactDecimal(amount, USD_SCALE_DIGITS)
+
+    /**
+     * Reads [key] from [config] as an exact USD decimal, converts it to
+     * nano-dollars, and requires it at or under [MAX_FOR_PERCENTAGE] — the whole
+     * of what a config-loaded, percentage-checked money amount has to satisfy,
+     * in one place, so every such reader enforces the same thing.
+     *
+     * Reading the value's original text (not a lossy binary double) and every
+     * check sit inside one catch, so EVERY way this can fail — text that is not a
+     * decimal at all ([BigDecimal]'s own `NumberFormatException`, which names
+     * neither), a negative or sub-nano-dollar amount, an over-ceiling one —
+     * surfaces as an [IllegalArgumentException] naming [key], its raw text, and
+     * the unit it was read as.
+     *
+     * An absent [key] is not this function's concern: [Config.getValue] throws
+     * its own `ConfigException.Missing`, which already names the key.
+     */
+    fun fromConfigUsd(
+      config: Config,
+      key: String,
+    ): Nanodollars {
+      val raw = config.getValue(key).unwrapped().toString()
+      return runCatching {
+        val amount = fromExactUsd(BigDecimal(raw))
+        require(amount.value <= MAX_FOR_PERCENTAGE.value) {
+          "[${amount.toUsdString()}] is above the largest amount a usage percentage can be " +
+            "computed for [${MAX_FOR_PERCENTAGE.toUsdString()}]"
+        }
+        amount
+      }.getOrElse { throw IllegalArgumentException("[$key] = [$raw] (USD, no finer than a nano-dollar): [${it.message}]", it) }
     }
   }
 }

@@ -8,20 +8,42 @@ package ed.unicoach.coaching.budget
 
 import com.typesafe.config.ConfigFactory
 import ed.unicoach.db.Database
+import ed.unicoach.subscriptions.SubscriptionPlans
+
+/**
+ * A [SubscriptionPlans] carrying the packaged plan shape (RFC 110): one plan,
+ * [productId], at `ratio × priceUsd` per period.
+ */
+fun testSubscriptionPlans(
+  productId: String = "coach.uni.UnicoachiOS.monthly10",
+  priceUsd: String = "9.99",
+  budgetRatio: String = "0.5",
+): SubscriptionPlans =
+  SubscriptionPlans
+    .from(
+      ConfigFactory.parseString(
+        """
+        subscriptions.budgetRatio = $budgetRatio
+        subscriptions.plans { "$productId" { priceUsd = $priceUsd } }
+        """.trimIndent(),
+      ),
+    ).getOrThrow()
 
 /**
  * A [BudgetService] over [database] whose free allowance is [freeAllowanceUsd],
- * stated the way config states it.
+ * stated the way config states it, with [plans] as the subscription plan table.
  */
 fun testBudgetService(
   database: Database,
   freeAllowanceUsd: String,
+  plans: SubscriptionPlans = testSubscriptionPlans(),
 ): BudgetService =
   BudgetService(
     database,
     BudgetConfig
       .from(ConfigFactory.parseString("budget.freeAllowanceUsd = $freeAllowanceUsd"))
       .getOrThrow(),
+    plans,
   )
 
 /**

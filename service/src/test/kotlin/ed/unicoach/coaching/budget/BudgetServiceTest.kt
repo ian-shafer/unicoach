@@ -3,7 +3,9 @@ package ed.unicoach.coaching.budget
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.SubscriptionsDao
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.SubscriptionStatus
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -12,6 +14,8 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -60,7 +64,7 @@ class BudgetServiceTest {
     connection.createStatement().use { stmt ->
       stmt.execute(
         "TRUNCATE TABLE convos, convo_requests, extraction_runs, synthesis_runs, fit_lens_runs, fit_suggestions, " +
-          "llm_requests, llm_responses, llm_responses_raw, colleges, system_prompts, students, users CASCADE",
+          "llm_requests, llm_responses, llm_responses_raw, colleges, system_prompts, subscriptions, students, users CASCADE",
       )
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
@@ -99,8 +103,15 @@ class BudgetServiceTest {
     return id
   }
 
-  /** An llm_requests row + its completed llm_responses row at [costNanodollars] (null = uncosted). */
-  private fun appendCall(costNanodollars: Long?): Long {
+  /**
+   * An llm_requests row + its completed llm_responses row at [costNanodollars]
+   * (null = uncosted), attributed at [createdAt] (null = the DB clock's now) —
+   * the timestamp the subscription meter windows by.
+   */
+  private fun appendCall(
+    costNanodollars: Long?,
+    createdAt: Instant? = null,
+  ): Long {
     val requestId =
       connection
         .prepareStatement(
@@ -116,13 +127,18 @@ class BudgetServiceTest {
       .prepareStatement(
         """
         INSERT INTO llm_responses
-          (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms)
-        VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, ?, 1, 1, 1)
+          (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms, created_at)
+        VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, ?, 1, 1, 1, COALESCE(?, NOW()))
         """.trimIndent(),
       ).use { stmt ->
         stmt.setLong(1, requestId)
         if (costNanodollars != null) stmt.setLong(2, costNanodollars) else stmt.setNull(2, java.sql.Types.BIGINT)
         if (costNanodollars != null) stmt.setBoolean(3, false) else stmt.setNull(3, java.sql.Types.BOOLEAN)
+        if (createdAt != null) {
+          stmt.setTimestamp(4, java.sql.Timestamp.from(createdAt))
+        } else {
+          stmt.setNull(4, java.sql.Types.TIMESTAMP_WITH_TIMEZONE)
+        }
         stmt.executeUpdate()
       }
     return requestId
@@ -172,7 +188,22 @@ class BudgetServiceTest {
   private fun spend(
     studentId: StudentId,
     costNanodollars: Long,
-  ) = attributeToSynthesis(studentId, appendCall(costNanodollars))
+    createdAt: Instant? = null,
+  ) = attributeToSynthesis(studentId, appendCall(costNanodollars, createdAt))
+
+  /** Upserts a subscription row for [studentId] over `[periodStart, periodEnd)`. */
+  private fun subscribe(
+    studentId: StudentId,
+    status: SubscriptionStatus = SubscriptionStatus.ACTIVE,
+    periodStart: Instant = Instant.now().minus(10, ChronoUnit.DAYS),
+    periodEnd: Instant = Instant.now().plus(20, ChronoUnit.DAYS),
+    productId: String = "coach.uni.UnicoachiOS.monthly10",
+    originalTransactionId: String = "bs-${studentId.value}",
+  ) {
+    SubscriptionsDao
+      .upsert(session, studentId, originalTransactionId, productId, status, periodStart, periodEnd)
+      .getOrThrow()
+  }
 
   // ---------------------------------------------------------------------------
   // Tests
@@ -275,6 +306,123 @@ class BudgetServiceTest {
       )
     assertEquals(5_000_000_000L, exhausted.entitlement.spent.value, "the refusal states the spend it was decided on")
     assertEquals(5_000_000_000L, exhausted.entitlement.allowance.value, "and the allowance it was decided against")
+  }
+
+  // ---------------------------------------------------------------------------
+  // Subscribed branch (RFC 110)
+  // ---------------------------------------------------------------------------
+
+  /** The plan table's monthly10 budget: y = 0.5 of $9.99. */
+  private val periodBudget = 4_995_000_000L
+
+  @Test
+  fun `an active subscription meters the period window against the plan budget`() {
+    val studentId = createStudent()
+    val periodEnd = Instant.now().plus(20, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS)
+    subscribe(studentId, periodEnd = periodEnd)
+    spend(studentId, 1_000_000_000)
+
+    val verdict = testBudgetService(database, "0.00").entitlement(session, studentId).getOrThrow()
+
+    assertEquals(EntitlementBasis.Subscription(periodEnd), verdict.basis, "the basis carries the period_end as its reset point")
+    assertEquals(1_000_000_000L, verdict.spent.value)
+    assertEquals(periodBudget, verdict.allowance.value, "the allowance is y × price, not the free allowance")
+    assertFalse(verdict.exhausted, "the zero FREE allowance is irrelevant on the subscribed branch")
+    assertEquals(periodEnd, verdict.resetsAt, "resetsAt is the period_end")
+  }
+
+  @Test
+  fun `period spend at the plan budget exhausts the subscribed student`() {
+    val studentId = createStudent()
+    subscribe(studentId)
+    spend(studentId, periodBudget)
+
+    val verdict = testBudgetService(database, "1000000.00").entitlement(session, studentId).getOrThrow()
+
+    assertTrue(verdict.exhausted, "the generous FREE allowance is irrelevant on the subscribed branch")
+    assertEquals(100, verdict.usedPercent)
+  }
+
+  @Test
+  fun `spend before period_start does not count against the period budget`() {
+    val studentId = createStudent()
+    subscribe(studentId, periodStart = Instant.now().minus(10, ChronoUnit.DAYS))
+    // Free-tier-era spend, well past the plan budget but before the window.
+    spend(studentId, 100_000_000_000L, createdAt = Instant.now().minus(30, ChronoUnit.DAYS))
+
+    val verdict = testBudgetService(database, "0.00").entitlement(session, studentId).getOrThrow()
+
+    assertIs<EntitlementBasis.Subscription>(verdict.basis)
+    assertEquals(0L, verdict.spent.value, "windowedCost's created_at bound excludes pre-period spend")
+    assertFalse(verdict.exhausted)
+  }
+
+  @Test
+  fun `rollover restores entitlement — overshoot forgiven, nothing carried forward`() {
+    val studentId = createStudent()
+    val service = testBudgetService(database, "0.00")
+
+    // Window W1 covers now; its spend overshoots the budget → exhausted.
+    subscribe(
+      studentId,
+      periodStart = Instant.now().minus(2, ChronoUnit.DAYS),
+      periodEnd = Instant.now().plus(1, ChronoUnit.DAYS),
+    )
+    spend(studentId, periodBudget * 2, createdAt = Instant.now().minus(1, ChronoUnit.DAYS))
+    assertTrue(service.entitlement(session, studentId).getOrThrow().exhausted)
+
+    // The renewal: the same row's window advances past every W1 spend. No reset
+    // action, no counter zeroed — the very next windowed read IS the rollover.
+    subscribe(
+      studentId,
+      periodStart = Instant.now().minus(1, ChronoUnit.HOURS),
+      periodEnd = Instant.now().plus(29, ChronoUnit.DAYS),
+    )
+
+    val rolled = service.entitlement(session, studentId).getOrThrow()
+    assertEquals(0L, rolled.spent.value, "W1's overshoot does not reduce W2's budget, and nothing is carried forward")
+    assertEquals(periodBudget, rolled.allowance.value, "the same y × price budget every period")
+    assertFalse(rolled.exhausted, "the exhausted student is entitled again the instant the row carries the new window")
+  }
+
+  @Test
+  fun `an expired or out-of-window row falls back to the free branch`() {
+    val expiredStudent = createStudent()
+    subscribe(expiredStudent, status = SubscriptionStatus.EXPIRED)
+    val expired = testBudgetService(database, "5.00").entitlement(session, expiredStudent).getOrThrow()
+    assertEquals(EntitlementBasis.FreeAllowance, expired.basis, "a lapsed subscriber meters as a free-tier student")
+    assertEquals(null, expired.resetsAt)
+
+    val lapsedStudent = createStudent()
+    subscribe(
+      lapsedStudent,
+      periodStart = Instant.now().minus(60, ChronoUnit.DAYS),
+      periodEnd = Instant.now().minus(30, ChronoUnit.DAYS),
+    )
+    val lapsed = testBudgetService(database, "5.00").entitlement(session, lapsedStudent).getOrThrow()
+    assertEquals(EntitlementBasis.FreeAllowance, lapsed.basis, "an elapsed window is not current")
+  }
+
+  @Test
+  fun `a grace row stays on the subscription branch`() {
+    val studentId = createStudent()
+    subscribe(studentId, status = SubscriptionStatus.GRACE)
+
+    val verdict = testBudgetService(database, "0.00").entitlement(session, studentId).getOrThrow()
+
+    assertIs<EntitlementBasis.Subscription>(verdict.basis, "grace is entitling")
+  }
+
+  @Test
+  fun `a current subscription with an unconfigured product fails closed`() {
+    val studentId = createStudent()
+    subscribe(studentId, productId = "coach.uni.UnicoachiOS.retired99")
+
+    val result = testBudgetService(database, "5.00").entitlement(session, studentId)
+
+    assertTrue(result.isFailure, "config drift never silently grants or denies")
+    val message = result.exceptionOrNull()!!.message!!
+    assertTrue(message.contains("coach.uni.UnicoachiOS.retired99"), "the failure names the product: $message")
   }
 
   @Test

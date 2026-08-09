@@ -1,5 +1,6 @@
 package ed.unicoach.chat
 
+import ed.unicoach.testing.ScriptedQueue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.JsonObject
@@ -27,8 +28,9 @@ data class Replay(
  * an N-element script.
  */
 class ScriptedAnthropicTransport(
-  private val replays: List<Replay>,
+  replays: List<Replay>,
 ) : AnthropicStreamTransport {
+  private val queue = ScriptedQueue(replays, "ScriptedAnthropicTransport.stream()")
   private val captured = mutableListOf<JsonObject>()
 
   /** Request bodies received, one per `stream()` call, in call order. */
@@ -41,12 +43,10 @@ class ScriptedAnthropicTransport(
   val calls: Int get() = captured.size
 
   override fun stream(body: JsonObject): Flow<AnthropicTransportEvent> {
-    val index = captured.size
-    check(index < replays.size) {
-      "ScriptedAnthropicTransport exhausted: unexpected stream() call #${index + 1}, script has ${replays.size}"
-    }
+    // Dequeue before recording so an unscripted call leaves [bodies] holding
+    // only the calls the script actually answered.
+    val replay = queue.next()
     captured.add(body)
-    val replay = replays[index]
     return flow {
       for (event in replay.events) emit(event)
       replay.throwing?.let { throw it }
