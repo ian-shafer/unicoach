@@ -23,7 +23,7 @@ source "$PROJECT_ROOT/bin/common"
 
 # Assert the cloud-env app config first (from the already-loaded .env.<env>), so a
 # missing key or a local/dev target is rejected before touching deploy-control/AWS.
-require_env_vars APP_DOMAIN GOOGLE_CLIENT_IDS
+require_env_vars APP_DOMAIN
 require_cloud_domain "$UNICOACH_ENV"
 
 # Deploy-control config (AWS_ACCOUNT_ID / REGION) from .env.deploy.<env>.
@@ -37,7 +37,6 @@ load_deploy_control_env "$UNICOACH_ENV"
 # RFC 95); the other TF_VAR_* come from .env.<env> / .env.deploy.<env>.
 export TF_VAR_environment="$UNICOACH_ENV"
 export TF_VAR_app_domain="$APP_DOMAIN"
-export TF_VAR_google_client_ids="$GOOGLE_CLIENT_IDS"
 export TF_VAR_public_web_port="$PUBLIC_WEB_PORT"
 export TF_VAR_admin_web_port="$ADMIN_WEB_PORT"
 [ -n "${HOSTED_ZONE_NAME:-}" ] && export TF_VAR_hosted_zone_name="$HOSTED_ZONE_NAME"

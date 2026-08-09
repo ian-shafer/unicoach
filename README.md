@@ -449,7 +449,7 @@ point:
 | `UNICOACH_ENV`      | invocation arg                   | the sole env identity; selects the files, state, SSM prefix, `TF_VAR_environment` |
 | `APP_DOMAIN`        | `.env.<env>` → `TF_VAR_*`        | the env's web host; required                                                      |
 | `HOSTED_ZONE_NAME`  | `.env.<env>` (omit for apex)     | parent zone; coalesces to `APP_DOMAIN`                                            |
-| `GOOGLE_CLIENT_IDS` | `.env.<env>` → `TF_VAR_*`        | accepted OAuth audiences; required                                                |
+| `GOOGLE_CLIENT_IDS` | `.env.<env>`                     | accepted OAuth audiences; required (reaches the host via the deployed dotenv)     |
 | `AWS_ACCOUNT_ID`    | `.env.deploy.<env>`              | the target AWS account; asserted before any AWS action                            |
 | `REGION`            | `.env.deploy.<env>` → `TF_VAR_*` | AWS region; drives `AWS_REGION`                                                   |
 

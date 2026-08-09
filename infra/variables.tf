@@ -20,11 +20,6 @@ variable "app_domain" {
   type        = string
 }
 
-variable "google_client_ids" {
-  description = "Accepted Google OAuth client IDs (comma-separated token audiences) the backend verifies ID tokens against (auth.google.clientIds). No default: bin/infra-plan / bin/infra-apply supply it as TF_VAR_google_client_ids from .env.<env>."
-  type        = string
-}
-
 variable "public_web_port" {
   description = "public-web's bind port, driving its ALB target group, security-group rule, and the PUBLIC_WEB_PORT SSM value the JVM reads. No default: it is needed by both Terraform and the JVM, so per CONFIGURATION.md it is sourced once in .env and supplied as TF_VAR_public_web_port (mirroring app_domain) rather than owned as a Terraform default."
   type        = number
