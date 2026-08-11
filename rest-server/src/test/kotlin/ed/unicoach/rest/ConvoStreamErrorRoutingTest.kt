@@ -1,7 +1,9 @@
 package ed.unicoach.rest
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import ed.unicoach.auth.StubGoogleTokenVerifier
+import ed.unicoach.auth.AppleIdTokenVerifier
+import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.auth.StubIdTokenVerifier
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
@@ -107,7 +109,8 @@ class ConvoStreamErrorRoutingTest {
             coachingConfig,
             clientKeyGateConfig,
             emailVerificationConfig,
-            StubGoogleTokenVerifier(),
+            GoogleIdTokenVerifier(StubIdTokenVerifier()),
+            AppleIdTokenVerifier(StubIdTokenVerifier()),
             queueService,
             extractionConfig,
             requestLoggingConfig,

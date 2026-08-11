@@ -1039,6 +1039,7 @@ write_full_cloud_env() {
   cat > "$1/.env.gentest" <<'EOF'
 APP_DOMAIN=gentest.example.com
 GOOGLE_CLIENT_IDS=abc.apps.googleusercontent.com
+APPLE_CLIENT_IDS=com.example.gentest
 SERVER_HOST=0.0.0.0
 PUBLIC_WEB_HOST=0.0.0.0
 ADMIN_WEB_HOST=0.0.0.0
@@ -1047,6 +1048,7 @@ ADMIN_COOKIE_SECURE=true
 EMAIL_PROVIDER=ses
 CHAT_PROVIDER=anthropic
 GOOGLE_AUTH_PROVIDER=google
+APPLE_AUTH_PROVIDER=apple
 EMAIL_DEFAULT_FROM=noreply@$APP_DOMAIN
 EMAIL_VERIFICATION_VERIFY_URL_BASE=https://app.$APP_DOMAIN/verify-email
 EOF

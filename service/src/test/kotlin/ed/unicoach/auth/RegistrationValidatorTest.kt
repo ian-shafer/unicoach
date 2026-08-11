@@ -26,6 +26,39 @@ class RegistrationValidatorTest {
     assertTrue(errors.fieldErrors.none { it.field == "email" }, "Valid email must not yield an email field error")
   }
 
+  private fun inputWithName(name: String) =
+    RegistrationInput(
+      email = "user@example.com",
+      name = name,
+      password = "Password123",
+    )
+
+  @Test
+  fun `blank name is rejected`() {
+    val errors = validator.validate(inputWithName("   "))
+    assertTrue(
+      errors.fieldErrors.any { it.field == "name" && it.message == "Name cannot be blank" },
+      "Expected the blank-name field error",
+    )
+  }
+
+  // A name past users_name_length_check must come back as a 400 field error;
+  // letting it through would blow up register's `as Valid` cast instead.
+  @Test
+  fun `name longer than 255 characters is rejected`() {
+    val errors = validator.validate(inputWithName("a".repeat(256)))
+    assertTrue(
+      errors.fieldErrors.any { it.field == "name" && it.message.contains("at most 255") },
+      "Expected a name field error naming the 255-character bound",
+    )
+  }
+
+  @Test
+  fun `name of 255 characters passes`() {
+    val errors = validator.validate(inputWithName("a".repeat(255)))
+    assertTrue(errors.fieldErrors.none { it.field == "name" }, "A 255-character name must not yield a name field error")
+  }
+
   private fun inputWithPassword(password: String) =
     RegistrationInput(
       email = "user@example.com",

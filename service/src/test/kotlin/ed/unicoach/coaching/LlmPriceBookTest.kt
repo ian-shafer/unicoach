@@ -34,6 +34,7 @@ class LlmPriceBookTest {
             APP_DOMAIN = localhost
             PUBLIC_WEB_PORT = 8082
             GOOGLE_AUTH_PROVIDER = stub
+            APPLE_AUTH_PROVIDER = stub
             """.trimIndent(),
           ).withFallback(ConfigFactory.parseResources("service.conf"))
           .resolve(offlineOptions),

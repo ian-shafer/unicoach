@@ -149,7 +149,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Email not verified, or the matched account is disabled
+          description: >
+            Google account email not verified, the matched account is
+            disabled, or the matched local account's own email is unverified
+            (account_email_not_verified — linking is refused)
           content:
             application/json:
               schema:
@@ -168,6 +171,81 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: Google sign-in is temporarily unavailable (JWKS endpoint unreachable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/apple:
+    post:
+      summary: Sign in with an Apple ID token
+      description: >
+        Verifies an Apple identity token and establishes a session. Both
+        first-time signup and returning login return 200 with the session
+        cookie; the response does not distinguish them, so account existence
+        is not disclosed. The optional `name` is used only when provisioning a
+        new user — Apple's identity token never carries a name claim, so the
+        client supplies it out of band, once, at first authorization.
+      operationId: loginWithApple
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppleLoginRequest'
+      responses:
+        '200':
+          description: User successfully authenticated
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: The opaque session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Malformed request body (e.g. wrong JSON value types)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Malformed, expired, or otherwise invalid Apple ID token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: >
+            Apple account email not verified, the matched account is
+            disabled, or the matched local account's own email is unverified
+            (account_email_not_verified — linking is refused)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Request body could not be deserialized into the expected shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Apple sign-in is temporarily unavailable (JWKS endpoint unreachable)
           content:
             application/json:
               schema:
@@ -1364,6 +1442,20 @@ components:
         idToken:
           type: string
           description: A Google-issued ID token (JWT)
+    AppleLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [idToken]
+      properties:
+        idToken:
+          type: string
+          description: An Apple-issued identity token (JWT)
+        name:
+          type: string
+          nullable: true
+          description: >
+            Optional client-supplied display name, used only when provisioning
+            a new user. Apple's identity token never carries a name claim.
     MeResponse:
       type: object
       required: [user]

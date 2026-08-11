@@ -23,11 +23,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Drives `POST /api/v1/auth/google` against a fully booted server using the stub
- * verifier (selected via `GOOGLE_AUTH_PROVIDER=stub` in `.env.test`). Stub tokens
- * follow the documented fake-token format decoded by `StubIdTokenVerifier`.
+ * Drives `POST /api/v1/auth/apple` against a fully booted server using the stub
+ * verifier (selected via `APPLE_AUTH_PROVIDER=stub` in the test dotenv layer).
+ * Mirrors [GoogleAuthRoutingTest]. Stub tokens follow the documented fake-token
+ * format decoded by `StubIdTokenVerifier` — the format carries no provider
+ * distinction, so the same helper builds tokens for either route.
  */
-class GoogleAuthRoutingTest {
+class AppleAuthRoutingTest {
   companion object {
     private lateinit var testServer: EmbeddedServer<*, *>
     private lateinit var client: HttpClient
@@ -59,44 +61,64 @@ class GoogleAuthRoutingTest {
 
   private fun buildUrl(path: String) = "http://localhost:$boundPort$path"
 
+  /** Apple's identity token never carries a name claim — the stub token omits it. */
   private fun stubToken(
     sub: String,
     email: String,
     verified: Boolean = true,
-  ) = "stub:sub=$sub;email=$email;email_verified=$verified;name=Google User"
+  ) = "stub:sub=$sub;email=$email;email_verified=$verified"
 
-  private suspend fun postGoogle(idToken: String) =
-    client.post(buildUrl("/api/v1/auth/google")) {
-      header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-      setBody(mapper.writeValueAsString(mapOf("idToken" to idToken)))
+  private suspend fun postApple(
+    idToken: String,
+    name: String? = null,
+  ) = client.post(buildUrl("/api/v1/auth/apple")) {
+    header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+    val body = mutableMapOf<String, String?>("idToken" to idToken)
+    if (name != null) body["name"] = name
+    setBody(mapper.writeValueAsString(body))
+  }
+
+  @Test
+  fun `valid token for a new user returns 200 with a session cookie and the supplied name`() =
+    runBlocking {
+      val response =
+        postApple(stubToken("rt-apple-new-${UUID.randomUUID()}", "rt-apple-new-${UUID.randomUUID()}@example.com"), name = "Ada Client")
+      assertEquals(HttpStatusCode.OK, response.status)
+      assertTrue(response.headers[HttpHeaders.SetCookie] != null, "Missing Set-Cookie header")
+      assertTrue(response.bodyAsText().contains("Ada Client"), "body was: ${response.bodyAsText()}")
     }
 
   @Test
-  fun `valid token for a new user returns 200 with a session cookie`() =
+  fun `valid token with no name returns 200 and derives the name from the email local-part`() =
     runBlocking {
-      val response = postGoogle(stubToken("rt-new-${UUID.randomUUID()}", "rt-new-${UUID.randomUUID()}@example.com"))
+      val email = "rt-apple-noname-${UUID.randomUUID()}@example.com"
+      val response = postApple(stubToken("rt-apple-noname-${UUID.randomUUID()}", email))
       assertEquals(HttpStatusCode.OK, response.status)
-      assertTrue(response.headers[HttpHeaders.SetCookie] != null, "Missing Set-Cookie header")
+      // Assert the name field itself: the body always echoes the email, so a
+      // substring match would pass for any derived name, right or wrong.
+      assertEquals(email.substringBefore('@'), mapper.readTree(response.bodyAsText())["user"]["name"].asText())
     }
 
   @Test
   fun `valid token for a returning user returns 200`() =
     runBlocking {
-      val sub = "rt-return-${UUID.randomUUID()}"
-      val email = "rt-return-${UUID.randomUUID()}@example.com"
-      val first = postGoogle(stubToken(sub, email))
+      val sub = "rt-apple-return-${UUID.randomUUID()}"
+      val email = "rt-apple-return-${UUID.randomUUID()}@example.com"
+      val first = postApple(stubToken(sub, email))
       assertEquals(HttpStatusCode.OK, first.status)
 
-      val second = postGoogle(stubToken(sub, email))
+      val second = postApple(stubToken(sub, email))
       assertEquals(HttpStatusCode.OK, second.status)
       assertTrue(second.headers[HttpHeaders.SetCookie] != null)
     }
 
   @Test
-  fun `unverified email returns 403 email_not_verified`() =
+  fun `unverified provider email returns 403 email_not_verified`() =
     runBlocking {
       val response =
-        postGoogle(stubToken("rt-unverified-${UUID.randomUUID()}", "rt-unverified-${UUID.randomUUID()}@example.com", verified = false))
+        postApple(
+          stubToken("rt-apple-unverified-${UUID.randomUUID()}", "rt-apple-unverified-${UUID.randomUUID()}@example.com", verified = false),
+        )
       assertEquals(HttpStatusCode.Forbidden, response.status)
       assertTrue(response.bodyAsText().contains("email_not_verified"), "body was: ${response.bodyAsText()}")
     }
@@ -104,7 +126,7 @@ class GoogleAuthRoutingTest {
   @Test
   fun `registered-but-unverified local account with matching email returns 403 account_email_not_verified`() =
     runBlocking {
-      val email = "rt-unverified-local-${UUID.randomUUID()}@example.com"
+      val email = "rt-apple-unverified-local-${UUID.randomUUID()}@example.com"
       val registerResponse =
         client.post(buildUrl("/api/v1/auth/register")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
@@ -113,8 +135,8 @@ class GoogleAuthRoutingTest {
       assertEquals(HttpStatusCode.Created, registerResponse.status)
 
       // register leaves email_verified_at null; the SSO linking gate (RFC 111)
-      // must refuse to attach the Google identity to this unverified account.
-      val response = postGoogle(stubToken("rt-link-blocked-${UUID.randomUUID()}", email))
+      // must refuse to attach the Apple identity to this unverified account.
+      val response = postApple(stubToken("rt-apple-link-blocked-${UUID.randomUUID()}", email))
       assertEquals(HttpStatusCode.Forbidden, response.status)
       assertTrue(response.bodyAsText().contains("account_email_not_verified"), "body was: ${response.bodyAsText()}")
     }
@@ -122,7 +144,7 @@ class GoogleAuthRoutingTest {
   @Test
   fun `invalid token returns 401 unauthorized`() =
     runBlocking {
-      val response = postGoogle("stub:invalid")
+      val response = postApple("stub:invalid")
       assertEquals(HttpStatusCode.Unauthorized, response.status)
       assertTrue(response.bodyAsText().contains("unauthorized"), "body was: ${response.bodyAsText()}")
     }
@@ -130,7 +152,7 @@ class GoogleAuthRoutingTest {
   @Test
   fun `transient verifier failure returns 503 service_unavailable`() =
     runBlocking {
-      val response = postGoogle("stub:unavailable")
+      val response = postApple("stub:unavailable")
       assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
       assertTrue(response.bodyAsText().contains("service_unavailable"), "body was: ${response.bodyAsText()}")
     }
@@ -138,17 +160,17 @@ class GoogleAuthRoutingTest {
   @Test
   fun `non-POST methods are rejected with 405`() =
     runBlocking {
-      val getResponse = client.get(buildUrl("/api/v1/auth/google"))
+      val getResponse = client.get(buildUrl("/api/v1/auth/apple"))
       assertEquals(HttpStatusCode.MethodNotAllowed, getResponse.status)
 
-      val deleteResponse = client.delete(buildUrl("/api/v1/auth/google"))
+      val deleteResponse = client.delete(buildUrl("/api/v1/auth/apple"))
       assertEquals(HttpStatusCode.MethodNotAllowed, deleteResponse.status)
     }
 
   @Test
   fun `the issued cookie authenticates a subsequent auth me`() =
     runBlocking {
-      val response = postGoogle(stubToken("rt-me-${UUID.randomUUID()}", "rt-me-${UUID.randomUUID()}@example.com"))
+      val response = postApple(stubToken("rt-apple-me-${UUID.randomUUID()}", "rt-apple-me-${UUID.randomUUID()}@example.com"))
       assertEquals(HttpStatusCode.OK, response.status)
 
       val setCookie = response.headers[HttpHeaders.SetCookie]!!

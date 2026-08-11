@@ -28,6 +28,7 @@ import kotlinx.html.h1
 import kotlinx.html.input
 import kotlinx.html.label
 import kotlinx.html.p
+import java.time.Duration
 
 /**
  * The authenticated admin resolved by the gate, made available to downstream
@@ -119,7 +120,7 @@ fun Route.adminAuthRoutes(
           email = email,
           password = password,
           oldCookieToken = null,
-          sessionExpirationSeconds = config.sessionExpirationSeconds,
+          sessionExpiration = Duration.ofSeconds(config.sessionExpirationSeconds),
           userAgent = call.request.headers["User-Agent"],
           initialIp = call.request.origin.remoteHost,
         ).getOrThrow()

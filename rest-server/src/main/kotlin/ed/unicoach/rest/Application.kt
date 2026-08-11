@@ -3,14 +3,15 @@ package ed.unicoach.rest
 import ed.unicoach.appstore.AppStoreConfig
 import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreServerApiFactory
+import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.DbEmailVerifier
 import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
-import ed.unicoach.auth.GoogleAuthConfig
-import ed.unicoach.auth.GoogleTokenVerifier
-import ed.unicoach.auth.GoogleTokenVerifierFactory
+import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.auth.IdTokenVerifierFactory
+import ed.unicoach.auth.SsoProviderConfig
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.chat.ToolRegistry
@@ -121,8 +122,13 @@ fun startServer(
       .getOrThrow()
 
   val googleTokenVerifier =
-    GoogleTokenVerifierFactory
-      .fromConfig(GoogleAuthConfig.from(config).getOrThrow())
+    IdTokenVerifierFactory
+      .googleFromConfig(SsoProviderConfig.from(config, "auth.google").getOrThrow())
+      .getOrThrow()
+
+  val appleTokenVerifier =
+    IdTokenVerifierFactory
+      .appleFromConfig(SsoProviderConfig.from(config, "auth.apple").getOrThrow())
       .getOrThrow()
 
   val database = Database(dbConfig)
@@ -205,6 +211,7 @@ fun startServer(
             clientKeyGateConfig,
             emailVerificationConfig,
             googleTokenVerifier,
+            appleTokenVerifier,
             queueService,
             extractionConfig,
             requestLoggingConfig,
@@ -247,7 +254,8 @@ fun Application.appModule(
   coachingConfig: CoachingConfig,
   clientKeyGateConfig: ClientKeyGateConfig,
   emailVerificationConfig: EmailVerificationConfig,
-  googleTokenVerifier: GoogleTokenVerifier,
+  googleTokenVerifier: GoogleIdTokenVerifier,
+  appleTokenVerifier: AppleIdTokenVerifier,
   queueService: QueueService,
   extractionConfig: ExtractionConfig,
   requestLoggingConfig: RequestLoggingConfig,
@@ -267,7 +275,8 @@ fun Application.appModule(
   val emailVerificationService =
     EmailVerificationService(database, queueService, tokenGenerator, emailVerificationConfig)
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
-  val authService = AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier)
+  val authService =
+    AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier, appleTokenVerifier)
   val studentService = ed.unicoach.student.StudentService(database)
   // The tool registry advertised on every coaching turn (RFC 94). New tools
   // append here; nothing else in the loop changes.

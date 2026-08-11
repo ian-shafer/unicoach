@@ -47,9 +47,15 @@ enum class ErrorCode(
   // Email-verification gate (new)
   EMAIL_NOT_VERIFIED("email_not_verified"),
 
-  // Google SSO
+  // SSO (Google + Apple, RFC 64 / RFC 111)
   ACCOUNT_DISABLED("account_disabled"),
   SERVICE_UNAVAILABLE("service_unavailable"),
+
+  // The email-matched local account exists but is itself unverified — the SSO
+  // linking gate (RFC 111) refuses to attach a federated identity to it.
+  // Distinct from EMAIL_NOT_VERIFIED, which indicts the provider account's
+  // email rather than the local account's.
+  ACCOUNT_EMAIL_NOT_VERIFIED("account_email_not_verified"),
 
   // Apple subscription verify (RFC 110)
   SUBSCRIPTION_NOT_FOUND("subscription_not_found"),

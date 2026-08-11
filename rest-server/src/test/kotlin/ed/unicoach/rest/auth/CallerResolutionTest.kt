@@ -1,7 +1,9 @@
 package ed.unicoach.rest.auth
 
+import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
-import ed.unicoach.auth.StubGoogleTokenVerifier
+import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.auth.StubIdTokenVerifier
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
@@ -74,7 +76,14 @@ class CallerResolutionTest {
         .from(config)
         .getOrThrow()
     val evService = ed.unicoach.auth.EmailVerificationService(db, queueService, TokenGenerator(), evConfig)
-    return AuthService(db, Argon2Hasher(), TokenGenerator(), evService, StubGoogleTokenVerifier())
+    return AuthService(
+      db,
+      Argon2Hasher(),
+      TokenGenerator(),
+      evService,
+      GoogleIdTokenVerifier(StubIdTokenVerifier()),
+      AppleIdTokenVerifier(StubIdTokenVerifier()),
+    )
   }
 
   private fun freshClosedDatabase(): Database {

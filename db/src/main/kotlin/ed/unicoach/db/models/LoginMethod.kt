@@ -6,6 +6,7 @@ enum class LoginMethod(
 ) {
   PASSWORD("password"),
   GOOGLE("google"),
+  APPLE("apple"),
   ;
 
   companion object {

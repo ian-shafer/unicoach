@@ -1,7 +1,9 @@
 package ed.unicoach.admin
 
+import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
-import ed.unicoach.auth.StubGoogleTokenVerifier
+import ed.unicoach.auth.DisabledIdTokenVerifier
+import ed.unicoach.auth.GoogleIdTokenVerifier
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
@@ -80,6 +82,7 @@ import io.ktor.server.application.Application
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import java.sql.DriverManager
+import java.time.Duration
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import kotlin.test.assertFalse
@@ -115,7 +118,15 @@ object AdminTestSupport {
         .from(config)
         .getOrThrow(),
     )
-  val authService = AuthService(database, argon2Hasher, TokenGenerator(), emailVerificationService, StubGoogleTokenVerifier())
+  val authService =
+    AuthService(
+      database,
+      argon2Hasher,
+      TokenGenerator(),
+      emailVerificationService,
+      GoogleIdTokenVerifier(DisabledIdTokenVerifier),
+      AppleIdTokenVerifier(DisabledIdTokenVerifier),
+    )
 
   fun Application.installTestAdminModule() {
     adminModule(database, authService, argon2Hasher, emailVerificationService, queueService, adminConfig, requestLoggingConfig)
@@ -536,7 +547,7 @@ object AdminTestSupport {
             email = email,
             password = password,
             oldCookieToken = null,
-            sessionExpirationSeconds = adminConfig.sessionExpirationSeconds,
+            sessionExpiration = Duration.ofSeconds(adminConfig.sessionExpirationSeconds),
             userAgent = "test",
             initialIp = "127.0.0.1",
           ).getOrThrow()

@@ -1,9 +1,11 @@
 package ed.unicoach.rest.routing
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.db.models.AuthProvider
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.auth.resolveCaller
+import ed.unicoach.rest.models.AppleLoginRequest
 import ed.unicoach.rest.models.ChangeEmailRequest
 import ed.unicoach.rest.models.ChangeEmailResponse
 import ed.unicoach.rest.models.ErrorCode
@@ -77,6 +79,10 @@ class AuthRouteHandler(
         post { handleGoogleLogin() }
         rejectUnsupportedMethods(HttpMethod.Post)
       }
+      route("/apple") {
+        post { handleAppleLogin() }
+        rejectUnsupportedMethods(HttpMethod.Post)
+      }
       route("/me") {
         get { handleMe() }
         rejectUnsupportedMethods(HttpMethod.Get)
@@ -112,7 +118,7 @@ class AuthRouteHandler(
           name = request.name,
           password = request.password,
           oldCookieToken = oldCookieToken,
-          sessionExpirationSeconds = sessionConfig.expiration.seconds,
+          sessionExpiration = sessionConfig.expiration,
           userAgent = call.request.headers["User-Agent"],
           initialIp = call.request.origin.remoteHost,
         ).getOrThrow()
@@ -180,7 +186,7 @@ class AuthRouteHandler(
           email = request.email,
           password = request.password,
           oldCookieToken = oldCookieToken,
-          sessionExpirationSeconds = sessionConfig.expiration.seconds,
+          sessionExpiration = sessionConfig.expiration,
           userAgent = call.request.headers["User-Agent"],
           initialIp = call.request.origin.remoteHost,
         ).getOrThrow()
@@ -233,51 +239,100 @@ class AuthRouteHandler(
 
   private suspend fun RoutingContext.handleGoogleLogin() {
     val request = call.receive<GoogleLoginRequest>()
-    val oldCookieToken = call.request.cookies[sessionConfig.cookieName]
+    // GoogleLoginRequest (RFC 64) carries no name field — an absent `name`
+    // claim falls back to the email local-part in AuthService.deriveName. Only
+    // the Apple route, whose token never carries a name at all, supplies a
+    // client-provided one.
+    handleSsoLogin(AuthProvider.GOOGLE, request.idToken, clientProvidedName = null)
+  }
 
+  private suspend fun RoutingContext.handleAppleLogin() {
+    val request = call.receive<AppleLoginRequest>()
+    handleSsoLogin(AuthProvider.APPLE, request.idToken, clientProvidedName = request.name)
+  }
+
+  /**
+   * The request-side half of the SSO contract, shared by both routes: each
+   * handler owns only its provider's deserialization, mirroring the shared
+   * [respondSsoLoginOutcome] on the response side.
+   */
+  private suspend fun RoutingContext.handleSsoLogin(
+    provider: AuthProvider,
+    idToken: String,
+    clientProvidedName: String?,
+  ) {
     val outcome =
       authService
-        .loginWithGoogle(
-          idToken = request.idToken,
-          oldCookieToken = oldCookieToken,
-          sessionExpirationSeconds = sessionConfig.expiration.seconds,
+        .loginWithSso(
+          provider = provider,
+          idToken = idToken,
+          clientProvidedName = clientProvidedName,
+          oldCookieToken = call.request.cookies[sessionConfig.cookieName],
+          sessionExpiration = sessionConfig.expiration,
           userAgent = call.request.headers["User-Agent"],
           initialIp = call.request.origin.remoteHost,
         ).getOrThrow()
 
-    respondGoogleLoginOutcome(outcome)
+    respondSsoLoginOutcome(outcome, provider)
   }
 
-  private suspend fun RoutingContext.respondGoogleLoginOutcome(outcome: ed.unicoach.auth.GoogleLoginResult) {
+  /**
+   * Shared outcome-to-response mapper for both SSO routes (RFC 111 generalizes
+   * RFC 64's Google-only mapper). [provider] parameterizes only log/message
+   * wording — the status/code mapping is identical for both providers,
+   * including [ed.unicoach.auth.SsoLoginResult.LinkBlockedUnverifiedEmail],
+   * which either route can now return since the linking gate is shared.
+   */
+  private suspend fun RoutingContext.respondSsoLoginOutcome(
+    outcome: ed.unicoach.auth.SsoLoginResult,
+    provider: AuthProvider,
+  ) {
+    val providerLabel =
+      when (provider) {
+        AuthProvider.GOOGLE -> "Google"
+        AuthProvider.APPLE -> "Apple"
+      }
     when (outcome) {
-      is ed.unicoach.auth.GoogleLoginResult.Success -> {
-        respondGoogleLoginSuccess(outcome)
+      is ed.unicoach.auth.SsoLoginResult.Success -> {
+        respondSsoLoginSuccess(outcome)
       }
 
-      is ed.unicoach.auth.GoogleLoginResult.InvalidToken -> {
+      is ed.unicoach.auth.SsoLoginResult.InvalidToken -> {
         call.application.environment.log
-          .info("Google login failed: $outcome")
-        call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Invalid Google ID token", null))
+          .info("SSO login failed [provider=$providerLabel] [outcome=$outcome]")
+        call.respond(HttpStatusCode.Unauthorized, ErrorResponse(ErrorCode.UNAUTHORIZED, "Invalid $providerLabel ID token", null))
       }
 
-      is ed.unicoach.auth.GoogleLoginResult.EmailNotVerified -> {
+      is ed.unicoach.auth.SsoLoginResult.EmailNotVerified -> {
         call.application.environment.log
-          .info("Google login failed: $outcome")
-        call.respond(HttpStatusCode.Forbidden, ErrorResponse(ErrorCode.EMAIL_NOT_VERIFIED, "Google account email is not verified", null))
+          .info("SSO login failed [provider=$providerLabel] [outcome=$outcome]")
+        call.respond(
+          HttpStatusCode.Forbidden,
+          ErrorResponse(ErrorCode.EMAIL_NOT_VERIFIED, "$providerLabel account email is not verified", null),
+        )
       }
 
-      is ed.unicoach.auth.GoogleLoginResult.AccountDisabled -> {
+      is ed.unicoach.auth.SsoLoginResult.LinkBlockedUnverifiedEmail -> {
         call.application.environment.log
-          .info("Google login failed: $outcome")
+          .info("SSO login failed [provider=$providerLabel] [outcome=$outcome]")
+        call.respond(
+          HttpStatusCode.Forbidden,
+          ErrorResponse(ErrorCode.ACCOUNT_EMAIL_NOT_VERIFIED, "The matched account's email is not verified", null),
+        )
+      }
+
+      is ed.unicoach.auth.SsoLoginResult.AccountDisabled -> {
+        call.application.environment.log
+          .info("SSO login failed [provider=$providerLabel] [outcome=$outcome]")
         call.respond(HttpStatusCode.Forbidden, ErrorResponse(ErrorCode.ACCOUNT_DISABLED, "Account is disabled", null))
       }
 
-      is ed.unicoach.auth.GoogleLoginResult.VerificationUnavailable -> {
+      is ed.unicoach.auth.SsoLoginResult.VerificationUnavailable -> {
         call.application.environment.log
-          .warn("Google login failed: $outcome")
+          .warn("SSO login failed [provider=$providerLabel] [outcome=$outcome]")
         call.respond(
           HttpStatusCode.ServiceUnavailable,
-          ErrorResponse(ErrorCode.SERVICE_UNAVAILABLE, "Google sign-in is temporarily unavailable", null),
+          ErrorResponse(ErrorCode.SERVICE_UNAVAILABLE, "$providerLabel sign-in is temporarily unavailable", null),
         )
       }
     }
@@ -295,7 +350,7 @@ class AuthRouteHandler(
     call.respond(HttpStatusCode.NoContent)
   }
 
-  private suspend fun RoutingContext.respondGoogleLoginSuccess(outcome: ed.unicoach.auth.GoogleLoginResult.Success) {
+  private suspend fun RoutingContext.respondSsoLoginSuccess(outcome: ed.unicoach.auth.SsoLoginResult.Success) {
     call.setSessionCookie(outcome.token, sessionConfig)
     call.respond(HttpStatusCode.OK, LoginResponse(PublicUser.from(outcome.user)))
   }

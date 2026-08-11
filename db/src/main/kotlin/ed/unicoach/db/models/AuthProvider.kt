@@ -3,8 +3,11 @@ package ed.unicoach.db.models
 /** Federated identity provider, persisted as `user_auth_identities.provider`. */
 enum class AuthProvider(
   val wire: String,
+  /** The session login method a sign-in through this provider records. */
+  val loginMethod: LoginMethod,
 ) {
-  GOOGLE("google"),
+  GOOGLE("google", LoginMethod.GOOGLE),
+  APPLE("apple", LoginMethod.APPLE),
   ;
 
   companion object {

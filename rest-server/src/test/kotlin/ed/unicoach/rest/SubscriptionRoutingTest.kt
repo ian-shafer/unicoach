@@ -6,7 +6,9 @@ import ed.unicoach.appstore.AppStoreTestFixtures
 import ed.unicoach.appstore.AppStoreTransport
 import ed.unicoach.appstore.AppStoreTransportResponse
 import ed.unicoach.appstore.ScriptedAppStoreTransport
-import ed.unicoach.auth.StubGoogleTokenVerifier
+import ed.unicoach.auth.AppleIdTokenVerifier
+import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.auth.StubIdTokenVerifier
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
@@ -152,7 +154,8 @@ class SubscriptionRoutingTest {
             ed.unicoach.auth.EmailVerificationConfig
               .from(config)
               .getOrThrow(),
-            StubGoogleTokenVerifier(),
+            GoogleIdTokenVerifier(StubIdTokenVerifier()),
+            AppleIdTokenVerifier(StubIdTokenVerifier()),
             ed.unicoach.queue.QueueService(database),
             ed.unicoach.coaching.extraction.ExtractionConfig
               .from(config)

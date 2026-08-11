@@ -23,6 +23,8 @@ import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
+import org.slf4j.LoggerFactory
+import java.time.Duration
 
 /**
  * A resolved caller: a live, non-expired session row whose user account exists.
@@ -39,15 +41,18 @@ class AuthService(
   private val argon2Hasher: Argon2Hasher,
   private val tokenGenerator: ed.unicoach.util.TokenGenerator,
   private val emailVerificationService: EmailVerificationService,
-  private val googleTokenVerifier: GoogleTokenVerifier,
+  private val googleTokenVerifier: GoogleIdTokenVerifier,
+  private val appleTokenVerifier: AppleIdTokenVerifier,
   private val validator: Validator<RegistrationInput> = RegistrationValidator(),
 ) {
+  private val logger = LoggerFactory.getLogger(AuthService::class.java)
+
   suspend fun register(
     email: String,
     name: String,
     password: String,
     oldCookieToken: String?,
-    sessionExpirationSeconds: Long,
+    sessionExpiration: Duration,
     userAgent: String?,
     initialIp: String?,
   ): Result<RegisterResult> {
@@ -107,7 +112,7 @@ class AuthService(
                 currentVersion = sessionVal.version,
                 newUserId = user.id,
                 newTokenHash = newHash.value,
-                newExpirationSeconds = sessionExpirationSeconds,
+                newExpirationSeconds = sessionExpiration.seconds,
                 newLoginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
               ).getOrThrow()
             wasReminted = true
@@ -125,7 +130,7 @@ class AuthService(
                   userAgent = userAgent,
                   initialIp = initialIp,
                   metadata = null,
-                  expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+                  expiration = sessionExpiration,
                   loginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
                 ),
             ).getOrThrow()
@@ -256,7 +261,7 @@ class AuthService(
     email: String,
     password: String,
     oldCookieToken: String?,
-    sessionExpirationSeconds: Long,
+    sessionExpiration: Duration,
     userAgent: String?,
     initialIp: String?,
   ): Result<LoginResult> =
@@ -302,7 +307,7 @@ class AuthService(
             user = user!!,
             loginMethod = LoginMethod.PASSWORD,
             oldCookieToken = oldCookieToken,
-            sessionExpirationSeconds = sessionExpirationSeconds,
+            sessionExpiration = sessionExpiration,
             userAgent = userAgent,
             initialIp = initialIp,
           )
@@ -314,57 +319,107 @@ class AuthService(
     }
 
   /**
-   * Establishes a session from a Google ID token. Verifies the token, gates on
-   * `email_verified`, then in one transaction resolves the federated identity
-   * (returning login), links it onto an existing email-matched user, or creates a
-   * new user — minting a session with [LoginMethod.GOOGLE].
+   * Establishes a session from an SSO provider's ID token (Google or Apple).
+   * Verifies the token with the provider's verifier, gates on `email_verified`,
+   * then in one transaction resolves the federated identity (returning login),
+   * links it onto an existing email-matched user (refused when that user holds
+   * a password credential whose email is unverified), or creates a new
+   * user — minting a session with [LoginMethod.GOOGLE] or [LoginMethod.APPLE].
    *
-   * Both first-time signup and returning login return [GoogleLoginResult.Success];
-   * the result does not distinguish them, so account existence is not disclosed.
+   * Both first-time signup and returning login return [SsoLoginResult.Success];
+   * the result does not distinguish them, so account existence is not
+   * disclosed. [clientProvidedName] is the Apple route's optional
+   * client-supplied name (Apple's token never carries a name claim); the
+   * Google route passes null.
    */
-  suspend fun loginWithGoogle(
+  suspend fun loginWithSso(
+    provider: AuthProvider,
     idToken: String,
+    clientProvidedName: String?,
     oldCookieToken: String?,
-    sessionExpirationSeconds: Long,
+    sessionExpiration: Duration,
     userAgent: String?,
     initialIp: String?,
-  ): Result<GoogleLoginResult> {
-    val verification = googleTokenVerifier.verify(idToken)
+  ): Result<SsoLoginResult> {
+    val verifier =
+      when (provider) {
+        AuthProvider.GOOGLE -> googleTokenVerifier.value
+        AuthProvider.APPLE -> appleTokenVerifier.value
+      }
+
+    val verification = verifier.verify(idToken)
     if (verification.isFailure) {
-      return when (verification.exceptionOrNull()) {
-        is GoogleTokenUnavailableException -> Result.success(GoogleLoginResult.VerificationUnavailable)
-        is GoogleTokenInvalidException -> Result.success(GoogleLoginResult.InvalidToken)
-        else -> Result.failure(verification.exceptionOrNull()!!)
+      return when (val failure = verification.exceptionOrNull()) {
+        is IdTokenUnavailableException -> Result.success(SsoLoginResult.VerificationUnavailable(failure))
+        is IdTokenInvalidException -> Result.success(SsoLoginResult.InvalidToken(InvalidTokenReason.VerificationFailed(failure)))
+        else -> Result.failure(failure!!)
       }
     }
 
     val identity = verification.getOrThrow()
     if (!identity.emailVerified) {
-      return Result.success(GoogleLoginResult.EmailNotVerified)
+      return Result.success(SsoLoginResult.EmailNotVerified)
     }
 
     val subject =
       when (val s = ProviderSubject.create(identity.subject)) {
         is ValidationResult.Valid -> s.value
-        is ValidationResult.Invalid -> return Result.success(GoogleLoginResult.InvalidToken)
+        is ValidationResult.Invalid -> return Result.success(SsoLoginResult.InvalidToken(InvalidTokenReason.UnusableSubject(s.error)))
       }
     val email =
       when (val e = EmailAddress.create(identity.email)) {
         is ValidationResult.Valid -> e.value
-        is ValidationResult.Invalid -> return Result.success(GoogleLoginResult.InvalidToken)
+        is ValidationResult.Invalid -> return Result.success(SsoLoginResult.InvalidToken(InvalidTokenReason.UnusableEmail(e.error)))
       }
+
+    val nameCandidates =
+      listOf(
+        NameCandidate("token name claim", identity.name),
+        NameCandidate("client-supplied name", clientProvidedName),
+      )
+
+    suspend fun attemptSignIn(): Result<SsoLoginResult> =
+      runSsoSignIn(
+        provider,
+        subject,
+        email,
+        nameCandidates,
+        oldCookieToken,
+        sessionExpiration,
+        userAgent,
+        initialIp,
+      )
+
+    /**
+     * The one retry of a sign-in aborted by [firstFailure]. It calls
+     * [attemptSignIn] exactly once — no failure of that call re-enters this
+     * function — and reports any failure of it as a [Result.failure] carrying
+     * [firstFailure] as a suppressed exception, so the violation that triggered
+     * the retry reaches the 500 alongside whatever the retry itself hit.
+     */
+    suspend fun retryAfter(firstFailure: Exception): Result<SsoLoginResult> {
+      logger.info("Retrying SSO sign-in after a concurrent first login [provider=${provider.wire}]", firstFailure)
+      return try {
+        attemptSignIn()
+      } catch (retryFailure: Exception) {
+        retryFailure.addSuppressed(firstFailure)
+        Result.failure(retryFailure)
+      }
+    }
 
     // The whole transaction aborts on a UNIQUE(provider,subject) or
     // users_email_unique_active_idx violation from a concurrent first login; an
     // in-transaction re-read is impossible (the transaction is aborted), so we
     // retry the entire block once. After the winner commits, the second attempt
-    // resolves deterministically as a returning login.
+    // resolves deterministically as a returning login. `retryAfter` never
+    // re-enters itself, so a violation thrown by the retry itself is reported
+    // rather than retried again — the retry is exactly once.
     return try {
-      runGoogleSignIn(subject, email, identity.name, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp)
+      attemptSignIn()
     } catch (e: ConstraintViolationException) {
-      runGoogleSignIn(subject, email, identity.name, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp)
+      retryAfter(e)
     } catch (e: DuplicateEmailException) {
-      runGoogleSignIn(subject, email, identity.name, oldCookieToken, sessionExpirationSeconds, userAgent, initialIp)
+      retryAfter(e)
     } catch (e: Exception) {
       Result.failure(e)
     }
@@ -373,22 +428,27 @@ class AuthService(
   /**
    * One transactional sign-in attempt. A `23505`-derived violation
    * ([ConstraintViolationException] or [DuplicateEmailException]) propagates so
-   * [loginWithGoogle] can retry the whole block; every other DAO failure is
+   * [loginWithSso] can retry the whole block; every other DAO failure is
    * rethrown to abort and surface as a 500.
    */
-  private suspend fun runGoogleSignIn(
+  private suspend fun runSsoSignIn(
+    provider: AuthProvider,
     subject: ProviderSubject,
     email: EmailAddress,
-    nameClaim: String?,
+    nameCandidates: List<NameCandidate>,
     oldCookieToken: String?,
-    sessionExpirationSeconds: Long,
+    sessionExpiration: Duration,
     userAgent: String?,
     initialIp: String?,
-  ): Result<GoogleLoginResult> =
+  ): Result<SsoLoginResult> =
     database.withConnection { session ->
-      when (val resolution = resolveOrProvisionUser(session, subject, email, nameClaim)) {
+      when (val resolution = resolveOrProvisionUser(session, provider, subject, email, nameCandidates)) {
         is UserResolution.Disabled -> {
-          Result.success(GoogleLoginResult.AccountDisabled)
+          Result.success(SsoLoginResult.AccountDisabled)
+        }
+
+        is UserResolution.LinkBlocked -> {
+          Result.success(SsoLoginResult.LinkBlockedUnverifiedEmail)
         }
 
         is UserResolution.Resolved -> {
@@ -396,41 +456,60 @@ class AuthService(
             mintSession(
               session = session,
               user = resolution.user,
-              loginMethod = LoginMethod.GOOGLE,
+              loginMethod = provider.loginMethod,
               oldCookieToken = oldCookieToken,
-              sessionExpirationSeconds = sessionExpirationSeconds,
+              sessionExpiration = sessionExpiration,
               userAgent = userAgent,
               initialIp = initialIp,
             )
-          Result.success(GoogleLoginResult.Success(resolution.user, token))
+          Result.success(SsoLoginResult.Success(resolution.user, token))
         }
       }
     }
 
-  /** The user a Google sign-in resolves to, or the soft-deleted (disabled) signal. */
+  /** The user an SSO sign-in resolves to, or a non-resolved signal. */
   private sealed interface UserResolution {
     data class Resolved(
       val user: User,
     ) : UserResolution
 
     data object Disabled : UserResolution
+
+    /** An email-matched target exists but its email is unverified — link refused. */
+    data object LinkBlocked : UserResolution
   }
 
   /**
-   * Resolves the Google identity to its user within the open transaction:
-   * a returning login (existing `(GOOGLE, subject)` row), a link onto an active
-   * email-matched user, or a freshly created user. A `23505`-derived violation
+   * Resolves the federated identity to its user within the open transaction:
+   * a returning login (existing `(provider, subject)` row), a link onto an
+   * active email-matched user, or a freshly created user. The link is refused
+   * — [UserResolution.LinkBlocked] — only when the matched user both HAS a
+   * password credential and its `emailVerifiedAt` is null: `passwordHash !=
+   * null` is exactly "this account was created via [register]", the only path
+   * that can plant an attacker-chosen, never-verified credential ahead of the
+   * victim's SSO login. This blocks the *unverified* pre-hijacking case only —
+   * once the victim clicks the mail [register] sent them the match verifies,
+   * the gate passes, and the attacker's password survives the link; see
+   * [SsoLoginResult.LinkBlockedUnverifiedEmail]. A match with no password
+   * credential can only itself be a prior SSO provisioning
+   * (`resolveOrProvisionUser` is the sole other creator, and it never sets
+   * one) — always linkable regardless of `emailVerifiedAt`, which this
+   * (pre-RFC-111) code path never sets either. Without that distinction, two
+   * providers racing to provision the SAME brand-new email would wrongly
+   * block the loser's retry against the winner's freshly (and unavoidably
+   * unverified-at-the-DB-row-level) created user. A `23505`-derived violation
    * ([ConstraintViolationException]/[DuplicateEmailException]) propagates so
-   * [loginWithGoogle] can retry the whole block; every other DAO failure is
+   * [loginWithSso] can retry the whole block; every other DAO failure is
    * rethrown to abort and surface as a 500.
    */
   private fun resolveOrProvisionUser(
     session: ed.unicoach.db.dao.SqlSession,
+    provider: AuthProvider,
     subject: ProviderSubject,
     email: EmailAddress,
-    nameClaim: String?,
+    nameCandidates: List<NameCandidate>,
   ): UserResolution {
-    val existing = UserAuthIdentitiesDao.findByProviderAndSubject(session, AuthProvider.GOOGLE, subject)
+    val existing = UserAuthIdentitiesDao.findByProviderAndSubject(session, provider, subject)
     val existingError = existing.exceptionOrNull()
     if (existingError != null && existingError !is NotFoundException) {
       throw existingError
@@ -442,7 +521,12 @@ class AuthService(
       return if (resolved.deletedAt != null) UserResolution.Disabled else UserResolution.Resolved(resolved)
     }
 
-    // First sign-in for this subject: link to an active email match, else create.
+    // First sign-in for this subject: link to an active email match, else
+    // create. The link is refused only for a password-holding match whose
+    // email is unverified (see the KDoc); a passwordless match always links.
+    // users_email_unique_active_idx forbids creating a second active user for
+    // an already-taken email, so a refused match cannot fall back to
+    // provisioning — rejection is the only sound outcome.
     val byEmail = UsersDao.findByEmail(session, email)
     val byEmailError = byEmail.exceptionOrNull()
     if (byEmailError != null && byEmailError !is NotFoundException) {
@@ -451,14 +535,18 @@ class AuthService(
 
     val target =
       if (byEmail.isSuccess) {
-        byEmail.getOrThrow()
+        val matched = byEmail.getOrThrow()
+        if (matched.passwordHash != null && matched.emailVerifiedAt == null) {
+          return UserResolution.LinkBlocked
+        }
+        matched
       } else {
         UsersDao
           .create(
             session,
             NewUser(
               email = email,
-              name = deriveName(nameClaim, email),
+              name = deriveName(nameCandidates, email),
               displayName = null,
               passwordHash = null,
             ),
@@ -470,7 +558,7 @@ class AuthService(
         session,
         NewAuthIdentity(
           userId = target.id,
-          provider = AuthProvider.GOOGLE,
+          provider = provider,
           subject = subject,
           email = email,
           emailVerified = true,
@@ -488,7 +576,7 @@ class AuthService(
     user: User,
     loginMethod: LoginMethod,
     oldCookieToken: String?,
-    sessionExpirationSeconds: Long,
+    sessionExpiration: Duration,
     userAgent: String?,
     initialIp: String?,
   ): String {
@@ -512,33 +600,65 @@ class AuthService(
           userAgent = userAgent,
           initialIp = initialIp,
           metadata = null,
-          expiration = java.time.Duration.ofSeconds(sessionExpirationSeconds),
+          expiration = sessionExpiration,
           loginMethod = loginMethod,
         ),
       ).getOrThrow()
     return newToken
   }
 
+  /** A name candidate and the source it came from, so a rejected one is identifiable in the log. */
+  private data class NameCandidate(
+    val source: String,
+    val value: String?,
+  )
+
   /**
-   * Derives a [PersonName] from the `name` claim, falling back to the email
-   * local-part when the claim is absent or blank. A name that cannot form a valid
-   * [PersonName] throws — surfacing as a 500 (no silent placeholder).
+   * Derives a [PersonName] for a newly provisioned SSO user from a fallback
+   * chain of candidates (in order): the token's `name` claim, then the
+   * client-supplied name (Apple route only; null on Google), then the email
+   * local-part. Usability is whatever [PersonName] itself accepts, so the
+   * blank/length rules live with the type and the schema constraint they
+   * mirror; an unusable candidate falls through to the next rather than
+   * aborting the transaction (a > 255-char claim is a latent 500 this chain
+   * closes) and is logged, so a provider or client sending unusable names is
+   * visible rather than silently absorbed. The candidate's own value is never
+   * logged — it is user data; the source, its length, and the rule it broke
+   * are what diagnose the sender, and the terminal failure below is bounded by
+   * the same rule. The local-part is the last candidate, not a guaranteed one:
+   * [EmailAddress] caps the whole address at 254 code points, but [PersonName]
+   * counts UTF-16 units, so an astral local-part inside that cap can still
+   * exceed 255 units and be rejected — leaving nothing to provision with. The
+   * name is used only when provisioning a new user; an existing user is never
+   * renamed.
    */
   private fun deriveName(
-    nameClaim: String?,
+    candidates: List<NameCandidate>,
     email: EmailAddress,
   ): PersonName {
-    val candidate = nameClaim?.trim()?.takeIf { it.isNotEmpty() } ?: email.value.substringBefore('@')
-    return when (val result = PersonName.create(candidate)) {
-      is ValidationResult.Valid -> {
-        result.value
-      }
+    val localPart = email.value.substringBefore('@')
+    for (candidate in candidates + NameCandidate("email local-part", localPart)) {
+      val value = candidate.value ?: continue
+      when (val result = PersonName.create(value)) {
+        is ValidationResult.Valid -> {
+          return result.value
+        }
 
-      is ValidationResult.Invalid -> {
-        throw IllegalStateException(
-          "Could not derive a valid PersonName from Google sign-in [candidate=$candidate, error=${result.error}]",
-        )
+        is ValidationResult.Invalid -> {
+          logger.warn(
+            "SSO name candidate rejected, falling through to the next source=[{}] length=[{}] error=[{}]",
+            candidate.source,
+            value.length,
+            result.error,
+          )
+        }
       }
     }
+    // Every candidate was rejected, each already logged above with its source
+    // and the rule it broke; the local-part's value is user data and so is
+    // reported by length only.
+    throw IllegalStateException(
+      "Could not derive a valid PersonName from SSO sign-in [emailLocalPartLength=${localPart.length}]",
+    )
   }
 }

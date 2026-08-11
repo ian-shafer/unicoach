@@ -33,8 +33,10 @@ class SubscriptionPlansTest {
     // ServiceConfTest's incantation), so a plan-block edit shows up here.
     val packaged =
       ConfigFactory
-        .parseString("APP_DOMAIN = localhost\nPUBLIC_WEB_PORT = 8082\nGOOGLE_AUTH_PROVIDER = stub")
-        .withFallback(ConfigFactory.parseResources("service.conf"))
+        .parseString(
+          "APP_DOMAIN = localhost\nPUBLIC_WEB_PORT = 8082\n" +
+            "GOOGLE_AUTH_PROVIDER = stub\nAPPLE_AUTH_PROVIDER = stub",
+        ).withFallback(ConfigFactory.parseResources("service.conf"))
         .resolve(ConfigResolveOptions.defaults().setUseSystemEnvironment(false))
 
     val parsed = SubscriptionPlans.from(packaged).getOrThrow()

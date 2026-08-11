@@ -125,7 +125,8 @@ class OfflineCoachingE2eTest {
         ed.unicoach.auth.EmailVerificationConfig
           .from(config)
           .getOrThrow()
-      val googleTokenVerifier = ed.unicoach.auth.StubGoogleTokenVerifier()
+      val googleTokenVerifier = ed.unicoach.auth.GoogleIdTokenVerifier(ed.unicoach.auth.StubIdTokenVerifier())
+      val appleTokenVerifier = ed.unicoach.auth.AppleIdTokenVerifier(ed.unicoach.auth.StubIdTokenVerifier())
       // debounce defaults to 5m (coalesces rapid turns); zero it so the enqueued
       // EXTRACT_CONVERSATION job is immediately due for the worker.
       extractionConfig =
@@ -158,6 +159,7 @@ class OfflineCoachingE2eTest {
             clientKeyGateConfig,
             emailVerificationConfig,
             googleTokenVerifier,
+            appleTokenVerifier,
             queueService,
             extractionConfig,
             requestLoggingConfig,

@@ -23,10 +23,12 @@ import ed.unicoach.admin.resources.StudentsResource
 import ed.unicoach.admin.resources.SynthesisRunsResource
 import ed.unicoach.admin.resources.SystemPromptsResource
 import ed.unicoach.admin.resources.UsersResource
+import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
+import ed.unicoach.auth.DisabledIdTokenVerifier
 import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
-import ed.unicoach.auth.StubGoogleTokenVerifier
+import ed.unicoach.auth.GoogleIdTokenVerifier
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.cron.dao.PeriodicJobsDao
 import ed.unicoach.db.Database
@@ -70,14 +72,22 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   // The admin "send verification email" action enqueues a SEND_EMAIL job via
   // EmailVerificationService.resend (RFC 96); the worker transmits it. admin-web
   // is now a pure enqueue-only producer — it constructs a QueueService, never an
-  // EmailService/provider. The StubGoogleTokenVerifier (RFC 64) stays inert: the
-  // admin gate never exercises the Google login path.
+  // EmailService/provider. admin-web serves no SSO route, so both verifier slots
+  // are wired fail-closed (RFC 111): DisabledIdTokenVerifier rejects every
+  // token, rather than admin-web's gate silently accepting a stub credential.
   val queueService = QueueService(database)
   val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
   val emailVerificationService =
     EmailVerificationService(database, queueService, tokenGenerator, emailVerificationConfig)
   val authService =
-    AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, StubGoogleTokenVerifier())
+    AuthService(
+      database,
+      argon2Hasher,
+      tokenGenerator,
+      emailVerificationService,
+      GoogleIdTokenVerifier(DisabledIdTokenVerifier),
+      AppleIdTokenVerifier(DisabledIdTokenVerifier),
+    )
 
   val server =
     embeddedServer(Netty, port = adminConfig.port, host = adminConfig.host) {

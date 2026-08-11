@@ -84,7 +84,14 @@ class AuthServiceTest {
   }
 
   private fun newAuthService() =
-    AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), emailVerificationService(), StubGoogleTokenVerifier())
+    AuthService(
+      database,
+      argon2Hasher,
+      ed.unicoach.util.TokenGenerator(),
+      emailVerificationService(),
+      GoogleIdTokenVerifier(StubIdTokenVerifier()),
+      AppleIdTokenVerifier(StubIdTokenVerifier()),
+    )
 
   private fun authServiceWithFailingEnqueue(): AuthService {
     // A real QueueService over a JobsDao whose insert always reports a database
@@ -92,7 +99,14 @@ class AuthServiceTest {
     // EnqueueResult.DatabaseFailure mapping (no facade subclassing).
     val failingQueueService = ed.unicoach.queue.QueueService(database, FailingJobsDao())
     val evService = emailVerificationService(failingQueueService)
-    return AuthService(database, argon2Hasher, ed.unicoach.util.TokenGenerator(), evService, StubGoogleTokenVerifier())
+    return AuthService(
+      database,
+      argon2Hasher,
+      ed.unicoach.util.TokenGenerator(),
+      evService,
+      GoogleIdTokenVerifier(StubIdTokenVerifier()),
+      AppleIdTokenVerifier(StubIdTokenVerifier()),
+    )
   }
 
   private fun countRows(sql: String): Int {
@@ -151,13 +165,13 @@ class AuthServiceTest {
       // run against the same Postgres harness as the other tests in this class.
       val service = newAuthService()
 
-      val res1 = service.register("email@test.com", "Name", "short", null, 86400L, null, null)
+      val res1 = service.register("email@test.com", "Name", "short", null, Duration.ofDays(1), null, null)
       assertTrue(res1.isSuccess && res1.getOrNull() is RegisterResult.ValidationFailure)
 
-      val res2 = service.register("email@test.com", "Name", "nouppercasenonumber", null, 86400L, null, null)
+      val res2 = service.register("email@test.com", "Name", "nouppercasenonumber", null, Duration.ofDays(1), null, null)
       assertTrue(res2.isSuccess && res2.getOrNull() is RegisterResult.ValidationFailure)
 
-      val res3 = service.register("email@test.com", "Name", "UPPERCASENONUMBER", null, 86400L, null, null)
+      val res3 = service.register("email@test.com", "Name", "UPPERCASENONUMBER", null, Duration.ofDays(1), null, null)
       assertTrue(res3.isSuccess && res3.getOrNull() is RegisterResult.ValidationFailure)
     }
 
@@ -305,9 +319,9 @@ class AuthServiceTest {
     runTest {
       val email = "login_test@example.com"
       val password = "Password123"
-      authService.register(email, "Login Test", password, null, 86400L, null, null)
+      authService.register(email, "Login Test", password, null, Duration.ofDays(1), null, null)
 
-      val result = authService.login(email, password, null, 86400L, null, null)
+      val result = authService.login(email, password, null, Duration.ofDays(1), null, null)
       assertTrue(result.isSuccess)
       val loginResult = result.getOrNull()
       assertTrue(loginResult is LoginResult.Success)
@@ -322,7 +336,7 @@ class AuthServiceTest {
   fun `register creates a PASSWORD session`() =
     runTest {
       val email = "register_method@example.com"
-      val regResult = authService.register(email, "Register Method", "Password123", null, 86400L, null, null)
+      val regResult = authService.register(email, "Register Method", "Password123", null, Duration.ofDays(1), null, null)
       val success = regResult.getOrNull() as RegisterResult.Success
 
       val regHash = TokenHash.fromRawToken(success.token)
@@ -333,7 +347,7 @@ class AuthServiceTest {
   @Test
   fun `login with invalid email yields UserNotFound`() =
     runTest {
-      val result = authService.login("nonexistent@example.com", "Password123", null, 86400L, null, null)
+      val result = authService.login("nonexistent@example.com", "Password123", null, Duration.ofDays(1), null, null)
       assertTrue(result.isSuccess)
       assertTrue(result.getOrNull() is LoginResult.UserNotFound)
     }
@@ -342,9 +356,9 @@ class AuthServiceTest {
   fun `login with invalid password yields PasswordMismatch`() =
     runTest {
       val email = "login_bad_pwd@example.com"
-      authService.register(email, "Bad Pwd", "Password123", null, 86400L, null, null)
+      authService.register(email, "Bad Pwd", "Password123", null, Duration.ofDays(1), null, null)
 
-      val result = authService.login(email, "WrongPassword", null, 86400L, null, null)
+      val result = authService.login(email, "WrongPassword", null, Duration.ofDays(1), null, null)
       assertTrue(result.isSuccess)
       assertTrue(result.getOrNull() is LoginResult.PasswordMismatch)
     }
@@ -354,10 +368,10 @@ class AuthServiceTest {
     runTest {
       val email = "login_old_cookie@example.com"
       val password = "Password123"
-      val regResult = authService.register(email, "Old Cookie", password, null, 86400L, null, null)
+      val regResult = authService.register(email, "Old Cookie", password, null, Duration.ofDays(1), null, null)
       val oldToken = (regResult.getOrNull() as RegisterResult.Success).token
 
-      val result = authService.login(email, password, oldToken, 86400L, null, null)
+      val result = authService.login(email, password, oldToken, Duration.ofDays(1), null, null)
       assertTrue(result.isSuccess)
       val loginResult = result.getOrNull() as LoginResult.Success
 
@@ -377,10 +391,10 @@ class AuthServiceTest {
     runTest {
       val email = "login_fake_old_cookie@example.com"
       val password = "Password123"
-      authService.register(email, "Fake Old Cookie", password, null, 86400L, null, null)
+      authService.register(email, "Fake Old Cookie", password, null, Duration.ofDays(1), null, null)
 
       val fakeOldToken = "some_nonexistent_token"
-      val result = authService.login(email, password, fakeOldToken, 86400L, null, null)
+      val result = authService.login(email, password, fakeOldToken, Duration.ofDays(1), null, null)
       assertTrue(result.isSuccess)
       val loginResult = result.getOrNull() as LoginResult.Success
 
@@ -394,7 +408,7 @@ class AuthServiceTest {
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val email = "verify_register@example.com"
-      val result = authService.register(email, "Verify Register", "Password123", null, 86400L, null, null)
+      val result = authService.register(email, "Verify Register", "Password123", null, Duration.ofDays(1), null, null)
       assertTrue(result.isSuccess && result.getOrNull() is RegisterResult.Success)
       val user = (result.getOrNull() as RegisterResult.Success).user
 
@@ -413,7 +427,7 @@ class AuthServiceTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val service = authServiceWithFailingEnqueue()
       val email = "verify_reject@example.com"
-      val result = service.register(email, "Verify Reject", "Password123", null, 86400L, null, null)
+      val result = service.register(email, "Verify Reject", "Password123", null, Duration.ofDays(1), null, null)
 
       assertTrue(result.isFailure, "Registration must fail when the required enqueue fails")
 
@@ -429,7 +443,7 @@ class AuthServiceTest {
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val email = "change_src@example.com"
-      val reg = authService.register(email, "Change Src", "Password123", null, 86400L, null, null)
+      val reg = authService.register(email, "Change Src", "Password123", null, Duration.ofDays(1), null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
       // Mark the user verified so the re-arm (clearing verification) is observable.
       UsersDao.markEmailVerified(sqlSession, user.id).getOrThrow()
@@ -467,7 +481,7 @@ class AuthServiceTest {
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val email = "change_burn@example.com"
-      val reg = authService.register(email, "Change Burn", "Password123", null, 86400L, null, null)
+      val reg = authService.register(email, "Change Burn", "Password123", null, Duration.ofDays(1), null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
 
       // Issue an extra outstanding token before the call.
@@ -498,10 +512,10 @@ class AuthServiceTest {
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val takenEmail = "change_taken@example.com"
-      authService.register(takenEmail, "Taken", "Password123", null, 86400L, null, null)
+      authService.register(takenEmail, "Taken", "Password123", null, Duration.ofDays(1), null, null)
 
       val email = "change_collider@example.com"
-      val reg = authService.register(email, "Collider", "Password123", null, 86400L, null, null)
+      val reg = authService.register(email, "Collider", "Password123", null, Duration.ofDays(1), null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
       UsersDao.markEmailVerified(sqlSession, user.id).getOrThrow()
       val verified = UsersDao.findById(sqlSession, user.id).getOrThrow()
@@ -522,7 +536,7 @@ class AuthServiceTest {
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val email = "change_invalid@example.com"
-      val reg = authService.register(email, "Invalid", "Password123", null, 86400L, null, null)
+      val reg = authService.register(email, "Invalid", "Password123", null, Duration.ofDays(1), null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
       val before = SendEmailJobQueries.count(connection)
 
@@ -544,7 +558,7 @@ class AuthServiceTest {
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val email = "change_norm@example.com"
-      val reg = authService.register(email, "Norm", "Password123", null, 86400L, null, null)
+      val reg = authService.register(email, "Norm", "Password123", null, Duration.ofDays(1), null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
 
       val result = authService.changeEmail(user, "  New@Example.COM ")
@@ -558,7 +572,7 @@ class AuthServiceTest {
     runTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val email = "change_same@example.com"
-      val reg = authService.register(email, "Same", "Password123", null, 86400L, null, null)
+      val reg = authService.register(email, "Same", "Password123", null, Duration.ofDays(1), null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
       UsersDao.markEmailVerified(sqlSession, user.id).getOrThrow()
       val verified = UsersDao.findById(sqlSession, user.id).getOrThrow()
@@ -586,7 +600,7 @@ class AuthServiceTest {
       connection.createStatement().use { it.execute("TRUNCATE TABLE email_sends") }
       val service = newAuthService()
       val email = "change_reject_src@example.com"
-      val reg = service.register(email, "Reject Src", "Password123", null, 86400L, null, null)
+      val reg = service.register(email, "Reject Src", "Password123", null, Duration.ofDays(1), null, null)
       val user = (reg.getOrNull() as RegisterResult.Success).user
 
       val failingService = authServiceWithFailingEnqueue()

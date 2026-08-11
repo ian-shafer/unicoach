@@ -56,6 +56,7 @@ class RequestLoggingCarefulDefaultTest {
           POSTGRES_DB = x
           PUBLIC_WEB_PORT = 0
           GOOGLE_AUTH_PROVIDER = stub
+          APPLE_AUTH_PROVIDER = stub
           """.trimIndent(),
         ).withFallback(ConfigFactory.parseResourcesAnySyntax("rest-server.conf"))
         .withFallback(ConfigFactory.parseResourcesAnySyntax("queue.conf"))

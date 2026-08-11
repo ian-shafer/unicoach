@@ -130,7 +130,8 @@ class ConvoToolLoopRoutingTest {
         ed.unicoach.auth.EmailVerificationConfig
           .from(config)
           .getOrThrow()
-      val googleTokenVerifier = ed.unicoach.auth.StubGoogleTokenVerifier()
+      val googleTokenVerifier = ed.unicoach.auth.GoogleIdTokenVerifier(ed.unicoach.auth.StubIdTokenVerifier())
+      val appleTokenVerifier = ed.unicoach.auth.AppleIdTokenVerifier(ed.unicoach.auth.StubIdTokenVerifier())
       val extractionConfig = ExtractionConfig.from(config).getOrThrow()
 
       server =
@@ -145,6 +146,7 @@ class ConvoToolLoopRoutingTest {
             clientKeyGateConfig,
             emailVerificationConfig,
             googleTokenVerifier,
+            appleTokenVerifier,
             queueService,
             extractionConfig,
             requestLoggingConfig,

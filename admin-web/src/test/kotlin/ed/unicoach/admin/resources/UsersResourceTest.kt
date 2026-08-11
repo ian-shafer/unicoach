@@ -178,7 +178,7 @@ class UsersResourceTest {
       val loginResult =
         runBlocking {
           AdminTestSupport.authService
-            .login(email, "CreatedPass123!", null, 3600, "test", "127.0.0.1")
+            .login(email, "CreatedPass123!", null, java.time.Duration.ofHours(1), "test", "127.0.0.1")
             .getOrThrow()
         }
       assertTrue(loginResult is ed.unicoach.auth.LoginResult.Success, "Created user should be loginable")

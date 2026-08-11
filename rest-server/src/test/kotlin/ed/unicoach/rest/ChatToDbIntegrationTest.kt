@@ -88,7 +88,8 @@ class ChatToDbIntegrationTest {
         ed.unicoach.auth.EmailVerificationConfig
           .from(config)
           .getOrThrow()
-      val googleTokenVerifier = ed.unicoach.auth.StubGoogleTokenVerifier()
+      val googleTokenVerifier = ed.unicoach.auth.GoogleIdTokenVerifier(ed.unicoach.auth.StubIdTokenVerifier())
+      val appleTokenVerifier = ed.unicoach.auth.AppleIdTokenVerifier(ed.unicoach.auth.StubIdTokenVerifier())
       val extractionDisabled =
         ExtractionConfig
           .from(
@@ -114,6 +115,7 @@ class ChatToDbIntegrationTest {
             clientKeyGateConfig,
             emailVerificationConfig,
             googleTokenVerifier,
+            appleTokenVerifier,
             queueService,
             extractionDisabled,
             requestLoggingConfig,

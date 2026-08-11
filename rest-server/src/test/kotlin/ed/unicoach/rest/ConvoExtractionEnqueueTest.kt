@@ -128,7 +128,8 @@ class ConvoExtractionEnqueueTest {
         ed.unicoach.auth.EmailVerificationConfig
           .from(config)
           .getOrThrow()
-      val googleTokenVerifier = ed.unicoach.auth.StubGoogleTokenVerifier()
+      val googleTokenVerifier = ed.unicoach.auth.GoogleIdTokenVerifier(ed.unicoach.auth.StubIdTokenVerifier())
+      val appleTokenVerifier = ed.unicoach.auth.AppleIdTokenVerifier(ed.unicoach.auth.StubIdTokenVerifier())
 
       val enabledConfig = ExtractionConfig.from(config).getOrThrow()
       val disabledConfig =
@@ -151,6 +152,7 @@ class ConvoExtractionEnqueueTest {
             clientKeyGateConfig,
             emailVerificationConfig,
             googleTokenVerifier,
+            appleTokenVerifier,
             queueService,
             enabledConfig,
             requestLoggingConfig,
@@ -180,6 +182,7 @@ class ConvoExtractionEnqueueTest {
             clientKeyGateConfig,
             emailVerificationConfig,
             googleTokenVerifier,
+            appleTokenVerifier,
             queueService,
             disabledConfig,
             requestLoggingConfig,

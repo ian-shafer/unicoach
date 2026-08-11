@@ -27,7 +27,7 @@ object UserAuthIdentitiesDao : Creatable<NewAuthIdentity, AuthIdentity> {
    * (a [ed.unicoach.error.PermanentError]) carrying the offending raw value and
    * the structured [ValidationError]. Crucially this is NOT a
    * [ConstraintViolationException] — that exception is the in-transaction
-   * `23505`/`23514` retry signal `loginWithGoogle` recovers from, and a corrupt
+   * `23505`/`23514` retry signal `loginWithSso` recovers from, and a corrupt
    * row must not be mistaken for a concurrency race.
    */
   private fun mapIdentity(rs: ResultSet): AuthIdentity {
@@ -81,7 +81,7 @@ object UserAuthIdentitiesDao : Creatable<NewAuthIdentity, AuthIdentity> {
 
   /**
    * A `(provider, subject)` collision (the unique index) or a CHECK violation is
-   * a [ConstraintViolationException] — the in-transaction signal `loginWithGoogle`
+   * a [ConstraintViolationException] — the in-transaction signal `loginWithSso`
    * retries on. Everything else falls through to [mapDatabaseError].
    */
   private fun mapCreateError(e: SQLException): Exception =
