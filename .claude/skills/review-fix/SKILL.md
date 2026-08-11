@@ -1,12 +1,12 @@
 ---
 name: review-fix
 description: >-
-  Review and repair of an implementation, in two modes. Auto (the default)
-  applies every complete finding's recommended option unattended — streaming
-  every finding, diff, and test report so the operator can step in at any
-  moment — and halts only where a default would bury a real disagreement.
-  Manual is the original human-in-the-loop triage, built to evaluate the
-  reviewer skills themselves. Both modes fan out every reviewer skill against
+  Review and repair of an implementation, in two modes. Auto (the default) runs
+  end to end unattended — applying every complete finding's recommended option
+  and resolving conflicts and red gates by stated policy, never asking — while
+  streaming every finding, diff, and test report so the operator can step in at
+  any moment. Manual is the original human-in-the-loop triage, built to evaluate
+  the reviewer skills themselves. Both modes fan out every reviewer skill against
   one fixed base per tier, build each accepted fix in its own worktree off that
   base, and integrate the tier before the next one runs. Use when a user asks
   to review and fix an implementation, or invokes /review-fix.
@@ -79,8 +79,10 @@ the record of which reviewers produce defects. Auto mode does not filter either:
 every finding is presented in full, then applied or recorded as an open item —
 never silently dropped.
 
-**Never loop unasked.** Every iteration is entered because the operator chose to
-enter it. There is no pass/fail gate that re-runs anything on its own.
+**Never loop unasked.** No **review** iteration re-runs on its own: a lens is
+fanned out once per tier, and nothing re-triages itself because something came
+back red. (Phase 3's re-gate-after-discard is not that loop — it re-runs the
+build gate, never a reviewer, and it strictly shrinks the tier each cycle.)
 
 **Never let a lens vanish.** Every discovered skill ends the run with a verdict
 file — real or `NOT RUN` — and every `NOT RUN` is reported as such. An omitted
@@ -116,8 +118,9 @@ difference is who decides. Each manual decision point maps to a stated policy:
 | Accept / reject / revise-RFC      | Accept every **complete** finding                                                                                                              |
 | Which option to apply             | Option 1, always — the reviewer's recommendation                                                                                               |
 | Keep / discard after diff + tests | Keep on green (or an explicit "nothing to run"); on red, one retry handing the fixer the failure output, then discard as `discarded-fix-fault` |
-| Within-tier cherry-pick conflict  | **Halt** — present both hunks and wait for the operator                                                                                        |
-| Red tier gate                     | Discard the implicated fix and re-gate; still red → **halt**                                                                                   |
+| Within-tier cherry-pick conflict  | Compose both intents if they compose; else the earlier-picked fix wins and the later one is `discarded-conflict` (**Phase 3** step 2)          |
+| Red tier gate                     | Discard the implicated fix and re-gate, repeating until green — worst case the tier ends at `T`, which was already green                       |
+| Unlisted skill (tiers.md gap)     | Assign a tier by blast radius, say so loudly, carry it as an open item                                                                         |
 | Phase 4 re-fires                  | Report only — listed as open items, never re-triaged                                                                                           |
 
 **What auto never applies.** A `⚠ incomplete` finding has no valid recommended
@@ -125,12 +128,20 @@ option to take, and inventing one is banned above; likewise a Tier 0 finding
 whose recommendation is to revise the RFC cannot be auto-applied. Both are
 presented as usual, recorded, and carried to the final report as **open items**.
 
-**The two halts are the only ones.** Everything else completes with a default —
-that completion is the mode's whole promise. A halt is not a failure: a
-within-tier conflict means two reviewers disagree about the same lines, and a
-gate that stays red after discarding the implicated fix means the tier's fixes
-are jointly wrong. Both are exactly the results this process exists to surface,
-and defaulting through them would bury them.
+**Auto never stops to ask.** Not for a conflict, not for a red gate, not for a
+manifest gap — every decision point above completes under its stated policy, and
+that completion is the mode's whole promise. The operator pastes the prompt and
+walks away; a run that is waiting for an answer nobody is there to give has
+failed at the one thing it was for.
+
+**Surfacing is not stopping.** A within-tier conflict means two reviewers
+disagree about the same lines; a gate still red after a discard means the tier's
+fixes are jointly wrong. Those are exactly the results this process exists to
+produce, and auto still produces them — every conflict, every gate-driven
+discard, and every resolution taken is streamed as it happens, written to the
+ledger, and listed in the final report. What auto drops is the **wait**, not the
+evidence. The one thing that would bury them is resolving one silently, so never
+do that.
 
 **Everything still streams.** Auto prints every finding, every full colorized
 diff, and every verbatim test report exactly as manual mode does — it just does
@@ -155,8 +166,11 @@ auto run still evaluates the reviewers when nobody was watching.
 
 **The final report** closes every auto run: per tier, findings found / applied /
 discarded with the `decided_by` split; the open items (`⚠ incomplete` findings,
-rfc-revision recommendations, Phase 4 re-fires); and any halts and how the
-operator resolved them.
+rfc-revision recommendations, Phase 4 re-fires, tier assignments the policy
+guessed); and every conflict resolved and gate-driven discard, with the
+resolution taken. The last group is what an operator who was not watching reads
+first — it is where auto exercised judgement rather than applied a
+recommendation.
 
 ## Worktrees, branches & cleanup
 
@@ -271,11 +285,16 @@ whether this is even the right implementation to be reviewing.
 2. **Resolve the skill set.** Discover live skills by glob — `impl-review-*`,
    `design-review-*`, `code-review-*`, excluding `*-chain` — and check each
    against [`tiers.md`](tiers.md). A discovered skill missing from the manifest
-   **halts the run**; report it and ask the operator which tier it belongs in.
-   Do this **once**, up front, so a manifest gap fails before any leaf is spent.
-   Report the resolved set, its per-tier counts, and the run's **Model** (or
-   that spawns inherit the defaults) — a ledger read later needs to know which
-   model produced the findings.
+   **halts a manual run**; report it and ask the operator which tier it belongs
+   in. In **auto** mode, assign it yourself by `tiers.md`'s own rule — the blast
+   radius of the change its findings induce — announce the assignment and the
+   reasoning in chat, and carry it to the final report as an open item so the
+   operator can add the row. Never edit `tiers.md` to close the gap: a tier is
+   the operator's judgement, and a guess written into the manifest stops looking
+   like one. Do this **once**, up front, so a manifest gap surfaces before any
+   leaf is spent. Report the resolved set, its per-tier counts, and the run's
+   **Model** (or that spawns inherit the defaults) — a ledger read later needs
+   to know which model produced the findings.
 
 3. **Spawn one leaf per skill in the current tier only** — never a later tier —
    at most 10 in flight, refilling as each finishes. Name the tier and its skill
@@ -528,11 +547,12 @@ The operator chooses one of:
    it is a rule the fixer will follow.
 
 Record the outcome distinctly: `kept`, `discarded-fix-fault` (the finding was
-sound, the fix was not), or `discarded-finding-fault` (implementing it revealed
-the finding was wrong). These are different evidence and must not be collapsed.
-Record `option_applied` and `overrode_recommendation` on every accepted finding,
-including the ones that took Option 1 — an override rate is only readable
-against the total.
+sound, the fix was not), `discarded-finding-fault` (implementing it revealed the
+finding was wrong), or `discarded-conflict` (**Phase 3** dropped it in favour of
+a conflicting fix — a statement about the two lenses, not about either fix).
+These are different evidence and must not be collapsed. Record `option_applied`
+and `overrode_recommendation` on every accepted finding, including the ones that
+took Option 1 — an override rate is only readable against the total.
 
 ### Reject
 
@@ -633,12 +653,33 @@ at the end of the run. Its output is the next tier's base.
    are in flight; earlier tiers are already in.
 2. **A conflict is a finding, not a chore.** Two fixes from the same tier
    contending for the same lines means two reviewers disagree about that code.
-   Present both hunks, let the operator resolve it, and record it in the ledger
-   as a conflict between the two skills. That is a result this run was built to
-   produce — and per-tier integration is what isolates it, since a conflict here
-   can only be lens-versus-lens, never an artefact of a base that moved. **This
-   is one of auto mode's two halts**: auto presents both hunks and waits here
-   exactly as manual does.
+   Print both hunks and record it in the ledger as a conflict between the two
+   skills — in **both** modes, before anything is resolved. That is a result
+   this run was built to produce, and per-tier integration is what isolates it,
+   since a conflict here can only be lens-versus-lens, never an artefact of a
+   base that moved.
+
+   Then resolve it. **Manual**: the operator does. **Auto**: you do, under this
+   policy, printing the resolution you took alongside the hunks.
+
+   1. **Compose them if they compose.** Most same-tier conflicts are two edits
+      to overlapping lines whose intents are independent — a rename landing on
+      the same lines as an extracted helper. Write the hunk that satisfies both
+      findings; both fixes keep their attribution and both stay `kept`.
+   2. **Otherwise the earlier-picked fix wins.** Cherry-picks run in acceptance
+      order, so the earlier one is already on the branch: keep it, drop the
+      conflicting hunk from the later fix, and record that fix
+      `discarded-conflict` with the two skill names. Order is an arbitrary
+      tiebreak and is meant to be — the orchestrator judging which reviewer was
+      _right_ is exactly the filtering this skill never does. The discarded
+      finding goes to the final report as an open item.
+   3. **Never invent a third design.** The resolution is one of the two fixes or
+      both of them — never a rewrite you authored. That would be a change no
+      reviewer asked for, no ledger line can attribute, and no diff the operator
+      saw was ever shown for.
+
+   Step 3's gate is what checks the resolution: a composition that does not
+   build fails there and unwinds like any other red gate.
 3. **Gate the tip**: `nix develop -c bin/format -c` and
    `nix develop -c bin/test check`. Report the real counts.
 
@@ -647,10 +688,23 @@ at the end of the run. Its output is the next tier's base.
    that no longer exists there). This run is what catches that.
 
    **A red gate blocks the next tier.** Do not fan out against a base that does
-   not build: every finding it produced would be suspect. Resolve it with the
-   operator — discard the offending fix, or fix forward — then re-gate. In auto
-   mode: discard the implicated fix and re-gate once; if the gate is still red,
-   **halt** — auto's second and last halt — and resolve with the operator.
+   not build: every finding it produced would be suspect. In **manual** mode,
+   resolve it with the operator — discard the offending fix, or fix forward —
+   then re-gate.
+
+   In **auto** mode, unwind; do not fix forward. Discard the fix the failure
+   implicates — the most recently cherry-picked one when the output names none —
+   re-gate, and repeat until the tip is green. Every cycle drops at least one
+   fix, so this terminates: in the worst case the tier ends at `T`, which was
+   already green. Record each discard `discarded-fix-fault` with the verbatim
+   gate output, and report the whole sequence.
+
+   Fixing forward is the manual-only branch on purpose. A red gate after
+   per-branch greens means the tier's fixes are **jointly** wrong, and a repair
+   authored here belongs to no finding and no worktree — it would be the one
+   change in the run with nothing to attribute it to. Unwinding costs a fix and
+   keeps the record honest; the discarded findings are open items the next run
+   can raise again.
 
 4. **Tear down this tier's worktrees — from the manifest, never by pattern.**
    For each manifest line belonging to this tier: `git worktree remove` its
@@ -713,6 +767,8 @@ worktree looks orphaned but appears in no manifest, report it and stop.
 - Create a worktree or branch outside this run's namespace, or remove one that
   is not in this run's manifest.
 - Report a verdict for a lens that did not run.
+- Stop an auto run to ask for a decision the policy already covers.
+- Resolve a conflict or a red gate silently, or with a repair of its own design.
 - Let the integration tip reach `main` without the full gate having run on it.
 - Edit a reviewer skill itself — that is `/skill-update`, with the operator
   present.

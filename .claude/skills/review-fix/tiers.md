@@ -7,7 +7,9 @@ decided before the nits that its fix might delete.
 
 This file is the source of ordering. `/review-fix` discovers the live skill set
 by glob and **asserts every discovered skill appears here** — an unlisted skill
-halts the run rather than being silently dropped. Add a skill, add a row.
+is never silently dropped: it halts a manual run, and in auto mode it is
+assigned a tier by the blast-radius rule above, announced, and reported as an
+open item. Neither writes the row back here. Add a skill, add a row.
 
 Move a skill between tiers freely; the tier is a judgement about typical fix
 size and the operator's is better than the author's.

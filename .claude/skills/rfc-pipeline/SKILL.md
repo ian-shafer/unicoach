@@ -48,8 +48,8 @@ nothing else: **the pipeline's own flow is identical in both modes** — same
 phases, same checkpoints, same automatic commits and landing at the end. The
 knob only decides what happens inside the two review conversations: auto applies
 every recommended option itself (Phase 1 closing with the RFC walkthrough; Phase
-2 hands-off apart from its two defined halts), while manual is the full
-per-finding operator triage.
+2 hands-off end to end — it resolves its own conflicts and red gates and never
+asks), while manual is the full per-finding operator triage.
 
 ## The model knobs
 
@@ -110,8 +110,8 @@ Three dispatch mechanisms, chosen by the phase's shape:
   is too context-heavy to run inline here (full findings, full colorized diffs,
   and in manual mode per-finding conversations across up to 39 reviewers and 4
   tiers). In auto mode the conversation runs itself once launched —
-  paste-and-go, with the operator stepping in only for Phase 1's RFC walkthrough
-  or a defined Phase 2 halt — but it is still a top-level session the operator
+  paste-and-go, with Phase 1's RFC walkthrough the only place it asks the
+  Architect for anything — but it is still a top-level session the operator
   opens, never a background agent. Same mechanism as the rest of this list:
   copy-pasteable prompt, new conversation, pause and wait for the operator's
   summary.
@@ -718,15 +718,15 @@ where nothing reported them — a stall or kill — per **Verification** above.
 
 2. **Implementation Review & Fix (operator-launched separate conversation).**
    Phase 2's review is `/review-fix` — in auto mode (the default) it applies
-   every recommended option itself, tier by tier, halting only on its two
-   defined halt points (a within-tier conflict, or a tier gate that stays red
-   after discarding the implicated fix); in manual mode the operator triages
-   every finding. There is **no code walkthrough — by design**: the Architect
-   reviews the RFC, not the implementation diffs. Per the **Depth-1 Fan-out
-   Invariant** it must run in a top-level session, so it is dispatched exactly
-   like Phase 1's review: a copy-pasteable prompt for a **new conversation**,
-   never inline, never backgrounded. The step carries an `[i]` counter — first
-   entry is `<i> = 1`.
+   every recommended option itself, tier by tier, and resolves within-tier
+   conflicts and red tier gates under its own stated policy rather than asking,
+   so the conversation never stops for the Architect; in manual mode the
+   operator triages every finding. There is **no code walkthrough — by design**:
+   the Architect reviews the RFC, not the implementation diffs. Per the
+   **Depth-1 Fan-out Invariant** it must run in a top-level session, so it is
+   dispatched exactly like Phase 1's review: a copy-pasteable prompt for a **new
+   conversation**, never inline, never backgrounded. The step carries an `[i]`
+   counter — first entry is `<i> = 1`.
 
    Checkpoint first
    (`rfc-pipeline-checkpoint -s <run-scratch> before review-fix <i>`) — this
@@ -756,9 +756,9 @@ where nothing reported them — a stall or kill — per **Verification** above.
    Invoke /review-fix on Target rfc/<rfc-file>.md in <codebase-root> with Mode: <mode>, Model: <review-model>, Evaluated Commit E = <E>, Base Revision = <base-sha>. Use the default Fixer (/rfc-impl-fix) and the default Scratch Dir. When every tier is integrated and Phase 4 confirmed, report back the final ledger summary — open items included — and confirm the run completed.
    ```
 
-   In auto mode, tell the operator this conversation runs itself once pasted;
-   they need only return when it reports completion (or resolve a halt if one
-   fires). Pause and wait for the summary.
+   In auto mode, tell the operator this conversation runs itself once pasted and
+   will not ask them anything; they need only return when it reports completion.
+   Pause and wait for the summary.
 
    **Merge back, once the operator returns.** `/review-fix` leaves its result on
    `integration/<run-id>` — a branch, never a merge into the pipeline branch;
@@ -854,7 +854,7 @@ message since Phase 1, so it must stand alone:
 - Implementation summary: what `/rfc-impl` built, its reported test counts.
 - Review summary: Phase 1 findings applied/skipped and walkthrough edits; Phase
   2 per tier — findings found / applied / discarded, with the `decided_by`
-  split, and any halts and how they were resolved.
+  split, and every conflict or red gate the review resolved on its own and how.
 - **Open items**: everything the reviews declined to decide (incomplete
   findings, rfc-revision recommendations, Phase 4 re-fires) — the list the
   Architect may want to act on later.
