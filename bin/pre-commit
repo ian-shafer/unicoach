@@ -88,4 +88,16 @@ else
   log-info "[$SPEC_REL_PATH] unchanged; skipping contract fuzzing."
 fi
 
+# Record the tree this run validated, as the local stand-in for CI (there is
+# none: one engineer). The marker is what lets the `ship` workflow refuse to
+# land a tip that never passed this hook — throwaway `--no-verify` checkpoints
+# are safe precisely because landing checks for this. Recording the TREE, not
+# the commit sha, means an amend or a rebase that preserves content stays
+# verified while any content change does not. Inert for anything that does not
+# ask: the marker lives inside .git and nothing else reads it.
+SHIP_VERIFIED="$PROJECT_ROOT/.prime/agent/skills/ship/scripts/ship-verified"
+if [ -x "$SHIP_VERIFIED" ]; then
+  "$SHIP_VERIFIED" record || log-info "warning: could not record verified tree (continuing)"
+fi
+
 log-info "Pre-commit checks passed."
