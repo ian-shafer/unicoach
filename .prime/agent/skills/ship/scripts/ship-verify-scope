@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# ship-verify-scope — assert a phase's write footprint is a SUBSET of its
+# declared allowlist. Violation is a reset, not a negotiation.
+set -euo pipefail
+
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+help() {
+  cat << 'EOF'
+ship-verify-scope -s <run-scratch> -f <from-sha> <allow-glob>...
+
+Compares the changed-file set between <from-sha> and HEAD (plus the working
+tree) against the allowlist. Exits non-zero and lists offenders if any changed
+path matches no glob.
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH="" FROM=""
+while getopts ":s:f:h" opt; do
+  case "$opt" in
+    s) RUN_SCRATCH="$OPTARG" ;;
+    f) FROM="$OPTARG" ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
+[ -n "$FROM" ] || fatal "-f <from-sha> is required"
+[ "$#" -gt 0 ] || fatal "at least one allow-glob is required"
+
+# shellcheck disable=SC1090
+. "$RUN_SCRATCH/state"
+cd "$CODEBASE_ROOT"
+
+changed="$( { git diff --name-only "$FROM" HEAD; git diff --name-only HEAD; git ls-files --others --exclude-standard; } | sort -u )"
+
+violations=0
+while read -r path; do
+  [ -n "$path" ] || continue
+  ok=0
+  for glob in "$@"; do
+    # shellcheck disable=SC2053
+    [[ "$path" == $glob ]] && { ok=1; break; }
+  done
+  if [ "$ok" -eq 0 ]; then
+    echo "OUT-OF-SCOPE: $path" >&2
+    violations=$((violations + 1))
+  fi
+done <<< "$changed"
+
+if [ "$violations" -gt 0 ]; then
+  echo "[FATAL] $violations path(s) outside the declared write-scope" >&2
+  exit 1
+fi
+echo "write-scope OK ($(echo "$changed" | grep -c . ) path(s))"

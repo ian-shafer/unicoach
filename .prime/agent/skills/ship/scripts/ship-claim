@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# ship-claim — claim an RFC number (lane A) or a slug branch (lane B) by
+# atomically creating this run's dedicated worktree.
+#
+# INDEPENDENT IMPLEMENTATION, SHARED CONVENTION. This does not call, source, or
+# depend on .claude/skills/rfc-pipeline/scripts/*. It re-implements the same
+# claim PROTOCOL so the two workflows coordinate through git rather than through
+# shared code:
+#
+#   lane A   branch pipeline/rfc-<n>   worktree <repo>-rfc-<n>
+#            <n> = 1 + max(committed rfc/NN-*.md, pipeline/rfc-* branches,
+#                          <repo>-rfc-NN worktrees)
+#   lane B   branch ship/<slug>        worktree <repo>-ship-<slug>
+#
+# `git worktree add -b` is atomic: if a concurrent run (Claude Code's
+# rfc-pipeline, or another ship run) took the number since we computed the max,
+# the add fails and we bump and retry. Worst case is a wasted number, never a
+# collision. Because lane A uses the SAME names rfc-pipeline scans, the two
+# workflows are mutually exclusive without sharing a line of code.
+set -euo pipefail
+
+log-info() { echo "$@" >&2; }
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+help() {
+  cat << 'EOF'
+ship-claim -l <lane> [-s <slug>] [-b <base-branch>]
+
+Claim a run and create its worktree, printing the run state as KEY=value lines.
+
+  -l rfc     lane A: claim the next free RFC number
+  -l quick   lane B: claim a slug branch (requires -s)
+  -s <slug>  kebab-case slug for lane B
+  -b <br>    base branch to fork from (default: main)
+
+Run from the ORIGINAL checkout, not from inside a worktree.
+EOF
+  exit "${1:-0}"
+}
+
+LANE="" SLUG="" BASE_BRANCH="main"
+while getopts ":l:s:b:h" opt; do
+  case "$opt" in
+    l) LANE="$OPTARG" ;;
+    s) SLUG="$OPTARG" ;;
+    b) BASE_BRANCH="$OPTARG" ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ "$#" -eq 0 ] || fatal "ship-claim takes no positional arguments: $*"
+[ -n "$LANE" ] || fatal "lane is required (-l rfc|quick)"
+
+ORIGINAL_CHECKOUT="$(git rev-parse --show-toplevel)"
+WORKTREE_PARENT="$(dirname "$ORIGINAL_CHECKOUT")"
+REPO_NAME="$(basename "$ORIGINAL_CHECKOUT")"
+
+git -C "$ORIGINAL_CHECKOUT" rev-parse --verify "$BASE_BRANCH" >/dev/null 2>&1 ||
+  fatal "Base branch [$BASE_BRANCH] does not exist."
+
+max_of() {
+  local highest=0 n
+  while read -r n; do
+    [ -n "$n" ] || continue
+    n=$((10#$n))
+    ((n > highest)) && highest=$n
+  done
+  echo "$highest"
+}
+
+case "$LANE" in
+  rfc)
+    committed_max="$(ls "$ORIGINAL_CHECKOUT/rfc/" 2>/dev/null | grep -oE '^[0-9]+' | max_of || true)"
+    branch_max="$(git -C "$ORIGINAL_CHECKOUT" branch --list 'pipeline/rfc-*' --format='%(refname:short)' |
+      grep -oE '[0-9]+$' | max_of || true)"
+    worktree_max="$(git -C "$ORIGINAL_CHECKOUT" worktree list --porcelain |
+      grep -oE "${REPO_NAME}-rfc-[0-9]+$" | grep -oE '[0-9]+$' | max_of || true)"
+
+    highest="${committed_max:-0}"
+    ((${branch_max:-0} > highest)) && highest="${branch_max}"
+    ((${worktree_max:-0} > highest)) && highest="${worktree_max}"
+
+    n=$((highest + 1))
+    attempts=0
+    while :; do
+      worktree_path="$WORKTREE_PARENT/${REPO_NAME}-rfc-${n}"
+      branch="pipeline/rfc-${n}"
+      if git -C "$ORIGINAL_CHECKOUT" worktree add -b "$branch" "$worktree_path" "$BASE_BRANCH" 2>/dev/null; then
+        break
+      fi
+      n=$((n + 1))
+      attempts=$((attempts + 1))
+      [ "$attempts" -lt 50 ] || fatal "could not claim an RFC number after 50 attempts"
+    done
+    RUN_ID="rfc-${n}"
+    RFC_NUM="$n"
+    ;;
+  quick)
+    [ -n "$SLUG" ] || fatal "lane 'quick' requires -s <slug>"
+    [[ "$SLUG" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || fatal "slug must be kebab-case: $SLUG"
+    worktree_path="$WORKTREE_PARENT/${REPO_NAME}-ship-${SLUG}"
+    branch="ship/${SLUG}"
+    git -C "$ORIGINAL_CHECKOUT" worktree add -b "$branch" "$worktree_path" "$BASE_BRANCH" 2>/dev/null ||
+      fatal "could not claim [$branch] at [$worktree_path] — already exists?"
+    RUN_ID="ship-${SLUG}"
+    RFC_NUM=""
+    ;;
+  *) fatal "unknown lane [$LANE] (expected rfc|quick)" ;;
+esac
+
+# The run scratch lives inside the worktree, so `git add -A` in ship-checkpoint
+# would commit it unless .scratch/ is ignored. unicoach ignores it (CLAUDE.md,
+# "Transient pipeline output"); assert rather than assume, because the failure
+# is silent — run state lands in the squashed commit and then on main.
+# Probe a path INSIDE .scratch: a trailing-slash pattern like `.scratch/`
+# matches directories, and check-ignore cannot tell that a not-yet-created
+# `.scratch` is one. `.scratch/probe` matches the pattern either way.
+if ! git -C "$worktree_path" check-ignore -q .scratch/probe 2>/dev/null; then
+  git -C "$ORIGINAL_CHECKOUT" worktree remove --force "$worktree_path" 2>/dev/null || true
+  git -C "$ORIGINAL_CHECKOUT" branch -D "$branch" 2>/dev/null || true
+  fatal ".scratch/ is not gitignored in this repo — run state would be committed. Add it to .gitignore first."
+fi
+
+BASE_SHA="$(git -C "$ORIGINAL_CHECKOUT" rev-parse "$BASE_BRANCH")"
+RUN_SCRATCH="$worktree_path/.scratch/ship/$RUN_ID"
+mkdir -p "$RUN_SCRATCH/artifacts" "$RUN_SCRATCH/findings"
+
+state_file="$RUN_SCRATCH/state"
+{
+  echo "RUN_ID=$RUN_ID"
+  echo "LANE=$LANE"
+  echo "RFC_NUM=$RFC_NUM"
+  echo "SLUG=$SLUG"
+  echo "BRANCH=$branch"
+  echo "CODEBASE_ROOT=$worktree_path"
+  echo "ORIGINAL_CHECKOUT=$ORIGINAL_CHECKOUT"
+  echo "BASE_BRANCH=$BASE_BRANCH"
+  echo "BASE_SHA=$BASE_SHA"
+  echo "RUN_SCRATCH=$RUN_SCRATCH"
+  echo "PHASE=claimed"
+} > "$state_file"
+
+log-info "Claimed [$RUN_ID] on [$branch] at [$worktree_path]"
+cat "$state_file"

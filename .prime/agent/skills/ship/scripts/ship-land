@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# ship-land — squash, assert, fast-forward, tear down.
+#
+# The ONLY path by which a ship run reaches the base branch. It refuses a tip
+# whose tree was never recorded by bin/pre-commit (ship-verified assert), which
+# is what makes the throwaway --no-verify checkpoints safe.
+set -euo pipefail
+
+log-info() { echo "$@" >&2; }
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+help() {
+  cat << 'EOF'
+ship-land -s <run-scratch> [-d doc-glob]...
+
+Asserts HEAD is hook-verified (modulo doc-only commits), fast-forwards the base
+branch onto the run branch from the original checkout, removes the worktree, and
+deletes the merged branch. Refuses on uncommitted changes or a non-fast-forward.
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH=""; DOC_ARGS=()
+while getopts ":s:d:h" opt; do
+  case "$opt" in
+    s) RUN_SCRATCH="$OPTARG" ;;
+    d) DOC_ARGS+=(-d "$OPTARG") ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
+
+# shellcheck disable=SC1090
+. "$RUN_SCRATCH/state"
+
+cd "$CODEBASE_ROOT"
+
+# 1. Clean tree. A safety check, not an obstacle to force past.
+git diff --quiet && git diff --cached --quiet ||
+  fatal "worktree [$CODEBASE_ROOT] has uncommitted changes"
+
+# 2. The gate. Nothing lands that the hook never saw.
+"$SCRIPT_DIR/ship-verified" assert "${DOC_ARGS[@]+"${DOC_ARGS[@]}"}"
+
+TIP="$(git rev-parse HEAD)"
+
+# 3. Fast-forward the base branch from the original checkout.
+cd "$ORIGINAL_CHECKOUT"
+git merge-base --is-ancestor "$BASE_BRANCH" "$BRANCH" ||
+  fatal "[$BASE_BRANCH] advanced past this run's base — rebase [$BRANCH] and retry"
+
+current="$(git rev-parse --abbrev-ref HEAD)"
+[ "$current" = "$BASE_BRANCH" ] ||
+  fatal "original checkout is on [$current], expected [$BASE_BRANCH]"
+
+git merge --ff-only "$BRANCH"
+
+landed="$(git rev-parse "$BASE_BRANCH")"
+[ "$landed" = "$TIP" ] || fatal "post-land verify failed: [$BASE_BRANCH] is $landed, expected $TIP"
+
+# 4. Archive the run scratch out of the worktree before it is removed.
+archive="$ORIGINAL_CHECKOUT/.scratch/ship-archive/$RUN_ID"
+mkdir -p "$(dirname "$archive")"
+rm -rf "$archive"
+cp -R "$RUN_SCRATCH" "$archive"
+
+# 5. Tear down.
+git worktree remove "$CODEBASE_ROOT"
+git branch -d "$BRANCH"
+
+log-info "Landed [$RUN_ID] onto [$BASE_BRANCH] at $TIP"
+log-info "Run artifacts archived at $archive"
+echo "$TIP"

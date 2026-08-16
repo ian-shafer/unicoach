@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# ship-verified — the local stand-in for CI.
+#
+# WHY THIS EXISTS. This is a one-engineer project with no CI, so the pre-commit
+# hook is the only independent authority that can say "this is broken". The hole
+# that leaves is not the missing server: it is that --no-verify exists on every
+# checkpoint and nothing at landing checks whether the TIP ever passed. A run
+# that dies between review and commit can leave a branch that passed nothing.
+#
+# THE MECHANISM. On success the hook appends the tree it validated to
+#   $(git rev-parse --git-common-dir)/ship-verified-trees
+# TREE hash, not commit sha: amending a message, re-committing identical
+# content, or rebasing all preserve the tree, so the marker survives exactly the
+# operations that do not change what was tested and fails exactly those that do.
+# The file lives in the COMMON git dir, so every worktree shares one log, and
+# inside .git so it is never committed.
+#
+# THE DOC EXCEPTION. rfc-pipeline commits the code first through the hook, then
+# the RFC markdown with --no-verify. So the tip's tree is legitimately NOT the
+# verified tree. `assert` therefore walks back to the nearest verified ancestor
+# and requires everything added on top to match --doc-glob only.
+set -euo pipefail
+
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+help() {
+  cat << 'EOF'
+ship-verified record             record HEAD's staged tree (called by bin/pre-commit)
+ship-verified check <tree-sha>   exit 0 if that tree was validated
+ship-verified assert [-n depth] [-d doc-glob]...
+                                 assert HEAD is verified, modulo doc-only commits
+
+Default doc globs: rfc/*.md *.md
+EOF
+  exit "${1:-0}"
+}
+
+marker_file() {
+  local common
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || git rev-parse --git-common-dir)"
+  echo "$common/ship-verified-trees"
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  record)
+    # The hook validates the WORKING TREE; the commit is built from the INDEX.
+    # Normally identical. If not, we tested something other than what is being
+    # committed, so record nothing and say so.
+    if ! git diff --quiet; then
+      echo "[warn] working tree differs from index — not recording a verified tree" >&2
+      exit 0
+    fi
+    tree="$(git write-tree)"
+    mf="$(marker_file)"
+    grep -qx "$tree" "$mf" 2>/dev/null || echo "$tree" >> "$mf"
+    echo "recorded verified tree $tree" >&2
+    ;;
+  check)
+    tree="${1:-}"; [ -n "$tree" ] || fatal "check requires a tree sha"
+    grep -qx "$tree" "$(marker_file)" 2>/dev/null
+    ;;
+  assert)
+    DEPTH=10; DOC_GLOBS=()
+    while getopts ":n:d:h" opt; do
+      case "$opt" in
+        n) DEPTH="$OPTARG" ;;
+        d) DOC_GLOBS+=("$OPTARG") ;;
+        h) help 0 ;;
+        \?) fatal "unknown option [-$OPTARG]" ;;
+        :) fatal "option [-$OPTARG] requires an argument" ;;
+      esac
+    done
+    [ "${#DOC_GLOBS[@]}" -gt 0 ] || DOC_GLOBS=('rfc/*.md' '*.md')
+    mf="$(marker_file)"
+    [ -s "$mf" ] || fatal "no verified trees recorded — has bin/pre-commit ever passed here?"
+
+    i=0
+    while [ "$i" -le "$DEPTH" ]; do
+      rev="HEAD~$i"
+      git rev-parse --verify "$rev" >/dev/null 2>&1 || break
+      tree="$(git rev-parse "${rev}^{tree}")"
+      if grep -qx "$tree" "$mf" 2>/dev/null; then
+        if [ "$i" -eq 0 ]; then
+          echo "verified: HEAD tree $tree passed the hook"
+          exit 0
+        fi
+        bad=0
+        while read -r path; do
+          [ -n "$path" ] || continue
+          ok=0
+          for glob in "${DOC_GLOBS[@]}"; do
+            # shellcheck disable=SC2053
+            [[ "$path" == $glob ]] && { ok=1; break; }
+          done
+          [ "$ok" -eq 1 ] || { echo "UNVERIFIED CHANGE: $path" >&2; bad=$((bad + 1)); }
+        done < <(git diff --name-only "$rev" HEAD)
+        [ "$bad" -eq 0 ] ||
+          fatal "$bad non-doc path(s) added after the last verified tree — re-commit through the hook"
+        echo "verified: HEAD~$i tree $tree passed the hook; only doc paths added since"
+        exit 0
+      fi
+      i=$((i + 1))
+    done
+    fatal "no verified tree within $DEPTH commits of HEAD — nothing here passed bin/pre-commit"
+    ;;
+  ""|-h|--help|help) help 0 ;;
+  *) fatal "unknown command [$cmd]" ;;
+esac

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# ship-squash — collapse the run's WIP checkpoints into a clean staging state.
+# `reset --soft` to the recorded base: working tree and index preserved, only
+# the throwaway history dropped. The final commits are made from this state.
+set -euo pipefail
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+help() { cat << 'EOF'
+ship-squash -s <run-scratch>
+
+Resets --soft to BASE_SHA so the whole run appears as staged changes.
+EOF
+exit "${1:-0}"; }
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+    s) RUN_SCRATCH="$OPTARG" ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+[ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
+# shellcheck disable=SC1090
+. "$RUN_SCRATCH/state"
+cd "$CODEBASE_ROOT"
+git reset --soft "$BASE_SHA"
+echo "squashed to $BASE_SHA; run is staged in $CODEBASE_ROOT"

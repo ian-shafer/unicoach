@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# ship-checkpoint — WIP checkpoint commit + ledger row. Prints the SHA.
+#
+# Checkpoints are throwaway: they exist so a stalled or rogue phase costs one
+# unit of work rather than the run, and they are squashed away before anything
+# lands. They commit with --no-verify deliberately (a full bin/test check per
+# checkpoint would dominate the run's wall-clock and buys nothing for a commit
+# that will not survive). The flag lives HERE, not in an agent's command string.
+#
+# Nothing checkpointed can reach main: ship-land refuses a tip whose tree was
+# never recorded by the pre-commit hook (see references/verification.md).
+set -euo pipefail
+
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+help() {
+  cat << 'EOF'
+ship-checkpoint -s <run-scratch> <phase> [i] [-m message]
+
+Stages everything in the worktree and records a WIP checkpoint.
+Prints the new commit SHA on stdout. A no-op tree prints the existing HEAD.
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH="" MSG=""
+while getopts ":s:m:h" opt; do
+  case "$opt" in
+    s) RUN_SCRATCH="$OPTARG" ;;
+    m) MSG="$OPTARG" ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
+
+PHASE="${1:-}"; [ -n "$PHASE" ] || fatal "phase name is required"
+I="${2:-0}"
+
+# shellcheck disable=SC1090
+. "$RUN_SCRATCH/state"
+[ -n "${CODEBASE_ROOT:-}" ] || fatal "state has no CODEBASE_ROOT"
+
+cd "$CODEBASE_ROOT"
+git add -A
+
+if git diff --cached --quiet; then
+  sha="$(git rev-parse HEAD)"
+else
+  git commit --no-verify -q -m "wip($PHASE/$I): ${MSG:-checkpoint}"
+  sha="$(git rev-parse HEAD)"
+fi
+
+printf '%s\t%s\t%s\t%s\n' "$sha" "$PHASE" "$I" "${MSG:-checkpoint}" >> "$RUN_SCRATCH/checkpoints.log"
+echo "$sha"

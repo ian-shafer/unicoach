@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# ship-state — read/write the run state file and the checkpoint ledger.
+# Own format, own location; shares nothing with rfc-pipeline's state.
+#
+#   <run-scratch>/state           KEY=value lines (sourceable)
+#   <run-scratch>/checkpoints.log <sha>\t<phase>\t<i>\t<message>
+set -euo pipefail
+
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+help() {
+  cat << 'EOF'
+ship-state -s <run-scratch> get <KEY>
+ship-state -s <run-scratch> set <KEY> <VALUE>
+ship-state -s <run-scratch> show
+
+Upserts one fact into the run state, reads one, or prints all. Keys are
+uppercase snake-case. Values may contain spaces but not newlines.
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH=""
+while getopts ":s:h" opt; do
+  case "$opt" in
+    s) RUN_SCRATCH="$OPTARG" ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
+
+STATE="$RUN_SCRATCH/state"
+[ -f "$STATE" ] || fatal "no state file at [$STATE]"
+
+cmd="${1:-show}"; shift || true
+case "$cmd" in
+  show) cat "$STATE" ;;
+  get)
+    key="${1:-}"; [ -n "$key" ] || fatal "get requires a KEY"
+    grep -E "^${key}=" "$STATE" | head -1 | cut -d= -f2- || true
+    ;;
+  set)
+    key="${1:-}"; shift || true
+    value="${*:-}"
+    [ -n "$key" ] || fatal "set requires a KEY"
+    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || fatal "KEY must be uppercase snake-case: $key"
+    case "$value" in *$'\n'*) fatal "value must not contain newlines" ;; esac
+    tmp="$(mktemp)"
+    grep -vE "^${key}=" "$STATE" > "$tmp" || true
+    echo "${key}=${value}" >> "$tmp"
+    mv "$tmp" "$STATE"
+    ;;
+  *) fatal "unknown command [$cmd]" ;;
+esac
