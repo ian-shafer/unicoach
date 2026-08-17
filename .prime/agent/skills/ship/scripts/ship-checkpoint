@@ -36,8 +36,29 @@ done
 shift $((OPTIND - 1))
 [ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
 
-PHASE="${1:-}"; [ -n "$PHASE" ] || fatal "phase name is required"
-I="${2:-0}"
+# CP_PHASE, not PHASE: the state file sourced below defines PHASE, and a bare
+# `PHASE=` here was silently overwritten by it — every ledger row recorded the
+# run's current phase instead of the checkpoint's name.
+CP_PHASE="${1:-}"; [ -n "$CP_PHASE" ] || fatal "phase name is required"
+shift
+I=0
+if [ -n "${1:-}" ] && [[ "${1}" =~ ^[0-9]+$ ]]; then I="$1"; shift; fi
+
+# getopts stops at the first non-option, so the documented form
+# `ship-checkpoint -s <rs> impl 1 -m "msg"` never reached the -m above and every
+# such message was dropped. Parse what follows the positionals too.
+if [ "$#" -gt 0 ]; then
+  OPTIND=1
+  while getopts ":m:" opt; do
+    case "$opt" in
+      m) MSG="$OPTARG" ;;
+      \?) fatal "unknown option [-$OPTARG]" ;;
+      :) fatal "option [-$OPTARG] requires an argument" ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  [ "$#" -eq 0 ] || fatal "unexpected arguments: $*"
+fi
 
 # shellcheck disable=SC1090
 . "$RUN_SCRATCH/state"
@@ -49,9 +70,9 @@ git add -A
 if git diff --cached --quiet; then
   sha="$(git rev-parse HEAD)"
 else
-  git commit --no-verify -q -m "wip($PHASE/$I): ${MSG:-checkpoint}"
+  git commit --no-verify -q -m "wip($CP_PHASE/$I): ${MSG:-checkpoint}"
   sha="$(git rev-parse HEAD)"
 fi
 
-printf '%s\t%s\t%s\t%s\n' "$sha" "$PHASE" "$I" "${MSG:-checkpoint}" >> "$RUN_SCRATCH/checkpoints.log"
+printf '%s\t%s\t%s\t%s\n' "$sha" "$CP_PHASE" "$I" "${MSG:-checkpoint}" >> "$RUN_SCRATCH/checkpoints.log"
 echo "$sha"

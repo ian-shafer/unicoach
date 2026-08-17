@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# ship-rebase — replay this run onto the current tip of its base branch.
+#
+# WHY THIS EXISTS. Parallel ship runs are the normal case: another run lands on
+# main while yours is still open, and from that moment BASE_SHA is a lie. Three
+# scripts read it and every one of them fails badly:
+#
+#   ship-squash        `reset --soft` to a stale base absorbs the OTHER run's
+#                      landed changes into this run's diff and drops this run's
+#                      real base — a wrong commit that the hook, the reviewer
+#                      and the report all see before ff-only finally refuses it.
+#   ship-verify-scope  `-f <stale base>` reports other runs' landed files as
+#                      this run's writes — a false deny, which the skill treats
+#                      as grounds for a reset.
+#   ship-recover       after a rebase no ledger sha is an ancestor of HEAD, so
+#                      it refuses everything and the run loses its safety net.
+#
+# This is the ONE supported way to catch up, and it is idempotent and cheap by
+# design — SKILL.md calls it twice per run (start of verify, start of land) and
+# the common case must cost one rev-parse.
+#
+# A rebase does NOT silently revert another run's work: git rebase is
+# patch-based, so the landed commits stay landed and only this run's commits are
+# replayed. A genuine conflict is two runs disagreeing about the same code — a
+# design signal to surface, not a tooling failure to paper over.
+set -euo pipefail
+
+log-info() { echo "$@" >&2; }
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+help() {
+  cat << 'EOF'
+ship-rebase -s <run-scratch> [-N]
+
+Rebases CODEBASE_ROOT onto the CURRENT tip of BASE_BRANCH, updates BASE_SHA, and
+rotates the checkpoint ledger. A no-op when the base has not moved.
+
+  -N   dry run: report the drift, change nothing
+
+Checkpoints the worktree first, so uncommitted work cannot be lost to a rebase.
+On conflict the rebase is left IN PROGRESS and BASE_SHA is left untouched.
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH="" DRYRUN=0
+while getopts ":s:Nh" opt; do
+  case "$opt" in
+    s) RUN_SCRATCH="$OPTARG" ;;
+    N) DRYRUN=1 ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ "$#" -eq 0 ] || fatal "ship-rebase takes no positional arguments: $*"
+[ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
+
+# shellcheck disable=SC1090
+. "$RUN_SCRATCH/state"
+[ -n "${CODEBASE_ROOT:-}" ] || fatal "state has no CODEBASE_ROOT"
+[ -n "${BASE_BRANCH:-}" ] || fatal "state has no BASE_BRANCH"
+[ -n "${BASE_SHA:-}" ] || fatal "state has no BASE_SHA"
+[ -n "${ORIGINAL_CHECKOUT:-}" ] || fatal "state has no ORIGINAL_CHECKOUT"
+
+# The base branch is checked out in the ORIGINAL checkout, never in this run's
+# worktree — ask that checkout what its tip is.
+TIP="$(git -C "$ORIGINAL_CHECKOUT" rev-parse "$BASE_BRANCH" 2>/dev/null)" ||
+  fatal "cannot resolve [$BASE_BRANCH] in [$ORIGINAL_CHECKOUT]"
+
+if [ "$TIP" = "$BASE_SHA" ]; then
+  echo "already current: $BASE_BRANCH is $(git -C "$ORIGINAL_CHECKOUT" rev-parse --short "$TIP")"
+  exit 0
+fi
+
+BEHIND="$(git -C "$CODEBASE_ROOT" rev-list --count "$BASE_SHA..$TIP" 2>/dev/null || echo '?')"
+echo "run            ${RUN_ID:-?} ($CODEBASE_ROOT)"
+echo "base branch    $BASE_BRANCH"
+echo "recorded base  $BASE_SHA"
+echo "current tip    $TIP ($BEHIND behind)"
+
+if [ "$DRYRUN" -eq 1 ]; then
+  log-info "dry run (-N): nothing changed"
+  exit 0
+fi
+
+# A half-finished rebase or merge means the worktree is mid-surgery: starting
+# another one would compound the mess and the state file would describe neither.
+for op in rebase-merge rebase-apply MERGE_HEAD; do
+  path="$(git -C "$CODEBASE_ROOT" rev-parse --git-path "$op")"
+  if [ -e "$path" ]; then
+    fatal "an operation is already in progress in [$CODEBASE_ROOT] ($op) — finish or abort it first"
+  fi
+done
+
+# Checkpoint FIRST. A rebase with a dirty tree either refuses or carries the
+# changes across unrecorded; checkpoints are throwaway, the work is not.
+PRE_REBASE_HEAD="$("$SCRIPT_DIR/ship-checkpoint" -s "$RUN_SCRATCH" pre-rebase)"
+
+cd "$CODEBASE_ROOT"
+if ! git rebase "$TIP"; then
+  cat >&2 << EOF
+[FATAL] rebase onto $TIP hit a conflict and is LEFT IN PROGRESS in
+        $CODEBASE_ROOT
+
+  BASE_SHA is unchanged ($BASE_SHA), so nothing downstream will act on a
+  half-rebased run. Two conflicting runs touching the same code is a design
+  signal — read the conflict before resolving it.
+
+  To finish:   resolve the files, git add -A, git rebase --continue,
+               then re-run: ship-rebase -s $RUN_SCRATCH
+  To back out: git -C $CODEBASE_ROOT rebase --abort
+EOF
+  exit 1
+fi
+
+NEW_HEAD="$(git rev-parse HEAD)"
+REPLAYED="$(git rev-list --count "$TIP..$NEW_HEAD")"
+
+"$SCRIPT_DIR/ship-state" -s "$RUN_SCRATCH" set BASE_SHA "$TIP"
+"$SCRIPT_DIR/ship-state" -s "$RUN_SCRATCH" set PRE_REBASE_HEAD "$PRE_REBASE_HEAD"
+
+# ROTATE THE LEDGER, DO NOT SHA-MAP IT. Every pre-rebase checkpoint now names
+# abandoned history: resetting to one would not be a recovery, it would put the
+# worktree back on the old base with the other run's landed work missing. So the
+# old ledger is set aside intact (numbered, so repeated rebases never clobber)
+# and a fresh one starts at the post-rebase HEAD. ship-recover's "target must be
+# an ancestor of HEAD" invariant then stays TRUE rather than being faked by a
+# mapping table that cannot know which replayed commit answers to which old sha.
+LEDGER="$RUN_SCRATCH/checkpoints.log"
+if [ -f "$LEDGER" ]; then
+  n=1
+  while [ -e "$LEDGER.pre-rebase-$n" ]; do n=$((n + 1)); done
+  mv "$LEDGER" "$LEDGER.pre-rebase-$n"
+  log-info "Ledger rotated to $(basename "$LEDGER.pre-rebase-$n") — pre-rebase checkpoints are abandoned history"
+fi
+printf '%s\t%s\t%s\t%s\n' "$NEW_HEAD" "rebase" "0" "rebased onto $TIP (was $BASE_SHA)" > "$LEDGER"
+
+echo
+echo "rebased        $BASE_SHA -> $TIP"
+echo "replayed       $REPLAYED commit(s)"
+echo "new HEAD       $NEW_HEAD"
+log-info "Rebased [${RUN_ID:-?}] onto $BASE_BRANCH; pre-rebase tip recorded as PRE_REBASE_HEAD"

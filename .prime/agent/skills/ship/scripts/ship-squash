@@ -25,5 +25,27 @@ done
 # shellcheck disable=SC1090
 . "$RUN_SCRATCH/state"
 cd "$CODEBASE_ROOT"
+
+# BASE_SHA must still be this run's FORK POINT, not merely an ancestor of HEAD.
+# The distinction is the whole guard. After a rebase onto a moved base, the old
+# BASE_SHA is still an ancestor — it is the base's own history — so an ancestor
+# test sleeps through exactly the case that matters, while `reset --soft` to it
+# absorbs the OTHER run's landed commits into this run's diff. Verified: a run
+# rebased onto a master carrying `a-new.txt` staged `A a-new.txt` as its own
+# work with the ancestor test passing.
+#
+# Being merely BEHIND is not an error and is not blocked here: an un-rebased run
+# forked at BASE_SHA really does differ from it by exactly its own work, so that
+# commit is honest and ff-only will ask for the rebase later. It is the
+# rebased-but-not-recorded run that fabricates a footprint.
+FORK="$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || echo '')"
+if [ -n "$FORK" ]; then
+  [ "$FORK" = "$BASE_SHA" ] ||
+    fatal "BASE_SHA [$BASE_SHA] is no longer this run's fork point (now $FORK) — the base moved under it. Run: ship-rebase -s $RUN_SCRATCH"
+else
+  git merge-base --is-ancestor "$BASE_SHA" HEAD ||
+    fatal "BASE_SHA [$BASE_SHA] is not an ancestor of HEAD and [$BASE_BRANCH] will not resolve — run state and worktree disagree"
+fi
+
 git reset --soft "$BASE_SHA"
 echo "squashed to $BASE_SHA; run is staged in $CODEBASE_ROOT"

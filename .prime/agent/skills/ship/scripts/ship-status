@@ -94,6 +94,42 @@ while read -r wt; do
         fi
       fi
 
+      # BASE DRIFT. Parallel runs are normal, so a run's recorded base goes
+      # stale as a matter of course — and stale is invisible until ship-squash
+      # builds a wrong commit or ship-verify-scope emits a false deny. Surface
+      # it here, where a compacted session looks first. Everything degrades to
+      # `?`: a broken or half-removed run must never crash the listing.
+      base_line="?"
+      if [ -n "${BASE_BRANCH:-}" ] && [ -n "${BASE_SHA:-}" ] &&
+        [ -n "${CODEBASE_ROOT:-}" ] && [ -d "$CODEBASE_ROOT" ]; then
+        tip="$(git -C "$CODEBASE_ROOT" rev-parse "$BASE_BRANCH" 2>/dev/null || echo '')"
+        short="$(git -C "$CODEBASE_ROOT" rev-parse --short "$BASE_SHA" 2>/dev/null || echo '?')"
+        if [ -z "$tip" ]; then
+          base_line="${BASE_BRANCH}@${short} — ?"
+        elif [ "$tip" = "$BASE_SHA" ]; then
+          base_line="${BASE_BRANCH}@${short} (current)"
+        else
+          behind="$(git -C "$CODEBASE_ROOT" rev-list --count "$BASE_SHA..$tip" 2>/dev/null || echo '?')"
+          base_line="${BASE_BRANCH}@${short} — $behind behind, REBASE NEEDED"
+        fi
+      fi
+
+      # A run parked mid-rebase or mid-merge looks clean-ish to everything else
+      # and is safe for nothing; say so.
+      op=""
+      if [ -n "${CODEBASE_ROOT:-}" ] && [ -d "$CODEBASE_ROOT" ]; then
+        for probe in rebase-merge rebase-apply MERGE_HEAD; do
+          gp="$(git -C "$CODEBASE_ROOT" rev-parse --git-path "$probe" 2>/dev/null || echo '')"
+          if [ -n "$gp" ] && [ -e "$gp" ]; then
+            case "$probe" in
+              MERGE_HEAD) op="MERGING" ;;
+              *) op="REBASING" ;;
+            esac
+            break
+          fi
+        done
+      fi
+
       rs="${RUN_SCRATCH:-$(dirname "$state")}"
       last_row="(no checkpoints)"
       if [ -s "$rs/checkpoints.log" ]; then
@@ -107,6 +143,8 @@ while read -r wt; do
       echo "  CODEBASE_ROOT  ${CODEBASE_ROOT:-?}"
       echo "  RUN_SCRATCH    $rs"
       echo "  HEAD           $head_sha ($dirty)"
+      echo "  BASE           $base_line"
+      [ -n "$op" ] && echo "  IN PROGRESS    $op"
       echo "  last ledger    $last_row"
       echo "  state touched  $(age_of "$state")"
       [ -n "${RECOVERED_FROM:-}" ] && echo "  RECOVERED_FROM ${RECOVERED_FROM}"

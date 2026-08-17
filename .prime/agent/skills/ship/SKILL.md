@@ -48,6 +48,7 @@ claim → design → APPROVE → implement → verify → land → report
     scripts/ship-checkpoint -s <rs> <phase> [i]     # WIP commit + ledger
     scripts/ship-status  [-p]                       # find live runs, no args
     scripts/ship-recover -s <rs> [-c sha|-n back]   # reset to a checkpoint
+    scripts/ship-rebase  -s <rs> [-N]               # catch up with a moved base
     scripts/ship-verify-scope -s <rs> -f <sha> [-d deny]... [allow]...
     scripts/ship-squash  -s <rs>                    # collapse WIP to staged
     scripts/ship-verified record|check|assert       # the CI stand-in
@@ -90,6 +91,44 @@ anywhere in the repo and needs no arguments precisely because a compacted
 session has none. `ship-status -p` prints bare `RUN_SCRATCH` paths to paste into
 the other scripts. Re-enter at the `PHASE` on disk, not at the phase you
 remember.
+
+### Parallel runs: the base WILL move under you
+
+Other runs land while yours is open. The base branch advancing is NORMAL, not an
+error and not a race you lost. Being merely _behind_ is harmless: your run still
+forks at `BASE_SHA`, so its diff is honestly its own work, and `ship-land`'s
+fast-forward check will ask for the rebase.
+
+What is not harmless is being **rebased without recording it**. Once the branch
+moves but `BASE_SHA` does not, `ship-squash` resets to a point that is no longer
+the fork and absorbs the other run's landed commits into your diff, and
+`ship-verify-scope` reports their files as your writes — a false deny, which
+this skill treats as grounds for a reset. Note the trap: after a rebase the
+stale `BASE_SHA` is still an _ancestor_ of HEAD, so an ancestor check sleeps
+through exactly this case. Both scripts therefore test the **fork point**
+(`git merge-base HEAD <base>`) and refuse when it has moved.
+
+`scripts/ship-rebase -s <rs>` is the only supported way to catch up. It is
+idempotent and costs one `rev-parse` when nothing moved, so **rebase early and
+often** — call it at the top of verify and again before `ship-squash`, and any
+time a sibling run reports it landed. A conflict caught at verify costs a small
+fix; the same conflict caught at land costs the whole hook run again.
+
+`ship-status` shows the drift (`BASE main@455f74d — 2 behind, REBASE NEEDED`),
+so a resumed session sees it before it does anything else.
+
+A genuine conflict is a **design signal**, not a tooling failure: two runs
+disagree about the same code. Read it, decide which shape is right, and say so
+in the report. Do not paper over it by taking one side mechanically. On conflict
+`ship-rebase` leaves the rebase in progress and `BASE_SHA` unchanged — resolve
+and `git rebase --continue`, then re-run it, or `git rebase --abort`.
+
+`ship-rebase` **rotates the checkpoint ledger** (`checkpoints.log` becomes
+`checkpoints.log.pre-rebase-<n>`, and a fresh ledger starts at the post-rebase
+HEAD). Checkpoints predating a rebase are gone by design: they name abandoned
+history, so resetting to one would put the worktree back on the old base with
+the other run's landed work missing. `ship-recover` only ever targets
+post-rebase checkpoints.
 
 ### 1. claim
 
@@ -142,7 +181,14 @@ blocking loses a real insight, silent acceptance compounds drift.
 ### 5. verify
 
 `ship-state -s <rs> set PHASE verifying`, then
-`ship-checkpoint -s <rs> before-verify`.
+`ship-checkpoint -s <rs> before-verify`, then **rebase before anything else
+looks at the tree**:
+
+    scripts/ship-rebase -s <rs>
+
+Rebase is the first thing verify does, so the tree that is reviewed and tested
+is the tree that lands. Reviewing a stale tree reviews code that will never
+exist.
 
 See [`references/review.md`](references/review.md). Order matters and is not
 negotiable: **Tier 0 → 1 → 2 → 3**, sequential, because each tier's fixes move
@@ -164,6 +210,7 @@ screenshots as artifacts (see
 `ship-checkpoint -s <rs> before-land`. Write the report (phase 7) **first**:
 `ship-land` deletes the worktree.
 
+    scripts/ship-rebase -s <rs>          # no-op if nothing moved since verify
     scripts/ship-squash -s <rs>
     nix develop -c bin/format
     nix develop -c git commit            # code — through the FULL hook. The gate.

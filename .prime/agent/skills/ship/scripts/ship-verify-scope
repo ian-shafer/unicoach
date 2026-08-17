@@ -67,6 +67,23 @@ ALLOW=("$@")
 . "$RUN_SCRATCH/state"
 cd "$CODEBASE_ROOT"
 
+# A <from-sha> off this history (typically a BASE_SHA left stale by another
+# run's land) diffs against unrelated code and reports OTHER runs' landed files
+# as this run's writes — a FALSE deny, which the skill treats as grounds for a
+# reset. Refuse instead of emitting it.
+git merge-base --is-ancestor "$FROM" HEAD ||
+  fatal "[$FROM] is not an ancestor of HEAD — run state and worktree disagree. Run: ship-rebase -s $RUN_SCRATCH"
+
+# The usual <from-sha> is BASE_SHA, and for that one an ancestor test is not
+# enough: after a rebase the stale base is STILL an ancestor, so the diff
+# quietly widens to include the other run's landed files and denies them as this
+# run's writes. When -f is the recorded base, require it to be the fork point.
+if [ "$FROM" = "${BASE_SHA:-}" ] && [ -n "${BASE_BRANCH:-}" ]; then
+  fork="$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || echo '')"
+  [ -z "$fork" ] || [ "$fork" = "$BASE_SHA" ] ||
+    fatal "BASE_SHA [$BASE_SHA] is no longer this run's fork point (now $fork) — the diff would report other runs' landed files as this run's writes. Run: ship-rebase -s $RUN_SCRATCH"
+fi
+
 changed="$( { git diff --name-only "$FROM" HEAD; git diff --name-only HEAD; git ls-files --others --exclude-standard; } | sort -u )"
 
 violations=0
