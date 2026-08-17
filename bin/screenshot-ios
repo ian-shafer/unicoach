@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# screenshot-ios runs under SYSTEM Xcode (xcrun simctl), NOT the Nix dev shell.
+# Like build-ios/install-ios/release-ios it deliberately does NOT source
+# bin/common (which requires .env / Postgres / the Nix shell) — only
+# bin/functions for log-info/fatal.
+#
+# It boots a simulator, installs the most recent simulator build, launches it,
+# waits for the UI to settle, and captures a PNG. Simulator only: `xcrun simctl`
+# has no meaning for a physical device (that is install-ios's job).
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/bin/functions"
+
+BUNDLE_ID="coach.uni.UnicoachiOS"
+
+help() {
+  cat << 'EOF'
+screenshot-ios [-d <device>] [-o <png>] [-w <secs>] [target] [-- <launch args>...]
+
+Captures a PNG screenshot of UnicoachiOS running in the iOS Simulator: boots the
+simulator, installs the most recent simulator build, launches the app, waits for
+it to settle, and writes the image. Run bin/build-ios <target> first. Runs under
+system Xcode, not the Nix dev shell. Simulator only — a device target is
+rejected (use bin/install-ios for a physical iPhone).
+
+  target       Target name (default: simulator, the checked-in shared simulator
+               env). Sources ios-app/env/<target>.env for UNICOACH_DESTINATION
+               (UNICOACH_CONFIGURATION optional, defaults to Debug) and locates
+               the built .app under ios-app/build/DerivedData. `prod-simulator`
+               also works but needs an explicit device (-d or UNICOACH_SIMULATOR)
+               because its destination names no simulator.
+  -d <device>  Simulator NAME or UDID to capture (xcrun simctl list devices),
+               overriding UNICOACH_SIMULATOR and the destination's `name=`/`id=`.
+  -o <png>     Write the screenshot to this exact path (its parent is created).
+               Default: <dir>/<target>-<UTC timestamp>.png, where <dir> is
+               UNICOACH_SCREENSHOT_DIR when set, else ios-app/build/screenshots
+               (under the gitignored build/ tree).
+  -w <secs>    Seconds to wait after launch before capturing, giving the app
+               time to render its first screen (default: 4).
+  -- <args>    Everything after `--` is forwarded verbatim to
+               `xcrun simctl launch`, the seam for driving the app to a
+               particular screen (e.g. a launch argument an XCUITest-style
+               harness reads) before the capture.
+
+Simulator selection: -d when given; else UNICOACH_SIMULATOR when set; else the
+`name=<...>` component of the target's UNICOACH_DESTINATION, falling back to its
+`id=<UDID>` component when it names the simulator that way. The resolved value
+is passed to simctl as the device (simctl accepts a device NAME or UDID) rather
+than the literal `booted`, so a second simulator booted elsewhere cannot be
+captured by mistake. A target whose destination names no simulator (e.g.
+prod-simulator) therefore requires -d or UNICOACH_SIMULATOR.
+
+The app talks to the backend baked in at build time, so start it first
+(bin/rest-server-up) or the capture shows the app's offline "No Connection"
+screen rather than the real UI.
+
+The absolute path of the written PNG is the LAST and ONLY line on stdout (all
+progress logging goes to stderr), so a caller can capture it with $(...).
+
+Options:
+  -h           Help
+EOF
+  exit 0
+}
+
+# Split argv at the FIRST `--` before getopts runs. getopts itself consumes a
+# `--` terminator, which would make `screenshot-ios -- <launch args>` (no
+# target) indistinguishable from `screenshot-ios <target>`; splitting first
+# keeps the two grammars apart.
+#
+# Both arrays are expanded below as `${ARR[@]+"${ARR[@]}"}`, never the obvious
+# `"${ARR[@]}"`: this script is barred from the Nix dev shell, so it runs under
+# macOS system bash 3.2, where under `set -u` expanding an EMPTY array is an
+# unbound-variable error. The `+`-alternate guard is what keeps the ordinary
+# invocation (no `--`, hence no launch args) working at all.
+SCRIPT_ARGS=()
+LAUNCH_ARGS=()
+SEEN_DASHDASH=0
+for arg in "$@"; do
+  if [ "$SEEN_DASHDASH" -eq 0 ] && [ "$arg" = "--" ]; then
+    SEEN_DASHDASH=1
+    continue
+  fi
+  if [ "$SEEN_DASHDASH" -eq 1 ]; then
+    LAUNCH_ARGS+=("$arg")
+  else
+    SCRIPT_ARGS+=("$arg")
+  fi
+done
+set -- ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
+
+OUT=""
+WAIT=4
+DEVICE_OPT=""
+while getopts ":hd:o:w:" opt; do
+  case "$opt" in
+  h) help ;;
+  # An empty -d/-o value is almost always an unset variable expanded into the
+  # command line (screenshot-ios -d "$SIM" ...), which would otherwise read as
+  # "not supplied" and silently capture a different simulator / write to the
+  # default path.
+  d) [ -n "$OPTARG" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-d] requires a non-empty device name or UDID"
+     DEVICE_OPT="$OPTARG" ;;
+  o) [ -n "$OPTARG" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-o] requires a non-empty path"
+     OUT="$OPTARG" ;;
+  w) WAIT="$OPTARG" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+# Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
+# xcrun is shadowed by a stub with no simctl, so the capture would fail with an
+# unrelated error. Detection lives in bin/is-nix; the refusal is here. Placed
+# before any env/tool logic so this message wins even when an env file is also
+# missing.
+if "$PROJECT_ROOT/bin/is-nix" -q; then
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/screenshot-ios simulator), not via 'nix develop -c'."
+fi
+
+ENV_NAME="${1:-simulator}"
+if [ "$#" -gt 1 ]; then
+  # A surplus positional that looks like an option is almost always an option
+  # written AFTER the target (getopts stops at the first non-option), where the
+  # generic "use --" advice would send the operator down a dead end.
+  if [[ "$2" == -* ]]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "options must precede the target: write [screenshot-ios $2 ${3:+$3 }$ENV_NAME], not [screenshot-ios $ENV_NAME $2${3:+ $3}]."
+  fi
+  fatal -s "$EXIT_UNEXPECTED_ARG" "screenshot-ios accepts at most one positional argument (target); pass launch arguments after '--': $*"
+fi
+
+# The settle wait is slept on verbatim, so reject anything that is not a
+# non-negative number here rather than letting `sleep` fail mid-capture.
+if [[ ! "$WAIT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "wait [-w $WAIT] must be a non-negative number of seconds (e.g. 4)"
+fi
+
+# ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
+# (used by bin/ios-scripts-tests to point at a temp fixture dir).
+ENV_DIR="${UNICOACH_ENV_DIR:-$PROJECT_ROOT/ios-app/env}"
+ENV_FILE="$ENV_DIR/$ENV_NAME.env"
+if [ ! -f "$ENV_FILE" ]; then
+  fatal "Environment file not found [$ENV_FILE]. Pass an existing simulator target (e.g. simulator), or copy ios-app/env/local.env.example to ios-app/env/local.env."
+fi
+
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+: "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in [$ENV_FILE]}"
+UNICOACH_CONFIGURATION="${UNICOACH_CONFIGURATION:-Debug}"
+
+# Simulator-only: the exact inverse of install-ios's device-only guard, using the
+# same Simulator-substring discriminator build-ios uses to classify a target.
+if [[ "$UNICOACH_DESTINATION" != *Simulator* ]]; then
+  fatal "Target [$ENV_NAME] targets a physical device (UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] does not contain 'Simulator'); screenshot-ios captures the simulator only. Use a simulator target (e.g. simulator), or bin/install-ios for a device."
+fi
+
+# Device resolution, most explicit first: -d beats UNICOACH_SIMULATOR, which
+# beats the destination's own `name=<...>` / `id=<...>` component (the simulator
+# the target already names, so the common case needs no extra configuration).
+# simctl accepts either a device name or a UDID, so the resolved string is
+# passed through as-is. Mirrors bin/install-ios's resolve_device.
+resolve_device() {
+  if [ -n "${DEVICE_OPT:-}" ]; then
+    echo "$DEVICE_OPT"
+    return 0
+  fi
+  if [ -n "${UNICOACH_SIMULATOR:-}" ]; then
+    echo "$UNICOACH_SIMULATOR"
+    return 0
+  fi
+  # Both extractions are anchored to a destination COMPONENT boundary (start of
+  # string, or a comma) so a key that merely ENDS in the one we want —
+  # `devicename=`, `udid=` — cannot be mistaken for it. The value runs to the
+  # end of the destination or the next comma-separated key.
+  local device
+  device="$(printf '%s' "$UNICOACH_DESTINATION" | sed -nE 's/^.*(^|,)name=([^,]*).*/\2/p')"
+  if [ -z "$device" ]; then
+    # The standard Xcode form `platform=iOS Simulator,id=<UDID>` names the
+    # simulator by UDID instead, which simctl takes just as happily as a name.
+    device="$(printf '%s' "$UNICOACH_DESTINATION" | sed -nE 's/^.*(^|,)id=([^,]*).*/\2/p')"
+  fi
+  if [ -z "$device" ]; then
+    fatal "Cannot resolve a simulator: no -d given, UNICOACH_SIMULATOR is unset, and UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] carries neither a 'name=' nor an 'id=' component (this is why prod-simulator needs an explicit device). Pass -d <device>, set UNICOACH_SIMULATOR to a device name or UDID (xcrun simctl list devices), or add name=<device> or id=<UDID> to the destination."
+  fi
+  echo "$device"
+}
+
+DEVICE="$(resolve_device)"
+
+# PRODUCTS_DIR defaults to the DerivedData products tree; UNICOACH_PRODUCTS_DIR
+# overrides it (used by bin/ios-scripts-tests to stage a fixture .app).
+# bin/build-ios's -derivedDataPath owns this location: change it there and the
+# miss below reads as "not built yet" rather than "looked in the wrong place".
+PRODUCTS_DIR="${UNICOACH_PRODUCTS_DIR:-$PROJECT_ROOT/ios-app/build/DerivedData/Build/Products}"
+APP="$PRODUCTS_DIR/$UNICOACH_CONFIGURATION-iphonesimulator/UnicoachiOS.app"
+if [ ! -d "$APP" ]; then
+  fatal "Built app not found at [$APP]. Run [bin/build-ios $ENV_NAME] first."
+fi
+
+# Output path. -o wins verbatim; otherwise the file is named for the target and
+# a UTC timestamp so repeated captures never overwrite each other, under
+# UNICOACH_SCREENSHOT_DIR or the gitignored ios-app/build/screenshots.
+if [ -z "$OUT" ]; then
+  SCREENSHOT_DIR="${UNICOACH_SCREENSHOT_DIR:-$PROJECT_ROOT/ios-app/build/screenshots}"
+  OUT="$SCREENSHOT_DIR/$ENV_NAME-$(date -u +%Y%m%dT%H%M%SZ).png"
+fi
+# Absolutise a relative -o against the caller's cwd: the path is echoed on
+# stdout as this script's result, and a relative one would be meaningless to a
+# caller that captured it from a different directory.
+if [[ "$OUT" != /* ]]; then
+  OUT="$PWD/$OUT"
+fi
+mkdir -p "$(dirname "$OUT")"
+
+# Boot. simctl exits non-zero when the device is ALREADY booted ("Unable to boot
+# device in current state: Booted"), which is the normal state on a second run —
+# tolerate exactly that message and fail on anything else (unknown device, etc).
+# That wording is Apple's (CoreSimulator SimError 405), so it can change under us.
+log-info "Booting simulator [$DEVICE]..."
+BOOT_ERROR=""
+if ! BOOT_ERROR="$(xcrun simctl boot "$DEVICE" 2>&1)"; then
+  if [[ "$BOOT_ERROR" != *"current state: Booted"* ]]; then
+    fatal "Failed to boot simulator [$DEVICE]: [$BOOT_ERROR]. Check the device exists (xcrun simctl list devices), or set UNICOACH_SIMULATOR to one that does."
+  fi
+  log-info "Simulator [$DEVICE] is already booted; continuing."
+fi
+
+# Every simctl invocation below has its stdout redirected to stderr: simctl
+# chatters on stdout (bootstatus "Monitoring boot status...", launch
+# "<bundle>: <pid>", io "Wrote screenshot to: ..."), and this script's stdout is
+# reserved for its RESULT — the PNG path — so $(...) returns a usable path and
+# not five lines of progress. The chatter is still visible, on stderr with the
+# rest of the logging.
+
+# -b blocks until the device finishes booting, so the install/launch below do not
+# race the boot.
+log-info "Waiting for simulator [$DEVICE] to finish booting..."
+xcrun simctl bootstatus "$DEVICE" -b >&2 \
+  || fatal "Failed waiting for simulator [$DEVICE] to finish booting (xcrun simctl bootstatus). Check the simulator is responsive (xcrun simctl list devices), or shut it down and retry (xcrun simctl shutdown \"$DEVICE\")."
+
+log-info "Installing [$APP] to simulator [$DEVICE]..."
+xcrun simctl install "$DEVICE" "$APP" >&2 \
+  || fatal "Failed to install [$APP] to simulator [$DEVICE] (xcrun simctl install). Rebuild the app for the simulator ([bin/build-ios $ENV_NAME]) and retry."
+
+# Terminate any running instance first. `simctl launch` does NOT relaunch an app
+# that is already running (and `simctl install` over a running app does not
+# restart it), so without this a second run would capture the OLD process —
+# stale code, and the `--` launch args silently ignored. `|| true` because
+# terminate fails when nothing is running, which is the normal first-run case.
+xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+# `${LAUNCH_ARGS[@]+"${LAUNCH_ARGS[@]}"}` (not `"${LAUNCH_ARGS[@]}"`) because an
+# empty array is an unbound-variable error under bash 3.2 + `set -u` — see the
+# argv-split block above.
+log-info "Launching [$BUNDLE_ID] on simulator [$DEVICE]..."
+xcrun simctl launch "$DEVICE" "$BUNDLE_ID" ${LAUNCH_ARGS[@]+"${LAUNCH_ARGS[@]}"} >&2 \
+  || fatal "Failed to launch [$BUNDLE_ID] on simulator [$DEVICE] (xcrun simctl launch). Check the app installed cleanly and the launch arguments after '--' are ones the app accepts."
+
+# Settle wait: launch returns as soon as the process exists, well before the
+# first screen has rendered, so a capture taken immediately shows a blank window.
+log-info "Waiting [$WAIT] seconds for the app to settle..."
+sleep "$WAIT"
+
+log-info "Capturing screenshot to [$OUT]..."
+# Remove any previous file at this path first: with a stable -o the guard below
+# must prove THIS run wrote the screenshot, not that an earlier one left a file.
+rm -f "$OUT"
+xcrun simctl io "$DEVICE" screenshot "$OUT" >&2 \
+  || fatal "Failed to capture a screenshot to [$OUT] from simulator [$DEVICE] (xcrun simctl io). Check the simulator is responsive (xcrun simctl list devices) and that [$OUT] is writable, then retry."
+
+# simctl can exit 0 having written nothing (e.g. a device that went unresponsive),
+# so the caller's $(...) never returns a path to a file that does not exist.
+if [ ! -f "$OUT" ]; then
+  fatal "simctl reported success but no screenshot was written at [$OUT] by simulator [$DEVICE]. Check the simulator is responsive (xcrun simctl list devices) and retry."
+fi
+
+# The result, and the only thing on stdout.
+echo "$OUT"

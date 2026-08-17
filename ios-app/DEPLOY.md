@@ -4,11 +4,12 @@ This guide covers building, signing, and installing the `UnicoachiOS` app on a
 registered physical iPhone for on-device testing. The simulator workflow needs
 none of this — see [UnicoachiOSTests/TESTING.md](UnicoachiOSTests/TESTING.md).
 
-The two scripts here run under **system Xcode**, not the Nix dev shell. Do not
-wrap them in `nix develop`; just run `bin/build-ios` / `bin/install-ios`
-directly. Both call `bin/is-nix` and refuse to run if launched inside the dev
-shell, because there `xcrun` is shadowed by a stub and `DEVELOPER_DIR`/`SDKROOT`
-point into the Nix store — silently targeting the wrong toolchain.
+The scripts here run under **system Xcode**, not the Nix dev shell. Do not wrap
+them in `nix develop`; just run `bin/build-ios` / `bin/install-ios` (and
+`bin/release-ios` / `bin/screenshot-ios`, below) directly. Both call
+`bin/is-nix` and refuse to run if launched inside the dev shell, because there
+`xcrun` is shadowed by a stub and `DEVELOPER_DIR`/`SDKROOT` point into the Nix
+store — silently targeting the wrong toolchain.
 
 ## Named build targets
 
@@ -323,6 +324,31 @@ against the live backend) and differs in three deliberate ways:
 The build targets the live `https://api.uni.coach` deployment under the existing
 `NSAllowsArbitraryLoads` ATS exception — no transport-security change, same as
 the `prod` device build.
+
+## Simulator screenshots: `bin/screenshot-ios`
+
+Everything above targets a physical iPhone. For a **simulator** screenshot — the
+artifact a UI review is judged from — use `bin/screenshot-ios`, the simulator
+sibling of `bin/install-ios`:
+
+```sh
+bin/build-ios simulator          # once, or after any code change
+bin/rest-server-up               # else you capture the app's offline screen
+bin/screenshot-ios simulator     # prints the PNG path on stdout
+```
+
+It boots the target's simulator, installs the built `.app`, terminates any stale
+instance, launches, waits for the first screen to render, and writes
+`ios-app/build/screenshots/<target>-<UTC timestamp>.png` (under the gitignored
+`build/` tree). The path is the only thing on stdout, so a caller can capture it
+with `OUT=$(bin/screenshot-ios simulator)`; all progress goes to stderr.
+
+Like its siblings it runs under **system Xcode** and refuses inside the dev
+shell. It is simulator-only — the inverse of `install-ios`'s device-only guard.
+`-o` writes an exact path, `-w` tunes the settle wait, `-d` picks a simulator by
+name or UDID (needed for a target such as `prod-simulator`, whose destination
+names no device), and anything after `--` is forwarded to `xcrun simctl launch`
+— the seam for driving the app to a particular screen before the capture.
 
 ## Troubleshooting
 

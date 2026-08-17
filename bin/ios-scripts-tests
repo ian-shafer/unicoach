@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ios-scripts-tests exercises bin/is-nix, bin/build-ios, bin/install-ios, and
-# bin/release-ios WITHOUT any real Xcode build or hardware. xcodebuild and xcrun
-# are shimmed onto
+# ios-scripts-tests exercises bin/is-nix, bin/build-ios, bin/install-ios,
+# bin/release-ios, and bin/screenshot-ios WITHOUT any real Xcode build, hardware,
+# or booted simulator. xcodebuild and xcrun are shimmed onto
 # PATH via a temp dir; the shims record their argv to a file the assertions
 # inspect. The ios-app/env/<env>.env files are pointed at a temp fixture dir via
 # UNICOACH_ENV_DIR, and the repo .env (the APP_DOMAIN/SERVER_PORT source) is
@@ -36,7 +36,10 @@ ENV_DIR="$WORK/env"
 PRODUCTS_DIR="$WORK/products"
 ARGV_LOG="$WORK/argv.log"
 DOTENV="$WORK/dotenv"
-mkdir -p "$SHIM_DIR" "$ENV_DIR" "$PRODUCTS_DIR"
+# Where screenshot-ios writes its default-named PNGs in tests (redirected out of
+# the real repo via UNICOACH_SCREENSHOT_DIR).
+SCREENSHOT_DIR="$WORK/screenshots"
+mkdir -p "$SHIM_DIR" "$ENV_DIR" "$PRODUCTS_DIR" "$SCREENSHOT_DIR"
 
 # --- Shims -------------------------------------------------------------------
 # xcodebuild: record every arg (one per line) prefixed with "xcodebuild", succeed.
@@ -48,7 +51,24 @@ EOF
 
 # xcrun: record argv, succeed. For "devicectl list devices" it prints whatever
 # the per-test DEVICECTL_LIST_OUTPUT fixture file holds, so device auto-detect
-# can be driven to 0/1/2 devices without hardware.
+# can be driven to 0/1/2 devices without hardware. Two simctl behaviours are
+# modelled for screenshot-ios:
+#   - "simctl io <device> screenshot <path>" TOUCHES <path>, so the script's
+#     post-capture existence check sees a real file (the shim is the only thing
+#     that could ever create one here).
+#   - "simctl boot" fails with the REAL already-booted text when the per-test
+#     SIMCTL_BOOT_BOOTED fixture var is set, which is how the tolerate-booted
+#     rule is exercised without a booted simulator; with SIMCTL_BOOT_FAIL it
+#     fails with an unknown-device error instead, the case that must be FATAL.
+#   - SIMCTL_NO_WRITE makes "simctl io ... screenshot" exit 0 WITHOUT creating
+#     the file, the "reported success but wrote nothing" case.
+#   - SIMCTL_INSTALL_FAIL makes "simctl install" fail with simctl's own stderr
+#     and its raw exit status (164), the unhandled-sub-tool-failure case.
+# The simctl subcommands also emit their real STDOUT chatter (bootstatus's
+# progress, launch's "<bundle>: <pid>", io's "Wrote screenshot to: ..."), which
+# is what makes screenshot-ios's "the PNG path is the only line on stdout"
+# contract testable at all: without it every redirection could be deleted and
+# the suite would stay green.
 cat > "$SHIM_DIR/xcrun" <<EOF
 #!/usr/bin/env bash
 { echo "xcrun"; for a in "\$@"; do echo "\$a"; done; } >> "$ARGV_LOG"
@@ -56,6 +76,42 @@ if [ "\${1:-}" = "devicectl" ] && [ "\${2:-}" = "list" ] && [ "\${3:-}" = "devic
   if [ -n "\${DEVICECTL_LIST_OUTPUT:-}" ] && [ -f "\${DEVICECTL_LIST_OUTPUT}" ]; then
     cat "\${DEVICECTL_LIST_OUTPUT}"
   fi
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "boot" ] && [ -n "\${SIMCTL_BOOT_BOOTED:-}" ]; then
+  # Verbatim simctl wording, including its exit code, so the script's tolerance
+  # is pinned to the real string it must match.
+  echo "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405):" >&2
+  echo "Unable to boot device in current state: Booted" >&2
+  exit 149
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "boot" ] && [ -n "\${SIMCTL_BOOT_FAIL:-}" ]; then
+  # A boot failure that is NOT the already-booted state: verbatim simctl wording
+  # for a device that does not exist.
+  echo "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=161):" >&2
+  echo "Invalid device: \${3:-}" >&2
+  exit 164
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "install" ] && [ -n "\${SIMCTL_INSTALL_FAIL:-}" ]; then
+  # A sub-tool failure with simctl's own wording AND its raw exit status, which
+  # lands inside this repo's reserved 10-29 usage band — the collision the
+  # script's own || fatal exists to prevent.
+  echo "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405):" >&2
+  echo "Unable to install app: \${4:-}" >&2
+  exit 164
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "bootstatus" ]; then
+  echo "Monitoring boot status for device \${3:-}."
+  echo "Device already booted, nothing to do."
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "launch" ]; then
+  echo "\${4:-}: 1234"
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "io" ] && [ "\${4:-}" = "screenshot" ]; then
+  # SIMCTL_NO_WRITE models simctl exiting 0 having written nothing.
+  if [ -z "\${SIMCTL_NO_WRITE:-}" ]; then
+    : > "\${5:-/dev/null}"
+  fi
+  echo "Wrote screenshot to: \${5:-}"
 fi
 exit 0
 EOF
@@ -70,6 +126,21 @@ EOF
 
 cat > "$ENV_DIR/device.env" <<'EOF'
 UNICOACH_DESTINATION="generic/platform=iOS"
+EOF
+
+# A simulator target that names its device by UDID instead of by name — the
+# standard `platform=iOS Simulator,id=<UDID>` form Xcode itself writes. simctl
+# accepts a UDID, so this must resolve rather than dead-end in the
+# cannot-resolve fatal.
+cat > "$ENV_DIR/id-simulator.env" <<'EOF'
+UNICOACH_DESTINATION="platform=iOS Simulator,id=AAAABBBB-CCCC-DDDD-EEEE-FFFF00001111"
+EOF
+
+# A destination carrying a decoy key that merely ENDS in `name=`, before the
+# real one: the extraction must be anchored to a component boundary, not match
+# `devicename=` (or the LAST name= regardless of where the component starts).
+cat > "$ENV_DIR/decoy-name-simulator.env" <<'EOF'
+UNICOACH_DESTINATION="platform=iOS Simulator,devicename=Bogus Lead,name=iPhone 99 Real,simdevicename=Bogus Tail"
 EOF
 
 # Target fixtures that set an EXPLICIT UNICOACH_BACKEND_URL (honor path). The
@@ -152,6 +223,13 @@ stage_built_app() {
   mkdir -p "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app"
 }
 
+# Stage a Debug-iphonesimulator UnicoachiOS.app so screenshot-ios finds a built
+# app. A separate helper because the two scripts look under DIFFERENT SDK
+# subdirectories — staging one must never satisfy the other's check.
+stage_built_simulator_app() {
+  mkdir -p "$PRODUCTS_DIR/Debug-iphonesimulator/UnicoachiOS.app"
+}
+
 # App Store Connect API credentials fixture for release-ios upload tests, plus
 # the .p8 key file release-ios checks for existence.
 ASC_KEY_ID="KEYID123"
@@ -219,6 +297,44 @@ run_release() {
     UNICOACH_BUILD_NUMBER="${RELEASE_BUILD_NUMBER-7}" \
     ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/release-ios" "$@"
+}
+
+# Run screenshot-ios with the shims first on PATH, the env fixtures and staged
+# products in play, and the default screenshot destination redirected into the
+# temp work dir so no test ever writes into the real repo. SIMCTL_BOOT_BOOTED
+# (empty unless a case sets it) drives the xcrun shim's already-booted failure,
+# and SIMULATOR_OVERRIDE, when set, becomes UNICOACH_SIMULATOR for that one
+# invocation — mirroring the ${DEV_SHELL_MARKER:+...} form so an unset override
+# contributes no argument at all (rather than an empty one that would read as
+# "explicitly set to nothing").
+run_screenshot() {
+  reset_log
+  env PATH="$SHIM_DIR:$PATH" \
+    UNICOACH_ENV_DIR="$ENV_DIR" \
+    UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
+    UNICOACH_SCREENSHOT_DIR="$SCREENSHOT_DIR" \
+    SIMCTL_BOOT_BOOTED="${SIMCTL_BOOT_BOOTED:-}" \
+    SIMCTL_BOOT_FAIL="${SIMCTL_BOOT_FAIL:-}" \
+    SIMCTL_NO_WRITE="${SIMCTL_NO_WRITE:-}" \
+    SIMCTL_INSTALL_FAIL="${SIMCTL_INSTALL_FAIL:-}" \
+    ${SIMULATOR_OVERRIDE:+UNICOACH_SIMULATOR="$SIMULATOR_OVERRIDE"} \
+    ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
+    "$PROJECT_ROOT/bin/screenshot-ios" "$@"
+}
+
+# Run screenshot-ios against the REAL ios-app/env directory (no UNICOACH_ENV_DIR
+# override), so the checked-in targets themselves are under test. Everything
+# else is still redirected: the .app is the staged fixture and the PNG lands in
+# the temp screenshot dir, so this needs no build and writes nothing into the
+# repo. UNICOACH_SIMULATOR is explicitly cleared — an inherited one would
+# resolve the device and hide a broken checked-in destination.
+run_screenshot_real_env() {
+  reset_log
+  env -u UNICOACH_ENV_DIR -u UNICOACH_SIMULATOR \
+    PATH="$SHIM_DIR:$PATH" \
+    UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
+    UNICOACH_SCREENSHOT_DIR="$SCREENSHOT_DIR" \
+    "$PROJECT_ROOT/bin/screenshot-ios" "$@"
 }
 
 # Run bin/is-nix directly, honouring DEV_SHELL_MARKER as the simulated marker.
@@ -845,6 +961,352 @@ test_release_automatic_signing_default() {
   return 0
 }
 
+# ========================== screenshot-ios tests =============================
+
+test_screenshot_guard() {
+  stage_built_simulator_app
+  local out rc
+  out="$(DEV_SHELL_MARKER=1 run_screenshot simulator 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "screenshot-ios" || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  # Guard fires before any tool: no xcrun line recorded.
+  log_no_tool "xcrun"
+}
+
+test_screenshot_guard_precedence_over_missing_env() {
+  # Even with a nonexistent target (which would normally be the failure), the
+  # guard message must win because it precedes env resolution.
+  local out rc
+  out="$(DEV_SHELL_MARKER=1 run_screenshot nonexistent-env 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  if echo "$out" | grep -q "nonexistent-env.env"; then return 1; fi
+  log_no_tool "xcrun"
+}
+
+test_screenshot_missing_env_file() {
+  local out
+  if out="$(run_screenshot nonexistent-env 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "nonexistent-env.env" || return 1
+  log_no_tool "xcrun"
+}
+
+# Simulator-only: the device fixture (destination without "Simulator") is
+# rejected — the exact inverse of install-ios's device-only guard.
+test_screenshot_device_env_rejected() {
+  stage_built_simulator_app
+  local out
+  if out="$(run_screenshot device 2>&1)"; then return 1; fi
+  echo "$out" | grep -qi "simulator" || return 1
+  log_no_tool "xcrun"
+}
+
+test_screenshot_no_built_app() {
+  rm -rf "$PRODUCTS_DIR/Debug-iphonesimulator"
+  local out
+  if out="$(run_screenshot simulator 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "build-ios" || return 1
+  log_no_tool "xcrun"
+}
+
+# Happy path: the full simctl sequence is recorded, and the path printed on
+# stdout names a file that exists under the screenshot dir.
+test_screenshot_happy_path() {
+  stage_built_simulator_app
+  local out
+  out="$(run_screenshot -w 0 simulator 2>/dev/null)" || return 1
+  log_has "simctl" || return 1
+  log_has "boot" || return 1
+  log_has "bootstatus" || return 1
+  log_has "-b" || return 1
+  log_has "install" || return 1
+  log_has "launch" || return 1
+  log_has "coach.uni.UnicoachiOS" || return 1
+  log_has "$PRODUCTS_DIR/Debug-iphonesimulator/UnicoachiOS.app" || return 1
+  log_has "io" || return 1
+  log_has "screenshot" || return 1
+  log_has "$out" || return 1
+  [ -f "$out" ] || return 1
+  case "$out" in "$SCREENSHOT_DIR"/*) ;; *) return 1 ;; esac
+  return 0
+}
+
+# -o wins: that exact path is what simctl is told to write and what is printed.
+test_screenshot_explicit_output_path() {
+  stage_built_simulator_app
+  local target="$WORK/explicit-shot.png"
+  rm -f "$target"
+  local out
+  out="$(run_screenshot -w 0 -o "$target" simulator 2>/dev/null)" || return 1
+  [ "$out" = "$target" ] || return 1
+  log_has "$target" || return 1
+  [ -f "$target" ] || return 1
+  return 0
+}
+
+# Default naming: no -o puts the PNG under UNICOACH_SCREENSHOT_DIR, named for
+# the target, with a .png extension.
+test_screenshot_default_output_dir() {
+  stage_built_simulator_app
+  local out
+  out="$(run_screenshot -w 0 simulator 2>/dev/null)" || return 1
+  case "$out" in "$SCREENSHOT_DIR"/simulator-*.png) ;; *) return 1 ;; esac
+  return 0
+}
+
+# Everything after `--` reaches the launch invocation verbatim: the seam for
+# driving the app to a particular screen before the capture.
+test_screenshot_forwards_launch_args() {
+  stage_built_simulator_app
+  run_screenshot -w 0 simulator -- -UnicoachUITestScreen profile >/dev/null 2>&1 || return 1
+  log_has "launch" || return 1
+  log_has "-UnicoachUITestScreen" || return 1
+  log_has "profile" || return 1
+  return 0
+}
+
+# Device resolution defaults to the destination's name= component, so the
+# committed simulator target needs no extra configuration.
+test_screenshot_device_from_destination_name() {
+  stage_built_simulator_app
+  run_screenshot -w 0 simulator >/dev/null 2>&1 || return 1
+  log_has "iPhone 17 Pro" || return 1
+  # The literal "booted" is deliberately NOT used: a second simulator booted
+  # elsewhere must not be capturable by mistake.
+  log_lacks "booted" || return 1
+  return 0
+}
+
+# UNICOACH_SIMULATOR overrides the destination-derived name.
+test_screenshot_simulator_override() {
+  stage_built_simulator_app
+  SIMULATOR_OVERRIDE="ABCD1234-5678-90EF-1234-567890ABCDEF" \
+    run_screenshot -w 0 simulator >/dev/null 2>&1 || return 1
+  log_has "ABCD1234-5678-90EF-1234-567890ABCDEF" || return 1
+  log_lacks "iPhone 17 Pro" || return 1
+  return 0
+}
+
+# Regression pin for the tolerate-booted rule: `simctl boot` on an
+# already-booted device exits non-zero with "Unable to boot device in current
+# state: Booted", which is the NORMAL state on every run after the first. The
+# capture must still happen.
+test_screenshot_tolerates_already_booted() {
+  stage_built_simulator_app
+  local out
+  out="$(SIMCTL_BOOT_BOOTED=1 run_screenshot -w 0 simulator 2>/dev/null)" || return 1
+  log_has "screenshot" || return 1
+  [ -f "$out" ] || return 1
+  return 0
+}
+
+# Usage errors carry the shared EXIT_* band codes, not a bare 1, so a caller can
+# tell "you invoked it wrongly" from "the capture failed".
+test_screenshot_unknown_option() {
+  local rc=0
+  run_screenshot -Z simulator >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_UNKNOWN_OPTION" ]
+}
+
+test_screenshot_option_requires_value() {
+  local rc=0
+  run_screenshot -o >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_OPTION_REQUIRES_VALUE" ]
+}
+
+test_screenshot_stray_positional() {
+  stage_built_simulator_app
+  local rc=0
+  run_screenshot simulator stray >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_UNEXPECTED_ARG" ]
+}
+
+# The stdout contract: a caller does OUT="$(bin/screenshot-ios simulator)" and
+# must get a usable path. simctl chatters on stdout (the shim reproduces that),
+# so every sub-tool invocation is redirected to stderr; this pins the result.
+test_screenshot_stdout_is_only_the_png_path() {
+  stage_built_simulator_app
+  local out err lines
+  err="$WORK/stdout-contract.err"
+  out="$(run_screenshot -w 0 simulator 2>"$err")" || return 1
+  lines="$(printf '%s\n' "$out" | grep -c .)"
+  [ "$lines" -eq 1 ] || return 1
+  case "$out" in "$SCREENSHOT_DIR"/*.png) ;; *) return 1 ;; esac
+  [ -f "$out" ] || return 1
+  # The chatter is not lost, just moved: it is on stderr with the logging.
+  grep -q "Wrote screenshot to:" "$err" || return 1
+  grep -q "Monitoring boot status" "$err" || return 1
+  return 0
+}
+
+# Warm-run staleness: simctl launch does not relaunch an already-running app (and
+# install over a running app does not restart it), so the capture would show the
+# OLD process and ignore the -- launch args. A terminate must precede the launch.
+test_screenshot_terminates_before_launch() {
+  stage_built_simulator_app
+  run_screenshot -w 0 simulator >/dev/null 2>&1 || return 1
+  local t l
+  t="$(grep -nFx "terminate" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  l="$(grep -nFx "launch" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  [ -n "$t" ] || return 1
+  [ -n "$l" ] || return 1
+  [ "$t" -lt "$l" ] || return 1
+  # simctl terminate <device> <bundle>: the bundle id is two lines on.
+  [ "$(sed -n "$((t + 2))p" "$ARGV_LOG")" = "coach.uni.UnicoachiOS" ] || return 1
+  return 0
+}
+
+# -d is the most explicit device selector and beats BOTH UNICOACH_SIMULATOR and
+# the destination's name=.
+test_screenshot_device_flag_beats_env_and_destination() {
+  stage_built_simulator_app
+  SIMULATOR_OVERRIDE="ENVVAR-1111-2222-3333-444444444444" \
+    run_screenshot -w 0 -d "FLAG-5555-6666-7777-888888888888" simulator >/dev/null 2>&1 || return 1
+  log_has "FLAG-5555-6666-7777-888888888888" || return 1
+  log_lacks "ENVVAR-1111-2222-3333-444444444444" || return 1
+  log_lacks "iPhone 17 Pro" || return 1
+  return 0
+}
+
+# An option written AFTER the target gets advice that can actually help
+# (reorder), not the generic "pass launch arguments after --" dead end.
+test_screenshot_option_after_target() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(run_screenshot simulator -w 10 2>&1)" || rc=$?
+  [ "$rc" -eq "$EXIT_UNEXPECTED_ARG" ] || return 1
+  echo "$out" | grep -q "options must precede the target" || return 1
+  echo "$out" | grep -q "screenshot-ios -w 10 simulator" || return 1
+  return 0
+}
+
+# A boot failure that is NOT the already-booted state is FATAL: the tolerance is
+# for one specific message, not for boot failures in general.
+test_screenshot_boot_failure_is_fatal() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(SIMCTL_BOOT_FAIL=1 run_screenshot -w 0 simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "iPhone 17 Pro" || return 1
+  # Never reached the capture.
+  log_lacks "screenshot" || return 1
+  log_lacks "io" || return 1
+  return 0
+}
+
+# simctl can exit 0 having written nothing; the guard must fire rather than
+# print a path to a file that does not exist.
+test_screenshot_no_file_written_is_fatal() {
+  stage_built_simulator_app
+  # An explicit -o to a path this case controls: the default name is only
+  # timestamped to the second, so a PNG another case wrote in the same second
+  # would satisfy the existence check and hide the missing guard.
+  #
+  # A STALE file is planted at that path deliberately — with a stable -o that is
+  # exactly the real-world shape of the hole: simctl exits 0 writing nothing and
+  # the previous run's capture is printed as this run's result. The script
+  # removes the file itself immediately before the capture, so the guard proves
+  # THIS run wrote it. (That is also why this case no longer needs its own
+  # rm -f: deleting the script's rm -f fails this case.)
+  local target="$WORK/never-written.png"
+  echo "stale capture from a previous run" > "$target"
+  local out rc=0
+  out="$(SIMCTL_NO_WRITE=1 run_screenshot -w 0 -o "$target" simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "no screenshot was written" || return 1
+  [ ! -f "$target" ] || return 1
+  return 0
+}
+
+# The zero-config default against the REAL ios-app/env: `screenshot-ios` with no
+# arguments beyond the target must resolve a device from the checked-in
+# simulator.env. An edit dropping its name= component (as prod-simulator's
+# destination already lacks) would dead-end in the cannot-resolve fatal — this
+# case fails then, rather than the breakage being found by hand.
+test_screenshot_real_simulator_target_resolves_device() {
+  stage_built_simulator_app
+  local out device
+  out="$(run_screenshot_real_env -w 0 simulator 2>/dev/null)" || return 1
+  [ -f "$out" ] || return 1
+  case "$out" in "$SCREENSHOT_DIR"/*) ;; *) return 1 ;; esac
+  # The device simctl was handed: the argv line after "boot".
+  device="$(grep -A1 -Fx "boot" "$ARGV_LOG" | sed -n '2p')"
+  [ -n "$device" ] || return 1
+  [ "$device" != "booted" ] || return 1
+  return 0
+}
+
+# An EMPTY -d is a mistake, not a selection: `screenshot-ios -d "$SIM" ...`
+# with SIM unset would otherwise read as "no -d given" and quietly capture a
+# different simulator.
+test_screenshot_empty_device_value() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(run_screenshot -w 0 -d "" simulator 2>&1)" || rc=$?
+  [ "$rc" -eq "$EXIT_INVALID_ARG_VALUE" ] || return 1
+  echo "$out" | grep -q -- "-d" || return 1
+  log_no_tool "xcrun"
+}
+
+# Same for an empty -o, which would otherwise silently fall back to the default
+# timestamped path instead of the file the caller meant to write.
+test_screenshot_empty_output_value() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(run_screenshot -w 0 -o "" simulator 2>&1)" || rc=$?
+  [ "$rc" -eq "$EXIT_INVALID_ARG_VALUE" ] || return 1
+  echo "$out" | grep -q -- "-o" || return 1
+  log_no_tool "xcrun"
+}
+
+# A sub-tool failure must surface as THIS script's fatal with a sane exit
+# status, not as simctl's bare stderr plus its raw exit code (164 here), which
+# collides with the reserved 10-29 usage band a caller reads for "invoked
+# wrongly".
+test_screenshot_install_failure_is_fatal() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(SIMCTL_INSTALL_FAIL=1 run_screenshot -w 0 simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  [ "$rc" -lt 10 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -q "Failed to install" || return 1
+  echo "$out" | grep -q "iPhone 17 Pro" || return 1
+  # Never reached the capture.
+  log_lacks "screenshot" || return 1
+  return 0
+}
+
+# The standard `platform=iOS Simulator,id=<UDID>` destination resolves, and that
+# UDID is the device simctl is handed.
+test_screenshot_device_from_destination_id() {
+  stage_built_simulator_app
+  run_screenshot -w 0 id-simulator >/dev/null 2>&1 || return 1
+  log_has "AAAABBBB-CCCC-DDDD-EEEE-FFFF00001111" || return 1
+  log_lacks "booted" || return 1
+  return 0
+}
+
+# The extraction is anchored to a component boundary: a decoy key that merely
+# ENDS in `name=` must not be mistaken for the real one — the decoys sit on both
+# sides of it, so neither a key-unanchored match nor a greedy last-match wins.
+test_screenshot_device_ignores_decoy_name_key() {
+  stage_built_simulator_app
+  run_screenshot -w 0 decoy-name-simulator >/dev/null 2>&1 || return 1
+  log_has "iPhone 99 Real" || return 1
+  log_lacks "Bogus Lead" || return 1
+  log_lacks "Bogus Tail" || return 1
+  return 0
+}
+
+test_screenshot_help_exits_zero() {
+  local out rc=0
+  out="$(run_screenshot -h 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  echo "$out" | grep -q "screenshot-ios"
+}
+
 # Note: run_install/run_build wrappers reset the argv log; export the
 # DEVICECTL_LIST_OUTPUT / DEV_SHELL_MARKER through the env of the wrapper call above.
 
@@ -907,5 +1369,35 @@ assert_success "release-ios: derives build number from HEAD commit count" test_r
 assert_success "release-ios: deploy target derives https://api.\$APP_DOMAIN from .env.prod" test_release_deploy_derives_https
 assert_success "release-ios: manual signing when a provisioning profile is named" test_release_manual_signing_with_profile
 assert_success "release-ios: automatic signing by default (no profile)" test_release_automatic_signing_default
+
+# screenshot-ios
+assert_success "screenshot-ios: dev-shell guard fires, no xcrun line" test_screenshot_guard
+assert_success "screenshot-ios: dev-shell guard precedes env resolution (nonexistent target)" test_screenshot_guard_precedence_over_missing_env
+assert_success "screenshot-ios: missing env file fails, names the missing file" test_screenshot_missing_env_file
+assert_success "screenshot-ios: device target rejected (simulator-only)" test_screenshot_device_env_rejected
+assert_success "screenshot-ios: no built .app fails, directs to build-ios" test_screenshot_no_built_app
+assert_success "screenshot-ios: boots, installs, launches, and captures a real file" test_screenshot_happy_path
+assert_success "screenshot-ios: -o writes and prints that exact path" test_screenshot_explicit_output_path
+assert_success "screenshot-ios: default output lands in the screenshot dir as .png" test_screenshot_default_output_dir
+assert_success "screenshot-ios: args after -- are forwarded to simctl launch" test_screenshot_forwards_launch_args
+assert_success "screenshot-ios: device resolves from the destination's name=, not 'booted'" test_screenshot_device_from_destination_name
+assert_success "screenshot-ios: UNICOACH_SIMULATOR overrides the destination name" test_screenshot_simulator_override
+assert_success "screenshot-ios: an already-booted simulator still captures" test_screenshot_tolerates_already_booted
+assert_success "screenshot-ios: unknown option fails with the usage-band code" test_screenshot_unknown_option
+assert_success "screenshot-ios: option missing its value fails with the usage-band code" test_screenshot_option_requires_value
+assert_success "screenshot-ios: stray positional fails with the usage-band code" test_screenshot_stray_positional
+assert_success "screenshot-ios: an option after the target says to reorder, not to use --" test_screenshot_option_after_target
+assert_success "screenshot-ios: stdout is EXACTLY the PNG path despite simctl chatter" test_screenshot_stdout_is_only_the_png_path
+assert_success "screenshot-ios: terminates the running app before launching (no stale capture)" test_screenshot_terminates_before_launch
+assert_success "screenshot-ios: -d beats UNICOACH_SIMULATOR and the destination name" test_screenshot_device_flag_beats_env_and_destination
+assert_success "screenshot-ios: a non-booted boot failure is fatal and skips the capture" test_screenshot_boot_failure_is_fatal
+assert_success "screenshot-ios: simctl exiting 0 with no file written is fatal" test_screenshot_no_file_written_is_fatal
+assert_success "screenshot-ios: the checked-in simulator target resolves a device (real env)" test_screenshot_real_simulator_target_resolves_device
+assert_success "screenshot-ios: an empty -d value is rejected, not read as absent" test_screenshot_empty_device_value
+assert_success "screenshot-ios: an empty -o value is rejected, not read as absent" test_screenshot_empty_output_value
+assert_success "screenshot-ios: a simctl install failure is this script's fatal, not simctl's raw code" test_screenshot_install_failure_is_fatal
+assert_success "screenshot-ios: device resolves from the destination's id=<UDID>" test_screenshot_device_from_destination_id
+assert_success "screenshot-ios: a decoy devicename= key does not win over the real name=" test_screenshot_device_ignores_decoy_name_key
+assert_success "screenshot-ios: -h prints help and exits 0" test_screenshot_help_exits_zero
 
 end_tests
