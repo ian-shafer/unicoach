@@ -79,14 +79,28 @@ line. Record it: `ship-state -s <rs> set APPROVED yes`. Do not ask again.
 
 ### 4. implement
 
-Delegate to a child with an explicit write-scope allowlist. On return:
+Delegate to a child. State its write-scope as a **deny list**, not an allowlist:
 
-    scripts/ship-verify-scope -s <rs> -f "$BASE_SHA" <allow-globs>...
-    scripts/ship-checkpoint  -s <rs> impl 1 -m "..."
+    scripts/ship-verify-scope -s <rs> -f "$BASE_SHA" \
+      -d '.claude/*' -d '.prime/agent/skills/ship/*'
+    scripts/ship-checkpoint -s <rs> impl 1 -m "..."
 
-A violation is a reset to the last checkpoint, not a negotiation. Take the
-child's report at face value; re-verify only where **nothing** reported — a
-stall, a kill, or a hand edit.
+**Do not hand an implementation dispatch a strict allowlist.** A small required
+edit to an unlisted wiring, config, or fixture file is normal engineering, and
+failing the run over it only forces a worse change that stays inside the lines.
+Enforce absolutely where it is mechanical -- never touch the Claude Code
+workflow, never edit this skill from inside a run -- and leave "is this
+footprint consistent with the design?" to review, where the answer may be _widen
+the design_ rather than _revert_. Reserve allow-globs for a genuinely narrow
+dispatch (a docs-only fix, a single-file rename).
+
+A deny hit is a reset to the last checkpoint. Everything else is a review
+question. Take the child's report at face value; re-verify only where
+**nothing** reported -- a stall, a kill, or a hand edit.
+
+An opportunistic improvement the design never mandated is not blocked here. It
+is surfaced at review as scope creep and consciously kept or reverted -- silent
+blocking loses a real insight, silent acceptance compounds drift.
 
 ### 5. verify
 

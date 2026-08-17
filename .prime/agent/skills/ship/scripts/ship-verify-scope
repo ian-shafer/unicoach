@@ -1,26 +1,57 @@
 #!/usr/bin/env bash
-# ship-verify-scope — assert a phase's write footprint is a SUBSET of its
-# declared allowlist. Violation is a reset, not a negotiation.
+# ship-verify-scope — assert a dispatched unit's write footprint.
+#
+# TWO MODES, AND THE DEFAULT IS THE LOOSE ONE.
+#
+#   deny  (-d GLOB, repeatable)  a path matching any deny glob is a violation
+#   allow (positional GLOBs)     if given, EVERY path must match one
+#
+# Deny-only is the default posture for an implementation dispatch, and allow
+# globs are reserved for a genuinely narrow one (a docs-only fix, a single-file
+# rename) where "only this file" really is the contract.
+#
+# WHY NOT A STRICT ALLOWLIST EVERYWHERE. There are two different questions
+# here. "Did the agent write somewhere it must NEVER write?" is mechanical, has
+# a short stable answer, and belongs at dispatch. "Is this footprint consistent
+# with the design?" is judgement and belongs at review, where the outcome can be
+# `widen the design doc` rather than only `revert`. A strict allowlist forces a
+# mechanical answer to the judgement question: it can only say FAIL, so a small
+# required edit to an unlisted wiring or config file -- the kind sound
+# engineering routinely makes -- either fails the run or pushes the agent into a
+# worse change that stays inside the lines. Enforce absolutely at dispatch;
+# negotiate at review.
 set -euo pipefail
 
 fatal() { echo "[FATAL] $*" >&2; exit 1; }
 
 help() {
   cat << 'EOF'
-ship-verify-scope -s <run-scratch> -f <from-sha> <allow-glob>...
+ship-verify-scope -s <run-scratch> -f <from-sha> [-d deny-glob]... [allow-glob]...
 
 Compares the changed-file set between <from-sha> and HEAD (plus the working
-tree) against the allowlist. Exits non-zero and lists offenders if any changed
-path matches no glob.
+tree) against the declared scope.
+
+  -d GLOB   deny: matching this path is a violation. Repeatable.
+  GLOB...   allow: when any are given, every changed path must match one.
+            Omit them for deny-only checking (the default for implementation).
+
+Exits 0 within scope; 1 with the offending paths on stderr.
+
+Typical implementation dispatch (deny-only):
+  ship-verify-scope -s "$RS" -f "$BASE_SHA" -d '.claude/*' -d '.prime/agent/skills/ship/*'
+
+Narrow dispatch (allowlist):
+  ship-verify-scope -s "$RS" -f "$BASE_SHA" 'ios-app/DESIGN.md'
 EOF
   exit "${1:-0}"
 }
 
-RUN_SCRATCH="" FROM=""
-while getopts ":s:f:h" opt; do
+RUN_SCRATCH="" FROM="" DENY=()
+while getopts ":s:f:d:h" opt; do
   case "$opt" in
     s) RUN_SCRATCH="$OPTARG" ;;
     f) FROM="$OPTARG" ;;
+    d) DENY+=("$OPTARG") ;;
     h) help 0 ;;
     \?) fatal "unknown option [-$OPTARG]" ;;
     :) fatal "option [-$OPTARG] requires an argument" ;;
@@ -29,7 +60,8 @@ done
 shift $((OPTIND - 1))
 [ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
 [ -n "$FROM" ] || fatal "-f <from-sha> is required"
-[ "$#" -gt 0 ] || fatal "at least one allow-glob is required"
+
+ALLOW=("$@")
 
 # shellcheck disable=SC1090
 . "$RUN_SCRATCH/state"
@@ -38,10 +70,26 @@ cd "$CODEBASE_ROOT"
 changed="$( { git diff --name-only "$FROM" HEAD; git diff --name-only HEAD; git ls-files --others --exclude-standard; } | sort -u )"
 
 violations=0
+checked=0
 while read -r path; do
   [ -n "$path" ] || continue
+  checked=$((checked + 1))
+
+  for glob in ${DENY[@]+"${DENY[@]}"}; do
+    # shellcheck disable=SC2053
+    if [[ "$path" == $glob ]]; then
+      echo "DENIED: $path (matches deny glob '$glob')" >&2
+      violations=$((violations + 1))
+      continue 2
+    fi
+  done
+
+  # Allow globs are optional. With none declared, the deny list above is the
+  # whole contract and anything it did not catch is in scope.
+  [ "${#ALLOW[@]}" -gt 0 ] || continue
+
   ok=0
-  for glob in "$@"; do
+  for glob in "${ALLOW[@]}"; do
     # shellcheck disable=SC2053
     [[ "$path" == $glob ]] && { ok=1; break; }
   done
@@ -55,4 +103,4 @@ if [ "$violations" -gt 0 ]; then
   echo "[FATAL] $violations path(s) outside the declared write-scope" >&2
   exit 1
 fi
-echo "write-scope OK ($(echo "$changed" | grep -c . ) path(s))"
+echo "write-scope OK ($checked path(s) checked)"
