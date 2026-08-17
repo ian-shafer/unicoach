@@ -17,7 +17,7 @@ restart.
 non-comment line, optionally preceded only by an `export ENV_FILE=…` /
 `export ENV_FILES=…` selector. Exempt: the system-Xcode scripts (`build-ios`,
 `install-ios`, `release-ios`, `ios-scripts-tests`) and `is-nix`, which run
-outside the Nix dev shell and source only `bin/functions`.
+outside the unicoach dev shell and source only `bin/functions`.
 
 **Why:** `bin/common` is where the shared setup lives — `set -euo pipefail`,
 `PROJECT_ROOT`, the loaded `.env` plus deltas, and required vars like `PGPORT`.
@@ -68,10 +68,10 @@ surface).
 **Why:** A caller distinguishes "you typed it wrong" from "the system said no"
 only by the code. Reusing `1` for a usage error collapses it into operational
 failures — a stray argument to `postgres-check` reads as "postgres down", to
-`is-nix` as "not in the dev shell" — silently, since both are consumed in `if`
-guards with stderr suppressed. A reserved band keeps the two classes disjoint;
-the converse — an operational outcome in 10–29 — is equally forbidden, which is
-why `file-lock`'s matching-op fast-fail uses the operational code `3`.
+`is-nix` as "not in the unicoach dev shell" — silently, since both are consumed
+in `if` guards with stderr suppressed. A reserved band keeps the two classes
+disjoint; the converse — an operational outcome in 10–29 — is equally forbidden,
+which is why `file-lock`'s matching-op fast-fail uses the operational code `3`.
 
 ### Don't forward `"$@"`/`"$*"` as a child's argument vector
 

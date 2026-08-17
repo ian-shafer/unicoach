@@ -689,20 +689,21 @@ test_db_status_f_parses() {
 }
 assert_success "db-status -f value option is accepted (parses)" test_db_status_f_parses
 
-# 4. Clustering and the -q guard. is-nix -qv is accepted (exits per dev-shell
-#    predicate, not a parse error). is-nix -q is the exact form bin/pre-commit's
-#    nix-guard uses; inside the dev shell it exits 0.
+# 4. Clustering and the -q guard. is-nix -qv is accepted (exits per the
+#    unicoach-dev-shell predicate — UNICOACH_DEV_SHELL, set by this repo's
+#    flake.nix — not a parse error). is-nix -q is the exact form bin/pre-commit's
+#    nix-guard uses; inside the unicoach dev shell it exits 0.
 test_is_nix_qv_no_parse_error() {
   bin/is-nix -qv >/dev/null 2>&1
-  # 0 = in nix shell, 1 = not; both are valid predicate outcomes. A parse error
+  # 0 = in the unicoach dev shell, 1 = not; both are valid predicate outcomes. A parse error
   # would route through fatal (also exit 1) but print a [FATAL] message — assert
   # the absence of that message instead.
   ! bin/is-nix -qv 2>&1 | grep -q '\[FATAL\]'
 }
 assert_success "is-nix -qv clusters without a parse error" test_is_nix_qv_no_parse_error
 test_is_nix_q_in_shell() {
-  # This harness runs inside the dev shell, so the nix guard must succeed (exit 0)
-  # — the exact predicate bin/pre-commit relies on.
+  # This harness runs inside the unicoach dev shell, so the nix guard must
+  # succeed (exit 0) — the exact predicate bin/pre-commit relies on.
   bin/is-nix -q
 }
 assert_success "is-nix -q exits 0 inside the dev shell (pre-commit nix-guard)" test_is_nix_q_in_shell

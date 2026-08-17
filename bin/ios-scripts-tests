@@ -13,10 +13,13 @@
 set -euo pipefail
 
 # Make happy-path cases deterministic even when this harness is itself launched
-# via `nix develop -c`: clear the inside-Nix marker. "Inside Nix" is simulated
-# per-invocation by prefixing a script call with IN_NIX_SHELL=impure (an
-# external-command assignment, so it scopes to that child only).
-unset IN_NIX_SHELL
+# via `nix develop -c`: clear unicoach's dev-shell marker. "Inside the dev
+# shell" is simulated per-invocation by prefixing a script call with
+# UNICOACH_DEV_SHELL=impure (an external-command assignment, so it scopes to
+# that child only). IN_NIX_SHELL is deliberately LEFT ALONE: this harness is
+# typically launched via `nix develop -c`, and an inherited IN_NIX_SHELL with no
+# marker is exactly the foreign-shell environment the is-nix cases pin.
+unset UNICOACH_DEV_SHELL
 
 THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$THIS_DIR/.." && pwd)"
@@ -179,10 +182,11 @@ EOF
 reset_log() { : > "$ARGV_LOG"; }
 
 # Run a bin script with the shims first on PATH and env/products overrides set.
-# IN_NIX is honoured to simulate the dev shell for the guard cases: when set, it
-# is exported into the child as IN_NIX_SHELL ONLY for that invocation.
-# nix_prefix emits the `env`-style argument that simulates the dev shell for a
-# single child: `IN_NIX_SHELL=<IN_NIX>` when IN_NIX is set, nothing otherwise.
+# DEV_SHELL_MARKER is honoured to simulate the dev shell for the guard cases:
+# when set, it is exported into the child as UNICOACH_DEV_SHELL (the marker
+# bin/is-nix keys on) ONLY for that invocation. The expansion below emits the
+# `env`-style argument `UNICOACH_DEV_SHELL=<DEV_SHELL_MARKER>` when
+# DEV_SHELL_MARKER is set, nothing otherwise.
 # `env -u` cannot be used unconditionally because the harness already unset the
 # var; the empty expansion simply contributes no argument.
 run_build() {
@@ -190,7 +194,7 @@ run_build() {
   env PATH="$SHIM_DIR:$PATH" \
     UNICOACH_ENV_DIR="$ENV_DIR" \
     UNICOACH_DOTENV="$DOTENV" \
-    ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} \
+    ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/build-ios" "$@"
 }
 run_install() {
@@ -199,7 +203,7 @@ run_install() {
     UNICOACH_ENV_DIR="$ENV_DIR" \
     UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
     DEVICECTL_LIST_OUTPUT="${DEVICECTL_LIST_OUTPUT:-}" \
-    ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} \
+    ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/install-ios" "$@"
 }
 # Run release-ios with the shims first on PATH, artifacts redirected into a temp
@@ -213,13 +217,35 @@ run_release() {
     UNICOACH_DOTENV="$DOTENV" \
     UNICOACH_BUILD_DIR="$RELEASE_BUILD_DIR" \
     UNICOACH_BUILD_NUMBER="${RELEASE_BUILD_NUMBER-7}" \
-    ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} \
+    ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/release-ios" "$@"
 }
 
-# Run bin/is-nix directly, honouring IN_NIX as the simulated marker.
+# Run bin/is-nix directly, honouring DEV_SHELL_MARKER as the simulated marker.
+# IN_NIX_SHELL is unset here so the marker is the ONLY variable in play: this
+# harness inherits IN_NIX_SHELL when launched via `nix develop -c`, which would
+# otherwise silently route the marker-absent cases through is-nix's foreign-shell
+# branch and make them assert a different message than they name. The other two
+# states have their own wrappers below, which set IN_NIX_SHELL back.
 run_is_nix() {
-  env ${IN_NIX:+IN_NIX_SHELL="$IN_NIX"} "$PROJECT_ROOT/bin/is-nix" "$@"
+  env -u IN_NIX_SHELL ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} "$PROJECT_ROOT/bin/is-nix" "$@"
+}
+
+# Run bin/is-nix in a FOREIGN Nix shell: IN_NIX_SHELL set, unicoach's marker
+# absent — the false positive RFC 114 exists to kill. A named helper so all
+# three environment states this suite drives (unicoach shell, no shell, foreign
+# shell) are CONSTRUCTED by a wrapper rather than assembled inline per case,
+# where an omitted `env -u` silently reclassifies the case under test.
+run_is_nix_foreign_shell() {
+  env -u UNICOACH_DEV_SHELL IN_NIX_SHELL=impure "$PROJECT_ROOT/bin/is-nix" "$@"
+}
+
+# Run bin/is-nix in the REAL dev-shell environment: both the marker and
+# IN_NIX_SHELL set, exactly as `nix develop` leaves it. run_is_nix deliberately
+# unsets IN_NIX_SHELL to isolate the marker, so without this helper the state
+# every developer is actually in would be the one state never exercised.
+run_is_nix_unicoach_shell() {
+  env UNICOACH_DEV_SHELL=1 IN_NIX_SHELL=impure "$PROJECT_ROOT/bin/is-nix" "$@"
 }
 
 # Assert a literal line is present in the recorded argv log. `--` guards patterns
@@ -239,7 +265,7 @@ export_option_has() { grep -Fq -e "$1" "$EXPORT_OPTIONS_PLIST"; }
 
 test_isnix_quiet_inside() {
   local out
-  out="$(IN_NIX=impure run_is_nix -q 2>&1)" && local rc=0 || local rc=$?
+  out="$(DEV_SHELL_MARKER=1 run_is_nix -q 2>&1)" && local rc=0 || local rc=$?
   [ "$rc" -eq 0 ] || return 1
   [ -z "$out" ] || return 1
   return 0
@@ -255,21 +281,60 @@ test_isnix_quiet_outside() {
 
 test_isnix_default_inside() {
   local out rc
-  out="$(IN_NIX=impure run_is_nix 2>&1)" && rc=0 || rc=$?
+  out="$(DEV_SHELL_MARKER=1 run_is_nix 2>&1)" && rc=0 || rc=$?
   [ "$rc" -eq 0 ] || return 1
-  echo "$out" | grep -q "nix enabled"
+  echo "$out" | grep -q "unicoach dev shell active"
 }
 
 test_isnix_default_outside() {
   local out rc
   out="$(run_is_nix 2>&1)" && rc=0 || rc=$?
   [ "$rc" -eq 1 ] || return 1
-  echo "$out" | grep -q "nix NOT enabled"
+  # -x (whole line): is-nix's three status lines are disjoint, so a substring
+  # match would also be correct here — the whole-line form additionally pins the
+  # `(no Nix shell)` qualifier that KEEPS them disjoint, so deleting it as
+  # redundant fails this case rather than silently loosening two others.
+  echo "$out" | grep -qx "unicoach dev shell NOT active (no Nix shell)"
+}
+
+# Precedence: in a real `nix develop` shell BOTH variables are set. The marker
+# must take precedence — if the IN_NIX_SHELL branch were tested first, every developer
+# in the actual dev shell would be told a foreign shell was active.
+test_isnix_marker_takes_precedence_over_in_nix_shell() {
+  local out rc
+  out="$(run_is_nix_unicoach_shell 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  echo "$out" | grep -qx "unicoach dev shell active"
+}
+
+# The regression pin for RFC 114: a foreign flake's shell sets IN_NIX_SHELL but
+# not unicoach's marker, and must NOT read as the dev shell. Under the old
+# IN_NIX_SHELL-keyed predicate this exited 0.
+test_isnix_foreign_shell_quiet() {
+  local out rc
+  out="$(run_is_nix_foreign_shell -q 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] || return 1
+  [ -z "$out" ] || return 1
+  return 0
+}
+
+# Same environment, non-quiet: the status line names the foreign shell and does
+# not claim the unicoach shell is active.
+test_isnix_foreign_shell_message() {
+  local out rc
+  out="$(run_is_nix_foreign_shell 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -eq 1 ] || return 1
+  echo "$out" | grep -qx "unicoach dev shell NOT active (a different Nix shell is active)" || return 1
+  ! echo "$out" | grep -q "unicoach dev shell active"
 }
 
 test_isnix_verbose_lists_packages() {
   local out rc
-  out="$(IN_NIX_SHELL=impure nativeBuildInputs="/nix/store/abc123-foo-1.0 /nix/store/def456-bar-2.0" \
+  # Built inline rather than via run_is_nix_unicoach_shell: this case also has to
+  # inject a FIXTURE nativeBuildInputs, and the real dev shell exports a real one
+  # that would otherwise leak in and add packages to the listing.
+  out="$(env -u IN_NIX_SHELL UNICOACH_DEV_SHELL=1 \
+    nativeBuildInputs="/nix/store/abc123-foo-1.0 /nix/store/def456-bar-2.0" \
     "$PROJECT_ROOT/bin/is-nix" -v 2>&1)" && rc=0 || rc=$?
   [ "$rc" -eq 0 ] || return 1
   echo "$out" | grep -qx "foo-1.0" || return 1
@@ -289,7 +354,7 @@ test_isnix_bogus_option() {
 test_build_guard_simulator() {
   write_dotenv ""   # localhost default
   local out rc
-  out="$(IN_NIX=impure run_build simulator 2>&1)" && rc=0 || rc=$?
+  out="$(DEV_SHELL_MARKER=1 run_build simulator 2>&1)" && rc=0 || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "build-ios" || return 1
   echo "$out" | grep -qi "system Xcode" || return 1
@@ -301,7 +366,7 @@ test_build_guard_precedence_over_missing_env() {
   # Even with a nonexistent env (which would normally be the failure), the guard
   # message must win because it precedes env resolution.
   local out rc
-  out="$(IN_NIX=impure run_build nonexistent-env 2>&1)" && rc=0 || rc=$?
+  out="$(DEV_SHELL_MARKER=1 run_build nonexistent-env 2>&1)" && rc=0 || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -qi "system Xcode" || return 1
   # Must NOT be the missing-env message.
@@ -313,7 +378,7 @@ test_install_guard_device() {
   write_signing_env
   stage_built_app
   local out rc
-  out="$(IN_NIX=impure run_install device 2>&1)" && rc=0 || rc=$?
+  out="$(DEV_SHELL_MARKER=1 run_install device 2>&1)" && rc=0 || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "install-ios" || return 1
   echo "$out" | grep -qi "system Xcode" || return 1
@@ -622,7 +687,7 @@ test_release_guard_device() {
   write_signing_env
   write_appstore_env
   local out rc
-  out="$(IN_NIX=impure run_release explicit-device 2>&1)" && rc=0 || rc=$?
+  out="$(DEV_SHELL_MARKER=1 run_release explicit-device 2>&1)" && rc=0 || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "release-ios" || return 1
   echo "$out" | grep -qi "system Xcode" || return 1
@@ -781,13 +846,16 @@ test_release_automatic_signing_default() {
 }
 
 # Note: run_install/run_build wrappers reset the argv log; export the
-# DEVICECTL_LIST_OUTPUT / IN_NIX through the env of the wrapper call above.
+# DEVICECTL_LIST_OUTPUT / DEV_SHELL_MARKER through the env of the wrapper call above.
 
 # is-nix
-assert_success "is-nix: -q inside Nix exits 0 with no output" test_isnix_quiet_inside
-assert_success "is-nix: -q outside Nix exits 1 with no output" test_isnix_quiet_outside
-assert_success "is-nix: default inside Nix exits 0, says 'nix enabled'" test_isnix_default_inside
-assert_success "is-nix: default outside Nix exits 1, says 'nix NOT enabled'" test_isnix_default_outside
+assert_success "is-nix: -q inside the unicoach dev shell exits 0 with no output" test_isnix_quiet_inside
+assert_success "is-nix: -q outside the unicoach dev shell exits 1 with no output" test_isnix_quiet_outside
+assert_success "is-nix: default inside exits 0, says 'unicoach dev shell active'" test_isnix_default_inside
+assert_success "is-nix: default outside exits 1, says 'unicoach dev shell NOT active'" test_isnix_default_outside
+assert_success "is-nix: the marker takes precedence when IN_NIX_SHELL is also set" test_isnix_marker_takes_precedence_over_in_nix_shell
+assert_success "is-nix: -q in a foreign Nix shell exits 1 with no output" test_isnix_foreign_shell_quiet
+assert_success "is-nix: a foreign Nix shell is named in the status line" test_isnix_foreign_shell_message
 assert_success "is-nix: -v lists package names with the <hash>- stripped" test_isnix_verbose_lists_packages
 assert_success "is-nix: unknown option fails with an unknown-option message" test_isnix_bogus_option
 

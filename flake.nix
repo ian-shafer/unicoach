@@ -12,6 +12,11 @@
         pkgs = nixpkgs.legacyPackages.${system};
       in {
         devShells.default = pkgs.mkShell {
+          # Identifies THIS flake's shell. bin/is-nix keys on this rather than
+          # on IN_NIX_SHELL, which nix sets for any flake's shell and so cannot
+          # tell unicoach's toolchain from an unrelated project's.
+          UNICOACH_DEV_SHELL = "1";
+
           packages = [
             # JVM — replaces eclipse-temurin:21-jdk Docker image.
             # Temurin is the recommended OpenJDK distribution for production workloads.

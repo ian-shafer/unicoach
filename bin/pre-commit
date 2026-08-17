@@ -34,8 +34,14 @@ fi
 # "deno: command not found" / "Unable to locate a Java Runtime". This is the
 # is-nix guard the iOS scripts use, in the opposite direction: they refuse inside
 # the dev shell, pre-commit refuses outside it.
-if ! "$PROJECT_ROOT/bin/is-nix" -q; then
-  fatal "pre-commit must run inside the Nix dev shell. Commit via 'nix develop -c git commit ...' or from a 'nix develop' shell."
+# Deliberately NOT -q: is-nix's status line names which of the three states it
+# found, and the confusing one — a different flake's shell, none of this
+# toolchain in it (RFC 114) — is invisible under -q, which is what left an
+# operator staring at "not in the dev shell" from inside an active Nix shell.
+# Called once and branched on directly, so no outcome is discarded; the cost is
+# one confirming line on the happy path.
+if ! "$PROJECT_ROOT/bin/is-nix"; then
+  fatal "pre-commit must run inside the unicoach Nix dev shell. Commit via 'nix develop -c git commit ...' or from a 'nix develop' shell."
 fi
 
 log-info "Running pre-commit checks concurrently..."
