@@ -69,3 +69,9 @@ Skip a lens whose subject cannot appear in the change. A bash-only change does
 not need `code-review-structured-payloads`; a markdown-only change needs almost
 none. Record which lenses were skipped and why in the run's findings directory —
 a skipped lens must be visible in the report, never silent.
+
+State the reason **once** for the whole skipped set when it is one reason, e.g.
+`{"reason": "...", "lenses": [...]}`, rather than copying the same sentence onto
+every entry. One shared justification is easier to challenge than twenty
+identical ones, and a lens that needs its own reason is exactly the one worth
+reading.

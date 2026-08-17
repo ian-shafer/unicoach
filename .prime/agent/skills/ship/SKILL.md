@@ -46,13 +46,34 @@ claim → design → APPROVE → implement → verify → land → report
     scripts/ship-claim   -l rfc|quick [-s slug]     # worktree + branch + state
     scripts/ship-state   -s <rs> get|set|show       # run facts, on disk
     scripts/ship-checkpoint -s <rs> <phase> [i]     # WIP commit + ledger
-    scripts/ship-verify-scope -s <rs> -f <sha> GLOB...
+    scripts/ship-verify-scope -s <rs> -f <sha> [-d deny]... [allow]...
     scripts/ship-squash  -s <rs>                    # collapse WIP to staged
     scripts/ship-verified record|check|assert       # the CI stand-in
     scripts/ship-land    -s <rs>                    # assert, ff-merge, teardown
 
 Run every script with `-h` for its contract. **Read the run state from disk
 after any compaction — never from memory.**
+
+### The run is on disk, not in this session
+
+Your context is the least durable thing in the run: compaction is silent, and it
+takes the coordinator rather than a worker. So every phase boundary writes two
+things before the next phase starts.
+
+**Advance `PHASE` on entering each phase**, so a resumed session re-enters where
+the run actually is:
+
+    scripts/ship-state -s <rs> set PHASE designing|approved|implementing|verifying|landing|complete
+
+**Checkpoint at every phase boundary**, not only during implementation, and name
+the checkpoint for the phase it closes:
+
+    scripts/ship-checkpoint -s <rs> before-verify
+    scripts/ship-checkpoint -s <rs> before-land
+
+A run that lands with `PHASE=implementing` had a working outcome and a lying
+state file; the next resumed run believes it. Treat a stale `PHASE` as a defect,
+not untidiness.
 
 ### 1. claim
 
@@ -104,15 +125,28 @@ blocking loses a real insight, silent acceptance compounds drift.
 
 ### 5. verify
 
+`ship-state -s <rs> set PHASE verifying`, then
+`ship-checkpoint -s <rs> before-verify`.
+
 See [`references/review.md`](references/review.md). Order matters and is not
 negotiable: **Tier 0 → 1 → 2 → 3**, sequential, because each tier's fixes move
 the tree the next tier reviews. Parallelise _within_ a tier only.
+
+Persist as you go, one file per lens, so a stall costs one lens rather than the
+tier: `<rs>/findings/lens-plan.json` (ran + skipped, with the skip reason) and
+`<rs>/findings/tier<N>-<lens>.md`. Record the write-scope result too —
+`ship-verify-scope … | tee <rs>/findings/write-scope.txt` — so the archive shows
+the check ran, not merely that nobody complained.
 
 Then the real gate — `nix develop -c bin/test` — and, for any UI change,
 screenshots as artifacts (see
 [`references/visual-gate.md`](references/visual-gate.md)).
 
 ### 6. land
+
+`ship-state -s <rs> set PHASE landing`, then
+`ship-checkpoint -s <rs> before-land`. Write the report (phase 7) **first**:
+`ship-land` deletes the worktree.
 
     scripts/ship-squash -s <rs>
     nix develop -c bin/format
@@ -125,10 +159,16 @@ approval where this skill wakes Ian.
 
 ### 7. report
 
+**Write `<rs>/report.md` BEFORE calling `ship-land`** — the worktree is deleted
+at landing, and a report that exists only in this session dies with it. Then
+give Ian the same content in chat.
+
 RFC number/slug, landed SHAs with `--stat`, what was built, per-tier findings
 applied/discarded, the test counts actually executed, and **open items** — every
 finding the review declined to decide. Point at
 `.scratch/ship-archive/<run-id>/`.
+
+Finish with `ship-state -s <rs> set PHASE complete`.
 
 ## What this shares with Claude Code, and how
 
