@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# ship-recover — reset a run's worktree back to a checkpoint in its ledger.
+#
+# WHY A LEDGER TARGET AND NOT AN ARBITRARY SHA. Checkpoints exist so a stalled
+# or rogue phase costs one unit of work rather than the run (see
+# ship-checkpoint), and this is the script that collects on that. Restricting
+# the target to a row of <run-scratch>/checkpoints.log is what makes the reset
+# safe to run without thinking: every such sha was produced by this run, in this
+# worktree, at a known phase boundary. A hand-picked sha has none of those
+# properties, so it is out of scope by design — checkpoint first, then recover.
+#
+# WHY WE RECORD THE DISCARDED TIP. `reset --hard` leaves the old tip reachable
+# only through the reflog, which is per-worktree, expiring, and gone entirely
+# once ship-land removes the worktree. So the old HEAD is written to the run
+# state as RECOVERED_FROM and a `recover` row is appended to the ledger: the
+# discard is a fact of the run's history, not a local git detail.
+set -euo pipefail
+
+log-info() { echo "$@" >&2; }
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+help() {
+  cat << 'EOF'
+ship-recover -s <run-scratch> [-c <sha>] [-n <back>] [-l] [-N]
+
+Resets CODEBASE_ROOT to a checkpoint recorded in <run-scratch>/checkpoints.log
+and removes the untracked files added since it.
+
+  -c <sha>   target this checkpoint (a ledger sha, or a unique prefix of one)
+  -n <back>  target N rows back from the last (0 = last). Excludes -c.
+  -l         list the ledger with indices and exit
+  -N         dry run: print what WOULD be discarded, change nothing
+
+Default target is the last ledger row. Refuses a sha that is not in the ledger
+or not an ancestor of HEAD.
+EOF
+  exit "${1:-0}"
+}
+
+RUN_SCRATCH="" TARGET_SHA="" BACK="" LIST=0 DRYRUN=0
+while getopts ":s:c:n:lNh" opt; do
+  case "$opt" in
+    s) RUN_SCRATCH="$OPTARG" ;;
+    c) TARGET_SHA="$OPTARG" ;;
+    n) BACK="$OPTARG" ;;
+    l) LIST=1 ;;
+    N) DRYRUN=1 ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ "$#" -eq 0 ] || fatal "ship-recover takes no positional arguments: $*"
+[ -n "$RUN_SCRATCH" ] || fatal "-s <run-scratch> is required"
+[ -z "$TARGET_SHA" ] || [ -z "$BACK" ] || fatal "-c and -n are mutually exclusive"
+[ -z "$BACK" ] || [[ "$BACK" =~ ^[0-9]+$ ]] || fatal "-n takes a non-negative integer: $BACK"
+
+LEDGER="$RUN_SCRATCH/checkpoints.log"
+[ -f "$LEDGER" ] || fatal "no checkpoint ledger at [$LEDGER] — nothing to recover to"
+[ -s "$LEDGER" ] || fatal "checkpoint ledger [$LEDGER] is empty — nothing to recover to"
+
+# Read rows without mapfile: /usr/bin/env bash is bash 3.2 on macOS.
+ROWS=()
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  ROWS+=("$line")
+done < "$LEDGER"
+[ "${#ROWS[@]}" -gt 0 ] || fatal "checkpoint ledger [$LEDGER] has no rows"
+
+if [ "$LIST" -eq 1 ]; then
+  i=0
+  for row in "${ROWS[@]}"; do
+    back=$(( ${#ROWS[@]} - 1 - i ))
+    printf '%2d  (-n %d)  %s\n' "$i" "$back" "$(echo "$row" | tr '\t' ' ')"
+    i=$((i + 1))
+  done
+  exit 0
+fi
+
+# shellcheck disable=SC1090
+. "$RUN_SCRATCH/state"
+[ -n "${CODEBASE_ROOT:-}" ] || fatal "state has no CODEBASE_ROOT"
+cd "$CODEBASE_ROOT"
+
+# Resolve the target to a full ledger sha.
+if [ -n "$TARGET_SHA" ]; then
+  matches=()
+  for row in "${ROWS[@]}"; do
+    sha="${row%%$'\t'*}"
+    case "$sha" in "$TARGET_SHA"*) matches+=("$sha") ;; esac
+  done
+  # De-duplicate: the same sha can appear on more than one row (a no-op
+  # checkpoint re-records the existing HEAD), and that is not an ambiguity.
+  uniq_matches="$(printf '%s\n' ${matches[@]+"${matches[@]}"} | sort -u)"
+  count="$(printf '%s' "$uniq_matches" | grep -c . || true)"
+  [ "$count" -ge 1 ] || fatal "[$TARGET_SHA] is not a checkpoint in [$LEDGER] — recover targets must be checkpoints"
+  [ "$count" -eq 1 ] || fatal "[$TARGET_SHA] matches $count checkpoints — give more characters"
+  TARGET="$uniq_matches"
+  ROW_DESC="$(grep -m1 "^$TARGET" "$LEDGER" | tr '\t' ' ')"
+else
+  idx=$(( ${#ROWS[@]} - 1 - ${BACK:-0} ))
+  [ "$idx" -ge 0 ] || fatal "-n ${BACK} goes past the start of the ledger (${#ROWS[@]} row(s))"
+  row="${ROWS[$idx]}"
+  TARGET="${row%%$'\t'*}"
+  ROW_DESC="$(echo "$row" | tr '\t' ' ')"
+fi
+
+git rev-parse --verify --quiet "${TARGET}^{commit}" > /dev/null ||
+  fatal "checkpoint [$TARGET] is not a commit in [$CODEBASE_ROOT]"
+
+OLD_HEAD="$(git rev-parse HEAD)"
+
+# Recovery only ever goes BACKWARDS. A non-ancestor target means the ledger and
+# this worktree disagree about which history they are on (a rebase, a squash, a
+# different run's scratch) — resetting there would not be a recovery, it would
+# be a jump to unrelated code.
+git merge-base --is-ancestor "$TARGET" HEAD ||
+  fatal "checkpoint [$TARGET] is not an ancestor of HEAD ($OLD_HEAD) — refusing"
+
+if [ "$TARGET" = "$OLD_HEAD" ]; then
+  log-info "HEAD is already at checkpoint $TARGET"
+fi
+
+echo "run            ${RUN_ID:-?} ($CODEBASE_ROOT)"
+echo "HEAD           $OLD_HEAD"
+echo "target         $ROW_DESC"
+echo
+echo "commits to discard:"
+git log --oneline "$TARGET..HEAD" | sed 's/^/  /' || true
+[ -n "$(git log --oneline "$TARGET..HEAD")" ] || echo "  (none)"
+echo
+echo "untracked files to remove:"
+# -nd only: see the git clean below for why -x is never used.
+git clean -nd | sed 's/^/  /' || true
+[ -n "$(git clean -nd)" ] || echo "  (none)"
+echo
+if [ -n "$(git status --porcelain)" ]; then
+  echo "working tree   DIRTY — modifications below will also be discarded"
+  git status --short | sed 's/^/  /'
+else
+  echo "working tree   clean"
+fi
+echo
+
+if [ "$DRYRUN" -eq 1 ]; then
+  log-info "dry run (-N): nothing changed"
+  exit 0
+fi
+
+# Record the discarded tip BEFORE it becomes unreachable. After the reset the
+# only other trace is the reflog, which dies with the worktree at land time.
+"$SCRIPT_DIR/ship-state" -s "$RUN_SCRATCH" set RECOVERED_FROM "$OLD_HEAD"
+
+git reset --hard "$TARGET"
+
+# NEVER pass -x. .scratch/ is gitignored (ship-claim asserts it), so `-x` would
+# delete this run's state file and the very ledger this script just read — the
+# recover would destroy the ability to recover again. -fd removes only the
+# untracked-but-not-ignored files the discarded work created.
+git clean -fd
+
+printf '%s\t%s\t%s\t%s\n' "$TARGET" "recover" "0" "reset from $OLD_HEAD" >> "$LEDGER"
+
+log-info "Recovered [${RUN_ID:-?}] to $TARGET (was $OLD_HEAD)"
+log-info "Discarded tip recorded as RECOVERED_FROM in $RUN_SCRATCH/state"
+echo "$TARGET"

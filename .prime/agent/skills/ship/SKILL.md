@@ -46,6 +46,8 @@ claim → design → APPROVE → implement → verify → land → report
     scripts/ship-claim   -l rfc|quick [-s slug]     # worktree + branch + state
     scripts/ship-state   -s <rs> get|set|show       # run facts, on disk
     scripts/ship-checkpoint -s <rs> <phase> [i]     # WIP commit + ledger
+    scripts/ship-status  [-p]                       # find live runs, no args
+    scripts/ship-recover -s <rs> [-c sha|-n back]   # reset to a checkpoint
     scripts/ship-verify-scope -s <rs> -f <sha> [-d deny]... [allow]...
     scripts/ship-squash  -s <rs>                    # collapse WIP to staged
     scripts/ship-verified record|check|assert       # the CI stand-in
@@ -74,6 +76,20 @@ the checkpoint for the phase it closes:
 A run that lands with `PHASE=implementing` had a working outcome and a lying
 state file; the next resumed run believes it. Treat a stale `PHASE` as a defect,
 not untidiness.
+
+**Resuming a run.** A compacted session cannot pass `-s <rs>` — the run scratch
+was the first thing it forgot. So start from the one script that asks for
+nothing:
+
+    scripts/ship-status                    # live runs: id, phase, branch, paths
+    scripts/ship-state -s <rs> show        # re-read the facts
+    # then re-enter at PHASE
+
+`ship-status` discovers runs from git's own worktree list, so it works from
+anywhere in the repo and needs no arguments precisely because a compacted
+session has none. `ship-status -p` prints bare `RUN_SCRATCH` paths to paste into
+the other scripts. Re-enter at the `PHASE` on disk, not at the phase you
+remember.
 
 ### 1. claim
 
@@ -115,9 +131,9 @@ footprint consistent with the design?" to review, where the answer may be _widen
 the design_ rather than _revert_. Reserve allow-globs for a genuinely narrow
 dispatch (a docs-only fix, a single-file rename).
 
-A deny hit is a reset to the last checkpoint. Everything else is a review
-question. Take the child's report at face value; re-verify only where
-**nothing** reported -- a stall, a kill, or a hand edit.
+A deny hit is a reset to the last checkpoint — `scripts/ship-recover -s <rs>`.
+Everything else is a review question. Take the child's report at face value;
+re-verify only where **nothing** reported -- a stall, a kill, or a hand edit.
 
 An opportunistic improvement the design never mandated is not blocked here. It
 is surfaced at review as scope creep and consciously kept or reverted -- silent
