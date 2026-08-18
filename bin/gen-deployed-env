@@ -23,7 +23,21 @@
 # unicoach_env_file needs PROJECT_ROOT + fatal from bin/functions, but bin/common
 # (which sets PROJECT_ROOT) reads ENV_FILE at source time — so resolve the path
 # from bin/functions first, using this script's own dir, then hand it to common.
-GEN_DEPLOYED_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The prelude runs before bin/common, so it must set its own shell options:
+# bin/functions is a library and deliberately sets none. Without errexit the gap
+# is unguarded, because `fatal` inside a `$(...)` exits only the SUBSHELL — a
+# failed resolve would leave the variable empty and let the script run on to die
+# later on a missing key, printing a second misleading fatal and exiting with
+# that symptom's code instead of the real one's.
+set -euo pipefail
+
+# Handled explicitly rather than left to errexit: `fatal` comes from bin/functions,
+# which cannot be sourced until this line has located it, so an errexit abort here
+# would be the script's only silent exit.
+GEN_DEPLOYED_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+  echo "[FATAL] cannot resolve the project root from [${BASH_SOURCE[0]}]" >&2
+  exit 1
+}
 source "$GEN_DEPLOYED_ENV_ROOT/bin/functions"
 
 UNICOACH_ENV="${1:-}"
