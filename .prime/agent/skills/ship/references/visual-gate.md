@@ -13,20 +13,40 @@ they exist.
 ## Capture
 
 iOS scripts run under **system Xcode**, not the Nix dev shell (`bin/is-nix`
-guards this in both directions). Existing siblings: `bin/build-ios`,
-`bin/install-ios`, `bin/release-ios`, `bin/ios-scripts-tests`.
+guards this in both directions). The family: `bin/build-ios`, `bin/install-ios`,
+`bin/release-ios`, `bin/screenshot-ios`, all shim-tested by
+`bin/ios-scripts-tests` — which `bin/test` does NOT run, since it needs system
+Xcode. The pre-commit gate is blind to these scripts; a real run is the only
+evidence they work.
 
-`bin/screenshot-ios` **does not exist yet** — it is the first planned `ship`
-run. Intended shape, next to `install-ios` but driving a simulator:
+`bin/screenshot-ios` is the capture tool (landed by the `ship/screenshot-ios`
+run; `ios-app/DEPLOY.md` documents it):
 
-    xcrun simctl boot "<device>"
-    xcrun simctl install booted "<app-path-under-ios-app/build/DerivedData>"
-    xcrun simctl launch booted coach.uni.UnicoachiOS
-    xcrun simctl io booted screenshot <out.png>
+    bin/build-ios simulator             # after any code change
+    bin/rest-server-up                  # else you capture the offline screen
+    OUT=$(bin/screenshot-ios simulator) # the PNG path is the ONLY stdout line
 
-A bare launch only ever reaches the login screen. Deeper screens need XCUITest
-launch arguments; `ios-app` has **no UI tests** today, so that harness is part
-of the same work.
+It boots the target's simulator, installs the build, **terminates any running
+instance**, launches, waits for the first screen, and writes
+`ios-app/build/screenshots/<target>-<UTC>.png`. `-o` sets an exact path, `-w`
+the settle wait, `-d` a simulator by name or UDID.
+
+Two of its behaviours are load-bearing here and were bought with real defects,
+so do not "simplify" them away:
+
+- It drives an **explicitly resolved device**, never the literal `booted`, so a
+  second simulator booted elsewhere cannot be captured by mistake.
+- It terminates before launching, because `simctl launch` does not relaunch an
+  already-running app: without it a second run silently screenshots the OLD
+  process — stale code that looks perfectly plausible.
+
+The app talks to the backend baked in at build time, so with nothing serving
+locally the capture is the app's "No Connection" state, not a real screen.
+
+A bare launch only ever reaches the first screen. Deeper screens need XCUITest
+launch arguments — anything after `--` is forwarded to `simctl launch`, which is
+the seam — but `ios-app` still has **no UI tests**, so that harness remains
+unbuilt.
 
 ## Judging
 
