@@ -121,6 +121,7 @@ class EmailSendE2eTest {
             BudgetConfig.from(config).getOrThrow(),
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
+            testAppleNotificationVerifier(),
           )
         }
 

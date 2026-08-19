@@ -22,4 +22,10 @@ class JobTypeTest {
     assertEquals(JobType.SEND_EMAIL, JobType.fromValue("SEND_EMAIL"))
     assertEquals("SEND_EMAIL", JobType.SEND_EMAIL.value)
   }
+
+  @Test
+  fun `REFRESH_SUBSCRIPTION round-trips through fromValue`() {
+    assertEquals(JobType.REFRESH_SUBSCRIPTION, JobType.fromValue("REFRESH_SUBSCRIPTION"))
+    assertEquals("REFRESH_SUBSCRIPTION", JobType.REFRESH_SUBSCRIPTION.value)
+  }
 }

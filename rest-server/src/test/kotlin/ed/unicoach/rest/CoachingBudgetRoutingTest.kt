@@ -142,6 +142,7 @@ class CoachingBudgetRoutingTest {
             budgetConfig,
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
+            testAppleNotificationVerifier(),
           )
         }
       testServer.start(wait = false)

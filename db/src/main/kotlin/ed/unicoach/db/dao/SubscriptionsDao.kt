@@ -34,9 +34,9 @@ sealed interface SubscriptionUpsert {
 /**
  * Data-access layer over the versioned `subscriptions` entity (RFC 110).
  * Stateless `object`, one [SqlSession] per call, transaction boundaries owned
- * by the caller. Every mutation source funnels through [upsert] (the verify
- * path now, the Notifications-V2 webhook later), so the versioning trigger pair
- * captures both. The `version` bump is DAO-supplied in the conflict arm, never
+ * by the caller. Every mutation source funnels through [upsert] — the verify
+ * path and the Notifications-V2 webhook's refresh alike — so the versioning
+ * trigger pair captures both. The `version` bump is DAO-supplied in the conflict arm, never
  * caller-supplied — versions are an audit trail here, not caller-facing
  * concurrency control.
  */
@@ -142,7 +142,7 @@ object SubscriptionsDao {
         map = ::mapSubscription,
       ).map { it.firstOrNull() }
 
-  /** Lookup by Apple's key; the webhook RFC's entry point, and test support. */
+  /** Lookup by Apple's key; the webhook refresh's entry point, and test support. */
   fun findByOriginalTransactionId(
     session: SqlSession,
     originalTransactionId: String,

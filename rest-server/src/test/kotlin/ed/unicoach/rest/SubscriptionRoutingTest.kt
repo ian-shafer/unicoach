@@ -68,8 +68,9 @@ import kotlin.test.assertTrue
  * end to end (RFC 110), against a real server whose `appModule` is wired with a
  * real [AppStoreServerApi] over a per-test swappable scripted transport: the
  * route's arm mapping, the row the happy path records, and the two e2e flows
- * the app will live until the webhook RFC — the entitlement flip on first
- * verify, and the verify-driven period rollover.
+ * verify itself owns — the entitlement flip on first verify, and the rollover a
+ * re-verify applies. Renewals no longer depend on that re-verify: the webhook
+ * (RFC 112) carries them, and [AppleNotificationRoutingTest] pins that path.
  */
 class SubscriptionRoutingTest {
   companion object {
@@ -164,6 +165,7 @@ class SubscriptionRoutingTest {
             BudgetConfig.from(config).getOrThrow(),
             AppStoreServerApi(SwappableTransport, AppStoreTestFixtures.authTokens()),
             subscriptionPlansFrom(config),
+            testAppleNotificationVerifier(),
           )
         }
       testServer.start(wait = false)

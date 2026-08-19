@@ -159,6 +159,7 @@ class ConvoExtractionEnqueueTest {
             BudgetConfig.from(config).getOrThrow(),
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
+            testAppleNotificationVerifier(),
           )
         }
       enabledServer.start(wait = false)
@@ -189,6 +190,7 @@ class ConvoExtractionEnqueueTest {
             BudgetConfig.from(config).getOrThrow(),
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
+            testAppleNotificationVerifier(),
           )
         }
       disabledServer.start(wait = false)

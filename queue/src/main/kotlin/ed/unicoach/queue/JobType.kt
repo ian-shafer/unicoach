@@ -21,6 +21,11 @@ enum class JobType(
   // out one FIT_LENS per student, each a two-call college-discovery pass.
   FIT_LENS_SWEEP("FIT_LENS_SWEEP"),
   FIT_LENS("FIT_LENS"),
+
+  // Named for the work, not the trigger (RFC 112): the App Store Server
+  // Notifications V2 webhook enqueues one of these per delivery, and the handler
+  // re-reads authoritative state from Apple rather than believing the notification.
+  REFRESH_SUBSCRIPTION("REFRESH_SUBSCRIPTION"),
   ;
 
   companion object {

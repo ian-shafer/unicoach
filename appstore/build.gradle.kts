@@ -4,6 +4,9 @@ plugins {
 }
 
 dependencies {
+  // DataSize, the shared bound type the notification verifier's MAX_JWS is
+  // expressed in (RFC 112) — the same type SubscriptionService.MAX_JWS uses.
+  implementation(project(":common"))
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.slf4j.api)
@@ -19,6 +22,13 @@ dependencies {
   testFixturesImplementation(testFixtures(project(":common")))
   testFixturesImplementation(libs.kotlinx.serialization.json)
   testFixturesImplementation(libs.java.jwt)
+  testFixturesImplementation(libs.typesafe.config)
+  // Test-only certificate minting (RFC 112): every AppleJwsVerifier case needs a
+  // synthetic X.509 chain — a foreign root, a leaf without the marker OID, an
+  // expired leaf — and nothing in the JDK's public API issues certificates.
+  // Declared here alone, so it never reaches a main or runtime classpath.
+  testFixturesImplementation(libs.bouncycastle.pkix)
+  testFixturesImplementation(libs.bouncycastle.prov)
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)

@@ -7,13 +7,16 @@ import java.io.IOException
 import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
  * Pins [AppStoreServerApi.subscriptionStatus] over the scripted transport (RFC
- * 110): the request it builds, the status mapping, the current-transaction
- * selection, the grace window, and the three-way outcome taxonomy
- * (Found/NotFound/Unavailable vs. bug-grade [Result.failure]).
+ * 110): the request it builds, the transaction-id allowlist guarding its path,
+ * the status mapping, the current-transaction selection, the grace window, and
+ * the three-way outcome taxonomy (Found/NotFound/Unavailable vs. bug-grade
+ * [Result.failure]).
  */
 class AppStoreServerApiTest {
   private fun api(transport: AppStoreTransport): AppStoreServerApi = AppStoreServerApi(transport, AppStoreTestFixtures.authTokens())
@@ -193,15 +196,20 @@ class AppStoreServerApiTest {
         val unavailable = assertIs<AppStoreSubscriptionLookup.Unavailable>(lookup, "HTTP [$status]")
         assertTrue(unavailable.reason.contains("[$status]"), "reason names the status: [${unavailable.reason}]")
         assertTrue(unavailable.reason.contains("trouble"), "reason carries the body: [${unavailable.reason}]")
+        assertNull(unavailable.cause, "a status Apple answered has no throwable behind it")
       }
 
+      val transportFailure = IOException("connection reset")
       val lookup =
-        api(ScriptedAppStoreTransport.throwing(IOException("connection reset")))
+        api(ScriptedAppStoreTransport.throwing(transportFailure))
           .subscriptionStatus("1")
           .getOrThrow()
       val unavailable = assertIs<AppStoreSubscriptionLookup.Unavailable>(lookup, "IO failure")
       assertTrue(unavailable.reason.contains("IOException"), "reason names the exception: [${unavailable.reason}]")
       assertTrue(unavailable.reason.contains("connection reset"), "reason carries the message: [${unavailable.reason}]")
+      // Callers map this onward into a queue verdict's cause, so the throwable
+      // itself has to survive the lookup, not just its message.
+      assertSame(transportFailure, unavailable.cause)
     }
 
   @Test
@@ -209,6 +217,46 @@ class AppStoreServerApiTest {
     runTest {
       val result = api(ScriptedAppStoreTransport.of(200, "not json")).subscriptionStatus("1")
       assertTrue(result.isFailure)
+    }
+
+  @Test
+  fun `a transaction id outside the allowlist is refused before any call`() =
+    runTest {
+      val refused =
+        listOf(
+          "",
+          // The id is interpolated into the request path, so a traversal or a
+          // space is the shape that must never survive this gate.
+          "200000123456789/../../inApps/v1/notifications",
+          "200000123 456789",
+          "200000123456789?x=1",
+          "abc",
+          "9".repeat(33),
+        )
+
+      for (transactionId in refused) {
+        val transport = ScriptedAppStoreTransport.of(200, AppStoreTestFixtures.activeStatusResponseBody())
+
+        val result = api(transport).subscriptionStatus(transactionId)
+
+        val refusal = assertIs<IllegalArgumentException>(result.exceptionOrNull(), "[$transactionId]").message.orEmpty()
+        assertTrue(
+          refusal.contains(AppStoreServerApi.TRANSACTION_ID_PATTERN.pattern),
+          "the refusal names the allowlist it applied: [$refusal]",
+        )
+        assertEquals(0, transport.calls.size, "[$transactionId] never reaches the network")
+      }
+    }
+
+  @Test
+  fun `the allowlist admits the full 32-digit width`() =
+    runTest {
+      val widest = "9".repeat(32)
+      val transport = ScriptedAppStoreTransport.of(200, AppStoreTestFixtures.activeStatusResponseBody())
+
+      api(transport).subscriptionStatus(widest).getOrThrow()
+
+      assertEquals("/inApps/v1/subscriptions/$widest", transport.calls.single().path)
     }
 
   @Test

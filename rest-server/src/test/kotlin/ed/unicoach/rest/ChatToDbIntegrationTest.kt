@@ -122,6 +122,7 @@ class ChatToDbIntegrationTest {
             BudgetConfig.from(config).getOrThrow(),
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
+            testAppleNotificationVerifier(),
           )
         }
       server.start(wait = false)

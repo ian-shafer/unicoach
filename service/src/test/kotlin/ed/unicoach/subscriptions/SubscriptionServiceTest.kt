@@ -270,4 +270,157 @@ class SubscriptionServiceTest {
     assertEquals(owner, row.studentId, "the row stays bound to the first verifier")
     assertNull(SubscriptionsDao.findCurrent(session, interloper).getOrThrow())
   }
+
+  // ---------------------------------------------------------------------------
+  // refresh — the webhook's flow (RFC 112)
+  // ---------------------------------------------------------------------------
+
+  private fun refresh(
+    transport: ScriptedAppStoreTransport,
+    originalTransactionId: String = AppStoreTestFixtures.ORIGINAL_TRANSACTION_ID,
+  ): RefreshResult = runBlocking { service(transport).refresh(originalTransactionId).getOrThrow() }
+
+  /** The row as the database holds it now, by Apple's key. */
+  private fun row(originalTransactionId: String = AppStoreTestFixtures.ORIGINAL_TRANSACTION_ID) =
+    SubscriptionsDao.findByOriginalTransactionId(session, originalTransactionId).getOrThrow()
+
+  @Test
+  fun `a refresh naming no local row is NotBound, with zero transport calls`() {
+    // The webhook refreshes but never binds: no student has verified this, and
+    // the notification carries no identity to invent one from.
+    val transport = activeTransport()
+
+    val result = refresh(transport)
+
+    assertIs<RefreshResult.NotBound>(result)
+    assertEquals(0, transport.calls.size, "an unbound notification costs no Apple call")
+    assertEquals(0, rowCount())
+  }
+
+  @Test
+  fun `a refresh applies changed state under the row's own student`() {
+    // refresh is passed no student at all — the binding comes from the row.
+    val studentId = createStudent()
+    val first = assertIs<VerifyResult.Verified>(verify(studentId, activeTransport())).subscription
+
+    val result =
+      refresh(
+        activeTransport(
+          purchaseDate = Instant.parse("2026-09-01T00:00:00Z"),
+          expiresDate = Instant.parse("2026-10-01T00:00:00Z"),
+        ),
+      )
+
+    val refreshed = assertIs<RefreshResult.Refreshed>(result).subscription
+    assertEquals(first.id, refreshed.id, "the same row")
+    assertEquals(2, refreshed.version)
+    assertEquals(Instant.parse("2026-10-01T00:00:00Z"), refreshed.periodEnd)
+    assertEquals(studentId, refreshed.studentId, "the student the row already named")
+    assertEquals(1, rowCount())
+  }
+
+  @Test
+  fun `a refresh of identical state is Refreshed with the version unmoved`() {
+    // Apple may deliver the same notification twice; the second refresh must
+    // mint no version row. Idempotency is a property of the design, not a dedup table.
+    val studentId = createStudent()
+    assertIs<VerifyResult.Verified>(verify(studentId, activeTransport()))
+
+    val result = refresh(activeTransport())
+
+    assertEquals(1, assertIs<RefreshResult.Refreshed>(result).subscription.version)
+    assertEquals(1, assertNotNull(row()).version)
+  }
+
+  @Test
+  fun `a refresh records non-entitling statuses`() {
+    // EXPIRED and REVOKED are Apple truth like any other; the gate, not this
+    // flow, decides what they entitle.
+    for ((appleStatus, expected) in mapOf(2 to SubscriptionStatus.EXPIRED, 5 to SubscriptionStatus.REVOKED)) {
+      resetDatabase()
+      val studentId = createStudent()
+      assertIs<VerifyResult.Verified>(verify(studentId, activeTransport()))
+      val body =
+        AppStoreTestFixtures.statusResponseBody(
+          AppStoreTestFixtures.LastTransaction(status = appleStatus, signedTransactionInfo = AppStoreTestFixtures.signedTransaction()),
+        )
+
+      val result = refresh(ScriptedAppStoreTransport.of(200, body))
+
+      assertEquals(expected, assertIs<RefreshResult.Refreshed>(result, "status $appleStatus").subscription.status)
+      assertEquals(expected, assertNotNull(row()).status)
+    }
+  }
+
+  @Test
+  fun `a refresh of an unknown product leaves the row untouched`() {
+    val studentId = createStudent()
+    val bound = assertIs<VerifyResult.Verified>(verify(studentId, activeTransport())).subscription
+    val body =
+      AppStoreTestFixtures.statusResponseBody(
+        AppStoreTestFixtures.LastTransaction(
+          status = 1,
+          signedTransactionInfo = AppStoreTestFixtures.signedTransaction(productId = "coach.uni.UnicoachiOS.retired99"),
+        ),
+      )
+
+    val result = refresh(ScriptedAppStoreTransport.of(200, body))
+
+    assertEquals("coach.uni.UnicoachiOS.retired99", assertIs<RefreshResult.UnknownProduct>(result).productId)
+    assertEquals(bound.version, assertNotNull(row()).version, "nothing written for a product this box cannot budget")
+  }
+
+  @Test
+  fun `an Apple 404 on refresh is UnknownTransaction and leaves the row untouched`() {
+    val studentId = createStudent()
+    val bound = assertIs<VerifyResult.Verified>(verify(studentId, activeTransport())).subscription
+
+    val result = refresh(ScriptedAppStoreTransport.of(404, "{}"))
+
+    assertIs<RefreshResult.UnknownTransaction>(result)
+    assertEquals(bound.version, assertNotNull(row()).version)
+  }
+
+  @Test
+  fun `a transport failure on refresh is AppStoreUnavailable and leaves the row untouched`() {
+    val studentId = createStudent()
+    val bound = assertIs<VerifyResult.Verified>(verify(studentId, activeTransport())).subscription
+
+    val result = refresh(ScriptedAppStoreTransport.throwing(IOException("connection reset")))
+
+    assertTrue(assertIs<RefreshResult.AppStoreUnavailable>(result).reason.contains("connection reset"))
+    assertEquals(bound.version, assertNotNull(row()).version)
+  }
+
+  @Test
+  fun `a refresh Apple answers for a different transaction is MismatchedTransaction and writes nothing, under either key`() {
+    // Get All Subscription Statuses answers for every auto-renewable
+    // subscription the customer holds, and the client reduces that to the entry
+    // with the greatest expiresDate — so the id that comes back is not
+    // guaranteed to be the id asked about, and applying it would refresh the
+    // wrong row.
+    val studentId = createStudent()
+    val bound = assertIs<VerifyResult.Verified>(verify(studentId, activeTransport())).subscription
+    val otherId = "555000111222333"
+    val body =
+      AppStoreTestFixtures.statusResponseBody(
+        AppStoreTestFixtures.LastTransaction(
+          status = 1,
+          signedTransactionInfo =
+            AppStoreTestFixtures.signedTransaction(
+              originalTransactionId = otherId,
+              expiresDate = Instant.parse("2027-01-01T00:00:00Z"),
+            ),
+        ),
+      )
+
+    val result = refresh(ScriptedAppStoreTransport.of(200, body))
+
+    val mismatch = assertIs<RefreshResult.MismatchedTransaction>(result)
+    assertEquals(AppStoreTestFixtures.ORIGINAL_TRANSACTION_ID, mismatch.expected)
+    assertEquals(otherId, mismatch.answered, "the outcome carries the id Apple actually answered with")
+    assertEquals(bound.version, assertNotNull(row()).version, "the requested row is untouched")
+    assertNull(row(otherId), "and the returned transaction mints no row of its own")
+    assertEquals(1, rowCount())
+  }
 }

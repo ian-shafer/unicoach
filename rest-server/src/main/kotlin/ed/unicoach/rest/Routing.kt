@@ -1,5 +1,6 @@
 package ed.unicoach.rest
 
+import ed.unicoach.rest.routing.AppleNotificationRouteHandler
 import ed.unicoach.rest.routing.AuthRouteHandler
 import ed.unicoach.rest.routing.CoachingUsageRouteHandler
 import ed.unicoach.rest.routing.CollegeListRouteHandler
@@ -41,6 +42,7 @@ fun Application.configureRouting(
   collegeListService: ed.unicoach.coaching.collegelist.CollegeListService,
   budgetService: ed.unicoach.coaching.budget.BudgetService,
   subscriptionService: ed.unicoach.subscriptions.SubscriptionService,
+  appleNotificationVerifier: ed.unicoach.appstore.AppleNotificationVerifier,
 ) {
   val authRouteHandler = AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
@@ -52,6 +54,8 @@ fun Application.configureRouting(
     CoachingUsageRouteHandler(authService, studentService, budgetService, sessionConfig)
   val subscriptionRouteHandler =
     SubscriptionRouteHandler(authService, studentService, subscriptionService, sessionConfig)
+  val appleNotificationRouteHandler =
+    AppleNotificationRouteHandler(appleNotificationVerifier, queueService)
   routing {
     route("/healthz") {
       get {
@@ -68,5 +72,6 @@ fun Application.configureRouting(
     collegeListRouteHandler.registerRoutes(this)
     coachingUsageRouteHandler.registerRoutes(this)
     subscriptionRouteHandler.registerRoutes(this)
+    appleNotificationRouteHandler.registerRoutes(this)
   }
 }

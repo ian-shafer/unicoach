@@ -24,6 +24,14 @@ dependencies {
   // EmailService/provider and the EmailSendHandler, and bring email.conf onto the
   // classpath — the worker is the sole transmitter of outbound email (RFC 96).
   implementation(project(":email"))
+  // Direct dependency (Gradle `implementation` is non-transitive) to build the
+  // App Store client the SubscriptionRefreshHandler refreshes through, and bring
+  // appstore.conf onto the classpath (RFC 112).
+  implementation(project(":appstore"))
+
+  // The App Store wiring hands its HttpClient back for the root to close, so the
+  // root has to be able to name the type (RFC 112).
+  implementation(libs.ktor.client.core)
 
   implementation(libs.logback.classic)
   implementation(libs.logstash.logback.encoder)

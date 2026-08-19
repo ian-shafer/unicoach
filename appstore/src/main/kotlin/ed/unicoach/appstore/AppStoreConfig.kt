@@ -10,6 +10,23 @@ import java.util.Base64
 enum class AppStoreEnvironment {
   SANDBOX,
   PRODUCTION,
+  ;
+
+  companion object {
+    /**
+     * The one place the two environment names are spelled. Case-insensitive
+     * because the same two values arrive in two casings — our own config's
+     * lowercase `sandbox`/`production` and Apple's wire `Sandbox`/`Production`.
+     * Null for anything else, so each caller can name its own source in the
+     * error it raises.
+     */
+    fun parse(value: String): AppStoreEnvironment? =
+      when (value.lowercase()) {
+        "sandbox" -> SANDBOX
+        "production" -> PRODUCTION
+        else -> null
+      }
+  }
 }
 
 /** The three credential fields as a unit: all present and key-parseable, or none. */
@@ -83,15 +100,10 @@ class AppStoreConfig private constructor(
       }
 
     private fun parseEnvironment(value: String): AppStoreEnvironment =
-      when (value) {
-        "sandbox" -> AppStoreEnvironment.SANDBOX
-
-        "production" -> AppStoreEnvironment.PRODUCTION
-
-        else -> throw IllegalArgumentException(
+      AppStoreEnvironment.parse(value)
+        ?: throw IllegalArgumentException(
           "[$ENVIRONMENT_KEY] = [$value] is not an App Store environment (expected sandbox | production)",
         )
-      }
 
     private fun parseCredentials(config: Config): AppStoreCredentials? {
       val keys = listOf(ISSUER_ID_KEY, KEY_ID_KEY, PRIVATE_KEY_KEY)

@@ -3,6 +3,9 @@ package ed.unicoach.rest
 import ed.unicoach.appstore.AppStoreConfig
 import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreServerApiFactory
+import ed.unicoach.appstore.AppleJwsVerifier
+import ed.unicoach.appstore.AppleNotificationVerifier
+import ed.unicoach.appstore.AppleTrustAnchorLoader
 import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.DbEmailVerifier
@@ -158,15 +161,27 @@ fun startServer(
 
   val queueService = QueueService(database)
 
+  // Hoisted out of the factory call below (RFC 112): the notification verifier
+  // holds an inbound notification's bundleId and environment against this same
+  // config, so both readers of it name one value.
+  val appStoreConfig =
+    AppStoreConfig
+      .from(config)
+      .getOrThrow()
+
   // The App Store Server API client (RFC 110): the factory owns its Ktor client's
   // construction, this root owns the client's lifetime — closed on
   // ApplicationStopped, mirroring the chat client. Null credentials are a valid
   // unconfigured state — verify answers 503.
-  val appStore =
-    AppStoreServerApiFactory.fromConfig(
-      AppStoreConfig
-        .from(config)
-        .getOrThrow(),
+  val appStore = AppStoreServerApiFactory.fromConfig(appStoreConfig)
+
+  // The notifications endpoint's entire authentication (RFC 112). The anchor set
+  // is bundled, so a broken one fails boot here rather than 401-ing every
+  // notification in production.
+  val appleNotificationVerifier =
+    AppleNotificationVerifier(
+      AppleJwsVerifier(AppleTrustAnchorLoader().load().getOrThrow()),
+      appStoreConfig,
     )
 
   // Everything from here until Netty is bound can still throw — a rejected
@@ -218,6 +233,7 @@ fun startServer(
             budgetConfig,
             appStore.api,
             subscriptionPlans,
+            appleNotificationVerifier,
           )
 
           install(SessionExpiryPlugin) {
@@ -262,6 +278,7 @@ fun Application.appModule(
   budgetConfig: BudgetConfig,
   appStoreServerApi: AppStoreServerApi,
   subscriptionPlans: SubscriptionPlans,
+  appleNotificationVerifier: AppleNotificationVerifier,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
@@ -307,5 +324,6 @@ fun Application.appModule(
     collegeListService,
     budgetService,
     subscriptionService,
+    appleNotificationVerifier,
   )
 }

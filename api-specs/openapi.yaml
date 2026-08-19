@@ -870,11 +870,12 @@ paths:
         The app posts the StoreKit 2 signed transaction (JWS); the backend uses
         it only as a lookup key, fetches the authoritative subscription state
         from the App Store Server API, and records it as the caller's
-        subscription. Re-posting is the idempotent refresh path — until the
-        Notifications V2 webhook exists it is also how a renewal reaches the
-        server. Non-entitling statuses (expired, revoked, ...) still record and
-        answer 200 — the row reflects Apple truth; entitlement is the budget
-        gate's concern.
+        subscription. This is the only path that BINDS a subscription to an
+        account; re-posting is the idempotent refresh path. Renewals reach the
+        server through the App Store Server Notifications V2 webhook, not
+        through here. Non-entitling statuses (expired, revoked, ...) still
+        record and answer 200 — the row reflects Apple truth; entitlement is the
+        budget gate's concern.
       operationId: verifySubscription
       security:
         - cookieAuth: []
@@ -938,6 +939,66 @@ paths:
           description: >
             Subscription verification is temporarily unavailable (App Store
             unreachable or credentials not configured; code service_unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/subscriptions/apple-notifications:
+    post:
+      summary: Receive an App Store Server Notification V2
+      description: >
+        Apple posts subscription lifecycle notifications here. The endpoint
+        carries no session: the notification's own JWS signature is its entire
+        authentication — the x5c certificate chain is validated by PKIX to a
+        pinned Apple root, the leaf must carry Apple's notification marker OID,
+        and ES256 is pinned by the verifying algorithm. The notification is a
+        trigger, not a state carrier: an accepted delivery enqueues one refresh
+        job that re-reads authoritative state from the App Store Server API, so
+        duplicate and out-of-order deliveries are no-ops. A notification for a
+        subscription no account has verified refreshes nothing and creates
+        nothing.
+      operationId: receiveAppleNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppleNotificationRequest'
+      responses:
+        '200':
+          description: >
+            The notification was accepted. The body is empty — Apple reads only
+            the status code. A notification naming no transaction (TEST, or a
+            renewal-extension summary) is also 200 and enqueues nothing.
+        '400':
+          description: >
+            The notification is Apple-signed but targets another bundle or
+            another App Store environment (code validation_failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: >
+            The signedPayload is not a valid Apple-signed notification — an
+            oversized, malformed, or unverifiable JWS, on the outer payload or
+            on the nested transaction (code unauthorized)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: >
+            The refresh could not be enqueued, or the notification is
+            Apple-signed in a payload shape this server has never seen. Apple
+            retries (code internal_error).
           content:
             application/json:
               schema:
@@ -1668,6 +1729,19 @@ components:
           minLength: 1
           maxLength: 16384
           description: The StoreKit 2 signed transaction (JWS) as received from Product.purchase().
+    AppleNotificationRequest:
+      type: object
+      additionalProperties: false
+      required: [signedPayload]
+      properties:
+        signedPayload:
+          type: string
+          minLength: 1
+          maxLength: 32768
+          description: >
+            One App Store Server Notification V2, as Apple posts it: a JWS whose
+            x5c chain and ES256 signature are the request's entire
+            authentication.
     SubscriptionVerifyResponse:
       type: object
       required: [subscription]

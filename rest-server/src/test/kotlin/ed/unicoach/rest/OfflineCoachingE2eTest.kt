@@ -166,6 +166,7 @@ class OfflineCoachingE2eTest {
             BudgetConfig.from(config).getOrThrow(),
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
+            testAppleNotificationVerifier(),
           )
         }
       server.start(wait = false)

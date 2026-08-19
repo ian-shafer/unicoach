@@ -222,7 +222,7 @@ and backfilled here.
 | `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `coaching_budget_exhausted` (402), background passes → named skip                                                                               | implemented | 109 |
 | `subscriptions-apple` | split at design time (RFC 110) into the two rows below: a verify-path slice and a Notifications-V2 webhook slice                                                                                                                                                             | split       | —   |
 | — verify path         | `subscriptions` table (versioned) + `SubscriptionsDao`; `POST /api/v1/subscriptions/verify` via the App Store Server API (`:appstore` module); `SubscriptionPlans` (`productId → y × price`); subscribed `Entitlement` branch (basis/resetsAt); `resetsAt` on coaching-usage | implemented | 110 |
-| — webhook             | App Store Server Notifications V2 webhook (Apple-signed JWS auth, x5c verification, queue-processed) updating the same `subscriptions` row; retires the re-post-to-`/verify` renewal-refresh gap                                                                             | planned     | —   |
+| — webhook             | App Store Server Notifications V2 webhook (Apple-signed JWS auth, x5c verification, queue-processed) updating the same `subscriptions` row; retires the re-post-to-`/verify` renewal-refresh gap                                                                             | implemented | 112 |
 | `paywall-ios`         | iOS paywall + block screen + subscribe flow + Restore Purchases + `UserAuthState` gate; abstract "coaching used" usage bar (percentage, never dollars)                                                                                                                       | planned     | —   |
 
 ## Dependency tree
@@ -348,9 +348,11 @@ shifts).
 ```
 
 **3 — `subscriptions-apple`**: split at design time (RFC 110) into the verify
-path (landed) and the Notifications-V2 webhook (pending, below).
+path (RFC 110, landed) and the Notifications-V2 webhook (RFC 112, landed). Both
+slices are done; the kickoff prompt below is kept as the record of what was
+asked for.
 
-**3b — `subscriptions-apple` webhook** (backend):
+**3b — `subscriptions-apple` webhook** (backend) — landed as RFC 112:
 
 ```
 /rfc-pipeline
@@ -422,14 +424,18 @@ the production API — App Review's case; the conventional production→sandbox
 404-fallback was deliberately NOT built server-side and is this node's concern
 if needed), 409 subscription_owned_by_other_account (the first verifier owns
 the originalTransactionId), 503 service_unavailable (Apple unreachable /
-credentials unconfigured). Re-posting /verify is the idempotent refresh path —
-until the webhook slice lands, it is also how a renewal reaches the server, so
-the app should re-verify on launch/foreground while subscribed. One plan is
-configured: coach.uni.UnicoachiOS.monthly10 (SubscriptionPlans, service.conf).
+credentials unconfigured). /verify is the BINDING call — it is the only path
+that ties an originalTransactionId to an account — and re-posting it is the
+idempotent refresh path. Renewals no longer depend on it: the Notifications V2
+webhook (RFC 112) carries them server-side, so re-verifying on
+launch/foreground is a binding-and-restore concern (a fresh install, a restored
+purchase, a subscription bought while the app was offline), not a renewal one.
+One plan is configured: coach.uni.UnicoachiOS.monthly10 (SubscriptionPlans,
+service.conf).
 Already landed (build on these): llm-cost-ledger; budget-gate;
-subscriptions-apple verify path (RFC 110). The Notifications-V2 webhook slice
-may land before or after this node; nothing here depends on it.
-Out of scope: nothing further beyond the webhook slice.
+subscriptions-apple verify path (RFC 110) and Notifications-V2 webhook
+(RFC 112). This is the last node.
+Out of scope: nothing — every backend slice is landed.
 iOS/Swift: bin/test check does NOT compile Swift, so the pipeline gate is a false
 green here — verify with xcodebuild (scheme UnicoachiOS) before landing.
 When done: return to features/paid-subscriptions.md — mark this node implemented

@@ -13,6 +13,7 @@ jackson = "2.15.2"
 aws-sdk-kotlin = "1.6.27"
 commons-csv = "1.14.1"
 cron-utils = "9.2.1"
+bouncycastle = "1.82"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -46,6 +47,12 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 aws-sesv2 = { module = "aws.sdk.kotlin:sesv2", version.ref = "aws-sdk-kotlin" }
 commons-csv = { module = "org.apache.commons:commons-csv", version.ref = "commons-csv" }
 cron-utils = { module = "com.cronutils:cron-utils", version.ref = "cron-utils" }
+# TEST-ONLY (RFC 112): minting the synthetic X.509 chains AppleJwsVerifier's
+# negative cases need. Nothing in the JDK's public API issues certificates.
+# Wired as `testFixturesImplementation` of :appstore only — never on a main or
+# runtime classpath; production verification uses java.security.cert alone.
+bouncycastle-pkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
+bouncycastle-prov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 
 [plugins]
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
