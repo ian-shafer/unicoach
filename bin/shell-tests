@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Aggregator for the shell script-test harnesses (RFC 115).
+#
+# OWNS NO POSTGRES LIFECYCLE: like bin/db-tests, it assumes the caller (bin/test
+# check, or a developer who has run db-bootstrap) provides a live shared cluster.
+# q-scripts-tests and scripts-tests self-provision their per-worktree test DB
+# against it (each runs db-reset, so this aggregator leaves the test DB dirty —
+# bin/test's existing db-reset is the cleanup); db-scripts-tests provisions and
+# tears down its own private, throwaway cluster regardless.
+#
+# scripts-tests additionally requires built rest-server/queue-worker installDist
+# artifacts, and stops THIS CHECKOUT's rest-server/queue-worker daemons via its
+# EXIT trap (daemon identity hangs off bin/common's PROJECT_ROOT, so no other
+# worktree is touched). bin/test check builds those artifacts before calling here.
+#
+# Each harness aborts on its first failure and this script runs them sequentially
+# under `set -e`, so it aborts non-zero on the first failing harness. Ordering is
+# cheapest-first: the ordering only changes how long a developer waits to learn
+# the tree is broken.
+# Layer `.env -> .env.dev -> .env.test` (RFC 95): the DB block and required-toggle
+# dev values live in .env.dev. ENV_FILES is a PATH-like ':'-separated string.
+# Under bin/test it is inherited (exported) across the process boundary; run
+# STANDALONE it defaults here to the same stack if unset. bin/common resolves each
+# entry against PROJECT_ROOT.
+export ENV_FILES="${ENV_FILES:-.env.dev:.env.test}"
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+shell-tests [options]
+
+Runs the shell script-test harnesses sequentially, cheapest first, aborting on
+the first failure:
+
+  q-scripts-tests    ~12s  queue ops tools, shared cluster
+  db-scripts-tests   ~15s  db/cluster lifecycle, its OWN private cluster
+  scripts-tests      ~63s  daemon/ops/deploy scripts, shared cluster + built
+                           rest-server/queue-worker installDist artifacts
+
+Owns no Postgres lifecycle: the caller supplies a live shared cluster. Leaves
+this worktree's test DB dirty, and stops this checkout's rest-server and
+queue-worker daemons. bin/test check invokes this after installDist and before
+its db-reset.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Error: shell-tests accepts no positional arguments."
+fi
+
+"$PROJECT_ROOT/bin/q-scripts-tests"
+# db-scripts-tests builds its own private env file and sets ENV_FILE, which
+# bin/common rejects as mutually exclusive with an inherited ENV_FILES. Clear the
+# variable for that child only — its private cluster is deliberately unrelated to
+# the shared one this stack points at.
+env -u ENV_FILES "$PROJECT_ROOT/bin/db-scripts-tests"
+"$PROJECT_ROOT/bin/scripts-tests"

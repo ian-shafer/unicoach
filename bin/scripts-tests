@@ -855,6 +855,37 @@ for unit_path in "$PROJECT_ROOT"/infra/files/unicoach-*.service; do
   assert_success "deploy-on-instance restarts $unit" unit_restarted "$unit"
 done
 
+echo ""
+echo "==== Testing every shell test harness is run by bin/shell-tests ===="
+# The anti-orphan guard (RFC 115). These harnesses are executed by nothing but
+# bin/shell-tests, and an orphaned one looks exactly like a passing one: three of
+# them sat unrun for months, hiding two real defects. So discover the harnesses
+# from the filesystem and assert each is named in the aggregator — a new
+# bin/<x>-scripts-tests that nobody wired up halts here, loudly, by name.
+#
+# ios-scripts-tests is the ONE deliberate exclusion: it drives system Xcode and
+# refuses to run inside the Nix dev shell (RFC 114), which is where bin/test and
+# the pre-commit hook run. It is carved out BY NAME rather than by a pattern, so
+# a future omission cannot be silently swallowed by the same carve-out.
+#
+# The glob is `*scripts-tests`, not `*-scripts-tests`: the latter (as RFC 115
+# sketched it) silently misses `bin/scripts-tests` itself — the most expensive
+# harness and the one this guard most needs to keep wired up.
+HARNESS_EXCLUSIONS=(ios-scripts-tests)
+harness_excluded() {
+  local candidate="$1" excluded
+  for excluded in "${HARNESS_EXCLUSIONS[@]}"; do
+    [ "$excluded" = "$candidate" ] && return 0
+  done
+  return 1
+}
+harness_in_shell_tests() { grep -qF "bin/$1" "$PROJECT_ROOT/bin/shell-tests"; }
+for harness_path in "$PROJECT_ROOT"/bin/*scripts-tests; do
+  harness="$(basename "$harness_path")"
+  harness_excluded "$harness" && continue
+  assert_success "bin/shell-tests runs $harness" harness_in_shell_tests "$harness"
+done
+
 # OpenTofu static validation of infra/ (ops.tf + the iam.tf/outputs.tf edits).
 # fmt -check is purely static. validate needs the providers installed, so init
 # first with -backend=false (no remote state, no AWS) into a throwaway TF_DATA_DIR

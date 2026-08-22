@@ -25,6 +25,12 @@ task instead of bare `test`. The pre-commit hook invokes this form for the test
 gate. (Kotlin lint/format is not here — it lives in bin/format, the repo's single
 ktlint avenue; the hook runs `bin/format -c` alongside this.)
 
+`check` additionally builds the rest-server/queue-worker installDist artifacts
+and runs bin/shell-tests (q-scripts-tests, db-scripts-tests, scripts-tests) —
+~118s cold — before the database reset. Those harnesses stop THIS checkout's
+rest-server and queue-worker daemons. Bare `bin/test` runs none of them and says
+so.
+
 Modules:
   common web-common db net auth queue queue-worker cron rest-server service email chat appstore admin-web public-web college
 
@@ -115,6 +121,23 @@ done
 # Reset only this worktree's test DB to a clean, fully-migrated state; never
 # touch the shared cluster itself.
 "$PROJECT_ROOT/bin/postgres-up"
+
+# The shell script-test harnesses (bin/shell-tests, RFC 115) run under `check`
+# only — the form bin/pre-commit uses, so everything reaching main runs them,
+# while the bare-`bin/test` tight loop stays fast. They must run BEFORE the
+# db-reset below: q-scripts-tests and scripts-tests db-reset the same test DB the
+# Gradle suite then uses, so they cannot overlap it and must not follow the reset
+# that prepares it. The existing reset is therefore also the cleanup after them;
+# no new cleanup step is introduced. scripts-tests checks its rest-server /
+# queue-worker installDist artifacts for existence but never freshness, so build
+# them first (Gradle no-ops it warm) rather than let a month-old binary satisfy it.
+if [ "$TASK" = "check" ]; then
+  "$PROJECT_ROOT/gradlew" :rest-server:installDist :queue-worker:installDist
+  "$PROJECT_ROOT/bin/shell-tests"
+else
+  log-info "Skipping shell script-test harnesses (bin/shell-tests: q-scripts-tests, db-scripts-tests, scripts-tests) — they run under \`bin/test check\`, which is what the pre-commit hook runs."
+fi
+
 "$PROJECT_ROOT/bin/db-reset"
 
 # Run the shell DB schema harnesses against the freshly migrated DB, sequentially
