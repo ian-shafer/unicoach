@@ -7,24 +7,33 @@ daemon-http-check <service-label> <port> <health-url>
 
 Resolves a port-bound daemon to one of three operational states, owning the
 curl->check-port health tri-state in one place. It is daemon-aware where
-check-port is occupant-agnostic: it composes curl (HTTP health) with check-port
-(TCP liveness), delegating the /dev/tcp probe to check-port so the
-bin/INVARIANTS.md port-liveness rule lives in one place.
+check-port is occupant-agnostic: it composes curl (HTTP health), daemon-check
+(ownership) and check-port (TCP liveness), delegating the /dev/tcp probe to
+check-port so the bin/INVARIANTS.md port-liveness rule lives in one place.
+
+A healthy HTTP reply alone does not mean OUR daemon is up. Ports are host-wide
+while the PID file is per-checkout, so a rest-server running from another
+worktree answers /healthz on the same port and is indistinguishable to curl.
+Ownership is therefore checked before a healthy reply is reported as running.
 
 Resolution order:
-  curl -sf <health-url> succeeds          -> 0 (healthy)
-  else check-port <port> reports in-use   -> 2 (bound but not responding)
-  else                                    -> 1 (not running)
+  curl succeeds AND daemon-check <service-label> says ours -> 0 (healthy)
+  curl succeeds but the service is not ours                -> 2 (foreign daemon)
+  else check-port <port> reports in-use                    -> 2 (bound, unhealthy)
+  else                                                     -> 1 (not running)
 
 Arguments:
-  service-label: The identifier named in the diagnostic.
+  service-label: The identifier named in the diagnostic, and the service name
+                 daemon-check resolves to var/run/<service-label>.pid. Callers
+                 must pass the same name they pass to daemon-up.
   port:          The TCP port for the check-port fallback.
   health-url:    The full URL curl probes (caller owns the /healthz path).
 
 Exit codes:
   0: Healthy (HTTP 200).
   1: Not running (curl failed, port free).
-  2: Port held by another process or an unhealthy instance (curl failed, port in use).
+  2: Port held by something that is not our running daemon -- a foreign but
+     healthy daemon (e.g. another worktree), or an unhealthy/wedged instance.
   3: Invalid arguments (wrong count, or a non-numeric/out-of-range port). Kept
      distinct from the 2 conflict state so a malformed invocation is never read
      as a conflict (check-port reuses 2 for invalid args, so it is unavailable
@@ -67,6 +76,15 @@ HEALTH_CONNECT_TIMEOUT=2
 HEALTH_MAX_TIME=3
 
 if curl -sf --connect-timeout "$HEALTH_CONNECT_TIMEOUT" --max-time "$HEALTH_MAX_TIME" "$HEALTH_URL" > /dev/null; then
+  # Healthy -- but healthy for WHOM? The port is host-wide and the PID file is
+  # per-checkout, so the same daemon run from another worktree answers this URL
+  # identically. Without this gate the check reports "is running" when our own
+  # service is stopped, which made bin/scripts-tests assert a stripped service
+  # was still up and fail a pre-commit gate in an unrelated worktree.
+  if ! "$PROJECT_ROOT/bin/daemon-check" "$SERVICE_LABEL" > /dev/null 2>&1; then
+    log-info "[$SERVICE_LABEL] port [$PORT] is answering, but not from this checkout (no live var/run/$SERVICE_LABEL.pid) -- another worktree or an unmanaged process is serving it"
+    exit 2
+  fi
   log-info "[$SERVICE_LABEL] is running"
 elif "$PROJECT_ROOT/bin/check-port" "$PORT" 2>/dev/null; then
   log-info "[$SERVICE_LABEL] port [$PORT] is bound but not responding as [$SERVICE_LABEL] (held by another process or an unhealthy instance)"

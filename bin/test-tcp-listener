@@ -11,6 +11,10 @@ Modes:
   hold: accept each connection and hold it open, never replying — the "wedged
     server" case (a daemon blocked mid-/healthz). An unbounded curl against this
     blocks forever, so it proves a health probe's timeout is real.
+  healthy: accept each connection and reply HTTP 200 — a foreign occupant that
+    is a perfectly healthy daemon, just not this checkout's. This is the case a
+    port-only probe cannot distinguish from our own service, and the one that
+    let a real cross-worktree false positive through bin/scripts-tests.
 
 The socket is bound before the process is otherwise ready; the caller polls
 bin/check-port until the port reports in-use rather than racing this process.
@@ -28,14 +32,20 @@ import sys
 # Accept-queue depth. Sized for test parallelism, not production load.
 _BACKLOG = 16
 
+# healthy mode: the smallest response curl -sf accepts as success. Bounded reads
+# and a short timeout keep a misbehaving probe from wedging the fixture itself.
+_HEALTHY_RESPONSE = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+_HEALTHY_REQUEST_MAX = 4096
+_HEALTHY_IO_TIMEOUT = 2
+
 
 def main() -> None:
     if not 2 <= len(sys.argv) <= 3:
-        sys.exit("usage: test-tcp-listener <port> [close|hold]")
+        sys.exit("usage: test-tcp-listener <port> [close|hold|healthy]")
     port = int(sys.argv[1])
     mode = sys.argv[2] if len(sys.argv) == 3 else "close"
-    if mode not in ("close", "hold"):
-        sys.exit(f"unknown mode [{mode}]; expected close or hold")
+    if mode not in ("close", "hold", "healthy"):
+        sys.exit(f"unknown mode [{mode}]; expected close, hold or healthy")
 
     if os.environ.get("TEST_LISTENER_IGNORE_SIGTERM") == "1":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -46,7 +56,8 @@ def main() -> None:
     sock.listen(_BACKLOG)
 
     # In hold mode, keep accepted connections referenced so the kernel does not
-    # close them; in close mode, drain the accept queue immediately.
+    # close them; in close mode, drain the accept queue immediately; in healthy
+    # mode, answer like a real daemon before closing.
     held = []
     while True:
         try:
@@ -55,8 +66,18 @@ def main() -> None:
             break
         if mode == "hold":
             held.append(conn)
-        else:
-            conn.close()
+            continue
+        if mode == "healthy":
+            # Read the request line so curl does not see a reset, then reply.
+            # Errors are ignored: a probe that hangs up early is not this
+            # fixture's problem.
+            try:
+                conn.settimeout(_HEALTHY_IO_TIMEOUT)
+                conn.recv(_HEALTHY_REQUEST_MAX)
+                conn.sendall(_HEALTHY_RESPONSE)
+            except OSError:
+                pass
+        conn.close()
 
 
 if __name__ == "__main__":

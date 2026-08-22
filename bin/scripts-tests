@@ -117,6 +117,18 @@ _spawn_test_listener() {
   FOREIGN_LISTENER_PIDS+=("$listener_pid")
   local i
   for ((i = 0; i < PORT_POLL_ATTEMPTS; i++)); do
+    # Readiness is "MY listener is up", not "the port is occupied". If this
+    # child has exited it lost the bind (EADDRINUSE from a leaked fixture), and
+    # check-port would then report the port in use by the WINNER -- handing back
+    # a listener of the wrong mode. A stalled-listener test that silently
+    # measured a leftover close-mode listener would pass while testing nothing,
+    # which is the same occupancy-is-not-identity confusion daemon-http-check
+    # had. Fail loudly instead.
+    if ! kill -0 "$listener_pid" 2>/dev/null; then
+      wait "$listener_pid" 2>/dev/null || true
+      FOREIGN_LISTENER_PID=""
+      return 1
+    fi
     if bin/check-port "$port" >/dev/null 2>&1; then
       FOREIGN_LISTENER_PID="$listener_pid"
       return 0
@@ -130,6 +142,12 @@ _spawn_test_listener() {
 
 # accept + immediately close: a fast empty reply, as a non-HTTP occupant gives.
 start_foreign_listener() { _spawn_test_listener "$1" close; }
+
+# accept + reply HTTP 200: a foreign occupant that is a perfectly healthy daemon,
+# just not ours -- the cross-worktree case. A port-only or curl-only probe cannot
+# tell this apart from our own service, which is precisely how a stopped service
+# was once reported as running.
+start_healthy_foreign_listener() { _spawn_test_listener "$1" healthy; }
 
 # accept + hold open, never replying: the "wedged server" case. An unbounded
 # curl against this blocks forever, so it proves daemon-http-check's bounded
@@ -614,7 +632,25 @@ dh_listener="$FOREIGN_LISTENER_PID"
 dh_status=0; dh_out="$(bin/daemon-http-check svc "$PORT_HTTP" "http://localhost:$PORT_HTTP/healthz" 2>&1)" || dh_status=$?
 if [ "$dh_status" -ne 2 ]; then echo "Fail: daemon-http-check with a foreign-held port did not exit 2 (got $dh_status)"; stop_foreign_listener "$dh_listener"; exit 1; fi
 if ! echo "$dh_out" | grep -qF "bound but not responding as [svc]"; then echo "Fail: daemon-http-check did not log the 'bound but not responding as [svc]' message"; echo "$dh_out"; stop_foreign_listener "$dh_listener"; exit 1; fi
+stop_foreign_listener "$dh_listener"
 pass_test "daemon-http-check exits 2 and reports 'bound but not responding as [svc]' when foreign-held"
+
+# A foreign listener that ANSWERS /healthz. curl alone cannot distinguish it from
+# our own daemon, so without the ownership gate this reports 0 (running) while
+# the service is stopped -- the false positive that failed a pre-commit gate from
+# a rest-server left running in a different worktree.
+dh_listener=""
+# The previous case just killed a listener on this port; bind only once the
+# kernel has actually released it, or this fixture silently fails to bind and
+# the probe measures the corpse of the last one.
+if ! wait_for_port_free "$PORT_HTTP"; then echo "Fail: port $PORT_HTTP not released before the healthy-foreign case"; exit 1; fi
+start_healthy_foreign_listener "$PORT_HTTP" || { echo "Fail: could not bind healthy foreign listener on $PORT_HTTP"; exit 1; }
+dh_listener="$FOREIGN_LISTENER_PID"
+dh_status=0; dh_out="$(bin/daemon-http-check svc "$PORT_HTTP" "http://localhost:$PORT_HTTP/healthz" 2>&1)" || dh_status=$?
+if [ "$dh_status" -ne 2 ]; then echo "Fail: daemon-http-check trusted a HEALTHY foreign daemon as ours (expected 2, got $dh_status)"; echo "$dh_out"; stop_foreign_listener "$dh_listener"; exit 1; fi
+if ! echo "$dh_out" | grep -qF "not from this checkout"; then echo "Fail: daemon-http-check did not explain that the responder is not ours"; echo "$dh_out"; stop_foreign_listener "$dh_listener"; exit 1; fi
+stop_foreign_listener "$dh_listener"
+pass_test "daemon-http-check exits 2 when a HEALTHY foreign daemon answers on the port (ownership gate)"
 stop_foreign_listener "$dh_listener"
 
 # Usage errors route to the reserved band, disjoint from the 0/1/2 operational
