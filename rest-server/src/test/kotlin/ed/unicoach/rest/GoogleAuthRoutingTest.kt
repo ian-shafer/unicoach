@@ -80,6 +80,17 @@ class GoogleAuthRoutingTest {
     }
 
   @Test
+  fun `a first Google sign-in reports emailVerified true`() =
+    runBlocking {
+      val response = postGoogle(stubToken("rt-verified-${UUID.randomUUID()}", "rt-verified-${UUID.randomUUID()}@example.com"))
+      assertEquals(HttpStatusCode.OK, response.status)
+      assertTrue(
+        mapper.readTree(response.bodyAsText())["user"]["emailVerified"].asBoolean(),
+        "body was: [${response.bodyAsText()}]",
+      )
+    }
+
+  @Test
   fun `valid token for a returning user returns 200`() =
     runBlocking {
       val sub = "rt-return-${UUID.randomUUID()}"

@@ -2,11 +2,16 @@ import Foundation
 @testable import UnicoachiOS
 
 @MainActor
-class MockGoogleSignInProvider: GoogleSignInProviding {
-    var signInResult: Result<GoogleSignInOutcome, Error>?
+class MockSsoSignInProvider: SsoSignInProviding {
+    let provider: SsoProvider
+    var signInResult: Result<SsoSignInOutcome, Error>?
     private(set) var signInCallCount = 0
 
-    func signIn() async throws -> GoogleSignInOutcome {
+    init(provider: SsoProvider = .google) {
+        self.provider = provider
+    }
+
+    func signIn() async throws -> SsoSignInOutcome {
         signInCallCount += 1
         guard let result = signInResult else {
             fatalError("No result configured")

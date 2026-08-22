@@ -4,25 +4,28 @@ import os
 @MainActor
 class AppViewModel: ObservableObject {
     @Published var authState: UserAuthState = .loading
-    let authClient: AuthClientProtocol & GoogleAuthenticating
+    let authClient: AuthClientProtocol & SsoAuthenticating
     let studentClient: StudentClientProtocol
     let conversationClient: ConversationClientProtocol
-    let googleSignInProvider: GoogleSignInProviding
+    let googleSignInProvider: SsoSignInProviding
+    let appleSignInProvider: SsoSignInProviding
     let cookieStorage: CookieStorageProtocol
     private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AppViewModel")
 
     init(
         apiClient: APIClient = APIClient(),
         cookieStorage: CookieStorageProtocol = HTTPCookieStorage.shared,
-        authClient: (AuthClientProtocol & GoogleAuthenticating)? = nil,
+        authClient: (AuthClientProtocol & SsoAuthenticating)? = nil,
         studentClient: StudentClientProtocol? = nil,
         conversationClient: ConversationClientProtocol? = nil,
-        googleSignInProvider: GoogleSignInProviding = GoogleSignInProvider()
+        googleSignInProvider: SsoSignInProviding = GoogleSignInProvider(),
+        appleSignInProvider: SsoSignInProviding = AppleSignInProvider()
     ) {
         self.authClient = authClient ?? AuthClient(apiClient: apiClient)
         self.studentClient = studentClient ?? StudentClient(apiClient: apiClient)
         self.conversationClient = conversationClient ?? ConversationClient(apiClient: apiClient)
         self.googleSignInProvider = googleSignInProvider
+        self.appleSignInProvider = appleSignInProvider
         self.cookieStorage = cookieStorage
     }
 
@@ -77,7 +80,7 @@ class AppViewModel: ObservableObject {
         do {
             try await authClient.logout()
         } catch {
-            logger.error("Network logout failed, proceeding with local session clear: \(error.localizedDescription)")
+            logger.error("Network logout failed, proceeding with local session clear: [\(error, privacy: .public)]")
         }
         if let cookies = cookieStorage.cookies {
             for cookie in cookies {

@@ -493,11 +493,15 @@ class AuthService(
    * [SsoLoginResult.LinkBlockedUnverifiedEmail]. A match with no password
    * credential can only itself be a prior SSO provisioning
    * (`resolveOrProvisionUser` is the sole other creator, and it never sets
-   * one) — always linkable regardless of `emailVerifiedAt`, which this
-   * (pre-RFC-111) code path never sets either. Without that distinction, two
-   * providers racing to provision the SAME brand-new email would wrongly
-   * block the loser's retry against the winner's freshly (and unavoidably
-   * unverified-at-the-DB-row-level) created user. A `23505`-derived violation
+   * one) — always linkable regardless of `emailVerifiedAt`. The gate itself
+   * looks only at `passwordHash`, so this reasoning holds even though (as of
+   * RFC 113) this code path *does* mark `emailVerifiedAt` — via
+   * [markVerifiedIfEmailMatches], guarded to fire only when the candidate's
+   * current email still matches the provider-verified token email. Without
+   * the passwordHash distinction, two providers racing to provision the SAME
+   * brand-new email would wrongly block the loser's retry against the
+   * winner's freshly (and unavoidably unverified-at-the-DB-row-level)
+   * created user. A `23505`-derived violation
    * ([ConstraintViolationException]/[DuplicateEmailException]) propagates so
    * [loginWithSso] can retry the whole block; every other DAO failure is
    * rethrown to abort and surface as a 500.
@@ -518,7 +522,8 @@ class AuthService(
     if (existing.isSuccess) {
       // Returning login: load the identity's user across all soft-delete states.
       val resolved = UsersDao.findById(session, existing.getOrThrow().userId, SoftDeleteScope.ALL).getOrThrow()
-      return if (resolved.deletedAt != null) UserResolution.Disabled else UserResolution.Resolved(resolved)
+      if (resolved.deletedAt != null) return UserResolution.Disabled
+      return UserResolution.Resolved(markVerifiedIfEmailMatches(session, resolved, email))
     }
 
     // First sign-in for this subject: link to an active email match, else
@@ -564,7 +569,39 @@ class AuthService(
           emailVerified = true,
         ),
       ).getOrThrow()
-    return UserResolution.Resolved(target)
+    return UserResolution.Resolved(markVerifiedIfEmailMatches(session, target, email))
+  }
+
+  /**
+   * Marks [candidate] email-verified when, and only when, its current email
+   * equals the provider-verified [email] from the token and the account is not
+   * already verified, returning the (possibly updated) [User] to resolve to.
+   * `loginWithSso` already hard-gates on `identity.emailVerified` before
+   * resolution runs, so reaching this point means the provider asserted
+   * [email]; the address guard is what stops that assertion from verifying a
+   * *different* address a user has since moved to via [changeEmail] (which
+   * resets `emailVerifiedAt` to null on address change) — the token still names
+   * the old address, so an unguarded mark here would verify an address nobody
+   * just proved.
+   *
+   * Verifying runs the same two steps `DbEmailVerifier.verify` does: mark, then
+   * burn the account's outstanding verification tokens in this transaction.
+   * [changeEmail] re-arms a token on every address change, so a user who moves
+   * their address to their SSO address and then signs in with SSO would
+   * otherwise leave that mailed link spendable for its full expiry against an
+   * address that is already verified.
+   */
+  private fun markVerifiedIfEmailMatches(
+    session: ed.unicoach.db.dao.SqlSession,
+    candidate: User,
+    email: EmailAddress,
+  ): User {
+    if (candidate.email != email || candidate.emailVerifiedAt != null) {
+      return candidate
+    }
+    val verified = UsersDao.markEmailVerified(session, candidate.id).getOrThrow()
+    VerificationTokensDao.consumeAllForUser(session, candidate.id).getOrThrow()
+    return verified
   }
 
   /**

@@ -136,6 +136,25 @@ However the URL is resolved, the build and install mechanics are the same:
 6. **Inbound 8080 allowed.** Allow inbound connections to the server: either via
    the Tailscale interface, or by permitting inbound 8080 in the macOS firewall
    (System Settings → Network → Firewall).
+7. **Sign in with Apple enabled on the App ID, for a real Apple authorization.**
+   The `coach.uni.UnicoachiOS` App ID in the Apple Developer portal must have
+   the **Sign in with Apple** capability turned on. A simulator build does not
+   need this — `UnicoachiOS.entitlements` is ad-hoc signed and its
+   `com.apple.developer.applesignin` key is simulator-embedded without
+   contacting the portal, so compilation and the unit suite never depend on it —
+   but a device or TestFlight build fails provisioning without it, and only a
+   real, portal-backed App ID can complete a genuine Apple authorization.
+
+**Cross-artifact coupling (cannot be derived or enforced automatically):**
+`.env.prod`'s `APPLE_CLIENT_IDS` must equal this project's
+`PRODUCT_BUNDLE_IDENTIFIER` (`coach.uni.UnicoachiOS`) — the backend's Apple
+verifier checks the token's `aud` against `APPLE_CLIENT_IDS`, and a native Apple
+authorization's `aud` is always the app's bundle identifier. See `.env.prod`'s
+own comment on `APPLE_CLIENT_IDS` for the reciprocal note (RFC 111 for Google's
+identical `GOOGLE_CLIENT_IDS` coupling; RFC 113 added the Apple side). Renaming
+the bundle identifier without updating `.env.prod` breaks every Apple sign-in
+silently (a `401` at the route, not a build failure) — there is no automated
+check across this boundary.
 
 ## Set the deploy host once: `APP_DOMAIN`
 
@@ -381,3 +400,37 @@ followed by `bin/install-ios --launch`: register or log in on the device against
 the Tailscale backend, then force-quit and relaunch the app and confirm the
 session survived. This validates that the single `APP_DOMAIN` drives both the
 baked backend host and the issued cookie `Domain`.
+
+## Manual Sign in with Apple pass
+
+No automated gate covers Apple sign-in: `xcodebuild test` cannot construct an
+`ASAuthorizationAppleIDCredential`, and the default `simulator` target's local
+backend picks up `APPLE_AUTH_PROVIDER=stub` from `.env.dev`, whose verifier
+rejects every real Apple token — the pass would fail spuriously there. Build
+with `bin/build-ios prod-simulator`, which targets the live deployment whose
+`APPLE_CLIENT_IDS` carries the bundle identifier, and run all six cases:
+
+1. **First authorization.** Sign in with an Apple ID that has never authorized
+   this app, disclosing name and email. The app reaches `HomeView`/onboarding —
+   **not** `VerificationRequiredView` — and greets the user by the disclosed
+   name.
+2. **Subsequent authorization.** Log out and sign in again with the same Apple
+   ID. Apple discloses no name; the session is established and the greeting is
+   unchanged.
+3. **Hide My Email.** Revoke, then re-authorize choosing "Hide My Email". The
+   account provisions on the `@privaterelay.appleid.com` address and lands
+   authenticated.
+4. **Cancel.** Dismiss the Apple sheet; the login screen returns with no banner
+   and no state change.
+5. **Placement.** The Apple button sits above the Google button, the two are the
+   same width and height, and both track Dynamic Type at the largest
+   accessibility size.
+6. **Disabled during loading.** On a deliberately slow network, tap Apple and
+   then tap both buttons again while the spinner shows: neither responds and no
+   second Apple sheet appears.
+
+Case 1 is only reachable once per Apple ID. Re-testing it requires revoking the
+app under _Settings → Apple ID → Sign-In & Security → Apps Using Apple ID → Stop
+Using_ — a careless first run burns the case.
+
+Device and TestFlight verification are out of scope.

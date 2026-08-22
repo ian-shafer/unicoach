@@ -89,6 +89,18 @@ class AppleAuthRoutingTest {
     }
 
   @Test
+  fun `a first Apple sign-in reports emailVerified true`() =
+    runBlocking {
+      val response =
+        postApple(stubToken("rt-apple-verified-${UUID.randomUUID()}", "rt-apple-verified-${UUID.randomUUID()}@example.com"))
+      assertEquals(HttpStatusCode.OK, response.status)
+      assertTrue(
+        mapper.readTree(response.bodyAsText())["user"]["emailVerified"].asBoolean(),
+        "body was: [${response.bodyAsText()}]",
+      )
+    }
+
+  @Test
   fun `valid token with no name returns 200 and derives the name from the email local-part`() =
     runBlocking {
       val email = "rt-apple-noname-${UUID.randomUUID()}@example.com"
@@ -97,6 +109,24 @@ class AppleAuthRoutingTest {
       // Assert the name field itself: the body always echoes the email, so a
       // substring match would pass for any derived name, right or wrong.
       assertEquals(email.substringBefore('@'), mapper.readTree(response.bodyAsText())["user"]["name"].asText())
+    }
+
+  @Test
+  fun `a returning Apple login does not overwrite the stored name with a resent one`() =
+    runBlocking {
+      // The client caches Apple's first-authorization name and resends it on
+      // every later sign-in (ios-app/UnicoachiOS/AppleNameStore.swift), which is
+      // only safe while the server ignores `name` for an already-provisioned
+      // account. This pins that promise, so the resend cannot silently start
+      // clobbering a name the user has since changed.
+      val sub = "rt-apple-rename-${UUID.randomUUID()}"
+      val email = "rt-apple-rename-${UUID.randomUUID()}@example.com"
+      val first = postApple(stubToken(sub, email), name = "Ada Lovelace")
+      assertEquals(HttpStatusCode.OK, first.status)
+
+      val returning = postApple(stubToken(sub, email), name = "Someone Else")
+      assertEquals(HttpStatusCode.OK, returning.status)
+      assertEquals("Ada Lovelace", mapper.readTree(returning.bodyAsText())["user"]["name"].asText())
     }
 
   @Test

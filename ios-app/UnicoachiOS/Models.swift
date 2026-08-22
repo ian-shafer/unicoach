@@ -44,6 +44,33 @@ extension ErrorResponse {
     }
 }
 
+/// The wire `code` vocabulary the client branches on: the server's `ErrorCode`
+/// forms (lowercase, owned by
+/// rest-server/src/main/kotlin/ed/unicoach/rest/models/ErrorCode.kt) plus the
+/// UPPERCASE codes `APIClient` synthesizes for transport failures. Nothing spans
+/// the Swift/Kotlin boundary to derive or check the server forms, so a changed
+/// wire string is corrected by hand — here, and until they are migrated onto
+/// this enum, in `AppViewModel` and `OnboardingViewModel`, which still compare
+/// `error.code` against raw literals.
+enum ServerErrorCode: String {
+    case unauthorized
+    case emailNotVerified = "email_not_verified"
+    case accountEmailNotVerified = "account_email_not_verified"
+    case accountDisabled = "account_disabled"
+    case serviceUnavailable = "service_unavailable"
+    case studentAlreadyExists = "student_already_exists"
+    case timeout = "TIMEOUT"
+    case networkError = "NETWORK_ERROR"
+    case serverError = "SERVER_ERROR"
+}
+
+extension ErrorResponse {
+    /// The recognized code this response carries, or `nil` for one this client
+    /// has no case for — a newer server code, or a client-synthesized one such
+    /// as `VALIDATION` that is only ever displayed.
+    var knownCode: ServerErrorCode? { ServerErrorCode(rawValue: code) }
+}
+
 struct LoginRequest: Codable {
     let email: String
     let password: String
@@ -55,6 +82,20 @@ struct LoginResponse: Codable {
 
 struct GoogleLoginRequest: Codable {
     let idToken: String
+}
+
+/// Body of `POST /api/v1/auth/apple`. `name` is the name Apple disclosed on the
+/// *first* authorization only — `AppleNameStore` persists it and resends it on
+/// every later sign-in — and the server uses it solely when provisioning a new
+/// user, never to rename an existing one. Swift's synthesized `Encodable` omits
+/// a `nil` optional via `encodeIfPresent`, and that omission is how this body
+/// says "no name": the server then derives one from the email local-part
+/// (`AuthService.deriveName`). Send `nil`, never `""` — `PersonName.create`
+/// rejects a blank, so an empty string is never a name, only a rejected
+/// candidate the server logs before falling through to that same local-part.
+struct AppleLoginRequest: Encodable {
+    let idToken: String
+    let name: String?
 }
 
 struct MeResponse: Codable {

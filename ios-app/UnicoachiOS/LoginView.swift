@@ -9,8 +9,19 @@ struct LoginView: View {
         case email, password
     }
 
-    init(authClient: AuthClientProtocol & GoogleAuthenticating, googleSignInProvider: GoogleSignInProviding, onLoginSuccess: @escaping (PublicUser) async -> Void, onSwitchToRegister: @escaping () -> Void) {
-        _viewModel = StateObject(wrappedValue: LoginViewModel(authClient: authClient, googleSignInProvider: googleSignInProvider, onLoginSuccess: onLoginSuccess))
+    init(
+        authClient: AuthClientProtocol & SsoAuthenticating,
+        googleSignInProvider: SsoSignInProviding,
+        appleSignInProvider: SsoSignInProviding,
+        onLoginSuccess: @escaping (PublicUser) async -> Void,
+        onSwitchToRegister: @escaping () -> Void
+    ) {
+        _viewModel = StateObject(wrappedValue: LoginViewModel(
+            authClient: authClient,
+            googleSignInProvider: googleSignInProvider,
+            appleSignInProvider: appleSignInProvider,
+            onLoginSuccess: onLoginSuccess
+        ))
         self.onSwitchToRegister = onSwitchToRegister
     }
 
@@ -61,34 +72,9 @@ struct LoginView: View {
                 )
                 .disabled(viewModel.phase != .idle)
 
-                HStack(spacing: DSSpacing.md) {
-                    Rectangle()
-                        .fill(Color.dsFieldBorder)
-                        .frame(height: 1)
-                    Text("or")
-                        .font(.dsLabel)
-                        .foregroundStyle(Color.dsTextSecondary)
-                    Rectangle()
-                        .fill(Color.dsFieldBorder)
-                        .frame(height: 1)
-                }
+                orDivider
 
-                ZStack {
-                    // GoogleSignInButton stretches full-width and reports its own
-                    // height via its button style (matching the Log In button
-                    // above), so the ZStack reserves real vertical space and the
-                    // loading spinner overlays a stable box.
-                    GoogleSignInButton {
-                        Task { await viewModel.signInWithGoogle() }
-                    }
-                    .disabled(viewModel.phase != .idle)
-
-                    if viewModel.phase == .googleLoading {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .accessibilityIdentifier("googleLoadingIndicator")
-                    }
-                }
+                ssoButtons
 
                 Button(action: onSwitchToRegister) {
                     Text("Don't have an account? Register")
@@ -109,21 +95,98 @@ struct LoginView: View {
                 systemImage: error.systemImage,
                 retryAction: {
                     viewModel.infrastructureError = nil
-                    Task { await viewModel.login() }
+                    Task { await viewModel.retryLastAttempt() }
                 }
             )
         }
     }
+
+    /// The "or" rule separating the password form from the SSO buttons.
+    private var orDivider: some View {
+        HStack(spacing: DSSpacing.md) {
+            Rectangle()
+                .fill(Color.dsFieldBorder)
+                .frame(height: 1)
+            Text("or")
+                .font(.dsLabel)
+                .foregroundStyle(Color.dsTextSecondary)
+            Rectangle()
+                .fill(Color.dsFieldBorder)
+                .frame(height: 1)
+        }
+    }
+
+    /// The third-party sign-in block. Apple sits above Google per Apple's
+    /// prominence rule, which binds Apple against other third-party sign-in
+    /// rather than against our own password form. Each slot disables its
+    /// control whenever any sign-in runs and overlays that provider's spinner
+    /// on the stable box the control reserves.
+    ///
+    /// The spacing and alignment repeat the enclosing form's so the rendered
+    /// gaps are exactly what they were before the block was named.
+    private var ssoButtons: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.lg) {
+            SsoButtonSlot(provider: .apple, phase: viewModel.phase) {
+                AppleSignInButton {
+                    Task { await viewModel.signInWithApple() }
+                }
+                // Google's slot needs no width modifier because
+                // GoogleSignInButtonStyle stretches from the inside. The wrapped
+                // ASAuthorizationAppleIDButton carries no such rule: its
+                // sizeThatFits adopts whatever width it is proposed and falls
+                // back to the control's intrinsic width when it is proposed
+                // none. This VStack does propose one today, so the two buttons
+                // would match without this; it is here so the pairing survives a
+                // container that stops proposing a width.
+                .frame(maxWidth: .infinity)
+            }
+
+            // GoogleSignInButton stretches full-width and reports its own
+            // height via its button style (matching the Log In button above),
+            // so the slot reserves real vertical space and the loading spinner
+            // overlays a stable box.
+            SsoButtonSlot(provider: .google, phase: viewModel.phase) {
+                GoogleSignInButton {
+                    Task { await viewModel.signInWithGoogle() }
+                }
+            }
+        }
+    }
 }
 
-private final class LoginPreviewAuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Sendable {
+/// One SSO button slot: the provider's own control, disabled whenever any
+/// sign-in is running, with that provider's in-flight spinner overlaid on the
+/// stable box the control reserves. The `LoadingButton` equivalent for buttons
+/// whose chrome the provider owns and we cannot restyle.
+private struct SsoButtonSlot<Content: View>: View {
+    let provider: SsoProvider
+    let phase: SignInPhase
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ZStack {
+            content()
+                .disabled(phase != .idle)
+
+            if phase == .ssoLoading(provider) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .accessibilityIdentifier(provider.loadingIndicatorAccessibilityIdentifier)
+            }
+        }
+    }
+}
+
+private final class LoginPreviewAuthClient: AuthClientProtocol, SsoAuthenticating, @unchecked Sendable {
     func register(request: RegisterRequest) async throws -> RegisterResponse {
         RegisterResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
     }
     func login(request: LoginRequest) async throws -> LoginResponse {
         LoginResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
     }
-    func signInWithGoogle(idToken: String) async throws -> LoginResponse { fatalError() }
+    func signIn(with credential: SsoCredential) async throws -> LoginResponse {
+        fatalError("LoginView preview never exercises SSO sign-in")
+    }
     func logout() async throws {}
     func me() async throws -> MeResponse {
         MeResponse(user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: true))
@@ -134,14 +197,21 @@ private final class LoginPreviewAuthClient: AuthClientProtocol, GoogleAuthentica
     }
 }
 
-private final class LoginPreviewGoogleSignInProvider: GoogleSignInProviding {
-    func signIn() async throws -> GoogleSignInOutcome { .signedIn("preview-id-token") }
+private final class LoginPreviewSsoSignInProvider: SsoSignInProviding {
+    let provider: SsoProvider
+    init(provider: SsoProvider) { self.provider = provider }
+    func signIn() async throws -> SsoSignInOutcome {
+        // One authorization for both providers: `provider` supplies the tag,
+        // and the `.google` credential drops the name on its own.
+        .signedIn(SsoAuthorization(idToken: "preview-id-token", name: "Preview"))
+    }
 }
 
 #Preview {
     LoginView(
         authClient: LoginPreviewAuthClient(),
-        googleSignInProvider: LoginPreviewGoogleSignInProvider(),
+        googleSignInProvider: LoginPreviewSsoSignInProvider(provider: .google),
+        appleSignInProvider: LoginPreviewSsoSignInProvider(provider: .apple),
         onLoginSuccess: { _ in },
         onSwitchToRegister: {}
     )

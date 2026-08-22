@@ -161,6 +161,12 @@ class SsoAuthServiceTest {
   }
 
   @Test
+  fun `a newly provisioned SSO user is email-verified`() {
+    val result = login(token("verify-new-sub", "verifynew@example.com")) as SsoLoginResult.Success
+    assertTrue(result.user.emailVerifiedAt != null, "A freshly provisioned SSO user's email must be verified")
+  }
+
+  @Test
   fun `apple login for a new user creates the user, an apple identity, and an APPLE session`() {
     val result = login(token("apple-new-sub", "applenewuser@example.com"), provider = AuthProvider.APPLE)
     assertTrue(result is SsoLoginResult.Success)
@@ -214,15 +220,15 @@ class SsoAuthServiceTest {
   }
 
   @Test
-  fun `a second provider links onto a prior SSO-provisioned user even though emailVerifiedAt is null`() {
+  fun `linking onto a prior SSO-provisioned user verifies it`() {
     // The matched user carries no password credential: it was provisioned by a
-    // FIRST SSO login (Google) moments ago, so its emailVerifiedAt is null by
-    // construction (SSO provisioning never sets it) — but it is NOT the
-    // attacker-registered-password-account scenario the gate exists to block,
-    // so a second provider (Apple) must still link onto it cleanly.
+    // FIRST SSO login (Google) moments ago, so its email is already verified
+    // (a first sign-in's email always equals the token email) — and it is NOT
+    // the attacker-registered-password-account scenario the gate exists to
+    // block, so a second provider (Apple) must still link onto it cleanly.
     val email = "cross-provider-link@example.com"
     val first = login(token("cross-google-sub", email)) as SsoLoginResult.Success
-    assertTrue(first.user.emailVerifiedAt == null, "Precondition: SSO provisioning never sets emailVerifiedAt")
+    assertTrue(first.user.emailVerifiedAt != null, "Precondition: a first SSO sign-in marks its own email verified")
     assertTrue(first.user.passwordHash == null, "Precondition: SSO provisioning never sets a password")
 
     val second = login(token("cross-apple-sub", email), provider = AuthProvider.APPLE) as SsoLoginResult.Success
@@ -389,6 +395,72 @@ class SsoAuthServiceTest {
     assertTrue(oldSession.isFailure, "The old cookie's session must be revoked")
     val newSession = SessionsDao.findByTokenHash(sqlSession, TokenHash.fromRawToken(second.token))
     assertTrue(newSession.isSuccess, "A fresh session must be live")
+  }
+
+  @Test
+  fun `a returning login whose account email still matches marks it verified`() {
+    // Seed a legacy SSO-provisioned user the old way: emailVerifiedAt stays
+    // null even though the row was created by a provider-verified sign-in.
+    val email = "legacy-heal@example.com"
+    val user =
+      UsersDao
+        .create(
+          sqlSession,
+          NewUser(
+            email = (EmailAddress.create(email) as ValidationResult.Valid).value,
+            name = (PersonName.create("Legacy SSO User") as ValidationResult.Valid).value,
+            displayName = null,
+            passwordHash = null,
+          ),
+        ).getOrThrow()
+    UserAuthIdentitiesDao
+      .create(
+        sqlSession,
+        ed.unicoach.db.models.NewAuthIdentity(
+          userId = user.id,
+          provider = AuthProvider.GOOGLE,
+          subject = subject("legacy-heal-sub"),
+          email = user.email,
+          emailVerified = true,
+        ),
+      ).getOrThrow()
+    assertTrue(user.emailVerifiedAt == null, "Precondition: the legacy row is unverified")
+
+    val result = login(token("legacy-heal-sub", email)) as SsoLoginResult.Success
+    assertTrue(result.user.emailVerifiedAt != null, "A returning login whose email still matches must heal the legacy row")
+  }
+
+  @Test
+  fun `a returning login after changeEmail does not mark the new address verified`() {
+    val originalEmail = "movedfrom@example.com"
+    val newEmail = "movedto@example.com"
+    val provisioned = login(token("moved-sub", originalEmail)) as SsoLoginResult.Success
+    assertTrue(provisioned.user.emailVerifiedAt != null, "Precondition: the SSO-provisioned user is verified")
+
+    val changeResult =
+      runBlocking { authService.changeEmail(provisioned.user, newEmail).getOrThrow() }
+    val movedUser = assertIs<ChangeEmailResult.Success>(changeResult).user
+    assertTrue(movedUser.emailVerifiedAt == null, "Precondition: changeEmail resets emailVerifiedAt to null")
+
+    // The token still asserts the OLD provider address; the user's current
+    // email has since moved, so the equality guard must not mark it verified.
+    val result = login(token("moved-sub", originalEmail)) as SsoLoginResult.Success
+    assertEquals(movedUser.id, result.user.id)
+    assertTrue(result.user.emailVerifiedAt == null, "A stale token must not verify the user's new, different address")
+  }
+
+  @Test
+  fun `a linked password account keeps its own verification state`() {
+    val email = "linked-idempotent@example.com"
+    val existing = seedVerifiedUser(email)
+
+    val result = login(token("linked-idempotent-sub", email)) as SsoLoginResult.Success
+    assertEquals(existing.id, result.user.id)
+    assertTrue(result.user.passwordHash != null, "Linking must preserve the password credential")
+    assertTrue(result.user.emailVerifiedAt != null, "The linked account stays verified")
+    // markEmailVerified is idempotent (conditional on emailVerifiedAt IS NULL),
+    // so an already-verified match takes no redundant version bump.
+    assertEquals(existing.version, result.user.version, "No redundant version bump from a no-op mark")
   }
 
   @Test

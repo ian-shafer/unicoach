@@ -1,12 +1,13 @@
 import SwiftUI
 
 struct AuthFlowView: View {
-    let authClient: AuthClientProtocol & GoogleAuthenticating
-    let googleSignInProvider: GoogleSignInProviding
+    let authClient: AuthClientProtocol & SsoAuthenticating
+    let googleSignInProvider: SsoSignInProviding
+    let appleSignInProvider: SsoSignInProviding
     @State private var showingRegistration = false
     let onLoginSuccess: (PublicUser) async -> Void
     let onRegisterSuccess: (PublicUser) async -> Void
-    
+
     var body: some View {
         if showingRegistration {
             RegistrationView(
@@ -21,6 +22,7 @@ struct AuthFlowView: View {
             LoginView(
                 authClient: authClient,
                 googleSignInProvider: googleSignInProvider,
+                appleSignInProvider: appleSignInProvider,
                 onLoginSuccess: onLoginSuccess,
                 onSwitchToRegister: {
                     withAnimation { showingRegistration = true }

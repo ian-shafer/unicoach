@@ -1,15 +1,15 @@
 import Foundation
 @testable import UnicoachiOS
 
-class MockAuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Sendable {
+class MockAuthClient: AuthClientProtocol, SsoAuthenticating, @unchecked Sendable {
     var registerResult: Result<RegisterResponse, Error>?
     var loginResult: Result<LoginResponse, Error>?
-    var signInWithGoogleResult: Result<LoginResponse, Error>?
+    var signInResult: Result<LoginResponse, Error>?
     var logoutResult: Result<Void, Error>?
     var meResult: Result<MeResponse, Error>?
     var resendVerificationResult: Result<Void, Error>?
     var changeEmailResult: Result<PublicUser, Error>?
-    private(set) var signInWithGoogleCallCount = 0
+    private(set) var signInCredentials: [SsoCredential] = []
 
     func register(request: RegisterRequest) async throws -> RegisterResponse {
         if let result = registerResult {
@@ -22,7 +22,7 @@ class MockAuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Senda
         }
         fatalError("No result configured")
     }
-    
+
     func login(request: LoginRequest) async throws -> LoginResponse {
         if let result = loginResult {
             switch result {
@@ -34,10 +34,10 @@ class MockAuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Senda
         }
         fatalError("No result configured")
     }
-    
-    func signInWithGoogle(idToken: String) async throws -> LoginResponse {
-        signInWithGoogleCallCount += 1
-        if let result = signInWithGoogleResult {
+
+    func signIn(with credential: SsoCredential) async throws -> LoginResponse {
+        signInCredentials.append(credential)
+        if let result = signInResult {
             switch result {
             case .success(let response):
                 return response
@@ -59,7 +59,7 @@ class MockAuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Senda
         }
         fatalError("No result configured")
     }
-    
+
     func me() async throws -> MeResponse {
         if let result = meResult {
             switch result {

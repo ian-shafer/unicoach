@@ -23,8 +23,8 @@ struct PrimaryButtonStyle: ButtonStyle {
     }
 
     private func opacity(isPressed: Bool) -> Double {
-        if !isEnabled { return 0.5 }
-        return isPressed ? 0.8 : 1.0
+        if !isEnabled { return DSOpacity.disabled }
+        return isPressed ? DSOpacity.pressed : DSOpacity.enabled
     }
 }
 
@@ -54,8 +54,8 @@ struct DestructiveButtonStyle: ButtonStyle {
     }
 
     private func opacity(isPressed: Bool) -> Double {
-        if !isEnabled { return 0.5 }
-        return isPressed ? 0.8 : 1.0
+        if !isEnabled { return DSOpacity.disabled }
+        return isPressed ? DSOpacity.pressed : DSOpacity.enabled
     }
 }
 
@@ -177,8 +177,8 @@ struct CircularIconButtonStyle: ButtonStyle {
     }
 
     private func opacity(isPressed: Bool) -> Double {
-        if !isEnabled { return 0.5 }
-        return isPressed ? 0.8 : 1.0
+        if !isEnabled { return DSOpacity.disabled }
+        return isPressed ? DSOpacity.pressed : DSOpacity.enabled
     }
 }
 

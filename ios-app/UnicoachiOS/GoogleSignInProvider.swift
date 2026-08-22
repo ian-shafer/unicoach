@@ -2,38 +2,46 @@ import Foundation
 import GoogleSignIn
 import UIKit
 
-/// Isolates the presentation-coupled `GIDSignIn` SDK call behind a protocol so
-/// `LoginViewModel`'s outcome logic stays unit-testable against a mock. The
-/// production conformer drives real UI (an account chooser) and cannot run in a
-/// unit test; the protocol returns only the resulting ID token string.
-@MainActor
-protocol GoogleSignInProviding {
-    /// Presents Google's account chooser; returns the outcome. Throws only for
-    /// genuine failures — user cancellation is a returned outcome, not one.
-    func signIn() async throws -> GoogleSignInOutcome
-}
-
-enum GoogleSignInOutcome {
-    case signedIn(String) // the resulting ID token string
-    case cancelled        // user dismissed the sheet — an ordinary outcome
-}
-
 enum GoogleSignInError: Error {
     case presentationUnavailable // no key-window root view controller found
     case missingIdToken          // GIDSignInResult carried no ID token
     case sdkError(Error)         // any other GIDSignIn failure
 }
 
-/// Production `GoogleSignInProviding`. Resolves the presenting view controller
-/// from the active foreground scene's key window, invokes the Google SDK, and
-/// returns the outcome. Takes no client ID — the SDK self-configures from
-/// `Info.plist`'s `GIDClientID`.
+/// Production `SsoSignInProviding` conformer for Google. Resolves the
+/// presenting view controller from the shared `foregroundKeyWindow()` helper,
+/// invokes the Google SDK, and returns the outcome. Takes no client ID — the
+/// SDK self-configures from `Info.plist`'s `GIDClientID`.
 @MainActor
-final class GoogleSignInProvider: GoogleSignInProviding {
-    func signIn() async throws -> GoogleSignInOutcome {
-        guard let presenter = Self.keyWindowRootViewController() else {
+final class GoogleSignInProvider: SsoSignInProviding {
+    let provider: SsoProvider = .google
+
+    /// True while a `signIn()` call is awaiting the SDK. A second request made
+    /// in that window is refused as the ordinary `.alreadyPresenting` outcome
+    /// rather than reaching `GIDSignIn` twice — the guard
+    /// `AppleSignInProvider` owns, held here for the same reason: the provider
+    /// cannot depend on its caller having disabled the button.
+    private var isPresenting = false
+
+    // Defaults to the real shared helper; overridable only so the presentation
+    // guard below is reachable from a unit test without the test host's scene
+    // having to reach `.foregroundActive` — mirroring `AppleSignInProvider`'s
+    // `windowResolver`.
+    private let windowResolver: @MainActor () -> UIWindow?
+
+    init(windowResolver: @escaping @MainActor () -> UIWindow? = foregroundKeyWindow) {
+        self.windowResolver = windowResolver
+    }
+
+    func signIn() async throws -> SsoSignInOutcome {
+        guard !isPresenting else {
+            return .alreadyPresenting
+        }
+        guard let presenter = windowResolver()?.rootViewController else {
             throw GoogleSignInError.presentationUnavailable
         }
+        isPresenting = true
+        defer { isPresenting = false }
 
         let result: GIDSignInResult
         do {
@@ -55,16 +63,7 @@ final class GoogleSignInProvider: GoogleSignInProviding {
         guard let idToken = result.user.idToken?.tokenString else {
             throw GoogleSignInError.missingIdToken
         }
-        return .signedIn(idToken)
-    }
-
-    /// The root view controller of the active foreground scene's key window, or
-    /// `nil` when no such window exists (e.g. mid-transition).
-    private static func keyWindowRootViewController() -> UIViewController? {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first(where: { $0.activationState == .foregroundActive })?
-            .keyWindow?
-            .rootViewController
+        // Google discloses no name; the `.google` credential carries none.
+        return .signedIn(SsoAuthorization(idToken: idToken, name: nil))
     }
 }

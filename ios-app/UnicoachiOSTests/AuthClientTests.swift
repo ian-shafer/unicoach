@@ -1,6 +1,13 @@
 import XCTest
 @testable import UnicoachiOS
 
+/// `AppleLoginRequest` is `Encodable`-only (the app never decodes its own
+/// outgoing request), so this test-local mirror decodes the wire body instead.
+private struct DecodedAppleLoginRequest: Decodable {
+    let idToken: String
+    let name: String?
+}
+
 class MockURLProtocol: URLProtocol {
     nonisolated(unsafe) static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
     
@@ -270,6 +277,32 @@ class AuthClientTests: XCTestCase {
         }
     }
 
+    /// Reads the request body under `MockURLProtocol`, where `URLRequest.httpBody`
+    /// is always nil and the body must be read from the stream instead. A read
+    /// error fails the test where it happens: returning the bytes gathered so
+    /// far would make a truncated body indistinguishable from a wrongly encoded
+    /// one at every call site.
+    private func readBody(_ request: URLRequest, file: StaticString = #filePath, line: UInt = #line) -> Data {
+        request.httpBody ?? request.httpBodyStream.map { stream -> Data in
+            stream.open()
+            defer { stream.close() }
+            var data = Data()
+            let bufferSize = 1024
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+            defer { buffer.deallocate() }
+            while stream.hasBytesAvailable {
+                let read = stream.read(buffer, maxLength: bufferSize)
+                if read == 0 { break }
+                if read < 0 {
+                    XCTFail("Request body stream failed after [\(data.count)] bytes: [\(String(describing: stream.streamError))]", file: file, line: line)
+                    return Data()
+                }
+                data.append(buffer, count: read)
+            }
+            return data
+        } ?? Data()
+    }
+
     func testGoogleSignInSuccess() async throws {
         let expectedUser = PublicUser(id: UUID(), email: "google@example.com", name: "Google", emailVerified: true)
         let responsePayload = LoginResponse(user: expectedUser)
@@ -281,29 +314,14 @@ class AuthClientTests: XCTestCase {
             XCTAssertEqual(request.httpMethod, "POST")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
 
-            // URLRequest.httpBody is nil under URLProtocol; read the stream body.
-            let body = request.httpBody ?? request.httpBodyStream.map { stream -> Data in
-                stream.open()
-                defer { stream.close() }
-                var data = Data()
-                let bufferSize = 1024
-                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-                defer { buffer.deallocate() }
-                while stream.hasBytesAvailable {
-                    let read = stream.read(buffer, maxLength: bufferSize)
-                    if read <= 0 { break }
-                    data.append(buffer, count: read)
-                }
-                return data
-            } ?? Data()
-            let decoded = try? JSONDecoder().decode(GoogleLoginRequest.self, from: body)
+            let decoded = try? JSONDecoder().decode(GoogleLoginRequest.self, from: self.readBody(request))
             XCTAssertEqual(decoded?.idToken, sentToken)
 
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, responseData)
         }
 
-        let response = try await authClient.signInWithGoogle(idToken: sentToken)
+        let response = try await authClient.signIn(with: .google(idToken: sentToken))
         XCTAssertEqual(response.user.email, expectedUser.email)
     }
 
@@ -316,7 +334,7 @@ class AuthClientTests: XCTestCase {
         }
 
         do {
-            _ = try await authClient.signInWithGoogle(idToken: "t")
+            _ = try await authClient.signIn(with: .google(idToken: "t"))
             XCTFail("Should have thrown an error")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "unauthorized")
@@ -333,7 +351,7 @@ class AuthClientTests: XCTestCase {
         }
 
         do {
-            _ = try await authClient.signInWithGoogle(idToken: "t")
+            _ = try await authClient.signIn(with: .google(idToken: "t"))
             XCTFail("Should have thrown an error")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "email_not_verified")
@@ -350,7 +368,7 @@ class AuthClientTests: XCTestCase {
         }
 
         do {
-            _ = try await authClient.signInWithGoogle(idToken: "t")
+            _ = try await authClient.signIn(with: .google(idToken: "t"))
             XCTFail("Should have thrown an error")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "account_disabled")
@@ -367,7 +385,7 @@ class AuthClientTests: XCTestCase {
         }
 
         do {
-            _ = try await authClient.signInWithGoogle(idToken: "t")
+            _ = try await authClient.signIn(with: .google(idToken: "t"))
             XCTFail("Should have thrown an error")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "service_unavailable")
@@ -382,7 +400,162 @@ class AuthClientTests: XCTestCase {
         }
 
         do {
-            _ = try await authClient.signInWithGoogle(idToken: "t")
+            _ = try await authClient.signIn(with: .google(idToken: "t"))
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "SERVER_ERROR")
+        }
+    }
+
+    // MARK: - Apple sign-in
+
+    func testAppleSignInSuccess() async throws {
+        let expectedUser = PublicUser(id: UUID(), email: "apple@example.com", name: "Apple User", emailVerified: true)
+        let responsePayload = LoginResponse(user: expectedUser)
+        let responseData = try JSONEncoder().encode(responsePayload)
+        let sentToken = "sent-apple-id-token"
+        let sentName = "Apple User"
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/auth/apple")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+
+            let decoded = try? JSONDecoder().decode(DecodedAppleLoginRequest.self, from: self.readBody(request))
+            XCTAssertEqual(decoded?.idToken, sentToken)
+            XCTAssertEqual(decoded?.name, sentName)
+
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, responseData)
+        }
+
+        let response = try await authClient.signIn(with: .apple(idToken: sentToken, name: sentName))
+        XCTAssertEqual(response.user.email, expectedUser.email)
+    }
+
+    func testAppleSignInOmitsNameWhenNil() async throws {
+        let expectedUser = PublicUser(id: UUID(), email: "apple2@example.com", name: "apple2", emailVerified: true)
+        let responsePayload = LoginResponse(user: expectedUser)
+        let responseData = try JSONEncoder().encode(responsePayload)
+        let sentToken = "sent-apple-id-token"
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            guard let json = try? JSONSerialization.jsonObject(with: self.readBody(request)) as? [String: Any] else {
+                XCTFail("Apple sign-in body was not a JSON object")
+                return (response, responseData)
+            }
+            // The token pins the body that was actually encoded, so the missing
+            // name below is a proven omission rather than an unread body.
+            XCTAssertEqual(json["idToken"] as? String, sentToken)
+            // Absent, never an empty string — an empty string is a value
+            // PersonName.create would reject, blocking the backend's own
+            // email-local-part fallback.
+            XCTAssertNil(json["name"], "name key must be omitted, not present as an empty string")
+
+            return (response, responseData)
+        }
+
+        _ = try await authClient.signIn(with: .apple(idToken: sentToken, name: nil))
+    }
+
+    func testAppleSignInUnauthorized() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(code: "unauthorized", message: "Unauthorized", fieldErrors: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signIn(with: .apple(idToken: "t", name: nil))
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "unauthorized")
+            XCTAssertEqual(error.status, 401)
+        }
+    }
+
+    func testAppleSignInAccountEmailNotVerified() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(
+            code: "account_email_not_verified",
+            message: "The matched account's email is not verified",
+            fieldErrors: nil
+        ))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signIn(with: .apple(idToken: "t", name: nil))
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "account_email_not_verified")
+            XCTAssertEqual(error.status, 403)
+        }
+    }
+
+    func testAppleSignInEmailNotVerified() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(code: "email_not_verified", message: "Email not verified", fieldErrors: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signIn(with: .apple(idToken: "t", name: nil))
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "email_not_verified")
+            XCTAssertEqual(error.status, 403)
+        }
+    }
+
+    func testAppleSignInAccountDisabled() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(code: "account_disabled", message: "Account disabled", fieldErrors: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signIn(with: .apple(idToken: "t", name: nil))
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "account_disabled")
+            XCTAssertEqual(error.status, 403)
+        }
+    }
+
+    func testAppleSignInServiceUnavailable() async throws {
+        let errorData = try JSONEncoder().encode(ErrorResponse(code: "service_unavailable", message: "Service unavailable", fieldErrors: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
+            return (response, errorData)
+        }
+
+        do {
+            _ = try await authClient.signIn(with: .apple(idToken: "t", name: nil))
+            XCTFail("Should have thrown an error")
+        } catch let error as ErrorResponse {
+            XCTAssertEqual(error.code, "service_unavailable")
+            XCTAssertEqual(error.status, 503)
+        }
+    }
+
+    func testAppleSignInServerError() async throws {
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (response, "Internal Server Error".data(using: .utf8)!)
+        }
+
+        do {
+            _ = try await authClient.signIn(with: .apple(idToken: "t", name: nil))
             XCTFail("Should have thrown an error")
         } catch let error as ErrorResponse {
             XCTAssertEqual(error.code, "SERVER_ERROR")

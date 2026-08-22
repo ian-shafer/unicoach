@@ -9,8 +9,15 @@
 /* Begin PBXBuildFile section */
 		DDDD00010000000000000B01 /* GoogleSignInProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00010000000000000F01 /* GoogleSignInProvider.swift */; };
 		DDDD00010000000000000B02 /* GoogleSignInButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00010000000000000F02 /* GoogleSignInButton.swift */; };
-		DDDD00010000000000000B03 /* MockGoogleSignInProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00010000000000000F03 /* MockGoogleSignInProvider.swift */; };
 		DDDD00010000000000000B04 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = DDDD00010000000000000D01 /* GoogleSignIn */; };
+		EEEE00010000000000000B01 /* SsoSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F01 /* SsoSignIn.swift */; };
+		EEEE00010000000000000B02 /* AppleSignInProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F02 /* AppleSignInProvider.swift */; };
+		EEEE00010000000000000B03 /* AppleNameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F03 /* AppleNameStore.swift */; };
+		EEEE00010000000000000B04 /* AppleSignInButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F04 /* AppleSignInButton.swift */; };
+		EEEE00010000000000000B06 /* MockSsoSignInProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F06 /* MockSsoSignInProvider.swift */; };
+		EEEE00010000000000000B07 /* MockAppleNameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F07 /* MockAppleNameStore.swift */; };
+		EEEE00010000000000000B08 /* AppleSignInProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F08 /* AppleSignInProviderTests.swift */; };
+		EEEE00010000000000000B09 /* GoogleSignInProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F09 /* GoogleSignInProviderTests.swift */; };
 		188CC6069EC5B0D0E4D317F9 /* LoginViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A9C9A24C5D3D920ADB5657 /* LoginViewModel.swift */; };
 		1B5D67F44509AAC5162D2D9B /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76885EFAAF600E01FC2CA4E9 /* AppViewModel.swift */; };
 		24AEAB991B392D40D5F4865D /* UserAuthState.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF26463FA3E9D6158360F6B0 /* UserAuthState.swift */; };
@@ -79,7 +86,15 @@
 /* Begin PBXFileReference section */
 		DDDD00010000000000000F01 /* GoogleSignInProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleSignInProvider.swift; sourceTree = "<group>"; };
 		DDDD00010000000000000F02 /* GoogleSignInButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleSignInButton.swift; sourceTree = "<group>"; };
-		DDDD00010000000000000F03 /* MockGoogleSignInProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockGoogleSignInProvider.swift; sourceTree = "<group>"; };
+		EEEE00010000000000000F01 /* SsoSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SsoSignIn.swift; sourceTree = "<group>"; };
+		EEEE00010000000000000F02 /* AppleSignInProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppleSignInProvider.swift; sourceTree = "<group>"; };
+		EEEE00010000000000000F03 /* AppleNameStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppleNameStore.swift; sourceTree = "<group>"; };
+		EEEE00010000000000000F04 /* AppleSignInButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppleSignInButton.swift; sourceTree = "<group>"; };
+		EEEE00010000000000000F05 /* UnicoachiOS.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = UnicoachiOS.entitlements; sourceTree = "<group>"; };
+		EEEE00010000000000000F06 /* MockSsoSignInProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockSsoSignInProvider.swift; sourceTree = "<group>"; };
+		EEEE00010000000000000F07 /* MockAppleNameStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockAppleNameStore.swift; sourceTree = "<group>"; };
+		EEEE00010000000000000F08 /* AppleSignInProviderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppleSignInProviderTests.swift; sourceTree = "<group>"; };
+		EEEE00010000000000000F09 /* GoogleSignInProviderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleSignInProviderTests.swift; sourceTree = "<group>"; };
 		008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppViewModelTests.swift; sourceTree = "<group>"; };
 		0369D9C82AA6374C4EEF5C33 /* UnicoachiOSApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UnicoachiOSApp.swift; sourceTree = "<group>"; };
 		11EB23D4BA12D429EC020603 /* HomeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
@@ -188,6 +203,11 @@
 				6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */,
 				DDDD00010000000000000F01 /* GoogleSignInProvider.swift */,
 				DDDD00010000000000000F02 /* GoogleSignInButton.swift */,
+				EEEE00010000000000000F01 /* SsoSignIn.swift */,
+				EEEE00010000000000000F02 /* AppleSignInProvider.swift */,
+				EEEE00010000000000000F03 /* AppleNameStore.swift */,
+				EEEE00010000000000000F04 /* AppleSignInButton.swift */,
+				EEEE00010000000000000F05 /* UnicoachiOS.entitlements */,
 				CEA408B564E10F9E132951E2 /* CookieStorageProtocol.swift */,
 				BBBB00010000000000000F01 /* APIClient.swift */,
 				BBBB00010000000000000F0A /* BackendURL.swift */,
@@ -232,7 +252,10 @@
 				E07CF0E17D649CCDB28346C4 /* AuthClientTests.swift */,
 				883B58CD37496DA7F775524A /* RegistrationViewModelTests.swift */,
 				5B78E8AB9325BA342EC147D1 /* MockAuthClient.swift */,
-				DDDD00010000000000000F03 /* MockGoogleSignInProvider.swift */,
+				EEEE00010000000000000F06 /* MockSsoSignInProvider.swift */,
+				EEEE00010000000000000F07 /* MockAppleNameStore.swift */,
+				EEEE00010000000000000F08 /* AppleSignInProviderTests.swift */,
+				EEEE00010000000000000F09 /* GoogleSignInProviderTests.swift */,
 				D62AAE67DF17D5BF66357229 /* LoginViewModelTests.swift */,
 				008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */,
 				AAAA00010000000000000F03 /* ErrorResponseTests.swift */,
@@ -325,6 +348,11 @@
 					};
 					6F9281DE34931041BB823788 = {
 						DevelopmentTeam = W632LUDQ69;
+						SystemCapabilities = {
+							com.apple.SignInWithApple = {
+								enabled = 1;
+							};
+						};
 					};
 				};
 			};
@@ -388,6 +416,10 @@
 				473585B6D2515A0F3F04F832 /* AuthFlowView.swift in Sources */,
 				DDDD00010000000000000B01 /* GoogleSignInProvider.swift in Sources */,
 				DDDD00010000000000000B02 /* GoogleSignInButton.swift in Sources */,
+				EEEE00010000000000000B01 /* SsoSignIn.swift in Sources */,
+				EEEE00010000000000000B02 /* AppleSignInProvider.swift in Sources */,
+				EEEE00010000000000000B03 /* AppleNameStore.swift in Sources */,
+				EEEE00010000000000000B04 /* AppleSignInButton.swift in Sources */,
 				E18E82B50D2DECBF36C8CCFC /* CookieStorageProtocol.swift in Sources */,
 				AAAA00010000000000000B01 /* Theme.swift in Sources */,
 				AAAA00010000000000000B02 /* Components.swift in Sources */,
@@ -416,7 +448,10 @@
 				51EDF3D4D368E28FAD40A072 /* AuthClientTests.swift in Sources */,
 				3E36533C112F695B175277F4 /* RegistrationViewModelTests.swift in Sources */,
 				FCB2B11F8FF11F5448DC44A8 /* MockAuthClient.swift in Sources */,
-				DDDD00010000000000000B03 /* MockGoogleSignInProvider.swift in Sources */,
+				EEEE00010000000000000B06 /* MockSsoSignInProvider.swift in Sources */,
+				EEEE00010000000000000B07 /* MockAppleNameStore.swift in Sources */,
+				EEEE00010000000000000B08 /* AppleSignInProviderTests.swift in Sources */,
+				EEEE00010000000000000B09 /* GoogleSignInProviderTests.swift in Sources */,
 				B49688497600EA7DC3C15E64 /* LoginViewModelTests.swift in Sources */,
 				63C0E03A53327D2F2C1DF54B /* AppViewModelTests.swift in Sources */,
 				AAAA00010000000000000B03 /* ErrorResponseTests.swift in Sources */,
@@ -515,6 +550,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = UnicoachiOS/UnicoachiOS.entitlements;
 				DEVELOPMENT_TEAM = W632LUDQ69;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = UnicoachiOS/Info.plist;
@@ -622,6 +658,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = UnicoachiOS/UnicoachiOS.entitlements;
 				DEVELOPMENT_TEAM = W632LUDQ69;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = UnicoachiOS/Info.plist;

@@ -10,15 +10,16 @@ protocol AuthClientProtocol: Sendable {
     func changeEmail(_ email: String) async throws -> PublicUser
 }
 
-/// Narrow protocol for the Google sign-in POST, kept off `AuthClientProtocol` so
+/// Narrow protocol for the SSO sign-in POST, kept off `AuthClientProtocol` so
 /// the preview/test conformers that never build a `LoginViewModel` need no stub.
 /// Only conformers that construct a `LoginViewModel` (whose `authClient` is typed
-/// `AuthClientProtocol & GoogleAuthenticating`) must adopt it.
-protocol GoogleAuthenticating {
-    func signInWithGoogle(idToken: String) async throws -> LoginResponse
+/// `AuthClientProtocol & SsoAuthenticating`) must adopt it. Replaces RFC 90's
+/// Google-only `GoogleAuthenticating`.
+protocol SsoAuthenticating {
+    func signIn(with credential: SsoCredential) async throws -> LoginResponse
 }
 
-class AuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Sendable {
+class AuthClient: AuthClientProtocol, SsoAuthenticating, @unchecked Sendable {
     private let apiClient: APIClient
     private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AuthClient")
 
@@ -38,9 +39,20 @@ class AuthClient: AuthClientProtocol, GoogleAuthenticating, @unchecked Sendable 
         return try apiClient.decode(data: data, response: response, expectedStatus: 200)
     }
 
-    func signInWithGoogle(idToken: String) async throws -> LoginResponse {
-        logger.debug("Starting Google sign-in")
-        let (data, response) = try await apiClient.post("/api/v1/auth/google", body: GoogleLoginRequest(idToken: idToken))
+    /// One transport call for every provider: the credential supplies its own
+    /// route and request body, and the shared response contract lives in
+    /// `postSsoLogin`. A new provider adds a `SsoCredential` case and nothing
+    /// here.
+    func signIn(with credential: SsoCredential) async throws -> LoginResponse {
+        logger.debug("Starting SSO sign-in [provider=\(credential.provider.rawValue, privacy: .public)]")
+        return try await postSsoLogin(credential.path, body: credential.requestBody)
+    }
+
+    /// Every SSO login endpoint answers `200` with a `LoginResponse` body and
+    /// sets the session cookie, so one method holds that contract for all of
+    /// them.
+    private func postSsoLogin<B: Encodable>(_ path: String, body: B) async throws -> LoginResponse {
+        let (data, response) = try await apiClient.post(path, body: body)
         return try apiClient.decode(data: data, response: response, expectedStatus: 200)
     }
 

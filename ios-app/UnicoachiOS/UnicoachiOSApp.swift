@@ -17,6 +17,7 @@ struct UnicoachiOSApp: App {
                     AuthFlowView(
                         authClient: viewModel.authClient,
                         googleSignInProvider: viewModel.googleSignInProvider,
+                        appleSignInProvider: viewModel.appleSignInProvider,
                         onLoginSuccess: viewModel.onLoginSuccess,
                         onRegisterSuccess: viewModel.onRegisterSuccess
                     )

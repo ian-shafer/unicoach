@@ -24,7 +24,7 @@ extension Font {
     static let dsButton = Font.system(.headline, design: .default).weight(.semibold)
 }
 
-// MARK: - Spacing and radius tokens
+// MARK: - Spacing, radius, and opacity tokens
 
 enum DSSpacing {
     static let xs: CGFloat = 4
@@ -37,4 +37,15 @@ enum DSSpacing {
 enum DSRadius {
     static let field: CGFloat = 10
     static let button: CGFloat = 12
+}
+
+/// Opacity tokens for interactive state feedback, shared by the design system's
+/// button styles and by wrapped UIKit controls that must dim to match them.
+/// Held here rather than in each style so a wrapped control (which cannot use a
+/// `ButtonStyle`) dims identically by construction instead of by a copied
+/// literal.
+enum DSOpacity {
+    static let enabled: Double = 1.0
+    static let pressed: Double = 0.8
+    static let disabled: Double = 0.5
 }
