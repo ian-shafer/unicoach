@@ -22,87 +22,93 @@ struct VerificationRequiredView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: DSSpacing.lg) {
-                Text("Verify Your Email")
-                    .font(.dsTitleXL)
-                    .foregroundStyle(Color.dsTextPrimary)
+        VStack(spacing: 0) {
+            BrandTopBar()
 
-                Text("We sent a verification link to \(viewModel.email). Tap it to finish setting up your account, then check again.")
-                    .font(.dsBody)
-                    .foregroundStyle(Color.dsTextSecondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: DSSpacing.lg) {
+                    Text("Verify Your Email")
+                        .font(.dsDisplay)
+                        .foregroundStyle(Color.dsTextPrimary)
 
-                if let confirmation = viewModel.changeConfirmation {
-                    Text(confirmation)
-                        .font(.dsLabel)
+                    Text("We sent a verification link to \(viewModel.email). Tap it to finish setting up your account, then check again.")
+                        .font(.dsBody)
                         .foregroundStyle(Color.dsTextSecondary)
-                        .accessibilityIdentifier("changeEmailConfirmation")
-                }
 
-                if let confirmation = viewModel.resendConfirmation {
-                    Text(confirmation)
-                        .font(.dsLabel)
-                        .foregroundStyle(Color.dsTextSecondary)
-                        .accessibilityIdentifier("resendConfirmation")
-                }
-
-                if let resendError = viewModel.resendError {
-                    FormErrorBanner(resendError.message)
-                }
-
-                if let recheckMessage = viewModel.recheckMessage {
-                    Text(recheckMessage)
-                        .font(.dsLabel)
-                        .foregroundStyle(Color.dsTextSecondary)
-                        .accessibilityIdentifier("recheckMessage")
-                }
-
-                VStack(spacing: DSSpacing.md) {
-                    LoadingButton(
-                        "Check Again",
-                        isLoading: viewModel.isChecking,
-                        role: .primary,
-                        accessibilityIdentifier: "checkAgainButton",
-                        accessibilityLabel: "Check Again",
-                        action: { Task { await viewModel.checkAgain() } }
-                    )
-
-                    LoadingButton(
-                        "Resend Email",
-                        isLoading: viewModel.isResending,
-                        role: .primary,
-                        accessibilityIdentifier: "resendVerificationButton",
-                        accessibilityLabel: "Resend Email",
-                        action: { Task { await viewModel.resend() } }
-                    )
-
-                    Button(action: { isChangingEmail = true }) {
-                        Text("Change Email")
+                    if let confirmation = viewModel.changeConfirmation {
+                        Text(confirmation)
                             .font(.dsLabel)
-                            .frame(maxWidth: .infinity)
+                            .foregroundStyle(Color.dsTextSecondary)
+                            .accessibilityIdentifier("changeEmailConfirmation")
                     }
-                    .foregroundStyle(Color.brandAccent)
-                    .accessibilityIdentifier("changeEmailButton")
-                    .accessibilityLabel("Change Email")
 
-                    LoadingButton(
-                        "Log Out",
-                        isLoading: isLoggingOut,
-                        role: .destructive,
-                        accessibilityIdentifier: "logoutButton",
-                        accessibilityLabel: "Log Out",
-                        action: {
-                            isLoggingOut = true
-                            Task {
-                                await viewModel.onLogout()
-                                isLoggingOut = false
-                            }
+                    if let confirmation = viewModel.resendConfirmation {
+                        Text(confirmation)
+                            .font(.dsLabel)
+                            .foregroundStyle(Color.dsTextSecondary)
+                            .accessibilityIdentifier("resendConfirmation")
+                    }
+
+                    if let resendError = viewModel.resendError {
+                        FormErrorBanner(resendError.message)
+                    }
+
+                    if let recheckMessage = viewModel.recheckMessage {
+                        Text(recheckMessage)
+                            .font(.dsLabel)
+                            .foregroundStyle(Color.dsTextSecondary)
+                            .accessibilityIdentifier("recheckMessage")
+                    }
+
+                    VStack(spacing: DSControl.stackGap) {
+                        LoadingButton(
+                            "Check Again",
+                            isLoading: viewModel.isChecking,
+                            role: .primary,
+                            accessibilityIdentifier: "checkAgainButton",
+                            accessibilityLabel: "Check Again",
+                            action: { Task { await viewModel.checkAgain() } }
+                        )
+
+                        LoadingButton(
+                            "Resend Email",
+                            isLoading: viewModel.isResending,
+                            role: .primary,
+                            accessibilityIdentifier: "resendVerificationButton",
+                            accessibilityLabel: "Resend Email",
+                            action: { Task { await viewModel.resend() } }
+                        )
+
+                        Button(action: { isChangingEmail = true }) {
+                            Text("Change Email")
+                                .font(.dsLabel)
+                                .frame(maxWidth: .infinity)
                         }
-                    )
+                        // Not brandAccent: `#EE732F` on white is 2.95:1 (DESIGN.md §6).
+                        .foregroundStyle(Color.dsTextPrimary)
+                        .accessibilityIdentifier("changeEmailButton")
+                        .accessibilityLabel("Change Email")
+
+                        LoadingButton(
+                            "Log Out",
+                            isLoading: isLoggingOut,
+                            role: .destructive,
+                            accessibilityIdentifier: "logoutButton",
+                            accessibilityLabel: "Log Out",
+                            action: {
+                                isLoggingOut = true
+                                Task {
+                                    await viewModel.onLogout()
+                                    isLoggingOut = false
+                                }
+                            }
+                        )
+                    }
                 }
+                .padding(DSSpacing.lg)
             }
-            .padding(DSSpacing.lg)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.dsBackground)
         .sheet(isPresented: $isChangingEmail) {
             ChangeEmailView(
@@ -137,7 +143,7 @@ struct ChangeEmailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: DSSpacing.lg) {
                     Text("Change Email")
-                        .font(.dsTitleXL)
+                        .font(.dsDisplay)
                         .foregroundStyle(Color.dsTextPrimary)
 
                     Text("Enter a new email address. We'll send a fresh verification link there.")
@@ -200,11 +206,21 @@ private final class VerificationPreviewAuthClient: AuthClientProtocol, @unchecke
     }
 }
 
-#Preview {
+@MainActor private var verificationPreview: some View {
     VerificationRequiredView(
         user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview", emailVerified: false),
         authClient: VerificationPreviewAuthClient(),
         onRecheck: { .stillUnverified },
         onLogout: {}
     )
+}
+
+#Preview("verification - Light") {
+    verificationPreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("verification - Dark") {
+    verificationPreview
+        .preferredColorScheme(.dark)
 }

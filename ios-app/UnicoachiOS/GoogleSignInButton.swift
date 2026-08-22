@@ -5,12 +5,12 @@ import SwiftUI
 /// Replaces Google's native `GIDSignInButton`, which carried its own fixed
 /// chrome — hairline border, system text, a corner radius and height that
 /// matched nothing else — and read as foreign beside the `PrimaryButtonStyle`
-/// "Log In" button. This mirrors the design-system button metrics (same vertical
-/// rhythm, `DSRadius.button` corners, `dsButton` font, full-width) as a neutral
-/// secondary variant: `dsSurface` fill + `dsFieldBorder` stroke, matching the
-/// form fields above it. Google-branding compliance is preserved — the official
-/// multicolor "G" mark (`GoogleLogo` asset) and the "Sign in with Google" label,
-/// both unaltered.
+/// "Log In" button. This adopts the design system's control box exactly
+/// (`ControlFill` at 64pt / `DSRadius.control`, `dsButton` label, full-width),
+/// so it stacks as an equal with the Apple button beside it — which is what the
+/// style reference shows. Google-branding compliance is preserved: the official
+/// multicolor "G" mark (`GoogleLogo` asset) on a dark button and the unaltered
+/// "Sign in with Google" label are both sanctioned Google button treatments.
 ///
 /// Purely presentational: the tap closure runs the view model's
 /// `signInWithGoogle()`; the button carries no sign-in logic.
@@ -48,22 +48,19 @@ struct GoogleSignInButton: View {
 private struct GoogleSignInButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
+    @ScaledMetric(relativeTo: .headline) private var height: CGFloat = DSControl.height
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.dsButton)
-            .foregroundStyle(Color.dsTextPrimary)
-            // Match PrimaryButtonStyle's box metrics so the two buttons stack as
-            // equals: intrinsic horizontal inset, stretched full-width, tokenized
-            // vertical padding, shared button corner radius.
+            .foregroundStyle(Color.dsControlOnFill)
+            // Match PrimaryButtonStyle's box exactly so the two stack as equals:
+            // intrinsic horizontal inset, stretched full-width, the 64pt control
+            // height, and the shared 16pt control radius.
             .padding(.horizontal, DSSpacing.lg)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, DSSpacing.md)
-            .background(Color.dsSurface)
-            .clipShape(RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous)
-                    .stroke(Color.dsFieldBorder, lineWidth: 1)
-            )
+            .frame(maxWidth: .infinity, minHeight: height)
+            .background(Color.dsControlFill)
+            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
             .opacity(opacity(isPressed: configuration.isPressed))
     }
 

@@ -94,6 +94,7 @@ struct ConversationListView: View {
     private var loadingView: some View {
         ProgressView()
             .progressViewStyle(.circular)
+            .tint(Color.dsTextPrimary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("conversationListLoading")
             .accessibilityLabel("Loading conversations")
@@ -110,6 +111,12 @@ struct ConversationListView: View {
             } label: {
                 conversationRow(conversation)
             }
+            // Rows are outlined cards on white, not stock inset-grouped rows:
+            // the separator and the row background are removed so the card's own
+            // hairline is the only separation (DESIGN.md §8 extrapolation).
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.dsBackground)
+            .listRowInsets(EdgeInsets(top: DSControl.stackGap / 2, leading: DSSpacing.lg, bottom: DSControl.stackGap / 2, trailing: DSSpacing.lg))
             .swipeActions(edge: .trailing) {
                 Button(role: .destructive) {
                     pendingDeletion = conversation
@@ -142,6 +149,8 @@ struct ConversationListView: View {
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.dsBackground)
     }
 
     private func conversationRow(_ conversation: Conversation) -> some View {
@@ -153,7 +162,14 @@ struct ConversationListView: View {
                 .font(.dsCaption)
                 .foregroundStyle(Color.dsTextSecondary)
         }
+        .padding(DSSpacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.dsSurface)
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+        )
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("conversationRow")
     }
@@ -169,7 +185,7 @@ struct ConversationListView: View {
     private var emptyView: some View {
         VStack(spacing: DSSpacing.md) {
             Text("No conversations yet")
-                .font(.dsTitleXL)
+                .font(.dsDisplay)
                 .foregroundStyle(Color.dsTextPrimary)
             Text("Start a conversation to get coaching.")
                 .font(.dsBody)
@@ -189,7 +205,7 @@ struct ConversationListView: View {
                 Task { await viewModel.load() }
             }
             .font(.dsButton)
-            .foregroundStyle(Color.brandAccent)
+            .foregroundStyle(Color.dsTextPrimary)
             .accessibilityIdentifier("conversationListRetryButton")
             .accessibilityLabel("Retry")
         }
@@ -206,11 +222,10 @@ struct ConversationListView: View {
         } label: {
             Text("Start a conversation")
                 .font(.dsButton)
-                .foregroundStyle(Color.brandOnAccent)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, DSSpacing.md)
-                .background(Color.brandAccent)
-                .clipShape(RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous))
+                .foregroundStyle(Color.dsControlOnFill)
+                .frame(maxWidth: .infinity, minHeight: DSControl.height)
+                .background(Color.dsControlFill)
+                .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
         }
         .accessibilityIdentifier("startConversationButton")
         .accessibilityLabel("Start a conversation")
@@ -246,8 +261,18 @@ private final class ConversationListPreviewClient: ConversationClientProtocol, @
     func setArchived(conversationId: UUID, archived: Bool) async throws {}
 }
 
-#Preview {
+@MainActor private var conversationListPreview: some View {
     NavigationStack {
         ConversationListView(conversationClient: ConversationListPreviewClient(), onProfileRequired: {})
     }
+}
+
+#Preview("conversationList - Light") {
+    conversationListPreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("conversationList - Dark") {
+    conversationListPreview
+        .preferredColorScheme(.dark)
 }

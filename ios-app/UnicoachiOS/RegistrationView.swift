@@ -21,10 +21,10 @@ struct RegistrationView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: DSSpacing.lg) {
                 Text("Create Account")
-                    .font(.dsTitleXL)
+                    .font(.dsDisplay)
                     .foregroundStyle(Color.dsTextPrimary)
 
-                VStack(spacing: DSSpacing.md) {
+                VStack(spacing: DSControl.stackGap) {
                     LabeledField(
                         "Email",
                         text: $viewModel.email,
@@ -87,7 +87,9 @@ struct RegistrationView: View {
                         .font(.dsLabel)
                         .frame(maxWidth: .infinity)
                 }
-                .foregroundStyle(Color.brandAccent)
+                // Not brandAccent: `#EE732F` on white is 2.95:1 (DESIGN.md §6),
+                // so the brand colour never carries text.
+                .foregroundStyle(Color.dsTextPrimary)
                 .accessibilityIdentifier("switchToLoginButton")
                 .accessibilityLabel("Log In")
             }
@@ -131,10 +133,20 @@ private final class RegistrationPreviewAuthClient: AuthClientProtocol, @unchecke
     }
 }
 
-#Preview {
+@MainActor private var registrationPreview: some View {
     RegistrationView(
         authClient: RegistrationPreviewAuthClient(),
         onRegisterSuccess: { _ in },
         onSwitchToLogin: {}
     )
+}
+
+#Preview("registration - Light") {
+    registrationPreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("registration - Dark") {
+    registrationPreview
+        .preferredColorScheme(.dark)
 }

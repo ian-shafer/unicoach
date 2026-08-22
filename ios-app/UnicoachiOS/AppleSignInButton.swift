@@ -34,19 +34,16 @@ private struct AppleSignInButtonRepresentable: UIViewRepresentable {
 
     // ASAuthorizationAppleIDButton has no font-driven intrinsic size the way an
     // SF Symbol/text button does, so its box is rebuilt here from the same
-    // tokens PrimaryButtonStyle and GoogleSignInButtonStyle apply: a
-    // .headline-scaled label plus DSSpacing.md above and below. Deriving the
-    // inset instead of baking a total means retuning DSSpacing.md moves this
-    // button with the other two rather than leaving it behind. Only the label
-    // box stays a hand-tuned @ScaledMetric — Apple's control cannot take the
-    // design system's font, so its text height is not readable from here.
-    @ScaledMetric(relativeTo: .headline) private var labelHeight: CGFloat = 18
-    private var height: CGFloat { labelHeight + DSSpacing.md * 2 }
+    // token the design system's own controls use: DSControl.height, scaled
+    // relative to .headline exactly as PrimaryButtonStyle and
+    // GoogleSignInButtonStyle scale theirs. All three therefore share one
+    // control rhythm by construction rather than by coincidence.
+    @ScaledMetric(relativeTo: .headline) private var height: CGFloat = DSControl.height
 
     func makeUIView(context: Context) -> ASAuthorizationAppleIDButton {
         let style: ASAuthorizationAppleIDButton.Style = colorScheme == .dark ? .white : .black
         let button = ASAuthorizationAppleIDButton(authorizationButtonType: .signIn, authorizationButtonStyle: style)
-        button.cornerRadius = DSRadius.button
+        button.cornerRadius = DSRadius.control
         button.accessibilityIdentifier = "appleSignInButton"
         button.addTarget(context.coordinator, action: #selector(Coordinator.handleTap), for: .touchUpInside)
         return button

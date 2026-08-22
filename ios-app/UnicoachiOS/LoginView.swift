@@ -28,11 +28,13 @@ struct LoginView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DSSpacing.lg) {
-                Text("Welcome Back")
-                    .font(.dsTitleXL)
-                    .foregroundStyle(Color.dsTextPrimary)
+                logoLockup
 
-                VStack(spacing: DSSpacing.md) {
+                ssoButtons
+
+                orDivider
+
+                VStack(spacing: DSControl.stackGap) {
                     LabeledField(
                         "Email",
                         text: $viewModel.email,
@@ -72,16 +74,12 @@ struct LoginView: View {
                 )
                 .disabled(viewModel.phase != .idle)
 
-                orDivider
-
-                ssoButtons
-
                 Button(action: onSwitchToRegister) {
                     Text("Don't have an account? Register")
                         .font(.dsLabel)
                         .frame(maxWidth: .infinity)
                 }
-                .foregroundStyle(Color.brandAccent)
+                .foregroundStyle(Color.dsTextPrimary)
                 .accessibilityIdentifier("switchToRegisterButton")
                 .accessibilityLabel("Register")
             }
@@ -99,6 +97,26 @@ struct LoginView: View {
                 }
             )
         }
+    }
+
+    /// The reference's login lockup: wordmark, circular brand mark, tagline —
+    /// centred, and standing in for the screen heading the reference does not
+    /// have. The tagline is `PRODUCT.md`'s positioning line verbatim.
+    private var logoLockup: some View {
+        VStack(spacing: DSSpacing.lg) {
+            Text("uni.COACH")
+                .font(.dsTitle)
+                .foregroundStyle(Color.dsTextPrimary)
+
+            LogoMark()
+
+            Text("Personal college-prep coach")
+                .font(.dsTitle)
+                .foregroundStyle(Color.dsTextPrimary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 
     /// The "or" rule separating the password form from the SSO buttons.
@@ -125,7 +143,7 @@ struct LoginView: View {
     /// The spacing and alignment repeat the enclosing form's so the rendered
     /// gaps are exactly what they were before the block was named.
     private var ssoButtons: some View {
-        VStack(alignment: .leading, spacing: DSSpacing.lg) {
+        VStack(alignment: .leading, spacing: DSControl.stackGap) {
             SsoButtonSlot(provider: .apple, phase: viewModel.phase) {
                 AppleSignInButton {
                     Task { await viewModel.signInWithApple() }
@@ -207,7 +225,7 @@ private final class LoginPreviewSsoSignInProvider: SsoSignInProviding {
     }
 }
 
-#Preview {
+@MainActor private var loginPreview: some View {
     LoginView(
         authClient: LoginPreviewAuthClient(),
         googleSignInProvider: LoginPreviewSsoSignInProvider(provider: .google),
@@ -215,4 +233,14 @@ private final class LoginPreviewSsoSignInProvider: SsoSignInProviding {
         onLoginSuccess: { _ in },
         onSwitchToRegister: {}
     )
+}
+
+#Preview("login - Light") {
+    loginPreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("login - Dark") {
+    loginPreview
+        .preferredColorScheme(.dark)
 }

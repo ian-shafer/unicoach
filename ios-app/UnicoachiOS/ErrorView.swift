@@ -26,15 +26,26 @@ struct ErrorView: View {
                     .buttonStyle(PrimaryButtonStyle())
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.dsBackground)
     }
 }
 
-#Preview {
+private var errorPreview: some View {
     ErrorView(
         title: "Something went wrong",
         description: "We couldn't reach the server. Please try again.",
         systemImage: "wifi.exclamationmark",
         retryAction: {}
     )
+}
+
+#Preview("Error - Light") {
+    errorPreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("Error - Dark") {
+    errorPreview
+        .preferredColorScheme(.dark)
 }

@@ -9,61 +9,80 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: DSSpacing.md) {
-                Text("Welcome, \(user.name)!")
-                    .font(.dsTitleXL)
-                    .foregroundStyle(Color.dsTextPrimary)
-                    .padding(.top, DSSpacing.xl)
+            VStack(spacing: 0) {
+                BrandTopBar()
 
-                Text(user.email)
-                    .font(.dsLabel)
-                    .foregroundStyle(Color.dsTextSecondary)
+                VStack(alignment: .leading, spacing: DSControl.stackGap) {
+                    Text("Welcome, \(user.name)")
+                        .dsOverlineStyle()
+                        .foregroundStyle(Color.dsTextPrimary)
 
-                Spacer()
+                    Text("What should we work on?")
+                        .font(.dsDisplay)
+                        .foregroundStyle(Color.dsTextPrimary)
 
-                NavigationLink {
-                    ConversationView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
-                } label: {
-                    Text("Start Coaching")
-                        .font(.dsButton)
-                        .foregroundStyle(Color.brandOnAccent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, DSSpacing.md)
-                        .background(Color.brandAccent)
-                        .clipShape(RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous))
-                }
-                .accessibilityIdentifier("startCoachingButton")
-                .accessibilityLabel("Start Coaching")
+                    Text(user.email)
+                        .font(.dsLabel)
+                        .foregroundStyle(Color.dsTextSecondary)
 
-                NavigationLink {
-                    ConversationListView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
-                } label: {
-                    Text("Your Conversations")
-                        .font(.dsButton)
-                        .foregroundStyle(Color.brandAccent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, DSSpacing.md)
-                }
-                .accessibilityIdentifier("yourConversationsButton")
-                .accessibilityLabel("Your Conversations")
+                    Spacer()
 
-                LoadingButton(
-                    "Log Out",
-                    isLoading: isLoggingOut,
-                    role: .destructive,
-                    action: {
-                        isLoggingOut = true
-                        Task {
-                            await onLogout()
-                            isLoggingOut = false
-                        }
+                    NavigationLink {
+                        ConversationView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
+                    } label: {
+                        Text("Start Coaching")
+                            .font(.dsButton)
+                            .foregroundStyle(Color.dsControlOnFill)
+                            .frame(maxWidth: .infinity, minHeight: DSControl.height)
+                            .background(Color.dsControlFill)
+                            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
                     }
-                )
-                .padding(.bottom, DSSpacing.xl)
+                    .accessibilityIdentifier("startCoachingButton")
+                    .accessibilityLabel("Start Coaching")
+
+                    // The secondary of the pair: same 64pt/16pt box, outlined
+                    // rather than filled. Depth is carried by the hairline, and
+                    // there is exactly one filled control per screen.
+                    NavigationLink {
+                        ConversationListView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
+                    } label: {
+                        Text("Your Conversations")
+                            .font(.dsButton)
+                            .foregroundStyle(Color.dsTextPrimary)
+                            .frame(maxWidth: .infinity, minHeight: DSControl.height)
+                            .background(Color.dsSurface)
+                            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                                    .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+                            )
+                    }
+                    .accessibilityIdentifier("yourConversationsButton")
+                    .accessibilityLabel("Your Conversations")
+
+                    LoadingButton(
+                        "Log Out",
+                        isLoading: isLoggingOut,
+                        role: .destructive,
+                        action: {
+                            isLoggingOut = true
+                            Task {
+                                await onLogout()
+                                isLoggingOut = false
+                            }
+                        }
+                    )
+                    .padding(.bottom, DSSpacing.xl)
+                }
+                .padding(.top, DSSpacing.lg)
+                .padding(.horizontal, DSSpacing.lg)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, DSSpacing.lg)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.dsBackground)
+            // BrandTopBar IS this screen's chrome; the stock bar would sit above
+            // it as a second, empty one.
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 }
@@ -88,11 +107,21 @@ private final class HomePreviewConversationClient: ConversationClientProtocol, @
     func setArchived(conversationId: UUID, archived: Bool) async throws {}
 }
 
-#Preview {
+@MainActor private var homePreview: some View {
     HomeView(
         user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User", emailVerified: true),
         conversationClient: HomePreviewConversationClient(),
         onProfileRequired: {},
         onLogout: {}
     )
+}
+
+#Preview("home - Light") {
+    homePreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("home - Dark") {
+    homePreview
+        .preferredColorScheme(.dark)
 }

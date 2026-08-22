@@ -3,7 +3,7 @@ import os
 
 @MainActor
 class OnboardingViewModel: ObservableObject {
-    enum Precision {
+    enum Precision: Hashable {
         case year
         case yearMonth
         case full

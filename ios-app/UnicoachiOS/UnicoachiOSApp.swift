@@ -24,6 +24,7 @@ struct UnicoachiOSApp: App {
                 case .onboarding(let user):
                     OnboardingView(
                         studentClient: viewModel.studentClient,
+                        userName: user.name,
                         onComplete: { viewModel.onOnboardingComplete(user) }
                     )
                 case .authenticated(let user):
@@ -63,6 +64,11 @@ struct UnicoachiOSApp: App {
                     )
                 }
             }
+            // One app-wide accent. Without it every stock control SwiftUI still
+            // owns — the navigation back button, toolbar glyphs, alert actions,
+            // text-selection handles — renders in the system blue, which is the
+            // exact colour this design removed.
+            .tint(Color.dsTextPrimary)
             .onOpenURL { url in
                 // Receive the Google OAuth callback under the SwiftUI App
                 // lifecycle (no UIApplicationDelegate exists).

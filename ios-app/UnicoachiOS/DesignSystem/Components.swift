@@ -2,23 +2,34 @@ import SwiftUI
 
 // MARK: - Button styles
 
+/// The primary control: a `ControlFill` box at the shared 64pt/16pt control
+/// rhythm. The fill inverts between colour schemes (near-black label-on-white in
+/// dark), which is deliberate — see `Color.dsControlFill`.
+///
+/// It is emphatically **not** the brand gradient or `brandAccent`: white on
+/// `#EE7330` is 2.95:1 (DESIGN.md §6), so the brand colour is chrome and
+/// selection only, never a large tappable surface.
 struct PrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+
+    // The 64pt control height is a measured value, not a raw one: scaling it
+    // relative to .headline (the label's text style) keeps the box around the
+    // label at larger Dynamic Type sizes instead of clipping it.
+    @ScaledMetric(relativeTo: .headline) private var height: CGFloat = DSControl.height
 
     init() {}
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.dsButton)
-            .foregroundStyle(Color.brandOnAccent)
-            // Intrinsic horizontal inset so the capsule has breathing room even in
+            .foregroundStyle(Color.dsControlOnFill)
+            // Intrinsic horizontal inset so the control has breathing room even in
             // content-sized containers (e.g. ContentUnavailableView actions); the
             // maxWidth below still stretches it edge-to-edge in full-width forms.
             .padding(.horizontal, DSSpacing.lg)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, DSSpacing.md)
-            .background(Color.brandAccent)
-            .clipShape(RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous))
+            .frame(maxWidth: .infinity, minHeight: height)
+            .background(Color.dsControlFill)
+            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
             .opacity(opacity(isPressed: configuration.isPressed))
     }
 
@@ -28,8 +39,14 @@ struct PrimaryButtonStyle: ButtonStyle {
     }
 }
 
+/// The destructive control. Same 64pt/16pt box as `PrimaryButtonStyle`, but
+/// outlined rather than filled: this design communicates depth by border alone
+/// (DESIGN.md §3), so the tinted wash the style used to carry is gone and the
+/// `dsError` semantics live in the label and the hairline.
 struct DestructiveButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+
+    @ScaledMetric(relativeTo: .headline) private var height: CGFloat = DSControl.height
 
     init() {}
 
@@ -37,19 +54,17 @@ struct DestructiveButtonStyle: ButtonStyle {
         configuration.label
             .font(.dsButton)
             .foregroundStyle(Color.dsError)
-            // Intrinsic horizontal inset so the capsule has breathing room even in
+            // Intrinsic horizontal inset so the control has breathing room even in
             // content-sized containers; the maxWidth below still stretches it
             // edge-to-edge in full-width forms.
             .padding(.horizontal, DSSpacing.lg)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, DSSpacing.md)
-            .background(
-                ZStack {
-                    Color.dsSurface
-                    Color.dsError.opacity(0.12)
-                }
+            .frame(maxWidth: .infinity, minHeight: height)
+            .background(Color.dsSurface)
+            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                    .stroke(Color.dsError, lineWidth: DSControl.borderWidth)
             )
-            .clipShape(RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous))
             .opacity(opacity(isPressed: configuration.isPressed))
     }
 
@@ -118,15 +133,27 @@ struct LoadingButton: View {
         }
     }
 
+    /// The spinner is tinted for the box it sits in: the primary control is a
+    /// near-black (light) / white (dark) fill, where an untinted system spinner
+    /// all but disappears; the destructive control is an outlined surface.
+    private var spinnerTint: Color {
+        switch role {
+        case .primary: return Color.dsControlOnFill
+        case .destructive: return Color.dsError
+        }
+    }
+
     @ViewBuilder
     private var progressView: some View {
         if let progressAccessibilityIdentifier {
             ProgressView()
                 .progressViewStyle(.circular)
+                .tint(spinnerTint)
                 .accessibilityIdentifier(progressAccessibilityIdentifier)
         } else {
             ProgressView()
                 .progressViewStyle(.circular)
+                .tint(spinnerTint)
         }
     }
 }
@@ -165,13 +192,15 @@ struct CircularIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.dsButton)
-            .foregroundStyle(Color.brandOnAccent)
+            .foregroundStyle(Color.dsControlOnFill)
             // Symmetric padding around the intrinsic glyph; combined with
             // .clipShape(Circle()) this yields a circle sized from its content
             // (no fixed point size or raw diameter), satisfying the module's
             // token-only and Dynamic-Type invariants.
             .padding(DSSpacing.sm)
-            .background(Color.brandAccent)
+            // ControlFill, not brandAccent: an arrow on `#EE7330` is 2.95:1
+            // (DESIGN.md §6), and the brand colour is chrome, not a control fill.
+            .background(Color.dsControlFill)
             .clipShape(Circle())
             .opacity(opacity(isPressed: configuration.isPressed))
     }
@@ -226,13 +255,13 @@ struct CircularIconButton: View {
             ProgressView()
                 .progressViewStyle(.circular)
                 // ProgressView ignores the style's foregroundStyle; .tint colors
-                // the spinner so it reads against the brandAccent fill.
-                .tint(Color.brandOnAccent)
+                // the spinner so it reads against the ControlFill circle.
+                .tint(Color.dsControlOnFill)
                 .accessibilityIdentifier(progressAccessibilityIdentifier)
         } else {
             ProgressView()
                 .progressViewStyle(.circular)
-                .tint(Color.brandOnAccent)
+                .tint(Color.dsControlOnFill)
         }
     }
 }
@@ -253,6 +282,8 @@ struct LabeledField<Value: Hashable>: View {
     private let accessibilityIdentifier: String?
     private let accessibilityLabelText: String?
     private let onSubmit: () -> Void
+
+    @ScaledMetric(relativeTo: .body) private var height: CGFloat = DSControl.height
 
     init(
         _ label: String,
@@ -299,12 +330,15 @@ struct LabeledField<Value: Hashable>: View {
                 .submitLabel(submitLabel)
                 .focused(focus, equals: equals)
                 .onSubmit(onSubmit)
-                .padding(DSSpacing.md)
+                // 20pt leading inset and the 64pt control height (DESIGN.md §5),
+                // so a field and a button read as the same kind of object.
+                .padding(.horizontal, DSControl.textInset)
+                .frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
                 .background(Color.dsSurface)
-                .clipShape(RoundedRectangle(cornerRadius: DSRadius.field, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: DSRadius.field, style: .continuous)
-                        .stroke(error == nil ? Color.dsFieldBorder : Color.dsError, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                        .stroke(error == nil ? Color.dsFieldBorder : Color.dsError, lineWidth: DSControl.borderWidth)
                 )
                 .modifier(OptionalIdentifier(identifier: accessibilityIdentifier))
                 .modifier(OptionalLabel(label: accessibilityLabelText))
@@ -322,6 +356,261 @@ struct LabeledField<Value: Hashable>: View {
         } else {
             TextField(label, text: text)
         }
+    }
+}
+
+// MARK: - OptionCard
+
+/// The reference's signature control: a 64pt, 16pt-radius outlined card with a
+/// leading radio circle and a large `dsOption` label (DESIGN.md §5). Selection
+/// is carried by the radio's `brandAccent` fill and by the card's border
+/// darkening — never by a filled card, because a saturated tappable surface is
+/// exactly what the palette forbids (§6).
+struct OptionCard: View {
+    private let title: String
+    private let isSelected: Bool
+    private let accessibilityIdentifier: String?
+    private let action: () -> Void
+
+    @ScaledMetric(relativeTo: .title3) private var height: CGFloat = DSControl.height
+    @ScaledMetric(relativeTo: .title3) private var radioDiameter: CGFloat = DSControl.radioDiameter
+
+    init(
+        _ title: String,
+        isSelected: Bool,
+        accessibilityIdentifier: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.isSelected = isSelected
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: DSSpacing.md) {
+                radio
+                Text(title)
+                    .font(.dsOption)
+                    .foregroundStyle(Color.dsTextPrimary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, DSControl.textInset)
+            .frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
+            .background(Color.dsSurface)
+            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                    .stroke(borderColor, lineWidth: DSControl.borderWidth)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .modifier(OptionalIdentifier(identifier: accessibilityIdentifier))
+    }
+
+    /// The selected card's border darkens to `TextPrimary`; unselected cards
+    /// keep the layout-carrying `FieldBorder` hairline.
+    private var borderColor: Color {
+        isSelected ? Color.dsTextPrimary : Color.dsFieldBorder
+    }
+
+    private var radio: some View {
+        ZStack {
+            Circle()
+                .strokeBorder(isSelected ? Color.brandAccent : Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+                .frame(width: radioDiameter, height: radioDiameter)
+
+            if isSelected {
+                Circle()
+                    .fill(Color.brandAccent)
+                    // Inset by two hairlines so the ring stays visible around
+                    // the fill, as it does in the reference.
+                    .frame(
+                        width: radioDiameter - DSControl.borderWidth * 4,
+                        height: radioDiameter - DSControl.borderWidth * 4
+                    )
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+// MARK: - SegmentedSelector
+
+/// A segmented choice in the motif's vocabulary, replacing SwiftUI's
+/// `.pickerStyle(.segmented)` — which renders a stock grey capsule that
+/// contradicts both §2 ("no grey fills; separation is by border, not by tint")
+/// and §3 ("emphatically not a capsule").
+///
+/// One outlined `DSRadius.control` container holding N segments; the selected
+/// segment carries a `brandAccent` fill with a **black** label. Black, not
+/// white: this is the selection accent §1 sanctions, and black on `#EE7330` is
+/// 7.13:1 where white is 2.95:1 (§6).
+struct SegmentedSelector<Tag: Hashable>: View {
+    private let options: [(tag: Tag, title: String)]
+    private let selection: Binding<Tag>
+    private let accessibilityIdentifier: String?
+
+    @ScaledMetric(relativeTo: .subheadline) private var height: CGFloat = DSControl.height
+
+    init(
+        options: [(tag: Tag, title: String)],
+        selection: Binding<Tag>,
+        accessibilityIdentifier: String? = nil
+    ) {
+        self.options = options
+        self.selection = selection
+        self.accessibilityIdentifier = accessibilityIdentifier
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(options, id: \.tag) { option in
+                segment(option)
+            }
+        }
+        .padding(DSSpacing.xs)
+        .frame(maxWidth: .infinity, minHeight: height)
+        .background(Color.dsSurface)
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+        )
+        .modifier(OptionalIdentifier(identifier: accessibilityIdentifier))
+    }
+
+    private func segment(_ option: (tag: Tag, title: String)) -> some View {
+        let isSelected = selection.wrappedValue == option.tag
+        return Button {
+            selection.wrappedValue = option.tag
+        } label: {
+            Text(option.title)
+                .font(.dsLabel)
+                .foregroundStyle(isSelected ? Color.dsOnBrandAccent : Color.dsTextPrimary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(isSelected ? Color.brandAccent : Color.clear)
+                // The inner radius is the outer one less the container inset, so
+                // the selected segment's corners stay concentric with the box.
+                .clipShape(RoundedRectangle(cornerRadius: DSRadius.control - DSSpacing.xs, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+// MARK: - BrandTopBar
+
+/// Full-bleed brand chrome: the gradient runs edge to edge and extends under
+/// the status bar, carrying the `uni.COACH` wordmark leading-aligned in white
+/// (DESIGN.md §5). This replaces the stock `.navigationTitle` bar on branded
+/// screens.
+///
+/// The white wordmark on the gradient is 2.95:1 and is the **single sanctioned
+/// exception** to §6 — it is a logotype, not copy. Nothing else may follow it
+/// onto the gradient: any other text there must be black, or the gradient
+/// darkened for that surface.
+struct BrandTopBar: View {
+    init() {}
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text("uni.COACH")
+                .font(.dsButton)
+                .foregroundStyle(Color.brandOnAccent)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, DSSpacing.lg)
+        .frame(maxWidth: .infinity, minHeight: DSControl.topBarHeight)
+        .background(DSGradient.brand.ignoresSafeArea(edges: .top))
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityLabel("uni.COACH")
+    }
+}
+
+// MARK: - StepIndicator
+
+/// N circles joined by a 1pt rail, the current step filled (DESIGN.md §5).
+struct StepIndicator: View {
+    private let count: Int
+    private let current: Int
+
+    @ScaledMetric(relativeTo: .caption) private var diameter: CGFloat = 12
+
+    /// - Parameters:
+    ///   - count: total number of steps; values below 1 render nothing.
+    ///   - current: zero-based index of the step in progress.
+    init(count: Int, current: Int) {
+        self.count = count
+        self.current = current
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(0 ..< max(count, 0), id: \.self) { index in
+                if index > 0 { rail }
+                circle(isCurrent: index == current)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(current + 1) of \(count)")
+    }
+
+    private var rail: some View {
+        Rectangle()
+            .fill(Color.dsTextPrimary)
+            .frame(height: DSControl.borderWidth)
+    }
+
+    @ViewBuilder
+    private func circle(isCurrent: Bool) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color.dsBackground)
+            Circle()
+                .strokeBorder(Color.dsTextPrimary, lineWidth: DSControl.borderWidth)
+            if isCurrent {
+                Circle()
+                    .fill(Color.dsTextPrimary)
+                    .padding(DSSpacing.xs / 2)
+            }
+        }
+        .frame(width: diameter, height: diameter)
+    }
+}
+
+// MARK: - LogoMark
+
+/// The circular brand mark: a topLeading→bottomTrailing gradient carrying a
+/// heavy white `U`, sized as a fraction of its container's width (DESIGN.md §5).
+///
+/// The mark is artwork, not copy, so its glyph scales with the circle rather
+/// than with Dynamic Type — the one place a size-taking font token is correct.
+struct LogoMark: View {
+    private let widthFraction: CGFloat
+
+    init(widthFraction: CGFloat = DSLogo.widthFraction) {
+        self.widthFraction = widthFraction
+    }
+
+    var body: some View {
+        Circle()
+            .fill(DSGradient.brandDiagonal)
+            .overlay {
+                GeometryReader { proxy in
+                    Text("U")
+                        .font(.dsLogoGlyph(diameter: proxy.size.width))
+                        .foregroundStyle(Color.brandOnAccent)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            }
+            .aspectRatio(1, contentMode: .fit)
+            .containerRelativeFrame(.horizontal) { width, _ in width * widthFraction }
+            .accessibilityHidden(true)
     }
 }
 
@@ -364,13 +653,15 @@ struct FormErrorBanner: View {
         .font(.dsCaption)
         .foregroundStyle(Color.dsError)
         .padding(DSSpacing.md)
-        .background(
-            ZStack {
-                Color.dsSurface
-                Color.dsError.opacity(0.12)
-            }
+        // Outlined, not washed: depth is communicated by border alone
+        // (DESIGN.md §3), so the banner is a flat surface with a `dsError`
+        // hairline at the shared control radius.
+        .background(Color.dsSurface)
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                .stroke(Color.dsError, lineWidth: DSControl.borderWidth)
         )
-        .clipShape(RoundedRectangle(cornerRadius: DSRadius.field, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(message)
     }
@@ -452,5 +743,57 @@ private struct LabeledFieldPreviewHost: View {
 
 #Preview("Fields - Dark") {
     LabeledFieldPreviewHost()
+        .preferredColorScheme(.dark)
+}
+
+// MARK: - Motif component previews
+
+private struct MotifPreviewHost: View {
+    @State private var selectedYear = 2029
+
+    private let years = [2027, 2028, 2029, 2030]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            BrandTopBar()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: DSSpacing.lg) {
+                    Text("Welcome, Kendall")
+                        .dsOverlineStyle()
+                        .foregroundStyle(Color.dsTextPrimary)
+
+                    StepIndicator(count: 4, current: 0)
+
+                    Text("When will you graduate?")
+                        .font(.dsDisplay)
+                        .foregroundStyle(Color.dsTextPrimary)
+
+                    VStack(spacing: DSControl.stackGap) {
+                        ForEach(years, id: \.self) { year in
+                            OptionCard(String(year), isSelected: year == selectedYear) {
+                                selectedYear = year
+                            }
+                        }
+                    }
+
+                    LogoMark()
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(DSSpacing.lg)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.dsBackground)
+    }
+}
+
+#Preview("Motif - Light") {
+    MotifPreviewHost()
+        .preferredColorScheme(.light)
+}
+
+#Preview("Motif - Dark") {
+    MotifPreviewHost()
         .preferredColorScheme(.dark)
 }

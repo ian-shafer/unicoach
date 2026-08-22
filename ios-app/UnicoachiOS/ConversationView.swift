@@ -65,6 +65,7 @@ struct ConversationView: View {
         VStack(spacing: DSSpacing.sm) {
             ProgressView()
                 .progressViewStyle(.circular)
+                .tint(Color.dsTextPrimary)
             Text("Loading conversation…")
                 .font(.dsCaption)
                 .foregroundStyle(Color.dsTextSecondary)
@@ -82,7 +83,7 @@ struct ConversationView: View {
                 Task { await viewModel.loadHistory() }
             }
             .font(.dsButton)
-            .foregroundStyle(Color.brandAccent)
+            .foregroundStyle(Color.dsTextPrimary)
             .accessibilityIdentifier("historyRetryButton")
             .accessibilityLabel("Retry")
         }
@@ -149,15 +150,24 @@ struct ConversationView: View {
         viewModel.isStreaming && turn.coachMessage == nil && turn.id == viewModel.turns.last?.id
     }
 
+    /// Bubbles are **outlined, never filled** (DESIGN.md §8 extrapolation): a
+    /// saturated user bubble is exactly the large brand-coloured surface §6
+    /// rules out, and this design carries depth by border alone. The user's turn
+    /// is distinguished by border weight — a darkened `TextPrimary` hairline
+    /// against the coach's `FieldBorder` one — not by colour.
     private func messageBubble(text: String, isUser: Bool, identifier: String) -> some View {
         HStack {
             if isUser { Spacer(minLength: DSSpacing.xl) }
             Text(text)
                 .font(.dsBody)
-                .foregroundStyle(isUser ? Color.brandOnAccent : Color.dsTextPrimary)
+                .foregroundStyle(Color.dsTextPrimary)
                 .padding(DSSpacing.md)
-                .background(isUser ? Color.brandAccent : Color.dsSurface)
-                .clipShape(RoundedRectangle(cornerRadius: DSRadius.field, style: .continuous))
+                .background(Color.dsSurface)
+                .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                        .stroke(isUser ? Color.dsTextPrimary : Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+                )
                 .accessibilityIdentifier(identifier)
             if !isUser { Spacer(minLength: DSSpacing.xl) }
         }
@@ -167,6 +177,7 @@ struct ConversationView: View {
         HStack(spacing: DSSpacing.sm) {
             ProgressView()
                 .progressViewStyle(.circular)
+                .tint(Color.dsTextPrimary)
             Text("Coach is typing…")
                 .font(.dsCaption)
                 .foregroundStyle(Color.dsTextSecondary)
@@ -202,7 +213,7 @@ struct ConversationView: View {
                 Task { await viewModel.retry(turnId) }
             }
             .font(.dsButton)
-            .foregroundStyle(Color.brandAccent)
+            .foregroundStyle(Color.dsTextPrimary)
             .accessibilityIdentifier("retryButton")
             .accessibilityLabel("Retry")
         }
@@ -226,10 +237,18 @@ struct ConversationView: View {
         TextField("Message", text: $viewModel.messageText, axis: .vertical)
             .font(.dsBody)
             .foregroundStyle(Color.dsTextPrimary)
-            .padding(DSSpacing.md)
+            .padding(.horizontal, DSControl.textInset)
+            .padding(.vertical, DSSpacing.md)
             .padding(.trailing, sendButtonWidth + DSSpacing.sm)
+            .frame(minHeight: DSControl.height)
             .background(Color.dsSurface)
-            .clipShape(RoundedRectangle(cornerRadius: DSRadius.field, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+            // The composer is a LabeledField in everything but name: same
+            // radius, same hairline, same 20pt leading inset.
+            .overlay(
+                RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                    .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+            )
             .focused($isComposerFocused)
             .disabled(isComposerDisabled)
             .accessibilityIdentifier("messageField")
@@ -326,8 +345,18 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
     func setArchived(conversationId: UUID, archived: Bool) async throws {}
 }
 
-#Preview {
+@MainActor private var conversationPreview: some View {
     NavigationStack {
         ConversationView(conversationClient: ConversationPreviewClient(), onProfileRequired: {})
     }
+}
+
+#Preview("conversation - Light") {
+    conversationPreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("conversation - Dark") {
+    conversationPreview
+        .preferredColorScheme(.dark)
 }
