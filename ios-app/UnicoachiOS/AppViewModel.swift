@@ -63,6 +63,17 @@ class AppViewModel: ObservableObject {
         authState = .authenticated(user)
     }
 
+    /// A successful change of email address, from either of `ChangeEmailView`'s
+    /// call sites. The server clears verification when the address changes, so
+    /// the returned user is unverified and the app must leave `.authenticated`
+    /// at once — RFC 117 made this path reachable for a *verified* student, and
+    /// without this the app would keep showing a verified session for an
+    /// address that is no longer verified. Same shape as `onLoginSuccess`: hand
+    /// the fresh user to the router and let it decide the state.
+    func onEmailChanged(_ user: PublicUser) async {
+        await resolveProfileState(user)
+    }
+
     /// Re-onboarding entry point for the abnormal `409 student_profile_required`
     /// edge: profile gating guarantees HomeView is reachable only with a profile,
     /// so a `409` from the stream endpoint means the profile was deleted

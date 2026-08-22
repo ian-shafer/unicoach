@@ -514,21 +514,83 @@ struct SegmentedSelector<Tag: Hashable>: View {
 /// exception** to §6 — it is a logotype, not copy. Nothing else may follow it
 /// onto the gradient: any other text there must be black, or the gradient
 /// darkened for that surface.
-struct BrandTopBar: View {
-    init() {}
+///
+/// An optional **leading accessory** may precede the wordmark — the slide-over
+/// menu button at the root of the authenticated tree (DESIGN.md §7). It is a
+/// generic slot rather than a baked-in button so the bar stays a chrome
+/// primitive; screens without one keep calling `BrandTopBar()`.
+struct BrandTopBar<LeadingAccessory: View>: View {
+    private let leadingAccessory: LeadingAccessory
+
+    init(@ViewBuilder leadingAccessory: () -> LeadingAccessory) {
+        self.leadingAccessory = leadingAccessory()
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: DSSpacing.md) {
+            leadingAccessory
             Text("uni.COACH")
                 .font(.dsButton)
                 .foregroundStyle(Color.brandOnAccent)
+                // Artwork, not copy: capped growth, and it may never wrap or
+                // hyphenate. Shrink-to-fit is the backstop on a narrow device,
+                // so it is never truncated either. The accessibility label and
+                // the header trait are deliberately NOT reduced with it.
+                .lineLimit(1)
+                .minimumScaleFactor(DSLogo.wordmarkMinScale)
+                .dynamicTypeSize(...DSLogo.wordmarkMaxDynamicTypeSize)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityLabel("uni.COACH")
             Spacer(minLength: 0)
         }
         .padding(.horizontal, DSSpacing.lg)
         .frame(maxWidth: .infinity, minHeight: DSControl.topBarHeight)
         .background(DSGradient.brand.ignoresSafeArea(edges: .top))
-        .accessibilityAddTraits(.isHeader)
-        .accessibilityLabel("uni.COACH")
+    }
+}
+
+extension BrandTopBar where LeadingAccessory == EmptyView {
+    /// The bar with no accessory: chrome only.
+    init() {
+        self.init(leadingAccessory: { EmptyView() })
+    }
+}
+
+/// A control sized for the top bar's gradient. The glyph is **black**, not the
+/// wordmark's white: white on `#EE7330` is 2.95:1 and the logotype is the one
+/// sanctioned exception (DESIGN.md §6), so anything that follows it onto the
+/// gradient takes `dsOnBrandAccent` — the same rule the segmented control's
+/// selected label follows. The box is the bar's own content height, which is
+/// also the platform's minimum tap target.
+struct BrandTopBarButton: View {
+    private let systemImage: String
+    private let accessibilityIdentifier: String
+    private let accessibilityLabelText: String
+    private let action: () -> Void
+
+    init(
+        systemImage: String,
+        accessibilityIdentifier: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) {
+        self.systemImage = systemImage
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.accessibilityLabelText = accessibilityLabel
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.dsTopBarGlyph)
+                .foregroundStyle(Color.dsOnBrandAccent)
+                .frame(minWidth: DSControl.topBarHeight, minHeight: DSControl.topBarHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(accessibilityIdentifier)
+        .accessibilityLabel(accessibilityLabelText)
     }
 }
 
@@ -786,6 +848,33 @@ private struct MotifPreviewHost: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.dsBackground)
     }
+}
+
+private var topBarPreview: some View {
+    VStack(spacing: DSSpacing.lg) {
+        BrandTopBar()
+        BrandTopBar {
+            BrandTopBarButton(
+                systemImage: "line.3.horizontal",
+                accessibilityIdentifier: "menuButton",
+                accessibilityLabel: "Menu",
+                action: {}
+            )
+        }
+        Spacer()
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(Color.dsBackground)
+}
+
+#Preview("TopBar - Light") {
+    topBarPreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("TopBar - Dark") {
+    topBarPreview
+        .preferredColorScheme(.dark)
 }
 
 #Preview("Motif - Light") {

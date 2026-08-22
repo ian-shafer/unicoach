@@ -19,6 +19,7 @@
 		EEEE00010000000000000B08 /* AppleSignInProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F08 /* AppleSignInProviderTests.swift */; };
 		EEEE00010000000000000B09 /* GoogleSignInProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEEE00010000000000000F09 /* GoogleSignInProviderTests.swift */; };
 		188CC6069EC5B0D0E4D317F9 /* LoginViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A9C9A24C5D3D920ADB5657 /* LoginViewModel.swift */; };
+		A634343CD12A20105551B02A /* AppearancePreference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A64E452678522013D636103 /* AppearancePreference.swift */; };
 		1B5D67F44509AAC5162D2D9B /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76885EFAAF600E01FC2CA4E9 /* AppViewModel.swift */; };
 		24AEAB991B392D40D5F4865D /* UserAuthState.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF26463FA3E9D6158360F6B0 /* UserAuthState.swift */; };
 		2A8F34E11A9B308FF97B5C93 /* ErrorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0492882B3D047293ADFE06B /* ErrorView.swift */; };
@@ -27,7 +28,10 @@
 		473585B6D2515A0F3F04F832 /* AuthFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */; };
 		51EDF3D4D368E28FAD40A072 /* AuthClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E07CF0E17D649CCDB28346C4 /* AuthClientTests.swift */; };
 		63C0E03A53327D2F2C1DF54B /* AppViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */; };
-		7A8C8BD03AA7CC720818E921 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11EB23D4BA12D429EC020603 /* HomeView.swift */; };
+		40A0FA73AC7259D3EBAE06B6 /* ChangeEmailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0762040579E46D6AC7EA267 /* ChangeEmailView.swift */; };
+		4F6B14FB1C441914045D1527 /* AuthenticatedRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81BE4D11329AC4C0F10A5A35 /* AuthenticatedRootView.swift */; };
+		0294B0EC05C2308BE50F05A7 /* SlideOverMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = F93E6C08A23BEDFEA12EBEBE /* SlideOverMenu.swift */; };
+		1DE32917ABB4B7AA4F80F289 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43590BB3FD057F8D04CD03EE /* SettingsView.swift */; };
 		7FADE3CF9342DBBA420151F0 /* AuthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6825BBE278E8DA9E9B075B91 /* AuthClient.swift */; };
 		8003C3DC5A8DDE362AB90D04 /* RegistrationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 571A4B19EB5CC138BE8B778E /* RegistrationView.swift */; };
 		8A9A885769335695678A41C7 /* UnicoachiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0369D9C82AA6374C4EEF5C33 /* UnicoachiOSApp.swift */; };
@@ -70,6 +74,7 @@
 		CCCC00010000000000000B02 /* VerificationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F02 /* VerificationViewModel.swift */; };
 		CCCC00010000000000000B03 /* ChangeEmailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F03 /* ChangeEmailViewModel.swift */; };
 		CCCC00010000000000000B04 /* VerificationViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F04 /* VerificationViewModelTests.swift */; };
+		25404F7F3AAEACEA33261AEB /* AppearancePreferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08EF9B956DDA48C69EEDC6C2 /* AppearancePreferenceTests.swift */; };
 		CCCC00010000000000000B05 /* ChangeEmailViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -97,7 +102,10 @@
 		EEEE00010000000000000F09 /* GoogleSignInProviderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GoogleSignInProviderTests.swift; sourceTree = "<group>"; };
 		008F6AD988DC499C02406DF2 /* AppViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppViewModelTests.swift; sourceTree = "<group>"; };
 		0369D9C82AA6374C4EEF5C33 /* UnicoachiOSApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UnicoachiOSApp.swift; sourceTree = "<group>"; };
-		11EB23D4BA12D429EC020603 /* HomeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		F0762040579E46D6AC7EA267 /* ChangeEmailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChangeEmailView.swift; sourceTree = "<group>"; };
+		81BE4D11329AC4C0F10A5A35 /* AuthenticatedRootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuthenticatedRootView.swift; sourceTree = "<group>"; };
+		F93E6C08A23BEDFEA12EBEBE /* SlideOverMenu.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SlideOverMenu.swift; sourceTree = "<group>"; };
+		43590BB3FD057F8D04CD03EE /* SettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		24C7FAB0BDD4E68265F0BDE6 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		2C8A2A153A20CE21B45852C9 /* RegistrationViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RegistrationViewModel.swift; sourceTree = "<group>"; };
 		31BB1219080B31BB2938AB80 /* UnicoachiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = UnicoachiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -108,6 +116,7 @@
 		6825BBE278E8DA9E9B075B91 /* AuthClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuthClient.swift; sourceTree = "<group>"; };
 		6BA3C895E84184F93D916BB5 /* Models.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuthFlowView.swift; sourceTree = "<group>"; };
+		6A64E452678522013D636103 /* AppearancePreference.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppearancePreference.swift; sourceTree = "<group>"; };
 		76885EFAAF600E01FC2CA4E9 /* AppViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
 		841CE404B1BC74E8DC98E67E /* UnicoachiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = UnicoachiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		883B58CD37496DA7F775524A /* RegistrationViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RegistrationViewModelTests.swift; sourceTree = "<group>"; };
@@ -149,6 +158,7 @@
 		CCCC00010000000000000F02 /* VerificationViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerificationViewModel.swift; sourceTree = "<group>"; };
 		CCCC00010000000000000F03 /* ChangeEmailViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChangeEmailViewModel.swift; sourceTree = "<group>"; };
 		CCCC00010000000000000F04 /* VerificationViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerificationViewModelTests.swift; sourceTree = "<group>"; };
+		08EF9B956DDA48C69EEDC6C2 /* AppearancePreferenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppearancePreferenceTests.swift; sourceTree = "<group>"; };
 		CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChangeEmailViewModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -195,11 +205,15 @@
 				BC933E46CFC14069D3498016 /* Assets.xcassets */,
 				EF26463FA3E9D6158360F6B0 /* UserAuthState.swift */,
 				4C1C30C6AA0A048AF2C056AB /* InfrastructureError.swift */,
+				6A64E452678522013D636103 /* AppearancePreference.swift */,
 				76885EFAAF600E01FC2CA4E9 /* AppViewModel.swift */,
 				D0492882B3D047293ADFE06B /* ErrorView.swift */,
 				95688CBB1214D3278FA13E27 /* LoginView.swift */,
 				A0A9C9A24C5D3D920ADB5657 /* LoginViewModel.swift */,
-				11EB23D4BA12D429EC020603 /* HomeView.swift */,
+				F0762040579E46D6AC7EA267 /* ChangeEmailView.swift */,
+				81BE4D11329AC4C0F10A5A35 /* AuthenticatedRootView.swift */,
+				F93E6C08A23BEDFEA12EBEBE /* SlideOverMenu.swift */,
+				43590BB3FD057F8D04CD03EE /* SettingsView.swift */,
 				6CF902DE6784F7BEE43356F9 /* AuthFlowView.swift */,
 				DDDD00010000000000000F01 /* GoogleSignInProvider.swift */,
 				DDDD00010000000000000F02 /* GoogleSignInButton.swift */,
@@ -271,6 +285,7 @@
 				AAAA00020000000000000F08 /* MockConversationClient.swift */,
 				AAAA00020000000000000F0B /* ConversationListViewModelTests.swift */,
 				CCCC00010000000000000F04 /* VerificationViewModelTests.swift */,
+				08EF9B956DDA48C69EEDC6C2 /* AppearancePreferenceTests.swift */,
 				CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */,
 			);
 			path = UnicoachiOSTests;
@@ -408,11 +423,15 @@
 				8A9A885769335695678A41C7 /* UnicoachiOSApp.swift in Sources */,
 				24AEAB991B392D40D5F4865D /* UserAuthState.swift in Sources */,
 				E52E30993062D5052E73B728 /* InfrastructureError.swift in Sources */,
+				A634343CD12A20105551B02A /* AppearancePreference.swift in Sources */,
 				1B5D67F44509AAC5162D2D9B /* AppViewModel.swift in Sources */,
 				2A8F34E11A9B308FF97B5C93 /* ErrorView.swift in Sources */,
 				305DFBB6DF5DDD6CFD662B17 /* LoginView.swift in Sources */,
 				188CC6069EC5B0D0E4D317F9 /* LoginViewModel.swift in Sources */,
-				7A8C8BD03AA7CC720818E921 /* HomeView.swift in Sources */,
+				40A0FA73AC7259D3EBAE06B6 /* ChangeEmailView.swift in Sources */,
+				4F6B14FB1C441914045D1527 /* AuthenticatedRootView.swift in Sources */,
+				0294B0EC05C2308BE50F05A7 /* SlideOverMenu.swift in Sources */,
+				1DE32917ABB4B7AA4F80F289 /* SettingsView.swift in Sources */,
 				473585B6D2515A0F3F04F832 /* AuthFlowView.swift in Sources */,
 				DDDD00010000000000000B01 /* GoogleSignInProvider.swift in Sources */,
 				DDDD00010000000000000B02 /* GoogleSignInButton.swift in Sources */,
@@ -467,6 +486,7 @@
 				AAAA00020000000000000B08 /* MockConversationClient.swift in Sources */,
 				AAAA00020000000000000B0B /* ConversationListViewModelTests.swift in Sources */,
 				CCCC00010000000000000B04 /* VerificationViewModelTests.swift in Sources */,
+				25404F7F3AAEACEA33261AEB /* AppearancePreferenceTests.swift in Sources */,
 				CCCC00010000000000000B05 /* ChangeEmailViewModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

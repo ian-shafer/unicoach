@@ -32,6 +32,64 @@ final class ConversationListViewModelTests: XCTestCase {
         XCTAssertEqual(mock.listConversationsCallCount, 1)
     }
 
+    func testRefreshKeepsExistingRowsOnFailure() async {
+        // The drawer's list must never blink out: a failed refresh leaves the
+        // rows that are already on screen.
+        let mock = MockConversationClient()
+        mock.listConversationsResult = [makeConversation(name: "Existing")]
+        let vm = ConversationListViewModel(conversationClient: mock)
+        await vm.load()
+
+        mock.listConversationsError = ErrorResponse(code: "SERVER_ERROR", message: "Boom", fieldErrors: nil)
+        await vm.refresh()
+
+        guard case .loaded(let conversations) = vm.state else {
+            return XCTFail("expected .loaded, got [\(vm.state)]")
+        }
+        XCTAssertEqual(conversations.map(\.name), ["Existing"])
+    }
+
+    func testRefreshNeverPassesThroughLoading() async {
+        let mock = MockConversationClient()
+        mock.listConversationsResult = [makeConversation(name: "Existing")]
+        let vm = ConversationListViewModel(conversationClient: mock)
+        await vm.load()
+
+        mock.listConversationsResult = [makeConversation(name: "Newer"), makeConversation(name: "Existing")]
+        await vm.refresh()
+
+        guard case .loaded(let conversations) = vm.state else {
+            return XCTFail("expected .loaded, got [\(vm.state)]")
+        }
+        XCTAssertEqual(conversations.map(\.name), ["Newer", "Existing"])
+    }
+
+    func testRefreshFallsBackToLoadWhenNothingIsOnScreenYet() async {
+        let mock = MockConversationClient()
+        mock.listConversationsResult = [makeConversation(name: "First")]
+        let vm = ConversationListViewModel(conversationClient: mock)
+
+        await vm.refresh()
+
+        guard case .loaded(let conversations) = vm.state else {
+            return XCTFail("expected .loaded, got [\(vm.state)]")
+        }
+        XCTAssertEqual(conversations.map(\.name), ["First"])
+        XCTAssertEqual(mock.listConversationsCallCount, 1)
+    }
+
+    func testRefreshSurfacesAnEmptiedList() async {
+        let mock = MockConversationClient()
+        mock.listConversationsResult = [makeConversation(name: "Existing")]
+        let vm = ConversationListViewModel(conversationClient: mock)
+        await vm.load()
+
+        mock.listConversationsResult = []
+        await vm.refresh()
+
+        XCTAssertEqual(vm.state, .empty)
+    }
+
     func testLoadEmptyTransitionsToEmpty() async {
         let mock = MockConversationClient()
         mock.listConversationsResult = []

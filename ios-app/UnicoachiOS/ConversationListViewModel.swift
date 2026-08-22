@@ -48,6 +48,26 @@ final class ConversationListViewModel: ObservableObject {
         }
     }
 
+    /// A reload that keeps the rows already on screen while it runs. `load()`
+    /// resets to `.loading`, which is right when it owns the whole screen and
+    /// wrong for the slide-over menu: emptying the drawer's list as it opens is
+    /// exactly the "animates in empty, then populates" flicker the menu must not
+    /// have. A failure here leaves the previous rows in place — a slightly stale
+    /// list beats a list that vanishes. Falls back to `load()` when there is
+    /// nothing on screen to preserve.
+    func refresh() async {
+        guard case .loaded = state else {
+            await load()
+            return
+        }
+        do {
+            let conversations = try await conversationClient.listConversations()
+            state = conversations.isEmpty ? .empty : .loaded(conversations)
+        } catch {
+            // Keep the rows already showing.
+        }
+    }
+
     /// Archives a conversation, removing its row optimistically and rolling back
     /// on failure. The view model only ever archives (the unarchive UI is out of
     /// scope), but the client carries no archive-only assumption.

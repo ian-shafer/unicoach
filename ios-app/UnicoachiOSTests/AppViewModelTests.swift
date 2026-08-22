@@ -167,6 +167,29 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.authState, .onboarding(user))
     }
 
+    func testOnEmailChangedRoutesToVerificationRequired() async {
+        let user = PublicUser(id: UUID(), email: "old@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .authenticated(user)
+        // Changing the address clears verification server-side, so the fresh
+        // user comes back unverified.
+        let changed = PublicUser(id: user.id, email: "new@example.com", name: "Test", emailVerified: false)
+
+        await viewModel.onEmailChanged(changed)
+
+        XCTAssertEqual(viewModel.authState, .verificationRequired(changed))
+    }
+
+    func testOnEmailChangedStaysAuthenticatedWhenStillVerified() async {
+        let user = PublicUser(id: UUID(), email: "old@example.com", name: "Test", emailVerified: true)
+        viewModel.authState = .authenticated(user)
+        mockStudentClient.fetchProfileResult = .success(makeStudent())
+        let changed = PublicUser(id: user.id, email: "new@example.com", name: "Test", emailVerified: true)
+
+        await viewModel.onEmailChanged(changed)
+
+        XCTAssertEqual(viewModel.authState, .authenticated(changed))
+    }
+
     func testOnOnboardingCompleteTransitionsToAuthenticated() async {
         let user = PublicUser(id: UUID(), email: "test@example.com", name: "Test", emailVerified: true)
         viewModel.authState = .onboarding(user)

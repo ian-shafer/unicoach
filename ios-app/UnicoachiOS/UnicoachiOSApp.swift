@@ -5,6 +5,9 @@ import SwiftUI
 struct UnicoachiOSApp: App {
     @StateObject private var viewModel = AppViewModel()
     @Environment(\.scenePhase) private var scenePhase
+    /// Applied at the scene, not inside the authenticated tree, so the login and
+    /// verification screens honour it too.
+    @AppStorage(AppearancePreference.storageKey) private var appearance: AppearancePreference = .system
 
     var body: some Scene {
         WindowGroup {
@@ -28,10 +31,12 @@ struct UnicoachiOSApp: App {
                         onComplete: { viewModel.onOnboardingComplete(user) }
                     )
                 case .authenticated(let user):
-                    HomeView(
+                    AuthenticatedRootView(
                         user: user,
+                        authClient: viewModel.authClient,
                         conversationClient: viewModel.conversationClient,
                         onProfileRequired: viewModel.onStudentProfileRequired,
+                        onEmailChanged: viewModel.onEmailChanged,
                         onLogout: viewModel.logout
                     )
                 case .verificationRequired(let user):
@@ -69,6 +74,8 @@ struct UnicoachiOSApp: App {
             // text-selection handles — renders in the system blue, which is the
             // exact colour this design removed.
             .tint(Color.dsTextPrimary)
+            // nil for `.system`, which is SwiftUI's "follow the device".
+            .preferredColorScheme(appearance.colorScheme)
             .onOpenURL { url in
                 // Receive the Google OAuth callback under the SwiftUI App
                 // lifecycle (no UIApplicationDelegate exists).

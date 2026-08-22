@@ -22,6 +22,11 @@ extension Color {
     /// 2.95:1 (DESIGN.md §6). The white `uni.COACH` wordmark is the single
     /// sanctioned exception and uses `brandOnAccent`, not this.
     static let dsOnBrandAccent = Color("OnBrandAccent", bundle: .main)
+    /// The slide-over menu's scrim. Deliberately **not** built from an
+    /// inverting token: a scrim dims in both schemes, and `dsTextPrimary` — white
+    /// in dark mode — would brighten the screen it is supposed to push back.
+    /// The literal lives here, in the token layer, so no view carries one.
+    static let dsScrim = Color.black.opacity(DSOpacity.scrim)
 }
 
 // MARK: - Gradient tokens
@@ -68,6 +73,12 @@ extension Font {
     static let dsOverline = Font.system(.caption, design: .default).weight(.semibold)
     /// Option-card labels, far larger than list text normally is.
     static let dsOption = Font.system(.title3, design: .default).weight(.bold)
+    /// Glyphs in the brand top bar. A symbol set at `dsButton` — the wordmark's
+    /// own size — reads weedy beside a bold wordmark, because a line symbol
+    /// carries far less ink than text at the same point size. Sized up and kept
+    /// as a token so the bar's glyphs cannot drift apart. The 44pt tap target is
+    /// independent of this and lives in `BrandTopBarButton`.
+    static let dsTopBarGlyph = Font.system(.title2, design: .default).weight(.semibold)
 
     /// The logo mark's `U`, sized from the circle that contains it. The mark is
     /// artwork rather than copy, so it scales with its container instead of
@@ -77,12 +88,31 @@ extension Font {
     }
 }
 
-/// Proportions of the circular logo mark (DESIGN.md §5).
+/// Proportions of the brand artwork (DESIGN.md §5) — the circular logo mark and
+/// the `uni.COACH` wordmark.
 enum DSLogo {
     /// The mark's diameter as a fraction of its container's width, on login.
     static let widthFraction: CGFloat = 0.62
     /// The `U`'s cap height as a fraction of the mark's diameter.
     static let glyphFraction: CGFloat = 0.62
+
+    /// Ceiling on the wordmark's Dynamic Type growth. The wordmark is a
+    /// **logotype — artwork, not copy** — the same argument that sizes the logo
+    /// mark's `U` from its circle rather than from the type scale. Uncapped it
+    /// hyphenated to "uni.-COACH" at accessibility sizes and tripled the top
+    /// bar's height on every branded screen, taking a third of the screen from
+    /// the reader who has least to spare.
+    ///
+    /// A ceiling rather than a fixed size: the wordmark still responds across
+    /// the standard range, it just does not follow text into the accessibility
+    /// range. Controls in the bar are **not** capped — a control that refuses
+    /// to grow is an accessibility regression. VoiceOver is unaffected: the
+    /// label and the header trait are untouched.
+    static let wordmarkMaxDynamicTypeSize: DynamicTypeSize = .xxxLarge
+
+    /// Backstop so a narrow device shrinks the wordmark rather than truncating
+    /// it. It must never wrap, and it must never show an ellipsis either.
+    static let wordmarkMinScale: CGFloat = 0.75
 }
 
 /// Tracking that belongs with `Font.dsOverline` (~0.08em of a 12pt caption).
@@ -147,4 +177,23 @@ enum DSOpacity {
     static let enabled: Double = 1.0
     static let pressed: Double = 0.8
     static let disabled: Double = 0.5
+    /// The slide-over menu's scrim. A **dim, not a shadow** — this design has no
+    /// elevation (DESIGN.md §3); the scrim exists to push the covered screen
+    /// back, and the drawer is still separated from it by a hairline.
+    static let scrim: Double = 0.45
+}
+
+/// The slide-over menu (DESIGN.md §7).
+enum DSMenu {
+    /// The drawer's width as a fraction of the screen, expressed proportionally
+    /// so it survives device sizes rather than being transcribed from one.
+    /// Enough of the scrim stays visible to be tappable and to read as "the app
+    /// is still behind this".
+    static let widthFraction: CGFloat = 0.78
+
+    /// How many recent conversations the drawer lists. The drawer is a fast
+    /// switcher for the common case, not a browser: a menu that scrolls hides
+    /// its own footer behind a gesture and has no determinate height. Past this
+    /// handful, "All conversations" is the complete surface, one tap away.
+    static let recentLimit = 3
 }

@@ -79,9 +79,15 @@ pre-spec value — most consequentially `BrandAccent`, which was LinkedIn blue
 
 ### 2.1 Dark mode (derived)
 
-Dark mode is **kept**. The reference's visual logic — flat surfaces, no
-elevation, separation by hairline border — inverts cleanly; only the near-black
-control fill cannot survive inversion.
+Dark mode is **kept**, and since RFC 117 it is also **user-selectable**:
+Settings carries a System / Light / Dark `SegmentedSelector` backed by
+`AppearancePreference`, applied with `.preferredColorScheme` at the root scene
+so it governs every auth state rather than only the authenticated tree. `System`
+means "follow the device" (`nil`), not a third palette.
+
+The reference's visual logic — flat surfaces, no elevation, separation by
+hairline border — inverts cleanly; only the near-black control fill cannot
+survive inversion.
 
 | Token           | Dark      | Contrast on background | Note                                                                                       |
 | --------------- | --------- | ---------------------- | ------------------------------------------------------------------------------------------ |
@@ -192,6 +198,26 @@ in white, leading-aligned, ~44pt of content height. This replaces the stock
 `.navigationTitle` chrome on branded screens (`BrandTopBar`); a screen that
 adopts it hides the stock navigation bar rather than showing both.
 
+It takes an optional **leading accessory** — today the menu button
+(`BrandTopBarButton`). Two things about that button are deliberate and separate:
+its **box** is `DSControl.topBarHeight`, which is also the platform's minimum
+tap target, and its **glyph** is `Font.dsTopBarGlyph`, a step larger than
+`dsButton`. A line symbol set at the wordmark's own point size carries far less
+ink than the wordmark does and reads weedy beside it, so glyph size is a token
+of its own rather than borrowed from the type scale's button entry.
+
+**The wordmark is artwork; the button is a control, and Dynamic Type treats them
+differently.** The same argument that sizes the logo mark's `U` from its circle
+rather than from the type scale applies to the logotype: the wordmark's growth
+is **capped** at `DSLogo.wordmarkMaxDynamicTypeSize`, is `lineLimit(1)`, and
+shrinks (`DSLogo.wordmarkMinScale`) rather than truncating on a narrow device.
+Uncapped it hyphenated to "uni.-COACH" at accessibility sizes and tripled the
+bar's height on every branded screen. The accessory button is **not** capped — a
+control that refuses to grow is an accessibility regression — and neither is
+what VoiceOver reports: the label and the `.isHeader` trait are unchanged. The
+bar's `DSControl.topBarHeight` minimum is therefore no longer driven past itself
+by its own logotype.
+
 ### Segmented selector
 
 One outlined `DSRadius.control` container holding N segments; the selected
@@ -245,28 +271,87 @@ Two consequences bind the whole app, not just the gradient:
 Conversation is the app's primary interface; everything else is secondary and
 lives behind a menu rather than competing with it in a tab bar.
 
-Structure:
+Built in RFC 117. Structure:
 
 - The root of the authenticated state is the **conversation view**, not a hub.
-  `HomeView`'s current three-button menu screen disappears entirely.
-- A **leading toolbar button** on the gradient top bar opens a slide-over menu
-  (drawer) from the leading edge, over a dimmed scrim.
-- The menu holds: **New conversation**, the **conversation list** (recent
-  first), and a footer entry into **Settings/Profile**.
-- **Settings/Profile** is a new destination absorbing Log Out, Change Email,
-  subscription status, and coaching usage — none of which have a home today.
-  `ChangeEmailViewModel` already exists and is currently reachable only from the
-  pre-verification blocking screen, so a verified user cannot change their
-  email; this destination fixes that.
-- One `NavigationStack` at the root. The four independent `NavigationStack`s in
-  `HomeView`, `ConversationView`, `ConversationListView`, and
-  `VerificationRequiredView` collapse into it. The auth-state `switch` in
-  `UnicoachiOSApp` stays where it is — it routes _between_ states, above
-  navigation.
+  `HomeView`'s three-button menu screen is gone; `AuthenticatedRootView` owns
+  the stack, the chat, and the menu overlay.
+- A **leading accessory on `BrandTopBar`** opens a slide-over menu (drawer) from
+  the leading edge, over a dimmed scrim. Its glyph is black (`OnBrandAccent`),
+  not the wordmark's white: the logotype is §6's one sanctioned exception, and
+  anything that follows it onto the gradient takes black.
+- The drawer and its scrim sit **below the gradient bar, not under it**. The bar
+  is the app's identity and stays lit while the menu is open, the button that
+  opened the drawer stays where the user left it (and closes it again), and the
+  drawer clips to the content area by construction rather than by fighting the
+  safe area. Covering the bar was tried first and read as a half-dimmed
+  accident.
+- The scrim is a **dim, not a shadow** — §3's no-elevation rule holds. In light
+  mode it reads as a grey wash. In **dark** mode a flat `#0E0E10` background
+  cannot get meaningfully darker, so the dim shows only on the content that has
+  contrast (borders, the composer) and the drawer is separated from the scrimmed
+  screen by the same 1pt hairline everything else uses. That is the design's own
+  answer to separation and it is deliberately not fixed with an elevation
+  shadow.
+- The menu holds: **New conversation**, the **recent conversations** in the
+  server's MRU order, **All conversations**, and a footer entry into
+  **Settings**.
+- The drawer lists at most `DSMenu.recentLimit` (3) conversations and **does not
+  scroll**. A menu that scrolls has no determinate height and hides its own
+  footer behind a gesture. The cap lives in the view, not in
+  `ConversationListViewModel` — the same view model backs
+  `ConversationListView`, which must show everything. This makes **All
+  conversations** load-bearing rather than a convenience: past the three most
+  recent it is the only route to a conversation, so it stays pinned in the
+  footer where it cannot be scrolled away. Its list state is owned by the root,
+  not by the drawer, so the drawer slides in already populated: a view model
+  rebuilt per open made the rows appear whenever the network returned, sometimes
+  mid-animation. The drawer stays in the hierarchy and is hidden by an offset
+  rather than by conditional insertion, so it and its contents are one
+  animation, and it refreshes without emptying
+  (`ConversationListViewModel.refresh()`).
+- `ConversationListView` is **kept, not absorbed**. It carries swipe-to-delete,
+  archive, the confirmation dialog and the error alert; the drawer's inline list
+  is a fast switcher, and duplicating destructive affordances into it would buy
+  nothing.
+- **Chrome is a function of depth, not of which door you came through.** The
+  root is always a _fresh_ conversation: brand chrome, menu button, and no back
+  button, because there is nothing behind it. Every _existing_ conversation is a
+  **pushed** destination — from the drawer and from All Conversations alike —
+  with stock chrome, a title and a back button. An earlier revision let the
+  drawer swap the conversation at the root, which gave the same content two
+  chromes and two exits depending on the entry point.
+- A push gives each conversation its own `ConversationView`, and so its own
+  `@StateObject` view model, by construction. That is what removed the earlier
+  `.id(selectedConversation)` re-identification trick: with no shared root view
+  model to swap underneath, there is no in-flight SSE stream that can be left
+  writing into the wrong conversation.
+- **Settings** is a new destination holding the student's name and email, the
+  appearance preference (§2.1), Change Email, and Log Out. `ChangeEmailView`
+  moved to its own file and is used by both call sites, so a verified student
+  can now change their email at all — before, it was reachable only from the
+  pre-verification blocking screen.
+- The **authenticated state** gets exactly one `NavigationStack`.
+  `VerificationRequiredView` keeps its own, because it is a sibling _auth
+  state_, never on screen at the same time; the two could only share a stack if
+  it were hoisted above the auth-state `switch`, which this section forbids —
+  that `switch` routes _between_ states, above navigation. (This corrects the
+  earlier claim of "four independent `NavigationStack`s": `ConversationView` and
+  `ConversationListView` never declared one outside their previews, so the
+  collapse was `HomeView`'s alone.)
 
 The menu is a custom overlay, not `NavigationSplitView`: the reference's
 full-bleed gradient chrome does not survive stock split-view presentation on
 iPhone.
+
+**Deferred: subscription status and coaching usage.** This section previously
+asked Settings to absorb both. Neither is buildable: the server exposes only
+`POST /api/v1/subscriptions/verify` and the Apple notifications webhook — there
+is no GET for subscription state and no usage endpoint of any kind. Delivering
+them means new server endpoints, an OpenAPI change, a client and tests, which is
+a different change from a navigation restructure. `SettingsView` is composed as
+a stack of sections so they are additive later; this note stands in place of a
+promise the code does not keep.
 
 ## 8. What the reference does not cover
 
@@ -298,8 +383,13 @@ Concretely, and binding:
 
 ### 8.2 Still undesigned
 
-- The slide-over menu's own visual treatment (the menu itself arrives in RFC
-  117).
+- The **conversation empty state**. The chat root is now the first screen a
+  signed-in student sees (§7), so RFC 117 put a **minimal placeholder** there —
+  one centred `dsDisplay` / `TextSecondary` line, no illustration and no actions
+  — rather than ship a blank void. The designed empty state is still open: the
+  placeholder is a floor, not the answer.
+- The slide-over menu's own visual treatment (the menu itself arrived in RFC
+  117; §7 records the decisions taken there).
 - Loading **skeletons** — today's loading states are spinners, not skeletons.
 - System alert and confirmation-dialog presentation, which is stock UIKit chrome
   and cannot take these tokens without being replaced outright.

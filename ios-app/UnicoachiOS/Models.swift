@@ -140,7 +140,9 @@ struct Message: Codable, Sendable, Identifiable, Equatable {
     let createdAt: Date
 }
 
-struct Conversation: Codable, Sendable, Identifiable, Equatable {
+// Hashable so a conversation can be a `NavigationPath` destination value:
+// opening an existing conversation always pushes (DESIGN.md §7).
+struct Conversation: Codable, Sendable, Identifiable, Equatable, Hashable {
     let id: UUID         // contract: uuid-format string; decoded as UUID
     let name: String
     let createdAt: Date

@@ -57,8 +57,27 @@ struct ConversationView: View {
         case .failed(let error):
             historyFailedView(error)
         case .ready:
-            thread
+            if viewModel.turns.isEmpty {
+                emptyThread
+            } else {
+                thread
+            }
         }
+    }
+
+    /// The root of the authenticated app opens on a fresh conversation, so this
+    /// is the first thing a signed-in student sees — a blank void otherwise.
+    /// Deliberately ONE line of token-driven copy: a designed empty state is
+    /// still open work (DESIGN.md §8.2), and inventing an illustration here
+    /// would be inventing visual language.
+    private var emptyThread: some View {
+        Text("What's on your mind about college?")
+            .font(.dsDisplay)
+            .foregroundStyle(Color.dsTextSecondary)
+            .multilineTextAlignment(.center)
+            .padding(DSSpacing.lg)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("conversationEmpty")
     }
 
     private var historyLoadingView: some View {
