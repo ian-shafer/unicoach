@@ -45,6 +45,31 @@ the human gate), and implementation (`/rfc-impl`) copies them into the target
 directory's `INVARIANTS.md` alongside the code change — light editing to match
 the file's style is fine; the meaning must not change.
 
+## Artifacts
+
+Supporting material that is not markdown — design mockups, screenshots,
+diagrams, exported data — lives in **`rfc/artifacts/<NN>/`**, where `<NN>` is
+the RFC's number. An RFC references its own artifacts by relative path, e.g.
+`![login + onboarding](artifacts/116/iOS.jpg)`.
+
+Two reasons the files live here rather than beside the thing they describe:
+
+- **An RFC must stay readable on its own.** A mockup that a design was measured
+  against is part of the record of _why_; if it is only in a chat message or a
+  developer's `~/Documents`, the RFC's reasoning cannot be checked later. RFC
+  116 exists partly because exactly that happened — `ios-app/DESIGN.md` cited a
+  style reference that was never committed.
+- **Artifacts inherit RFC immutability.** `rfc/artifacts/<NN>/` is written once,
+  with the RFC. A superseding design gets a new number and a new directory; it
+  never overwrites an earlier RFC's artifacts, because that would silently
+  rewrite the evidence an already-committed document reasons from.
+
+A **living** document (`ios-app/DESIGN.md`, say) is the opposite case and keeps
+its assets next to itself, since both are expected to change together. If a
+living doc needs the same image an RFC captured, it should reference the RFC's
+copy by relative path rather than duplicate it — one file, one source of truth,
+and the reference stays valid because the artifact is immutable.
+
 ## Lifecycle
 
 RFCs are authored, reviewed, and implemented through the pipeline skills under
