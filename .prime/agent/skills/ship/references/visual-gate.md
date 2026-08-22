@@ -50,7 +50,34 @@ unbuilt.
 
 ## Judging
 
-Compare against `ios-app/DESIGN.md`, which carries measured values (64pt control
-height, 16pt radius, `#EE7330`→`#E94577` gradient, the dark palette) rather than
-adjectives. A screenshot review that does not cite a number from that file is
-not a review.
+Two different questions, judged in two different places. Confusing them is the
+main failure mode.
+
+**Token conformance is reviewed in the diff, not in the pixels.** The question
+is whether the view reads `DSControl.height` or hardcodes `64`. Measuring
+64.00pt in a PNG when the code already says `DSControl.height` verifies nothing
+— the number is true by construction and the measurement can only ever agree.
+Grep the diff for magic numbers, inline `.font(.system(`, and literal colours.
+That is where exactness belongs, and where real drift becomes visible.
+
+**The screenshot is for what the code cannot tell you.** Stock chrome leaking
+through (a `.pickerStyle(.segmented)` grey capsule, a system-blue `.tint`), text
+clipped or overflowing, a contrast failure, a layout that collapses in dark mode
+or at large Dynamic Type, an element that is simply absent. In the RFC 116 run
+every real defect came from looking at the image or reading the diff; the pixel
+measurements confirmed three numbers the tokens already guaranteed and found
+nothing.
+
+**Tolerance: the mockup is a reference, not a contract.** It is one render at
+one width. If a control reads as the motif, it passes. Do not chase pixel parity
+— a dimension expressed as a fraction of its container is _better_ than one
+transcribed from a mockup measurement, because it survives the device sizes the
+mockup never showed. Prefer proportional and semantic layout over copied
+constants, and one token over a repeated literal. Clean, legible view code beats
+a closer match to the render; if the two conflict, the code wins and `DESIGN.md`
+gets updated to say so.
+
+Cite specifics rather than adjectives — but a specific is "the segmented control
+is still stock grey, violating `DESIGN.md` §2" every bit as much as a number is.
+What is banned is a review that could have been written without opening the
+image.
