@@ -204,9 +204,25 @@ enum DSMarkdown {
     /// apart and make a long list read as ragged. Applied as a `@ScaledMetric`
     /// so a two-digit marker at accessibility sizes still fits.
     static let markerWidth: CGFloat = 24
-    /// Floor on a table column, so a one-word column ("Yes") does not collapse
-    /// to the width of its own text and leave the grid looking broken.
-    static let columnMinWidth: CGFloat = 64
+    /// The grid/stack threshold: the narrowest a table column may be and still
+    /// read as a column. A table that cannot give every column this much is
+    /// drawn as one block per row instead (RFC 120), so this number decides
+    /// which of the two layouts a table gets — it is not merely a floor.
+    ///
+    /// Set from a captured render, not from taste
+    /// (`.scratch/ship/rfc-120/artifacts/threshold-sweep*.png`): ordinary cells
+    /// — "Not started", "Public (CC)", "In progress", "Michigan" — drawn at
+    /// `dsBody` in candidate widths from 64 to 104. At 64 "Michigan" hyphenated
+    /// into "Mi-chigan" and "In progress" broke a word across lines; at 72–86
+    /// nothing hyphenated but every two-word cell wrapped onto a second line,
+    /// which is a column too narrow to be one. 88 is the narrowest width where
+    /// all of them set on a single line, and it was preferred to 96 because a
+    /// lower threshold keeps a grid — the better layout when it is honest — for
+    /// more tables.
+    ///
+    /// It was 64 when it was only a floor. Raising it is why the five-column
+    /// fixture now stacks rather than squeezing to a hyphenated grid.
+    static let columnMinWidth: CGFloat = 88
     /// Ceiling on a table column, so a prose column wraps instead of
     /// monopolising the row and pushing every other column off screen.
     /// A `@ScaledMetric` at the call site: the grid must grow with text rather

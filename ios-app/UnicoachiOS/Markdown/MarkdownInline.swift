@@ -54,4 +54,27 @@ enum MarkdownInline {
         }
         return string
     }
+
+    /// One block's base style, stamped on only where the inline parser has not
+    /// already spoken: `dsCode` on an inline-code span and `TextPrimary` +
+    /// underline on a link are `attributed`'s decisions (DESIGN.md §6), and
+    /// writing the block's own font over them would silently undo them.
+    ///
+    /// Attributes rather than `.font()` / `.foregroundStyle()` modifiers,
+    /// because a stacked table row composes two differently-styled halves into
+    /// ONE `AttributedString` for ONE `Text` (RFC 120) — a view modifier cannot
+    /// style half a string. One implementation serves both callers so the two
+    /// cannot drift the first time a style rule changes.
+    static func styled(_ markdown: InlineMarkdown, font: Font, color: Color) -> AttributedString {
+        var string = attributed(markdown)
+        // Ranges are collected before anything is written: mutating an
+        // `AttributedString` re-segments its runs, so writing inside the
+        // `runs` loop would iterate a collection being reshaped underneath it.
+        let ranges = string.runs.map { ($0.range, $0.font, $0.foregroundColor) }
+        for (range, runFont, runColor) in ranges {
+            if runFont == nil { string[range].font = font }
+            if runColor == nil { string[range].foregroundColor = color }
+        }
+        return string
+    }
 }
