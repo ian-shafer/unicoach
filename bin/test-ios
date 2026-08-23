@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# test-ios runs under SYSTEM Xcode (xcodebuild), NOT the Nix dev shell. Like its
+# -ios siblings it deliberately does NOT source bin/common (which requires
+# .env / Postgres / the Nix shell) — only bin/functions for log-info/fatal.
+#
+# It runs the UnicoachiOS unit suite in the iOS Simulator, pinned to THIS
+# CHECKOUT's device (bin/ios-sim) rather than the shared device the checked-in
+# destination names. A hand-typed
+# `xcodebuild test -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`
+# boots and drives the one machine-global device, so two checkouts testing at
+# once fight over it (RFC 126). This is the documented command instead.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/bin/functions"
+
+help() {
+  cat << 'EOF'
+test-ios [target] [-- <xcodebuild args>...]
+
+Runs the UnicoachiOS test suite in the iOS Simulator on THIS CHECKOUT's own
+simulator device (bin/ios-sim, created on demand), so a concurrent run in
+another checkout cannot boot, drive, or reinstall over it. Runs under system
+Xcode, not the Nix dev shell.
+
+  target    Target name (default: simulator). Sources ios-app/env/<target>.env
+            for UNICOACH_DESTINATION, whose `name=<model>` component selects the
+            simulator MODEL; the device itself is this checkout's. Simulator
+            only — a device target is rejected (a unit run needs a bootable
+            simulator, not a cabled iPhone).
+  -- <args> Everything after `--` is forwarded verbatim to `xcodebuild`, the
+            seam for -only-testing:, -resultBundlePath, and friends.
+
+Builds into the same ios-app/build/DerivedData tree as bin/build-ios, so the two
+share a build cache within the checkout.
+
+Options:
+  -h        Help
+EOF
+  exit 0
+}
+
+# Split argv at the FIRST `--` before getopts runs; everything after it is
+# forwarded verbatim to xcodebuild. See split_argv_at_dashdash in bin/functions
+# for why this precedes getopts and why both arrays must be expanded as
+# `${ARR[@]+"${ARR[@]}"}` (bash 3.2 + `set -u`).
+split_argv_at_dashdash "$@"
+XCODEBUILD_ARGS=(${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"})
+set -- ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+# Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
+# xcrun is shadowed by a stub and DEVELOPER_DIR/SDKROOT point into the Nix
+# store. Detection lives in bin/is-nix; the refusal is here. Placed before any
+# env/tool logic so this message wins even when an env file is also missing.
+if "$PROJECT_ROOT/bin/is-nix" -q; then
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/test-ios simulator), not via 'nix develop -c'."
+fi
+
+ENV_NAME="${1:-simulator}"
+if [ "$#" -gt 1 ]; then
+  # A surplus positional that looks like an option is almost always an option
+  # written AFTER the target, where the generic "use --" advice misleads.
+  if [[ "$2" == -* ]]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "options must precede the target, and xcodebuild arguments follow '--': write [test-ios $ENV_NAME -- $2], not [test-ios $ENV_NAME $2]."
+  fi
+  fatal -s "$EXIT_UNEXPECTED_ARG" "test-ios accepts at most one positional argument (target); pass xcodebuild arguments after '--': $*"
+fi
+
+# ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
+# (used by bin/ios-scripts-tests to point at a temp fixture dir).
+ENV_DIR="${UNICOACH_ENV_DIR:-$PROJECT_ROOT/ios-app/env}"
+ENV_FILE="$ENV_DIR/$ENV_NAME.env"
+if [ ! -f "$ENV_FILE" ]; then
+  fatal "Environment file not found [$ENV_FILE]. Pass an existing simulator target (e.g. simulator), or copy ios-app/env/local.env.example to ios-app/env/local.env."
+fi
+
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+: "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in [$ENV_FILE]}"
+
+# Simulator-only, using the same Simulator-substring discriminator build-ios
+# uses to classify a target — the same guard screenshot-ios carries.
+if [[ "$UNICOACH_DESTINATION" != *Simulator* ]]; then
+  fatal "Target [$ENV_NAME] targets a physical device (UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] does not contain 'Simulator'); test-ios runs the suite in the simulator only. Use a simulator target (e.g. simulator)."
+fi
+
+# This checkout's device, created on demand. ios-sim logs the name it resolved
+# to stderr and prints ONLY the UDID, so the destination below can never pick up
+# stray output. Its fatals (no name= component, unknown model) surface verbatim.
+DEVICE_UDID="$("$PROJECT_ROOT/bin/ios-sim" "$ENV_NAME")"
+
+log-info "Running UnicoachiOS tests [env=$ENV_NAME] on this checkout's simulator [$DEVICE_UDID]..."
+
+# bin/build-ios's -derivedDataPath owns this location: change it there and the
+# path here must change with it, or the two silently stop sharing a build tree —
+# no error, just a second cold DerivedData. bin/ios-scripts-tests compares what
+# the two scripts actually pass, so a one-sided move fails there.
+xcodebuild test \
+  -project "$PROJECT_ROOT/ios-app/UnicoachiOS.xcodeproj" \
+  -scheme UnicoachiOS \
+  -destination "platform=iOS Simulator,id=$DEVICE_UDID" \
+  -derivedDataPath "$PROJECT_ROOT/ios-app/build/DerivedData" \
+  ${XCODEBUILD_ARGS[@]+"${XCODEBUILD_ARGS[@]}"}

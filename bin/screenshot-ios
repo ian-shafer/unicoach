@@ -7,6 +7,10 @@
 # It boots a simulator, installs the most recent simulator build, launches it,
 # waits for the UI to settle, and captures a PNG. Simulator only: `xcrun simctl`
 # has no meaning for a physical device (that is install-ios's job).
+#
+# The simulator it drives is THIS CHECKOUT's own device (bin/ios-sim), not the
+# machine-global one the destination's `name=` names — see resolve_device below
+# and RFC 126.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,7 +35,8 @@ rejected (use bin/install-ios for a physical iPhone).
                also works but needs an explicit device (-d or UNICOACH_SIMULATOR)
                because its destination names no simulator.
   -d <device>  Simulator NAME or UDID to capture (xcrun simctl list devices),
-               overriding UNICOACH_SIMULATOR and the destination's `name=`/`id=`.
+               overriding UNICOACH_SIMULATOR, the destination's `id=`, and this
+               checkout's own device (bin/ios-sim).
   -o <png>     Write the screenshot to this exact path (its parent is created).
                Default: <dir>/<target>-<UTC timestamp>.png, where <dir> is
                UNICOACH_SCREENSHOT_DIR when set, else ios-app/build/screenshots
@@ -43,13 +48,19 @@ rejected (use bin/install-ios for a physical iPhone).
                particular screen (e.g. a launch argument an XCUITest-style
                harness reads) before the capture.
 
-Simulator selection: -d when given; else UNICOACH_SIMULATOR when set; else the
-`name=<...>` component of the target's UNICOACH_DESTINATION, falling back to its
-`id=<UDID>` component when it names the simulator that way. The resolved value
-is passed to simctl as the device (simctl accepts a device NAME or UDID) rather
-than the literal `booted`, so a second simulator booted elsewhere cannot be
-captured by mistake. A target whose destination names no simulator (e.g.
-prod-simulator) therefore requires -d or UNICOACH_SIMULATOR.
+Simulator selection, most explicit first: -d when given; else
+UNICOACH_SIMULATOR when set; else the `id=<UDID>` component of the target's
+UNICOACH_DESTINATION; else THIS CHECKOUT's own simulator device, which
+bin/ios-sim resolves — creating it on demand — from the destination's
+`name=<model>` component (`iPhone 17 Pro` -> a device named
+`iPhone 17 Pro (<checkout>)`). The per-checkout device is what keeps a
+concurrent capture in another checkout from terminating this app or installing
+over this bundle; UNICOACH_SIMULATOR="iPhone 17 Pro" is how you deliberately
+drive the shared device instead. The resolved value is passed to simctl as the
+device (simctl accepts a device NAME or UDID) rather than the literal `booted`,
+so a second simulator booted elsewhere cannot be captured by mistake. A target
+whose destination names no simulator (e.g. prod-simulator) therefore requires -d
+or UNICOACH_SIMULATOR.
 
 StoreKit: this script passes nothing about StoreKit, and does not have to. A
 StoreKit configuration (ios-app/UnicoachiOS.storekit) is bound to the LAUNCH,
@@ -76,30 +87,12 @@ EOF
   exit 0
 }
 
-# Split argv at the FIRST `--` before getopts runs. getopts itself consumes a
-# `--` terminator, which would make `screenshot-ios -- <launch args>` (no
-# target) indistinguishable from `screenshot-ios <target>`; splitting first
-# keeps the two grammars apart.
-#
-# Both arrays are expanded below as `${ARR[@]+"${ARR[@]}"}`, never the obvious
-# `"${ARR[@]}"`: this script is barred from the Nix dev shell, so it runs under
-# macOS system bash 3.2, where under `set -u` expanding an EMPTY array is an
-# unbound-variable error. The `+`-alternate guard is what keeps the ordinary
-# invocation (no `--`, hence no launch args) working at all.
-SCRIPT_ARGS=()
-LAUNCH_ARGS=()
-SEEN_DASHDASH=0
-for arg in "$@"; do
-  if [ "$SEEN_DASHDASH" -eq 0 ] && [ "$arg" = "--" ]; then
-    SEEN_DASHDASH=1
-    continue
-  fi
-  if [ "$SEEN_DASHDASH" -eq 1 ]; then
-    LAUNCH_ARGS+=("$arg")
-  else
-    SCRIPT_ARGS+=("$arg")
-  fi
-done
+# Split argv at the FIRST `--` before getopts runs; everything after it is
+# forwarded verbatim to `simctl launch`. See split_argv_at_dashdash in
+# bin/functions for why this precedes getopts and why both arrays must be
+# expanded as `${ARR[@]+"${ARR[@]}"}` (bash 3.2 + `set -u`).
+split_argv_at_dashdash "$@"
+LAUNCH_ARGS=(${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"})
 set -- ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
 
 OUT=""
@@ -172,8 +165,18 @@ if [[ "$UNICOACH_DESTINATION" != *Simulator* ]]; then
 fi
 
 # Device resolution, most explicit first: -d beats UNICOACH_SIMULATOR, which
-# beats the destination's own `name=<...>` / `id=<...>` component (the simulator
-# the target already names, so the common case needs no extra configuration).
+# beats the destination's own `id=<UDID>` component, which beats THIS
+# CHECKOUT's device — the per-checkout simulator bin/ios-sim resolves (and
+# creates on demand) from the destination's `name=<model>` component.
+#
+# The `name=` component is a MODEL selector, not a device selector (RFC 126):
+# CoreSimulator devices are machine-global, so using it verbatim made every
+# checkout drive the one `iPhone 17 Pro` — a concurrent run's terminate killed
+# this capture's app, and its install replaced the bundle, yielding a plausible
+# screenshot of someone ELSE's build. An `id=<UDID>` is explicit intent and is
+# therefore consulted first; the two escape hatches above are how you
+# deliberately drive the shared device (UNICOACH_SIMULATOR="iPhone 17 Pro").
+#
 # simctl accepts either a device name or a UDID, so the resolved string is
 # passed through as-is. Mirrors bin/install-ios's resolve_device.
 resolve_device() {
@@ -185,24 +188,33 @@ resolve_device() {
     echo "$UNICOACH_SIMULATOR"
     return 0
   fi
-  # Both extractions are anchored to a destination COMPONENT boundary (start of
-  # string, or a comma) so a key that merely ENDS in the one we want —
-  # `devicename=`, `udid=` — cannot be mistaken for it. The value runs to the
-  # end of the destination or the next comma-separated key.
+  # Both reads go through destination_component (bin/functions), the single
+  # owner of the rule that a component is anchored to a boundary — so a key that
+  # merely ENDS in the one we want (`devicename=`, `udid=`) cannot be mistaken
+  # for it — and that its value runs to the next comma or the end.
   local device
-  device="$(printf '%s' "$UNICOACH_DESTINATION" | sed -nE 's/^.*(^|,)name=([^,]*).*/\2/p')"
-  if [ -z "$device" ]; then
-    # The standard Xcode form `platform=iOS Simulator,id=<UDID>` names the
-    # simulator by UDID instead, which simctl takes just as happily as a name.
-    device="$(printf '%s' "$UNICOACH_DESTINATION" | sed -nE 's/^.*(^|,)id=([^,]*).*/\2/p')"
+  # The standard Xcode form `platform=iOS Simulator,id=<UDID>` names one exact
+  # simulator, which simctl takes just as happily as a name. An explicit UDID is
+  # explicit intent, so it wins over the per-checkout device below.
+  device="$(destination_component "$UNICOACH_DESTINATION" id)"
+  if [ -n "$device" ]; then
+    echo "$device"
+    return 0
   fi
-  if [ -z "$device" ]; then
-    fatal "Cannot resolve a simulator: no -d given, UNICOACH_SIMULATOR is unset, and UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] carries neither a 'name=' nor an 'id=' component (this is why prod-simulator needs an explicit device). Pass -d <device>, set UNICOACH_SIMULATOR to a device name or UDID (xcrun simctl list devices), or add name=<device> or id=<UDID> to the destination."
+  # A `name=<model>` component: hand the target to bin/ios-sim, which resolves
+  # (creating on demand) the device named "<model> (<checkout>)" and prints its
+  # UDID — its own stdout contract, so nothing but a UDID can land here. Its
+  # fatals surface verbatim, and kill this script too: the assignment below runs
+  # under `set -e`.
+  if [ -n "$(destination_component "$UNICOACH_DESTINATION" name)" ]; then
+    "$PROJECT_ROOT/bin/ios-sim" "$ENV_NAME"
+    return 0
   fi
-  echo "$device"
+  # Neither component: nothing to resolve and nothing to create, and this is the
+  # end of the chain — the function either echoes a device or it fatals, so no
+  # caller can ever be handed an empty one.
+  fatal "Cannot resolve a simulator: no -d given, UNICOACH_SIMULATOR is unset, and UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] carries neither a 'name=' nor an 'id=' component (this is why prod-simulator needs an explicit device). Pass -d <device>, set UNICOACH_SIMULATOR to a device name or UDID (xcrun simctl list devices), or add name=<device> or id=<UDID> to the destination."
 }
-
-DEVICE="$(resolve_device)"
 
 # PRODUCTS_DIR defaults to the DerivedData products tree; UNICOACH_PRODUCTS_DIR
 # overrides it (used by bin/ios-scripts-tests to stage a fixture .app).
@@ -213,6 +225,11 @@ APP="$PRODUCTS_DIR/$UNICOACH_CONFIGURATION-iphonesimulator/UnicoachiOS.app"
 if [ ! -d "$APP" ]; then
   fatal "Built app not found at [$APP]. Run [bin/build-ios $ENV_NAME] first."
 fi
+
+# Resolved AFTER the built-app check on purpose: resolution can now CREATE this
+# checkout's simulator device (bin/ios-sim), and a run that cannot proceed for
+# want of a build should not leave a device behind.
+DEVICE="$(resolve_device)"
 
 # Output path. -o wins verbatim; otherwise the file is named for the target and
 # a UTC timestamp so repeated captures never overwrite each other, under

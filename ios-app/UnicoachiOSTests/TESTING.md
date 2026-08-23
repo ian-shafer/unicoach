@@ -10,11 +10,19 @@ write a good test_ on top of them.
 iOS tests run through **system Xcode**, not the Nix dev shell:
 
 ```sh
-xcodebuild test \
-  -project ios-app/UnicoachiOS.xcodeproj \
-  -scheme UnicoachiOS \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+bin/test-ios            # the whole suite, on THIS checkout's simulator
+bin/test-ios simulator -- -only-testing:UnicoachiOSTests/PaywallViewModelTests
 ```
+
+`bin/test-ios` is `xcodebuild test` with the destination pinned to **this
+checkout's own simulator device** (`bin/ios-sim`, created on demand), sharing
+`bin/build-ios`'s DerivedData tree; everything after `--` is forwarded to
+`xcodebuild`. Type the raw command and you get
+`-destination 'platform=iOS Simulator,name=iPhone 17 Pro'` — the one
+machine-global device every other checkout also resolves, which a concurrent
+`ship` run or screenshot capture is booting, installing over, and terminating
+apps on. See
+[DEPLOY.md — One simulator per checkout](../DEPLOY.md#one-simulator-per-checkout-binios-sim).
 
 New test `.swift` files MUST be registered in
 `ios-app/UnicoachiOS.xcodeproj/project.pbxproj` (explicit file references —

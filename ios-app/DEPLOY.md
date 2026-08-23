@@ -6,10 +6,11 @@ none of this — see [UnicoachiOSTests/TESTING.md](UnicoachiOSTests/TESTING.md).
 
 The scripts here run under **system Xcode**, not the Nix dev shell. Do not wrap
 them in `nix develop`; just run `bin/build-ios` / `bin/install-ios` (and
-`bin/release-ios` / `bin/screenshot-ios`, below) directly. Both call
-`bin/is-nix` and refuse to run if launched inside the dev shell, because there
-`xcrun` is shadowed by a stub and `DEVELOPER_DIR`/`SDKROOT` point into the Nix
-store — silently targeting the wrong toolchain.
+`bin/release-ios` / `bin/ios-sim` / `bin/test-ios` / `bin/screenshot-ios`,
+below) directly. They all call `bin/is-nix` and refuse to run if launched inside
+the dev shell, because there `xcrun` is shadowed by a stub and
+`DEVELOPER_DIR`/`SDKROOT` point into the Nix store — silently targeting the
+wrong toolchain.
 
 ## Named build targets
 
@@ -344,6 +345,73 @@ The build targets the live `https://api.uni.coach` deployment under the existing
 `NSAllowsArbitraryLoads` ATS exception — no transport-security change, same as
 the `prod` device build.
 
+## One simulator per checkout: `bin/ios-sim`
+
+CoreSimulator devices are **machine-global**; everything else about a checkout
+is not (`var/run/` gives each checkout its own daemon identity,
+`ios-app/build/DerivedData` its own build tree). `ios-app/env/simulator.env`
+pins `name=iPhone 17 Pro`, so every worktree and every `ship` run used to
+resolve that one device — and the collisions were quiet: a `screenshot-ios`
+capture terminates the running app (deliberately, so it does not shoot the old
+process) and kills the sibling's; a `simctl install` overwrites the bundle the
+sibling just installed, so the next capture is a real screenshot of **someone
+else's build**. RFC 126 gives each checkout its own device instead:
+
+```sh
+bin/ios-sim              # prints this checkout's device UDID, creating it if needed
+bin/ios-sim -D           # deletes it
+```
+
+The device is named `<model> (<basename of the checkout directory>)` — e.g.
+`iPhone 17 Pro (unicoach-rfc-126)` — where `<model>` is the `name=` component of
+the target's `UNICOACH_DESTINATION`. That **name is the identity and the lookup
+key**; the UDID is what callers use, and it is the only thing on stdout, so
+`-destination "platform=iOS Simulator,id=$(bin/ios-sim)"` works. Nothing is
+cached on disk: `xcrun simctl list devices` is the source of truth, so deleting
+the device by hand or from Simulator.app self-heals on the next call. A missing
+device is **created** (`simctl create`, never `clone` — nothing on the shared
+device is worth inheriting) against the exact device type for the model, with no
+runtime named — `simctl` itself picks the newest runtime compatible with that
+device type. An uninstalled model fatals with the list of the ones you do have,
+and a failing `create` fatals with simctl's own message and the installed
+runtime list (which is what "no iOS runtime installed" looks like).
+
+The checked-in `UNICOACH_DESTINATION` is unchanged and is now read as a **model
+selector**, not a device selector. `bin/screenshot-ios` and `bin/test-ios` both
+route through `bin/ios-sim`; `bin/build-ios` deliberately does not, because a
+simulator `xcodebuild build` boots no device and the produced `.app` is not tied
+to one.
+
+`simctl` does not enforce unique device names, so a lost race (two first-runs in
+one checkout) or a runtime removal can leave **two** devices carrying the name.
+That is refused rather than resolved to an arbitrary one; `bin/ios-sim -D`
+clears the lot — every device with the name, unavailable ones included — and the
+next call creates one fresh device.
+
+Two checkouts whose directories share a basename share a device — the documented
+limit of the scheme, and not a silent one: `bin/ios-sim` prints the name it
+resolved on stderr every time. To deliberately drive the shared device, pass
+`-d` or set `UNICOACH_SIMULATOR="iPhone 17 Pro"`; both beat the per-checkout
+device.
+
+## Running the unit suite: `bin/test-ios`
+
+```sh
+bin/test-ios                                    # the whole suite
+bin/test-ios simulator -- -only-testing:UnicoachiOSTests/PaywallViewModelTests
+```
+
+`xcodebuild test` pinned to this checkout's device, with the same dev-shell
+guard as its siblings, the same simulator-only guard as `bin/screenshot-ios`,
+and the same `-derivedDataPath` as `bin/build-ios` (so the two share a build
+tree within the checkout). Everything after `--` is forwarded to `xcodebuild`.
+Prefer it to a hand-typed `xcodebuild test`, which names the shared device — see
+[UnicoachiOSTests/TESTING.md](UnicoachiOSTests/TESTING.md).
+
+Note that `nix develop -c bin/test` does **not** run the iOS suite (it needs
+system Xcode, which the dev shell shadows); a green repo gate says nothing about
+an iOS change.
+
 ## Simulator screenshots: `bin/screenshot-ios`
 
 Everything above targets a physical iPhone. For a **simulator** screenshot — the
@@ -368,6 +436,12 @@ shell. It is simulator-only — the inverse of `install-ios`'s device-only guard
 name or UDID (needed for a target such as `prod-simulator`, whose destination
 names no device), and anything after `--` is forwarded to `xcrun simctl launch`
 — the seam for driving the app to a particular screen before the capture.
+
+The simulator it drives is **this checkout's own device**
+([above](#one-simulator-per-checkout-binios-sim)), resolved most-explicit-first:
+`-d`, else `UNICOACH_SIMULATOR`, else the destination's `id=<UDID>` component,
+else `bin/ios-sim` on the destination's `name=<model>`. A target carrying
+neither component (`prod-simulator`) still needs `-d` or `UNICOACH_SIMULATOR`.
 
 ### The StoreKit trap: a configuration is bound to the launch, not the artifact
 
@@ -464,7 +538,12 @@ store rather than a launch argument for a catalogue nobody injected.
   `signing.env` to the intended UDID (`xcrun devicectl list devices`).
 - **Dev-shell guard error (`must run under system Xcode`).** The script was
   wrapped in `nix develop -c`. Run it directly: `bin/build-ios` /
-  `bin/install-ios` / `bin/release-ios`.
+  `bin/install-ios` / `bin/release-ios` / `bin/ios-sim` / `bin/test-ios` /
+  `bin/screenshot-ios`.
+- **A capture or test run shows another checkout's build.** You bypassed the
+  per-checkout device — `UNICOACH_SIMULATOR` is set in your environment, or the
+  target's destination carries an explicit `id=<UDID>`. Unset it, or check what
+  `bin/ios-sim` prints.
 - **TestFlight upload rejected: duplicate build number.** App Store Connect
   already has a build with that `CFBundleVersion`. `bin/release-ios` derives the
   build number from the HEAD commit count, so commit first (or pass a higher

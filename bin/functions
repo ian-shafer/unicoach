@@ -103,6 +103,49 @@ validate_port() {
   [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
 }
 
+# Echoes the value of the `<key>=` component of an xcodebuild -destination
+# string, or nothing when the destination carries none. $1 is the destination,
+# $2 the bare key (e.g. `name`, `id`). The match is anchored to a component
+# BOUNDARY (start of string, or a comma) so a key that merely ENDS in the one
+# asked for — `devicename=` for `name=`, `udid=` for `id=` — can never be
+# mistaken for it, and the value runs to the next comma or the end of the
+# string. The single owner of the destination-parsing rule shared by
+# bin/ios-sim and bin/screenshot-ios. Depends on nothing else in this file.
+destination_component() {
+  local destination="$1" key="$2"
+  printf '%s' "$destination" | sed -nE "s/^.*(^|,)$key=([^,]*).*/\2/p"
+}
+
+# Splits "$@" at the FIRST literal `--` into two globals: SCRIPT_ARGS
+# (everything before it) and PASSTHROUGH_ARGS (everything after, for a script
+# that forwards a tail verbatim to an underlying tool). Must be called BEFORE
+# getopts: getopts consumes a `--` terminator itself, which would make
+# `<script> -- <args>` indistinguishable from `<script> <target>`.
+#
+# Globals rather than a return value because bash 3.2 — the macOS system shell
+# the -ios scripts run under, being barred from the Nix dev shell — has no
+# namerefs and cannot return an array. For the same reason callers must expand
+# both arrays as `${ARR[@]+"${ARR[@]}"}`, never the obvious `"${ARR[@]}"`:
+# under `set -u` on 3.2, expanding an EMPTY array is an unbound-variable error,
+# and the ordinary no-`--` invocation leaves PASSTHROUGH_ARGS empty.
+# Depends on nothing else in this file.
+split_argv_at_dashdash() {
+  SCRIPT_ARGS=()
+  PASSTHROUGH_ARGS=()
+  local seen_dashdash=0 arg
+  for arg in "$@"; do
+    if [ "$seen_dashdash" -eq 0 ] && [ "$arg" = "--" ]; then
+      seen_dashdash=1
+      continue
+    fi
+    if [ "$seen_dashdash" -eq 1 ]; then
+      PASSTHROUGH_ARGS+=("$arg")
+    else
+      SCRIPT_ARGS+=("$arg")
+    fi
+  done
+}
+
 # Echoes the dotenv file path for a cloud-env selector (UNICOACH_ENV): `local`
 # maps to .env (the base, no delta), every other value to .env.<env>. Empty arg
 # is a missing-required-arg usage error; a named-but-absent file is fatal. The

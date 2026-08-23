@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+# ios-sim runs under SYSTEM Xcode (xcrun simctl), NOT the Nix dev shell. Like
+# build-ios/install-ios/release-ios/screenshot-ios it deliberately does NOT
+# source bin/common (which requires .env / Postgres / the Nix shell) — only
+# bin/functions for log-info/fatal.
+#
+# CoreSimulator devices are machine-GLOBAL, and everything else about a checkout
+# is not (var/run/ gives each checkout its own daemon identity,
+# ios-app/build/DerivedData its own build tree). Two checkouts resolving the one
+# `iPhone 17 Pro` collide silently: a screenshot run terminates the sibling's
+# app, an install overwrites the sibling's bundle and the next capture is a real
+# screenshot of someone else's build. This script closes that by giving each
+# checkout its OWN device, named after the checkout and created on demand
+# (RFC 126).
+#
+# The NAME is the identity and the lookup key; the UDID is what callers use.
+# Nothing is cached on disk — `xcrun simctl list devices` is the source of
+# truth — so deleting the device by hand (or from Simulator.app) self-heals on
+# the next call.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/bin/functions"
+
+help() {
+  cat << 'EOF'
+ios-sim [-D] [target]
+
+Prints the UDID of THIS CHECKOUT's iOS Simulator device, creating it if it does
+not exist yet. Runs under system Xcode, not the Nix dev shell.
+
+  target  Target name (default: simulator). Sources ios-app/env/<target>.env for
+          UNICOACH_DESTINATION and takes its `name=<model>` component as the
+          simulator MODEL to create (e.g. `iPhone 17 Pro`). A destination that
+          names no model (e.g. prod-simulator, or a device target) is an error —
+          there is nothing to create.
+
+The device is named "<model> (<basename of the checkout directory>)", e.g.
+`iPhone 17 Pro (unicoach)`, and that name is the lookup key: if a device with
+exactly that name exists its UDID is printed, otherwise one is created with
+`xcrun simctl create` (never `clone` — a clone copies the source device's data
+directory, and nothing on the shared device is worth inheriting) against the
+matching device type; simctl itself picks the runtime. Nothing is cached, so
+deleting the device by hand self-heals on the next call.
+
+Checkout identity is the directory BASENAME, short enough to read in Simulator's
+device list. Two checkouts with the same basename under different parents share
+a device; that is the documented limit of the scheme — the resolved name is
+printed on stderr so it is never silent.
+
+The UDID is the ONLY thing on stdout (all logging goes to stderr), so a caller
+can use it directly:
+
+  xcodebuild test -destination "platform=iOS Simulator,id=$(bin/ios-sim)"
+
+Options:
+  -D     Delete this checkout's device instead of printing it — EVERY device
+         carrying the name, including unavailable ones. A no-op (exit 0) when
+         none exists. Prints nothing on stdout.
+  -h     Help
+EOF
+  exit 0
+}
+
+DELETE=0
+while getopts ":hD" opt; do
+  case "$opt" in
+  h) help ;;
+  D) DELETE=1 ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+# Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
+# xcrun is shadowed by a stub with no simctl. Detection lives in bin/is-nix; the
+# refusal is here. Placed before any env/tool logic so this message wins even
+# when an env file is also missing.
+if "$PROJECT_ROOT/bin/is-nix" -q; then
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/ios-sim simulator), not via 'nix develop -c'."
+fi
+
+ENV_NAME="${1:-simulator}"
+if [ "$#" -gt 1 ]; then
+  if [[ "$2" == -* ]]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "options must precede the target: write [ios-sim $2 $ENV_NAME], not [ios-sim $ENV_NAME $2]."
+  fi
+  fatal -s "$EXIT_UNEXPECTED_ARG" "ios-sim accepts at most one positional argument (target): $*"
+fi
+
+# ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
+# (used by bin/ios-scripts-tests to point at a temp fixture dir).
+ENV_DIR="${UNICOACH_ENV_DIR:-$PROJECT_ROOT/ios-app/env}"
+ENV_FILE="$ENV_DIR/$ENV_NAME.env"
+if [ ! -f "$ENV_FILE" ]; then
+  fatal "Environment file not found [$ENV_FILE]. Pass an existing simulator target (e.g. simulator), or copy ios-app/env/local.env.example to ios-app/env/local.env."
+fi
+
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+: "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in [$ENV_FILE]}"
+
+# destination_component (bin/functions) owns the extraction rule, including the
+# component-boundary anchoring that stops a `devicename=` key passing for the
+# `name=` one; screenshot-ios reads the destination through the same function.
+MODEL="$(destination_component "$UNICOACH_DESTINATION" name)"
+if [ -z "$MODEL" ]; then
+  fatal "Cannot resolve a simulator model: UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] carries no 'name=' component, so there is no model to create a device from (this is why prod-simulator, and any device target, has no per-checkout device). Pass a target whose destination names a model (e.g. simulator), or add name=<model> to the destination."
+fi
+
+# Checkout identity: the directory BASENAME, not the full path.
+CHECKOUT="$(basename "$PROJECT_ROOT")"
+DEVICE_NAME="$MODEL ($CHECKOUT)"
+
+# Always announced, on stderr: two checkouts with the same basename would share
+# a device, and this line is what keeps that from being silent.
+log-info "This checkout's simulator device is [$DEVICE_NAME] (model [$MODEL] from [$ENV_FILE], checkout [$PROJECT_ROOT])."
+
+# `xcrun simctl list <kind>`, or a fatal carrying simctl's own words. The
+# listings below are this script's ONLY source of truth, so a simctl that cannot
+# run at all (Command Line Tools selected rather than a full Xcode, a
+# CoreSimulator service error) must say WHY. Discarding the stderr would make
+# that read as an empty list — or, under `set -e`, as a wordless non-zero exit
+# from the caller's command substitution, before any fallback fatal could run.
+simctl_list() {
+  local kind="$1" out
+  out="$(xcrun simctl list "$kind" 2>&1)" \
+    || fatal "Failed to list simulator [$kind] (run [xcrun simctl list $kind]): [$out]. Check that a full Xcode is selected (xcode-select -p) and retry."
+  printf '%s\n' "$out"
+}
+
+# Every UDID whose device is named EXACTLY $1, one per line.
+#
+# `simctl list devices` lines look like
+#   "    iPhone 17 Pro (unicoach) (BB47-...-3793) (Shutdown)"
+# — the NAME itself contains parentheses here, so the UDID is located by its own
+# shape rather than by counting parenthesised groups. Plain text, not `-j`:
+# these scripts run outside the dev shell, so no jq/python3 can be assumed.
+# The awk regexes avoid ERE interval syntax ({8}), which the system awk does not
+# support.
+#
+# A SET, not a first match: simctl does not enforce unique device names, so two
+# first-runs in this one checkout (screenshot-ios and test-ios in the same
+# iteration) can each list-then-create, and the caller has to be told rather than
+# handed an arbitrary one.
+#
+# $2 is an availability filter, and the two callers want different answers.
+# `available` skips an "(unavailable" device — its runtime is gone, so it cannot
+# be booted and must never be handed back as this checkout's device. `all`
+# includes it, because an unavailable duplicate is exactly the orphan that makes
+# the next resolve ambiguous, and -D is the one path whose job is to clear the
+# broken state it finds.
+find_udids() {
+  local name="$1" availability="$2"
+  simctl_list devices | awk -v name="$name" -v availability="$availability" '
+    {
+      line = $0
+      sub(/^[ \t]+/, "", line)
+      sub(/[ \t]+$/, "", line)
+      if (availability == "available" && index(line, "(unavailable") > 0) next
+      if (match(line, /\([0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+\)/)) {
+        # RSTART points at the "(" of the UDID group, which is preceded by a
+        # space: the name is everything before that space.
+        if (RSTART < 3) next
+        dev = substr(line, 1, RSTART - 2)
+        udid = substr(line, RSTART + 1, RLENGTH - 2)
+        if (dev == name) print udid
+      }
+    }'
+}
+
+# Number of non-empty lines in $1 (a possibly-empty UDID list).
+#
+# The empty-string branch is not a shortcut: `grep -c .` PRINTS 0 but EXITS 1 on
+# no match, so folding it away makes the caller's
+# `UDID_COUNT="$(count_udids ...)"` fail under `set -e` — on every first run,
+# where this checkout has no device yet and the list is legitimately empty.
+count_udids() {
+  [ -n "$1" ] || { echo 0; return 0; }
+  printf '%s\n' "$1" | grep -c .
+}
+
+if [ "$DELETE" -eq 1 ]; then
+  DELETE_UDIDS="$(find_udids "$DEVICE_NAME" all)"
+  if [ -z "$DELETE_UDIDS" ]; then
+    log-info "No simulator device named [$DEVICE_NAME] exists; nothing to delete."
+    exit 0
+  fi
+  # The whole set, not the first: leaving a twin behind is what makes the next
+  # resolve fatal with nothing the operator can do about it. A here-string, not
+  # a pipe, so the loop runs in THIS shell and a `fatal` inside it exits the
+  # script rather than a subshell.
+  while IFS= read -r udid; do
+    [ -n "$udid" ] || continue
+    log-info "Deleting simulator device [$DEVICE_NAME] [$udid]..."
+    # Shut it down first: `simctl delete` refuses a BOOTED device, and booted is
+    # the state screenshot-ios/test-ios leave this one in — the most common way to
+    # arrive here. The failure is ignored because "not booted" is the other normal
+    # state, and a shutdown that did not happen shows up as the delete failing.
+    xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
+    xcrun simctl delete "$udid" >&2 \
+      || fatal "Failed to delete simulator device [$DEVICE_NAME] [$udid] (xcrun simctl delete). Check it is not in use (xcrun simctl list devices) and retry."
+  done <<< "$DELETE_UDIDS"
+  exit 0
+fi
+
+UDIDS="$(find_udids "$DEVICE_NAME" available)"
+UDID_COUNT="$(count_udids "$UDIDS")"
+if [ "$UDID_COUNT" -gt 1 ]; then
+  fatal "[$UDID_COUNT] simulator devices are named [$DEVICE_NAME], so this checkout's device is ambiguous:
+$UDIDS
+Delete them all with [bin/ios-sim -D $ENV_NAME] and re-run to get a single fresh device."
+fi
+UDID="$UDIDS"
+
+if [ -n "$UDID" ]; then
+  log-info "Simulator device [$DEVICE_NAME] already exists [$UDID]."
+  echo "$UDID"
+  exit 0
+fi
+
+# Not there: create it. `simctl list devicetypes` lines look like
+#   "iPhone 17 Pro (com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro)"
+# and the match is EXACT, so `iPhone 17 Pro` never resolves to `iPhone 17 Pro
+# Max`.
+resolve_devicetype() {
+  local model="$1"
+  simctl_list devicetypes | awk -v model="$model" '
+    {
+      line = $0
+      sub(/^[ \t]+/, "", line)
+      sub(/[ \t]+$/, "", line)
+      if (match(line, /\(com\.apple\.CoreSimulator\.SimDeviceType\.[^)]+\)$/)) {
+        if (RSTART < 3) next
+        name = substr(line, 1, RSTART - 2)
+        id = substr(line, RSTART + 1, RLENGTH - 2)
+        if (name == model) { print id; exit }
+      }
+    }'
+}
+
+DEVICETYPE_ID="$(resolve_devicetype "$MODEL")"
+if [ -z "$DEVICETYPE_ID" ]; then
+  fatal "No simulator device type matches model [$MODEL] (from UNICOACH_DESTINATION in [$ENV_FILE]); it is probably not installed locally. Installed device types:
+$(xcrun simctl list devicetypes 2>&1)"
+fi
+
+log-info "Creating simulator device [$DEVICE_NAME] [$DEVICETYPE_ID] (runtime: simctl's choice)..."
+# `create`, not `clone`: a clone copies the source device's data directory, and
+# nothing on the shared device is worth inheriting.
+#
+# The runtime argument is OMITTED deliberately: `simctl help create` documents
+# that simctl then picks "the newest runtime compatible with the device type" —
+# a decision that needs both version ordering (26.10 > 26.2) and CoreSimulator's
+# device-type compatibility table, and only the first of those can be
+# re-derived from a text listing here.
+#
+# The failure carries simctl's own text AND the installed runtimes, so the
+# common "no iOS runtime installed" case still diagnoses itself.
+CREATE_OUT="$(xcrun simctl create "$DEVICE_NAME" "$DEVICETYPE_ID" 2>&1)" \
+  || fatal "Failed to create simulator device [$DEVICE_NAME] with device type [$DEVICETYPE_ID] (xcrun simctl create): [$CREATE_OUT]. If no iOS runtime is installed, add one (Xcode > Settings > Components). Runtimes:
+$(xcrun simctl list runtimes 2>&1)"
+
+# simctl create prints the new UDID, and only that — but it has been known to
+# prepend warnings, and this script's stdout contract means a non-UDID line must
+# never be printed as if it were one. The check is the UDID's SHAPE (8-4-4-4-12
+# hex, the same five groups find_udids' awk matches), not its length and
+# alphabet: `------...` is 36 characters drawn from the same set.
+#
+# `|| true` because grep exits 1 on no match and `pipefail` would propagate it: a
+# create that printed no UDID must reach the fatal below, not die wordlessly
+# here. `tail -n 1` rather than `head` for the prepended-warning case above — the
+# UDID is the last thing simctl prints.
+NEW_UDID="$(printf '%s\n' "$CREATE_OUT" \
+  | grep -Eox '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' \
+  | tail -n 1 || true)"
+if [ -z "$NEW_UDID" ]; then
+  fatal "xcrun simctl create reported success for [$DEVICE_NAME] but printed no UDID: [$CREATE_OUT]. Check the device list (xcrun simctl list devices) and retry."
+fi
+
+log-info "Created simulator device [$DEVICE_NAME] [$NEW_UDID]."
+
+# The result, and the only thing on stdout.
+echo "$NEW_UDID"

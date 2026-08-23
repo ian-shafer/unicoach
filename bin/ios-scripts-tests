@@ -99,6 +99,42 @@ if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "install" ] && [ -n "\${SIMCTL_INST
   echo "Unable to install app: \${4:-}" >&2
   exit 164
 fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "list" ] && [ -n "\${SIMCTL_LIST_FAIL:-}" ]; then
+  # simctl itself refusing to run at all: the Command Line Tools / broken
+  # CoreSimulator case, in xcrun's own wording and on STDERR. bin/ios-sim must
+  # turn this into a [FATAL] naming the listing, not die wordlessly under set -e.
+  echo "xcrun: error: unable to find utility \"simctl\", not a developer tool or in PATH" >&2
+  exit 72
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "create" ] && [ -n "\${SIMCTL_CREATE_FAIL:-}" ]; then
+  # A create that fails with simctl's own wording — the shape of the real "no
+  # runtime is installed" failure now that the runtime choice is simctl's.
+  echo "An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=2):" >&2
+  echo "Unable to find a runtime for device type \${3:-}" >&2
+  exit 164
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "list" ]; then
+  # Fixture-driven \`simctl list\`. Each of the three listings is a per-test file
+  # (SIMCTL_DEVICES / SIMCTL_DEVICETYPES / SIMCTL_RUNTIMES) in the REAL simctl
+  # plain-text shape, which is what bin/ios-sim parses — no jq/python3 is
+  # available to these scripts, so the parser is text and so is the fixture.
+  case "\${3:-}" in
+  devices)
+    if [ -n "\${SIMCTL_DEVICES:-}" ] && [ -f "\${SIMCTL_DEVICES}" ]; then cat "\${SIMCTL_DEVICES}"; fi
+    ;;
+  devicetypes)
+    if [ -n "\${SIMCTL_DEVICETYPES:-}" ] && [ -f "\${SIMCTL_DEVICETYPES}" ]; then cat "\${SIMCTL_DEVICETYPES}"; fi
+    ;;
+  runtimes)
+    if [ -n "\${SIMCTL_RUNTIMES:-}" ] && [ -f "\${SIMCTL_RUNTIMES}" ]; then cat "\${SIMCTL_RUNTIMES}"; fi
+    ;;
+  esac
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "create" ]; then
+  # The real \`simctl create\` prints the new device's UDID on stdout, and that is
+  # the value bin/ios-sim must relay as ITS stdout.
+  echo "\${SIMCTL_CREATE_UDID:-}"
+fi
 if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "bootstatus" ]; then
   echo "Monitoring boot status for device \${3:-}."
   echo "Device already booted, nothing to do."
@@ -141,6 +177,13 @@ EOF
 # `devicename=` (or the LAST name= regardless of where the component starts).
 cat > "$ENV_DIR/decoy-name-simulator.env" <<'EOF'
 UNICOACH_DESTINATION="platform=iOS Simulator,devicename=Bogus Lead,name=iPhone 99 Real,simdevicename=Bogus Tail"
+EOF
+
+# A simulator target naming a model that no installed device type matches — the
+# expected human error ("that iPhone is not installed locally"), which must
+# fatal with the actual list rather than creating something arbitrary.
+cat > "$ENV_DIR/unknown-model-simulator.env" <<'EOF'
+UNICOACH_DESTINATION="platform=iOS Simulator,name=iPhone Nonexistent 42"
 EOF
 
 # Target fixtures that set an EXPLICIT UNICOACH_BACKEND_URL (honor path). The
@@ -257,6 +300,103 @@ iPhone A (model)  00000000-1111111111111111  available
 iPhone B (model)  22222222-3333333333333333  available
 EOF
 
+# --- Per-checkout simulator fixtures (RFC 126) --------------------------------
+# bin/ios-sim names this checkout's device "<model> (<basename of PROJECT_ROOT>)"
+# and looks it up in `simctl list devices`, so the fixtures below must be built
+# from the SAME basename this harness runs under — a hardcoded name would pass
+# in one worktree and fail in the next.
+CHECKOUT="$(basename "$PROJECT_ROOT")"
+SIM_DEVICE_NAME="iPhone 17 Pro ($CHECKOUT)"
+DECOY_DEVICE_NAME="iPhone 99 Real ($CHECKOUT)"
+# The machine-global device the checked-in destination used to resolve
+# verbatim. It is present in BOTH device fixtures precisely so that returning it
+# is a detectable failure: the whole point of RFC 126 is that this is not our
+# device.
+SHARED_UDID="AAAAAAAA-0000-0000-0000-000000000001"
+CHECKOUT_UDID="BBBBBBBB-0000-0000-0000-000000000002"
+DECOY_UDID="CCCCCCCC-0000-0000-0000-000000000003"
+UNAVAILABLE_UDID="DDDDDDDD-0000-0000-0000-000000000004"
+# What the xcrun shim's `simctl create` prints, i.e. the UDID of a device that
+# did not exist until this run.
+CREATED_UDID="EEEEEEEE-0000-0000-0000-00000000000E"
+
+# `simctl list devices` with this checkout's devices already present. Real
+# simctl shape, including the trailing space after the state and an unavailable
+# device (whose runtime is gone) that must never be handed back as usable —
+# listed FIRST, so a lookup that ignores the "(unavailable" suffix returns it
+# rather than the real device.
+DEVICES_PRESENT="$WORK/devices-present.txt"
+cat > "$DEVICES_PRESENT" <<EOF
+== Devices ==
+-- Unavailable: com.apple.CoreSimulator.SimRuntime.iOS-16-4 --
+    $SIM_DEVICE_NAME ($UNAVAILABLE_UDID) (Shutdown) (unavailable, runtime profile not found using "System" match policy)
+-- iOS 26.2 --
+    iPhone 17 Pro ($SHARED_UDID) (Shutdown) 
+    $SIM_DEVICE_NAME ($CHECKOUT_UDID) (Shutdown) 
+    $DECOY_DEVICE_NAME ($DECOY_UDID) (Booted) 
+EOF
+
+# Two AVAILABLE devices carrying this checkout's name, plus the unavailable one.
+# simctl does not enforce unique names, so two first-runs in one checkout
+# (screenshot-ios and test-ios in the same iteration) can each list-then-create
+# and land here. Resolution must refuse rather than pick one; -D must clear all
+# THREE, the unavailable twin included.
+DEVICES_DUPLICATE="$WORK/devices-duplicate.txt"
+DUPLICATE_UDID="FFFFFFFF-0000-0000-0000-00000000000F"
+cat > "$DEVICES_DUPLICATE" <<EOF
+== Devices ==
+-- Unavailable: com.apple.CoreSimulator.SimRuntime.iOS-16-4 --
+    $SIM_DEVICE_NAME ($UNAVAILABLE_UDID) (Shutdown) (unavailable, runtime profile not found using "System" match policy)
+-- iOS 26.2 --
+    iPhone 17 Pro ($SHARED_UDID) (Shutdown) 
+    $SIM_DEVICE_NAME ($CHECKOUT_UDID) (Shutdown) 
+    $SIM_DEVICE_NAME ($DUPLICATE_UDID) (Shutdown) 
+EOF
+
+# The same listing WITHOUT this checkout's devices — the first-run state. The
+# shared `iPhone 17 Pro` is still there, so a lookup that matched the MODEL
+# rather than the per-checkout NAME would return $SHARED_UDID here instead of
+# creating.
+DEVICES_ABSENT="$WORK/devices-absent.txt"
+cat > "$DEVICES_ABSENT" <<EOF
+== Devices ==
+-- iOS 26.2 --
+    iPhone 17 Pro ($SHARED_UDID) (Shutdown) 
+    iPhone 17 Pro Max (99999999-0000-0000-0000-000000000009) (Shutdown) 
+EOF
+
+# `simctl list devicetypes`. `iPhone 17 Pro` and `iPhone 17 Pro Max` are both
+# present so the match is proven EXACT rather than prefix-based.
+DEVICETYPES="$WORK/devicetypes.txt"
+cat > "$DEVICETYPES" <<'EOF'
+== Device Types ==
+iPhone 17 (com.apple.CoreSimulator.SimDeviceType.iPhone-17)
+iPhone 17 Pro Max (com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro-Max)
+iPhone 17 Pro (com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro)
+iPhone 99 Real (com.apple.CoreSimulator.SimDeviceType.iPhone-99-Real)
+iPad Pro 13-inch (M5) (com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-8GB)
+EOF
+NEWEST_RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-10"
+OLDER_RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-2"
+UNAVAILABLE_RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-27-0"
+# `simctl list runtimes`. bin/ios-sim does NOT rank these: it omits the runtime
+# argument from `simctl create` so that CoreSimulator picks the newest runtime
+# COMPATIBLE WITH THE DEVICE TYPE, which needs a compatibility table this script
+# cannot see. The fixture is kept because the create fatal quotes the runtime
+# list as its diagnosis of "no iOS runtime installed", and because a version of
+# ios-sim that went back to choosing a runtime itself would have to name one of
+# these ids in the argv log — which the create case asserts it does not.
+RUNTIMES="$WORK/runtimes.txt"
+cat > "$RUNTIMES" <<EOF
+== Runtimes ==
+iOS 17.5 (17.5 - 21F79) - com.apple.CoreSimulator.SimRuntime.iOS-17-5
+iOS 26.10 (26.10 - 23D99) - $NEWEST_RUNTIME
+iOS 26.2 (26.2 - 23C54) - $OLDER_RUNTIME
+watchOS 26.4 (26.4 - 23S54) - com.apple.CoreSimulator.SimRuntime.watchOS-26-4
+iOS 27.0 (27.0 - 24A100) - $UNAVAILABLE_RUNTIME (unavailable, runtime profile not found using "System" match policy)
+EOF
+
+
 reset_log() { : > "$ARGV_LOG"; }
 
 # Run a bin script with the shims first on PATH and env/products overrides set.
@@ -317,6 +457,10 @@ run_screenshot() {
     SIMCTL_BOOT_FAIL="${SIMCTL_BOOT_FAIL:-}" \
     SIMCTL_NO_WRITE="${SIMCTL_NO_WRITE:-}" \
     SIMCTL_INSTALL_FAIL="${SIMCTL_INSTALL_FAIL:-}" \
+    SIMCTL_DEVICES="${SIMCTL_DEVICES:-$DEVICES_PRESENT}" \
+    SIMCTL_DEVICETYPES="${SIMCTL_DEVICETYPES:-$DEVICETYPES}" \
+    SIMCTL_RUNTIMES="${SIMCTL_RUNTIMES:-$RUNTIMES}" \
+    SIMCTL_CREATE_UDID="${SIMCTL_CREATE_UDID:-$CREATED_UDID}" \
     ${SIMULATOR_OVERRIDE:+UNICOACH_SIMULATOR="$SIMULATOR_OVERRIDE"} \
     ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/screenshot-ios" "$@"
@@ -334,8 +478,38 @@ run_screenshot_real_env() {
     PATH="$SHIM_DIR:$PATH" \
     UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
     UNICOACH_SCREENSHOT_DIR="$SCREENSHOT_DIR" \
+    SIMCTL_DEVICES="${SIMCTL_DEVICES:-$DEVICES_PRESENT}" \
+    SIMCTL_DEVICETYPES="${SIMCTL_DEVICETYPES:-$DEVICETYPES}" \
+    SIMCTL_RUNTIMES="${SIMCTL_RUNTIMES:-$RUNTIMES}" \
+    SIMCTL_CREATE_UDID="${SIMCTL_CREATE_UDID:-$CREATED_UDID}" \
     "$PROJECT_ROOT/bin/screenshot-ios" "$@"
 }
+
+# Run one of the two per-checkout simulator scripts (bin/$1) with the shims
+# first on PATH and the three `simctl list` fixtures in play. SIMCTL_DEVICES
+# defaults to the listing where this checkout's device ALREADY EXISTS (the
+# steady state); a case drives the first-run path by prefixing
+# SIMCTL_DEVICES="$DEVICES_ABSENT". test-ios shells out to ios-sim, which needs
+# the same fixtures and inherits them through the environment — which is why the
+# two share one wrapper rather than carrying their own env blocks.
+run_sim_script() {
+  local script="$1"
+  shift
+  reset_log
+  env PATH="$SHIM_DIR:$PATH" \
+    UNICOACH_ENV_DIR="$ENV_DIR" \
+    SIMCTL_DEVICES="${SIMCTL_DEVICES:-$DEVICES_PRESENT}" \
+    SIMCTL_DEVICETYPES="${SIMCTL_DEVICETYPES:-$DEVICETYPES}" \
+    SIMCTL_RUNTIMES="${SIMCTL_RUNTIMES:-$RUNTIMES}" \
+    SIMCTL_CREATE_UDID="${SIMCTL_CREATE_UDID:-$CREATED_UDID}" \
+    SIMCTL_CREATE_FAIL="${SIMCTL_CREATE_FAIL:-}" \
+    SIMCTL_LIST_FAIL="${SIMCTL_LIST_FAIL:-}" \
+    ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
+    "$PROJECT_ROOT/bin/$script" "$@"
+}
+
+run_ios_sim() { run_sim_script ios-sim "$@"; }
+run_test_ios() { run_sim_script test-ios "$@"; }
 
 # Run bin/is-nix directly, honouring DEV_SHELL_MARKER as the simulated marker.
 # IN_NIX_SHELL is unset here so the marker is the ONLY variable in play: this
@@ -1087,25 +1261,52 @@ test_screenshot_forwards_an_explicit_storekit_opt_in() {
   return 0
 }
 
-# Device resolution defaults to the destination's name= component, so the
-# committed simulator target needs no extra configuration.
-test_screenshot_device_from_destination_name() {
+# Device resolution defaults to THIS CHECKOUT's device (RFC 126): the
+# destination's name= names a MODEL, and the device simctl is handed is the UDID
+# of "<model> (<checkout>)" — never the shared `iPhone 17 Pro` every other
+# checkout would also resolve, and never the literal "booted" (a second
+# simulator booted elsewhere must not be capturable by mistake).
+test_screenshot_device_is_this_checkouts_udid() {
   stage_built_simulator_app
   run_screenshot -w 0 simulator >/dev/null 2>&1 || return 1
-  log_has "iPhone 17 Pro" || return 1
-  # The literal "booted" is deliberately NOT used: a second simulator booted
-  # elsewhere must not be capturable by mistake.
+  log_has "$CHECKOUT_UDID" || return 1
+  log_lacks "iPhone 17 Pro" || return 1
+  log_lacks "$SHARED_UDID" || return 1
   log_lacks "booted" || return 1
+  # The device already existed, so nothing was created.
+  log_lacks "create" || return 1
   return 0
 }
 
-# UNICOACH_SIMULATOR overrides the destination-derived name.
+# First run in a fresh checkout: the device does not exist yet, so it is created
+# on demand and the capture proceeds on the NEW UDID.
+test_screenshot_creates_the_checkout_device_on_demand() {
+  stage_built_simulator_app
+  SIMCTL_DEVICES="$DEVICES_ABSENT" run_screenshot -w 0 simulator >/dev/null 2>&1 || return 1
+  log_has "create" || return 1
+  log_has "$SIM_DEVICE_NAME" || return 1
+  log_has "$CREATED_UDID" || return 1
+  # Not the shared device, even though the listing still offers it.
+  log_lacks "$SHARED_UDID" || return 1
+  # The boot/install/launch/io sequence ran against the created device.
+  local device
+  device="$(grep -A1 -Fx "boot" "$ARGV_LOG" | sed -n '2p')"
+  [ "$device" = "$CREATED_UDID" ] || return 1
+  return 0
+}
+
+# UNICOACH_SIMULATOR overrides the destination-derived device. It is the escape
+# hatch for deliberately driving a shared device, so it must also skip the
+# per-checkout resolution entirely — no device is created, and this checkout's
+# own device is not even consulted.
 test_screenshot_simulator_override() {
   stage_built_simulator_app
   SIMULATOR_OVERRIDE="ABCD1234-5678-90EF-1234-567890ABCDEF" \
     run_screenshot -w 0 simulator >/dev/null 2>&1 || return 1
   log_has "ABCD1234-5678-90EF-1234-567890ABCDEF" || return 1
   log_lacks "iPhone 17 Pro" || return 1
+  log_lacks "$CHECKOUT_UDID" || return 1
+  log_lacks "create" || return 1
   return 0
 }
 
@@ -1187,6 +1388,8 @@ test_screenshot_device_flag_beats_env_and_destination() {
   log_has "FLAG-5555-6666-7777-888888888888" || return 1
   log_lacks "ENVVAR-1111-2222-3333-444444444444" || return 1
   log_lacks "iPhone 17 Pro" || return 1
+  log_lacks "$CHECKOUT_UDID" || return 1
+  log_lacks "create" || return 1
   return 0
 }
 
@@ -1209,7 +1412,7 @@ test_screenshot_boot_failure_is_fatal() {
   local out rc=0
   out="$(SIMCTL_BOOT_FAIL=1 run_screenshot -w 0 simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
-  echo "$out" | grep -q "iPhone 17 Pro" || return 1
+  echo "$out" | grep -q "$CHECKOUT_UDID" || return 1
   # Never reached the capture.
   log_lacks "screenshot" || return 1
   log_lacks "io" || return 1
@@ -1255,6 +1458,9 @@ test_screenshot_real_simulator_target_resolves_device() {
   device="$(grep -A1 -Fx "boot" "$ARGV_LOG" | sed -n '2p')"
   [ -n "$device" ] || return 1
   [ "$device" != "booted" ] || return 1
+  # ...and it is THIS CHECKOUT's device, resolved from the checked-in
+  # destination's model through bin/ios-sim.
+  [ "$device" = "$CHECKOUT_UDID" ] || return 1
   return 0
 }
 
@@ -1293,20 +1499,39 @@ test_screenshot_install_failure_is_fatal() {
   [ "$rc" -lt 10 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "Failed to install" || return 1
-  echo "$out" | grep -q "iPhone 17 Pro" || return 1
+  echo "$out" | grep -q "$CHECKOUT_UDID" || return 1
   # Never reached the capture.
   log_lacks "screenshot" || return 1
   return 0
 }
 
-# The standard `platform=iOS Simulator,id=<UDID>` destination resolves, and that
-# UDID is the device simctl is handed.
+# The standard `platform=iOS Simulator,id=<UDID>` destination names one exact
+# simulator, which is explicit intent: it is used VERBATIM, ahead of the
+# per-checkout device, and nothing is created.
 test_screenshot_device_from_destination_id() {
   stage_built_simulator_app
   run_screenshot -w 0 id-simulator >/dev/null 2>&1 || return 1
   log_has "AAAABBBB-CCCC-DDDD-EEEE-FFFF00001111" || return 1
   log_lacks "booted" || return 1
+  log_lacks "create" || return 1
+  log_lacks "$CHECKOUT_UDID" || return 1
   return 0
+}
+
+# The end of the resolution chain: a destination carrying NEITHER a `name=` nor
+# an `id=` component (prod-simulator's shape) is fatal, never an empty device
+# handed on to `simctl boot ""`. Also the negative half of the `name=` probe —
+# without this case the probe could match anything and the suite stay green.
+test_screenshot_unresolvable_destination_is_fatal() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(run_screenshot -w 0 explicit-simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -q "Cannot resolve a simulator" || return 1
+  echo "$out" | grep -q "neither a 'name=' nor an 'id=' component" || return 1
+  # Nothing was booted, and no device was created for want of one.
+  log_no_tool "xcrun"
 }
 
 # The extraction is anchored to a component boundary: a decoy key that merely
@@ -1315,7 +1540,9 @@ test_screenshot_device_from_destination_id() {
 test_screenshot_device_ignores_decoy_name_key() {
   stage_built_simulator_app
   run_screenshot -w 0 decoy-name-simulator >/dev/null 2>&1 || return 1
-  log_has "iPhone 99 Real" || return 1
+  # `iPhone 99 Real` is the model, so the device is this checkout's
+  # "iPhone 99 Real (<checkout>)" — present in the device fixture as $DECOY_UDID.
+  log_has "$DECOY_UDID" || return 1
   log_lacks "Bogus Lead" || return 1
   log_lacks "Bogus Tail" || return 1
   return 0
@@ -1326,6 +1553,294 @@ test_screenshot_help_exits_zero() {
   out="$(run_screenshot -h 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || return 1
   echo "$out" | grep -q "screenshot-ios"
+}
+
+# ============================== ios-sim tests ================================
+# The per-checkout simulator device (RFC 126). Every case is fixture-driven: the
+# xcrun shim answers `simctl list devices/devicetypes/runtimes` from files and
+# records `simctl create`, so nothing here touches a real device.
+
+# Steady state: the device named "<model> (<checkout>)" already exists, so its
+# UDID is printed and NOTHING is created. The shared `iPhone 17 Pro` is in the
+# same listing, so returning it (a model-keyed rather than name-keyed lookup)
+# fails here.
+test_iossim_prints_existing_udid() {
+  local out
+  out="$(run_ios_sim simulator 2>/dev/null)" || return 1
+  [ "$out" = "$CHECKOUT_UDID" ] || return 1
+  log_lacks "create" || return 1
+  return 0
+}
+
+# First run: no such device, so one is created — with the EXACT device type for
+# the model (not `iPhone 17 Pro Max`, also in the listing) and NO third
+# argument, so CoreSimulator picks the newest runtime compatible with that
+# device type — and the created UDID is printed.
+#
+# The argv is read positionally rather than with log_has, because "no runtime
+# argument" is a statement about the shape of the invocation: a `create` that
+# grew a third argument would still satisfy every membership assertion.
+test_iossim_creates_when_absent() {
+  local out create_at trailing
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_sim simulator 2>/dev/null)" || return 1
+  [ "$out" = "$CREATED_UDID" ] || return 1
+  # Not the shared device, which the listing still offers under the bare model.
+  [ "$out" != "$SHARED_UDID" ] || return 1
+  create_at="$(grep -n -Fx -- "create" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  [ -n "$create_at" ] || return 1
+  [ "$(sed -n "$((create_at + 1))p" "$ARGV_LOG")" = "$SIM_DEVICE_NAME" ] || return 1
+  [ "$(sed -n "$((create_at + 2))p" "$ARGV_LOG")" = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" ] || return 1
+  # Exactly two arguments: the next logged line is either the start of another
+  # recorded invocation or end-of-file.
+  trailing="$(sed -n "$((create_at + 3))p" "$ARGV_LOG")"
+  [ -z "$trailing" ] || [ "$trailing" = "xcrun" ] || return 1
+  log_lacks "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro-Max" || return 1
+  # No runtime id anywhere in the argv: choosing one is simctl's job now.
+  log_lacks "$NEWEST_RUNTIME" || return 1
+  log_lacks "$OLDER_RUNTIME" || return 1
+  log_lacks "$UNAVAILABLE_RUNTIME" || return 1
+  # `create`, never `clone`: a clone would inherit the shared device's data.
+  log_lacks "clone" || return 1
+  return 0
+}
+
+# A `simctl create` that fails is this script's fatal, carrying simctl's own
+# words — the shape of the real "no iOS runtime is installed" failure, which is
+# simctl's to report now that the runtime choice is simctl's. The installed
+# runtimes are printed too, so that case still diagnoses itself.
+test_iossim_create_failure_is_fatal() {
+  local out rc=0
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" SIMCTL_CREATE_FAIL=1 run_ios_sim simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -q "Unable to find a runtime for device type" || return 1
+  echo "$out" | grep -q "$NEWEST_RUNTIME" || return 1
+  return 0
+}
+
+# The stdout contract's last guard: whatever `simctl create` prints is checked
+# for the UDID's SHAPE before it is relayed. 36 dashes are 36 characters from
+# the UDID's own alphabet, so a length-and-charset check passes them straight
+# through to a caller's `-destination ...,id=`.
+test_iossim_create_output_must_be_udid_shaped() {
+  local out rc=0
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" \
+    SIMCTL_CREATE_UDID="------------------------------------" \
+    run_ios_sim simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -q "printed no UDID" || return 1
+  return 0
+}
+
+# `simctl list` is this script's only source of truth, so a simctl that cannot
+# run at all must produce a [FATAL] naming the listing and carrying xcrun's own
+# text. Without it the caller's command substitution dies under `set -e` with no
+# message whatsoever — a bare non-zero exit out of bin/test-ios.
+test_iossim_list_failure_is_fatal() {
+  local out rc=0
+  out="$(SIMCTL_LIST_FAIL=1 run_ios_sim simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -q "list simulator \[devices\]" || return 1
+  echo "$out" | grep -q "unable to find utility" || return 1
+  log_lacks "create" || return 1
+  return 0
+}
+
+# simctl does not enforce unique device names, so two same-checkout first-runs
+# can each list-then-create. Two devices carrying this name is a broken state,
+# not a choice to make quietly: fatal, naming both UDIDs and the command that
+# clears them — and creating nothing.
+test_iossim_duplicate_devices_are_fatal() {
+  local out rc=0
+  out="$(SIMCTL_DEVICES="$DEVICES_DUPLICATE" run_ios_sim simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -q "$CHECKOUT_UDID" || return 1
+  echo "$out" | grep -q "$DUPLICATE_UDID" || return 1
+  echo "$out" | grep -q "bin/ios-sim -D simulator" || return 1
+  log_lacks "create" || return 1
+  return 0
+}
+
+# -D names a SET, and it is the one path that must cope with the broken state it
+# exists to clear: every device carrying the name goes, the unavailable twin
+# included (resolution skips those because they cannot be booted, but leaving
+# one behind is exactly what makes the next resolve fatal). The decoy and the
+# shared machine-global device are left alone.
+test_iossim_delete_removes_every_match() {
+  local out rc=0
+  out="$(SIMCTL_DEVICES="$DEVICES_DUPLICATE" run_ios_sim -D simulator 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  [ -z "$out" ] || return 1
+  log_has "$CHECKOUT_UDID" || return 1
+  log_has "$DUPLICATE_UDID" || return 1
+  log_has "$UNAVAILABLE_UDID" || return 1
+  log_lacks "$SHARED_UDID" || return 1
+  log_lacks "$DECOY_UDID" || return 1
+  return 0
+}
+
+# An unavailable device (its runtime is gone) carries the right NAME in the
+# listing but cannot be booted, so it must not be handed back as this
+# checkout's device — the available one is.
+test_iossim_ignores_an_unavailable_device() {
+  local out
+  out="$(run_ios_sim simulator 2>/dev/null)" || return 1
+  [ "$out" != "$UNAVAILABLE_UDID" ] || return 1
+  return 0
+}
+
+# The family's stdout contract: a caller does
+# `-destination "platform=iOS Simulator,id=$(bin/ios-sim)"`, so stdout is EXACTLY
+# the UDID and every log line — including the resolved device name, and simctl's
+# own chatter — is on stderr. Driven through the CREATE path, where simctl
+# itself prints a UDID that would otherwise leak straight through.
+test_iossim_stdout_is_only_the_udid() {
+  local out err lines
+  err="$WORK/ios-sim-stdout.err"
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_sim simulator 2>"$err")" || return 1
+  lines="$(printf '%s\n' "$out" | grep -c .)"
+  [ "$lines" -eq 1 ] || return 1
+  [ "$out" = "$CREATED_UDID" ] || return 1
+  # The name it resolved is announced, but on stderr — two checkouts sharing a
+  # basename would share a device, and this line is what stops that being silent.
+  grep -qF "$SIM_DEVICE_NAME" "$err" || return 1
+  return 0
+}
+
+# "That model is not installed locally" is the expected human error, so the
+# fatal names the model AND prints the actual list to choose from — and nothing
+# is created.
+test_iossim_unknown_model_is_fatal() {
+  local out rc=0
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_sim unknown-model-simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -q "iPhone Nonexistent 42" || return 1
+  echo "$out" | grep -q "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" || return 1
+  log_lacks "create" || return 1
+  return 0
+}
+
+# A destination with no `name=` component (prod-simulator's shape) names no
+# model, so there is nothing to create: fatal, not an arbitrary device.
+test_iossim_no_name_component_is_fatal() {
+  local out rc=0
+  out="$(run_ios_sim explicit-simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "name=" || return 1
+  log_no_tool "xcrun"
+}
+
+# Same dev-shell guard as the rest of the -ios family, before any tool runs.
+test_iossim_guard() {
+  local out rc=0
+  out="$(DEV_SHELL_MARKER=1 run_ios_sim simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "ios-sim" || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  log_no_tool "xcrun"
+}
+
+# -D deletes by UDID (the name is the lookup key, the UDID is what simctl acts
+# on) and prints nothing on stdout.
+test_iossim_delete_by_udid() {
+  local out shutdown_at delete_at
+  out="$(run_ios_sim -D simulator 2>/dev/null)" || return 1
+  [ -z "$out" ] || return 1
+  log_has "delete" || return 1
+  log_has "$CHECKOUT_UDID" || return 1
+  # ...and the device is SHUT DOWN first: `simctl delete` refuses a booted
+  # device, which is exactly the state screenshot-ios/test-ios leave it in, so
+  # the shutdown must precede the delete rather than being advice in a fatal.
+  shutdown_at="$(grep -n -Fx -- "shutdown" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  delete_at="$(grep -n -Fx -- "delete" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  [ -n "$shutdown_at" ] || return 1
+  [ -n "$delete_at" ] || return 1
+  [ "$shutdown_at" -lt "$delete_at" ] || return 1
+  return 0
+}
+
+# ...and deleting a device that is not there is a no-op, not a failure: nothing
+# is cached on disk, so a hand-deleted device is the normal state.
+test_iossim_delete_absent_is_a_noop() {
+  local out rc=0
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_sim -D simulator 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  echo "$out" | grep -q "nothing to delete" || return 1
+  log_lacks "delete" || return 1
+  return 0
+}
+
+# ============================== test-ios tests ===============================
+
+# The whole point: `xcodebuild test` is pinned to THIS CHECKOUT's device by
+# UDID, not to the shared `name=iPhone 17 Pro` a hand-typed command would use,
+# and it shares bin/build-ios's DerivedData tree.
+test_testios_destination_is_the_checkout_device() {
+  run_test_ios simulator >/dev/null 2>&1 || return 1
+  log_has "xcodebuild" || return 1
+  log_has "test" || return 1
+  log_has "-destination" || return 1
+  log_has "platform=iOS Simulator,id=$CHECKOUT_UDID" || return 1
+  log_lacks "platform=iOS Simulator,name=iPhone 17 Pro" || return 1
+  log_has "-derivedDataPath" || return 1
+  log_has "$PROJECT_ROOT/ios-app/build/DerivedData" || return 1
+  log_has "$PROJECT_ROOT/ios-app/UnicoachiOS.xcodeproj" || return 1
+  log_has "UnicoachiOS" || return 1
+  return 0
+}
+
+# bin/build-ios owns the DerivedData location and bin/test-ios repeats the
+# literal, which is the only thing making the two share a build tree. Compare
+# what each script ACTUALLY hands xcodebuild, read out of the argv log rather
+# than from a third copy of the literal, so moving one and not the other fails
+# here instead of silently costing a cold rebuild on every test run.
+test_testios_shares_build_ios_derived_data() {
+  local build_path test_path
+  run_build simulator >/dev/null 2>&1 || return 1
+  build_path="$(grep -A1 -Fx -- "-derivedDataPath" "$ARGV_LOG" | sed -n '2p')"
+  [ -n "$build_path" ] || return 1
+  run_test_ios simulator >/dev/null 2>&1 || return 1
+  test_path="$(grep -A1 -Fx -- "-derivedDataPath" "$ARGV_LOG" | sed -n '2p')"
+  [ -n "$test_path" ] || return 1
+  [ "$test_path" = "$build_path" ] || return 1
+  return 0
+}
+
+# A device target has no bootable simulator: rejected, and no build is started.
+test_testios_device_target_rejected() {
+  local out rc=0
+  out="$(run_test_ios device 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  # THIS script's guard, pinned by its own wording: a device destination also
+  # has no `name=` component, so deleting the guard would still fail — inside
+  # bin/ios-sim, with a message about models. A loose /simulator/i match would
+  # accept that and the guard could be removed unnoticed.
+  echo "$out" | grep -q "physical device" || return 1
+  echo "$out" | grep -q "test-ios runs the suite in the simulator only" || return 1
+  # Refused before any device is even resolved, let alone created.
+  log_no_tool "xcrun" || return 1
+  log_no_tool "xcodebuild"
+}
+
+test_testios_guard() {
+  local out rc=0
+  out="$(DEV_SHELL_MARKER=1 run_test_ios simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "test-ios" || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  log_no_tool "xcodebuild"
+}
+
+# Everything after `--` reaches xcodebuild verbatim: the -only-testing seam.
+test_testios_forwards_args_after_dashdash() {
+  run_test_ios simulator -- -only-testing:UnicoachiOSTests/PaywallTests -quiet >/dev/null 2>&1 || return 1
+  log_has "-only-testing:UnicoachiOSTests/PaywallTests" || return 1
+  log_has "-quiet" || return 1
+  return 0
 }
 
 # Note: run_install/run_build wrappers reset the argv log; export the
@@ -1391,6 +1906,29 @@ assert_success "release-ios: deploy target derives https://api.\$APP_DOMAIN from
 assert_success "release-ios: manual signing when a provisioning profile is named" test_release_manual_signing_with_profile
 assert_success "release-ios: automatic signing by default (no profile)" test_release_automatic_signing_default
 
+# ios-sim
+assert_success "ios-sim: prints the existing per-checkout UDID, creates nothing" test_iossim_prints_existing_udid
+assert_success "ios-sim: creates with the exact devicetype and no runtime argument" test_iossim_creates_when_absent
+assert_success "ios-sim: a failing simctl create is fatal, carrying simctl's message" test_iossim_create_failure_is_fatal
+assert_success "ios-sim: a failing simctl list is fatal, naming the listing" test_iossim_list_failure_is_fatal
+assert_success "ios-sim: create output that is not UDID-SHAPED is fatal, not relayed" test_iossim_create_output_must_be_udid_shaped
+assert_success "ios-sim: an unavailable same-named device is not handed back" test_iossim_ignores_an_unavailable_device
+assert_success "ios-sim: two same-named devices are fatal, not an arbitrary pick" test_iossim_duplicate_devices_are_fatal
+assert_success "ios-sim: stdout is EXACTLY the UDID; the name goes to stderr" test_iossim_stdout_is_only_the_udid
+assert_success "ios-sim: an unknown model is fatal and lists the installed types" test_iossim_unknown_model_is_fatal
+assert_success "ios-sim: a destination with no name= component is fatal" test_iossim_no_name_component_is_fatal
+assert_success "ios-sim: dev-shell guard fires, no xcrun line" test_iossim_guard
+assert_success "ios-sim: -D deletes this checkout's device by UDID" test_iossim_delete_by_udid
+assert_success "ios-sim: -D deletes EVERY same-named device, unavailable included" test_iossim_delete_removes_every_match
+assert_success "ios-sim: -D on an absent device is a no-op" test_iossim_delete_absent_is_a_noop
+
+# test-ios
+assert_success "test-ios: xcodebuild test is pinned to this checkout's device by id=" test_testios_destination_is_the_checkout_device
+assert_success "test-ios: device target rejected (simulator-only)" test_testios_device_target_rejected
+assert_success "test-ios: dev-shell guard fires, no xcodebuild line" test_testios_guard
+assert_success "test-ios: args after -- are forwarded to xcodebuild" test_testios_forwards_args_after_dashdash
+assert_success "test-ios: -derivedDataPath is the same tree bin/build-ios uses" test_testios_shares_build_ios_derived_data
+
 # screenshot-ios
 assert_success "screenshot-ios: dev-shell guard fires, no xcrun line" test_screenshot_guard
 assert_success "screenshot-ios: dev-shell guard precedes env resolution (nonexistent target)" test_screenshot_guard_precedence_over_missing_env
@@ -1403,7 +1941,8 @@ assert_success "screenshot-ios: default output lands in the screenshot dir as .p
 assert_success "screenshot-ios: args after -- are forwarded to simctl launch" test_screenshot_forwards_launch_args
 assert_success "screenshot-ios: a capture passes no StoreKit argument at all" test_screenshot_passes_no_storekit_argument
 assert_success "screenshot-ios: an explicit StoreKit opt-in after -- is forwarded" test_screenshot_forwards_an_explicit_storekit_opt_in
-assert_success "screenshot-ios: device resolves from the destination's name=, not 'booted'" test_screenshot_device_from_destination_name
+assert_success "screenshot-ios: device is this checkout's UDID, not the shared name=" test_screenshot_device_is_this_checkouts_udid
+assert_success "screenshot-ios: this checkout's device is created on demand" test_screenshot_creates_the_checkout_device_on_demand
 assert_success "screenshot-ios: UNICOACH_SIMULATOR overrides the destination name" test_screenshot_simulator_override
 assert_success "screenshot-ios: an already-booted simulator still captures" test_screenshot_tolerates_already_booted
 assert_success "screenshot-ios: unknown option fails with the usage-band code" test_screenshot_unknown_option
@@ -1420,6 +1959,7 @@ assert_success "screenshot-ios: an empty -d value is rejected, not read as absen
 assert_success "screenshot-ios: an empty -o value is rejected, not read as absent" test_screenshot_empty_output_value
 assert_success "screenshot-ios: a simctl install failure is this script's fatal, not simctl's raw code" test_screenshot_install_failure_is_fatal
 assert_success "screenshot-ios: device resolves from the destination's id=<UDID>" test_screenshot_device_from_destination_id
+assert_success "screenshot-ios: a destination with neither name= nor id= is fatal" test_screenshot_unresolvable_destination_is_fatal
 assert_success "screenshot-ios: a decoy devicename= key does not win over the real name=" test_screenshot_device_ignores_decoy_name_key
 assert_success "screenshot-ios: -h prints help and exits 0" test_screenshot_help_exits_zero
 
