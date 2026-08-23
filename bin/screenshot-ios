@@ -51,6 +51,18 @@ than the literal `booted`, so a second simulator booted elsewhere cannot be
 captured by mistake. A target whose destination names no simulator (e.g.
 prod-simulator) therefore requires -d or UNICOACH_SIMULATOR.
 
+StoreKit: this script passes nothing about StoreKit, and does not have to. A
+StoreKit configuration (ios-app/UnicoachiOS.storekit) is bound to the LAUNCH,
+not to the artifact -- it is referenced by the scheme and is NOT inside the
+built .app -- so a `simctl launch` has none, and a simulator Debug build that
+was not opted in with -UnicoachEnableStoreKit therefore uses an inert store
+rather than falling through to the REAL App Store (which, on a simulator with no
+Apple Account, paints "Sign in to your Apple Account" alerts over the very UI
+being captured). The app is safe by default, so the capture is. To deliberately
+shoot the subscription surface, pass -UnicoachEnableStoreKit after `--` on a
+simulator signed in to a Sandbox Apple Account, or run from Xcode's Run action
+(the one launch that does get the local .storekit catalogue).
+
 The app talks to the backend baked in at build time, so start it first
 (bin/rest-server-up) or the capture shows the app's offline "No Connection"
 screen rather than the real UI.
@@ -253,6 +265,16 @@ xcrun simctl install "$DEVICE" "$APP" >&2 \
 # stale code, and the `--` launch args silently ignored. `|| true` because
 # terminate fails when nothing is running, which is the normal first-run case.
 xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+# Deliberately NO StoreKit argument here. The defect -- a StoreKit configuration
+# is bound to the LAUNCH, not to the artifact, so this script's `simctl launch`
+# has none and used to fall through to the REAL App Store, painting "Sign in to
+# your Apple Account" alerts over the screenshot -- is fixed in the app, which
+# on a simulator Debug build uses an inert store unless a launch opts in with
+# -UnicoachEnableStoreKit. Adding a flag here would have made this one script
+# safe and left the next launcher to remember it; there is nothing left for a
+# caller to forget. An operator who genuinely wants the live subscription
+# surface passes -UnicoachEnableStoreKit after `--`, through the seam below.
 
 # `${LAUNCH_ARGS[@]+"${LAUNCH_ARGS[@]}"}` (not `"${LAUNCH_ARGS[@]}"`) because an
 # empty array is an unbound-variable error under bash 3.2 + `set -u` — see the

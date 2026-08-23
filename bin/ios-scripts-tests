@@ -1066,6 +1066,27 @@ test_screenshot_forwards_launch_args() {
   return 0
 }
 
+# A capture passes NOTHING about StoreKit: the app is disabled by default on a
+# simulator Debug build, so there is no flag for this script -- or any future
+# launcher -- to remember. Pinning the absence is what stops a well-meaning
+# re-addition of a per-caller flag, which is the shape of the original defect.
+test_screenshot_passes_no_storekit_argument() {
+  stage_built_simulator_app
+  run_screenshot -w 0 simulator >/dev/null 2>&1 || return 1
+  log_has "launch" || return 1
+  log_lacks "StoreKit" || return 1
+  return 0
+}
+
+# ...but the `--` seam still carries an explicit opt-in, which is how an
+# operator deliberately captures the live subscription surface.
+test_screenshot_forwards_an_explicit_storekit_opt_in() {
+  stage_built_simulator_app
+  run_screenshot -w 0 simulator -- -UnicoachEnableStoreKit >/dev/null 2>&1 || return 1
+  log_has "-UnicoachEnableStoreKit" || return 1
+  return 0
+}
+
 # Device resolution defaults to the destination's name= component, so the
 # committed simulator target needs no extra configuration.
 test_screenshot_device_from_destination_name() {
@@ -1380,6 +1401,8 @@ assert_success "screenshot-ios: boots, installs, launches, and captures a real f
 assert_success "screenshot-ios: -o writes and prints that exact path" test_screenshot_explicit_output_path
 assert_success "screenshot-ios: default output lands in the screenshot dir as .png" test_screenshot_default_output_dir
 assert_success "screenshot-ios: args after -- are forwarded to simctl launch" test_screenshot_forwards_launch_args
+assert_success "screenshot-ios: a capture passes no StoreKit argument at all" test_screenshot_passes_no_storekit_argument
+assert_success "screenshot-ios: an explicit StoreKit opt-in after -- is forwarded" test_screenshot_forwards_an_explicit_storekit_opt_in
 assert_success "screenshot-ios: device resolves from the destination's name=, not 'booted'" test_screenshot_device_from_destination_name
 assert_success "screenshot-ios: UNICOACH_SIMULATOR overrides the destination name" test_screenshot_simulator_override
 assert_success "screenshot-ios: an already-booted simulator still captures" test_screenshot_tolerates_already_booted

@@ -369,6 +369,87 @@ name or UDID (needed for a target such as `prod-simulator`, whose destination
 names no device), and anything after `--` is forwarded to `xcrun simctl launch`
 — the seam for driving the app to a particular screen before the capture.
 
+### The StoreKit trap: a configuration is bound to the launch, not the artifact
+
+`ios-app/UnicoachiOS.storekit` is the local StoreKit catalogue the app is
+supposed to be exercised against in the simulator. It is **not** part of the
+built app: it is referenced by `UnicoachiOS.xcscheme` and **injected by the
+scheme's action at launch time**. Nothing in the `.app` bundle mentions it.
+
+The consequence is easy to miss and unpleasant when hit: **any simulator launch
+that is not driven by the scheme has no StoreKit configuration at all** and
+would fall through to the real App Store. `xcrun simctl launch` — which is
+exactly what `bin/screenshot-ios` does — is such a launch. On a simulator that
+is not signed in to an Apple Account, StoreKit answers by demanding one,
+repeatedly: `Product.products(for:)` and `Transaction.currentEntitlements` are
+issued concurrently from `SubscriptionViewModel.load()` (driven by
+`SubscriptionSection`'s `.task`, so it re-runs on every appearance), the
+session-long `Transaction.updates` listener runs for as long as the process
+does, and StoreKit retries on its own. The visible result was a stream of "Sign
+in to your Apple Account" system alerts drawn over the UI — including over the
+screenshot being captured.
+
+**The rule, and note which way round it is: on a simulator, a Debug build talks
+to real StoreKit only when the launch explicitly opts in.** Anything else gets
+an inert store.
+
+```sh
+# Opts in — real StoreKit. Only do this where a catalogue or a Sandbox Apple
+# Account actually exists.
+xcrun simctl launch <device> coach.uni.UnicoachiOS -UnicoachEnableStoreKit
+
+# Says nothing — inert store, cannot reach the App Store, cannot raise an alert.
+xcrun simctl launch <device> coach.uni.UnicoachiOS
+```
+
+The default is inverted **because a simulator process can only ever get a
+StoreKit configuration from a scheme action, and only a scheme action can pass
+this argument** — so "no scheme" and "no configuration" are the same condition.
+Defaulting to disabled means no launcher can reach the real App Store by
+forgetting something: safety is not a flag that every future call site has to
+remember. (The previous shape — a `-UnicoachDisableStoreKit` opt-out that
+`bin/screenshot-ios` passed — fixed one script and left the next one to
+rediscover the trap.)
+
+`AppViewModel.defaultSubscriptionStore()` — the app's composition root — is
+where this is decided, and it is the only place. Without the argument it injects
+`DisabledSubscriptionStore`, which offers no product and no entitlements, so
+StoreKit is never called at all. A captured Settings screen then shows the usage
+meter with **no** Subscribe button, the honest rendering of "no purchase path is
+on offer" — the inert store deliberately does not fabricate a price.
+
+Two guards on that block, both load-bearing:
+
+- **`#if DEBUG`** — a Release build does not contain the switch at all. A
+  shipping binary that can be told on the command line what to do about StoreKit
+  is a binary that can be told to skip paying.
+- **`targetEnvironment(simulator)`** — a Debug build **on a real device** keeps
+  real StoreKit with no argument. A device has a real Apple Account and is where
+  purchases are actually tested; only the simulator, which cannot obtain the
+  configuration outside a scheme, is defaulted off.
+
+Xcode's own **Run** action is unaffected: the scheme's `LaunchAction` carries
+`-UnicoachEnableStoreKit` as a `CommandLineArguments` entry **in the same node**
+as its `StoreKitConfigurationFileReference`, so the thing that turns StoreKit on
+and the catalogue that makes it safe live together and cannot drift apart. Press
+Run and you get the local `.storekit` products exactly as before.
+
+`bin/screenshot-ios` passes nothing at all, and needs no flag for this. To
+deliberately capture the live subscription surface, put
+`-UnicoachEnableStoreKit` after `--` (it is forwarded verbatim to
+`simctl launch`) on a simulator signed in to a **Sandbox** Apple Account, or use
+Xcode's Run action.
+
+**If you add a UI test**, it needs both halves, because a test launch is not a
+Run: add a `StoreKitConfigurationFileReference` to the scheme's `TestAction`
+(pointing at `../../../UnicoachiOS.storekit`, as the `LaunchAction` does)
+**and** arrange for the test host to receive `-UnicoachEnableStoreKit` — either
+as a `CommandLineArguments` entry on the `TestAction`, or by setting
+`shouldUseLaunchSchemeArgsEnv = "YES"` so it inherits the LaunchAction's. Today
+that attribute is `"NO"` and the `TestAction` carries no configuration, on
+purpose: the unit suite uses protocol mocks, so its host app must get the inert
+store rather than a launch argument for a catalogue nobody injected.
+
 ## Troubleshooting
 
 - **Login does not persist across an app relaunch.** You changed `APP_DOMAIN`

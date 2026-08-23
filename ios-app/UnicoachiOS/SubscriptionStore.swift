@@ -96,6 +96,75 @@ protocol TransactionFinishing: Sendable {
     func finish(_ transaction: StoreTransaction) async
 }
 
+#if DEBUG
+/// The simulator-Debug StoreKit switch, and the two pieces it is made of: the
+/// launch argument that names it, and the pure predicate that reads an argument
+/// list. A predicate over `[String]` rather than an inline `ProcessInfo` read at
+/// the composition root because `bin/test` never compiles ios-app — XCTest is
+/// the only mechanical authority this switch has, and a function that reaches
+/// into the process's own environment cannot be given one.
+///
+/// **The switch is opt-IN, and that is the whole design.** The defect: a
+/// StoreKit *configuration* is bound to the LAUNCH, not to the artifact.
+/// `UnicoachiOS.storekit` is referenced by the scheme and injected by the
+/// scheme's action; it is NOT inside the built `.app`. So on a simulator, "this
+/// process was started by a scheme action" and "this process has a StoreKit
+/// configuration" are the SAME condition — and only a scheme action can pass
+/// this argument. Defaulting to disabled therefore means no launch can fall
+/// through to the REAL App Store by forgetting anything: a hand-typed `xcrun
+/// simctl launch`, `bin/screenshot-ios`, a test host, a launcher nobody has
+/// written yet. A default-on switch would have made safety a flag every future
+/// call site has to remember, and the first one that forgets gets the burst of
+/// "Sign in to your Apple Account" system alerts over the UI
+/// (`Product.products(for:)` and `Transaction.currentEntitlements` from
+/// `SubscriptionViewModel.load()`, the session-long `Transaction.updates`
+/// listener, and StoreKit's own retries).
+///
+/// **`#if DEBUG` on purpose.** A shipping binary that can be told on the command
+/// line what to do about StoreKit is a binary that can be told to skip paying.
+/// Release must not carry the switch at all — not "ignore the flag", not "log
+/// and continue" — so it is compiled out rather than checked at runtime.
+enum StoreKitLaunchOverride {
+    /// The launch argument, spelled once. It lives in the scheme's LaunchAction
+    /// next to the `StoreKitConfigurationFileReference` it depends on, so the
+    /// thing that enables StoreKit and the configuration that makes it safe
+    /// cannot drift apart. `ProcessInfo.arguments` carries it verbatim.
+    static let enableArgument = "-UnicoachEnableStoreKit"
+
+    /// Exact-match containment, deliberately: a prefix or case-insensitive match
+    /// would let an unrelated argument switch real billing on by accident.
+    static func isStoreKitEnabled(launchArguments: [String]) -> Bool {
+        launchArguments.contains(enableArgument)
+    }
+}
+
+/// The store a simulator Debug launch gets unless it opted in: genuinely inert,
+/// so StoreKit is never called at all and nothing can demand an Apple Account
+/// regardless of how the process was launched.
+///
+/// Distinct from `PreviewSubscriptionStore`, which answers `product(id:)` with a
+/// FAKE "$10.00" plan. A canvas wants a populated row; a screenshot capture must
+/// not invent a price that no storefront quoted — a fabricated price in a
+/// captured image is exactly the kind of thing that ends up in a store listing.
+/// Answering `nil` renders the honest "no purchase path offered" state: the
+/// usage meter still draws, the Subscribe button simply is not there.
+///
+/// Every member is the emptiest truthful answer, never a fatal: this store is
+/// live behind a real UI, and trapping would turn a capture into a crash.
+struct DisabledSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishing {
+    func product(id: String) async throws -> StoreProduct? { nil }
+    /// `.unavailable` and not `.userCancelled`: nothing was cancelled, the plan
+    /// is genuinely not on offer in this process.
+    func purchase(productID: String) async throws -> PurchaseResult { .unavailable }
+    func currentEntitlements() async -> [StoreTransaction] { [] }
+    func sync() async -> RestoreResult { .synced }
+    func finish(_ transaction: StoreTransaction) async {}
+    /// Finished immediately, so `AuthenticatedRootView`'s listener task ends at
+    /// once instead of awaiting a stream that will never yield.
+    func updates() -> AsyncStream<StoreTransaction> { AsyncStream { $0.finish() } }
+}
+#endif
+
 /// The seam's inert canvas double. A `#Preview` must never construct a real
 /// `StoreKitSubscriptionStore` — a static canvas has no business touching
 /// StoreKit — and every preview showing the subscription surface needs the same

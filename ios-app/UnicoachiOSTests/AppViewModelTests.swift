@@ -377,4 +377,87 @@ class AppViewModelTests: XCTestCase {
         }
         XCTAssertEqual(store.finished, [transaction], "finished through the app's own store")
     }
+
+    // MARK: - The simulator-Debug StoreKit switch (opt-in)
+
+    /// The predicate behind `-UnicoachEnableStoreKit`. A StoreKit
+    /// *configuration* is bound to the LAUNCH, not the artifact — it is not in
+    /// the built `.app` — so on a simulator only a scheme action has one, and
+    /// only a scheme action passes this argument. Everything else must stay
+    /// disabled or it falls through to the REAL App Store and the simulator
+    /// throws "Sign in to your Apple Account" alerts over the UI. These cases
+    /// are the only mechanical authority the switch has: `bin/test` never
+    /// compiles ios-app.
+    func testTheEnableArgumentIsRecognisedOnlyWhenItIsExactlyPresent() {
+        XCTAssertTrue(StoreKitLaunchOverride.isStoreKitEnabled(
+            launchArguments: ["/path/to/UnicoachiOS", StoreKitLaunchOverride.enableArgument]
+        ))
+        XCTAssertTrue(StoreKitLaunchOverride.isStoreKitEnabled(
+            launchArguments: [StoreKitLaunchOverride.enableArgument, "-UnicoachUITestScreen", "profile"]
+        ))
+        XCTAssertFalse(StoreKitLaunchOverride.isStoreKitEnabled(launchArguments: []))
+        XCTAssertFalse(StoreKitLaunchOverride.isStoreKitEnabled(launchArguments: ["/path/to/UnicoachiOS"]))
+        // Near-misses stay OFF: a prefix or a case-folded match would let an
+        // unrelated argument switch real billing on by accident.
+        XCTAssertFalse(StoreKitLaunchOverride.isStoreKitEnabled(launchArguments: ["-UnicoachEnableStoreKitFoo"]))
+        XCTAssertFalse(StoreKitLaunchOverride.isStoreKitEnabled(launchArguments: ["-unicoachenablestorekit"]))
+        XCTAssertFalse(StoreKitLaunchOverride.isStoreKitEnabled(launchArguments: ["UnicoachEnableStoreKit"]))
+    }
+
+    /// The argument is spelled exactly once in the app, and the scheme's
+    /// LaunchAction passes that literal string. Pinning it here is what makes a
+    /// rename go red instead of silently leaving Xcode's own Run action —
+    /// the one launch that DOES carry the local `.storekit` catalogue — with an
+    /// inert store and no way to exercise a purchase.
+    func testTheEnableArgumentSpelling() {
+        XCTAssertEqual(StoreKitLaunchOverride.enableArgument, "-UnicoachEnableStoreKit")
+    }
+
+    /// The inert store is inert: no product on offer (so a capture shows the
+    /// honest "no purchase path" state rather than a fabricated price), no
+    /// entitlements, and a stream that ends at once so the authenticated root's
+    /// listener task does not hang on a stream that will never yield.
+    func testTheDisabledStoreOffersNothingAndEndsItsUpdateStream() async throws {
+        let store = DisabledSubscriptionStore()
+
+        let product = try await store.product(id: SubscriptionProduct.monthlyIdentifier)
+        XCTAssertNil(product, "a disabled store must not invent a price")
+        let entitlements = await store.currentEntitlements()
+        XCTAssertTrue(entitlements.isEmpty)
+        let purchase = try await store.purchase(productID: SubscriptionProduct.monthlyIdentifier)
+        XCTAssertEqual(purchase, .unavailable, "nothing was cancelled; the plan is not on offer")
+        let restore = await store.sync()
+        XCTAssertEqual(restore, .synced)
+
+        var delivered: [StoreTransaction] = []
+        for await transaction in store.updates() {
+            delivered.append(transaction)
+        }
+        XCTAssertTrue(delivered.isEmpty)
+    }
+
+    /// The property that makes this complete rather than per-call-site: a
+    /// simulator Debug launch that says NOTHING gets a `DisabledSubscriptionStore`,
+    /// so no code path capable of calling StoreKit exists in the process at all.
+    /// A forgetful `xcrun simctl launch` — or any launcher nobody has written
+    /// yet — cannot reach the real App Store. This test running at all proves
+    /// the point: these cases are compiled and run on a simulator.
+    func testTheCompositionRootDefaultsToTheInertStoreOnASimulator() {
+        let store = AppViewModel.defaultSubscriptionStore(launchArguments: ["/path/to/UnicoachiOS"])
+
+        XCTAssertTrue(store is DisabledSubscriptionStore, "a bare simulator launch must not reach StoreKit")
+    }
+
+    /// And opting in works, because Xcode's Run action does exactly this: the
+    /// scheme's LaunchAction carries the argument alongside the
+    /// `StoreKitConfigurationFileReference`, which is the launch that has a
+    /// local catalogue to talk to. A regression here would leave a developer
+    /// unable to exercise a purchase from Xcode.
+    func testTheCompositionRootUsesRealStoreKitWhenTheLaunchOptsIn() {
+        let store = AppViewModel.defaultSubscriptionStore(
+            launchArguments: ["/path/to/UnicoachiOS", StoreKitLaunchOverride.enableArgument]
+        )
+
+        XCTAssertTrue(store is StoreKitSubscriptionStore)
+    }
 }

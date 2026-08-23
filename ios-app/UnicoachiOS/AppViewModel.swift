@@ -32,6 +32,48 @@ class AppViewModel: ObservableObject {
 
     private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AppViewModel")
 
+    /// The store this app runs against when nobody injects one — the
+    /// simulator-Debug StoreKit switch is honoured HERE, at the composition
+    /// root, and nowhere else.
+    ///
+    /// One decision point is the whole design: a check scattered into
+    /// `SubscriptionViewModel` or the `Transaction.updates` listener would have
+    /// to be right in every one of them, and the first one missed re-opens the
+    /// defect (see `StoreKitLaunchOverride` for what that defect is). Swapping
+    /// the object itself means the disabled process holds no
+    /// `StoreKitSubscriptionStore` at all, so there is no code path left that
+    /// could reach StoreKit.
+    ///
+    /// **Disabled is the DEFAULT, and opting in is what takes an argument.** A
+    /// simulator process can only ever be handed a StoreKit configuration by a
+    /// scheme action, and only a scheme action can pass this argument, so "no
+    /// scheme" and "no configuration" are one and the same condition. Defaulting
+    /// to disabled means no launcher — a hand-typed `simctl launch`,
+    /// `bin/screenshot-ios`, a future UI test — can fall through to the real App
+    /// Store by forgetting a flag. Safety stops being opt-in per call site.
+    ///
+    /// `targetEnvironment(simulator)` is load-bearing, not decoration: a DEBUG
+    /// build on a REAL DEVICE keeps real StoreKit, because a device has a real
+    /// Apple Account and a device is where purchases are actually tested. Only
+    /// the simulator, which cannot get the configuration outside a scheme, is
+    /// defaulted off.
+    ///
+    /// A `static func` rather than an inline default argument because `#if`
+    /// cannot appear inside a parameter list — and the guard is not optional
+    /// here: Release must not be able to switch billing off.
+    /// `launchArguments` is a parameter with the real process's arguments as its
+    /// default so a test can drive the decision without a process to launch.
+    static func defaultSubscriptionStore(
+        launchArguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> (SubscriptionStoreProtocol & TransactionFinishing) {
+        #if DEBUG && targetEnvironment(simulator)
+        guard StoreKitLaunchOverride.isStoreKitEnabled(launchArguments: launchArguments) else {
+            return DisabledSubscriptionStore()
+        }
+        #endif
+        return StoreKitSubscriptionStore()
+    }
+
     init(
         apiClient: APIClient = APIClient(),
         cookieStorage: CookieStorageProtocol = HTTPCookieStorage.shared,
@@ -40,7 +82,7 @@ class AppViewModel: ObservableObject {
         conversationClient: ConversationClientProtocol? = nil,
         coachingUsageClient: CoachingUsageClientProtocol? = nil,
         subscriptionClient: SubscriptionClientProtocol? = nil,
-        subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = StoreKitSubscriptionStore(),
+        subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = AppViewModel.defaultSubscriptionStore(),
         googleSignInProvider: SsoSignInProviding = GoogleSignInProvider(),
         appleSignInProvider: SsoSignInProviding = AppleSignInProvider()
     ) {
