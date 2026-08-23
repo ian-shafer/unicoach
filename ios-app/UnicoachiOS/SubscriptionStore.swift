@@ -56,6 +56,25 @@ enum PurchaseResult: Sendable, Equatable {
     case unrecognized
 }
 
+/// Every way the App Store's own "manage subscription" sheet ends (RFC 123).
+///
+/// An enum rather than a `Bool` or a thrown error, matching `RestoreResult`'s
+/// shape: the two ways this can fail — no foreground `UIWindowScene` to present
+/// over, and Apple itself refusing — are the *same* thing to a student, who is
+/// simply not looking at Apple's sheet. Collapsing them into one arm is what
+/// keeps the view model from having to say two different sentences about a
+/// distinction nobody outside this file can act on.
+///
+/// There is no `.cancelled` arm, and there cannot be one: the app never learns
+/// what happened inside Apple's sheet. A cancellation made there arrives later
+/// as a transaction on `Transaction.updates`, verified server-side, exactly
+/// like every other change (RFC 119).
+enum ManageSubscriptionsResult: Sendable, Equatable {
+    case shown
+    /// No scene to present over, or Apple refused.
+    case unavailable
+}
+
 /// Every way Restore Purchases ends. A cancelled App Store sign-in is an
 /// ordinary end of the flow, not a failure, so it is a value here rather than
 /// `StoreKitError.userCancelled` thrown up to a layer with no vocabulary for
@@ -79,6 +98,19 @@ protocol SubscriptionStoreProtocol: Sendable {
     /// Non-throwing on purpose: its one failure mode a caller must distinguish
     /// — the student cancelling — is an arm of `RestoreResult`, not an error.
     func sync() async -> RestoreResult
+    /// Presents Apple's own subscription-management sheet — the **only** way to
+    /// cancel, because Apple offers no API that cancels on the student's behalf
+    /// (RFC 123). It is on this protocol rather than called from the view
+    /// because `AppStore.showManageSubscriptions(in:)` needs a `UIWindowScene`
+    /// and can throw: behind the seam, the view model's arm is testable and the
+    /// "the app never touches StoreKit directly" rule RFC 119 set still holds.
+    ///
+    /// The name is deliberately Apple's own — this is a one-to-one seam over
+    /// `AppStore.showManageSubscriptions(in:)`, and spelling it the same is what
+    /// says so at every call site. Its caller,
+    /// `SubscriptionViewModel.showManagement()`, is *not* a wrapper of one API
+    /// call, so it is named for what it does instead.
+    func showManageSubscriptions() async -> ManageSubscriptionsResult
     /// Apple's session-long push: renewals, Ask to Buy approvals, and
     /// redeliveries of anything never finished. Every transaction that reaches
     /// the app outside a purchase or a restore arrives here, so the listener
@@ -158,6 +190,10 @@ struct DisabledSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishin
     func purchase(productID: String) async throws -> PurchaseResult { .unavailable }
     func currentEntitlements() async -> [StoreTransaction] { [] }
     func sync() async -> RestoreResult { .synced }
+    /// `.unavailable`, the emptiest truthful answer: this store never calls
+    /// StoreKit, so Apple's sheet genuinely was not shown, and the link says so
+    /// rather than pretending it was and leaving the student staring at nothing.
+    func showManageSubscriptions() async -> ManageSubscriptionsResult { .unavailable }
     func finish(_ transaction: StoreTransaction) async {}
     /// Finished immediately, so `AuthenticatedRootView`'s listener task ends at
     /// once instead of awaiting a stream that will never yield.
@@ -178,6 +214,10 @@ struct PreviewSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishing
     func purchase(productID: String) async throws -> PurchaseResult { .userCancelled }
     func currentEntitlements() async -> [StoreTransaction] { [] }
     func sync() async -> RestoreResult { .synced }
+    /// `.shown`, unlike the disabled store's `.unavailable`: a canvas wants the
+    /// link's ordinary, noticeless state, and a preview that raised a failure
+    /// banner the moment it was tapped would be showing the wrong screen.
+    func showManageSubscriptions() async -> ManageSubscriptionsResult { .shown }
     func finish(_ transaction: StoreTransaction) async {}
     func updates() -> AsyncStream<StoreTransaction> { AsyncStream { $0.finish() } }
 }

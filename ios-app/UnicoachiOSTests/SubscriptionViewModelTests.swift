@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import UnicoachiOS
 
@@ -22,6 +23,9 @@ final class SubscriptionViewModelTests: XCTestCase {
         displayName: "Unicoach Monthly",
         displayPrice: "£8.99"
     )
+    /// A period end distinct from `subscription`'s, so a sentence that named
+    /// the wrong date could not accidentally match.
+    private let periodEnd = Date(timeIntervalSince1970: 1_780_000_000)
     private let transaction = StoreTransaction(id: 7, productID: SubscriptionProduct.monthlyIdentifier, jws: "a.b.c")
 
     override func setUp() {
@@ -493,5 +497,424 @@ final class SubscriptionViewModelTests: XCTestCase {
 
         XCTAssertTrue(viewModel.offersSubscribe)
         XCTAssertEqual(viewModel.statusLine, "Monthly · payment issue · retrying")
+    }
+
+    // MARK: - remainingPercent (the composer ring's reading, RFC 123)
+
+    /// `100 - usedPercent`, on the server's own capped value.
+    func testRemainingPercentIsTheComplementOfUsed() async {
+        usageClient.results = [.success(CoachingUsage(usedPercent: 38, exhausted: false, resetsAt: nil))]
+
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.remainingPercent, 62)
+    }
+
+    /// The case that matters most: a load in flight must never draw a full ring
+    /// for a student with nothing left.
+    func testRemainingPercentIsNilWhileLoading() {
+        XCTAssertEqual(viewModel.usageReading, .loading)
+        XCTAssertNil(viewModel.remainingPercent)
+    }
+
+    /// …and a read that finished with nothing is the same answer: no reading.
+    func testRemainingPercentIsNilWhenTheReadingIsUnavailable() async {
+        struct Boom: Error {}
+        usageClient.results = [.failure(Boom())]
+
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.usageReading, .unavailable)
+        XCTAssertNil(viewModel.remainingPercent)
+    }
+
+    func testAnExhaustedBudgetHasNothingRemaining() async {
+        usageClient.results = [.success(CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil))]
+
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.remainingPercent, 0)
+    }
+
+    // MARK: - budgetGlance (the ring, the label, and what VoiceOver says)
+
+    func testBudgetReadingIsThePercentageWhenThereIsOne() async {
+        usageClient.results = [.success(CoachingUsage(usedPercent: 38, exhausted: false, resetsAt: nil))]
+
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.budgetGlance, .remaining(percent: 62))
+        XCTAssertEqual(viewModel.budgetGlance.label, "62% left")
+        XCTAssertEqual(viewModel.budgetGlance.accessibilityValue, "62 percent remaining")
+        XCTAssertFalse(viewModel.budgetGlance.isExhausted)
+        XCTAssertEqual(viewModel.budgetGlance.ringRemainingPercent, 62)
+    }
+
+    /// The server's own `exhausted` flag decides this, never the arithmetic.
+    func testBudgetReadingIsExhaustedWhenTheServerSaysSo() async {
+        usageClient.results = [.success(CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil))]
+
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.budgetGlance, .exhausted)
+        XCTAssertEqual(viewModel.budgetGlance.label, "Out of coaching")
+        XCTAssertEqual(viewModel.budgetGlance.accessibilityValue, "No coaching remaining")
+        XCTAssertTrue(viewModel.budgetGlance.isExhausted)
+        XCTAssertEqual(viewModel.budgetGlance.ringRemainingPercent, 0, "an exhausted budget draws an empty ring")
+    }
+
+    /// No reading at all: the bare track, and no words. Not a spinner, and
+    /// emphatically not a full ring.
+    func testBudgetReadingSaysNothingWithoutAReading() {
+        XCTAssertEqual(viewModel.budgetGlance, .noReading)
+        XCTAssertNil(viewModel.budgetGlance.label)
+        XCTAssertNil(viewModel.budgetGlance.ringRemainingPercent)
+        XCTAssertEqual(viewModel.budgetGlance.accessibilityValue, "Not loaded yet")
+    }
+
+    /// A broken server cap must not put a negative number beside an empty ring.
+    /// The ring clamps its own sweep, so without a clamp here the two would
+    /// contradict each other — an empty ring beside "-5% left".
+    func testAnImpossibleReadingIsClampedForBothTheRingAndTheLabel() {
+        let overspent = CoachingBudgetGlance(remainingPercent: -5, budget: .open)
+
+        XCTAssertEqual(overspent, .remaining(percent: 0))
+        XCTAssertEqual(overspent.label, "0% left")
+        XCTAssertEqual(overspent.ringRemainingPercent, 0)
+
+        let overfull = CoachingBudgetGlance(remainingPercent: 130, budget: .open)
+
+        XCTAssertEqual(overfull, .remaining(percent: 100))
+        XCTAssertEqual(overfull.label, "100% left")
+        XCTAssertEqual(overfull.ringRemainingPercent, 100)
+    }
+
+    /// The free tier needs no case of its own: the ring and the label are a
+    /// quantity, and say nothing about time.
+    func testTheFreeTierReadsLikeAnyOtherQuantity() async {
+        usageClient.results = [.success(CoachingUsage(usedPercent: 25, exhausted: false, resetsAt: nil))]
+
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.budgetGlance.label, "75% left")
+    }
+
+    // MARK: - The explanation matrix (RFC 123)
+
+    // Every row of the matrix is asserted as a **case**, not as a sentence:
+    // which situation was classified is the rule, and the wording is a copy
+    // decision that has already been revised twice. Two representative rows
+    // below pin the exact string, so the copy is still covered without seven
+    // assertions breaking on an edit that changes no behaviour.
+
+    /// Nothing bound, coaching left: the free allowance is one-time, and what a
+    /// subscription changes.
+    func testExplanationForTheFreeTierWithCoachingLeft() async {
+        await viewModel.refreshUsage()
+
+        XCTAssertNil(viewModel.subscription)
+        XCTAssertEqual(viewModel.explanation, .freeAllowanceAvailable)
+    }
+
+    /// Nothing bound, nothing left.
+    func testExplanationForASpentFreeAllowance() async {
+        usageClient.results = [.success(CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil))]
+
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.explanation, .freeAllowanceSpent)
+    }
+
+    func testExplanationForAnActiveSubscriptionWithCoachingLeft() async {
+        await bind(status: "active", usage: CoachingUsage(usedPercent: 20, exhausted: false, resetsAt: periodEnd))
+
+        XCTAssertEqual(viewModel.explanation, .activeRunningTo(periodEnd: periodEnd))
+    }
+
+    /// RFC 121's open item: the subscriber who has spent the period.
+    func testExplanationForAnActiveSubscriptionWithThePeriodSpent() async {
+        await bind(status: "active", usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: periodEnd))
+
+        XCTAssertEqual(viewModel.explanation, .activePeriodSpent(resetsAt: periodEnd))
+    }
+
+    /// RFC 119's open item: a subscription that is failing to bill. Both
+    /// statuses classify the same, because they are the same situation — and
+    /// each iteration re-binds over the same rail, which is sound because
+    /// `bind` states the whole situation (the reading and the status) rather
+    /// than adding to a previous one.
+    func testExplanationForAFailingPayment() async {
+        for status in ["grace", "billing_retry"] {
+            await bind(status: status, usage: CoachingUsage(usedPercent: 20, exhausted: false, resetsAt: periodEnd))
+
+            XCTAssertEqual(viewModel.explanation, .billingFailing, "status [\(status)]")
+        }
+    }
+
+    func testExplanationForASubscriptionThatHasEnded() async {
+        for status in ["expired", "revoked"] {
+            await bind(status: status, usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: periodEnd))
+
+            XCTAssertEqual(viewModel.explanation, .ended, "status [\(status)]")
+        }
+    }
+
+    /// A status this client has no case for must not borrow another's words —
+    /// it says the one thing true of every bound subscription.
+    func testExplanationForAStatusThisClientDoesNotKnow() async {
+        await bind(status: "some_new_server_status", usage: CoachingUsage(usedPercent: 20, exhausted: false, resetsAt: periodEnd))
+
+        XCTAssertEqual(viewModel.explanation, .boundUnknownStatus)
+        XCTAssertEqual(viewModel.explanation.detail, "Your subscription is managed by the App Store.")
+    }
+
+    /// The spent-period sentence, spelled out: it is the one that names a date,
+    /// so a wrong `resetsAt` reaching the copy would show up here.
+    func testTheSpentPeriodSentenceNamesTheResetDate() async {
+        await bind(status: "active", usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: periodEnd))
+
+        XCTAssertEqual(
+            viewModel.explanation.detail,
+            "You've used this period's coaching. It resets \(periodEnd.dsCalendarDate), when your subscription renews."
+        )
+    }
+
+    /// The billing-failure sentence, spelled out — and specifically that it
+    /// names the Manage subscription **button** rather than claiming a
+    /// position. "Manage subscription below" pointed at the full-width
+    /// Subscribe button, so a student who followed it attempted a second
+    /// purchase.
+    func testTheBillingFailureSentenceNamesTheControlRatherThanAPosition() async {
+        await bind(status: "grace", usage: CoachingUsage(usedPercent: 20, exhausted: false, resetsAt: periodEnd))
+
+        XCTAssertEqual(
+            viewModel.explanation.detail,
+            "Your last payment didn't go through and the App Store is retrying. You can update your payment method there — the Manage subscription button opens it."
+        )
+        XCTAssertFalse(viewModel.explanation.detail.contains("below"), "no positional claim about a control")
+    }
+
+    /// A reading that has not landed is no basis for telling a subscriber their
+    /// coaching is gone: `unknown` reads as *not spent*, by an arm of the
+    /// classifier's `switch` rather than by falling off a `== .spent`.
+    func testAnUnknownBudgetExplainsTheOpenSituation() async {
+        struct Boom: Error {}
+        usageClient.results = [.failure(Boom())]
+        store.entitlements = [transaction]
+        recorder.outcome = .recorded(subscription)
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.budget, .unknown)
+        XCTAssertEqual(viewModel.explanation, .activeRunningTo(periodEnd: subscription.currentPeriodEnd))
+    }
+
+    /// …and the same on the free tier: no reading is not a spent allowance.
+    func testAnUnknownBudgetOnTheFreeTierReadsAsAvailable() async {
+        struct Boom: Error {}
+        usageClient.results = [.failure(Boom())]
+
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.budget, .unknown)
+        XCTAssertEqual(viewModel.explanation, .freeAllowanceAvailable)
+    }
+
+    // MARK: - Manage subscription (RFC 123)
+
+    /// Bound in any state, because `grace` and `expired` are exactly the states
+    /// where reaching the subscription matters most.
+    func testManageIsOfferedOnlyWhenSomethingIsBound() async {
+        XCTAssertFalse(viewModel.offersManage)
+
+        await bind(status: "expired", usage: freeUsage)
+
+        XCTAssertTrue(viewModel.offersManage)
+    }
+
+    /// Apple's sheet appearing over the app is the feedback; a banner
+    /// underneath it would be talking over it.
+    func testShowingApplesSheetLeavesNoNotice() async {
+        store.manageResult = .shown
+
+        await viewModel.showManagement()
+
+        XCTAssertEqual(store.manageCallCount, 1)
+        XCTAssertNil(viewModel.notice)
+    }
+
+    /// The round trip is closed here and **nowhere else**: Apple presents over
+    /// the app's own scene, so `scenePhase` never leaves `.active`, and a
+    /// renewal-state change pushes nothing onto `Transaction.updates`. The
+    /// store's `await` returns when the sheet is dismissed, which is the moment
+    /// to re-read — otherwise the student who has just repaired their card is
+    /// still reading that the payment failed.
+    func testDismissingApplesSheetReReadsTheRail() async {
+        usageClient.results = [.success(freeUsage)]
+        store.manageResult = .shown
+        await viewModel.refreshUsage()
+        let readsBefore = usageClient.callCount
+
+        await viewModel.showManagement()
+
+        XCTAssertGreaterThan(usageClient.callCount, readsBefore, "the meter is re-read when Apple's sheet closes")
+        XCTAssertNil(viewModel.notice)
+    }
+
+    /// A failed presentation re-reads nothing: nothing happened, and the notice
+    /// is the whole of the response.
+    func testAFailedManageDoesNotReReadTheRail() async {
+        usageClient.results = [.success(freeUsage)]
+        store.manageResult = .unavailable
+        await viewModel.refreshUsage()
+        let readsBefore = usageClient.callCount
+
+        await viewModel.showManagement()
+
+        XCTAssertEqual(usageClient.callCount, readsBefore)
+    }
+
+    /// No scene, or Apple refused: the student asked for something and did not
+    /// get it, so it is a failure notice naming the route that always works.
+    func testAFailedManageRaisesAFailureNotice() async {
+        store.manageResult = .unavailable
+
+        await viewModel.showManagement()
+
+        XCTAssertEqual(store.manageCallCount, 1)
+        XCTAssertEqual(
+            viewModel.notice,
+            .failure("We couldn't open the App Store. You can manage this subscription in Settings › your name › Subscriptions.")
+        )
+    }
+
+    /// The phase belongs to the actions with a control the student waits on;
+    /// this one hands the screen to Apple.
+    func testManageDoesNotTouchThePhase() async {
+        await viewModel.showManagement()
+
+        XCTAssertEqual(viewModel.phase, .idle)
+    }
+
+    // MARK: - Helpers
+
+    /// Binds a subscription the only way one ever reaches this rail — through
+    /// the recorder — and publishes a reading alongside it, so a test states the
+    /// *situation* rather than the four calls that produce it.
+    private func bind(status: String, usage: CoachingUsage) async {
+        usageClient.results = [.success(usage)]
+        recorder.outcome = .recorded(PublicSubscription(
+            status: status,
+            productId: SubscriptionProduct.monthlyIdentifier,
+            currentPeriodEnd: periodEnd
+        ))
+        await viewModel.apply(recorder.outcome)
+    }
+}
+
+
+/// The gate itself (RFC 123). It is a `@MainActor` struct over a `Binding`, so
+/// the presentation rules are reachable without rendering anything — and they
+/// were the untested part of the change that removed the pair of `Bool`s.
+///
+/// Presentation is asserted through the binding's **written value**, which is
+/// the whole of what the gate does: SwiftUI's behaviour when a sheet is
+/// swapped for another is not this type's to promise (see `present()`), and
+/// asserting it here would be asserting a claim the code deliberately no
+/// longer makes.
+@MainActor
+final class PaywallGateTests: XCTestCase {
+    private var usageClient: MockCoachingUsageClient!
+    private var subscriptions: SubscriptionViewModel!
+
+    /// The `@State` the gate writes through, and — recorded at the moment of
+    /// each write — how many usage reads had happened by then. Ordering is the
+    /// rule for `handleBudgetExhausted()`: the sheet must open **on** the fresh
+    /// reading, so a refresh that lands after the assignment is a defect that a
+    /// call-count checked at the end of the test cannot see.
+    private let presentedSheet = Locked<SubscriptionSheet?>(nil)
+    private let usageReadsAtAssignment = Locked<[Int]>([])
+
+    private let usage = CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil)
+
+    override func setUp() {
+        super.setUp()
+        usageClient = MockCoachingUsageClient()
+        usageClient.results = [.success(usage)]
+        subscriptions = SubscriptionViewModel(
+            usageClient: usageClient,
+            store: MockSubscriptionStore(),
+            recorder: MockTransactionRecorder()
+        )
+    }
+
+    /// Built per test rather than stored, so the binding closures capture the
+    /// boxes and the client directly instead of the test case.
+    private func makeGate() -> PaywallGate {
+        let sheet = presentedSheet
+        let reads = usageReadsAtAssignment
+        let client = usageClient!
+        return PaywallGate(
+            subscriptions: subscriptions,
+            presentedSheet: Binding(
+                get: { sheet.current },
+                set: { newValue in
+                    sheet.withLock { $0 = newValue }
+                    reads.withLock { $0.append(client.callCount) }
+                }
+            )
+        )
+    }
+
+    /// Nothing has been read, so the budget is `.unknown` — one of the two
+    /// verdicts `present()` opens on. The gate declines only an **open**
+    /// budget, and that rule has its own tests in `PaywallViewModelTests`;
+    /// these are about which value the binding is left holding.
+    func testPresentRaisesThePaywallFromNothing() {
+        XCTAssertEqual(subscriptions.budget, .unknown)
+
+        makeGate().present()
+
+        XCTAssertEqual(presentedSheet.current, .paywall)
+    }
+
+    /// The case the pair of `Bool`s got wrong: the composer's budget control is
+    /// never disabled, so a 402 can land while the explanation sheet is already
+    /// up. With a budget the gate presents on, it writes the paywall over the
+    /// explanation — what SwiftUI then does with the swap is not claimed, but
+    /// the binding must not be left saying `.explanation`.
+    func testPresentRaisesThePaywallOverTheExplanationSheet() {
+        let gate = makeGate()
+        gate.presentExplanation()
+        XCTAssertEqual(presentedSheet.current, .explanation)
+
+        gate.present()
+
+        XCTAssertEqual(presentedSheet.current, .paywall)
+    }
+
+    /// The budget control's tap: the explanation, not the block.
+    func testPresentExplanationRaisesTheExplanationSheet() {
+        makeGate().presentExplanation()
+
+        XCTAssertEqual(presentedSheet.current, .explanation)
+    }
+
+    /// The 402's landing point refreshes usage from the server **before** the
+    /// sheet opens, so the block and the meter come from one answer and the
+    /// paywall opens on the fresh reading rather than on whatever was there
+    /// when the turn was refused.
+    func testHandleBudgetExhaustedRefreshesUsageBeforePresenting() async {
+        XCTAssertEqual(subscriptions.usageReading, .loading)
+
+        await makeGate().handleBudgetExhausted()
+
+        XCTAssertEqual(presentedSheet.current, .paywall)
+        XCTAssertEqual(subscriptions.usageReading, .ready(usage))
+        XCTAssertEqual(
+            usageReadsAtAssignment.current,
+            [1],
+            "the read had already landed when the sheet was assigned"
+        )
     }
 }

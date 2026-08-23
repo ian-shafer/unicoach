@@ -80,13 +80,13 @@ struct UsageMeter: View {
 
     /// `usedPercent` is used as the server sends it — the 0...100 cap is a
     /// server guarantee, not something the client re-derives. The only bound is
-    /// here, on the drawn fraction, so no arithmetic can paint outside the
-    /// track.
+    /// `DSFraction.clamped(percent:)`, which every drawn proportion in this
+    /// layer goes through, so no arithmetic here can paint outside the track.
     ///
     /// The fill is inset by the hairline on both sides, so a 0% meter is an
     /// empty outline and a 100% meter fills the track exactly.
     private func fillWidth(in width: CGFloat) -> CGFloat {
-        let fraction = min(max(CGFloat(usedPercent) / 100, 0), 1)
+        let fraction = DSFraction.clamped(percent: usedPercent)
         let inner = max(0, width - DSControl.borderWidth * 2)
         return inner * fraction + DSControl.borderWidth * 2
     }

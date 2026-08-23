@@ -16,8 +16,10 @@ final class MockSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishi
         var purchaseResult: Result<PurchaseResult, Error> = .success(.userCancelled)
         var entitlements: [StoreTransaction] = []
         var syncResult: RestoreResult = .synced
+        var manageResult: ManageSubscriptionsResult = .shown
         var finished: [StoreTransaction] = []
         var syncCallCount = 0
+        var manageCallCount = 0
         var purchasedProductIDs: [String] = []
         var queued: [StoreTransaction] = []
         var productCallCount = 0
@@ -41,6 +43,10 @@ final class MockSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishi
         get { recorded.withLock { $0.syncResult } }
         set { recorded.withLock { $0.syncResult = newValue } }
     }
+    var manageResult: ManageSubscriptionsResult {
+        get { recorded.withLock { $0.manageResult } }
+        set { recorded.withLock { $0.manageResult = newValue } }
+    }
     var queued: [StoreTransaction] {
         get { recorded.withLock { $0.queued } }
         set { recorded.withLock { $0.queued = newValue } }
@@ -50,6 +56,9 @@ final class MockSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishi
     /// assertion surface.
     var finished: [StoreTransaction] { recorded.withLock { $0.finished } }
     var syncCallCount: Int { recorded.withLock { $0.syncCallCount } }
+    /// How many times Apple's management sheet was asked for — the assertion
+    /// surface for "the link opens it exactly once" (RFC 123).
+    var manageCallCount: Int { recorded.withLock { $0.manageCallCount } }
     /// How many product fetches were asked for — the assertion surface for "the
     /// gate's read is usage only" (RFC 121).
     var productCallCount: Int { recorded.withLock { $0.productCallCount } }
@@ -77,6 +86,13 @@ final class MockSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishi
         recorded.withLock { recorded in
             recorded.syncCallCount += 1
             return recorded.syncResult
+        }
+    }
+
+    func showManageSubscriptions() async -> ManageSubscriptionsResult {
+        recorded.withLock { recorded in
+            recorded.manageCallCount += 1
+            return recorded.manageResult
         }
     }
 

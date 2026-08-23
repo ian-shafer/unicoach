@@ -182,6 +182,149 @@ private struct OptionalLabel: ViewModifier {
     }
 }
 
+// MARK: - DSTextButton
+
+/// How much weight a text button carries. Both are the same plain, centred
+/// text control — the distinction is only ever colour, so it is a role rather
+/// than a colour parameter no call site could get wrong in an interesting way.
+enum DSTextButtonRole {
+    /// The action the screen is offering: `dsTextPrimary`.
+    case primary
+    /// A way out of the screen — "Done", "Not now": `dsTextSecondary`, so it
+    /// sits behind the action above it without becoming invisible.
+    case secondary
+}
+
+/// The plain, centred text button: no fill, no border, full width, `dsLabel`
+/// type. It is what the subscription surfaces use for everything that is not
+/// the one filled `PrimaryButtonStyle` control — Restore Purchases, Manage
+/// subscription, "Not now", "Done".
+///
+/// **Not `brandAccent`.** `#EE732F` on white is 2.95:1 (DESIGN.md §6), so the
+/// brand colour is chrome and selection only and never a text control's
+/// foreground. That reasoning is stated **here, once**: it was previously
+/// re-argued in a comment at each hand-rolled copy, which is exactly how four
+/// copies of one rule become three copies and an exception.
+///
+/// **The 44pt target is not optional.** The hand-rolled copies this replaces
+/// disagreed about whether they carried `minHeight: DSControl.tapTarget` —
+/// `dsLabel` alone is roughly half of it — so two of the four were below the
+/// platform's minimum tap target while looking identical to the two that were
+/// not. A primitive that always applies the floor is the only version of this
+/// control that cannot drift back.
+///
+/// `loadingTitle` is for the one site that has work to report (Restore, mid
+/// `AppStore.sync()`): the title swaps and the control disables, rather than a
+/// spinner replacing the words — this is a secondary action, and a text button
+/// that becomes a spinner reads as the screen having lost a control.
+struct DSTextButton: View {
+    private let title: String
+    private let role: DSTextButtonRole
+    private let isLoading: Bool
+    private let loadingTitle: String?
+    private let accessibilityIdentifier: String
+    private let accessibilityLabelText: String
+    private let accessibilityHintText: String?
+    private let action: () -> Void
+
+    init(
+        _ title: String,
+        role: DSTextButtonRole = .primary,
+        isLoading: Bool = false,
+        loadingTitle: String? = nil,
+        accessibilityIdentifier: String,
+        accessibilityLabel: String,
+        accessibilityHint: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.role = role
+        self.isLoading = isLoading
+        self.loadingTitle = loadingTitle
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.accessibilityLabelText = accessibilityLabel
+        self.accessibilityHintText = accessibilityHint
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(isLoading ? (loadingTitle ?? title) : title)
+                .font(.dsLabel)
+                .foregroundStyle(foreground)
+                // Both the width and the 44pt floor, then a rectangular
+                // content shape over them: the glyphs are a fraction of the
+                // box, and without the shape only the letters are tappable.
+                .frame(maxWidth: .infinity, minHeight: DSControl.tapTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Work in flight is the one state that takes the tap away: the title
+        // has already changed to say so, and a second tap would start the same
+        // work twice.
+        .disabled(isLoading)
+        .accessibilityIdentifier(accessibilityIdentifier)
+        // The label is spoken from here, so a swapped `loadingTitle` never
+        // changes what VoiceOver calls the control.
+        .accessibilityLabel(accessibilityLabelText)
+        .modifier(OptionalHint(hint: accessibilityHintText))
+    }
+
+    private var foreground: Color {
+        switch role {
+        case .primary: return Color.dsTextPrimary
+        case .secondary: return Color.dsTextSecondary
+        }
+    }
+}
+
+private struct OptionalHint: ViewModifier {
+    let hint: String?
+
+    func body(content: Content) -> some View {
+        if let hint {
+            content.accessibilityHint(hint)
+        } else {
+            content
+        }
+    }
+}
+
+// MARK: - DSSheetScroll
+
+/// The scaffold every full-screen sheet in this app is built on: a scrolling,
+/// leading-aligned column at the screen margin over `dsBackground`.
+///
+/// Extracted because `PaywallView` and `SubscriptionView` had it transcribed
+/// line for line — the `ScrollView`, the `DSSpacing.lg` column, the
+/// `DSSpacing.lg` padding, both `frame`s and the background — and five
+/// modifiers copied between two files is five chances for one sheet to be
+/// margined or aligned unlike the other while both look deliberate.
+///
+/// It is the **container only**. A sheet's own `.task`, `.onChange` and
+/// `dismiss` stay at the call site: what a screen loads and when it leaves are
+/// that screen's rules, not the scaffold's, and hoisting them here would make
+/// this a base class in a struct's clothing.
+struct DSSheetScroll<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: DSSpacing.lg) {
+                content
+            }
+            .padding(DSSpacing.lg)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.dsBackground)
+    }
+}
+
 // MARK: - CircularIconButton
 
 struct CircularIconButtonStyle: ButtonStyle {

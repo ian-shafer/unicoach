@@ -248,14 +248,14 @@ final class PaywallViewModelTests: XCTestCase {
         await viewModel.refreshUsage()
         XCTAssertEqual(viewModel.budget, .open, "the stale reading the refusal is about to disprove")
 
-        let flag = PresentationFlag()
+        let sheet = PresentedSheet()
         let gate = PaywallGate(
             subscriptions: viewModel,
-            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+            presentedSheet: Binding(get: { sheet.value }, set: { sheet.value = $0 })
         )
         await gate.handleBudgetExhausted()
 
-        XCTAssertTrue(flag.value, "the 402 opens the sheet")
+        XCTAssertEqual(sheet.value, .paywall, "the 402 opens the sheet")
         XCTAssertEqual(viewModel.usageReading, .unavailable, "the refusal disproved the reading; a failed re-read must not keep it")
         XCTAssertEqual(viewModel.budget, .unknown, "not open: the 402 is the authority")
         XCTAssertNotNil(viewModel.coachingBasis, "and the sheet therefore has a basis")
@@ -281,16 +281,16 @@ final class PaywallViewModelTests: XCTestCase {
         await viewModel.refreshUsage()
         XCTAssertEqual(viewModel.budget, .open)
 
-        let flag = PresentationFlag()
+        let sheet = PresentedSheet()
         let gate = PaywallGate(
             subscriptions: viewModel,
-            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+            presentedSheet: Binding(get: { sheet.value }, set: { sheet.value = $0 })
         )
         await gate.handleBudgetExhausted()
 
         XCTAssertEqual(viewModel.budget, .open, "the server's answer stands")
         XCTAssertNil(viewModel.coachingBasis, "an open budget names no basis")
-        XCTAssertFalse(flag.value, "and a sheet with nothing to explain and no way out is not opened")
+        XCTAssertNil(sheet.value, "and a sheet with nothing to explain and no way out is not opened")
     }
 
     /// The **other** way in. "See options" calls `present()` directly, with no
@@ -304,14 +304,14 @@ final class PaywallViewModelTests: XCTestCase {
         await viewModel.refreshUsage()
         XCTAssertEqual(viewModel.budget, .open)
 
-        let flag = PresentationFlag()
+        let sheet = PresentedSheet()
         let gate = PaywallGate(
             subscriptions: viewModel,
-            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+            presentedSheet: Binding(get: { sheet.value }, set: { sheet.value = $0 })
         )
         gate.present()
 
-        XCTAssertFalse(flag.value, "a tap has no more right to strand the sheet than a refusal does")
+        XCTAssertNil(sheet.value, "a tap has no more right to strand the sheet than a refusal does")
     }
 
     /// The same tap over a budget that *is* spent still opens the sheet — the
@@ -322,29 +322,29 @@ final class PaywallViewModelTests: XCTestCase {
         await viewModel.refreshUsage()
         XCTAssertEqual(viewModel.budget, .spent)
 
-        let flag = PresentationFlag()
+        let sheet = PresentedSheet()
         let gate = PaywallGate(
             subscriptions: viewModel,
-            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+            presentedSheet: Binding(get: { sheet.value }, set: { sheet.value = $0 })
         )
         gate.present()
 
-        XCTAssertTrue(flag.value)
+        XCTAssertEqual(sheet.value, .paywall)
     }
 
     /// And over a meter with no answer at all: `.unknown` has copy of its own,
     /// so the tap is answered rather than swallowed.
     func testASeeOptionsTapWithNoReadingOpensTheSheet() {
-        let flag = PresentationFlag()
+        let sheet = PresentedSheet()
         let gate = PaywallGate(
             subscriptions: viewModel,
-            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+            presentedSheet: Binding(get: { sheet.value }, set: { sheet.value = $0 })
         )
         XCTAssertEqual(viewModel.budget, .unknown, "nothing has been read yet")
 
         gate.present()
 
-        XCTAssertTrue(flag.value)
+        XCTAssertEqual(sheet.value, .paywall)
     }
 
     /// A forced read that *succeeds* is still just the server's answer: the
@@ -431,7 +431,12 @@ final class PaywallViewModelTests: XCTestCase {
 /// A `Binding`'s storage for a test: a reference box, so the gate's write is
 /// visible to the assertion without capturing a mutable local in an escaping
 /// closure.
+///
+/// It holds the **one** `SubscriptionSheet?` the gate now writes through (RFC
+/// 123) rather than the `Bool` the paywall used to have to itself, so "no
+/// sheet" is `nil` and "the paywall" is `.paywall` — the same value
+/// `AuthenticatedRootView` hands `.sheet(item:)`.
 @MainActor
-private final class PresentationFlag {
-    var value = false
+private final class PresentedSheet {
+    var value: SubscriptionSheet?
 }

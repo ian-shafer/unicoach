@@ -1,12 +1,5 @@
 import SwiftUI
 
-private struct SendButtonWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
 struct ConversationView: View {
     @StateObject private var viewModel: ConversationViewModel
     /// The **shared** blocked truth, owned by `AuthenticatedRootView` and handed
@@ -27,7 +20,6 @@ struct ConversationView: View {
     /// created when the first message is sent.
     private let startsFresh: Bool
     @FocusState private var isComposerFocused: Bool
-    @State private var sendButtonWidth: CGFloat = 0
 
     init(
         conversationClient: ConversationClientProtocol,
@@ -410,47 +402,83 @@ struct ConversationView: View {
 
     // MARK: - Composer
 
+    /// One outlined box containing a text field **above a control row** (RFC
+    /// 123) — the shape the composer was already imitating. It keeps its
+    /// `DSRadius.control` corners, its 1pt `dsFieldBorder` hairline and its 20pt
+    /// leading inset, so it is still a `LabeledField` in everything but name.
+    ///
+    /// The box replaces a `TextField` with the send button `.overlay`-ed at
+    /// `.bottomTrailing` and the text inset out of its way by a
+    /// `SendButtonWidthKey` preference measured at runtime. That geometry hack
+    /// existed only to fake the row this now actually has, so it — the
+    /// preference key, the `@State` width, the trailing padding and the
+    /// `onPreferenceChange` — is gone. The composer is **taller**, which is the
+    /// accepted cost of the row.
     private var composer: some View {
+        VStack(alignment: .leading, spacing: DSSpacing.sm) {
+            messageField
+
+            controlRow
+        }
+        .padding(.horizontal, DSControl.textInset)
+        .padding(.vertical, DSSpacing.md)
+        .frame(minHeight: DSControl.height)
+        .background(Color.dsSurface)
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+        )
+        .padding(DSSpacing.md)
+        .background(Color.dsBackground)
+    }
+
+    /// The turn itself. Named rather than inlined so the box's two children —
+    /// this and `controlRow` — read at the same altitude: one named child
+    /// beside seven stacked modifiers hides the shape the box exists to state.
+    ///
+    /// `axis: .vertical` is what makes it grow with the message; disabling
+    /// follows `isComposerDisabled` (blocked or streaming), which the budget
+    /// control deliberately does not.
+    private var messageField: some View {
         TextField("Message", text: $viewModel.messageText, axis: .vertical)
             .font(.dsBody)
             .foregroundStyle(Color.dsTextPrimary)
-            .padding(.horizontal, DSControl.textInset)
-            .padding(.vertical, DSSpacing.md)
-            .padding(.trailing, sendButtonWidth + DSSpacing.sm)
-            .frame(minHeight: DSControl.height)
-            .background(Color.dsSurface)
-            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
-            // The composer is a LabeledField in everything but name: same
-            // radius, same hairline, same 20pt leading inset.
-            .overlay(
-                RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
-                    .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
-            )
+            .frame(maxWidth: .infinity, alignment: .leading)
             .focused($isComposerFocused)
             .disabled(isComposerDisabled)
             .accessibilityIdentifier("messageField")
             .accessibilityLabel("Message")
-            .overlay(alignment: .bottomTrailing) {
-                CircularIconButton(
-                    systemImage: "arrow.up",
-                    isLoading: viewModel.isStreaming,
-                    accessibilityIdentifier: "sendButton",
-                    accessibilityLabel: "Send",
-                    action: send
-                )
-                .disabled(!viewModel.canSend || isBlocked)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: SendButtonWidthKey.self, value: proxy.size.width)
-                    }
-                )
-                .padding(DSSpacing.sm)
-            }
-            .onPreferenceChange(SendButtonWidthKey.self) { width in
-                sendButtonWidth = width
-            }
-            .padding(DSSpacing.md)
-            .background(Color.dsBackground)
+    }
+
+    /// The budget on the left, the send button on the right.
+    ///
+    /// The budget control is **not** disabled with the composer: a student who
+    /// has just been blocked needs exactly that door, and the sheet is a
+    /// read-only explanation the rest of the time (RFC 123).
+    ///
+    /// `Spacer(minLength:)` and the send button's `layoutPriority` are what make
+    /// the budget label yield first under large Dynamic Type — the send control
+    /// is the one thing on this row that must never be squeezed.
+    private var controlRow: some View {
+        HStack(spacing: DSSpacing.sm) {
+            CoachingBudgetButton(
+                viewModel: subscriptionViewModel,
+                action: paywallGate.presentExplanation
+            )
+
+            Spacer(minLength: DSSpacing.sm)
+
+            CircularIconButton(
+                systemImage: "arrow.up",
+                isLoading: viewModel.isStreaming,
+                accessibilityIdentifier: "sendButton",
+                accessibilityLabel: "Send",
+                action: send
+            )
+            .disabled(!viewModel.canSend || isBlocked)
+            .layoutPriority(1)
+        }
     }
 
     private func send() {
@@ -541,7 +569,7 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
             store: PreviewSubscriptionStore(),
             recorder: PreviewTransactionRecorder()
         ),
-        isPresented: .constant(false)
+        presentedSheet: .constant(nil)
     )
 }
 

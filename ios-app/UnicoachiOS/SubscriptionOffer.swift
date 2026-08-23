@@ -79,16 +79,17 @@ struct SubscriptionOffer: View {
                     EmptyView()
                 }
 
-                Button(action: { Task { await viewModel.restore() } }) {
-                    Text(viewModel.phase == .restoring ? "Restoring…" : "Restore Purchases")
-                        .font(.dsLabel)
-                        .frame(maxWidth: .infinity)
-                }
-                // Not brandAccent: `#EE732F` on white is 2.95:1 (DESIGN.md §6).
-                .foregroundStyle(Color.dsTextPrimary)
-                .disabled(viewModel.phase == .restoring)
-                .accessibilityIdentifier("restorePurchasesButton")
-                .accessibilityLabel("Restore Purchases")
+                // `DSTextButton`, not a hand-rolled `Button`: the colour rule
+                // (never `brandAccent`) and the 44pt tap target are the
+                // primitive's, stated once there.
+                DSTextButton(
+                    String(localized: "Restore Purchases"),
+                    isLoading: viewModel.phase == .restoring,
+                    loadingTitle: String(localized: "Restoring…"),
+                    accessibilityIdentifier: "restorePurchasesButton",
+                    accessibilityLabel: "Restore Purchases",
+                    action: { Task { await viewModel.restore() } }
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

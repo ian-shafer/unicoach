@@ -172,12 +172,47 @@ enum DSControl {
     /// Content height of the branded top bar (excluding the status bar it
     /// extends under).
     static let topBarHeight: CGFloat = 44
+    /// The platform's minimum tap target, 44pt. It coincides with
+    /// `topBarHeight` and is deliberately a **second** token: the bar's content
+    /// height is a layout measurement that could change with the chrome, while
+    /// this is an accessibility floor that cannot, and a control that borrowed
+    /// the bar's number would lose its tap target the day the bar was redrawn.
+    static let tapTarget: CGFloat = 44
+    /// Diameter of the composer's coaching-budget ring. Sized against
+    /// `radioDiameter` — it is read at the same glance distance as an option
+    /// card's radio — and, like it, applied as a `@ScaledMetric` so it grows
+    /// with Dynamic Type. The 44pt tap target is independent of this and lives
+    /// in `CoachingBudgetButton`.
+    static let budgetRingDiameter: CGFloat = 18
+    /// Thickness of the ring's remaining-fraction arc. Thicker than the
+    /// hairline track it sits on, because an arc drawn at `borderWidth` is
+    /// indistinguishable from the track at this diameter — the reading would be
+    /// carried by colour alone, which DESIGN.md §6 forbids as the only channel.
+    static let budgetRingWidth: CGFloat = 3
     /// Height of the coaching-usage meter's track. A meter is not a control:
     /// it is read, never tapped, so it is far shorter than `height` while
     /// keeping the same 16pt radius as everything else that reads as a
     /// container. A token rather than a literal so the one magic number in the
     /// meter lives with the rest of the rhythm.
     static let meterHeight: CGFloat = 14
+}
+
+/// The one rule for turning a server percentage into a drawn fraction.
+///
+/// The 0...100 range is the **server's** guarantee, so this clamp is the only
+/// bound anything in `DesignSystem/` applies — and it is applied here rather
+/// than at each site that draws a proportion. Two transcriptions of
+/// `min(max(x / 100, 0), 1)` (the meter's fill and the budget ring's sweep) are
+/// two places for the bound to be dropped or inverted, and a fraction outside
+/// 0...1 does not fail loudly: it paints past the end of a track or past twelve
+/// o'clock, which reads as a rendering quirk rather than as a broken cap.
+enum DSFraction {
+    /// `percent` of the whole, clamped to 0...1. `Int` in, `CGFloat` out,
+    /// because every caller has the server's integer and needs a geometry
+    /// value.
+    static func clamped(percent: Int) -> CGFloat {
+        min(max(CGFloat(percent) / 100, 0), 1)
+    }
 }
 
 /// Opacity tokens for interactive state feedback, shared by the design system's

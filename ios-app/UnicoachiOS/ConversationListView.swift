@@ -287,7 +287,7 @@ private final class ConversationListPreviewClient: ConversationClientProtocol, @
                     store: PreviewSubscriptionStore(),
                     recorder: PreviewTransactionRecorder()
                 ),
-                isPresented: .constant(false)
+                presentedSheet: .constant(nil)
             ),
             onProfileRequired: {}
         )

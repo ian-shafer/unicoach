@@ -215,6 +215,64 @@ final class SubscriptionViewModel: ObservableObject {
         }
     }
 
+    /// How much coaching is **left**, in `CoachingUsage.percentRange`, or `nil`
+    /// when there is no
+    /// reading — a load in flight, or one that finished with nothing (RFC 123).
+    ///
+    /// `nil` rather than 100 for a missing reading, and that is the whole
+    /// point: a full ring drawn for a student who has nothing left is a lie
+    /// told by the one control that is on screen at the moment they decide to
+    /// send. The ring draws its bare track instead and the label says nothing.
+    ///
+    /// The complement of `usedPercent` is arithmetic on the server's own capped
+    /// value, not a re-derivation of entitlement: `exhausted` remains the only
+    /// thing that decides whether the budget is spent. Both the range and the
+    /// clamp are `CoachingUsage`'s, so the documented bound is the one the code
+    /// actually applies rather than a promise this body could break.
+    var remainingPercent: Int? {
+        switch usageReading {
+        case .ready(let usage):
+            return CoachingUsage.clamped(percent: CoachingUsage.percentRange.upperBound - usage.usedPercent)
+        case .loading, .unavailable:
+            return nil
+        }
+    }
+
+    /// What the composer's budget control shows — the ring's sweep, its label
+    /// and what VoiceOver says, as one value rather than three views each
+    /// re-reading the meter. Composed here so the suite can reach the rules;
+    /// the words themselves are `CoachingBudgetGlance`'s (RFC 123).
+    var budgetGlance: CoachingBudgetGlance {
+        CoachingBudgetGlance(remainingPercent: remainingPercent, budget: budget)
+    }
+
+    /// Whether the App Store's management sheet is offered — bound in **any**
+    /// state, because `grace` (RFC 119's open item) and `expired` are precisely
+    /// the states where a student most needs to reach their subscription, and
+    /// a subscriber who has spent the period is otherwise shown a date and
+    /// nothing (RFC 121's open item).
+    ///
+    /// It is *not* `!offersSubscribe`: those two are near-inverses today and
+    /// would silently diverge the first time a status is added to either rule.
+    var offersManage: Bool {
+        subscription != nil
+    }
+
+    /// How the subscription works, in the student's current situation — the
+    /// sheet's own words, derived as a pure value so the rules are tested
+    /// without rendering a view (RFC 123).
+    var explanation: SubscriptionExplanation {
+        SubscriptionExplanation(subscription: subscription, budget: budget, resetsAt: readyUsage?.resetsAt)
+    }
+
+    /// The reading itself when there is one. Private: every surface wants a
+    /// *derived* answer (`budget`, `coachingBasis`, `remainingPercent`), and
+    /// handing out the raw model would invite each of them to re-derive one.
+    private var readyUsage: CoachingUsage? {
+        guard case .ready(let usage) = usageReading else { return nil }
+        return usage
+    }
+
     /// The status line, or `nil` when nothing is bound. The price shown is
     /// always StoreKit's localized `displayPrice`; the server's `priceUsd` is a
     /// budget input, not display copy. `currentPeriodEnd` is displayed, never
@@ -347,6 +405,45 @@ final class SubscriptionViewModel: ObservableObject {
         }
         notice = failures.compactMap(message(for:)).first.map(Notice.failure)
         await refreshUsage()
+    }
+
+    /// Opens Apple's own subscription-management sheet — where cancelling
+    /// lives, because Apple offers no API that cancels on the student's behalf
+    /// (RFC 123).
+    ///
+    /// Nothing is *said* on `.shown`: Apple's sheet appearing over the app *is*
+    /// the feedback, and a banner underneath it would be talking over it. The
+    /// failure arm is a `failure` notice rather than an informational one
+    /// because the student asked for something and did not get it, and the
+    /// sentence names the route that always works.
+    ///
+    /// **`.shown` re-reads the rail**, because the store's `await` returns
+    /// exactly when Apple's sheet is dismissed — and nothing else would ask.
+    /// Neither of the two paths that appear to cover it does: Apple presents
+    /// over the app's **own** scene, so `scenePhase` never leaves `.active` and
+    /// the foreground refresh never fires; and a renewal-state change (a
+    /// cancellation, a repaired payment method) pushes no entry onto
+    /// `Transaction.updates`. Without this the student who has just fixed their
+    /// card is left reading "Your last payment didn't go through" on the screen
+    /// they fixed it from.
+    ///
+    /// `load()` rather than `refreshUsage()`: what the visit changes is the
+    /// *subscription* — its status and period — and only `load()` re-posts the
+    /// newest entitlement to `/verify`, which is the app's one read of it.
+    ///
+    /// `phase` is deliberately untouched while Apple's sheet is up. The other
+    /// two actions own a spinner on a control the student is waiting on; this
+    /// one hands the screen away, and dimming Subscribe and Restore behind
+    /// Apple's own sheet would dress a hand-off as work in progress. (`load()`
+    /// owns the phase for the refresh that follows, which is ordinary loading.)
+    func showManagement() async {
+        notice = nil
+        switch await store.showManageSubscriptions() {
+        case .shown:
+            await load()
+        case .unavailable:
+            notice = .failure(String(localized: "We couldn't open the App Store. You can manage this subscription in Settings › your name › Subscriptions."))
+        }
     }
 
     /// A transaction the session-long listener recorded — a renewal, an Ask to

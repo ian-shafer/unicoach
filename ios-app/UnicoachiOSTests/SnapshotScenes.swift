@@ -63,7 +63,10 @@ enum SnapshotSeed {
     /// entitlement and the recorder answers `.recorded`, which is the only way
     /// `SubscriptionViewModel.subscription` is ever populated (there is no GET
     /// for subscription state).
-    static func boundActiveRail() async -> SubscriptionViewModel {
+    static func boundRail(
+        status: SubscriptionStatus,
+        usage: CoachingUsage
+    ) async -> SubscriptionViewModel {
         let store = MockSubscriptionStore()
         store.productResult = .success(StoreProduct(
             id: SubscriptionProduct.monthlyIdentifier,
@@ -77,14 +80,12 @@ enum SnapshotSeed {
         )]
         let recorder = MockTransactionRecorder()
         recorder.outcome = .recorded(PublicSubscription(
-            status: SubscriptionStatus.active.rawValue,
+            status: status.rawValue,
             productId: SubscriptionProduct.monthlyIdentifier,
             currentPeriodEnd: SnapshotClock.pinned
         ))
         let viewModel = SubscriptionViewModel(
-            usageClient: PreviewCoachingUsageClient(
-                usage: CoachingUsage(usedPercent: 68, exhausted: false, resetsAt: SnapshotClock.pinned)
-            ),
+            usageClient: PreviewCoachingUsageClient(usage: usage),
             store: store,
             recorder: recorder
         )
@@ -92,8 +93,18 @@ enum SnapshotSeed {
         return viewModel
     }
 
+    static func boundActiveRail() async -> SubscriptionViewModel {
+        await boundRail(
+            status: .active,
+            usage: CoachingUsage(usedPercent: 68, exhausted: false, resetsAt: SnapshotClock.pinned)
+        )
+    }
+
     static func gate(_ rail: SubscriptionViewModel) -> PaywallGate {
-        PaywallGate(subscriptions: rail, isPresented: .constant(false))
+        // One `SubscriptionSheet?` binding, not two `Bool`s (RFC 123). Nothing
+        // here presents a sheet -- each sheet is its own scene, hosted
+        // directly -- so the binding is pinned at "no sheet on screen".
+        PaywallGate(subscriptions: rail, presentedSheet: .constant(nil))
     }
 
     static func conversationClient(history: [Message], list: [Conversation] = []) -> MockConversationClient {
@@ -229,6 +240,93 @@ enum SnapshotCatalogue {
                         .padding(DSSpacing.lg)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                         .background(Color.dsBackground)
+                )
+            },
+
+            // --- The RFC 123 subscription sheet, in the four situations its
+            // words are decided by: no subscription, an active one running,
+            // an active one whose period is spent, and a failing payment.
+            // `SubscriptionExplanation` is a pure value with its own tests;
+            // what these scenes add is the rendered sheet -- the meter, both
+            // hairlines, the offer and `ManageSubscriptionLink` -- around it.
+            SnapshotScene(name: "subscription-sheet-free") {
+                let rail = await SnapshotSeed.rail(
+                    usage: CoachingUsage(usedPercent: 42, exhausted: false, resetsAt: nil)
+                )
+                return AnyView(SubscriptionView(viewModel: rail))
+            },
+            SnapshotScene(name: "subscription-sheet-active-open") {
+                let rail = await SnapshotSeed.boundRail(
+                    status: .active,
+                    usage: CoachingUsage(usedPercent: 31, exhausted: false, resetsAt: SnapshotClock.pinned)
+                )
+                return AnyView(SubscriptionView(viewModel: rail))
+            },
+            SnapshotScene(name: "subscription-sheet-period-spent") {
+                let rail = await SnapshotSeed.boundRail(
+                    status: .active,
+                    usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: SnapshotClock.pinned)
+                )
+                return AnyView(SubscriptionView(viewModel: rail))
+            },
+            SnapshotScene(name: "subscription-sheet-billing-retry") {
+                let rail = await SnapshotSeed.boundRail(
+                    status: .billingRetry,
+                    usage: CoachingUsage(usedPercent: 12, exhausted: false, resetsAt: SnapshotClock.pinned)
+                )
+                return AnyView(SubscriptionView(viewModel: rail))
+            },
+
+            // The paywall over a BOUND subscription: the three paywall scenes
+            // above are all unbound, so `ManageSubscriptionLink` -- and the
+            // hairline it brings with it -- is absent from every one of them.
+            // `offersManage` is `subscription != nil`, so this is the only way
+            // that block is photographed on this sheet (RFC 123).
+            SnapshotScene(name: "paywall-bound-subscriber") {
+                let rail = await SnapshotSeed.boundRail(
+                    status: .active,
+                    usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: SnapshotClock.pinned)
+                )
+                return AnyView(PaywallView(viewModel: rail))
+            },
+
+            // --- The composer's budget control, at every state
+            // `CoachingBudgetGlance` has (RFC 123). One strip rather than four
+            // conversation scenes, following `usage-meter-strip`: the control
+            // is a primitive whose four readings are the question, and the
+            // composer row it sits on is already photographed by
+            // `conversation-thread` and `conversation-blocked-composer`.
+            // On `dsSurface`, which is the composer's own background -- the
+            // ring's colour choice is argued against that surface, not
+            // against `dsBackground`.
+            SnapshotScene(name: "coaching-budget-strip", size: CGSize(width: 402, height: 400)) {
+                let healthy = await SnapshotSeed.rail(
+                    usage: CoachingUsage(usedPercent: 38, exhausted: false, resetsAt: nil)
+                )
+                let nearlySpent = await SnapshotSeed.rail(
+                    usage: CoachingUsage(usedPercent: 92, exhausted: false, resetsAt: SnapshotClock.pinned)
+                )
+                let spent = await SnapshotSeed.rail(
+                    usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: SnapshotClock.pinned)
+                )
+                // Deliberately NOT loaded: an unread meter is the `.noReading`
+                // glance, the state that must draw a bare track and say
+                // nothing rather than invent a number.
+                let unread = SubscriptionViewModel(
+                    usageClient: PreviewCoachingUsageClient(),
+                    store: PreviewSubscriptionStore(),
+                    recorder: PreviewTransactionRecorder()
+                )
+                return AnyView(
+                    VStack(alignment: .leading, spacing: DSSpacing.md) {
+                        CoachingBudgetButton(viewModel: healthy, action: {})
+                        CoachingBudgetButton(viewModel: nearlySpent, action: {})
+                        CoachingBudgetButton(viewModel: spent, action: {})
+                        CoachingBudgetButton(viewModel: unread, action: {})
+                    }
+                    .padding(DSSpacing.lg)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(Color.dsSurface)
                 )
             },
 

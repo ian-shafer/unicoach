@@ -1,5 +1,6 @@
 import Foundation
 import StoreKit
+import UIKit
 import os
 
 /// The `.verified`-only rule, lifted out of StoreKit's types so it can be
@@ -109,6 +110,73 @@ final class StoreKitSubscriptionStore: SubscriptionStoreProtocol, TransactionFin
             logger.error("AppStore.sync failed: [\(error, privacy: .public)]")
             return .failed
         }
+    }
+
+    /// Apple's own management sheet, which is where cancelling lives — there is
+    /// no API that cancels a subscription on the student's behalf, so this link
+    /// out is the whole affordance (RFC 123).
+    ///
+    /// Both failures answer `.unavailable`, deliberately: a missing scene and a
+    /// StoreKit refusal are the same fact to a student — Apple's sheet is not
+    /// in front of them — and the raw error is logged here, the one layer that
+    /// still holds it.
+    ///
+    /// **Nothing is refreshed here**, and that is a division of labour rather
+    /// than a claim that nothing needs refreshing: the caller
+    /// (`SubscriptionViewModel.showManagement()`) re-reads the rail when
+    /// this returns, because `await` here ends exactly when Apple's sheet is
+    /// dismissed. Neither of the two paths that look like they would cover it
+    /// does: this sheet is presented over the app's **own** scene, so
+    /// `scenePhase` never leaves `.active`, and a renewal-state change pushes
+    /// no entry onto `Transaction.updates`.
+    ///
+    /// The whole method is `@MainActor`, not merely the scene lookup: the
+    /// foreground check and the presentation that depends on it must not
+    /// straddle an `await`, or the scene chosen as frontmost can have stopped
+    /// being so by the time Apple is handed it.
+    @MainActor
+    func showManageSubscriptions() async -> ManageSubscriptionsResult {
+        guard let scene = Self.activeWindowScene() else {
+            // The caller collapses both failure modes into `.unavailable`, so
+            // this line is the only surviving evidence of which one happened —
+            // and "no scenes at all" and "scenes, none foreground" are
+            // different bugs. The activation states are what tells them apart.
+            let states = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .map { "\($0.activationState.rawValue)" }
+            logger.error(
+                "No foreground UIWindowScene to present manage-subscriptions over: [\(states.count, privacy: .public)] window scene(s), activation states [\(states.joined(separator: ","), privacy: .public)]"
+            )
+            return .unavailable
+        }
+        do {
+            try await AppStore.showManageSubscriptions(in: scene)
+            return .shown
+        } catch {
+            logger.error("AppStore.showManageSubscriptions failed: [\(error, privacy: .public)]")
+            return .unavailable
+        }
+    }
+
+    /// The scene Apple's sheet is presented over: `foregroundActive` — the one
+    /// the student is looking at — then `foregroundInactive`, which is the same
+    /// scene mid state-transition, and **nothing else**.
+    ///
+    /// There is deliberately no unqualified `?? windowScenes.first` fallback.
+    /// `UIApplication.connectedScenes` is a `Set`, so "first" is hash order:
+    /// the fallback picked an arbitrary scene, and presenting over a background
+    /// or disconnected one still returns `.shown` — no sheet, no notice, and no
+    /// way for the student to tell. That is precisely the outcome
+    /// `.unavailable` exists to report, so a scene this app cannot vouch for is
+    /// answered as unavailable instead.
+    ///
+    /// `@MainActor` because `UIApplication.shared` is; the whole of
+    /// `showManageSubscriptions()` carries it for the same reason.
+    @MainActor
+    private static func activeWindowScene() -> UIWindowScene? {
+        let windowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return windowScenes.first { $0.activationState == .foregroundActive }
+            ?? windowScenes.first { $0.activationState == .foregroundInactive }
     }
 
     /// A registry miss can only mean the transaction was already finished —

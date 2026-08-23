@@ -56,9 +56,13 @@ enum CoachingBasis: Equatable {
 /// over `CoachingBasis` with no `default:`, so that distinction cannot be
 /// deleted without the compiler saying so.
 ///
-/// This is also the **only** place the block's words are authored: the
-/// subscription surface's own 402 arm asks this type rather than re-typing the
-/// sentence.
+/// This is also the only place **the block's own words** are authored: the
+/// subscription surface's 402 arm asks this type rather than re-typing the
+/// sentence. It is not the only place the spent budget is described — the
+/// subscription sheet's `SubscriptionExplanation` says something different
+/// about the same situation, deliberately, because that screen is a read-only
+/// explanation and this one is a refusal (RFC 123). What must never be
+/// duplicated is *this* sentence, and it is not.
 struct PaywallCopy: Equatable {
     let title: String
     let detail: String
@@ -158,40 +162,45 @@ struct PaywallView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: DSSpacing.lg) {
-                VStack(alignment: .leading, spacing: DSSpacing.sm) {
-                    Text(copy.title)
-                        .font(.dsTitle)
-                        .foregroundStyle(Color.dsTextPrimary)
-                        .accessibilityIdentifier("paywallTitle")
+        DSSheetScroll {
+            // Not `if let`: the gate only opens this sheet when there is
+            // something to explain, so the block always has its words.
+            VStack(alignment: .leading, spacing: DSSpacing.sm) {
+                Text(copy.title)
+                    .font(.dsTitle)
+                    .foregroundStyle(Color.dsTextPrimary)
+                    .accessibilityIdentifier("paywallTitle")
 
-                    Text(copy.detail)
-                        .font(.dsBody)
-                        .foregroundStyle(Color.dsTextSecondary)
-                        .accessibilityIdentifier("paywallDetail")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                CoachingUsageMeter(viewModel: viewModel)
-
-                SubscriptionOffer(viewModel: viewModel)
-
-                // Reading stays open while blocked (the server keeps it open),
-                // so the sheet must have a way back to it that does not depend
-                // on knowing the drag gesture.
-                Button("Not now") { dismiss() }
-                    .font(.dsLabel)
+                Text(copy.detail)
+                    .font(.dsBody)
                     .foregroundStyle(Color.dsTextSecondary)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityIdentifier("paywallDismissButton")
-                    .accessibilityLabel("Not now")
+                    .accessibilityIdentifier("paywallDetail")
             }
-            .padding(DSSpacing.lg)
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            CoachingUsageMeter(viewModel: viewModel)
+
+            SubscriptionOffer(viewModel: viewModel)
+
+            // RFC 121's open item, closed by composition: a subscriber who
+            // has spent the period was shown a date and offered nothing.
+            // The link renders only when a subscription is bound — its own
+            // rule, so this surface and the subscription sheet cannot
+            // disagree about when it appears.
+            ManageSubscriptionLink(viewModel: viewModel)
+
+            // Reading stays open while blocked (the server keeps it open),
+            // so the sheet must have a way back to it that does not depend
+            // on knowing the drag gesture. `.secondary`: it is the way out,
+            // not the action this screen is asking for.
+            DSTextButton(
+                String(localized: "Not now"),
+                role: .secondary,
+                accessibilityIdentifier: "paywallDismissButton",
+                accessibilityLabel: "Not now",
+                action: { dismiss() }
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.dsBackground)
         // The offer's own load. The authenticated root takes a **usage-only**
         // read at launch (it has nowhere to show a price and no business
         // re-posting an entitlement), so the sheet fetches the product it needs

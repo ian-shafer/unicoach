@@ -54,11 +54,18 @@ struct AuthenticatedRootView: View {
     /// Nothing is created server-side: a conversation exists only once its
     /// first message is sent.
     @State private var rootConversationToken = UUID()
-    /// The paywall (RFC 121). Presented from **here**, not from the conversation
-    /// screen, so one sheet serves the whole stack: a 402 on a pushed
-    /// conversation and a "See options" tap on the root open the same one, over
-    /// whatever is on screen.
-    @State private var isPaywallPresented = false
+    /// Which subscription sheet is up, if either (RFC 121, RFC 123). Presented
+    /// from **here**, not from the conversation screen, so one presentation
+    /// serves the whole stack: a 402 on a pushed conversation, a "See options"
+    /// tap on the root and the composer's budget control on every screen all
+    /// open over whatever is on screen.
+    ///
+    /// **One optional, not two `Bool`s**, and one `.sheet(item:)` rather than
+    /// two chained `.sheet(isPresented:)`. The two screens are mutually
+    /// exclusive by construction, SwiftUI cannot present a second sheet over
+    /// the first anyway, and the pair of flags made the block unreachable once
+    /// both were set — the whole argument is on `SubscriptionSheet`.
+    @State private var presentedSheet: SubscriptionSheet?
 
     /// Owned here rather than by `SlideOverMenu` so the drawer's list survives
     /// open/close and the drawer can slide in already populated — see `menu`.
@@ -137,19 +144,27 @@ struct AuthenticatedRootView: View {
             guard phase == .active else { return }
             Task { await subscriptionViewModel.refreshUsage() }
         }
-        .sheet(isPresented: $isPaywallPresented) {
-            PaywallView(viewModel: subscriptionViewModel)
+        // Both sheets render the **same** rail: one is the block, the other
+        // the read-only explanation, and neither derives anything of its own.
+        .sheet(item: $presentedSheet) { sheet in
+            switch sheet {
+            case .paywall:
+                PaywallView(viewModel: subscriptionViewModel)
+            case .explanation:
+                SubscriptionView(viewModel: subscriptionViewModel)
+            }
         }
     }
 
     /// The gate, built here because this is the only place that can build it
-    /// correctly: the rail below is the one the sheet renders, and the sheet's
-    /// flag is this view's. Everything under the root takes this one value
-    /// rather than three arguments that are only correct together (RFC 121).
+    /// correctly: the rail below is the one the sheets render, and the
+    /// presented sheet is this view's state. Everything under the root takes
+    /// this one value rather than arguments that are only correct together
+    /// (RFC 121).
     private var paywallGate: PaywallGate {
         PaywallGate(
             subscriptions: subscriptionViewModel,
-            isPresented: $isPaywallPresented
+            presentedSheet: $presentedSheet
         )
     }
 

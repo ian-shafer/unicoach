@@ -198,7 +198,30 @@ struct CoachingUsageResponse: Codable {
 /// sends nothing else). Read from the same `Entitlement` the four turn gates
 /// read, so the bar and the block can never disagree.
 struct CoachingUsage: Codable, Equatable, Sendable {
-    /// 0...100, floored and capped server-side. `usedPercent == 100` iff `exhausted`.
+    /// The percentage contract, **named once**. `usedPercent` is floored and
+    /// capped server-side to this range, and so is everything derived from it
+    /// (`SubscriptionViewModel.remainingPercent`, `CoachingBudgetGlance`'s
+    /// label). Those had all re-typed the bounds as bare literals — one of them
+    /// only in prose, over an expression that could not honour it — in a change
+    /// where every geometric constant got a named token. The guarantee lives
+    /// here, on the type the server's own value arrives as, rather than in
+    /// three comments that can drift apart.
+    ///
+    /// `DesignSystem/DSFraction` deliberately does **not** use this: it clamps
+    /// a fraction to 0...1 in its own terms, and the design system must not
+    /// take a dependency on the API layer to do it.
+    static let percentRange = 0...100
+
+    /// The one clamp, expressed in terms of the range. A client-side guard on a
+    /// server-side guarantee: if the cap were ever broken, the ring (which
+    /// clamps its own sweep) and the label beside it would otherwise
+    /// contradict each other — an empty ring next to "-5% left".
+    static func clamped(percent: Int) -> Int {
+        min(max(percent, percentRange.lowerBound), percentRange.upperBound)
+    }
+
+    /// `percentRange`, floored and capped server-side. `usedPercent == 100` iff
+    /// `exhausted`.
     let usedPercent: Int
     let exhausted: Bool
     /// When the meter resets: the subscription period's end, or `nil` on the
