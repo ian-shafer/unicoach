@@ -9,15 +9,26 @@ struct ConversationListView: View {
     @StateObject private var viewModel: ConversationListViewModel
     private let conversationClient: ConversationClientProtocol
     private let onProfileRequired: () -> Void
+    /// Carried, not used: every `ConversationView` this screen pushes needs the
+    /// authenticated root's paywall gate (RFC 121), and this list is on the path
+    /// between the two. **One** opaque value, so a list that has no paywall
+    /// concern of its own does not have to keep three correlated arguments in
+    /// step.
+    private let paywallGate: PaywallGate
 
     /// Set by a Delete tap (swipe or context menu) to stage a conversation for the
     /// confirmation dialog. The actual `viewModel.delete(_:)` fires only when the
     /// dialog's confirm button resolves.
     @State private var pendingDeletion: Conversation?
 
-    init(conversationClient: ConversationClientProtocol, onProfileRequired: @escaping () -> Void) {
+    init(
+        conversationClient: ConversationClientProtocol,
+        paywallGate: PaywallGate,
+        onProfileRequired: @escaping () -> Void
+    ) {
         _viewModel = StateObject(wrappedValue: ConversationListViewModel(conversationClient: conversationClient))
         self.conversationClient = conversationClient
+        self.paywallGate = paywallGate
         self.onProfileRequired = onProfileRequired
     }
 
@@ -106,6 +117,7 @@ struct ConversationListView: View {
                 ConversationView(
                     conversation: conversation,
                     conversationClient: conversationClient,
+                    paywallGate: paywallGate,
                     onProfileRequired: onProfileRequired
                 )
             } label: {
@@ -232,7 +244,11 @@ struct ConversationListView: View {
     }
 
     private var freshConversation: some View {
-        ConversationView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
+        ConversationView(
+            conversationClient: conversationClient,
+            paywallGate: paywallGate,
+            onProfileRequired: onProfileRequired
+        )
     }
 }
 
@@ -263,7 +279,18 @@ private final class ConversationListPreviewClient: ConversationClientProtocol, @
 
 @MainActor private var conversationListPreview: some View {
     NavigationStack {
-        ConversationListView(conversationClient: ConversationListPreviewClient(), onProfileRequired: {})
+        ConversationListView(
+            conversationClient: ConversationListPreviewClient(),
+            paywallGate: PaywallGate(
+                subscriptions: SubscriptionViewModel(
+                    usageClient: PreviewCoachingUsageClient(),
+                    store: PreviewSubscriptionStore(),
+                    recorder: PreviewTransactionRecorder()
+                ),
+                isPresented: .constant(false)
+            ),
+            onProfileRequired: {}
+        )
     }
 }
 

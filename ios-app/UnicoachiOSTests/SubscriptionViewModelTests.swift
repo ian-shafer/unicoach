@@ -43,8 +43,9 @@ final class SubscriptionViewModelTests: XCTestCase {
     func testLoadPublishesUsageAndProduct() async {
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.usage, freeUsage)
-        XCTAssertEqual(viewModel.product, product)
+        XCTAssertEqual(viewModel.usageReading, .ready(freeUsage))
+        XCTAssertEqual(viewModel.productReading, .ready(product))
+        XCTAssertEqual(viewModel.offer, .subscribe(product))
         XCTAssertEqual(viewModel.phase, .idle)
         XCTAssertNil(viewModel.notice)
         XCTAssertTrue(recorder.recorded.isEmpty, "no entitlement, nothing to record")
@@ -65,16 +66,62 @@ final class SubscriptionViewModelTests: XCTestCase {
     }
 
     /// Degrade, not fail: the meter is the part that always works, so a
-    /// StoreKit failure costs the Subscribe button and nothing else.
+    /// StoreKit failure costs the Subscribe button — and **says so**, with a
+    /// retry. Best-effort over two fetches that reported only one of them
+    /// missing left a blocked student on the paywall with no purchase path and
+    /// no reason for it (RFC 121).
     func testLoadStillPublishesUsageWhenTheProductFetchFails() async {
         struct Boom: Error {}
         store.productResult = .failure(Boom())
 
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.usage, freeUsage)
-        XCTAssertNil(viewModel.product)
+        XCTAssertEqual(viewModel.usageReading, .ready(freeUsage))
+        XCTAssertEqual(viewModel.productReading, .unavailable)
+        XCTAssertEqual(viewModel.offer, .unavailable, "the offer says the purchase path is gone rather than vanishing")
         XCTAssertNil(viewModel.notice)
+    }
+
+    /// …and the retry behind that line works: the same `load()` the button
+    /// calls, and the offer comes back.
+    func testRetryingAfterAFailedProductFetchRestoresTheOffer() async {
+        struct Boom: Error {}
+        store.productResult = .failure(Boom())
+        usageClient.results = [.success(freeUsage), .success(freeUsage)]
+        await viewModel.load()
+        XCTAssertEqual(viewModel.offer, .unavailable)
+
+        store.productResult = .success(product)
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.offer, .subscribe(product))
+    }
+
+    /// A failed *refresh* of the price is not that: the price does not change
+    /// under us, so what is on screen stays and the button does not blink out.
+    func testAFailedProductRefreshKeepsThePriceOnScreen() async {
+        struct Boom: Error {}
+        usageClient.results = [.success(freeUsage), .success(freeUsage)]
+        await viewModel.load()
+        store.productResult = .failure(Boom())
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.productReading, .ready(product))
+        XCTAssertEqual(viewModel.offer, .subscribe(product))
+    }
+
+    /// A bound, active subscription is the one state where showing no Subscribe
+    /// button is the honest answer — and it is a named one, not the absence of
+    /// the other three.
+    func testAnActiveSubscriptionLeavesNothingToOffer() async {
+        store.entitlements = [transaction]
+        recorder.outcome = .recorded(subscription)
+
+        await viewModel.load()
+
+        XCTAssertFalse(viewModel.offersSubscribe)
+        XCTAssertEqual(viewModel.offer, .bound)
     }
 
     /// `load()` is a background refresh, not an action the student took — and
@@ -87,7 +134,7 @@ final class SubscriptionViewModelTests: XCTestCase {
 
         XCTAssertNil(viewModel.notice)
         XCTAssertNil(viewModel.subscription)
-        XCTAssertEqual(viewModel.usage, freeUsage)
+        XCTAssertEqual(viewModel.usageReading, .ready(freeUsage))
     }
 
     // MARK: - subscribe
@@ -104,7 +151,7 @@ final class SubscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(store.purchasedProductIDs, [SubscriptionProduct.monthlyIdentifier])
         XCTAssertEqual(recorder.recorded, [transaction])
         XCTAssertEqual(viewModel.subscription, subscription)
-        XCTAssertEqual(viewModel.usage, spent)
+        XCTAssertEqual(viewModel.usageReading, .ready(spent))
         XCTAssertEqual(viewModel.phase, .idle)
         XCTAssertNil(viewModel.notice)
     }
@@ -167,6 +214,19 @@ final class SubscriptionViewModelTests: XCTestCase {
             viewModel.notice,
             .failure("We couldn't confirm this purchase with the App Store.")
         )
+    }
+
+    /// The arm `ServerErrorCode.coachingBudgetExhausted` forced (RFC 121): a
+    /// 402 has no business on `/verify`, but if one surfaces in the
+    /// subscription surface it must read as what it is rather than fall to the
+    /// generic purchase-failure string.
+    func testCoachingBudgetExhaustedReadsAsTheBlockedCopy() async {
+        store.purchaseResult = .success(.purchased(transaction))
+        recorder.outcome = .deferred(.server(error("coaching_budget_exhausted", 402)))
+
+        await viewModel.subscribe()
+
+        XCTAssertEqual(viewModel.notice, .failure("You've used your coaching allowance."))
     }
 
     func testAnUnrecognizedCodeGetsTheGenericMessage() async {
@@ -321,8 +381,7 @@ final class SubscriptionViewModelTests: XCTestCase {
 
         await viewModel.load()
 
-        XCTAssertNil(viewModel.usage)
-        XCTAssertTrue(viewModel.usageUnavailable)
+        XCTAssertEqual(viewModel.usageReading, .unavailable)
         XCTAssertEqual(viewModel.phase, .idle)
     }
 
@@ -335,8 +394,7 @@ final class SubscriptionViewModelTests: XCTestCase {
         await viewModel.load()
         await viewModel.load()
 
-        XCTAssertEqual(viewModel.usage, freeUsage)
-        XCTAssertFalse(viewModel.usageUnavailable)
+        XCTAssertEqual(viewModel.usageReading, .ready(freeUsage))
     }
 
     /// StoreKit signed something this app refuses to trust: a failure, and the
@@ -373,7 +431,7 @@ final class SubscriptionViewModelTests: XCTestCase {
         await viewModel.apply(.recorded(subscription))
 
         XCTAssertEqual(viewModel.subscription, subscription)
-        XCTAssertEqual(viewModel.usage, renewed)
+        XCTAssertEqual(viewModel.usageReading, .ready(renewed))
         XCTAssertNil(viewModel.notice)
     }
 

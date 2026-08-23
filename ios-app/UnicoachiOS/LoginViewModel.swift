@@ -214,10 +214,12 @@ class LoginViewModel: ObservableObject {
             // server's own wording is shown verbatim.
             errorResponse = error
         case .studentAlreadyExists,
+             .studentProfileRequired,
              .subscriptionNotFound,
              .subscriptionOwnedByOtherAccount,
              .validationFailed,
              .payloadTooLarge,
+             .coachingBudgetExhausted,
              .decodeError,
              .none:
             // Every other code — one these two routes do not emit (the four

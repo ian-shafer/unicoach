@@ -117,6 +117,19 @@ final class TransactionRecorderTests: XCTestCase {
         }
     }
 
+    /// A 402 cannot arise from `/verify` — the coaching gate guards turn
+    /// endpoints. If one ever did it would say nothing about whether Apple's
+    /// transaction was recorded, so the asymmetry decides it: do not finish.
+    func testCoachingBudgetExhaustedIsDeferredAndNotFinished() async {
+        serverAnswers(402, "coaching_budget_exhausted")
+
+        let outcome = await recorder.record(transaction)
+
+        guard case .deferred(.server(let error)) = outcome else { return XCTFail("expected .deferred(.server), got [\(outcome)]") }
+        XCTAssertEqual(error.knownCode, .coachingBudgetExhausted)
+        XCTAssertTrue(store.finished.isEmpty)
+    }
+
     /// `APIClient` maps a connection-phase failure onto its own `NETWORK_ERROR`
     /// response, so this arrives as a server-shaped failure and defers.
     func testASynthesizedNetworkErrorIsDeferredAndNotFinished() async {

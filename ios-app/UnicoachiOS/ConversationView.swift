@@ -9,28 +9,54 @@ private struct SendButtonWidthKey: PreferenceKey {
 
 struct ConversationView: View {
     @StateObject private var viewModel: ConversationViewModel
+    /// The **shared** blocked truth, owned by `AuthenticatedRootView` and handed
+    /// down as it already is to Settings. Every pushed conversation builds its
+    /// own `ConversationViewModel`, so a per-view-model flag would leave one
+    /// screen blocked and the next one cheerfully offering a composer — this one
+    /// object is what makes the block the same everywhere (RFC 121).
+    @ObservedObject private var subscriptionViewModel: SubscriptionViewModel
+    /// The gate itself, whose `present()` opens the paywall living above this
+    /// view: the sheet is the authenticated root's, so it survives a push and
+    /// covers the whole stack.
+    private let paywallGate: PaywallGate
     @FocusState private var isComposerFocused: Bool
     @State private var sendButtonWidth: CGFloat = 0
 
-    init(conversationClient: ConversationClientProtocol, onProfileRequired: @escaping () -> Void) {
+    init(
+        conversationClient: ConversationClientProtocol,
+        paywallGate: PaywallGate,
+        onProfileRequired: @escaping () -> Void
+    ) {
         _viewModel = StateObject(wrappedValue: ConversationViewModel(
             conversationClient: conversationClient,
-            onProfileRequired: onProfileRequired
+            onProfileRequired: onProfileRequired,
+            onBudgetExhausted: paywallGate.handleBudgetExhausted
         ))
+        _subscriptionViewModel = ObservedObject(wrappedValue: paywallGate.subscriptions)
+        self.paywallGate = paywallGate
     }
 
-    init(conversation: Conversation, conversationClient: ConversationClientProtocol, onProfileRequired: @escaping () -> Void) {
+    init(
+        conversation: Conversation,
+        conversationClient: ConversationClientProtocol,
+        paywallGate: PaywallGate,
+        onProfileRequired: @escaping () -> Void
+    ) {
         _viewModel = StateObject(wrappedValue: ConversationViewModel(
             conversation: conversation,
             conversationClient: conversationClient,
-            onProfileRequired: onProfileRequired
+            onProfileRequired: onProfileRequired,
+            onBudgetExhausted: paywallGate.handleBudgetExhausted
         ))
+        _subscriptionViewModel = ObservedObject(wrappedValue: paywallGate.subscriptions)
+        self.paywallGate = paywallGate
     }
 
     var body: some View {
         VStack(spacing: 0) {
             threadArea
             validationArea
+            blockedArea
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -41,7 +67,19 @@ struct ConversationView: View {
     }
 
     private var isComposerDisabled: Bool {
-        viewModel.isStreaming || !viewModel.isReady
+        viewModel.isStreaming || !viewModel.isReady || isBlocked
+    }
+
+    /// The proactive half of the gate, and a **courtesy only**: it disables the
+    /// composer before the student types into something that cannot send. Usage
+    /// can be stale, so an enabled composer never promises a turn will be
+    /// accepted — the 402 is the authority, and works on its own.
+    ///
+    /// Only a meter that says `spent` blocks: `unknown` is a reading that has
+    /// not arrived or a refresh that failed, and a failed read must never
+    /// disable a composer.
+    private var isBlocked: Bool {
+        subscriptionViewModel.budget == .spent
     }
 
     // MARK: - History load
@@ -235,12 +273,23 @@ struct ConversationView: View {
 
     // MARK: - Per-turn failure
 
+    /// The failure's words, then its action. The action is not always Retry:
+    /// while blocked, a refused turn's only honest offer is "See options",
+    /// because retrying can do nothing but reproduce the 402. The turn itself is
+    /// kept either way — the student's words are theirs — so once the block
+    /// clears this same turn offers Retry again and sends what they wrote.
     @ViewBuilder
     private func failureView(_ failure: TurnFailure, turnId: ChatTurn.ID) -> some View {
         VStack(alignment: .leading, spacing: DSSpacing.sm) {
             switch failure {
             case .server(let error):
                 FormErrorBanner(error.message)
+            case .blocked:
+                Text(PaywallCopy.refusedTurnDetail(basis: subscriptionViewModel.coachingBasis))
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsTextSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("turnBlocked")
             case .infrastructure(let infra):
                 HStack(alignment: .firstTextBaseline, spacing: DSSpacing.sm) {
                     Image(systemName: infra.systemImage)
@@ -256,15 +305,63 @@ struct ConversationView: View {
                 .accessibilityElement(children: .combine)
             }
 
-            Button("Retry") {
-                Task { await viewModel.retry(turnId) }
+            // A `.blocked` turn offers Retry again the moment the meter reports
+            // the budget open — that is what keeping the student's words was
+            // for. While the meter has no answer, the 402 stays the authority.
+            // See `TurnAction`.
+            switch TurnAction(failure: failure, budget: subscriptionViewModel.budget) {
+            case .seeOptions:
+                seeOptionsButton(identifier: "turnSeeOptionsButton")
+            case .retry:
+                Button("Retry") {
+                    Task { await viewModel.retry(turnId) }
+                }
+                .font(.dsButton)
+                .foregroundStyle(Color.dsTextPrimary)
+                .accessibilityIdentifier("retryButton")
+                .accessibilityLabel("Retry")
             }
-            .font(.dsButton)
-            .foregroundStyle(Color.dsTextPrimary)
-            .accessibilityIdentifier("retryButton")
-            .accessibilityLabel("Retry")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The paywall's one affordance, said once — beside a refused turn and above
+    /// the blocked composer. The identifier is a parameter because both can be
+    /// on screen at the same time, and a duplicated identifier names neither
+    /// element for VoiceOver or a UI test.
+    private func seeOptionsButton(identifier: String) -> some View {
+        Button("See options", action: paywallGate.present)
+            .font(.dsButton)
+            .foregroundStyle(Color.dsTextPrimary)
+            .accessibilityIdentifier(identifier)
+            .accessibilityLabel("See options")
+    }
+
+    // MARK: - Blocked
+
+    /// The block state, in the shape `validationArea` already established: one
+    /// optional published value, rendered just above the composer. It is not a
+    /// `FormErrorBanner` — being out of coaching is not an error the student
+    /// made, and the only thing to do about it is on the sheet.
+    @ViewBuilder
+    private var blockedArea: some View {
+        if isBlocked {
+            VStack(alignment: .leading, spacing: DSSpacing.xs) {
+                // The title, not the detail: the sentence naming the basis (and
+                // the reset date) belongs to the refused turn and to the sheet.
+                // Saying it a third time, one line above a button that opens the
+                // screen it is written on, is noise.
+                Text(PaywallCopy.pausedTitle)
+                    .font(.dsCaption)
+                    .foregroundStyle(Color.dsTextSecondary)
+
+                seeOptionsButton(identifier: "composerSeeOptionsButton")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, DSSpacing.md)
+            .padding(.bottom, DSSpacing.sm)
+            .accessibilityIdentifier("composerBlocked")
+        }
     }
 
     // MARK: - Validation
@@ -308,7 +405,7 @@ struct ConversationView: View {
                     accessibilityLabel: "Send",
                     action: send
                 )
-                .disabled(!viewModel.canSend)
+                .disabled(!viewModel.canSend || isBlocked)
                 .background(
                     GeometryReader { proxy in
                         Color.clear.preference(key: SendButtonWidthKey.self, value: proxy.size.width)
@@ -400,9 +497,28 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
     func setArchived(conversationId: UUID, archived: Bool) async throws {}
 }
 
+/// The canvas's gate over a shared subscription rail, built once per preview:
+/// nothing is loaded into it, so the meter reads `unknown` and the composer
+/// previews in its ordinary state. The blocked composer is judged on the
+/// paywall's canvas and in the simulator, where a real reading can be injected.
+@MainActor private func conversationPreviewGate(usage: CoachingUsage? = nil) -> PaywallGate {
+    PaywallGate(
+        subscriptions: SubscriptionViewModel(
+            usageClient: PreviewCoachingUsageClient(usage: usage ?? CoachingUsage(usedPercent: 42, exhausted: false, resetsAt: nil)),
+            store: PreviewSubscriptionStore(),
+            recorder: PreviewTransactionRecorder()
+        ),
+        isPresented: .constant(false)
+    )
+}
+
 @MainActor private var conversationPreview: some View {
     NavigationStack {
-        ConversationView(conversationClient: ConversationPreviewClient(), onProfileRequired: {})
+        ConversationView(
+            conversationClient: ConversationPreviewClient(),
+            paywallGate: conversationPreviewGate(),
+            onProfileRequired: {}
+        )
     }
 }
 
@@ -434,6 +550,7 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
                 Message(id: "u1", role: .user, content: "What should I do next?", createdAt: Date()),
                 Message(id: "c1", role: .coach, content: MarkdownFixture.worstCaseReply, createdAt: Date()),
             ]),
+            paywallGate: conversationPreviewGate(),
             onProfileRequired: {}
         )
     }

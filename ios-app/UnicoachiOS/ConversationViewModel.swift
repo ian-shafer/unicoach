@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Per-turn view state: one student message and the coach reply it elicited.
 /// `id` is the sole `ForEach` key — never derived from `Message.id`, which is
@@ -17,6 +18,66 @@ struct ChatTurn: Identifiable {
 enum TurnFailure: Equatable {
     case server(ErrorResponse)               // a coach failure frame (coach_unavailable / coach_failed)
     case infrastructure(InfrastructureError) // a transport-class failure (timeout / connectivity / server)
+    /// The 402: the coaching budget is spent, so this turn was refused before it
+    /// reached the model. It carries no `ErrorResponse` because there is nothing
+    /// in that body worth rendering — the words come from `CoachingUsage`, whose
+    /// endpoint owns the meter (RFC 121). Unlike every other failure, retrying
+    /// it can only reproduce it, so the screen offers "See options" instead
+    /// until the block clears.
+    case blocked
+}
+
+/// The action a failed turn offers, and the one rule that chooses it.
+///
+/// The meter's three answers are what make the rule honest (RFC 121):
+///
+/// - **`spent`** — no failure offers a Retry that could only 402.
+/// - **`open`** — the server says the budget is open, so even a refused turn is
+///   sendable again: that is the whole justification for keeping the student's
+///   words rather than deleting them, and a `.blocked` turn stranded on "See
+///   options" forever would keep them for nothing.
+/// - **`unknown`** — no reading yet, or a refresh that failed, so the failure
+///   kind decides: the 402 stays the authority for the turn it refused, and
+///   every other failure keeps its ordinary Retry.
+///
+/// It lives here, next to `TurnFailure`, rather than inline in the view,
+/// because it is a rule with a truth table and this suite has no view-test
+/// harness: expressed here it is asserted directly; expressed in `body` it is
+/// asserted nowhere.
+enum TurnAction: Equatable {
+    /// Send the words again.
+    case retry
+    /// Open the paywall: retrying could only reproduce the 402.
+    case seeOptions
+
+    init(failure: TurnFailure, budget: CoachingBudget) {
+        switch budget {
+        case .spent:
+            self = .seeOptions
+        case .open:
+            self = .retry
+        case .unknown:
+            // No reading, so the failure kind decides — switched, not tested
+            // for one case: a new `TurnFailure` must be given an answer here
+            // rather than silently inheriting Retry, and Retry on a refusal is
+            // a button that can only 402 again.
+            switch failure {
+            case .blocked:
+                self = .seeOptions
+            case .server, .infrastructure:
+                self = .retry
+            }
+        }
+    }
+}
+
+/// What a mapped failure asks the layer **above** the stream to do. `handle`
+/// decides it and performs none of it: an escalation is a screen-level action,
+/// and running it inside `stream` would hold `isStreaming` true across a network
+/// round trip the failed turn is no longer waiting on — a disabled composer and
+/// a spinning send button while nothing is in flight (RFC 121).
+enum TurnEscalation: Equatable {
+    case budgetExhausted
 }
 
 /// Governs only the initial history fetch when an established conversation is
@@ -51,14 +112,24 @@ final class ConversationViewModel: ObservableObject {
     private var pendingConversation: Conversation?
 
     private let conversationClient: ConversationClientProtocol
+    private let logger = Logger.unicoach(category: "ConversationViewModel")
     private let onProfileRequired: () -> Void
+    /// Reported upward on a 402, mirroring `onProfileRequired`'s shape — but it
+    /// replaces no screen. `AuthenticatedRootView` answers it by refreshing the
+    /// shared `SubscriptionViewModel`'s meter and presenting the paywall, so the
+    /// blocked truth is the server's and every conversation in the stack sees
+    /// the same one (RFC 121).
+    private let onBudgetExhausted: () async -> Void
 
     /// Fresh conversation (Start Coaching / compose): no established conversation
     /// and no history to fetch, so `historyLoad` starts `.ready` and `stream()`
     /// routes the first turn to `streamConversation`.
-    init(conversationClient: ConversationClientProtocol, onProfileRequired: @escaping () -> Void) {
+    init(conversationClient: ConversationClientProtocol,
+         onProfileRequired: @escaping () -> Void,
+         onBudgetExhausted: @escaping () async -> Void) {
         self.conversationClient = conversationClient
         self.onProfileRequired = onProfileRequired
+        self.onBudgetExhausted = onBudgetExhausted
     }
 
     /// Re-enter an established conversation: seeds `conversation` (so every turn
@@ -66,10 +137,12 @@ final class ConversationViewModel: ObservableObject {
     /// `loadHistory()` (driven by the view's `.task`) rebuilds the thread.
     init(conversation: Conversation,
          conversationClient: ConversationClientProtocol,
-         onProfileRequired: @escaping () -> Void) {
+         onProfileRequired: @escaping () -> Void,
+         onBudgetExhausted: @escaping () async -> Void) {
         self.conversation = conversation
         self.conversationClient = conversationClient
         self.onProfileRequired = onProfileRequired
+        self.onBudgetExhausted = onBudgetExhausted
         self.historyLoad = .loading
     }
 
@@ -117,7 +190,7 @@ final class ConversationViewModel: ObservableObject {
         turns.append(turn)
         messageText = ""
 
-        await stream(turnId: turn.id, content: trimmed)
+        await streamAndEscalate(turnId: turn.id, content: trimmed)
     }
 
     /// Re-dispatches a failed turn in place: clears its failure and partial text,
@@ -137,13 +210,27 @@ final class ConversationViewModel: ObservableObject {
         turns[idx].coachMessage = nil
         let content = turns[idx].userMessage.content
 
-        await stream(turnId: id, content: content)
+        await streamAndEscalate(turnId: id, content: content)
+    }
+
+    /// Runs the turn, then performs whatever its failure asked of the layer
+    /// above — **after** `isStreaming` has been cleared, so a screen-level
+    /// escalation's network round trip cannot hold the composer disabled on a
+    /// turn that has already finished failing.
+    private func streamAndEscalate(turnId: ChatTurn.ID, content: String) async {
+        switch await stream(turnId: turnId, content: content) {
+        case .budgetExhausted:
+            await onBudgetExhausted()
+        case nil:
+            break
+        }
     }
 
     /// Consumes a stream into the turn identified by `turnId`, shared by `send`
     /// and `retry`. Dispatch is established-gated: `conversation == nil` starts a
-    /// new conversation; otherwise it posts a follow-up turn.
-    private func stream(turnId: ChatTurn.ID, content: String) async {
+    /// new conversation; otherwise it posts a follow-up turn. Returns what the
+    /// failure (if any) asks of the caller, and performs none of it itself.
+    private func stream(turnId: ChatTurn.ID, content: String) async -> TurnEscalation? {
         isStreaming = true
         defer { isStreaming = false }
 
@@ -162,7 +249,7 @@ final class ConversationViewModel: ObservableObject {
         do {
             for try await event in events {
                 guard let idx = turns.firstIndex(where: { $0.id == turnId }) else {
-                    return
+                    return nil
                 }
                 switch event {
                 case .conversation(let convo, let userMessage):
@@ -183,33 +270,66 @@ final class ConversationViewModel: ObservableObject {
                 }
             }
         } catch let error as ErrorResponse {
-            handle(error, turnId: turnId)
+            return handle(error, turnId: turnId)
         } catch {
             setFailure(.infrastructure(.serverError), turnId: turnId)
         }
+        return nil
     }
 
-    /// Maps a thrown server/transport error onto the target turn. Codes are matched
-    /// case-sensitively: client-synthesized codes (`TIMEOUT`/`NETWORK_ERROR`/
-    /// `SERVER_ERROR`/`VALIDATION`) are UPPERCASE; this route family's server codes
-    /// are lowercase. `student_profile_required` is a first-turn-only pre-stream 409.
-    private func handle(_ error: ErrorResponse, turnId: ChatTurn.ID) {
-        switch error.code {
-        case "student_profile_required":
+    /// Maps a thrown server/transport error onto the target turn, and **only**
+    /// that: a failure that needs something of the screen above returns a
+    /// `TurnEscalation` for `streamAndEscalate` to perform once the stream has
+    /// torn down. Writing a failure onto a turn and awaiting a cross-screen
+    /// refresh are two jobs, and doing both here cost `isStreaming` a network
+    /// round trip.
+    ///
+    /// It switches on `knownCode`, not the raw string it used to compare against
+    /// literals: the codes this screen must *act* on are now enum cases, so a
+    /// typo is a build failure rather than a silently unhandled refusal, and
+    /// there is no `default:` — a new `ServerErrorCode` has to be given an arm
+    /// here before this compiles. The last arm is every code with no chat-screen
+    /// behaviour of its own, plus `nil` for a code this client has never heard
+    /// of (a newer server code, or the client-synthesized `VALIDATION`): all of
+    /// them keep the turn and show the server's own message.
+    private func handle(_ error: ErrorResponse, turnId: ChatTurn.ID) -> TurnEscalation? {
+        switch error.knownCode {
+        case .studentProfileRequired:
             // The profile was deleted server-side mid-session: the root state
             // machine replaces this screen with onboarding. Drop the optimistic
             // turn and publish nothing.
             onProfileRequired()
             turns.removeAll { $0.id == turnId }
-        case "TIMEOUT":
+        case .coachingBudgetExhausted:
+            // The deliberate inverse of the arm above: the turn is **kept**. It
+            // never reached the model, and the student's words are theirs — so
+            // they stay in the transcript, marked blocked, ready to send again
+            // the moment the block clears.
+            //
+            // Logged with the identifiers that make it reconcilable against the
+            // server's gate: this one refusal disables every composer in the
+            // stack, and "blocked while subscribed" is otherwise a report with
+            // nothing to look up.
+            logger.error(
+                """
+                Coaching budget gate refused a turn                 [conversation=\(self.conversation?.id.uuidString ?? "new", privacy: .public)]                 [turn=\(turnId.uuidString, privacy: .public)]                 [code=\(error.code, privacy: .public)]                 [message=\(error.message, privacy: .public)]
+                """
+            )
+            setFailure(.blocked, turnId: turnId)
+            return .budgetExhausted
+        case .timeout:
             setFailure(.infrastructure(.timeout), turnId: turnId)
-        case "NETWORK_ERROR":
+        case .networkError:
             setFailure(.infrastructure(.noConnectivity), turnId: turnId)
-        case "SERVER_ERROR":
+        case .serverError:
             setFailure(.infrastructure(.serverError), turnId: turnId)
-        default:
+        case .unauthorized, .emailNotVerified, .accountEmailNotVerified,
+             .accountDisabled, .serviceUnavailable, .studentAlreadyExists,
+             .subscriptionNotFound, .subscriptionOwnedByOtherAccount,
+             .validationFailed, .payloadTooLarge, .decodeError, nil:
             setFailure(.server(error), turnId: turnId)
         }
+        return nil
     }
 
     private func setFailure(_ failure: TurnFailure, turnId: ChatTurn.ID) {

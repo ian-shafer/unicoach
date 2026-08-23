@@ -63,6 +63,15 @@ enum ServerErrorCode: String {
     case subscriptionOwnedByOtherAccount = "subscription_owned_by_other_account"
     case validationFailed = "validation_failed"
     case payloadTooLarge = "payload_too_large"
+    /// A 409 from a turn endpoint: the account has no student profile, so the
+    /// root state machine routes back to onboarding. Named here because
+    /// `ConversationViewModel.handle` branches on `knownCode`, and a code it
+    /// must act on cannot be one this enum has never heard of.
+    case studentProfileRequired = "student_profile_required"
+    /// The 402 both streaming turn endpoints answer once the coaching budget is
+    /// spent (RFC 109). Action-scoped: reads stay open, so this is never an auth
+    /// state — see RFC 121.
+    case coachingBudgetExhausted = "coaching_budget_exhausted"
     case timeout = "TIMEOUT"
     case networkError = "NETWORK_ERROR"
     case serverError = "SERVER_ERROR"

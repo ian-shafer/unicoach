@@ -5,16 +5,32 @@ import XCTest
 final class ConversationViewModelTests: XCTestCase {
     /// Counts `onProfileRequired` invocations for the active view model.
     private var profileRequiredCount = 0
+    /// Counts `onBudgetExhausted` invocations — the 402's report upward.
+    private var budgetExhaustedCount = 0
 
     override func setUp() {
         super.setUp()
         profileRequiredCount = 0
+        budgetExhaustedCount = 0
     }
 
     private func makeViewModel(_ client: ConversationClientProtocol) -> ConversationViewModel {
         ConversationViewModel(
             conversationClient: client,
-            onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 }
+            onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 },
+            onBudgetExhausted: { [weak self] in self?.budgetExhaustedCount += 1 }
+        )
+    }
+
+    /// The 402 both streaming turn endpoints answer once the budget is spent.
+    /// Pre-stream and plain JSON, so it reaches the view model as a terminal
+    /// `ErrorResponse` with no events before it.
+    private func budgetExhausted() -> ErrorResponse {
+        ErrorResponse(
+            code: "coaching_budget_exhausted",
+            message: "Coaching allowance exhausted",
+            fieldErrors: nil,
+            status: 402
         )
     }
 
@@ -270,6 +286,278 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isStreaming)
     }
 
+    // MARK: - coaching_budget_exhausted (RFC 121)
+
+    /// The deliberate inverse of `student_profile_required` above: the turn the
+    /// student wrote is **kept**. It never reached the model, and deleting their
+    /// writing to make room for an error message is the defect this arm exists
+    /// to remove.
+    func testBudgetExhaustedKeepsTheTurnMarksItBlockedAndReportsUpward() async {
+        let mock = MockConversationClient()
+        mock.scripts = [MockConversationClient.Script(events: [], terminalError: budgetExhausted())]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Should I apply early?"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.turns.count, 1, "the optimistic turn is KEPT, unlike the profile-required arm")
+        XCTAssertEqual(vm.turns[0].userMessage.content, "Should I apply early?")
+        XCTAssertEqual(vm.turns[0].failure, .blocked)
+        XCTAssertEqual(budgetExhaustedCount, 1)
+        XCTAssertEqual(profileRequiredCount, 0)
+        XCTAssertNil(vm.validationError)
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertNil(vm.conversation, "a refused first turn establishes nothing")
+    }
+
+    /// Both streaming call sites are gated server-side, and the arm cannot tell
+    /// them apart — an established conversation is refused identically.
+    func testBudgetExhaustedOnTheMessageEndpointBehavesIdentically() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.scripts = [
+            startScript(conversation: convo),
+            MockConversationClient.Script(events: [], terminalError: budgetExhausted()),
+        ]
+        let vm = makeViewModel(mock)
+
+        vm.messageText = "Hi"
+        await vm.send()
+        vm.messageText = "More"
+        await vm.send()
+
+        XCTAssertEqual(vm.turns.count, 2)
+        XCTAssertEqual(vm.turns[1].failure, .blocked)
+        XCTAssertEqual(vm.turns[1].userMessage.content, "More")
+        XCTAssertEqual(budgetExhaustedCount, 1)
+        XCTAssertEqual(mock.postMessageRequests.count, 1)
+    }
+
+    /// The whole point of keeping the turn: once the block clears, retrying it
+    /// re-sends the words the student already wrote, unchanged.
+    func testAnUnblockedTurnRetriesWithTheOriginalText() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.scripts = [
+            startScript(conversation: convo),
+            MockConversationClient.Script(events: [], terminalError: budgetExhausted()),
+        ]
+        let vm = makeViewModel(mock)
+
+        vm.messageText = "Hi"
+        await vm.send()
+        vm.messageText = "Which essay should I write first?"
+        await vm.send()
+        XCTAssertEqual(vm.turns[1].failure, .blocked)
+
+        // Unblocked: the same turn is re-dispatched.
+        mock.scripts = [followUpScript()]
+        await vm.retry(vm.turns[1].id)
+
+        XCTAssertNil(vm.turns[1].failure)
+        XCTAssertEqual(vm.turns[1].coachMessage?.content, "Sure")
+        XCTAssertEqual(mock.postMessageRequests.count, 2)
+        XCTAssertEqual(
+            mock.postMessageRequests[1].request.message,
+            "Which essay should I write first?",
+            "the words survived the refusal"
+        )
+        XCTAssertEqual(budgetExhaustedCount, 1, "a successful retry reports nothing")
+    }
+
+    // MARK: - The affordance rule (RFC 121)
+
+    /// A shared `SubscriptionViewModel` in whatever meter state a test needs —
+    /// the same object `AuthenticatedRootView` owns and every `ConversationView`
+    /// observes, so `budget` here is the real derived value and not a stand-in
+    /// value.
+    private func makeSubscriptionViewModel(usage: CoachingUsage?) async -> SubscriptionViewModel {
+        let usageClient = MockCoachingUsageClient()
+        if let usage { usageClient.results = [.success(usage)] }
+        let vm = SubscriptionViewModel(
+            usageClient: usageClient,
+            store: MockSubscriptionStore(),
+            recorder: MockTransactionRecorder()
+        )
+        if usage != nil { await vm.refreshUsage() }
+        return vm
+    }
+
+    /// **The case the meter alone gets wrong.** `budgetExhausted()`'s handler
+    /// refreshes usage from the server, and that refresh can fail — leaving
+    /// `usage` nil while the turn is unambiguously refused. The affordance must
+    /// still be See options: a Retry here could only reproduce the 402, beside
+    /// paywall copy saying so.
+    func testBlockedTurnOffersSeeOptionsEvenWhenTheMeterIsMissing() async {
+        let mock = MockConversationClient()
+        mock.scripts = [MockConversationClient.Script(events: [], terminalError: budgetExhausted())]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Should I apply early?"
+
+        await vm.send()
+
+        // The post-402 refresh failed: no reading at all.
+        let subscription = await makeSubscriptionViewModel(usage: nil)
+        XCTAssertEqual(subscription.usageReading, .loading, "no read has landed")
+        XCTAssertEqual(subscription.budget, .unknown, "no reading is neither open nor spent")
+
+        XCTAssertEqual(vm.turns[0].failure, .blocked)
+        XCTAssertEqual(
+            TurnAction(failure: vm.turns[0].failure!, budget: subscription.budget),
+            .seeOptions,
+            "with no reading, the 402 is the authority: a refused turn offers See options"
+        )
+        XCTAssertEqual(
+            TurnAction(failure: .infrastructure(.noConnectivity), budget: subscription.budget),
+            .retry,
+            "and an unknown meter never takes an ordinary failure's Retry away"
+        )
+    }
+
+    /// The other half of the condition: the meter says the budget is spent, so
+    /// even a turn that failed for some other reason is spared a Retry that
+    /// would only 402.
+    func testBlockedTurnOffersSeeOptionsWhenTheMeterSaysExhausted() async {
+        let mock = MockConversationClient()
+        mock.scripts = [MockConversationClient.Script(events: [], terminalError: budgetExhausted())]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Hi"
+        await vm.send()
+
+        let subscription = await makeSubscriptionViewModel(
+            usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil)
+        )
+        XCTAssertEqual(subscription.budget, .spent)
+
+        XCTAssertEqual(TurnAction(failure: vm.turns[0].failure!, budget: subscription.budget), .seeOptions)
+        XCTAssertEqual(
+            TurnAction(failure: .infrastructure(.noConnectivity), budget: subscription.budget),
+            .seeOptions,
+            "while the budget is known-spent, no failure offers a Retry that would 402"
+        )
+    }
+
+    /// **The assertion the whole "keep the student's words" argument rests on.**
+    /// The turn was refused by the 402 and still carries `.blocked` — that mark
+    /// is permanent state on the turn, nothing ever clears it — so the rule must
+    /// read the *meter* to know the block has lifted. Asserting this on an
+    /// `.infrastructure` failure instead would be trivially true and prove
+    /// nothing; the subject here is the refused turn itself, and retrying it
+    /// re-sends the words the student already wrote.
+    func testOnceUnblockedTheSameTurnOffersRetryAndResendsTheOriginalText() async {
+        let mock = MockConversationClient()
+        let convo = makeConversation()
+        mock.scripts = [
+            startScript(conversation: convo),
+            MockConversationClient.Script(events: [], terminalError: budgetExhausted()),
+        ]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Hi"
+        await vm.send()
+        vm.messageText = "Which essay should I write first?"
+        await vm.send()
+
+        let blocked = await makeSubscriptionViewModel(
+            usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil)
+        )
+        XCTAssertEqual(blocked.budget, .spent)
+        XCTAssertEqual(TurnAction(failure: vm.turns[1].failure!, budget: blocked.budget), .seeOptions)
+
+        // A purchase (or a new period) lands: the server says the budget is open.
+        let unblocked = await makeSubscriptionViewModel(
+            usage: CoachingUsage(usedPercent: 10, exhausted: false, resetsAt: nil)
+        )
+        XCTAssertEqual(unblocked.budget, .open)
+        XCTAssertEqual(vm.turns[1].failure, .blocked, "the turn is still marked refused — that never changes")
+        XCTAssertEqual(
+            TurnAction(failure: vm.turns[1].failure!, budget: unblocked.budget),
+            .retry,
+            "the refused turn is retryable again: an open meter lifts the block"
+        )
+        XCTAssertEqual(
+            TurnAction(failure: .infrastructure(.noConnectivity), budget: unblocked.budget),
+            .retry,
+            "an ordinary failure is retryable again"
+        )
+
+        mock.scripts = [followUpScript()]
+        await vm.retry(vm.turns[1].id)
+
+        XCTAssertNil(vm.turns[1].failure)
+        XCTAssertEqual(
+            mock.postMessageRequests[1].request.message,
+            "Which essay should I write first?",
+            "retrying sends the words the student already wrote"
+        )
+    }
+
+    /// The same lift, in the *copy*: a refused turn must not go on saying "You've
+    /// used this period's coaching" under the student's own message once the
+    /// meter reports the budget open — that sentence would contradict the Retry
+    /// button that has just come back beside it.
+    func testARefusedTurnStopsRenderingPaywallCopyOnceTheMeterReportsOpen() async {
+        let spent = await makeSubscriptionViewModel(
+            usage: CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil)
+        )
+        XCTAssertEqual(
+            PaywallCopy.refusedTurnDetail(basis: spent.coachingBasis),
+            "You've used your free coaching.",
+            "while the budget is spent, the refused turn carries the block's own words"
+        )
+
+        let open = await makeSubscriptionViewModel(
+            usage: CoachingUsage(usedPercent: 10, exhausted: false, resetsAt: nil)
+        )
+        let detail = PaywallCopy.refusedTurnDetail(basis: open.coachingBasis)
+        XCTAssertNotEqual(detail, "You've used your free coaching.")
+        XCTAssertEqual(detail, "This message wasn't sent. Send it again when you're ready.")
+
+        let unknown = await makeSubscriptionViewModel(usage: nil)
+        XCTAssertEqual(
+            PaywallCopy.refusedTurnDetail(basis: unknown.coachingBasis),
+            "You've used your coaching allowance.",
+            "with no reading the 402 still stands, in the neutral sentence"
+        )
+    }
+
+    /// The escalation runs **after** the stream has torn down: `isStreaming` is
+    /// already false while `onBudgetExhausted` does its network round trip, so a
+    /// slow (or hanging) usage refresh cannot hold the composer disabled and the
+    /// send button spinning on a turn that has already failed.
+    func testTheBudgetEscalationRunsAfterStreamingHasCleared() async {
+        let mock = MockConversationClient()
+        mock.scripts = [MockConversationClient.Script(events: [], terminalError: budgetExhausted())]
+        let probe = StreamingProbe()
+        let vm = ConversationViewModel(
+            conversationClient: mock,
+            onProfileRequired: {},
+            onBudgetExhausted: { probe.observed = probe.viewModel?.isStreaming }
+        )
+        probe.viewModel = vm
+        vm.messageText = "Should I apply early?"
+
+        await vm.send()
+
+        XCTAssertEqual(probe.observed, false, "the escalation must not hold isStreaming across its round trip")
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertEqual(vm.turns[0].failure, .blocked, "and the failure was mapped before the escalation ran")
+    }
+
+    /// Regression: every other server code keeps its own message and its Retry.
+    func testANon402ServerErrorStillTakesTheKeepAndRetryPath() async {
+        let mock = MockConversationClient()
+        let error = ErrorResponse(code: "coach_unavailable", message: "Coach unavailable", fieldErrors: nil, status: 503)
+        mock.scripts = [MockConversationClient.Script(events: [], terminalError: error)]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Hi"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.turns.count, 1)
+        XCTAssertEqual(vm.turns[0].failure, .server(error))
+        XCTAssertEqual(budgetExhaustedCount, 0)
+    }
+
     // MARK: - Transport error mapping
 
     func testTimeoutMapsToInfrastructureTimeoutOnTurn() async {
@@ -413,7 +701,8 @@ final class ConversationViewModelTests: XCTestCase {
         ConversationViewModel(
             conversation: conversation,
             conversationClient: client,
-            onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 }
+            onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 },
+            onBudgetExhausted: { [weak self] in self?.budgetExhaustedCount += 1 }
         )
     }
 
@@ -584,4 +873,12 @@ final class ConversationViewModelTests: XCTestCase {
         await seededVM.loadHistory()
         XCTAssertTrue(seededVM.isReady)
     }
+}
+
+/// Lets an escalation closure look back at the view model that invoked it —
+/// the only way to observe `isStreaming` *during* `onBudgetExhausted`.
+@MainActor
+private final class StreamingProbe {
+    weak var viewModel: ConversationViewModel?
+    var observed: Bool?
 }

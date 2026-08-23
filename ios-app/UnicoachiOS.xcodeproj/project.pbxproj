@@ -87,6 +87,11 @@
 		FFFF00010000000000000B05 /* TransactionRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F05 /* TransactionRecorder.swift */; };
 		FFFF00010000000000000B06 /* SubscriptionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F06 /* SubscriptionViewModel.swift */; };
 		FFFF00010000000000000B07 /* SubscriptionSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F07 /* SubscriptionSection.swift */; };
+		FFFF00030000000000000B01 /* SubscriptionOffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00030000000000000F01 /* SubscriptionOffer.swift */; };
+		FFFF00030000000000000B22 /* PaywallGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00030000000000000F22 /* PaywallGate.swift */; };
+		FFFF00030000000000000B21 /* CoachingUsageMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00030000000000000F21 /* CoachingUsageMeter.swift */; };
+		FFFF00030000000000000B02 /* PaywallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00030000000000000F02 /* PaywallView.swift */; };
+		FFFF00030000000000000B03 /* PaywallViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00030000000000000F03 /* PaywallViewModelTests.swift */; };
 		FFFF00010000000000000B08 /* UsageMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F08 /* UsageMeter.swift */; };
 		FFFF00010000000000000B09 /* SubscriptionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F09 /* SubscriptionClientTests.swift */; };
 		FFFF00010000000000000B0A /* CoachingUsageClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F0A /* CoachingUsageClientTests.swift */; };
@@ -192,6 +197,11 @@
 		FFFF00010000000000000F05 /* TransactionRecorder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TransactionRecorder.swift; sourceTree = "<group>"; };
 		FFFF00010000000000000F06 /* SubscriptionViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionViewModel.swift; sourceTree = "<group>"; };
 		FFFF00010000000000000F07 /* SubscriptionSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionSection.swift; sourceTree = "<group>"; };
+		FFFF00030000000000000F01 /* SubscriptionOffer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionOffer.swift; sourceTree = "<group>"; };
+		FFFF00030000000000000F22 /* PaywallGate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PaywallGate.swift; sourceTree = "<group>"; };
+		FFFF00030000000000000F21 /* CoachingUsageMeter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoachingUsageMeter.swift; sourceTree = "<group>"; };
+		FFFF00030000000000000F02 /* PaywallView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PaywallView.swift; sourceTree = "<group>"; };
+		FFFF00030000000000000F03 /* PaywallViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PaywallViewModelTests.swift; sourceTree = "<group>"; };
 		FFFF00010000000000000F08 /* UsageMeter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UsageMeter.swift; sourceTree = "<group>"; };
 		FFFF00010000000000000F09 /* SubscriptionClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionClientTests.swift; sourceTree = "<group>"; };
 		FFFF00010000000000000F0A /* CoachingUsageClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoachingUsageClientTests.swift; sourceTree = "<group>"; };
@@ -293,6 +303,10 @@
 				FFFF00010000000000000F05 /* TransactionRecorder.swift */,
 				FFFF00010000000000000F06 /* SubscriptionViewModel.swift */,
 				FFFF00010000000000000F07 /* SubscriptionSection.swift */,
+				FFFF00030000000000000F01 /* SubscriptionOffer.swift */,
+				FFFF00030000000000000F22 /* PaywallGate.swift */,
+				FFFF00030000000000000F21 /* CoachingUsageMeter.swift */,
+				FFFF00030000000000000F02 /* PaywallView.swift */,
 			);
 			path = UnicoachiOS;
 			sourceTree = "<group>";
@@ -349,6 +363,7 @@
 				FFFF00010000000000000F0C /* SubscriptionViewModelTests.swift */,
 				FFFF00010000000000000F0D /* SubscriptionStoreMocks.swift */,
 				FFFF00020000000000000F02 /* StoreKitConfigurationTests.swift */,
+				FFFF00030000000000000F03 /* PaywallViewModelTests.swift */,
 			);
 			path = UnicoachiOSTests;
 			sourceTree = "<group>";
@@ -542,6 +557,10 @@
 				FFFF00010000000000000B05 /* TransactionRecorder.swift in Sources */,
 				FFFF00010000000000000B06 /* SubscriptionViewModel.swift in Sources */,
 				FFFF00010000000000000B07 /* SubscriptionSection.swift in Sources */,
+				FFFF00030000000000000B01 /* SubscriptionOffer.swift in Sources */,
+				FFFF00030000000000000B22 /* PaywallGate.swift in Sources */,
+				FFFF00030000000000000B21 /* CoachingUsageMeter.swift in Sources */,
+				FFFF00030000000000000B02 /* PaywallView.swift in Sources */,
 				FFFF00010000000000000B08 /* UsageMeter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -582,6 +601,7 @@
 				FFFF00010000000000000B0C /* SubscriptionViewModelTests.swift in Sources */,
 				FFFF00010000000000000B0D /* SubscriptionStoreMocks.swift in Sources */,
 				FFFF00020000000000000B02 /* StoreKitConfigurationTests.swift in Sources */,
+				FFFF00030000000000000B03 /* PaywallViewModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -42,8 +42,15 @@ struct AuthenticatedRootView: View {
         case settings
     }
 
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var path: [Destination] = []
     @State private var isMenuOpen = false
+    /// The paywall (RFC 121). Presented from **here**, not from the conversation
+    /// screen, so one sheet serves the whole stack: a 402 on a pushed
+    /// conversation and a "See options" tap on the root open the same one, over
+    /// whatever is on screen.
+    @State private var isPaywallPresented = false
 
     /// Owned here rather than by `SlideOverMenu` so the drawer's list survives
     /// open/close and the drawer can slide in already populated — see `menu`.
@@ -100,6 +107,42 @@ struct AuthenticatedRootView: View {
         // handed to the surface that shows it. SwiftUI cancels the task when
         // this view goes away, i.e. on logout.
         .task { await recordTransactionUpdates() }
+        // The initial meter read, moved up from `SubscriptionSection` (RFC
+        // 121): the composer must be able to block for a student who never
+        // opens Settings, and the paywall must have a number to show the moment
+        // it appears rather than a beat later.
+        //
+        // **Usage only** — not `load()`, which also fetches the StoreKit product
+        // and re-posts the newest entitlement to `/verify`. RFC 119 scoped that
+        // to the subscription surface deliberately, and taking the whole of it
+        // here would put a `/verify` POST on every launch. Settings still calls
+        // `load()`, as does the paywall: they are the screens with a price to
+        // show.
+        .task { await subscriptionViewModel.refreshUsage() }
+        // The proactive block's only expiry, mirroring RFC 72's `scenePhase`
+        // re-check. A period rolls over (or a subscription is bought elsewhere)
+        // while the app is resident, and nothing else would ever ask: the
+        // composer would stay disabled past the very reset date the paywall
+        // named. One GET on returning to the foreground, which also keeps the
+        // meter on the two screens that render it honest.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await subscriptionViewModel.refreshUsage() }
+        }
+        .sheet(isPresented: $isPaywallPresented) {
+            PaywallView(viewModel: subscriptionViewModel)
+        }
+    }
+
+    /// The gate, built here because this is the only place that can build it
+    /// correctly: the rail below is the one the sheet renders, and the sheet's
+    /// flag is this view's. Everything under the root takes this one value
+    /// rather than three arguments that are only correct together (RFC 121).
+    private var paywallGate: PaywallGate {
+        PaywallGate(
+            subscriptions: subscriptionViewModel,
+            isPresented: $isPaywallPresented
+        )
     }
 
     /// The listener pump itself, named rather than inlined in `body`: a
@@ -161,6 +204,7 @@ struct AuthenticatedRootView: View {
     private var chat: some View {
         ConversationView(
             conversationClient: conversationClient,
+            paywallGate: paywallGate,
             onProfileRequired: onProfileRequired
         )
     }
@@ -211,10 +255,15 @@ struct AuthenticatedRootView: View {
             ConversationView(
                 conversation: conversation,
                 conversationClient: conversationClient,
+                paywallGate: paywallGate,
                 onProfileRequired: onProfileRequired
             )
         case .conversations:
-            ConversationListView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
+            ConversationListView(
+                conversationClient: conversationClient,
+                paywallGate: paywallGate,
+                onProfileRequired: onProfileRequired
+            )
         case .settings:
             SettingsView(
                 user: user,

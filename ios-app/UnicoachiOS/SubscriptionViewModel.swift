@@ -10,6 +10,69 @@ import os
 /// transactions only through it. Nor does it derive entitlement: it renders
 /// `CoachingUsage` from the server and nothing else decides what a student may
 /// do.
+/// The lifecycle of a value this rail fetches: a read in flight, a read that
+/// produced something, and a read that finished with nothing. **One value, not
+/// an optional beside a `Bool`** — three states in two fields leave the
+/// in-flight one unnamed, so every view has to infer it from a flag still
+/// sitting at its default, and a retry after a failed read then renders the
+/// failure's words for the whole of the new read.
+///
+/// It is generic because the meter and the price want the same three answers
+/// and the same merge rule (`refreshed(with:)`), and a second transcription of
+/// that rule is a second place for it to drift.
+enum Reading<Value: Equatable>: Equatable {
+    /// No read has finished yet: the spinner, never an empty gap.
+    case loading
+    /// The value a read produced.
+    case ready(Value)
+    /// A read finished and produced nothing, with nothing already on screen.
+    /// Said out loud by the surfaces that render it, because a header with
+    /// nothing under it reads as a rendering bug rather than as a failed fetch.
+    case unavailable
+
+    /// The one three-case rule: a fresh value wins; a failed refresh keeps what
+    /// is already on screen (it did not change under us, and dropping it would
+    /// take a meter or a Subscribe button off a screen the student is looking
+    /// at); and a read that produced nothing at all says so.
+    func refreshed(with fresh: Value?) -> Reading {
+        switch (fresh, self) {
+        case (.some(let fresh), _):
+            return .ready(fresh)
+        case (nil, .ready):
+            return self
+        case (nil, .loading), (nil, .unavailable):
+            return .unavailable
+        }
+    }
+
+    /// The state a retry starts from: a previous failure's words must not sit
+    /// on screen through the read that is meant to replace them. A reading
+    /// already on screen stays put — that is `refreshed(with:)`'s rule.
+    func retrying() -> Reading {
+        switch self {
+        case .unavailable:
+            return .loading
+        case .loading, .ready:
+            return self
+        }
+    }
+}
+
+/// The coaching meter's read.
+typealias UsageReading = Reading<CoachingUsage>
+/// The StoreKit price's read.
+typealias ProductReading = Reading<StoreProduct>
+
+/// What the shared meter says about the coaching budget. `unknown` is a reading
+/// that has not arrived or a refresh that failed: deliberately neither `open`
+/// (the 402 stays the authority for a turn already refused) nor `spent` (a
+/// failed read must never disable a composer). RFC 121.
+enum CoachingBudget: Equatable {
+    case unknown
+    case open
+    case spent
+}
+
 @MainActor
 final class SubscriptionViewModel: ObservableObject {
     enum Phase: Equatable {
@@ -29,16 +92,29 @@ final class SubscriptionViewModel: ObservableObject {
         case failure(String)
     }
 
-    @Published private(set) var usage: CoachingUsage?
+    /// The offer block's own state. `bound` is the student who already has an
+    /// active subscription — the one case where showing nothing is the honest
+    /// answer, and the only one.
+    enum Offer: Equatable {
+        case bound
+        case loading
+        case subscribe(StoreProduct)
+        case unavailable
+    }
+
+    /// The meter, as a lifecycle rather than as a reading beside a flag: the
+    /// three states `CoachingUsageMeter` renders — in flight, a reading, and a
+    /// finished-but-empty read — are one published value, so no surface has to
+    /// infer "still loading" from the absence of the other two (RFC 121).
+    @Published private(set) var usageReading: UsageReading = .loading
     @Published private(set) var subscription: PublicSubscription?
-    @Published private(set) var product: StoreProduct?
+    /// The price, under the same rule as the meter. A load that produced no
+    /// price at all is `unavailable` and is *said*: on the paywall a silently
+    /// missing Subscribe button leaves a blocked student with no purchase path
+    /// and no reason for it.
+    @Published private(set) var productReading: ProductReading = .loading
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var notice: Notice?
-    /// A finished load that produced no meter at all — the state
-    /// `SubscriptionSection` renders as "unavailable" rather than as nothing.
-    /// A *failed refresh* with a reading already on screen is not this: the
-    /// reading stays, and silence is right.
-    @Published private(set) var usageUnavailable = false
 
     private let usageClient: CoachingUsageClientProtocol
     private let store: SubscriptionStoreProtocol
@@ -66,13 +142,69 @@ final class SubscriptionViewModel: ObservableObject {
         subscription?.knownStatus != .active
     }
 
+    /// The shared blocked truth (RFC 121) — **three answers, not two**. The
+    /// server's own `exhausted` flag decides between `open` and `spent`; a
+    /// reading that has not arrived, or a refresh that failed, is `unknown` and
+    /// is deliberately neither. A `Bool` here would conflate "no reading yet"
+    /// with "budget open", and that conflation forces a refused turn to suppress
+    /// Retry forever — the student pays and still cannot send the words the 402
+    /// arm made a point of keeping.
+    ///
+    /// Every `ConversationView` in the stack observes this one value, which is
+    /// why it lives here and not on the per-screen `ConversationViewModel`.
+    var budget: CoachingBudget {
+        switch usageReading {
+        case .loading, .unavailable:
+            // No answer is not an answer of "open": a read that has not landed
+            // (or failed) leaves the 402 as the authority and never blocks on
+            // its own.
+            return .unknown
+        case .ready(let usage):
+            return usage.exhausted ? .spent : .open
+        }
+    }
+
+    /// Why coaching is paused, or `nil` when it is **not** paused — an open
+    /// budget has no basis to name, and the surfaces that render a reason are
+    /// the surfaces that have already established there is one (RFC 121).
+    /// Composed here, from the one reading, rather than re-decoded from a
+    /// `Date?`'s nullability at each call site.
+    var coachingBasis: CoachingBasis? {
+        switch usageReading {
+        case .loading, .unavailable:
+            return .unknown
+        case .ready(let usage):
+            return CoachingBasis(budget: budget, resetsAt: usage.resetsAt)
+        }
+    }
+
+    /// What the offer block can put on screen — **four answers, not a button
+    /// and a silence**. A price that never arrived is its own state, said out
+    /// loud with a retry, because on the paywall the Subscribe button is the
+    /// only exit from a blocked composer and its absence would be both the
+    /// failure and the explanation (RFC 121).
+    ///
+    /// It lives here rather than as a compound `if` in `SubscriptionOffer` so
+    /// the rule is asserted by this suite, which has no view-test harness.
+    var offer: Offer {
+        guard offersSubscribe else { return .bound }
+        switch productReading {
+        case .ready(let product):
+            return .subscribe(product)
+        case .loading:
+            return .loading
+        case .unavailable:
+            return .unavailable
+        }
+    }
+
     /// The status line, or `nil` when nothing is bound. The price shown is
     /// always StoreKit's localized `displayPrice`; the server's `priceUsd` is a
     /// budget input, not display copy. `currentPeriodEnd` is displayed, never
     /// compared.
     var statusLine: String? {
         guard let subscription else { return nil }
-        let date = subscription.currentPeriodEnd.formatted(date: .abbreviated, time: .omitted)
+        let date = subscription.currentPeriodEnd.dsCalendarDate
         switch subscription.knownStatus {
         case .active:
             return String(localized: "Monthly · renews \(date)")
@@ -95,35 +227,37 @@ final class SubscriptionViewModel: ObservableObject {
     /// subscription by re-posting the newest entitlement's JWS — `/verify` is
     /// idempotent and is the only read of subscription state the server offers.
     ///
-    /// A StoreKit or product-fetch failure degrades to "the meter without a
-    /// Subscribe button" rather than an empty screen: usage is the part that
-    /// always works. A record failure here is likewise silent — this is a
-    /// background refresh of a display value, not an action the student took,
-    /// and in dev `/verify` answers 503 on every open.
+    /// Best-effort over the two fetches, and it **reports both**: usage is the
+    /// part that always works, so a StoreKit failure costs the price and not the
+    /// screen — but a load that produced no price at all becomes an `offer` that
+    /// says so and offers a retry, rather than a Subscribe button that quietly
+    /// is not there. On the paywall that button is the blocked student's only
+    /// exit, and a silent absence would be both the failure and the explanation.
+    ///
+    /// A record failure here is silent — this is a background refresh of a
+    /// display value, not an action the student took, and in dev `/verify`
+    /// answers 503 on every open.
     func load() async {
         phase = .loading
         notice = nil
 
-        async let fetchedUsage = fetchUsage()
+        // The price's "a retry is in flight" reset is the caller's here because
+        // `refreshUsage()` already does its own; hoisting it keeps both fetches
+        // showing a spinner for the same window.
+        productReading = productReading.retrying()
+
+        // `refreshUsage()` publishes the meter itself, so its `async let` carries
+        // no value — it is bound and awaited purely to run concurrently with the
+        // price fetch and to be joined before `phase` goes back to `.idle`.
+        async let usageRead: Void = refreshUsage()
         async let fetchedProduct = fetchProduct()
-        let (usage, product) = await (fetchedUsage, fetchedProduct)
-        // Keep the product already fetched when this refresh fails — the same
-        // rule the meter gets below: the price does not change under us, and
-        // dropping it would take the Subscribe button off a screen the student
-        // is looking at.
-        self.product = product ?? self.product
-        switch (usage, self.usage) {
-        case (.some(let fresh), _):
-            self.usage = fresh
-            usageUnavailable = false
-        case (nil, .some):
-            // Keep the reading already on screen: a failed refresh is not news.
-            break
-        case (nil, nil):
-            // Nothing to draw. Said out loud, because a section header with
-            // nothing under it is indistinguishable from a rendering bug.
-            usageUnavailable = true
-        }
+        let (_, product) = await (usageRead, fetchedProduct)
+        // The **same** three-case rule the meter gets, applied by the same
+        // method rather than approximated: a fresh price wins, a failed refresh
+        // keeps the price already on screen, and a load that produced no price
+        // at all is `unavailable` — which the offer says out loud instead of
+        // dropping the Subscribe button without a word.
+        productReading = productReading.refreshed(with: product)
 
         if let newest = await newestEntitlement() {
             if case .recorded(let subscription) = await recorder.record(newest) {
@@ -270,15 +404,37 @@ final class SubscriptionViewModel: ObservableObject {
             // there is nothing for the student to do, so nothing is said.
             logger.error("Unreadable /verify body for a recorded purchase: [\(error.message, privacy: .public)]")
             return nil
-        case .studentAlreadyExists, .payloadTooLarge, nil:
+        case .coachingBudgetExhausted:
+            // A 402 has no business on this endpoint, but if one reaches the
+            // subscription surface it must read as what it is rather than as a
+            // failed purchase — in the paywall's own words, so the sentence is
+            // authored once and names the reset date when a reading is present.
+            // A meter that says the budget is *open* names no basis, so the
+            // server's refusal is reported in the neutral sentence rather than
+            // in a period's the client cannot stand behind.
+            return PaywallCopy(basis: coachingBasis ?? .unknown).detail
+        case .studentAlreadyExists, .studentProfileRequired, .payloadTooLarge, nil:
             return String(localized: "We couldn't complete your purchase. Please try again.")
         }
     }
 
-    private func refreshUsage() async {
-        if let usage = await fetchUsage() {
-            self.usage = usage
-        }
+    /// Re-reads the meter, and **nothing else** — no product fetch, no
+    /// `/verify` POST. This is the read the gate wants: `AuthenticatedRootView`
+    /// takes it at launch and on every return to the foreground, and the 402 arm
+    /// forces it so the blocked state and the number on the paywall come from
+    /// one server answer rather than a boolean the client set. Hoisting the
+    /// whole of `load()` for it would have put a `/verify` POST on every launch,
+    /// which RFC 119 deliberately scoped to the subscription surface.
+    ///
+    /// `load()` calls it too, and both go through `Reading.refreshed(with:)` —
+    /// fresh reading wins, a failed refresh keeps what is on screen, and a read
+    /// that produced nothing at all says so — so that rule is written once and
+    /// the meter and the price cannot drift apart on it.
+    func refreshUsage() async {
+        // A retry with nothing on screen is *in flight*, not unavailable: the
+        // previous failure's words must not sit there through the new read.
+        usageReading = usageReading.retrying()
+        usageReading = usageReading.refreshed(with: await fetchUsage())
     }
 
     private func fetchUsage() async -> CoachingUsage? {

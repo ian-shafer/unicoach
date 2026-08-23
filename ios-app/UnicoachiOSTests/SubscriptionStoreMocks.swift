@@ -20,6 +20,7 @@ final class MockSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishi
         var syncCallCount = 0
         var purchasedProductIDs: [String] = []
         var queued: [StoreTransaction] = []
+        var productCallCount = 0
     }
 
     private let recorded = Locked(Recorded())
@@ -49,10 +50,16 @@ final class MockSubscriptionStore: SubscriptionStoreProtocol, TransactionFinishi
     /// assertion surface.
     var finished: [StoreTransaction] { recorded.withLock { $0.finished } }
     var syncCallCount: Int { recorded.withLock { $0.syncCallCount } }
+    /// How many product fetches were asked for — the assertion surface for "the
+    /// gate's read is usage only" (RFC 121).
+    var productCallCount: Int { recorded.withLock { $0.productCallCount } }
     var purchasedProductIDs: [String] { recorded.withLock { $0.purchasedProductIDs } }
 
     func product(id: String) async throws -> StoreProduct? {
-        try productResult.get()
+        try recorded.withLock { recorded -> Result<StoreProduct?, Error> in
+            recorded.productCallCount += 1
+            return recorded.productResult
+        }.get()
     }
 
     func purchase(productID: String) async throws -> PurchaseResult {

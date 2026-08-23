@@ -216,16 +216,16 @@ Status axis:
 Slugs are the stable handles; `rfc/NN-*.md` numbers are assigned at design time
 and backfilled here.
 
-| slug                  | description                                                                                                                                                                                                                                                                  | status      | rfc |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
-| `llm-cost-ledger`     | extend the RFC 106 call log with per-call dollar cost (`model → price` table, cost frozen at the write boundary) and a period-windowed per-student cost read; completes `token-ledger`                                                                                       | implemented | 108 |
-| `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `coaching_budget_exhausted` (402), background passes → named skip                                                                               | implemented | 109 |
-| `subscriptions-apple` | split at design time (RFC 110) into the two rows below: a verify-path slice and a Notifications-V2 webhook slice                                                                                                                                                             | split       | —   |
-| — verify path         | `subscriptions` table (versioned) + `SubscriptionsDao`; `POST /api/v1/subscriptions/verify` via the App Store Server API (`:appstore` module); `SubscriptionPlans` (`productId → y × price`); subscribed `Entitlement` branch (basis/resetsAt); `resetsAt` on coaching-usage | implemented | 110 |
-| — webhook             | App Store Server Notifications V2 webhook (Apple-signed JWS auth, x5c verification, queue-processed) updating the same `subscriptions` row; retires the re-post-to-`/verify` renewal-refresh gap                                                                             | implemented | 112 |
-| `paywall-ios`         | split at design time (RFC 119) into the two rows below: the purchase rail + usage surface, then the gate                                                                                                                                                                     | split       | —   |
-| — subscription rail   | iOS StoreKit 2 product fetch, purchase, transaction listener and Restore Purchases; `SubscriptionClient` (`/verify`) and `CoachingUsageClient`; `TransactionRecorder` owning the finish policy; a Settings "Subscription" section with the abstract `UsageMeter`             | implemented | 119 |
-| — paywall gate        | intercepting the `coaching_budget_exhausted` 402 from the four turn endpoints and presenting the block/paywall screen (a modal on the chat action, or a `UserAuthState` gate state modeled on RFC 72)                                                                        | planned     | —   |
+| slug                  | description                                                                                                                                                                                                                                                                                                                                    | status      | rfc |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
+| `llm-cost-ledger`     | extend the RFC 106 call log with per-call dollar cost (`model → price` table, cost frozen at the write boundary) and a period-windowed per-student cost read; completes `token-ledger`                                                                                                                                                         | implemented | 108 |
+| `budget-gate`         | `BudgetService.entitlement(studentId)` at every LLM call boundary; free-allowance (`$N` lifetime) logic; hard block — chat → `coaching_budget_exhausted` (402), background passes → named skip                                                                                                                                                 | implemented | 109 |
+| `subscriptions-apple` | split at design time (RFC 110) into the two rows below: a verify-path slice and a Notifications-V2 webhook slice                                                                                                                                                                                                                               | split       | —   |
+| — verify path         | `subscriptions` table (versioned) + `SubscriptionsDao`; `POST /api/v1/subscriptions/verify` via the App Store Server API (`:appstore` module); `SubscriptionPlans` (`productId → y × price`); subscribed `Entitlement` branch (basis/resetsAt); `resetsAt` on coaching-usage                                                                   | implemented | 110 |
+| — webhook             | App Store Server Notifications V2 webhook (Apple-signed JWS auth, x5c verification, queue-processed) updating the same `subscriptions` row; retires the re-post-to-`/verify` renewal-refresh gap                                                                                                                                               | implemented | 112 |
+| `paywall-ios`         | split at design time (RFC 119) into the two rows below: the purchase rail + usage surface, then the gate                                                                                                                                                                                                                                       | split       | —   |
+| — subscription rail   | iOS StoreKit 2 product fetch, purchase, transaction listener and Restore Purchases; `SubscriptionClient` (`/verify`) and `CoachingUsageClient`; `TransactionRecorder` owning the finish policy; a Settings "Subscription" section with the abstract `UsageMeter`                                                                               | implemented | 119 |
+| — paywall gate        | intercepting the `coaching_budget_exhausted` 402 from the two streaming turn endpoints iOS calls; a `.blocked` turn that keeps the student's words, a blocked composer driven by `CoachingUsage.exhausted`, and a `PaywallView` sheet over the shared `SubscriptionViewModel`. Action-scoped, **not** a `UserAuthState` case — reads stay open | implemented | 121 |
 
 ## Dependency tree
 
@@ -408,9 +408,28 @@ answer, the arms being the table in
 session-long transaction listener at the authenticated root, and the Settings
 "Subscription" section with the abstract `UsageMeter`, Subscribe (StoreKit's
 localized `displayPrice`) and Restore Purchases. No server change was needed.
-**This node is not complete:** the second slice — the
-`coaching_budget_exhausted` 402 gate and the block/paywall screen — is still to
-run, so the feature is not yet finished either.
+
+The second slice, the **paywall gate**, landed as **RFC 121** — note the number:
+RFC 119's report and the prompt below call this slice "RFC 120", but 120 was
+claimed by a concurrent Markdown run while 119 was landing, so the gate is 121.
+It adds `ServerErrorCode.coachingBudgetExhausted`; a `402` arm in
+`ConversationViewModel.handle` (now switching on `knownCode`) that **keeps** the
+refused turn, marks it `.blocked`, and reports upward via `onBudgetExhausted`;
+`AuthenticatedRootView` answering that by refreshing usage on the one shared
+`SubscriptionViewModel` and presenting a `PaywallView` sheet; a composer blocked
+proactively by the server's own `CoachingUsage.exhausted`; the initial usage
+load hoisted from Settings to the authenticated root; and a `SubscriptionOffer`
+view shared by the sheet and the Settings section. The gate is **action-scoped —
+deliberately not a `UserAuthState` case** — because the server keeps reads open
+for an exhausted student, and a full-screen state would also hide Settings and
+unmount the transaction listener. No server change was needed here either.
+
+**With both slices landed, `paywall-ios` is complete — and it was the last node,
+so the feature is complete.** What is deliberately left undone is recorded in
+RFC 121: no runway warning before the hard block, and a subscriber who has spent
+the period gets an honest dead end (one plan is configured, so there is nothing
+to sell them) — which is where RFC 119's deferred `grace`/`billingRetry` surface
+belongs too.
 
 The original kickoff prompt is kept below as the record of what was asked for:
 

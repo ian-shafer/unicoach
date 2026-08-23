@@ -49,6 +49,7 @@ protocol TransactionRecording: Sendable {
 /// | 409 `subscription_owned_by_other_account`        | `rejected` | permanent, first-writer-wins                    |
 /// | 503 `service_unavailable`                        | `deferred` | Apple unreachable / credentials unset           |
 /// | 404 `subscription_not_found`                     | `deferred` | environment mismatch — config, not the purchase |
+/// | 402 `coaching_budget_exhausted`                  | `deferred` | not a `/verify` answer at all — unclassifiable  |
 /// | 401 / 403 / 409 `student_profile_required` / 500 | `deferred` | session or server problem                       |
 /// | transport failure                                | `deferred` | never reached the server                        |
 ///
@@ -128,8 +129,15 @@ actor TransactionRecorder: TransactionRecording {
             return true
         case .unauthorized, .emailNotVerified, .accountEmailNotVerified,
              .accountDisabled, .serviceUnavailable, .studentAlreadyExists,
-             .subscriptionNotFound, .payloadTooLarge, .timeout, .networkError,
-             .serverError:
+             .studentProfileRequired, .subscriptionNotFound, .payloadTooLarge,
+             .timeout, .networkError, .serverError:
+            return false
+        case .coachingBudgetExhausted:
+            // `/verify` cannot answer 402 — the coaching gate guards turn
+            // endpoints, not this one. If one ever arrived it would say nothing
+            // about whether Apple's transaction was recorded, and the asymmetry
+            // above decides an answer we do not understand: do not finish.
+            logger.error("Unexpected 402 from /verify: [\(error.code, privacy: .public)] [\(error.message, privacy: .public)]; deferring")
             return false
         case nil:
             // A code this client has no case for — a newer server code, or a

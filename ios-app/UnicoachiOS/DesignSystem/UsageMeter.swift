@@ -97,7 +97,7 @@ struct UsageMeter: View {
         guard let resetsAt else {
             return "One-time free allowance"
         }
-        return "Resets \(resetsAt.formatted(date: .abbreviated, time: .omitted))"
+        return "Resets \(resetsAt.dsCalendarDate)"
     }
 }
 

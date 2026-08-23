@@ -244,3 +244,16 @@ enum DSMenu {
     /// handful, "All conversations" is the complete surface, one tap away.
     static let recentLimit = 3
 }
+
+// MARK: - Date rendering
+
+extension Date {
+    /// The one rendering of a user-visible calendar date. The meter's
+    /// "Resets ⟨date⟩", the paywall's "It resets ⟨date⟩" and the subscription
+    /// status line's "renews ⟨date⟩" can appear on the same screen for the same
+    /// instant, so they must say it the same way — which they only do if the
+    /// style is written down once rather than transcribed into each call site.
+    var dsCalendarDate: String {
+        formatted(date: .abbreviated, time: .omitted)
+    }
+}
