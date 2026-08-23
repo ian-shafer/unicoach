@@ -201,7 +201,13 @@ struct ConversationView: View {
             // Rendering it as Markdown would silently eat the `*` in "should I
             // apply *early*?" and reflow the line breaks they typed, which is a
             // bug rather than a feature (RFC 118).
-            messageBubble(isUser: true, identifier: "userBubble") {
+            // That is also why it is an `.utterance` to copy: nothing to render,
+            // so nothing to choose between.
+            messageBubble(
+                isUser: true,
+                identifier: "userBubble",
+                menu: .utterance(text: turn.userMessage.content)
+            ) {
                 Text(turn.userMessage.content)
                     .font(.dsBody)
                     .foregroundStyle(Color.dsTextPrimary)
@@ -210,8 +216,17 @@ struct ConversationView: View {
             if turn.coachMessage != nil || !turn.coachStreamingText.isEmpty {
                 // The coach's turn is a **document** — it may carry a heading, a
                 // table, a code block — and is rendered Markdown at full width.
-                messageBubble(isUser: false, identifier: "coachBubble") {
-                    MarkdownView(source: turn.coachMessage?.content ?? turn.coachStreamingText)
+                // The same string feeds the renderer and both copy actions, so
+                // "copy as Markdown" is by construction the exact source the
+                // bubble drew — including mid-stream, where copying half a
+                // reply is the student's own choice.
+                let source = turn.coachMessage?.content ?? turn.coachStreamingText
+                messageBubble(
+                    isUser: false,
+                    identifier: "coachBubble",
+                    menu: .document(source: source)
+                ) {
+                    MarkdownView(source: source)
                 }
             }
 
@@ -254,6 +269,7 @@ struct ConversationView: View {
     private func messageBubble(
         isUser: Bool,
         identifier: String,
+        menu: CopyMenu,
         @ViewBuilder content: () -> some View
     ) -> some View {
         // `spacing: 0` because the inset is the student's `Spacer` and nothing
@@ -271,9 +287,9 @@ struct ConversationView: View {
                         .stroke(isUser ? Color.dsTextPrimary : Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
                 )
                 .accessibilityIdentifier(identifier)
+                .copyMenu(menu)
         }
     }
-
 
     private var streamingIndicator: some View {
         HStack(spacing: DSSpacing.sm) {

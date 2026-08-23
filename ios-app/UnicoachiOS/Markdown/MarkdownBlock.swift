@@ -639,3 +639,158 @@ extension MarkdownBlock {
         return (MarkdownTable(headers: headers, alignments: alignments, rows: rows), cursor)
     }
 }
+
+// MARK: - Plain text
+
+/// The plain-text rendering of a parsed message: what the eye saw, with the
+/// Markdown syntax gone. This is what the bubble's bare `Copy` action puts on
+/// the pasteboard (RFC 125), while `Copy as Markdown` puts the untouched
+/// source there and needs no code at all.
+///
+/// It lives here beside the parser rather than with the copy menu because it is
+/// the parser's partner — the same model read in the opposite direction. What
+/// it renders is a `MarkdownBlock`, and it would still be the right rendering
+/// if nothing in the app ever copied anything; `MessageCopy.swift` is about an
+/// affordance, and this is about the model.
+///
+/// Every inline span goes through `MarkdownAccessibility.plain`, which is the
+/// app's single definition of "the rendered characters" — the same function
+/// that decides what a VoiceOver student hears from a table cell. Two
+/// definitions of that would drift the first time an inline rule changes, and
+/// the copy a student pastes would stop matching the reply they read. That
+/// call is the one thing in this file that reaches out of Foundation-only
+/// code, and it is worth it for exactly that reason.
+enum MarkdownPlainText {
+    /// Parses `source` and renders it, for the common call site that holds the
+    /// raw string a bubble was handed rather than its blocks.
+    static func render(_ source: String) -> String {
+        render(MarkdownBlock.parse(source))
+    }
+
+    /// Blocks separated by exactly one blank line, with no trailing newline.
+    ///
+    /// `compactMap` rather than `map`, because a thematic rule renders to
+    /// *nothing at all* rather than to an empty string: an empty string would
+    /// still take its place in the join and leave a doubled blank line where
+    /// the `---` used to be.
+    ///
+    /// The trailing trim is for the code block, the one block whose payload can
+    /// legitimately end in a newline — a fence closed on the line after the
+    /// last statement. Nobody wants a pasted reply to end in blank lines.
+    ///
+    /// It drops trailing **whitespace**, not trailing newlines: a code block
+    /// whose last line is indented ends in `"\n    "`, and a newline-only trim
+    /// halts at the first space and leaves the indent dangling at the end of
+    /// the paste.
+    static func render(_ blocks: [MarkdownBlock]) -> String {
+        let rendered = blocks
+            .compactMap(text(of:))
+            // A block that renders to nothing is dropped as surely as a rule
+            // is. The parser really does produce them — a bare `##` is a
+            // heading with empty text, an empty fence is `.code("")` — and left
+            // in, each would still claim its place in the join and leave the
+            // doubled blank line this separator exists to prevent.
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        return trimmingTrailingWhitespace(rendered)
+    }
+
+    /// Trailing whitespace off the end of a string, leaving the interior alone.
+    ///
+    /// Hand-rolled because Foundation's `trimmingCharacters(in:)` is symmetric
+    /// and would eat a deliberate leading indent on the first line of a code
+    /// block. Written over `reversed()` rather than by index arithmetic so it
+    /// is Unicode-correct on graphemes.
+    private static func trimmingTrailingWhitespace(_ string: String) -> String {
+        String(string.reversed().drop(while: \.isWhitespace).reversed())
+    }
+
+    /// One block's lines, or `nil` for a block that contributes nothing.
+    private static func text(of block: MarkdownBlock) -> String? {
+        switch block {
+        case .heading(_, let text):
+            // No `#`, and no level marker of any kind: the levels differ by
+            // font on screen, and plain text has no font to differ by.
+            return MarkdownAccessibility.plain(text)
+        case .paragraph(let text):
+            return MarkdownAccessibility.plain(text)
+        case .list(let list):
+            return list.items.map(line(of:)).joined(separator: "\n")
+        case .quote(let lines):
+            // The `>` is already off — the parser strips it — and putting it
+            // back would be re-introducing syntax into the syntax-free half of
+            // this feature. A quote in a coach reply is an aside, and it reads
+            // as one without a marker.
+            return lines.map { MarkdownAccessibility.plain($0) }.joined(separator: "\n")
+        case .code(let code):
+            // Verbatim, and no fences: a student copying a command wants the
+            // command, and the fence is the one piece of Markdown that would
+            // break the paste destination rather than merely clutter it.
+            return code
+        case .table(let table):
+            return lines(of: table)
+        case .rule:
+            return nil
+        }
+    }
+
+    /// A table as tab-separated rows, header first.
+    ///
+    /// Tabs because that is what pastes into Notes, Numbers, Sheets and Mail as
+    /// an actual table; ASCII-art alignment would look right only in a
+    /// monospaced destination and wrong everywhere else.
+    private static func lines(of table: MarkdownTable) -> String {
+        ([table.headers] + table.rows)
+            .map { row in row.map(field(of:)).joined(separator: "\t") }
+            .joined(separator: "\n")
+    }
+
+    /// One cell, safe to sit between tabs.
+    ///
+    /// The delimiter is the whole contract of a tab-separated row, so a cell
+    /// that contains one has to lose it: `splitRow` trims only a cell's edges,
+    /// so a tab inside an inline-code span survives the parse and would emit a
+    /// phantom extra column — every following column in that row shifted by
+    /// one, silently, in exactly the spreadsheet this format was chosen for. A
+    /// newline would do the same to the row structure. Both collapse to a
+    /// single space, which is what the eye saw anyway: the renderer draws a
+    /// cell as one wrapped run of text, not as columns within a column.
+    private static func field(of cell: InlineMarkdown) -> String {
+        MarkdownAccessibility.plain(cell)
+            .split(whereSeparator: { $0 == "\t" || $0.isNewline })
+            .joined(separator: " ")
+    }
+
+    /// One list item: its indent, its marker, then its text.
+    ///
+    /// Two spaces per level rather than the source's own indent, because the
+    /// model deliberately flattened nesting into a `depth` and the column a
+    /// coach happened to type is not a thing this side of the parse still
+    /// knows. The `\u{2611}` / `\u{2610}` glyphs mirror the filled and empty
+    /// circles the view draws, keeping the promise that the plain text is what
+    /// the eye saw.
+    private static func line(of item: MarkdownList.Item) -> String {
+        let marker: String
+        switch item.marker {
+        case .bullet:
+            marker = "\u{2022} "
+        case .ordered(let ordinal):
+            // The ordinal the parser resolved, not the digit the coach typed:
+            // a source that writes `1.` three times draws as 1, 2, 3, and the
+            // copy has to say what the screen said.
+            marker = "\(ordinal). "
+        case .task(let done):
+            marker = done ? "\u{2611} " : "\u{2610} "
+        }
+        // A hard-wrapped item is still ONE item — the parser folded its
+        // continuation lines into this item's text with a soft break, and the
+        // rule here is one line per item. Left as-is the tail would start at
+        // column zero, unindented and unmarked, and read as a separate bullet's
+        // worth of prose in whatever the student pasted it into.
+        let text = MarkdownAccessibility.plain(item.text)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: " ")
+        return String(repeating: "  ", count: item.depth) + marker + text
+    }
+}
