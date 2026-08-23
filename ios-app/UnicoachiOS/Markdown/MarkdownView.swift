@@ -156,16 +156,59 @@ struct MarkdownView: View {
 
 // MARK: - Tables
 
+/// The widest single-line width each column wants, keyed by column index.
+/// Merged with `max` because every cell in a column reports independently: the
+/// column's natural width is the widest of them, header included.
+private struct TableColumnWidthKey: PreferenceKey {
+    static let defaultValue: [Int: CGFloat] = [:]
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue()) { max($0, $1) }
+    }
+}
+
+/// How much width the table is actually being given, read off the scroll view
+/// itself rather than assumed from a device size.
+private struct TableAvailableWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// The complaint that started RFC 118: a GFM table arriving as a wall of
 /// unaligned pipes. A `Grid` gives real columns; the horizontal `ScrollView`
 /// means a six-column table scrolls instead of truncating, while the two- and
 /// three-column tables a coach actually sends fit and never scroll.
+///
+/// Column widths are **measured, decided, then applied definitely** rather than
+/// left to a `minWidth`/`maxWidth` clamp. A clamp is not a width: inside a
+/// horizontal scroll view nothing proposes one, so a cell that wraps reported a
+/// one-line height and bled over the row beneath it. See `MarkdownTableLayout`
+/// for the decision and `measuringLayer` for where the numbers come from.
 private struct TableView: View {
     let table: MarkdownTable
     /// Scaled so the grid grows with Dynamic Type rather than clipping it.
     @ScaledMetric private var columnMaxWidth: CGFloat = DSMarkdown.columnMaxWidth
+    /// Scaled with it, or the floor would stay put while the text grew and a
+    /// short column would clip at accessibility sizes.
+    @ScaledMetric private var columnMinWidth: CGFloat = DSMarkdown.columnMinWidth
+
+    /// Filled by the hidden measuring pass below. Empty on the first layout,
+    /// which `naturalWidths(count:)` handles rather than collapsing.
+    @State private var measuredWidths: [Int: CGFloat] = [:]
+    /// Zero until the scroll view has been laid out once.
+    @State private var availableWidth: CGFloat = 0
+    /// Hysteresis on the width probe. Named rather than spelled inline in the
+    /// preference closure because it is a real layout-invalidation policy: this
+    /// view re-renders on every SSE delta while a reply streams, and a width
+    /// wobbling by a fraction of a point would re-decide the whole grid on each
+    /// one for no visible difference.
+    private static let availableWidthEpsilon: CGFloat = 0.5
 
     var body: some View {
+        // Widths are decided ONCE per body, not per cell: two cells in the same
+        // column resolving separately is how a grid goes ragged.
+        let widths = resolvedWidths
         // The indicator is SHOWN, unlike the code block's. It is the only thing
         // telling a student that a column exists off-screen: a captured render
         // of the five-column fixture cut "Status" off the trailing edge with no
@@ -176,7 +219,7 @@ private struct TableView: View {
             Grid(alignment: .topLeading, horizontalSpacing: DSSpacing.md, verticalSpacing: DSSpacing.sm) {
                 GridRow {
                     ForEach(Array(table.headers.enumerated()), id: \.offset) { index, header in
-                        cell(header, column: index, font: .dsLabel, color: .dsTextPrimary)
+                        cell(header, column: index, width: widths[index], font: .dsLabel, color: .dsTextPrimary)
                     }
                 }
                 rowSeparator
@@ -186,6 +229,7 @@ private struct TableView: View {
                             cell(
                                 value,
                                 column: index,
+                                width: widths[index],
                                 font: .dsBody,
                                 color: .dsTextPrimary,
                                 // VoiceOver reads "College: Michigan" rather
@@ -200,11 +244,110 @@ private struct TableView: View {
             }
             .padding(DSSpacing.sm)
         }
+        // Both probes hang off the scroll view as backgrounds: a background is
+        // proposed its parent's size but never contributes to it, so neither
+        // measurement can feed back into the layout it is measuring.
+        .background(alignment: .topLeading) { measuringLayer }
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: TableAvailableWidthKey.self, value: proxy.size.width)
+            }
+        }
+        .onPreferenceChange(TableColumnWidthKey.self) { measured in
+            measuredWidths = measured
+        }
+        .onPreferenceChange(TableAvailableWidthKey.self) { width in
+            // Sub-point noise is dropped rather than assigned. This view
+            // re-renders on every SSE delta while a reply streams; a width that
+            // wobbles by a fraction of a point would invalidate the layout on
+            // each one for no visible difference.
+            if abs(width - availableWidth) > Self.availableWidthEpsilon { availableWidth = width }
+        }
         // Clipped to the bubble's own radius, so a scrolled table still reads
         // as contained rather than as content escaping the bubble. Not
         // outlined: the table's own header hairline already bounds it, and a
         // second rule around a scrolling grid reads as a nested box.
         .markdownContainer(outlined: false)
+    }
+
+    private var columnCount: Int { max(table.headers.count, 1) }
+
+    /// The measured widths as a dense array, with the ceiling standing in for
+    /// any column that has not reported yet.
+    ///
+    /// The ceiling, and not the floor, is the stand-in on purpose: for the one
+    /// frame before the measuring pass lands, a cell at `columnMaxWidth` is
+    /// exactly what this view drew before this change, whereas a cell at the
+    /// floor is the collapsed-to-64pt grid that a zero-returning measuring pass
+    /// produced during development. Failing towards the previous render is the
+    /// cheaper mistake.
+    private func naturalWidths(count: Int) -> [CGFloat] {
+        (0 ..< count).map { measuredWidths[$0] ?? columnMaxWidth }
+    }
+
+    private var resolvedWidths: [CGFloat] {
+        MarkdownTableLayout.columnWidths(
+            natural: naturalWidths(count: columnCount),
+            // The grid is inset inside the scroll view, so the width the
+            // columns may occupy is the scroll view's less both insets —
+            // forgetting them is how a table that "fits" scrolls by 16pt.
+            available: availableWidth > 0 ? availableWidth - 2 * DSSpacing.sm : 0,
+            spacing: DSSpacing.md,
+            minimum: columnMinWidth,
+            maximum: columnMaxWidth
+        )
+    }
+
+    /// Every cell drawn once more, hidden, at its **single-line ideal** width,
+    /// reporting that width for its column.
+    ///
+    /// `fixedSize()` is what makes this a measurement rather than a second
+    /// layout: the text ignores whatever proposal this hidden layer is given,
+    /// so what comes back cannot depend on the widths this view is in the
+    /// middle of deciding. That is the guard against the classic
+    /// preference → `@State` → layout → preference loop, which on this view
+    /// would re-run on every SSE delta of a streaming reply.
+    ///
+    /// Measured in SwiftUI with the same `Font` tokens the real cells use,
+    /// rather than by mapping a token onto a `UIFont` and calling
+    /// `boundingRect` — that mapping is a second, silent copy of the type scale
+    /// and would drift from `Theme.swift` the first time a token changed
+    /// (DESIGN.md §0).
+    private var measuringLayer: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(table.headers.enumerated()), id: \.offset) { index, header in
+                measured(header, column: index, font: .dsLabel)
+            }
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                ForEach(Array(row.enumerated()), id: \.offset) { index, value in
+                    measured(value, column: index, font: .dsBody)
+                }
+            }
+        }
+        .hidden()
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+
+    private func measured(_ text: InlineMarkdown, column: Int, font: Font) -> some View {
+        Text(MarkdownInline.attributed(text))
+            .font(font)
+            // `lineLimit(1)` with `fixedSize()`: the ideal width of the whole
+            // string on one line, which is the number "does this column need to
+            // wrap?" is asking about.
+            .lineLimit(1)
+            .fixedSize()
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: TableColumnWidthKey.self,
+                        // Rounded up: a fractional shortfall is enough to wrap
+                        // the last word of a cell that was measured to fit,
+                        // which is the whole defect this change removes.
+                        value: [column: proxy.size.width.rounded(.up)]
+                    )
+                }
+            }
     }
 
     /// Rows are separated by the same 1pt `FieldBorder` hairline everything
@@ -224,6 +367,7 @@ private struct TableView: View {
     private func cell(
         _ text: InlineMarkdown,
         column: Int,
+        width: CGFloat,
         font: Font,
         color: Color,
         label: String? = nil
@@ -233,18 +377,144 @@ private struct TableView: View {
             .font(font)
             .foregroundStyle(color)
             .multilineTextAlignment(alignment.textAlignment)
-            // Floor and ceiling: a one-word column keeps a usable width, and a
-            // prose column wraps instead of monopolising the row.
-            .frame(
-                minWidth: DSMarkdown.columnMinWidth,
-                maxWidth: columnMaxWidth,
-                alignment: alignment.frameAlignment
-            )
+            // Order is load-bearing. `fixedSize` is INSIDE a `frame(width:)`,
+            // so the text is proposed a DEFINITE width and reports the height
+            // of however many lines it wraps onto. With the old
+            // `frame(minWidth:maxWidth:)` the proposal inside the horizontal
+            // scroll view was unspecified, so the text reported its
+            // single-line height, `fixedSize` pinned it, and the clamped width
+            // then wrapped the text to two lines inside a one-line-tall row —
+            // the second line drawing over the separator and the row below it.
             .fixedSize(horizontal: false, vertical: true)
+            .frame(width: width, alignment: alignment.frameAlignment)
             // A header cell has no header to prefix, so it speaks its own
             // rendered text — never the source, which is the `**` this RFC
             // exists to hide.
             .accessibilityLabel(label ?? MarkdownAccessibility.plain(text))
+    }
+}
+
+/// The arithmetic behind a table's column widths, with **no SwiftUI in it**.
+///
+/// This exists as a value-returning function for the same reason the parser
+/// does: `bin/test` never compiles `ios-app`, so an XCTest assertion is the
+/// only mechanical authority this feature can have, and a rule buried in a
+/// `View.body` has none. The measuring pass and the drawing are the parts a
+/// test cannot reach; the *decision* is not, so it lives here.
+///
+/// The defect it exists to prevent (RFC 118 follow-up): inside
+/// `ScrollView(.horizontal)` the width proposal is **unspecified**, so a `Text`
+/// reports its single-line ideal height, `fixedSize(vertical:)` pins that
+/// height, and a `maxWidth` clamp then forces the text to wrap to two lines
+/// inside a one-line-tall row — the second line drawing over the separator and
+/// the row beneath it. The cure is a *definite* width per column, and a
+/// definite width has to be computed from somewhere. Here.
+enum MarkdownTableLayout {
+    /// Definite widths for `natural.count` columns.
+    ///
+    /// - Parameters:
+    ///   - natural: each column's single-line ideal width (its widest cell,
+    ///     header included), as measured by the view.
+    ///   - available: width the table may occupy before it has to scroll. Pass
+    ///     `<= 0` when it is not known yet (the first layout pass, or an
+    ///     unspecified proposal): the columns then take their natural widths
+    ///     and the horizontal `ScrollView` absorbs any overflow, which is the
+    ///     same answer as "it fits" and so cannot oscillate.
+    ///   - spacing: the gutter *between* columns; `n - 1` of them.
+    ///   - minimum: floor, so a one-word column ("Yes") keeps a usable width.
+    ///   - maximum: ceiling, so a prose column wraps instead of monopolising
+    ///     the row.
+    ///
+    /// Rules, in order:
+    ///   1. Every column is clamped into `minimum ... maximum` first. A column
+    ///      is never *stretched* to fill leftover room — a two-column table
+    ///      pulled out to the bubble's full width reads as a layout accident,
+    ///      and the pre-existing render that Ian is happy with is content-sized.
+    ///   2. If the clamped widths fit `available`, they are the answer.
+    ///   3. Otherwise the table SHRINKS TO FIT rather than scrolling. Flagged
+    ///      honestly: this is layout *policy*, and the row-height defect did not
+    ///      ask for it — definite clamped-natural widths alone cure the bleed,
+    ///      and the scroll view with a shown indicator was already the design's
+    ///      answer to overflow. It is here because without it Ian's two-column
+    ///      table overruns the bubble by ~8pt and scrolls for the sake of eight
+    ///      points, which reads as broken. Kept deliberately, not accidentally;
+    ///      delete this branch (and `available`, `spacing`, and the width probe
+    ///      that feeds them) if that trade is ever judged the wrong one.
+    ///
+    ///      The deficit is taken as a **waterfall**: the column with
+    ///      the most slack above `minimum` pays first and is exhausted down to
+    ///      the floor before the next-widest is touched at all. Slack is the
+    ///      budget for shrinking, and the column holding the most of it is the
+    ///      one whose text least needs the pixels — a wide prose column
+    ///      reflows gracefully where a narrow label column does not. Spending
+    ///      the deficit where it is cheapest is what "shrink to fit" should
+    ///      mean.
+    ///
+    ///      Explicitly **not** proportional, which is what this shipped as
+    ///      first and what the second captured render caught: sharing an 8pt
+    ///      deficit by slack took 7pt from a 220pt column and 1pt from an 85pt
+    ///      one — but the 85pt column was sitting exactly at its natural width,
+    ///      so that single point wrapped "Public (CC)" onto a second line for
+    ///      nothing. Proportional shrink takes a little from every column, and
+    ///      a column at its natural width wraps the instant you take anything
+    ///      at all.
+    ///   4. If even all-columns-at-`minimum` does not fit, the *clamped* widths
+    ///      are returned and the table scrolls. Shrinking is only ever worth
+    ///      the legibility it costs if it removes the scroll; once the table is
+    ///      going to scroll anyway, squeezing buys nothing and charges for it —
+    ///      a captured five-column render squeezed to the floor hyphenated
+    ///      "Michigan" into "Mi-chigan" **and** still scrolled. The shown
+    ///      scroll indicator is the affordance for the off-screen column.
+    static func columnWidths(
+        natural: [CGFloat],
+        available: CGFloat,
+        spacing: CGFloat,
+        minimum: CGFloat,
+        maximum: CGFloat
+    ) -> [CGFloat] {
+        guard !natural.isEmpty else { return [] }
+        // `max(minimum, ...)` last so a `maximum` mistakenly below `minimum`
+        // degrades to the floor rather than to something narrower than either.
+        let clamped = natural.map { Swift.max(minimum, Swift.min(maximum, $0)) }
+        let gutters = spacing * CGFloat(natural.count - 1)
+        let content = available - gutters
+        guard available > 0 else { return clamped }
+
+        let total = clamped.reduce(0, +)
+        guard total > content else { return clamped }
+
+        // `<=`, mirroring rule 2's `total > content`: a table that seats
+        // exactly at its floors DOES fit, and shrinking it removes the scroll,
+        // which is the whole justification for shrinking. Spelling this `<`
+        // made the same predicate mean "fits" twelve lines up and "does not
+        // fit" here, and silently scrolled a table that would have seated
+        // perfectly.
+        let floors = minimum * CGFloat(natural.count)
+        guard floors <= content else { return clamped }
+
+        // Widest slack first, exhausted before the next column is touched. A
+        // column already at the floor has no slack, so it is never reached and
+        // never squeezed — and neither is a column the deficit runs out before.
+        //
+        // Ties break on column index rather than on whatever order a
+        // dictionary or a sort happened to produce. Two equally slack columns
+        // must always yield the same grid: a table whose layout depended on
+        // hash order would redraw differently on each SSE delta of the same
+        // reply.
+        let order = clamped.indices.sorted { first, second in
+            let slack = (clamped[first] - minimum, clamped[second] - minimum)
+            return slack.0 == slack.1 ? first < second : slack.0 > slack.1
+        }
+        var widths = clamped
+        // `floors < content` above guarantees the total slack exceeds the
+        // deficit, so this always reaches zero before it runs out of columns.
+        var remaining = total - content
+        for index in order where remaining > 0 {
+            let paid = Swift.min(widths[index] - minimum, remaining)
+            widths[index] -= paid
+            remaining -= paid
+        }
+        return widths
     }
 }
 

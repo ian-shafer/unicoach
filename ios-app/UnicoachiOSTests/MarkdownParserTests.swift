@@ -501,6 +501,146 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
     }
 
+    // MARK: - Table column widths
+
+    // `MarkdownTableLayout` is the second value-returning piece of this
+    // feature, and it exists so this decision can be asserted at all: it is the
+    // arithmetic that gives a table cell a DEFINITE width, without which a
+    // wrapped cell reports a one-line height and draws over the row below it.
+
+    // The defaults below deliberately spell the bounds as LITERALS rather than
+    // reading DSSpacing/DSMarkdown: every assertion here is arithmetic worked
+    // out by hand in its own comment ("64 + 64 + 16 = 144 exactly"), and a test
+    // that computes its expectation from the same token as the code cannot
+    // fail. The cost of that independence is that a retuned token would leave
+    // this suite green while the shipped grid moved, so
+    // `testTheFixtureBoundsStillMatchTheShippedTokens` pins the two together:
+    // change a token and it fails, telling you to re-check the arithmetic here.
+    private func widths(
+        natural: [CGFloat],
+        available: CGFloat,
+        spacing: CGFloat = 16,
+        minimum: CGFloat = 64,
+        maximum: CGFloat = 220
+    ) -> [CGFloat] {
+        MarkdownTableLayout.columnWidths(
+            natural: natural,
+            available: available,
+            spacing: spacing,
+            minimum: minimum,
+            maximum: maximum
+        )
+    }
+
+    func testColumnsThatFitExactlyKeepTheirNaturalWidths() {
+        // 120 + 16 + 100 = 236.
+        XCTAssertEqual(widths(natural: [120, 100], available: 236), [120, 100])
+    }
+
+    func testColumnsThatFitWithRoomToSpareAreNotStretched() {
+        // The whole of criterion D: a two-column table pulled out to the
+        // bubble's full width reads as a layout accident, not as a table.
+        XCTAssertEqual(widths(natural: [120, 100], available: 400), [120, 100])
+    }
+
+    func testAProseColumnIsCappedAtTheCeiling() {
+        XCTAssertEqual(widths(natural: [900, 100], available: 400), [220, 100])
+    }
+
+    func testANarrowColumnIsFloored() {
+        // "Yes" would otherwise collapse to the width of its own three
+        // characters and leave the grid looking broken.
+        XCTAssertEqual(widths(natural: [30, 120], available: 400), [64, 120])
+    }
+
+    func testTheColumnWithTheMostSlackPaysTheWholeDeficit() {
+        // 200 + 100 + 16 = 316 wanted against 266 available: a 50pt deficit,
+        // and the wide column has 136 of slack to cover it alone. A waterfall,
+        // not a share — the narrow column is not touched at all.
+        let result = widths(natural: [200, 100], available: 266)
+        XCTAssertEqual(result, [150, 100])
+        XCTAssertEqual(result.reduce(0, +) + 16, 266, accuracy: 0.01)
+    }
+
+    func testASmallDeficitDoesNotWrapAColumnSittingAtItsNaturalWidth() {
+        // Ian's two-column table, and the defect a proportional shrink caused:
+        // "School" clamps to the 220 ceiling and "Type" measures ~85 for
+        // "Public (CC)", so 305 is wanted against 297 — a deficit of 8. Shared
+        // by slack that is 7pt off School and 1pt off Type, and that single
+        // point wrapped "Public (CC)" onto a second line, because a column at
+        // its natural width has nothing to give. School pays all 8.
+        XCTAssertEqual(widths(natural: [300, 85], available: 313), [212, 85])
+    }
+
+    func testADeficitLargerThanTheWidestSlackSpillsToTheNextColumn() {
+        // 100 + 200 + 90 + 32 = 422 wanted against 272: a 150pt deficit. The
+        // middle column is exhausted to the floor (136) and the remaining 14
+        // falls to the next-most-slack column; the narrowest is never reached.
+        XCTAssertEqual(widths(natural: [100, 200, 90], available: 272), [86, 64, 90])
+    }
+
+    func testTiedSlackBreaksOnColumnIndexRatherThanArbitrarily() {
+        // Two identical columns and a 20pt deficit. Which one pays is a free
+        // choice, but it must be the SAME free choice every time: a layout that
+        // depended on hash or sort order would redraw differently on each SSE
+        // delta of one streaming reply.
+        XCTAssertEqual(widths(natural: [150, 150, 64], available: 376), [130, 150, 64])
+    }
+
+    func testAColumnAlreadyAtTheFloorPaysNothingTowardsTheDeficit() {
+        // Slack, not width, is the basis: squeezing a column that is already at
+        // its minimum is how the narrow columns become illegible slivers.
+        let result = widths(natural: [200, 40], available: 250)
+        XCTAssertEqual(result[1], 64)
+        XCTAssertEqual(result[0], 170, accuracy: 0.01)
+    }
+
+    func testTooManyColumnsToFitAreNotSqueezedAtAllAndScroll() {
+        // Five columns at the 64pt floor plus four 16pt gutters is 384, wider
+        // than the 300 offered — so no amount of shrinking removes the scroll,
+        // and shrinking that does not remove the scroll only costs legibility.
+        // Squeezing this case to the floor hyphenated "Michigan" into
+        // "Mi-chigan" in a captured render and STILL scrolled.
+        XCTAssertEqual(widths(natural: [200, 200, 200, 200, 200], available: 300), [200, 200, 200, 200, 200])
+        XCTAssertEqual(widths(natural: [80, 70, 90, 60, 100], available: 300), [80, 70, 90, 64, 100])
+    }
+
+    func testTheFixtureBoundsStillMatchTheShippedTokens() {
+        // Not a test of the tokens' values — a tripwire for this file. The cases
+        // above hardcode 16/64/220 so their arithmetic is checkable by eye; if a
+        // token moves, that arithmetic is describing a grid we no longer ship,
+        // and this is what says so instead of the suite quietly staying green.
+        XCTAssertEqual(DSSpacing.md, 16)
+        XCTAssertEqual(DSMarkdown.columnMinWidth, 64)
+        XCTAssertEqual(DSMarkdown.columnMaxWidth, 220)
+    }
+
+    func testColumnsThatFitOnlyAtTheirFloorsAreSqueezedRatherThanScrolled() {
+        // The boundary rule 4 stops one point above. 64 + 64 + one 16pt gutter
+        // is 144 exactly, so the floors DO fit and shrinking removes the
+        // scroll — which is the entire justification for shrinking. This
+        // shipped as `floors < content`, folding "fits exactly" into "cannot
+        // possibly fit" and scrolling a table that seats perfectly, while rule
+        // 2 twelve lines up read the same equality as a fit.
+        XCTAssertEqual(widths(natural: [200, 100], available: 144), [64, 64])
+    }
+
+    func testAnUnknownAvailableWidthFallsBackToNaturalWidths() {
+        // The first layout pass, or an unspecified proposal. Answering as if it
+        // fits is what keeps the measure → decide → measure cycle from
+        // oscillating: the scroll view then reports that same width back.
+        XCTAssertEqual(widths(natural: [900, 100], available: 0), [220, 100])
+        XCTAssertEqual(widths(natural: [900, 100], available: -1), [220, 100])
+    }
+
+    func testNoColumnsIsNoWidths() {
+        XCTAssertEqual(widths(natural: [], available: 300), [])
+    }
+
+    func testASingleColumnHasNoGutterToPayFor() {
+        XCTAssertEqual(widths(natural: [200], available: 200), [200])
+    }
+
     // MARK: - A whole reply
 
     func testWorstCaseReplyParsesIntoItsBlocks() {
@@ -515,3 +655,5 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertTrue(table.rows.allSatisfy { $0.count == 5 })
     }
 }
+
+
