@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# snapshot-ios runs under SYSTEM Xcode (xcodebuild), NOT the Nix dev shell.
+# Like build-ios/install-ios/release-ios/screenshot-ios/test-ios it deliberately
+# does NOT source bin/common (which requires .env / Postgres / the Nix shell) —
+# only bin/functions for log-info/fatal.
+#
+# It captures the SNAPSHOT CORPUS: every screen in the UnicoachiOSTests scene
+# catalogue, light and dark, by hosting each view in a UIWindow inside the test
+# process (RFC 122). No backend, no session, no StoreKit, no booted app — the
+# gap bin/screenshot-ios cannot close, because that one only ever reaches the
+# app's first screen.
+#
+# The xcodebuild invocation itself is NOT here: this is a thin front end over
+# bin/test-ios, which owns the project, the scheme, the DerivedData tree and —
+# the reason the delegation exists — the destination, THIS CHECKOUT's own
+# simulator device (bin/ios-sim, RFC 126). A duplicated `xcodebuild test
+# -destination ...,name=iPhone 17 Pro` here would put two checkouts capturing
+# at once back on the one machine-global device. Everything this script still
+# does is what test-ios does not know about: the corpus directory, the baseline,
+# the runner environment, and the proof that PNGs were actually written.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/bin/functions"
+
+help() {
+  cat << 'EOF'
+snapshot-ios [-o <dir>] [-b <baseline-dir>] [target]
+
+Captures the snapshot corpus for UnicoachiOS: every scene in the
+UnicoachiOSTests catalogue, in light AND dark, written as
+<dir>/<scene>-<light|dark>.png. Runs `bin/test-ios` restricted to
+UnicoachiOSTests/SnapshotTests, which hosts each view in a real UIWindow —
+so it needs no backend, no signed-in session and no booted app, and it reaches
+the authenticated and billing screens bin/screenshot-ios never can. It cannot
+show you a navigation bug BETWEEN screens; each scene is constructed directly.
+
+  target       Target name (default: simulator). Handed to bin/test-ios, which
+               sources ios-app/env/<target>.env and takes its destination's
+               `name=<model>` component as the simulator MODEL. The device is
+               THIS CHECKOUT's own (bin/ios-sim, created on demand), so a
+               concurrent capture in another checkout cannot collide with this
+               one. Simulator only — test-ios rejects a device target.
+  -o <dir>     Write the corpus to this directory (created if absent, and
+               CLEARED by the test run so a deleted scene leaves no stale PNG).
+               Default: UNICOACH_SNAPSHOT_DIR when set, else
+               ios-app/build/snapshots/latest (under the gitignored build/ tree).
+  -b <dir>     Compare each capture against the same-named PNG in this
+               directory — a corpus a PREVIOUS run wrote, not a committed
+               golden — and print which scenes moved, writing a red-overlay
+               <scene>.diff.png for each. It REPORTS; it never fails the run.
+  -h           Help
+
+There is no device option: under RFC 126 the device is this checkout's and the
+model comes from the target's env file, so a second device selector would be a
+contradiction. bin/ios-sim is where that resolution lives.
+
+Determinism: the test runner is pinned to en_US and UTC (-testLanguage /
+-testRegion, and TZ), so a machine's locale cannot move the pixels.
+
+The corpus DIRECTORY is the LAST and ONLY line on stdout (all progress logging,
+this script's and bin/test-ios's, goes to stderr), so a caller can capture it
+with $(...).
+EOF
+  exit 0
+}
+
+OUT=""
+BASELINE=""
+while getopts ":ho:b:" opt; do
+  case "$opt" in
+  h) help ;;
+  # An empty -o/-b value is almost always an unset variable expanded into the
+  # command line, which would otherwise read as "not supplied" and silently
+  # write somewhere else / compare nothing.
+  o) [ -n "$OPTARG" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-o] requires a non-empty path"
+     OUT="$OPTARG" ;;
+  b) [ -n "$OPTARG" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-b] requires a non-empty path"
+     BASELINE="$OPTARG" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+# Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
+# xcodebuild is shadowed by a stub, so the run would fail with an unrelated
+# error. bin/test-ios carries the same guard, but this one is kept — and named
+# for THIS script — so the refusal an operator reads names the command they
+# actually typed, and fires before any work at all.
+if "$PROJECT_ROOT/bin/is-nix" -q; then
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/snapshot-ios simulator), not via 'nix develop -c'."
+fi
+
+ENV_NAME="${1:-simulator}"
+if [ "$#" -gt 1 ]; then
+  # A surplus positional that looks like an option is almost always an option
+  # written AFTER the target (getopts stops at the first non-option), where the
+  # generic advice would send the operator down a dead end.
+  if [[ "$2" == -* ]]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "options must precede the target: write [snapshot-ios $2 ${3:+$3 }$ENV_NAME], not [snapshot-ios $ENV_NAME $2${3:+ $3}]."
+  fi
+  fatal -s "$EXIT_UNEXPECTED_ARG" "snapshot-ios accepts at most one positional argument (target): $*"
+fi
+
+# The target is NOT resolved here: bin/test-ios sources ios-app/env/<target>.env,
+# requires UNICOACH_DESTINATION, and rejects a device target — and bin/ios-sim
+# turns the destination's model into this checkout's device. Re-deriving any of
+# that here is what would let the two drift apart. Their fatals surface verbatim.
+
+# Output directory. -o wins, then UNICOACH_SNAPSHOT_DIR, then the gitignored
+# default the test itself derives from #filePath.
+if [ -z "$OUT" ]; then
+  OUT="${UNICOACH_SNAPSHOT_DIR:-$PROJECT_ROOT/ios-app/build/snapshots/latest}"
+fi
+# Absolutise a relative path against the caller's cwd: it is echoed on stdout as
+# this script's result, and is handed to a test process whose cwd is not this one.
+if [[ "$OUT" != /* ]]; then
+  OUT="$PWD/$OUT"
+fi
+mkdir -p "$OUT"
+
+if [ -n "$BASELINE" ]; then
+  if [[ "$BASELINE" != /* ]]; then
+    BASELINE="$PWD/$BASELINE"
+  fi
+  if [ ! -d "$BASELINE" ]; then
+    fatal "Baseline directory not found [$BASELINE]. Pass a directory a previous [bin/snapshot-ios] wrote (its path is that run's stdout)."
+  fi
+fi
+
+# The test-runner environment. EMPIRICAL FINDING (RFC 122 run): xcodebuild
+# forwards a variable named TEST_RUNNER_<NAME> from ITS OWN environment into the
+# test process as <NAME>, with the prefix stripped. A bare UNICOACH_SNAPSHOT_DIR
+# exported here does NOT cross into the runner — only the prefixed name does —
+# so the prefixed form is what is exported, and SnapshotHost reads both names.
+# Exported rather than passed as arguments, which is also what carries them
+# through bin/test-ios to the xcodebuild it runs.
+export TEST_RUNNER_UNICOACH_SNAPSHOT_DIR="$OUT"
+if [ -n "$BASELINE" ]; then
+  export TEST_RUNNER_UNICOACH_SNAPSHOT_BASELINE_DIR="$BASELINE"
+fi
+# Pixels must not move with the machine's clock settings.
+export TEST_RUNNER_TZ="UTC"
+
+log-info "Capturing the snapshot corpus to [$OUT] (target [$ENV_NAME], this checkout's simulator)..."
+if [ -n "$BASELINE" ]; then
+  log-info "Comparing against the baseline corpus [$BASELINE]; differences are REPORTED, never failed."
+fi
+
+# bin/test-ios owns -project/-scheme/-destination/-derivedDataPath; only what is
+# specific to THIS run goes after `--`. All of its output goes to stderr: this
+# script's stdout is reserved for its RESULT — the corpus directory — so $(...)
+# returns a usable path and not a thousand lines of build log.
+"$PROJECT_ROOT/bin/test-ios" "$ENV_NAME" -- \
+  -only-testing:UnicoachiOSTests/SnapshotTests \
+  -testLanguage en \
+  -testRegion US >&2 \
+  || fatal "bin/test-ios failed for the snapshot scenes (target [$ENV_NAME]). Read the log above: a scene that no longer constructs is a real failure of this gate, not a harness problem."
+
+# A `xcodebuild test` that runs ZERO tests exits 0 — the exact failure mode of a
+# scene file that never got registered in project.pbxproj — so the corpus is
+# proved to exist rather than assumed.
+COUNT="$(find "$OUT" -maxdepth 1 -name '*.png' ! -name '*.diff.png' | wc -l | tr -d ' ')"
+if [ "$COUNT" -eq 0 ]; then
+  fatal "bin/test-ios reported success but no PNGs were written to [$OUT]. That is what a test target running ZERO tests looks like: check UnicoachiOSTests/SnapshotTests is registered in ios-app/UnicoachiOS.xcodeproj/project.pbxproj."
+fi
+log-info "Wrote [$COUNT] snapshots."
+
+# The result, and the only thing on stdout.
+echo "$OUT"

@@ -412,6 +412,57 @@ Note that `nix develop -c bin/test` does **not** run the iOS suite (it needs
 system Xcode, which the dev shell shadows); a green repo gate says nothing about
 an iOS change.
 
+## Snapshot corpus: `bin/snapshot-ios`
+
+`bin/screenshot-ios` photographs the **running app**, which means it only ever
+reaches the **first screen** and needs a backend behind it. `bin/snapshot-ios`
+photographs **any view**: it hosts each screen in a `UIWindow` inside the test
+process, so it needs no backend, no session, no StoreKit and no booted app — and
+it therefore reaches the authenticated and billing screens (the conversation,
+Settings, the subscription rail, the paywall) that the running-app capture never
+could. What it cannot do is show you a navigation bug _between_ screens: every
+scene is constructed directly, not arrived at.
+
+```sh
+bin/snapshot-ios                          # prints the corpus directory
+bin/snapshot-ios -b <a-previous-corpus>   # also reports which scenes moved
+```
+
+It is a front end over `bin/test-ios` above — it runs
+`bin/test-ios <target> -- -only-testing:UnicoachiOSTests/SnapshotTests
+-testLanguage en -testRegion US`,
+and calls `xcodebuild` nowhere itself. So it inherits, rather than repeats,
+everything that section describes: the project, the scheme, `bin/build-ios`'s
+`-derivedDataPath`, the simulator-only guard — and, the reason the delegation
+exists, **this checkout's own simulator device** (`bin/ios-sim`, RFC 126). Two
+checkouts capturing at once therefore cannot collide; a duplicated
+`-destination ...,name=iPhone 17 Pro` here would put them straight back on the
+one machine-global device.
+
+What it adds is the corpus: it writes `<scene>-light.png` / `<scene>-dark.png`
+for every scene in the catalogue, into `ios-app/build/snapshots/latest` by
+default (under the gitignored `build/` tree) or wherever `-o` says. The
+directory is CLEARED at the start of a run, so a deleted scene leaves no stale
+PNG pretending to be current. The corpus directory is the only line on stdout —
+`DIR=$(bin/snapshot-ios)` — and all progress, `bin/test-ios`'s included, goes to
+stderr.
+
+Like its siblings it runs under **system Xcode** and refuses inside the Nix dev
+shell with its own name in the message. There is **no `-d`**: the device is this
+checkout's and the model comes from the target's env file, so a second device
+selector would be a contradiction — `bin/ios-sim` is where that resolution
+lives. The run is pinned to `en`/`US`/UTC so a machine's locale cannot move the
+pixels. Afterwards it proves the corpus is non-empty, because a
+`xcodebuild test` that ran ZERO tests exits 0 — the signature of a scene file
+that was never registered in `project.pbxproj`.
+
+Nothing here is a committed golden and `-b` never fails the run: it compares
+against a corpus a previous run wrote (typically one captured from the base
+commit), reports the fraction of pixels that moved per scene, and writes a
+red-overlay `<scene>.diff.png` for the ones that did. Adding a scene is one
+entry in `SnapshotCatalogue.scenes` — see
+[UnicoachiOSTests/TESTING.md](./UnicoachiOSTests/TESTING.md).
+
 ## Simulator screenshots: `bin/screenshot-ios`
 
 Everything above targets a physical iPhone. For a **simulator** screenshot — the

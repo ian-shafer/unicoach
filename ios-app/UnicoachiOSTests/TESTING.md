@@ -87,6 +87,96 @@ any random draw. Example: the three graduation-date precisions are asserted
 explicitly through `submit()` (`testSubmitEmitsCanonicalStringForEachPrecision`)
 **and** through `isoDate` (`testIsoDate*Precision`), not left to chance.
 
+## Snapshot scenes (the visual gate)
+
+`SnapshotTests` walks a catalogue of scenes, hosts each one in a real `UIWindow`
+and writes `<scene>-light.png` / `<scene>-dark.png`. It is a **compile-and-
+construct tripwire first** (a change that breaks a screen's construction fails
+`xcodebuild test` with nobody looking) and a review corpus second (RFC 122).
+
+Capture the whole corpus with one command, outside the Nix dev shell:
+
+```sh
+bin/snapshot-ios                       # -> prints the corpus directory
+bin/snapshot-ios -b <previous-corpus>  # also reports which scenes moved
+```
+
+Unlike `bin/screenshot-ios` it needs no backend, no session and no booted app —
+the reason the authenticated and billing screens are in the corpus at all.
+
+`bin/snapshot-ios` runs the capture **through `bin/test-ios`**
+(`-- -only-testing:UnicoachiOSTests/SnapshotTests -testLanguage en -testRegion
+US`)
+rather than calling `xcodebuild` itself, so it lands on **this checkout's own
+simulator device** (RFC 126) exactly like the unit suite does, and there is no
+device option to pass — the model comes from the target's env file. It adds the
+corpus directory, the `-b` comparison, the `en`/`US`/UTC pinning and the check
+that PNGs were actually written.
+
+### Adding a scene
+
+Append one entry to `SnapshotCatalogue.scenes` in
+[SnapshotScenes.swift](./SnapshotScenes.swift):
+
+```swift
+SnapshotScene(name: "my-screen", size: CGSize(width: 402, height: 1000)) {
+    let rail = await SnapshotSeed.rail(
+        usage: CoachingUsage(usedPercent: 42, exhausted: false, resetsAt: nil)
+    )
+    return AnyView(NavigationStack { MyScreen(viewModel: rail) })
+}
+```
+
+- `size` defaults to the pinned iPhone 17 Pro canvas (402x874); give a taller
+  one when the content is taller, because the window does not scroll for you.
+- The closure is `async` so seeding is `await viewModel.load()` **before** the
+  render. Do not rely on the view's own `.task` for anything you can seed
+  yourself — that path is captured only if the test is synchronous (below).
+- Seed from the doubles that already exist: the app target's
+  `PreviewCoachingUsageClient`, `PreviewSubscriptionStore`,
+  `PreviewTransactionRecorder`, `DisabledSubscriptionStore`, and this target's
+  `Mock*` clients. `SnapshotSeed` has helpers for the common rails.
+- Timestamps rendered by a **relative** formatter must be offsets from now
+  (`SnapshotClock.agoHours(2)`), or the PNG changes every day. Absolute dates
+  are pinned (`SnapshotClock.pinned`).
+
+That is the whole change: the test walks the array, so a scene that is added is
+rendered, asserted non-blank, and bleed-checked automatically.
+
+### Rules the harness is built on (do not "simplify" these)
+
+They are commented in [SnapshotHost.swift](./SnapshotHost.swift) with the defect
+each one cost:
+
+- **`ImageRenderer` is banned.** It does not rasterize `ScrollView` content and
+  it ignores a SwiftUI `.colorScheme` override for asset-catalog colours.
+  `UIGraphicsImageRenderer` is the path.
+- **Inside it, `drawHierarchy(in:afterScreenUpdates:)` is the rasterizing call**
+  and `layer.render(in:)` is only the fallback for a window with no live scene.
+  `layer.render(in:)` walks the layer tree synchronously and never evaluates the
+  compositing filters iOS 26's Liquid Glass navigation chrome is drawn through,
+  so it drops that chrome silently: a `.navigationTitle` comes out as its raw
+  white mask — correct-looking on a dark capture, invisible on the light capture
+  of the _same_ scene — and a toolbar button loses its glass capsule and half of
+  a multi-layer symbol. Two captures of one view disagreeing about whether the
+  title exists is the phantom defect report this harness exists to prevent.
+- **Dark mode is `window.overrideUserInterfaceStyle`**, never
+  `.colorScheme(.dark)`.
+- **The window comes from a live `UIWindowScene`** out of
+  `UIApplication.shared.connectedScenes`.
+- **The test methods are synchronous.** In an `async` `@MainActor` test the body
+  holds the main actor for its whole duration, so a view's own `.task` never
+  runs while the harness spins the run loop — `ConversationView` captures its
+  loading spinner forever. Async seeding goes through
+  `SnapshotAsync.resolve { ... }`.
+- **One `autoreleasepool` per capture**, or the walk is SIGKILLed part way
+  through by jetsam.
+
+The corpus is **not** committed and nothing fails on pixel drift: the assertions
+are "it renders", "it is not blank", "nothing draws outside the device width",
+and "the files exist". `-b` reports drift against a corpus you captured
+yourself; the rest is a human looking at the PNGs.
+
 ## Fixing a bug: failing test first
 
 When resolving a reported bug, write a test that **reproduces the real failure

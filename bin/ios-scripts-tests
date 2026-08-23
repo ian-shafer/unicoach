@@ -39,6 +39,9 @@ DOTENV="$WORK/dotenv"
 # Where screenshot-ios writes its default-named PNGs in tests (redirected out of
 # the real repo via UNICOACH_SCREENSHOT_DIR).
 SCREENSHOT_DIR="$WORK/screenshots"
+# Where snapshot-ios writes its corpus in tests (redirected out of the real repo
+# via UNICOACH_SNAPSHOT_DIR).
+SNAPSHOT_DIR="$WORK/snapshots"
 mkdir -p "$SHIM_DIR" "$ENV_DIR" "$PRODUCTS_DIR" "$SCREENSHOT_DIR"
 
 # --- Shims -------------------------------------------------------------------
@@ -46,6 +49,33 @@ mkdir -p "$SHIM_DIR" "$ENV_DIR" "$PRODUCTS_DIR" "$SCREENSHOT_DIR"
 cat > "$SHIM_DIR/xcodebuild" <<EOF
 #!/usr/bin/env bash
 { echo "xcodebuild"; for a in "\$@"; do echo "\$a"; done; } >> "$ARGV_LOG"
+# snapshot-ios's contract lives partly in the TEST-RUNNER ENVIRONMENT rather
+# than in argv (xcodebuild forwards a TEST_RUNNER_<NAME> variable into the test
+# process as <NAME>), so those three are recorded too — otherwise the seam that
+# tells the harness where to write could be deleted and this suite would stay
+# green. Recorded only for \`xcodebuild test\`, so the build-ios/release-ios
+# cases' logs are untouched.
+if [ "\${1:-}" = "test" ]; then
+  {
+    echo "env:TEST_RUNNER_UNICOACH_SNAPSHOT_DIR=\${TEST_RUNNER_UNICOACH_SNAPSHOT_DIR:-}"
+    echo "env:TEST_RUNNER_UNICOACH_SNAPSHOT_BASELINE_DIR=\${TEST_RUNNER_UNICOACH_SNAPSHOT_BASELINE_DIR:-}"
+    echo "env:TEST_RUNNER_TZ=\${TEST_RUNNER_TZ:-}"
+  } >> "$ARGV_LOG"
+  # Stand in for the real run's product: one PNG in the corpus directory, so
+  # snapshot-ios's "the corpus is non-empty" guard sees what a working run
+  # leaves behind. SNAPSHOT_NO_WRITE models the failure that guard exists for —
+  # a test target that ran ZERO tests and still exited 0.
+  if [ -z "\${SNAPSHOT_NO_WRITE:-}" ] && [ -n "\${TEST_RUNNER_UNICOACH_SNAPSHOT_DIR:-}" ]; then
+    mkdir -p "\${TEST_RUNNER_UNICOACH_SNAPSHOT_DIR}"
+    : > "\${TEST_RUNNER_UNICOACH_SNAPSHOT_DIR}/fixture-scene-light.png"
+    : > "\${TEST_RUNNER_UNICOACH_SNAPSHOT_DIR}/fixture-scene-dark.png"
+  fi
+  # A failing test run: the scenes no longer construct.
+  if [ -n "\${SNAPSHOT_TEST_FAIL:-}" ]; then
+    echo "** TEST FAILED **" >&2
+    exit 65
+  fi
+fi
 exit 0
 EOF
 
@@ -510,6 +540,34 @@ run_sim_script() {
 
 run_ios_sim() { run_sim_script ios-sim "$@"; }
 run_test_ios() { run_sim_script test-ios "$@"; }
+
+# Run snapshot-ios with the shims first on PATH, the env fixtures in play, and
+# the corpus directory redirected into the temp work dir so no test ever writes
+# into the real repo. SNAPSHOT_NO_WRITE / SNAPSHOT_TEST_FAIL drive the
+# xcodebuild shim's two failure models (a run that wrote nothing, and a run that
+# failed), each contributing no argument at all when unset — the same
+# `${VAR:+...}` form the other wrappers use.
+#
+# The three `simctl list` fixtures are here because snapshot-ios no longer calls
+# xcodebuild itself: it delegates to bin/test-ios, which resolves this checkout's
+# device through bin/ios-sim (RFC 126). Both inherit them through the
+# environment, exactly as run_sim_script's two callers do. Without them ios-sim
+# would query the REAL simulator list and the cases below would depend on the
+# machine.
+run_snapshot() {
+  reset_log
+  env PATH="$SHIM_DIR:$PATH" \
+    UNICOACH_ENV_DIR="$ENV_DIR" \
+    UNICOACH_SNAPSHOT_DIR="$SNAPSHOT_DIR" \
+    SIMCTL_DEVICES="${SIMCTL_DEVICES:-$DEVICES_PRESENT}" \
+    SIMCTL_DEVICETYPES="${SIMCTL_DEVICETYPES:-$DEVICETYPES}" \
+    SIMCTL_RUNTIMES="${SIMCTL_RUNTIMES:-$RUNTIMES}" \
+    SIMCTL_CREATE_UDID="${SIMCTL_CREATE_UDID:-$CREATED_UDID}" \
+    SNAPSHOT_NO_WRITE="${SNAPSHOT_NO_WRITE:-}" \
+    SNAPSHOT_TEST_FAIL="${SNAPSHOT_TEST_FAIL:-}" \
+    ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
+    "$PROJECT_ROOT/bin/snapshot-ios" "$@"
+}
 
 # Run bin/is-nix directly, honouring DEV_SHELL_MARKER as the simulated marker.
 # IN_NIX_SHELL is unset here so the marker is the ONLY variable in play: this
@@ -1556,6 +1614,7 @@ test_screenshot_help_exits_zero() {
 }
 
 # ============================== ios-sim tests ================================
+
 # The per-checkout simulator device (RFC 126). Every case is fixture-driven: the
 # xcrun shim answers `simctl list devices/devicetypes/runtimes` from files and
 # records `simctl create`, so nothing here touches a real device.
@@ -1843,6 +1902,232 @@ test_testios_forwards_args_after_dashdash() {
   return 0
 }
 
+# ============================ snapshot-ios tests =============================
+
+# The guard is FIRST in the script, before any env or tool logic: inside the dev
+# shell xcodebuild is a stub, and the failure would otherwise read as a broken
+# project rather than as the wrong shell.
+test_snapshot_guard() {
+  local out rc=0
+  out="$(DEV_SHELL_MARKER=1 run_snapshot simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "must run under system Xcode" || return 1
+  log_no_tool "xcodebuild" || return 1
+  return 0
+}
+
+test_snapshot_guard_precedence_over_missing_env() {
+  local out rc=0
+  out="$(DEV_SHELL_MARKER=1 run_snapshot nonexistent-target 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "must run under system Xcode" || return 1
+  echo "$out" | grep -q "Environment file not found" && return 1
+  return 0
+}
+
+test_snapshot_missing_env_file() {
+  local out rc=0
+  out="$(run_snapshot nonexistent-target 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "nonexistent-target.env" || return 1
+  log_no_tool "xcodebuild" || return 1
+  return 0
+}
+
+# Hosting a UIWindow needs a simulator runtime; a device target would also drag
+# in signing this run has no business asking for. snapshot-ios no longer carries
+# that guard — bin/test-ios does — so what is pinned here is that the refusal
+# still REACHES the operator through the delegation, in test-ios's own words. A
+# bare /simulator only/ would also match a hypothetical guard back in
+# snapshot-ios, which is the duplication RFC 126 removed.
+test_snapshot_device_env_rejected() {
+  local out rc=0
+  out="$(run_snapshot device 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "test-ios runs the suite in the simulator only" || return 1
+  # And snapshot-ios says which of ITS steps died, rather than exiting wordlessly.
+  echo "$out" | grep -q "bin/test-ios failed for the snapshot scenes" || return 1
+  log_no_tool "xcodebuild" || return 1
+  return 0
+}
+
+# The whole point of the script in one case: the scenes-only test invocation,
+# with the corpus directory handed to the test runner through the prefixed
+# environment variable xcodebuild forwards.
+test_snapshot_happy_path() {
+  local out
+  out="$(run_snapshot simulator 2>/dev/null)" || return 1
+  log_has "test" || return 1
+  log_has "-only-testing:UnicoachiOSTests/SnapshotTests" || return 1
+  log_has "env:TEST_RUNNER_UNICOACH_SNAPSHOT_DIR=$SNAPSHOT_DIR" || return 1
+  [ "$out" = "$SNAPSHOT_DIR" ] || return 1
+  [ -f "$SNAPSHOT_DIR/fixture-scene-light.png" ] || return 1
+  return 0
+}
+
+# snapshot-ios does NOT call xcodebuild: it runs `bin/test-ios <target> --
+# <its own args>`, so the destination, the project, the scheme and the
+# DerivedData tree are test-ios's answers and cannot drift from bin/test-ios or
+# bin/build-ios. bin/test-ios is invoked by absolute path, so it cannot be
+# shimmed onto PATH — the delegation is pinned by the thing only test-ios and
+# ios-sim can produce: a destination naming THIS CHECKOUT's device by UDID.
+# Restoring a local `xcodebuild test -destination ...,name=iPhone 17 Pro` here,
+# the collision RFC 126 exists to prevent, fails on both lines.
+test_snapshot_delegates_to_test_ios() {
+  run_snapshot simulator >/dev/null 2>&1 || return 1
+  log_has "-destination" || return 1
+  log_has "platform=iOS Simulator,id=$CHECKOUT_UDID" || return 1
+  log_lacks "platform=iOS Simulator,name=iPhone 17 Pro" || return 1
+  log_has "-derivedDataPath" || return 1
+  log_has "$PROJECT_ROOT/ios-app/build/DerivedData" || return 1
+  log_has "$PROJECT_ROOT/ios-app/UnicoachiOS.xcodeproj" || return 1
+  log_has "-scheme" || return 1
+  log_has "UnicoachiOS" || return 1
+  return 0
+}
+
+# The target positional is FORWARDED, not consumed: it is the only thing that
+# selects the simulator MODEL, and test-ios/ios-sim are what read it. A second
+# fixture target names a different model, so it must land on a DIFFERENT device
+# — which a hardcoded default target, or a target quietly dropped on the way to
+# test-ios, could not do.
+test_snapshot_forwards_the_target() {
+  run_snapshot decoy-name-simulator >/dev/null 2>&1 || return 1
+  log_has "platform=iOS Simulator,id=$DECOY_UDID" || return 1
+  log_lacks "platform=iOS Simulator,id=$CHECKOUT_UDID" || return 1
+  return 0
+}
+
+# Locale and time zone are pinned so a machine's settings cannot move the
+# pixels — the reason a capture is comparable at all between two developers.
+test_snapshot_pins_locale_and_timezone() {
+  run_snapshot simulator >/dev/null 2>&1 || return 1
+  log_has "-testLanguage" || return 1
+  log_has "en" || return 1
+  log_has "-testRegion" || return 1
+  log_has "US" || return 1
+  log_has "env:TEST_RUNNER_TZ=UTC" || return 1
+  return 0
+}
+
+test_snapshot_explicit_output_dir() {
+  local target="$WORK/explicit-corpus"
+  rm -rf "$target"
+  local out
+  out="$(run_snapshot -o "$target" simulator 2>/dev/null)" || return 1
+  [ "$out" = "$target" ] || return 1
+  log_has "env:TEST_RUNNER_UNICOACH_SNAPSHOT_DIR=$target" || return 1
+  [ -f "$target/fixture-scene-dark.png" ] || return 1
+  return 0
+}
+
+# There is no -d: under RFC 126 the device is this checkout's and the model
+# comes from the target's env file, so a device selector on this script would be
+# a second, contradicting answer. It must be REJECTED as unknown rather than
+# quietly ignored, which is what an operator carrying an old command line needs
+# to see.
+test_snapshot_has_no_device_option() {
+  local rc=0
+  run_snapshot -d "iPhone 99 Test" simulator >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_UNKNOWN_OPTION" ] || return 1
+  log_no_tool "xcodebuild" || return 1
+  return 0
+}
+
+test_snapshot_baseline_forwarded() {
+  local baseline="$WORK/baseline-corpus"
+  mkdir -p "$baseline"
+  run_snapshot -b "$baseline" simulator >/dev/null 2>&1 || return 1
+  log_has "env:TEST_RUNNER_UNICOACH_SNAPSHOT_BASELINE_DIR=$baseline" || return 1
+  return 0
+}
+
+test_snapshot_missing_baseline_dir_is_fatal() {
+  local out rc=0
+  out="$(run_snapshot -b "$WORK/no-such-baseline" simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "Baseline directory not found" || return 1
+  log_no_tool "xcodebuild" || return 1
+  return 0
+}
+
+# The failure mode the corpus check exists for: `xcodebuild test` exits 0 when
+# ZERO tests ran, which is exactly what an unregistered scene file looks like.
+test_snapshot_empty_corpus_is_fatal() {
+  local out rc=0
+  rm -rf "$SNAPSHOT_DIR"
+  out="$(SNAPSHOT_NO_WRITE=1 run_snapshot simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "no PNGs were written" || return 1
+  echo "$out" | grep -q "project.pbxproj" || return 1
+  return 0
+}
+
+test_snapshot_test_failure_is_fatal() {
+  local out rc=0
+  out="$(SNAPSHOT_TEST_FAIL=1 run_snapshot simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "bin/test-ios failed for the snapshot scenes" || return 1
+  return 0
+}
+
+test_snapshot_unknown_option() {
+  local rc=0
+  run_snapshot -Z simulator >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_UNKNOWN_OPTION" ]
+}
+
+test_snapshot_option_requires_value() {
+  local rc=0
+  run_snapshot -o >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_OPTION_REQUIRES_VALUE" ]
+}
+
+test_snapshot_stray_positional() {
+  local rc=0
+  run_snapshot simulator stray >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_UNEXPECTED_ARG" ]
+}
+
+test_snapshot_option_after_target() {
+  local out rc=0
+  out="$(run_snapshot simulator -o "$WORK/late" 2>&1)" || rc=$?
+  [ "$rc" -eq "$EXIT_UNEXPECTED_ARG" ] || return 1
+  echo "$out" | grep -q "snapshot-ios -o $WORK/late simulator" || return 1
+  return 0
+}
+
+# An EMPTY -o/-b is a mistake, not a selection: it is almost always an unset
+# variable expanded into the command line.
+test_snapshot_empty_option_values_rejected() {
+  local rc=0
+  run_snapshot -o "" simulator >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_INVALID_ARG_VALUE" ] || return 1
+  rc=0
+  run_snapshot -b "" simulator >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_INVALID_ARG_VALUE" ] || return 1
+  return 0
+}
+
+# The stdout contract: a caller does DIR="$(bin/snapshot-ios)" and gets a usable
+# path, never a line of build log.
+test_snapshot_stdout_is_only_the_corpus_dir() {
+  local err="$WORK/snapshot-stderr.txt"
+  local out
+  out="$(run_snapshot simulator 2>"$err")" || return 1
+  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -eq 1 ] || return 1
+  [ "$out" = "$SNAPSHOT_DIR" ] || return 1
+  grep -q "Capturing the snapshot corpus" "$err" || return 1
+  return 0
+}
+
+test_snapshot_help_exits_zero() {
+  local out rc=0
+  out="$(run_snapshot -h 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  echo "$out" | grep -q "snapshot-ios"
+}
+
 # Note: run_install/run_build wrappers reset the argv log; export the
 # DEVICECTL_LIST_OUTPUT / DEV_SHELL_MARKER through the env of the wrapper call above.
 
@@ -1962,5 +2247,28 @@ assert_success "screenshot-ios: device resolves from the destination's id=<UDID>
 assert_success "screenshot-ios: a destination with neither name= nor id= is fatal" test_screenshot_unresolvable_destination_is_fatal
 assert_success "screenshot-ios: a decoy devicename= key does not win over the real name=" test_screenshot_device_ignores_decoy_name_key
 assert_success "screenshot-ios: -h prints help and exits 0" test_screenshot_help_exits_zero
+
+# snapshot-ios
+assert_success "snapshot-ios: dev-shell guard fires, no xcodebuild line" test_snapshot_guard
+assert_success "snapshot-ios: dev-shell guard precedes env resolution (nonexistent target)" test_snapshot_guard_precedence_over_missing_env
+assert_success "snapshot-ios: missing env file fails, names the missing file" test_snapshot_missing_env_file
+assert_success "snapshot-ios: device target rejected by test-ios (simulator-only)" test_snapshot_device_env_rejected
+assert_success "snapshot-ios: runs the scenes-only test and writes the corpus" test_snapshot_happy_path
+assert_success "snapshot-ios: delegates to bin/test-ios (this checkout's device, shared DerivedData)" test_snapshot_delegates_to_test_ios
+assert_success "snapshot-ios: the target reaches test-ios and selects the device" test_snapshot_forwards_the_target
+assert_success "snapshot-ios: pins the test runner to en/US and UTC" test_snapshot_pins_locale_and_timezone
+assert_success "snapshot-ios: -o writes and prints that exact directory" test_snapshot_explicit_output_dir
+assert_success "snapshot-ios: there is no -d device option" test_snapshot_has_no_device_option
+assert_success "snapshot-ios: -b forwards the baseline dir to the test runner" test_snapshot_baseline_forwarded
+assert_success "snapshot-ios: a nonexistent -b directory fails before any build" test_snapshot_missing_baseline_dir_is_fatal
+assert_success "snapshot-ios: xcodebuild exiting 0 with an empty corpus is fatal" test_snapshot_empty_corpus_is_fatal
+assert_success "snapshot-ios: a failing bin/test-ios is this script's fatal" test_snapshot_test_failure_is_fatal
+assert_success "snapshot-ios: unknown option fails with the usage-band code" test_snapshot_unknown_option
+assert_success "snapshot-ios: option missing its value fails with the usage-band code" test_snapshot_option_requires_value
+assert_success "snapshot-ios: stray positional fails with the usage-band code" test_snapshot_stray_positional
+assert_success "snapshot-ios: an option after the target says to reorder" test_snapshot_option_after_target
+assert_success "snapshot-ios: empty -o / -b values are rejected, not read as absent" test_snapshot_empty_option_values_rejected
+assert_success "snapshot-ios: stdout is EXACTLY the corpus directory" test_snapshot_stdout_is_only_the_corpus_dir
+assert_success "snapshot-ios: -h prints help and exits 0" test_snapshot_help_exits_zero
 
 end_tests
