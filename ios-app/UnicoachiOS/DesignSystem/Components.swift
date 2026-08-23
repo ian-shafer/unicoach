@@ -676,6 +676,45 @@ struct LogoMark: View {
     }
 }
 
+// MARK: - DSHairline
+
+/// **The** separator. DESIGN.md §8 gives this design exactly one — a 1pt
+/// `FieldBorder` rule — and no fills, tints or shadows to fall back on, which
+/// makes the hairline the single most-repeated primitive in the app and the one
+/// worth owning centrally. Hand-building `Rectangle().fill(...).frame(...)` per
+/// site states the colour and the width again each time, so changing the
+/// separator becomes a grep rather than an edit, and a site that gets it subtly
+/// wrong looks intentional.
+///
+/// Always `accessibilityHidden`: a rule is punctuation, not content, and
+/// VoiceOver should walk straight past it.
+struct DSHairline: View {
+    /// Which way the rule runs. The vertical variant is the blockquote gutter;
+    /// the horizontal one is every other separator.
+    enum Axis {
+        case horizontal
+        case vertical
+    }
+
+    var axis: Axis = .horizontal
+
+    var body: some View {
+        // One exhaustive switch rather than two independent `axis ==` tests: a
+        // third axis would make both ternaries fall to `nil`, and a rule with
+        // neither dimension fixed silently expands to fill its parent — a
+        // layout bug with no compiler error in front of it.
+        let thickness: (width: CGFloat?, height: CGFloat?)
+        switch axis {
+        case .horizontal: thickness = (nil, DSControl.borderWidth)
+        case .vertical: thickness = (DSControl.borderWidth, nil)
+        }
+        return Rectangle()
+            .fill(Color.dsFieldBorder)
+            .frame(width: thickness.width, height: thickness.height)
+            .accessibilityHidden(true)
+    }
+}
+
 // MARK: - FieldErrorText
 
 struct FieldErrorText: View {

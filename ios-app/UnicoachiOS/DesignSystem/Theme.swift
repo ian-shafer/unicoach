@@ -80,6 +80,12 @@ extension Font {
     /// independent of this and lives in `BrandTopBarButton`.
     static let dsTopBarGlyph = Font.system(.title2, design: .default).weight(.semibold)
 
+    /// Fenced and inline code in a rendered coach reply. Monospaced because
+    /// code's alignment *is* its meaning, at `.body` so it sits at the same
+    /// optical size as the prose around it and grows with Dynamic Type like
+    /// every other token here.
+    static let dsCode = Font.system(.body, design: .monospaced)
+
     /// The logo mark's `U`, sized from the circle that contains it. The mark is
     /// artwork rather than copy, so it scales with its container instead of
     /// with Dynamic Type — which is why this is the one size-taking token.
@@ -181,6 +187,25 @@ enum DSOpacity {
     /// elevation (DESIGN.md §3); the scrim exists to push the covered screen
     /// back, and the drawer is still separated from it by a hairline.
     static let scrim: Double = 0.45
+}
+
+/// Rendered Markdown in a coach reply (DESIGN.md §8.1). Only the measurements
+/// that Markdown adds and the existing tokens cannot express — everything else
+/// in `MarkdownView` reads `DSSpacing` / `DSRadius` / `DSControl` directly.
+enum DSMarkdown {
+    /// Leading gutter reserved for a list marker. Fixed so every item's text
+    /// starts on one column: sizing it to the marker would step "9." and "10."
+    /// apart and make a long list read as ragged. Applied as a `@ScaledMetric`
+    /// so a two-digit marker at accessibility sizes still fits.
+    static let markerWidth: CGFloat = 24
+    /// Floor on a table column, so a one-word column ("Yes") does not collapse
+    /// to the width of its own text and leave the grid looking broken.
+    static let columnMinWidth: CGFloat = 64
+    /// Ceiling on a table column, so a prose column wraps instead of
+    /// monopolising the row and pushing every other column off screen.
+    /// A `@ScaledMetric` at the call site: the grid must grow with text rather
+    /// than clip it.
+    static let columnMaxWidth: CGFloat = 220
 }
 
 /// The slide-over menu (DESIGN.md §7).

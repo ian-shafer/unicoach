@@ -142,14 +142,22 @@ struct ConversationView: View {
     @ViewBuilder
     private func turnView(_ turn: ChatTurn) -> some View {
         VStack(alignment: .leading, spacing: DSSpacing.md) {
-            messageBubble(text: turn.userMessage.content, isUser: true, identifier: "userBubble")
+            // The student's turn is an **utterance**: plain `Text`, inset.
+            // Rendering it as Markdown would silently eat the `*` in "should I
+            // apply *early*?" and reflow the line breaks they typed, which is a
+            // bug rather than a feature (RFC 118).
+            messageBubble(isUser: true, identifier: "userBubble") {
+                Text(turn.userMessage.content)
+                    .font(.dsBody)
+                    .foregroundStyle(Color.dsTextPrimary)
+            }
 
             if turn.coachMessage != nil || !turn.coachStreamingText.isEmpty {
-                messageBubble(
-                    text: turn.coachMessage?.content ?? turn.coachStreamingText,
-                    isUser: false,
-                    identifier: "coachBubble"
-                )
+                // The coach's turn is a **document** — it may carry a heading, a
+                // table, a code block — and is rendered Markdown at full width.
+                messageBubble(isUser: false, identifier: "coachBubble") {
+                    MarkdownView(source: turn.coachMessage?.content ?? turn.coachStreamingText)
+                }
             }
 
             if isActiveStreamingTurn(turn) {
@@ -174,13 +182,33 @@ struct ConversationView: View {
     /// rules out, and this design carries depth by border alone. The user's turn
     /// is distinguished by border weight — a darkened `TextPrimary` hairline
     /// against the coach's `FieldBorder` one — not by colour.
-    private func messageBubble(text: String, isUser: Bool, identifier: String) -> some View {
-        HStack {
+    ///
+    /// **The coach's bubble takes the full content width unconditionally**; the
+    /// student's keeps its leading spacer and stays inset (Ian's call, RFC
+    /// 118). Unconditional rather than "wide when the content is wide" because
+    /// a content-conditional width resizes the bubble *mid-stream*: the reply
+    /// would open as a paragraph at inset width and jump wider the moment a
+    /// table's delimiter row arrived three deltas later.
+    ///
+    /// **Generic in its content.** The bubble used to take `isUser` *and*
+    /// `rendersMarkdown` — two booleans that are always exact inverses — and
+    /// switch on the second internally, which let a caller write the meaningless
+    /// `(isUser: true, rendersMarkdown: true)`. Chrome is the primitive here;
+    /// what goes inside a turn is the caller's business, so that combination now
+    /// has no spelling at all.
+    private func messageBubble(
+        isUser: Bool,
+        identifier: String,
+        @ViewBuilder content: () -> some View
+    ) -> some View {
+        // `spacing: 0` because the inset is the student's `Spacer` and nothing
+        // else: the default HStack gap would sit outside the coach's
+        // `.infinity` frame and quietly make "full width" full width minus 8pt.
+        HStack(spacing: 0) {
             if isUser { Spacer(minLength: DSSpacing.xl) }
-            Text(text)
-                .font(.dsBody)
-                .foregroundStyle(Color.dsTextPrimary)
+            content()
                 .padding(DSSpacing.md)
+                .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
                 .background(Color.dsSurface)
                 .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
                 .overlay(
@@ -188,9 +216,9 @@ struct ConversationView: View {
                         .stroke(isUser ? Color.dsTextPrimary : Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
                 )
                 .accessibilityIdentifier(identifier)
-            if !isUser { Spacer(minLength: DSSpacing.xl) }
         }
     }
+
 
     private var streamingIndicator: some View {
         HStack(spacing: DSSpacing.sm) {
@@ -302,6 +330,17 @@ struct ConversationView: View {
 }
 
 private final class ConversationPreviewClient: ConversationClientProtocol, @unchecked Sendable {
+    /// History the preview replays. Parameterised so one client can back both
+    /// the plain preview and the Markdown one below.
+    private let history: [Message]
+
+    init(history: [Message] = [
+        Message(id: "u1", role: .user, content: "Where do I start?", createdAt: Date()),
+        Message(id: "c1", role: .coach, content: "Let's begin with your goals.", createdAt: Date()),
+    ]) {
+        self.history = history
+    }
+
     func streamConversation(request: CreateConversationRequest)
         -> AsyncThrowingStream<ConversationStreamEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -353,10 +392,7 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
     }
 
     func fetchMessages(conversationId: UUID) async throws -> [Message] {
-        [
-            Message(id: "u1", role: .user, content: "Where do I start?", createdAt: Date()),
-            Message(id: "c1", role: .coach, content: "Let's begin with your goals.", createdAt: Date()),
-        ]
+        history
     }
 
     func deleteConversation(conversationId: UUID) async throws {}
@@ -377,5 +413,38 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
 
 #Preview("conversation - Dark") {
     conversationPreview
+        .preferredColorScheme(.dark)
+}
+
+/// The worst-case reply in the real bubble, which is the only place the
+/// full-width coach turn, the bubble's radius and the table's own scrolling can
+/// be judged together (RFC 118).
+@MainActor private var markdownConversationPreview: some View {
+    NavigationStack {
+        ConversationView(
+            conversation: Conversation(
+                id: UUID(),
+                name: "Deadlines",
+                createdAt: Date(),
+                updatedAt: Date(),
+                lastActivityAt: Date(),
+                archivedAt: nil
+            ),
+            conversationClient: ConversationPreviewClient(history: [
+                Message(id: "u1", role: .user, content: "What should I do next?", createdAt: Date()),
+                Message(id: "c1", role: .coach, content: MarkdownFixture.worstCaseReply, createdAt: Date()),
+            ]),
+            onProfileRequired: {}
+        )
+    }
+}
+
+#Preview("conversation markdown - Light") {
+    markdownConversationPreview
+        .preferredColorScheme(.light)
+}
+
+#Preview("conversation markdown - Dark") {
+    markdownConversationPreview
         .preferredColorScheme(.dark)
 }
