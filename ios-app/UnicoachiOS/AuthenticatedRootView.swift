@@ -46,6 +46,14 @@ struct AuthenticatedRootView: View {
 
     @State private var path: [Destination] = []
     @State private var isMenuOpen = false
+    /// Re-identifies the root conversation. **New conversation** in the drawer
+    /// pops back to the root, but once the root has been used it is a real
+    /// conversation, so popping to it alone leaves the same thread on screen —
+    /// a visible no-op. Bumping the token rebuilds the root view (and its view
+    /// model) as a blank thread whose composer takes focus on appearance.
+    /// Nothing is created server-side: a conversation exists only once its
+    /// first message is sent.
+    @State private var rootConversationToken = UUID()
     /// The paywall (RFC 121). Presented from **here**, not from the conversation
     /// screen, so one sheet serves the whole stack: a 402 on a pushed
     /// conversation and a "See options" tap on the root open the same one, over
@@ -207,6 +215,7 @@ struct AuthenticatedRootView: View {
             paywallGate: paywallGate,
             onProfileRequired: onProfileRequired
         )
+        .id(rootConversationToken)
     }
 
     // MARK: - Menu
@@ -228,10 +237,11 @@ struct AuthenticatedRootView: View {
     private func menu(width: CGFloat) -> some View {
         SlideOverMenu(
             viewModel: menuViewModel,
-            // Already at a fresh conversation: closing the menu is the whole
-            // action, and popping anything pushed on top of it.
+            // Pop anything pushed on top of the root, blank the root itself,
+            // and close the menu.
             onNewConversation: {
                 path.removeAll()
+                rootConversationToken = UUID()
                 setMenu(open: false)
             },
             onSelect: { conversation in push(.conversation(conversation)) },
@@ -239,6 +249,14 @@ struct AuthenticatedRootView: View {
             onSettings: { push(.settings) }
         )
         .frame(width: width)
+        // The drawer resolves its geometry as ONE unit, before the offset is
+        // applied. Without this, `.offset` is interpolated per leaf: a row
+        // inserted by `refresh()` *during* the slide has no in-flight geometry
+        // to interpolate from, so it resolves against the offset's target value
+        // and is painted at its final x — outside the still-sliding drawer,
+        // over the chat — snapping into place only when the animation ends.
+        // This must sit ABOVE `.offset`; below it, it is a no-op.
+        .geometryGroup()
         .offset(x: isMenuOpen ? 0 : -width)
         // Swiping back closes the drawer, as tapping the scrim does.
         .gesture(

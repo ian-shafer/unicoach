@@ -19,6 +19,13 @@ struct ConversationView: View {
     /// view: the sheet is the authenticated root's, so it survives a push and
     /// covers the whole stack.
     private let paywallGate: PaywallGate
+    /// Whether this view was opened as a *new* conversation rather than an
+    /// existing one. A new conversation has nothing to read, so the composer
+    /// takes focus on appearance and the student can type immediately; an
+    /// existing one must not, or the keyboard covers the history they just
+    /// opened. Note this creates nothing server-side — a conversation is only
+    /// created when the first message is sent.
+    private let startsFresh: Bool
     @FocusState private var isComposerFocused: Bool
     @State private var sendButtonWidth: CGFloat = 0
 
@@ -34,6 +41,7 @@ struct ConversationView: View {
         ))
         _subscriptionViewModel = ObservedObject(wrappedValue: paywallGate.subscriptions)
         self.paywallGate = paywallGate
+        self.startsFresh = true
     }
 
     init(
@@ -50,6 +58,7 @@ struct ConversationView: View {
         ))
         _subscriptionViewModel = ObservedObject(wrappedValue: paywallGate.subscriptions)
         self.paywallGate = paywallGate
+        self.startsFresh = false
     }
 
     var body: some View {
@@ -64,6 +73,14 @@ struct ConversationView: View {
         .navigationTitle("Coaching")
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.loadHistory() }
+        // A new conversation is a blank page: put the cursor in the composer so
+        // the student can type without a tap. Guarded by `isComposerDisabled`
+        // because raising the keyboard over a composer that cannot accept a turn
+        // (blocked by the paywall) invites typing into a dead field.
+        .onAppear {
+            guard startsFresh, !isComposerDisabled else { return }
+            isComposerFocused = true
+        }
     }
 
     private var isComposerDisabled: Bool {
