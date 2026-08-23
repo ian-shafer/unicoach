@@ -45,6 +45,23 @@ enum Reading<Value: Equatable>: Equatable {
         }
     }
 
+    /// The rule for a read whose *premise has been disproved*: a fresh value
+    /// wins, and a failed read is `unavailable` — it does **not** keep what is
+    /// on screen. This is the post-refusal path and nothing else: a 402 has
+    /// just told us the reading on screen is wrong, so keeping it would leave
+    /// a meter contradicting the refusal (and, on the paywall, a sheet with an
+    /// open budget and therefore no basis and no words at all). Ordinary
+    /// refreshes keep their reading — that is `refreshed(with:)`'s rule and
+    /// RFC 119's deliberate choice; this one is the exception, written as its
+    /// own method so neither can be mistaken for the other.
+    /// The receiver is not a parameter because it is not consulted: a static
+    /// factory makes the discarded reading visible at the call site and keeps
+    /// this from being read as a merge.
+    static func invalidated(by fresh: Value?) -> Reading {
+        guard let fresh else { return .unavailable }
+        return .ready(fresh)
+    }
+
     /// The state a retry starts from: a previous failure's words must not sit
     /// on screen through the read that is meant to replace them. A reading
     /// already on screen stays put — that is `refreshed(with:)`'s rule.
@@ -241,23 +258,15 @@ final class SubscriptionViewModel: ObservableObject {
         phase = .loading
         notice = nil
 
-        // The price's "a retry is in flight" reset is the caller's here because
-        // `refreshUsage()` already does its own; hoisting it keeps both fetches
-        // showing a spinner for the same window.
-        productReading = productReading.retrying()
-
-        // `refreshUsage()` publishes the meter itself, so its `async let` carries
-        // no value — it is bound and awaited purely to run concurrently with the
-        // price fetch and to be joined before `phase` goes back to `.idle`.
+        // Both reads publish their own reading, including the "a retry is in
+        // flight" reset, so the `async let`s carry no value — they are bound
+        // and awaited purely to run concurrently and to be joined before
+        // `phase` goes back to `.idle`. Neither merge rule is transcribed
+        // here: this method orchestrates two reads and a re-post, it performs
+        // neither read itself.
         async let usageRead: Void = refreshUsage()
-        async let fetchedProduct = fetchProduct()
-        let (_, product) = await (usageRead, fetchedProduct)
-        // The **same** three-case rule the meter gets, applied by the same
-        // method rather than approximated: a fresh price wins, a failed refresh
-        // keeps the price already on screen, and a load that produced no price
-        // at all is `unavailable` — which the offer says out loud instead of
-        // dropping the Subscribe button without a word.
-        productReading = productReading.refreshed(with: product)
+        async let productRead: Void = refreshProduct()
+        _ = await (usageRead, productRead)
 
         if let newest = await newestEntitlement() {
             if case .recorded(let subscription) = await recorder.record(newest) {
@@ -410,9 +419,18 @@ final class SubscriptionViewModel: ObservableObject {
             // failed purchase — in the paywall's own words, so the sentence is
             // authored once and names the reset date when a reading is present.
             // A meter that says the budget is *open* names no basis, so the
-            // server's refusal is reported in the neutral sentence rather than
-            // in a period's the client cannot stand behind.
-            return PaywallCopy(basis: coachingBasis ?? .unknown).detail
+            // refusal is reported in that case's own sentence rather than in a
+            // period's the client cannot stand behind — or in the "no reading
+            // yet" one, which would claim a spent allowance the meter beside
+            // it contradicts. With NO basis the meter says the budget is open,
+            // so there is no block to describe — and the paywall's dismissing
+            // words ("your allowance is available") would render here as a red
+            // failure banner reporting that nothing is wrong. That case falls in
+            // with the generic purchase failure instead.
+            guard let coachingBasis else {
+                return String(localized: "We couldn't complete your purchase. Please try again.")
+            }
+            return PaywallCopy(basis: coachingBasis).detail
         case .studentAlreadyExists, .studentProfileRequired, .payloadTooLarge, nil:
             return String(localized: "We couldn't complete your purchase. Please try again.")
         }
@@ -435,6 +453,41 @@ final class SubscriptionViewModel: ObservableObject {
         // previous failure's words must not sit there through the new read.
         usageReading = usageReading.retrying()
         usageReading = usageReading.refreshed(with: await fetchUsage())
+    }
+
+    /// The **402's** re-read: same fetch, opposite failure rule. A refusal has
+    /// just disproved whatever reading is on screen, so a read that fails goes
+    /// to `unavailable` (`budget == .unknown`) rather than keeping a stale
+    /// `exhausted == false` — a 402 and a failing usage GET are the same server
+    /// having the same bad minute, so they correlate rather than compose
+    /// independently, and the pair used to open a paywall with no title, no
+    /// explanation, and a meter contradicting the refusal.
+    ///
+    /// `unknown` is the right landing: it already means "the 402 is the
+    /// authority" everywhere else in this design, it has copy of its own, and
+    /// it never blocks a composer on its own.
+    func refreshUsageAfterRefusal() async {
+        // Unlike `refreshUsage()`, the line below is not consulted by the next
+        // one — `invalidated(by:)` is a factory that ignores the receiver. It
+        // is still not dead: it is the state on screen *for the duration of
+        // the read*, so a previous failure's words are replaced by the
+        // in-flight meter rather than sitting under the sheet about to open.
+        usageReading = usageReading.retrying()
+        usageReading = .invalidated(by: await fetchUsage())
+    }
+
+    /// Re-reads the price, and **nothing else** — no meter read, no `/verify`
+    /// POST. The offer's "Try again" wants exactly this: a control about a
+    /// missing price has no business writing to the purchase rail. `load()`
+    /// calls it too, so the three-case merge rule — a fresh price wins, a
+    /// failed refresh keeps the price already on screen, and a read that
+    /// produced no price at all is `unavailable`, which the offer says out
+    /// loud instead of dropping the Subscribe button without a word — stays
+    /// written once. The surfaces that genuinely want all three still call
+    /// `load()`.
+    func refreshProduct() async {
+        productReading = productReading.retrying()
+        productReading = productReading.refreshed(with: await fetchProduct())
     }
 
     private func fetchUsage() async -> CoachingUsage? {

@@ -85,6 +85,31 @@ struct PaywallCopy: Equatable {
     /// basis they would then have to invent for an open meter.
     static let pausedTitle = String(localized: "Coaching is paused")
 
+    /// Copy for a surface that **must speak**, where an absent basis means an
+    /// **open** budget and nothing else (`CoachingBasis.init?`). A paywall on
+    /// screen with no heading and no sentence — or a 402 reported with no
+    /// sentence at all — is not a rendering of an open budget, it is a
+    /// rendering bug, so the open case gets words of its own here.
+    ///
+    /// Words of its *own*, not `.unknown`'s: "no reading yet" and "the meter
+    /// answered, and the answer is that nothing is spent" are two different
+    /// situations, and lending the first one's sentence to the second tells a
+    /// student with an unspent allowance that they have used it. The optional
+    /// stays meaningful for the surfaces that legitimately say nothing
+    /// (`refusedTurnDetail(basis:)`); these are not among them.
+    init(basisOrOpen: CoachingBasis?) {
+        guard let basisOrOpen else {
+            self.init(title: Self.pausedTitle, detail: String(localized: "Your coaching allowance is available."))
+            return
+        }
+        self.init(basis: basisOrOpen)
+    }
+
+    private init(title: String, detail: String) {
+        self.title = title
+        self.detail = detail
+    }
+
     init(basis: CoachingBasis) {
         title = Self.pausedTitle
         switch basis {
@@ -119,31 +144,34 @@ struct PaywallView: View {
     @ObservedObject var viewModel: SubscriptionViewModel
     @Environment(\.dismiss) private var dismiss
 
-    /// `nil` once the meter reports the budget open — the sheet is on its way
-    /// out (see `onChange` below) and has nothing left to explain, which is
-    /// better than describing a freshly bought period as spent for the whole of
-    /// the dismiss animation.
-    private var copy: PaywallCopy? {
-        viewModel.coachingBasis.map(PaywallCopy.init(basis:))
+    /// Always words. An open meter names no basis, and the sheet is never
+    /// *opened* over one — `PaywallGate.present()`, the only opener, declines
+    /// a budget with nothing to explain. What remains is the budget going open
+    /// while the sheet is already up (a purchase, or a meter refresh
+    /// mid-sheet); `onChange` below dismisses it, but the frames before that
+    /// dismissal are still on screen, and a modal with a meter and a Subscribe
+    /// button under a blank space reads as a bug rather than as a dismissal.
+    /// So those frames say the allowance is available — never nothing, and
+    /// never the spent-period sentence over an unspent meter.
+    private var copy: PaywallCopy {
+        PaywallCopy(basisOrOpen: viewModel.coachingBasis)
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DSSpacing.lg) {
-                if let copy {
-                    VStack(alignment: .leading, spacing: DSSpacing.sm) {
-                        Text(copy.title)
-                            .font(.dsTitle)
-                            .foregroundStyle(Color.dsTextPrimary)
-                            .accessibilityIdentifier("paywallTitle")
+                VStack(alignment: .leading, spacing: DSSpacing.sm) {
+                    Text(copy.title)
+                        .font(.dsTitle)
+                        .foregroundStyle(Color.dsTextPrimary)
+                        .accessibilityIdentifier("paywallTitle")
 
-                        Text(copy.detail)
-                            .font(.dsBody)
-                            .foregroundStyle(Color.dsTextSecondary)
-                            .accessibilityIdentifier("paywallDetail")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(copy.detail)
+                        .font(.dsBody)
+                        .foregroundStyle(Color.dsTextSecondary)
+                        .accessibilityIdentifier("paywallDetail")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 CoachingUsageMeter(viewModel: viewModel)
 

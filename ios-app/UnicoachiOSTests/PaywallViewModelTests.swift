@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import UnicoachiOS
 
@@ -33,6 +34,14 @@ final class PaywallViewModelTests: XCTestCase {
     private func activeSubscription() -> PublicSubscription {
         PublicSubscription(
             status: "active",
+            productId: SubscriptionProduct.monthlyIdentifier,
+            currentPeriodEnd: resetDate
+        )
+    }
+
+    private func expiredSubscription() -> PublicSubscription {
+        PublicSubscription(
+            status: "expired",
             productId: SubscriptionProduct.monthlyIdentifier,
             currentPeriodEnd: resetDate
         )
@@ -153,8 +162,8 @@ final class PaywallViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.offersSubscribe)
     }
 
-    /// The 402's own landing point: `refreshUsage()` is the one thing the gate
-    /// calls, and it re-reads the meter rather than setting anything.
+    /// The refresh path re-reads the meter rather than setting anything — the
+    /// block becomes true because the server said so.
     func testRefreshUsageIsWhatMakesTheBlockTrue() async {
         usageClient.results = [.success(CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: nil))]
 
@@ -219,4 +228,210 @@ final class PaywallViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.usageReading, .ready(reading), "a failed refresh keeps the reading already on screen")
         XCTAssertEqual(viewModel.budget, .open)
     }
+
+    // MARK: - The refusal's own read
+
+    /// **The empty paywall.** A stale `exhausted == false` reading, a 402, and
+    /// a usage GET that fails with it — one bad minute on the server produces
+    /// all three, so they correlate rather than compose independently. Under
+    /// the ordinary keep-the-last-reading rule the budget stayed `open`, the
+    /// basis was therefore `nil`, and the sheet opened with no title, no
+    /// explanation, and a meter contradicting the refusal — with `onChange`
+    /// unable to dismiss it, because `open` never *transitioned*.
+    ///
+    /// The refusal's read invalidates instead: `unknown`, which has words.
+    func testAFailedForcedRefreshAfterARefusalDropsTheStaleOpenReading() async {
+        struct Boom: Error {}
+        let stale = CoachingUsage(usedPercent: 40, exhausted: false, resetsAt: nil)
+        usageClient.results = [.success(stale), .failure(Boom())]
+
+        await viewModel.refreshUsage()
+        XCTAssertEqual(viewModel.budget, .open, "the stale reading the refusal is about to disprove")
+
+        let flag = PresentationFlag()
+        let gate = PaywallGate(
+            subscriptions: viewModel,
+            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+        )
+        await gate.handleBudgetExhausted()
+
+        XCTAssertTrue(flag.value, "the 402 opens the sheet")
+        XCTAssertEqual(viewModel.usageReading, .unavailable, "the refusal disproved the reading; a failed re-read must not keep it")
+        XCTAssertEqual(viewModel.budget, .unknown, "not open: the 402 is the authority")
+        XCTAssertNotNil(viewModel.coachingBasis, "and the sheet therefore has a basis")
+        let copy = PaywallCopy(basisOrOpen: viewModel.coachingBasis)
+        XCTAssertFalse(copy.title.isEmpty)
+        XCTAssertFalse(copy.detail.isEmpty)
+        XCTAssertEqual(copy.detail, "You've used your coaching allowance.")
+    }
+
+    /// **The stranded paywall.** The forced re-read succeeds and honestly
+    /// reports the budget open — the refusal has been disproved, so there is
+    /// no block to explain. Presenting anyway is worse than useless: the
+    /// budget is already `.open` *before* `present()`, `PaywallView`'s
+    /// `onChange` has no `initial: true` and so has no transition left to
+    /// observe, and the sheet would sit there saying "Coaching is paused"
+    /// over an unspent meter with "Not now" as its only exit. The gate
+    /// declines to open it.
+    func testARefusalDisprovedByItsOwnReReadOpensNoSheet() async {
+        let stale = CoachingUsage(usedPercent: 40, exhausted: false, resetsAt: nil)
+        let fresh = CoachingUsage(usedPercent: 40, exhausted: false, resetsAt: nil)
+        usageClient.results = [.success(stale), .success(fresh)]
+
+        await viewModel.refreshUsage()
+        XCTAssertEqual(viewModel.budget, .open)
+
+        let flag = PresentationFlag()
+        let gate = PaywallGate(
+            subscriptions: viewModel,
+            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+        )
+        await gate.handleBudgetExhausted()
+
+        XCTAssertEqual(viewModel.budget, .open, "the server's answer stands")
+        XCTAssertNil(viewModel.coachingBasis, "an open budget names no basis")
+        XCTAssertFalse(flag.value, "and a sheet with nothing to explain and no way out is not opened")
+    }
+
+    /// The **other** way in. "See options" calls `present()` directly, with no
+    /// re-read in front of it, so a tap that races a meter refresh (scene
+    /// activation re-reads usage) would open the same stranded sheet. The rule
+    /// is the funnel's, not the 402 path's: `present()` declines an open
+    /// budget whoever asks.
+    func testASeeOptionsTapOverAnOpenBudgetOpensNoSheet() async {
+        let unspent = CoachingUsage(usedPercent: 40, exhausted: false, resetsAt: nil)
+        usageClient.results = [.success(unspent)]
+        await viewModel.refreshUsage()
+        XCTAssertEqual(viewModel.budget, .open)
+
+        let flag = PresentationFlag()
+        let gate = PaywallGate(
+            subscriptions: viewModel,
+            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+        )
+        gate.present()
+
+        XCTAssertFalse(flag.value, "a tap has no more right to strand the sheet than a refusal does")
+    }
+
+    /// The same tap over a budget that *is* spent still opens the sheet — the
+    /// rule at the funnel declines one verdict, it does not close the door.
+    func testASeeOptionsTapOverASpentBudgetOpensTheSheet() async {
+        let spent = CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: resetDate)
+        usageClient.results = [.success(spent)]
+        await viewModel.refreshUsage()
+        XCTAssertEqual(viewModel.budget, .spent)
+
+        let flag = PresentationFlag()
+        let gate = PaywallGate(
+            subscriptions: viewModel,
+            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+        )
+        gate.present()
+
+        XCTAssertTrue(flag.value)
+    }
+
+    /// And over a meter with no answer at all: `.unknown` has copy of its own,
+    /// so the tap is answered rather than swallowed.
+    func testASeeOptionsTapWithNoReadingOpensTheSheet() {
+        let flag = PresentationFlag()
+        let gate = PaywallGate(
+            subscriptions: viewModel,
+            isPresented: Binding(get: { flag.value }, set: { flag.value = $0 })
+        )
+        XCTAssertEqual(viewModel.budget, .unknown, "nothing has been read yet")
+
+        gate.present()
+
+        XCTAssertTrue(flag.value)
+    }
+
+    /// A forced read that *succeeds* is still just the server's answer: the
+    /// refusal invalidates the old reading, it does not invent a block.
+    func testAForcedRefreshThatSucceedsPublishesWhatTheServerSaid() async {
+        let fresh = CoachingUsage(usedPercent: 100, exhausted: true, resetsAt: resetDate)
+        usageClient.results = [.success(fresh)]
+
+        await viewModel.refreshUsageAfterRefusal()
+
+        XCTAssertEqual(viewModel.usageReading, .ready(fresh))
+        XCTAssertEqual(viewModel.budget, .spent)
+        XCTAssertEqual(viewModel.coachingBasis, .period(resetsAt: resetDate))
+    }
+
+    /// The RFC 119 rule the fix must **not** have broken: an ordinary refresh
+    /// that fails keeps the reading already on screen. Nothing has disproved
+    /// it, and yanking a meter off a screen the student is reading is the
+    /// behaviour that rule exists to prevent.
+    func testAnOrdinaryFailedRefreshStillKeepsTheReadingOnScreen() async {
+        struct Boom: Error {}
+        let reading = CoachingUsage(usedPercent: 40, exhausted: false, resetsAt: nil)
+        usageClient.results = [.success(reading), .failure(Boom())]
+
+        await viewModel.refreshUsage()
+        await viewModel.refreshUsage()
+
+        XCTAssertEqual(viewModel.usageReading, .ready(reading), "only the post-refusal read invalidates")
+        XCTAssertEqual(viewModel.budget, .open)
+    }
+
+    /// Whatever the meter says, the modal has words. Every reachable
+    /// budget/basis combination — including the budget going open while the
+    /// sheet is already up, in the frames before `onChange` dismisses it —
+    /// renders a title and a detail. An empty sheet is never a rendering.
+    func testTheSheetAlwaysHasATitleAndADetail() {
+        let dates: [Date?] = [nil, resetDate]
+        for budget in [CoachingBudget.unknown, .open, .spent] {
+            for date in dates {
+                let basis = CoachingBasis(budget: budget, resetsAt: date)
+                let copy = PaywallCopy(basisOrOpen: basis)
+                XCTAssertEqual(copy.title, PaywallCopy.pausedTitle, "\(budget)/\(String(describing: date))")
+                XCTAssertFalse(copy.detail.isEmpty, "\(budget)/\(String(describing: date))")
+                if budget == .open {
+                    XCTAssertNil(basis, "an open budget still names no basis")
+                    XCTAssertNotEqual(
+                        copy.detail, PaywallCopy(basis: .unknown).detail,
+                        "an open meter is not told its allowance is spent; the open case has words of its own"
+                    )
+                }
+            }
+        }
+    }
+
+    // MARK: - The offer's retry
+
+    /// "Try again" retries the **price**, and nothing else. `load()` would also
+    /// re-post the newest entitlement to `/verify` — a binding call with no
+    /// business firing because a StoreKit price fetch failed.
+    func testTheOfferRetryFetchesOnlyTheProductAndNeverPostsVerify() async {
+        struct Boom: Error {}
+        usageClient.results = [.success(CoachingUsage(usedPercent: 10, exhausted: false, resetsAt: nil))]
+        store.entitlements = [transaction]
+        recorder.outcome = .recorded(expiredSubscription())
+        store.productResult = .failure(Boom())
+
+        await viewModel.load()
+        XCTAssertEqual(viewModel.offer, .unavailable, "the price fetch failed, which is what the button is for")
+        XCTAssertEqual(viewModel.productReading, .unavailable)
+        let postsAfterLoad = recorder.recorded.count
+        let usageReadsAfterLoad = usageClient.callCount
+
+        store.productResult = .success(product)
+        await viewModel.refreshProduct()
+
+        XCTAssertEqual(viewModel.productReading, .ready(product))
+        XCTAssertEqual(viewModel.offer, .subscribe(product))
+        XCTAssertEqual(store.productCallCount, 2, "the one thing that failed was retried")
+        XCTAssertEqual(recorder.recorded.count, postsAfterLoad, "and no /verify POST fired")
+        XCTAssertEqual(usageClient.callCount, usageReadsAfterLoad, "nor a usage re-read")
+    }
+}
+
+/// A `Binding`'s storage for a test: a reference box, so the gate's write is
+/// visible to the assertion without capturing a mutable local in an escaping
+/// closure.
+@MainActor
+private final class PresentationFlag {
+    var value = false
 }

@@ -61,7 +61,11 @@ struct SubscriptionOffer: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .accessibilityIdentifier("subscribeUnavailable")
 
-                        Button("Try again") { Task { await viewModel.load() } }
+                        // The price, and only the price: this button exists
+                        // because *that* fetch failed, and `load()` would also
+                        // re-read the meter and re-post the newest entitlement
+                        // to `/verify`.
+                        Button("Try again") { Task { await viewModel.refreshProduct() } }
                             .font(.dsButton)
                             .foregroundStyle(Color.dsTextPrimary)
                             .frame(maxWidth: .infinity, alignment: .leading)

@@ -229,6 +229,23 @@ final class SubscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.notice, .failure("You've used your coaching allowance."))
     }
 
+    /// ...but only where there is a block to describe. With the meter reporting
+    /// the budget OPEN there is no basis, and the paywall's dismissing words
+    /// ("your allowance is available") would render here as a red failure
+    /// banner announcing that nothing is wrong. That case takes the generic
+    /// purchase-failure string instead.
+    func testCoachingBudgetExhaustedOverAnOpenMeterIsNotAnnouncedAsGoodNews() async {
+        await viewModel.load()
+        XCTAssertEqual(viewModel.budget, .open, "precondition: the meter says the budget is open")
+
+        store.purchaseResult = .success(.purchased(transaction))
+        recorder.outcome = .deferred(.server(error("coaching_budget_exhausted", 402)))
+
+        await viewModel.subscribe()
+
+        XCTAssertEqual(viewModel.notice, .failure("We couldn't complete your purchase. Please try again."))
+    }
+
     func testAnUnrecognizedCodeGetsTheGenericMessage() async {
         store.purchaseResult = .success(.purchased(transaction))
         recorder.outcome = .deferred(.server(error("some_new_server_code", 500)))

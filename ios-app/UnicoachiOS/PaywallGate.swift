@@ -32,13 +32,48 @@ struct PaywallGate {
     /// from one answer and cannot disagree, and every `ConversationViewModel` in
     /// the stack observes the same object. Awaited before presenting so the
     /// sheet opens on the fresh reading.
+    ///
+    /// The read is the *invalidating* one: the refusal has disproved whatever
+    /// the meter last said, so a failed re-read must not leave a stale open
+    /// budget standing behind the sheet this method is about to ask for. A
+    /// re-read that reports the budget **open** has disproved the refusal
+    /// itself and opens nothing — but that rule is not written here, because
+    /// it is not a property of this path. It lives in `present()`, the one
+    /// funnel every presentation goes through; this method is a forced re-read
+    /// followed by an unconditional request to present.
     func handleBudgetExhausted() async {
-        await subscriptions.refreshUsage()
+        await subscriptions.refreshUsageAfterRefusal()
         present()
     }
 
-    /// A "See options" tap — the same sheet the 402 opens, from the same flag.
+    /// The one place the sheet is opened — a "See options" tap, the 402's
+    /// landing point, and anything added later — and therefore the one place
+    /// the rule lives: a paywall over an **open** budget has no basis to name
+    /// and no way out. `PaywallView`'s `onChange` observes transitions seen
+    /// *after* the sheet appears, so a budget already open when it opens never
+    /// dismisses it; the modal would sit there saying "Coaching is paused"
+    /// over an unspent meter, exitable only by "Not now". A caller with
+    /// nothing to explain therefore gets no sheet, whether it is a refusal
+    /// disproved by its own re-read or a "See options" tap that raced a meter
+    /// refresh.
+    ///
+    /// The verdict is switched exhaustively rather than tested against `.open`
+    /// because this is the gate: a fourth `CoachingBudget` case must not
+    /// acquire a presentation policy by falling into an unnamed branch.
     func present() {
-        isPresented.wrappedValue = true
+        switch subscriptions.budget {
+        case .spent:
+            // The meter confirms the block: the sheet explains a real one.
+            isPresented.wrappedValue = true
+        case .unknown:
+            // No answer from the meter. A 402 that arrived before (or instead
+            // of) a reading stays the authority, and `.unknown` has copy of
+            // its own, so the sheet still has something to say.
+            isPresented.wrappedValue = true
+        case .open:
+            // Nothing to explain, and no transition left for `onChange` to
+            // observe — opening here strands the sheet behind "Not now".
+            break
+        }
     }
 }
