@@ -329,4 +329,52 @@ class AppViewModelTests: XCTestCase {
         XCTAssertEqual(outcome, .failed)
         XCTAssertEqual(viewModel.authState, .verificationRequired(user))
     }
+
+    // MARK: - The subscription rail (RFC 119)
+
+    /// The rail is composed **here**, once, and not inside
+    /// `AuthenticatedRootView`, whose `init` re-runs on every publish of this
+    /// object. Reading it twice must yield the same objects — turn either into a
+    /// computed property that rebuilds and this goes red.
+    func testTheSubscriptionRailIsBuiltOnceForTheAppsLifetime() {
+        let store = MockSubscriptionStore()
+        let viewModel = AppViewModel(
+            authClient: mockClient,
+            studentClient: mockStudentClient,
+            subscriptionStore: store
+        )
+
+        XCTAssertTrue(viewModel.subscriptionStore as AnyObject === store)
+        XCTAssertTrue(viewModel.subscriptionStore as AnyObject === viewModel.subscriptionStore as AnyObject)
+        XCTAssertTrue(viewModel.transactionRecorder as AnyObject === viewModel.transactionRecorder as AnyObject)
+    }
+
+    /// The property that actually loses money: the recorder must finish through
+    /// the *same* store the rest of the app holds. When the rail was built in a
+    /// SwiftUI `init`, the listener's recorder and the view model's store were
+    /// different instances and the surviving store's registry was empty, so
+    /// `finish()` silently no-opped and a paid purchase was never finished.
+    func testTheRecorderFinishesThroughTheStoreTheAppComposed() async {
+        let store = MockSubscriptionStore()
+        let client = MockSubscriptionClient()
+        client.result = .success(PublicSubscription(
+            status: "active",
+            productId: SubscriptionProduct.monthlyIdentifier,
+            currentPeriodEnd: Date(timeIntervalSince1970: 1_773_000_000)
+        ))
+        let viewModel = AppViewModel(
+            authClient: mockClient,
+            studentClient: mockStudentClient,
+            subscriptionClient: client,
+            subscriptionStore: store
+        )
+        let transaction = StoreTransaction(id: 11, productID: SubscriptionProduct.monthlyIdentifier, jws: "a.b.c")
+
+        let outcome = await viewModel.transactionRecorder.record(transaction)
+
+        guard case .recorded = outcome else {
+            return XCTFail("expected the transaction to be recorded, got [\(outcome)]")
+        }
+        XCTAssertEqual(store.finished, [transaction], "finished through the app's own store")
+    }
 }

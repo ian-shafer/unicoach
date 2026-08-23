@@ -223,7 +223,9 @@ and backfilled here.
 | `subscriptions-apple` | split at design time (RFC 110) into the two rows below: a verify-path slice and a Notifications-V2 webhook slice                                                                                                                                                             | split       | —   |
 | — verify path         | `subscriptions` table (versioned) + `SubscriptionsDao`; `POST /api/v1/subscriptions/verify` via the App Store Server API (`:appstore` module); `SubscriptionPlans` (`productId → y × price`); subscribed `Entitlement` branch (basis/resetsAt); `resetsAt` on coaching-usage | implemented | 110 |
 | — webhook             | App Store Server Notifications V2 webhook (Apple-signed JWS auth, x5c verification, queue-processed) updating the same `subscriptions` row; retires the re-post-to-`/verify` renewal-refresh gap                                                                             | implemented | 112 |
-| `paywall-ios`         | iOS paywall + block screen + subscribe flow + Restore Purchases + `UserAuthState` gate; abstract "coaching used" usage bar (percentage, never dollars)                                                                                                                       | planned     | —   |
+| `paywall-ios`         | split at design time (RFC 119) into the two rows below: the purchase rail + usage surface, then the gate                                                                                                                                                                     | split       | —   |
+| — subscription rail   | iOS StoreKit 2 product fetch, purchase, transaction listener and Restore Purchases; `SubscriptionClient` (`/verify`) and `CoachingUsageClient`; `TransactionRecorder` owning the finish policy; a Settings "Subscription" section with the abstract `UsageMeter`             | implemented | 119 |
+| — paywall gate        | intercepting the `coaching_budget_exhausted` 402 from the four turn endpoints and presenting the block/paywall screen (a modal on the chat action, or a `UserAuthState` gate state modeled on RFC 72)                                                                        | planned     | —   |
 
 ## Dependency tree
 
@@ -393,8 +395,24 @@ prompts to reflect what actually landed (renamed artifacts, node splits, scope
 shifts).
 ```
 
-**4 — `paywall-ios`** (iOS; may split into a StoreKit-purchase slice + paywall
-UI):
+**4 — `paywall-ios`** (iOS) — **split at design time into two slices, as the
+prompt below recommends.** The first, the **subscription rail**, landed as RFC
+119: the StoreKit 2 seam (`SubscriptionStoreProtocol` +
+`StoreKitSubscriptionStore`, product id `coach.uni.UnicoachiOS.monthly10`, a
+`.storekit` configuration file wired to the scheme), `SubscriptionClient` over
+`POST /api/v1/subscriptions/verify` and `CoachingUsageClient` over
+`GET /api/v1/students/me/coaching-usage`, the `TransactionRecorder` actor that
+owns the finish policy — a transaction is finished only on a terminal server
+answer, the arms being the table in
+`ios-app/UnicoachiOS/TransactionRecorder.swift`, which owns them — a
+session-long transaction listener at the authenticated root, and the Settings
+"Subscription" section with the abstract `UsageMeter`, Subscribe (StoreKit's
+localized `displayPrice`) and Restore Purchases. No server change was needed.
+**This node is not complete:** the second slice — the
+`coaching_budget_exhausted` 402 gate and the block/paywall screen — is still to
+run, so the feature is not yet finished either.
+
+The original kickoff prompt is kept below as the record of what was asked for:
 
 ```
 /rfc-pipeline

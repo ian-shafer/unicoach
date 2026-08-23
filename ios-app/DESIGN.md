@@ -345,14 +345,26 @@ The menu is a custom overlay, not `NavigationSplitView`: the reference's
 full-bleed gradient chrome does not survive stock split-view presentation on
 iPhone.
 
-**Deferred: subscription status and coaching usage.** This section previously
-asked Settings to absorb both. Neither is buildable: the server exposes only
-`POST /api/v1/subscriptions/verify` and the Apple notifications webhook — there
-is no GET for subscription state and no usage endpoint of any kind. Delivering
-them means new server endpoints, an OpenAPI change, a client and tests, which is
-a different change from a navigation restructure. `SettingsView` is composed as
-a stack of sections so they are additive later; this note stands in place of a
-promise the code does not keep.
+**Built: subscription status and coaching usage (RFC 119).** This section asks
+Settings to absorb both, and it now does — as the `SubscriptionSection` between
+the appearance section and the button stack, exactly the additive drop-in the
+stack-of-sections composition was for.
+
+The earlier note here said neither was buildable because "the server exposes no
+GET for subscription state and no usage endpoint of any kind". **The second half
+was already wrong when it was written:**
+`GET /api/v1/students/me/coaching-usage` shipped with RFC 109 and is what the
+coaching meter reads (`usedPercent`, `exhausted`, `resetsAt`, where a null
+`resetsAt` is the free tier's lifetime allowance).
+
+The first half is still true and shapes the design: **there is no GET for
+subscription state.** The only response carrying a `PublicSubscription` is
+`POST /api/v1/subscriptions/verify`, which is documented as idempotent and as
+the refresh path — so the client learns its subscription status by re-posting
+the current StoreKit entitlement's JWS, and a student with no entitlement simply
+has no status line to show. Entitlement itself is never derived on the client:
+the meter renders the server's own answer, and nothing inspects `status` or
+`currentPeriodEnd` to unlock anything.
 
 ## 8. What the reference does not cover
 

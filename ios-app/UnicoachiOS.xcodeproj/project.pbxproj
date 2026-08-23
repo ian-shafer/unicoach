@@ -80,6 +80,23 @@
 		CCCC00010000000000000B04 /* VerificationViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F04 /* VerificationViewModelTests.swift */; };
 		25404F7F3AAEACEA33261AEB /* AppearancePreferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08EF9B956DDA48C69EEDC6C2 /* AppearancePreferenceTests.swift */; };
 		CCCC00010000000000000B05 /* ChangeEmailViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */; };
+		FFFF00010000000000000B01 /* SubscriptionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F01 /* SubscriptionClient.swift */; };
+		FFFF00010000000000000B02 /* CoachingUsageClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F02 /* CoachingUsageClient.swift */; };
+		FFFF00010000000000000B03 /* SubscriptionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F03 /* SubscriptionStore.swift */; };
+		FFFF00010000000000000B04 /* StoreKitSubscriptionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F04 /* StoreKitSubscriptionStore.swift */; };
+		FFFF00010000000000000B05 /* TransactionRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F05 /* TransactionRecorder.swift */; };
+		FFFF00010000000000000B06 /* SubscriptionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F06 /* SubscriptionViewModel.swift */; };
+		FFFF00010000000000000B07 /* SubscriptionSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F07 /* SubscriptionSection.swift */; };
+		FFFF00010000000000000B08 /* UsageMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F08 /* UsageMeter.swift */; };
+		FFFF00010000000000000B09 /* SubscriptionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F09 /* SubscriptionClientTests.swift */; };
+		FFFF00010000000000000B0A /* CoachingUsageClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F0A /* CoachingUsageClientTests.swift */; };
+		FFFF00010000000000000B0E /* StoreKitVerdictTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F0F /* StoreKitVerdictTests.swift */; };
+		FFFF00010000000000000B0B /* TransactionRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F0B /* TransactionRecorderTests.swift */; };
+		FFFF00010000000000000B0C /* SubscriptionViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F0C /* SubscriptionViewModelTests.swift */; };
+		FFFF00010000000000000B0D /* SubscriptionStoreMocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00010000000000000F0D /* SubscriptionStoreMocks.swift */; };
+		FFFF00020000000000000B01 /* Locked.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00020000000000000F01 /* Locked.swift */; };
+		FFFF00020000000000000B02 /* StoreKitConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00020000000000000F02 /* StoreKitConfigurationTests.swift */; };
+		FFFF00020000000000000B03 /* Logging.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFFF00020000000000000F03 /* Logging.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -168,6 +185,24 @@
 		CCCC00010000000000000F04 /* VerificationViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerificationViewModelTests.swift; sourceTree = "<group>"; };
 		08EF9B956DDA48C69EEDC6C2 /* AppearancePreferenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppearancePreferenceTests.swift; sourceTree = "<group>"; };
 		CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChangeEmailViewModelTests.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F01 /* SubscriptionClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionClient.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F02 /* CoachingUsageClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoachingUsageClient.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F03 /* SubscriptionStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionStore.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F04 /* StoreKitSubscriptionStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StoreKitSubscriptionStore.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F05 /* TransactionRecorder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TransactionRecorder.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F06 /* SubscriptionViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionViewModel.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F07 /* SubscriptionSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionSection.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F08 /* UsageMeter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UsageMeter.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F09 /* SubscriptionClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionClientTests.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F0A /* CoachingUsageClientTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoachingUsageClientTests.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F0F /* StoreKitVerdictTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StoreKitVerdictTests.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F0B /* TransactionRecorderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TransactionRecorderTests.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F0C /* SubscriptionViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionViewModelTests.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F0D /* SubscriptionStoreMocks.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SubscriptionStoreMocks.swift; sourceTree = "<group>"; };
+		FFFF00020000000000000F01 /* Locked.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Locked.swift; sourceTree = "<group>"; };
+		FFFF00020000000000000F02 /* StoreKitConfigurationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StoreKitConfigurationTests.swift; sourceTree = "<group>"; };
+		FFFF00020000000000000F03 /* Logging.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Logging.swift; sourceTree = "<group>"; };
+		FFFF00010000000000000F0E /* UnicoachiOS.storekit */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = UnicoachiOS.storekit; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -198,6 +233,7 @@
 				D1900281D7D6477E191232FC /* Frameworks */,
 				54DF8AA27E5BE9829E6B2A58 /* UnicoachiOS */,
 				A7EFC6E8C2CFFB91407E525F /* UnicoachiOSTests */,
+				FFFF00010000000000000F0E /* UnicoachiOS.storekit */,
 			);
 			sourceTree = "<group>";
 		};
@@ -248,6 +284,15 @@
 				CCCC00010000000000000F03 /* ChangeEmailViewModel.swift */,
 				AAAA00010000000000000A01 /* DesignSystem */,
 				AAAA00030000000000000A01 /* Markdown */,
+				FFFF00010000000000000F01 /* SubscriptionClient.swift */,
+				FFFF00010000000000000F02 /* CoachingUsageClient.swift */,
+				FFFF00010000000000000F03 /* SubscriptionStore.swift */,
+				FFFF00020000000000000F01 /* Locked.swift */,
+				FFFF00020000000000000F03 /* Logging.swift */,
+				FFFF00010000000000000F04 /* StoreKitSubscriptionStore.swift */,
+				FFFF00010000000000000F05 /* TransactionRecorder.swift */,
+				FFFF00010000000000000F06 /* SubscriptionViewModel.swift */,
+				FFFF00010000000000000F07 /* SubscriptionSection.swift */,
 			);
 			path = UnicoachiOS;
 			sourceTree = "<group>";
@@ -297,6 +342,13 @@
 				08EF9B956DDA48C69EEDC6C2 /* AppearancePreferenceTests.swift */,
 				CCCC00010000000000000F05 /* ChangeEmailViewModelTests.swift */,
 				AAAA00030000000000000F04 /* MarkdownParserTests.swift */,
+				FFFF00010000000000000F09 /* SubscriptionClientTests.swift */,
+				FFFF00010000000000000F0A /* CoachingUsageClientTests.swift */,
+				FFFF00010000000000000F0F /* StoreKitVerdictTests.swift */,
+				FFFF00010000000000000F0B /* TransactionRecorderTests.swift */,
+				FFFF00010000000000000F0C /* SubscriptionViewModelTests.swift */,
+				FFFF00010000000000000F0D /* SubscriptionStoreMocks.swift */,
+				FFFF00020000000000000F02 /* StoreKitConfigurationTests.swift */,
 			);
 			path = UnicoachiOSTests;
 			sourceTree = "<group>";
@@ -306,6 +358,7 @@
 			children = (
 				AAAA00010000000000000F01 /* Theme.swift */,
 				AAAA00010000000000000F02 /* Components.swift */,
+				FFFF00010000000000000F08 /* UsageMeter.swift */,
 			);
 			path = DesignSystem;
 			sourceTree = "<group>";
@@ -480,6 +533,16 @@
 				CCCC00010000000000000B01 /* VerificationRequiredView.swift in Sources */,
 				CCCC00010000000000000B02 /* VerificationViewModel.swift in Sources */,
 				CCCC00010000000000000B03 /* ChangeEmailViewModel.swift in Sources */,
+				FFFF00010000000000000B01 /* SubscriptionClient.swift in Sources */,
+				FFFF00010000000000000B02 /* CoachingUsageClient.swift in Sources */,
+				FFFF00010000000000000B03 /* SubscriptionStore.swift in Sources */,
+				FFFF00020000000000000B01 /* Locked.swift in Sources */,
+				FFFF00020000000000000B03 /* Logging.swift in Sources */,
+				FFFF00010000000000000B04 /* StoreKitSubscriptionStore.swift in Sources */,
+				FFFF00010000000000000B05 /* TransactionRecorder.swift in Sources */,
+				FFFF00010000000000000B06 /* SubscriptionViewModel.swift in Sources */,
+				FFFF00010000000000000B07 /* SubscriptionSection.swift in Sources */,
+				FFFF00010000000000000B08 /* UsageMeter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -512,6 +575,13 @@
 				25404F7F3AAEACEA33261AEB /* AppearancePreferenceTests.swift in Sources */,
 				CCCC00010000000000000B05 /* ChangeEmailViewModelTests.swift in Sources */,
 				AAAA00030000000000000B04 /* MarkdownParserTests.swift in Sources */,
+				FFFF00010000000000000B09 /* SubscriptionClientTests.swift in Sources */,
+				FFFF00010000000000000B0A /* CoachingUsageClientTests.swift in Sources */,
+				FFFF00010000000000000B0E /* StoreKitVerdictTests.swift in Sources */,
+				FFFF00010000000000000B0B /* TransactionRecorderTests.swift in Sources */,
+				FFFF00010000000000000B0C /* SubscriptionViewModelTests.swift in Sources */,
+				FFFF00010000000000000B0D /* SubscriptionStoreMocks.swift in Sources */,
+				FFFF00020000000000000B02 /* StoreKitConfigurationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

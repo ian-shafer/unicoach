@@ -1,0 +1,45 @@
+{
+  "identifier": "9B1A6C40",
+  "nonRenewingSubscriptions": [],
+  "products": [],
+  "settings": {
+    "_askToBuyEnabled": false,
+    "_billingIssuesEnabled": false,
+    "_storeKitErrors": [],
+    "_storefront": "USA"
+  },
+  "subscriptionGroups": [
+    {
+      "id": "20B7A1F4",
+      "localizations": [],
+      "name": "Unicoach Coaching",
+      "subscriptions": [
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "9.99",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "6F3B21C0",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "A month of coaching",
+              "displayName": "Unicoach Monthly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "coach.uni.UnicoachiOS.monthly10",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Unicoach Monthly",
+          "subscriptionGroupID": "20B7A1F4",
+          "type": "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version": {
+    "major": 4,
+    "minor": 0
+  }
+}

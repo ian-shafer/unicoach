@@ -35,6 +35,9 @@ struct UnicoachiOSApp: App {
                         user: user,
                         authClient: viewModel.authClient,
                         conversationClient: viewModel.conversationClient,
+                        coachingUsageClient: viewModel.coachingUsageClient,
+                        subscriptionStore: viewModel.subscriptionStore,
+                        transactionRecorder: viewModel.transactionRecorder,
                         onProfileRequired: viewModel.onStudentProfileRequired,
                         onEmailChanged: viewModel.onEmailChanged,
                         onLogout: viewModel.logout

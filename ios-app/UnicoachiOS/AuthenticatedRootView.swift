@@ -16,6 +16,20 @@ struct AuthenticatedRootView: View {
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
 
+    /// The StoreKit rail and the one `TransactionRecorder` over it, **built by
+    /// `AppViewModel` and passed in**. This view's `init` runs again on every
+    /// publish of that object, so anything constructed here would be rebuilt
+    /// while the `@StateObject` below kept the first copy — leaving the listener
+    /// and the view model on different recorders over different stores, and the
+    /// rebuilt store's registry empty, so `finish()` would silently no-op and a
+    /// paid purchase would never be finished.
+    ///
+    /// What does belong here is the *listener*: a renewal must be recorded
+    /// whether or not Settings is on screen, and must not be attempted
+    /// unauthenticated, where `/verify` could only answer 401.
+    private let store: SubscriptionStoreProtocol
+    private let recorder: TransactionRecording
+
     /// Destinations pushed from the menu. An enum rather than `NavigationLink`
     /// destinations because the links live in an overlay that is dismissed as it
     /// navigates.
@@ -35,10 +49,19 @@ struct AuthenticatedRootView: View {
     /// open/close and the drawer can slide in already populated — see `menu`.
     @StateObject private var menuViewModel: ConversationListViewModel
 
+    /// Owned here, not by `SettingsView`, so the subscription surface keeps its
+    /// state across a push/pop of Settings. It is safe as a `@StateObject`
+    /// precisely because the store and recorder it closes over are the app's,
+    /// not this init's: re-running the init cannot hand it a second rail.
+    @StateObject private var subscriptionViewModel: SubscriptionViewModel
+
     init(
         user: PublicUser,
         authClient: AuthClientProtocol,
         conversationClient: ConversationClientProtocol,
+        coachingUsageClient: CoachingUsageClientProtocol,
+        subscriptionStore: SubscriptionStoreProtocol,
+        transactionRecorder: TransactionRecording,
         onProfileRequired: @escaping () -> Void,
         onEmailChanged: @escaping (PublicUser) async -> Void,
         onLogout: @escaping () async -> Void
@@ -50,7 +73,16 @@ struct AuthenticatedRootView: View {
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
         _menuViewModel = StateObject(wrappedValue: ConversationListViewModel(conversationClient: conversationClient))
+
+        self.store = subscriptionStore
+        self.recorder = transactionRecorder
+        _subscriptionViewModel = StateObject(wrappedValue: SubscriptionViewModel(
+            usageClient: coachingUsageClient,
+            store: subscriptionStore,
+            recorder: transactionRecorder
+        ))
     }
+
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -60,6 +92,21 @@ struct AuthenticatedRootView: View {
                 // theirs, which is where the back button comes from.
                 .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(for: Destination.self, destination: destination)
+        }
+        // The transaction listener, for the whole authenticated session: Apple
+        // redelivers an unfinished transaction and pushes renewals and Ask to
+        // Buy approvals here. Every one goes to the same recorder, which is the
+        // only thing that decides whether it may be finished, and its outcome is
+        // handed to the surface that shows it. SwiftUI cancels the task when
+        // this view goes away, i.e. on logout.
+        .task { await recordTransactionUpdates() }
+    }
+
+    /// The listener pump itself, named rather than inlined in `body`: a
+    /// `for await` loop over a session-long stream is not layout.
+    private func recordTransactionUpdates() async {
+        for await transaction in store.updates() {
+            await subscriptionViewModel.apply(await recorder.record(transaction))
         }
     }
 
@@ -169,7 +216,13 @@ struct AuthenticatedRootView: View {
         case .conversations:
             ConversationListView(conversationClient: conversationClient, onProfileRequired: onProfileRequired)
         case .settings:
-            SettingsView(user: user, authClient: authClient, onEmailChanged: onEmailChanged, onLogout: onLogout)
+            SettingsView(
+                user: user,
+                authClient: authClient,
+                subscriptionViewModel: subscriptionViewModel,
+                onEmailChanged: onEmailChanged,
+                onLogout: onLogout
+            )
         }
     }
 
@@ -232,6 +285,9 @@ private final class AuthenticatedRootPreviewAuthClient: AuthClientProtocol, @unc
         user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User", emailVerified: true),
         authClient: AuthenticatedRootPreviewAuthClient(),
         conversationClient: AuthenticatedRootPreviewClient(),
+        coachingUsageClient: PreviewCoachingUsageClient(),
+        subscriptionStore: PreviewSubscriptionStore(),
+        transactionRecorder: PreviewTransactionRecorder(),
         onProfileRequired: {},
         onEmailChanged: { _ in },
         onLogout: {}

@@ -10,6 +10,26 @@ class AppViewModel: ObservableObject {
     let googleSignInProvider: SsoSignInProviding
     let appleSignInProvider: SsoSignInProviding
     let cookieStorage: CookieStorageProtocol
+    let coachingUsageClient: CoachingUsageClientProtocol
+
+    /// The StoreKit rail and the one `TransactionRecorder` over it.
+    ///
+    /// They live here, in the app's composition root, and **not** in
+    /// `AuthenticatedRootView`: a `View`'s `init` runs again on every publish of
+    /// this object, so a rail built there is rebuilt each time while the
+    /// `@StateObject` view model keeps the first one. The listener and the view
+    /// model would then hold different recorders over different stores, and the
+    /// rebuilt store's registry would be empty — so `finish()` would no-op and a
+    /// paid purchase would never be finished. `AppViewModel` is a `@StateObject`
+    /// created once for the app's lifetime, so one store and one recorder exist
+    /// for as long as the process does.
+    ///
+    /// The *listener* still runs at the authenticated root, where it belongs: a
+    /// renewal must be recorded whether or not Settings is on screen, and must
+    /// not be attempted unauthenticated, where `/verify` could only answer 401.
+    let subscriptionStore: SubscriptionStoreProtocol
+    let transactionRecorder: TransactionRecording
+
     private let logger = Logger(subsystem: "coach.uni.UnicoachiOS", category: "AppViewModel")
 
     init(
@@ -18,15 +38,25 @@ class AppViewModel: ObservableObject {
         authClient: (AuthClientProtocol & SsoAuthenticating)? = nil,
         studentClient: StudentClientProtocol? = nil,
         conversationClient: ConversationClientProtocol? = nil,
+        coachingUsageClient: CoachingUsageClientProtocol? = nil,
+        subscriptionClient: SubscriptionClientProtocol? = nil,
+        subscriptionStore: (SubscriptionStoreProtocol & TransactionFinishing) = StoreKitSubscriptionStore(),
         googleSignInProvider: SsoSignInProviding = GoogleSignInProvider(),
         appleSignInProvider: SsoSignInProviding = AppleSignInProvider()
     ) {
         self.authClient = authClient ?? AuthClient(apiClient: apiClient)
         self.studentClient = studentClient ?? StudentClient(apiClient: apiClient)
         self.conversationClient = conversationClient ?? ConversationClient(apiClient: apiClient)
+        self.coachingUsageClient = coachingUsageClient ?? CoachingUsageClient(apiClient: apiClient)
         self.googleSignInProvider = googleSignInProvider
         self.appleSignInProvider = appleSignInProvider
         self.cookieStorage = cookieStorage
+        self.subscriptionStore = subscriptionStore
+        // The one place a `TransactionFinishing` is ever handed out.
+        self.transactionRecorder = TransactionRecorder(
+            client: subscriptionClient ?? SubscriptionClient(apiClient: apiClient),
+            store: subscriptionStore
+        )
     }
 
     func checkSession() async {

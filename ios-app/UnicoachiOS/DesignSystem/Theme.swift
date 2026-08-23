@@ -172,6 +172,12 @@ enum DSControl {
     /// Content height of the branded top bar (excluding the status bar it
     /// extends under).
     static let topBarHeight: CGFloat = 44
+    /// Height of the coaching-usage meter's track. A meter is not a control:
+    /// it is read, never tapped, so it is far shorter than `height` while
+    /// keeping the same 16pt radius as everything else that reads as a
+    /// container. A token rather than a literal so the one magic number in the
+    /// meter lives with the rest of the rhythm.
+    static let meterHeight: CGFloat = 14
 }
 
 /// Opacity tokens for interactive state feedback, shared by the design system's

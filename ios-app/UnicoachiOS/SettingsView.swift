@@ -5,15 +5,23 @@ import SwiftUI
 /// out. Before RFC 117 none of the three had a home once `HomeView` was gone,
 /// and Change Email had none at all for a verified student.
 ///
-/// §7 also asks this screen to absorb subscription status and coaching usage.
-/// Neither is buildable today — the server exposes no GET for subscription
-/// state and no usage endpoint of any kind — so the screen is composed as a
-/// stack of sections that those two join later, and DESIGN.md §7 records the
-/// deferral.
+/// §7 also asks this screen to absorb subscription status and coaching usage,
+/// and RFC 119 lands both as the `SubscriptionSection` below: the meter comes
+/// from `GET /api/v1/students/me/coaching-usage`, which has existed since
+/// RFC 109. What remains true of the older deferral is only this — the server
+/// exposes **no GET for subscription state**, so subscription status is read by
+/// re-posting the current entitlement's JWS to the idempotent
+/// `POST /api/v1/subscriptions/verify`, and a student with no StoreKit
+/// entitlement simply has no status to show.
 struct SettingsView: View {
     let authClient: AuthClientProtocol
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
+
+    /// Owned by `AuthenticatedRootView` — it shares the one
+    /// `TransactionRecorder` with the session-long transaction listener — so it
+    /// arrives as an `@ObservedObject` rather than being built here.
+    @ObservedObject var subscriptionViewModel: SubscriptionViewModel
 
     /// The signed-in user as this screen knows them.
     @State private var user: PublicUser
@@ -24,11 +32,13 @@ struct SettingsView: View {
     init(
         user: PublicUser,
         authClient: AuthClientProtocol,
+        subscriptionViewModel: SubscriptionViewModel,
         onEmailChanged: @escaping (PublicUser) async -> Void,
         onLogout: @escaping () async -> Void
     ) {
         _user = State(initialValue: user)
         self.authClient = authClient
+        self.subscriptionViewModel = subscriptionViewModel
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
     }
@@ -39,6 +49,8 @@ struct SettingsView: View {
                 identity
 
                 appearanceSection
+
+                SubscriptionSection(viewModel: subscriptionViewModel)
 
                 VStack(spacing: DSControl.stackGap) {
                     LoadingButton(
@@ -151,6 +163,11 @@ private final class SettingsPreviewAuthClient: AuthClientProtocol, @unchecked Se
         SettingsView(
             user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User", emailVerified: true),
             authClient: SettingsPreviewAuthClient(),
+            subscriptionViewModel: SubscriptionViewModel(
+                usageClient: PreviewCoachingUsageClient(),
+                store: PreviewSubscriptionStore(),
+                recorder: PreviewTransactionRecorder()
+            ),
             onEmailChanged: { _ in },
             onLogout: {}
         )

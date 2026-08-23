@@ -213,10 +213,18 @@ class LoginViewModel: ObservableObject {
             // `respondLoginUnauthorized` and `respondSsoLoginOutcome` — so the
             // server's own wording is shown verbatim.
             errorResponse = error
-        case .studentAlreadyExists, .none:
-            // Every other code — one these two routes do not emit, or one this
-            // client has no case for at all — carries copy written for a log, so
-            // it is recorded and replaced rather than surfaced raw.
+        case .studentAlreadyExists,
+             .subscriptionNotFound,
+             .subscriptionOwnedByOtherAccount,
+             .validationFailed,
+             .payloadTooLarge,
+             .decodeError,
+             .none:
+            // Every other code — one these two routes do not emit (the four
+            // subscription/validation codes belong to RFC 119's purchase rail),
+            // or one this client has no case for at all — carries copy written
+            // for a log, so it is recorded and replaced rather than surfaced
+            // raw.
             logger.error("Unrecognized backend error code: [\(error.code, privacy: .public)] message=[\(error.message, privacy: .public)]")
             errorResponse = ErrorResponse(
                 code: error.code,

@@ -59,9 +59,18 @@ enum ServerErrorCode: String {
     case accountDisabled = "account_disabled"
     case serviceUnavailable = "service_unavailable"
     case studentAlreadyExists = "student_already_exists"
+    case subscriptionNotFound = "subscription_not_found"
+    case subscriptionOwnedByOtherAccount = "subscription_owned_by_other_account"
+    case validationFailed = "validation_failed"
+    case payloadTooLarge = "payload_too_large"
     case timeout = "TIMEOUT"
     case networkError = "NETWORK_ERROR"
     case serverError = "SERVER_ERROR"
+    /// `APIClient.decode` synthesizes this **only after** the response carried
+    /// the expected status — i.e. the request succeeded and the body could not
+    /// be read. A code, not a `nil`, because that distinction decides whether a
+    /// StoreKit transaction may be finished (`TransactionRecorder.isPermanent`).
+    case decodeError = "DECODE_ERROR"
 }
 
 extension ErrorResponse {
@@ -124,6 +133,70 @@ struct PublicStudent: Codable, Equatable {
 
 struct StudentResponse: Codable {
     let student: PublicStudent
+}
+
+// MARK: - Subscription and coaching-usage domain models
+
+/// Body of `POST /api/v1/subscriptions/verify`: the StoreKit 2 JWS exactly as
+/// Apple signed it. The client parses none of it.
+struct SubscriptionVerifyRequest: Codable {
+    let signedTransaction: String
+}
+
+struct SubscriptionVerifyResponse: Codable {
+    let subscription: PublicSubscription
+}
+
+/// The server's record of the student's subscription, as returned by `/verify`
+/// — which is also the only read path: there is no GET for subscription state,
+/// so re-posting the current entitlement's JWS is how this is refreshed.
+///
+/// Display only. Nothing in this app derives entitlement from `status` or
+/// `currentPeriodEnd`; the entitlement truth is `CoachingUsage`, straight from
+/// the server.
+struct PublicSubscription: Codable, Equatable, Sendable {
+    /// The raw wire string rather than an enum, mirroring `ErrorResponse.code`.
+    /// A bare `enum: String, Codable` property would *throw on decode* the day
+    /// the server adds a status, turning a display concern into a hard failure
+    /// of the whole response. Read the closed vocabulary through `knownStatus`.
+    let status: String
+    let productId: String
+    let currentPeriodEnd: Date
+}
+
+/// The status vocabulary as the server spells it today
+/// (`db/.../models/Subscription.kt`). Display-only; it gates nothing.
+enum SubscriptionStatus: String, Sendable {
+    case active
+    case expired
+    case grace
+    case revoked
+    case billingRetry = "billing_retry"
+}
+
+extension PublicSubscription {
+    /// The recognized status this response carries, or `nil` for one this
+    /// client has no case for — a newer server status, never a decode failure.
+    var knownStatus: SubscriptionStatus? { SubscriptionStatus(rawValue: status) }
+}
+
+struct CoachingUsageResponse: Codable {
+    let usage: CoachingUsage
+}
+
+/// The abstract coaching meter — a percentage and a reset date, never dollars,
+/// tokens, or the budget ratio (the brief's abstraction principle; the server
+/// sends nothing else). Read from the same `Entitlement` the four turn gates
+/// read, so the bar and the block can never disagree.
+struct CoachingUsage: Codable, Equatable, Sendable {
+    /// 0...100, floored and capped server-side. `usedPercent == 100` iff `exhausted`.
+    let usedPercent: Int
+    let exhausted: Bool
+    /// When the meter resets: the subscription period's end, or `nil` on the
+    /// free tier, whose allowance is a lifetime credit that never resets. The
+    /// server emits the key explicitly as `null`, so this stays optional rather
+    /// than being defaulted client-side.
+    let resetsAt: Date?
 }
 
 // MARK: - Conversation domain models
