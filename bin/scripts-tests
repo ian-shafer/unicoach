@@ -26,7 +26,7 @@ source "$(dirname "$0")/functions"
 export BASE_TEST_PORT="$("$(dirname "$0")/checkout-port")"
 # This runs before `common` activates `set -euo pipefail`, so a checkout-port
 # failure would otherwise leave BASE_TEST_PORT="" and .env.test's
-# `${BASE_TEST_PORT:-18080}` would silently fall back to a hardcoded port. Guard
+# `${BASE_TEST_PORT:-17984}` would silently fall back to a hardcoded port. Guard
 # it explicitly via fatal.
 if [ -z "$BASE_TEST_PORT" ]; then
   fatal "checkout-port returned no free block; refusing to fall back to hardcoded ports."
@@ -530,6 +530,25 @@ ckp_count="$(grep -E '^BLOCK_COUNT=' bin/checkout-port | cut -d= -f2)"
 ckp_top=$((ckp_floor + (ckp_count - 1) * ckp_size + ckp_size - 1))
 if [ "$ckp_top" -ge 49152 ]; then echo "Fail: highest derivable port $ckp_top is at or above the ephemeral floor 49152"; exit 1; fi
 pass_test "the highest derivable block stays below the 49152 ephemeral floor ($ckp_top)"
+
+# Floor: the harness-less fallback in the delta files must sit entirely BELOW the
+# block floor, so it is not a derivable block base and can never be mistaken for
+# — or collide with — a block some checkout owns. 18080 used to be exactly block
+# index 5. Read both literals from the files rather than restating them, and
+# require the two deltas to agree: .env.fuzz's offsets (+7..+9) are relative to
+# the same base as .env.test's (+0..+2).
+ckp_fb_test="$(grep -oE 'BASE_TEST_PORT:-[0-9]+' .env.test | head -1 | grep -oE '[0-9]+$')"
+ckp_fb_fuzz="$(grep -oE 'BASE_TEST_PORT:-[0-9]+' .env.fuzz | head -1 | grep -oE '[0-9]+$')"
+if [ -z "$ckp_fb_test" ] || [ -z "$ckp_fb_fuzz" ]; then echo "Fail: could not read the BASE_TEST_PORT fallback from the delta files"; exit 1; fi
+if [ "$ckp_fb_test" != "$ckp_fb_fuzz" ]; then
+  echo "Fail: .env.test falls back to $ckp_fb_test but .env.fuzz falls back to $ckp_fb_fuzz; the fuzz offsets are relative to the same base"
+  exit 1
+fi
+if [ $((ckp_fb_test + ckp_size - 1)) -ge "$ckp_floor" ]; then
+  echo "Fail: fallback block $ckp_fb_test..$((ckp_fb_test + ckp_size - 1)) reaches the derivable range (floor $ckp_floor)"
+  exit 1
+fi
+pass_test "the delta files' fallback block ($ckp_fb_test) sits below the $ckp_floor block floor"
 
 # Block-wise fallback: the derived block is a preference, not a guarantee (hash
 # collision, or a foreign process squatting inside it). Hold a port in the MIDDLE
