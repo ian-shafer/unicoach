@@ -6,11 +6,11 @@ none of this — see [UnicoachiOSTests/TESTING.md](UnicoachiOSTests/TESTING.md).
 
 The scripts here run under **system Xcode**, not the Nix dev shell. Do not wrap
 them in `nix develop`; just run `bin/build-ios` / `bin/install-ios` (and
-`bin/release-ios` / `bin/ios-sim` / `bin/test-ios` / `bin/screenshot-ios`,
-below) directly. They all call `bin/is-nix` and refuse to run if launched inside
-the dev shell, because there `xcrun` is shadowed by a stub and
-`DEVELOPER_DIR`/`SDKROOT` point into the Nix store — silently targeting the
-wrong toolchain.
+`bin/release-ios` / `bin/ios-sim` / `bin/test-ios` / `bin/ios-simulator` /
+`bin/screenshot-ios`, below) directly. They all call `bin/is-nix` and refuse to
+run if launched inside the dev shell, because there `xcrun` is shadowed by a
+stub and `DEVELOPER_DIR`/`SDKROOT` point into the Nix store — silently targeting
+the wrong toolchain.
 
 ## Named build targets
 
@@ -502,6 +502,52 @@ red-overlay `<scene>.diff.png` for the ones that did. Adding a scene is one
 entry in `SnapshotCatalogue.scenes` — see
 [UnicoachiOSTests/TESTING.md](./UnicoachiOSTests/TESTING.md).
 
+## Running the app in the simulator: `bin/ios-simulator`
+
+```sh
+bin/ios-simulator                # build, install, launch, bring Simulator up
+bin/ios-simulator -B             # skip the build: fast reinstall/relaunch loop
+bin/ios-simulator -- -UnicoachEnableStoreKit
+```
+
+One command for "build this checkout and use the app". It builds the target
+(`bin/build-ios`), boots **this checkout's** simulator device, installs the
+build, **terminates any running instance**, launches, and brings `Simulator.app`
+to the front. The terminate is the reason this is a script rather than a recipe:
+`xcrun simctl launch` does **not** relaunch an app that is already running, and
+`simctl install` over a running app does not restart it, so a hand-typed
+sequence that skips it silently leaves you looking at the **previous build**.
+
+If that terminate fails for any reason other than "nothing was running", the run
+says so and carries on: `simctl launch` would otherwise exit 0 reporting the
+**old** process's pid, which is the stale run made invisible. And because
+simulator devices are machine-global, `Simulator.app` may come forward showing a
+different checkout's device — the closing line names the device this run
+actually touched, and points at _Simulator > File > Open Simulator_.
+
+`-B` skips the build — the fast loop when nothing has changed, or after a build
+you ran yourself. The default builds, because installing a stale `.app` is the
+failure the script exists to prevent; with `-B` and nothing built it says so and
+names the flag. `-d` picks a simulator by name or UDID, overriding
+`UNICOACH_SIMULATOR`, the destination's `id=`, and this checkout's own device.
+Everything after `--` is forwarded verbatim to `simctl launch`.
+
+Start the backend first (`bin/rest-server-up`) or the app opens on its offline
+"No Connection" screen — the URL is baked in at build time.
+
+**The keyboard.** Whether the on-screen keyboard appears at all is decided by
+_Simulator > I/O > Keyboard > Connect Hardware Keyboard_ (`shift-cmd-K`): with a
+hardware keyboard connected, iOS never draws the software one. That preference
+is global to every simulator on the Mac and belongs to you, so
+`bin/ios-simulator` **prints a reminder and never writes it**.
+
+`bin/ios-simulator` and `bin/screenshot-ios` share one copy of the boot →
+`bootstatus -b` → install → terminate → launch sequence (`bin/ios-functions`,
+sourced beside `bin/functions`); each adds only its own end. The capture
+deliberately does **not** bring `Simulator.app` forward — a headless screenshot
+must not steal focus — and the interactive run deliberately does not write a
+PNG.
+
 ## Simulator screenshots: `bin/screenshot-ios`
 
 Everything above targets a physical iPhone. For a **simulator** screenshot — the
@@ -598,11 +644,12 @@ as its `StoreKitConfigurationFileReference`, so the thing that turns StoreKit on
 and the catalogue that makes it safe live together and cannot drift apart. Press
 Run and you get the local `.storekit` products exactly as before.
 
-`bin/screenshot-ios` passes nothing at all, and needs no flag for this. To
-deliberately capture the live subscription surface, put
-`-UnicoachEnableStoreKit` after `--` (it is forwarded verbatim to
-`simctl launch`) on a simulator signed in to a **Sandbox** Apple Account, or use
-Xcode's Run action.
+`bin/screenshot-ios` and `bin/ios-simulator` pass nothing at all, and need no
+flag for this — the two illustrative `xcrun simctl launch` lines above are the
+rule, not a recipe to type; both scripts run that launch for you. To
+deliberately reach the live subscription surface, put `-UnicoachEnableStoreKit`
+after `--` (it is forwarded verbatim to `simctl launch` by either script) on a
+simulator signed in to a **Sandbox** Apple Account, or use Xcode's Run action.
 
 **If you add a UI test**, it needs both halves, because a test launch is not a
 Run: add a `StoreKitConfigurationFileReference` to the scheme's `TestAction`
@@ -629,7 +676,7 @@ store rather than a launch argument for a catalogue nobody injected.
 - **Dev-shell guard error (`must run under system Xcode`).** The script was
   wrapped in `nix develop -c`. Run it directly: `bin/build-ios` /
   `bin/install-ios` / `bin/release-ios` / `bin/ios-sim` / `bin/test-ios` /
-  `bin/screenshot-ios`.
+  `bin/ios-simulator` / `bin/screenshot-ios`.
 - **A capture or test run shows another checkout's build.** You bypassed the
   per-checkout device — `UNICOACH_SIMULATOR` is set in your environment, or the
   target's destination carries an explicit `id=<UDID>`. Unset it, or check what

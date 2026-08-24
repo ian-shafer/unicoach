@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# ios-simulator runs under SYSTEM Xcode (xcodebuild via bin/build-ios, and
+# xcrun simctl), NOT the Nix dev shell. Like its -ios siblings it deliberately
+# does NOT source bin/common (which requires .env / Postgres / the Nix shell) —
+# only bin/functions for log-info/fatal, and bin/ios-functions for the simulator
+# run sequence it shares with bin/screenshot-ios.
+#
+# It is the one command for "build this checkout and run it in the simulator so
+# I can use it": bin/build-ios, then boot/install/terminate/launch, then bring
+# Simulator.app to the front. The sequence used to be hand-typed as four xcrun
+# lines, and the order is not guessable — `simctl launch` does not relaunch an
+# app that is already running and `simctl install` does not restart one, so a
+# run that skips the terminate silently drives the PREVIOUS build. That is
+# exactly why the sequence is NOT written here: it is ios_boot_install_launch in
+# bin/ios-functions, one copy, shared verbatim with bin/screenshot-ios.
+#
+# The only thing this script adds over the capture sibling is the build and the
+# GUI: `open -a Simulator`, which a headless capture must never do.
+#
+# The simulator it drives is THIS CHECKOUT's own device (bin/ios-sim), not the
+# machine-global one the destination's `name=` names — see
+# ios_resolve_simulator_device in bin/ios-functions and RFC 126.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/bin/functions"
+source "$PROJECT_ROOT/bin/ios-functions"
+
+help() {
+  cat << 'EOF'
+ios-simulator [-B] [-d <device>] [target] [-- <launch args>...]
+
+Builds UnicoachiOS and runs it in the iOS Simulator, interactively: builds the
+target (bin/build-ios), boots this checkout's simulator, installs the build,
+terminates any stale instance, launches the app, and brings Simulator.app to the
+front so you can actually use it. Runs under system Xcode, not the Nix dev
+shell. Simulator only — a device target is rejected (use bin/install-ios for a
+physical iPhone).
+
+  target       Target name (default: simulator, the checked-in shared simulator
+               env). Sources ios-app/env/<target>.env for UNICOACH_DESTINATION
+               (UNICOACH_CONFIGURATION optional, defaults to Debug) and locates
+               the built .app under ios-app/build/DerivedData. `prod-simulator`
+               also works but needs an explicit device (-d or UNICOACH_SIMULATOR)
+               because its destination names no simulator.
+  -B           Skip the build and install whatever is already in
+               ios-app/build/DerivedData — the fast reinstall/relaunch loop when
+               nothing has changed, or after a build you ran yourself. The
+               DEFAULT builds, because installing a stale .app is the failure
+               this script exists to prevent.
+  -d <device>  Simulator NAME or UDID to run on (xcrun simctl list devices),
+               overriding UNICOACH_SIMULATOR, the destination's `id=`, and this
+               checkout's own device (bin/ios-sim).
+  -- <args>    Everything after `--` is forwarded verbatim to
+               `xcrun simctl launch` — the seam for launch arguments the app
+               reads, notably -UnicoachEnableStoreKit (see below).
+
+Simulator selection, most explicit first: -d when given; else UNICOACH_SIMULATOR
+when set; else the `id=<UDID>` component of the target's UNICOACH_DESTINATION;
+else THIS CHECKOUT's own simulator device, which bin/ios-sim resolves — creating
+it on demand — from the destination's `name=<model>` component (`iPhone 17 Pro`
+-> a device named `iPhone 17 Pro (<repo>/<checkout>)`). The per-checkout device
+is what keeps a concurrent run in another checkout from terminating this app or
+installing over this bundle; UNICOACH_SIMULATOR="iPhone 17 Pro" is how you
+deliberately drive the shared device instead. A target whose destination names
+no simulator (e.g. prod-simulator) therefore requires -d or UNICOACH_SIMULATOR.
+
+StoreKit: this script passes nothing about StoreKit, and does not have to. A
+StoreKit configuration (ios-app/UnicoachiOS.storekit) is bound to the LAUNCH,
+not to the artifact -- it is referenced by the scheme and is NOT inside the
+built .app -- so a `simctl launch` has none, and a simulator Debug build that
+was not opted in with -UnicoachEnableStoreKit therefore uses an inert store
+rather than falling through to the REAL App Store (which, on a simulator with no
+Apple Account, paints repeated "Sign in to your Apple Account" alerts over the
+UI). To exercise the subscription surface, pass -UnicoachEnableStoreKit after
+`--` on a simulator signed in to a Sandbox Apple Account, or use Xcode's Run
+action (the one launch that does get the local .storekit catalogue).
+
+The app talks to the backend baked in at build time, so start it first
+(bin/rest-server-up) or the app shows its offline "No Connection" screen.
+
+The software keyboard appears only when the simulator's HARDWARE keyboard is
+disconnected (Simulator > I/O > Keyboard > Connect Hardware Keyboard,
+shift-cmd-K). That setting is yours and global to every simulator on this Mac,
+so this script only reminds you of it — it never writes it.
+
+Options:
+  -h           Help
+EOF
+  exit 0
+}
+
+# Split argv at the FIRST `--` before getopts runs; everything after it is
+# forwarded verbatim to `simctl launch`. See split_argv_at_dashdash in
+# bin/functions for why this precedes getopts and why both arrays must be
+# expanded as `${ARR[@]+"${ARR[@]}"}` (bash 3.2 + `set -u`).
+split_argv_at_dashdash "$@"
+LAUNCH_ARGS=(${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"})
+set -- ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
+
+BUILD=1
+DEVICE_OPT=""
+while getopts ":hBd:" opt; do
+  case "$opt" in
+  h) help ;;
+  B) BUILD=0 ;;
+  # An empty -d value is almost always an unset variable expanded into the
+  # command line (ios-simulator -d "$SIM" ...), which would otherwise read as
+  # "not supplied" and silently run on a different simulator.
+  d) [ -n "$OPTARG" ] || fatal -s "$EXIT_INVALID_ARG_VALUE" "option [-d] requires a non-empty device name or UDID"
+     DEVICE_OPT="$OPTARG" ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+# Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
+# xcrun is shadowed by a stub with no simctl and DEVELOPER_DIR/SDKROOT point into
+# the Nix store, so the build would target the wrong toolchain and the launch
+# would fail with an unrelated error. Detection lives in bin/is-nix; the refusal
+# is here. Placed before any env/tool logic so this message wins even when an env
+# file is also missing.
+if "$PROJECT_ROOT/bin/is-nix" -q; then
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/ios-simulator simulator), not via 'nix develop -c'."
+fi
+
+ENV_NAME="${1:-simulator}"
+if [ "$#" -gt 1 ]; then
+  # A surplus positional that looks like an option is almost always an option
+  # written AFTER the target (getopts stops at the first non-option), where the
+  # generic "use --" advice would send the operator down a dead end.
+  if [[ "$2" == -* ]]; then
+    # ${0##*/} rather than the name spelled out, exactly as the is-nix fatal a
+    # dozen lines up does it: advice that names a command which no longer exists
+    # (because the script was renamed) is worse than no advice.
+    fatal -s "$EXIT_UNEXPECTED_ARG" "options must precede the target: write [${0##*/} $2 ${3:+$3 }$ENV_NAME], not [${0##*/} $ENV_NAME $2${3:+ $3}]."
+  fi
+  fatal -s "$EXIT_UNEXPECTED_ARG" "${0##*/} accepts at most one positional argument (target); pass launch arguments after '--': $*"
+fi
+
+# ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
+# (used by bin/ios-scripts-tests to point at a temp fixture dir).
+ENV_DIR="${UNICOACH_ENV_DIR:-$PROJECT_ROOT/ios-app/env}"
+ENV_FILE="$ENV_DIR/$ENV_NAME.env"
+if [ ! -f "$ENV_FILE" ]; then
+  fatal "Environment file not found [$ENV_FILE]. Pass an existing simulator target (e.g. simulator), or copy ios-app/env/local.env.example to ios-app/env/local.env."
+fi
+
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+: "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in [$ENV_FILE]}"
+UNICOACH_CONFIGURATION="${UNICOACH_CONFIGURATION:-Debug}"
+
+# Simulator-only: the exact inverse of install-ios's device-only guard, using the
+# same Simulator-substring discriminator build-ios uses to classify a target.
+# Checked BEFORE the build, so a device target is refused rather than spending a
+# signed device build on the way to a simctl call that could never work.
+if [[ "$UNICOACH_DESTINATION" != *Simulator* ]]; then
+  fatal "Target [$ENV_NAME] targets a physical device (UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] does not contain 'Simulator'); ios-simulator runs the app in the simulator only. Use a simulator target (e.g. simulator), or bin/install-ios for a device."
+fi
+
+# The build, unless -B. bin/build-ios owns everything about how the app is built
+# — the backend URL derivation, the DerivedData location, the destination — so
+# this is a delegation, not a second xcodebuild invocation; it re-sources the
+# same target file for itself. Its output is progress, so it goes to stderr with
+# the rest of the logging, and its fatals surface verbatim (this runs under
+# `set -e`, so a failed build stops the run before anything is installed).
+if [ "$BUILD" -eq 1 ]; then
+  log-info "Building UnicoachiOS [env=$ENV_NAME] before running it..."
+  "$PROJECT_ROOT/bin/build-ios" "$ENV_NAME" >&2
+else
+  log-info "Skipping the build [-B]; installing whatever is already built."
+fi
+
+# Where a simulator build lands (bin/ios-functions, so this script and
+# bin/screenshot-ios can never look in different places).
+APP="$(ios_simulator_app_path "$UNICOACH_CONFIGURATION")"
+if [ ! -d "$APP" ]; then
+  # Two different mistakes, so two different next steps: with -B there is
+  # nothing built to install (drop it), without -B the build claimed success and
+  # yet produced nothing where this script looks — a real mismatch worth naming.
+  #
+  # Both append ios_products_dir_note (bin/ios-functions), which is empty unless
+  # UNICOACH_PRODUCTS_DIR is set — the shared FACT that this script reads that
+  # override and does NOT pass it to bin/build-ios. The wording of the diagnosis
+  # itself stays here, because the two mistakes below have different next steps.
+  PRODUCTS_NOTE="$(ios_products_dir_note)"
+  if [ "$BUILD" -eq 0 ]; then
+    fatal "Built app not found at [$APP], and -B skipped the build. Drop -B, or run [bin/build-ios $ENV_NAME] first.$PRODUCTS_NOTE"
+  fi
+  fatal "bin/build-ios succeeded but no app is at [$APP]. Check the target's UNICOACH_CONFIGURATION [$UNICOACH_CONFIGURATION] matches what the build produced.$PRODUCTS_NOTE"
+fi
+
+# Resolved AFTER the built-app check on purpose: resolution can CREATE this
+# checkout's simulator device (bin/ios-sim), and a run that cannot proceed for
+# want of a build should not leave a device behind. The resolution rule itself
+# lives in bin/ios-functions, shared with bin/screenshot-ios.
+DEVICE="$(ios_resolve_simulator_device "${DEVICE_OPT:-}" "$UNICOACH_DESTINATION" "$ENV_NAME" "$ENV_FILE")"
+
+# The shared run sequence: boot (tolerating an already-booted device), block on
+# bootstatus, install, TERMINATE, launch. One copy, in bin/ios-functions — the
+# terminate-before-launch is the whole reason a hand-typed sequence ran stale
+# code, and it cannot be forgotten by a caller that does not spell the order out.
+ios_boot_install_launch "$DEVICE" "$APP" "$ENV_NAME" ${LAUNCH_ARGS[@]+"${LAUNCH_ARGS[@]}"}
+
+# The GUI half, and the only thing this script does that a capture must not:
+# `simctl boot` starts the DEVICE, not Simulator.app, so without this the app is
+# running where nobody can see or touch it. `open -a Simulator` is also what
+# brings an already-running Simulator to the front — the normal case on the
+# second run. No `--args`: this must not decide anything about the user's
+# Simulator, only show it.
+log-info "Bringing Simulator.app to the front..."
+open -a Simulator \
+  || fatal "Failed to bring Simulator.app to the front (open -a Simulator); the app IS running on simulator [$DEVICE]. Open Simulator from Xcode (Xcode > Open Developer Tool > Simulator) and select the device."
+
+# The hardware-keyboard reminder, printed rather than written. Whether the
+# SOFTWARE keyboard ever appears is decided by this Mac-wide Simulator
+# preference, and the single commonest "the keyboard never comes up" report is
+# that it is connected. It belongs to the operator — it is global to every
+# simulator and every project on the machine — so this script says it and stops
+# there rather than mutating a preference it does not own.
+log-info "Reminder: the on-screen keyboard appears only when the HARDWARE keyboard is disconnected — Simulator > I/O > Keyboard > Connect Hardware Keyboard (shift-cmd-K). This script does not change that setting."
+log-info "UnicoachiOS is running on simulator [$DEVICE]."
+# Simulator.app foregrounds whichever device windows it already has open, and
+# devices are machine-global: with another checkout's device booted, the window
+# that came forward may not be the one this run just installed to — the "why is
+# my change not there?" report that costs an hour. Naming the device above is
+# half of it; this is the other half, and it is advice rather than an action
+# because choosing a window for the operator is not this script's business.
+log-info "If the window that came forward is a different device, open this one from Simulator > File > Open Simulator (or Window > <device>) — devices are machine-global, and this run only touched [$DEVICE]."

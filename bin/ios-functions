@@ -1,0 +1,227 @@
+# ios-functions is a SOURCED library, not an executable: the shared simulator
+# run sequence for the two scripts that boot a simulator, put THIS checkout's
+# build on it, and start it — bin/screenshot-ios (capture, headless) and
+# bin/ios-simulator (interactive). It sits beside bin/functions and is sourced
+# the same way, AFTER it (it uses log-info/fatal from there).
+#
+# Why a sourced lib rather than one script calling the other. The two runs
+# differ only at their ends: screenshot-ios must not touch the GUI and owns a
+# stdout contract (the PNG path is its only line), ios-simulator must bring
+# Simulator.app forward and may build first. Making either call the other would
+# mean a capture that yanks windows around, or an interactive launcher that
+# writes a PNG nobody asked for and then throws it away — the shared part is a
+# SEQUENCE, not a command. bin/functions itself is the wrong home: these
+# functions call `xcrun simctl`, and bin/functions is sourced by bin/common on
+# the Nix-dev-shell side of the house where xcrun is a stub.
+#
+# The one thing that must not be re-derived by a caller is the ORDER. Boot
+# tolerating "already booted", THEN block on bootstatus, THEN install, THEN
+# TERMINATE, and only then launch: `simctl launch` does not relaunch a running
+# app and `simctl install` does not restart one, so a missing terminate silently
+# runs the PREVIOUS build's process and drops the launch arguments. That is why
+# the sequence is one function and not five — a caller cannot get the order
+# wrong if it has no order to get.
+
+# The app's bundle identifier, as built by ios-app/UnicoachiOS.xcodeproj. Every
+# simctl call that names the app (terminate, launch) uses this one constant.
+# Deliberately NOT UNICOACH_-prefixed, and named exactly as bin/install-ios
+# names its own: UNICOACH_* is the namespace a target's env file writes into,
+# and both callers source that file with `set -a` AFTER this lib — so a
+# UNICOACH_BUNDLE_ID here could be redefined by an env file, and terminate/launch
+# would then name a different app than the one just installed. That is precisely
+# the "you are looking at someone else's build" failure this lib exists to
+# prevent.
+IOS_BUNDLE_ID="coach.uni.UnicoachiOS"
+
+# Echoes the simulator to drive, most explicit first: $1 (the -d option) beats
+# UNICOACH_SIMULATOR, which beats the destination's own `id=<UDID>` component,
+# which beats THIS CHECKOUT's device — the per-checkout simulator bin/ios-sim
+# resolves (and creates on demand) from the destination's `name=<model>`
+# component.
+#
+# The `name=` component is a MODEL selector, not a device selector (RFC 126):
+# CoreSimulator devices are machine-global, so using it verbatim made every
+# checkout drive the one `iPhone 17 Pro` — a concurrent run's terminate killed
+# this run's app, and its install replaced the bundle, so what you were looking
+# at was someone ELSE's build. An `id=<UDID>` is explicit intent and is
+# therefore consulted first; the two escape hatches above are how you
+# deliberately drive the shared device (UNICOACH_SIMULATOR="iPhone 17 Pro").
+#
+# simctl accepts either a device name or a UDID, so the resolved string is
+# passed through as-is. Mirrors bin/install-ios's resolve_device.
+#
+# $1 the -d value (empty when not given), $2 the target's UNICOACH_DESTINATION,
+# $3 the target name, $4 the target's env file (the last two only word the
+# fatals). Reads UNICOACH_SIMULATOR and PROJECT_ROOT from the caller's
+# environment. Called as `DEVICE="$(ios_resolve_simulator_device ...)"`, so a
+# fatal inside it exits the substitution subshell and, under `set -e`, the
+# caller with it.
+ios_resolve_simulator_device() {
+  local device_opt="$1" destination="$2" env_name="$3" env_file="$4"
+  if [ -n "$device_opt" ]; then
+    echo "$device_opt"
+    return 0
+  fi
+  if [ -n "${UNICOACH_SIMULATOR:-}" ]; then
+    echo "$UNICOACH_SIMULATOR"
+    return 0
+  fi
+  # Both reads go through destination_component (bin/functions), the single
+  # owner of the rule that a component is anchored to a boundary — so a key that
+  # merely ENDS in the one we want (`devicename=`, `udid=`) cannot be mistaken
+  # for it — and that its value runs to the next comma or the end.
+  local device
+  # The standard Xcode form `platform=iOS Simulator,id=<UDID>` names one exact
+  # simulator, which simctl takes just as happily as a name. An explicit UDID is
+  # explicit intent, so it wins over the per-checkout device below.
+  device="$(destination_component "$destination" id)"
+  if [ -n "$device" ]; then
+    echo "$device"
+    return 0
+  fi
+  # A `name=<model>` component: hand the target to bin/ios-sim, which resolves
+  # (creating on demand) the device named "<model> (<repo>/<checkout>)" and
+  # prints its UDID — its own stdout contract, so nothing but a UDID can land
+  # here. Its fatals surface verbatim, and kill the caller too: the assignment
+  # runs under `set -e`.
+  if [ -n "$(destination_component "$destination" name)" ]; then
+    "$PROJECT_ROOT/bin/ios-sim" "$env_name"
+    return 0
+  fi
+  # Neither component: nothing to resolve and nothing to create, and this is the
+  # end of the chain — the function either echoes a device or it fatals, so no
+  # caller can ever be handed an empty one.
+  fatal "Cannot resolve a simulator: no -d given, UNICOACH_SIMULATOR is unset, and UNICOACH_DESTINATION [$destination] in [$env_file] carries neither a 'name=' nor an 'id=' component (this is why prod-simulator needs an explicit device). Pass -d <device>, set UNICOACH_SIMULATOR to a device name or UDID (xcrun simctl list devices), or add name=<device> or id=<UDID> to the destination."
+}
+
+# Echoes the path of the built simulator .app for configuration $1 — the one
+# place that knows where a simulator build lands, shared by both callers because
+# both must look in exactly the same spot as the other.
+#
+# UNICOACH_PRODUCTS_DIR overrides the products tree (used by
+# bin/ios-scripts-tests to stage a fixture .app). bin/build-ios's
+# -derivedDataPath owns the default location: change it there and a miss reads
+# as "not built yet" rather than "looked in the wrong place". The MISS is
+# deliberately not handled here — "there is no build yet" and "the build I just
+# ran produced nothing here" are different mistakes with different next steps,
+# so each caller words its own.
+ios_simulator_app_path() {
+  local configuration="$1"
+  echo "${UNICOACH_PRODUCTS_DIR:-$PROJECT_ROOT/ios-app/build/DerivedData/Build/Products}/$configuration-iphonesimulator/UnicoachiOS.app"
+}
+
+# The two steps that hinge on an APPLE ERROR STRING live here, out from under
+# the sequence: matching Apple's wording is a different altitude of concern from
+# "boot, wait, install, terminate, launch", and inlining them buried the order
+# under two paragraphs of string-matching. They are helpers of
+# ios_boot_install_launch, NOT a five-way split of it: bootstatus, install and
+# launch stay inline, because the single public entry point IS the ordering
+# guarantee and five separately-callable steps in a sourced lib would invite
+# exactly the partial sequence the extraction exists to prevent.
+
+# Echoes the "…and note WHERE this script looked" clause for a not-built
+# diagnosis, or nothing at all when UNICOACH_PRODUCTS_DIR is unset (the normal
+# case). Shared because the FACT is shared — the override is read by these
+# scripts and is NOT passed to bin/build-ios, so a run with it set builds in one
+# tree and looks in another, and a message that does not say so reads as "the
+# build produced nothing", which is the wrong thing to go and check. The
+# DIAGNOSIS is not shared: each caller composes its own ("run build-ios" vs the
+# -B / built-nothing split) and appends this.
+#
+# Leading space included, so a caller appends it directly to a sentence.
+ios_products_dir_note() {
+  echo "${UNICOACH_PRODUCTS_DIR:+ Note UNICOACH_PRODUCTS_DIR is set, so this script looked in [$UNICOACH_PRODUCTS_DIR] while bin/build-ios writes to its own DerivedData tree.}"
+}
+
+# Boots $1, tolerating the ONE expected failure. simctl exits non-zero when the
+# device is ALREADY booted ("Unable to boot device in current state: Booted"),
+# which is the normal state on every run after the first — tolerate exactly that
+# message and fatal on anything else (unknown device, etc). That wording is
+# Apple's (CoreSimulator SimError 405), so it can change under us; an
+# unrecognised failure is therefore fatal rather than assumed benign.
+ios_boot_device() {
+  local device="$1"
+  log-info "Booting simulator [$device]..."
+  local boot_error=""
+  if ! boot_error="$(xcrun simctl boot "$device" 2>&1)"; then
+    if [[ "$boot_error" != *"current state: Booted"* ]]; then
+      fatal "Failed to boot simulator [$device]: [$boot_error]. Check the device exists (xcrun simctl list devices), or set UNICOACH_SIMULATOR to one that does."
+    fi
+    log-info "Simulator [$device] is already booted; continuing."
+  fi
+}
+
+# Terminates any running instance of the app on $1, tolerating the ONE expected
+# failure. Terminate fails when nothing is running, which is the NORMAL
+# first-run case, so its failure cannot be fatal — but it must not be
+# blanket-tolerated either. A `|| true` swallows every other failure too (a
+# device that has gone busy or unresponsive), and then the launch that follows
+# exits 0 reporting the OLD pid: the stale run made invisible, in the one call
+# this whole sequence exists for. So the expected message is discriminated
+# exactly as ios_boot_device discriminates its own, and anything else is
+# reported — a warning, not a fatal, because the launch may well succeed and the
+# operator is about to be looking at the answer either way.
+ios_terminate_running_app() {
+  local device="$1"
+  local terminate_error=""
+  if ! terminate_error="$(xcrun simctl terminate "$device" "$IOS_BUNDLE_ID" 2>&1)"; then
+    # Apple's wording for "that app is not running" (NSPOSIXErrorDomain code 3,
+    # verified against the real simctl); Apple's, so it can change under us.
+    if [[ "$terminate_error" != *"found nothing to terminate"* ]]; then
+      log-warning "Could not terminate the running [$IOS_BUNDLE_ID] on simulator [$device]: [$terminate_error]. Launching anyway — but if the app below shows the PREVIOUS build, that terminate is why: quit it by hand (or xcrun simctl terminate \"$device\" $IOS_BUNDLE_ID) and re-run."
+    fi
+  fi
+}
+
+# Boots $1, waits for the boot to finish, installs the .app at $2, terminates any
+# running instance, and launches it — the whole shared sequence, in the only
+# order that works. $3 is the target name (it words the "rebuild it" advice);
+# everything from $4 on is forwarded VERBATIM to `simctl launch` (the `--`
+# seam). Every failure is turned into this repo's own fatal with a next step:
+# simctl's raw exit status (164) lands inside the reserved 10-29 usage band a
+# caller reads as "you invoked it wrongly".
+#
+# Every simctl invocation has its stdout redirected to stderr: simctl chatters
+# on stdout (bootstatus "Monitoring boot status...", launch "<bundle>: <pid>"),
+# and bin/screenshot-ios's stdout is reserved for its RESULT — the PNG path — so
+# $(...) returns a usable path and not five lines of progress. The chatter is
+# still visible, on stderr with the rest of the logging.
+# Boot and terminate delegate to the two helpers above; bootstatus, install and
+# launch are inline, so the body below still reads as the ORDER it guarantees.
+ios_boot_install_launch() {
+  local device="$1" app="$2" env_name="$3"
+  shift 3
+
+  ios_boot_device "$device"
+
+  # -b blocks until the device finishes booting, so the install/launch below do
+  # not race the boot.
+  log-info "Waiting for simulator [$device] to finish booting..."
+  xcrun simctl bootstatus "$device" -b >&2 \
+    || fatal "Failed waiting for simulator [$device] to finish booting (xcrun simctl bootstatus). Check the simulator is responsive (xcrun simctl list devices), or shut it down and retry (xcrun simctl shutdown \"$device\")."
+
+  log-info "Installing [$app] to simulator [$device]..."
+  xcrun simctl install "$device" "$app" >&2 \
+    || fatal "Failed to install [$app] to simulator [$device] (xcrun simctl install). Rebuild the app for the simulator ([bin/build-ios $env_name]) and retry."
+
+  # Terminate any running instance BEFORE launching. `simctl launch` does NOT
+  # relaunch an app that is already running (and `simctl install` over a running
+  # app does not restart it), so without this a second run would drive the OLD
+  # process — stale code, and the `--` launch args silently ignored. This one
+  # line is the reason the sequence is a function at all.
+  ios_terminate_running_app "$device"
+
+  # Deliberately NO StoreKit argument here. A StoreKit configuration is bound to
+  # the LAUNCH, not to the artifact -- it is referenced by the scheme and is NOT
+  # inside the built .app -- so a `simctl launch` has none and used to fall
+  # through to the REAL App Store, painting "Sign in to your Apple Account"
+  # alerts over the UI. That is fixed in the APP, which on a simulator Debug
+  # build uses an inert store unless a launch opts in with
+  # -UnicoachEnableStoreKit. Adding a flag here would make one launcher safe and
+  # leave the next to remember it; there is nothing left for a caller to forget.
+  # An operator who genuinely wants the live subscription surface passes
+  # -UnicoachEnableStoreKit after `--`, through the seam below.
+  log-info "Launching [$IOS_BUNDLE_ID] on simulator [$device]..."
+  xcrun simctl launch "$device" "$IOS_BUNDLE_ID" "$@" >&2 \
+    || fatal "Failed to launch [$IOS_BUNDLE_ID] on simulator [$device] with launch arguments [$*] (xcrun simctl launch). Check the app installed cleanly, and that those arguments (everything after '--') are ones the app accepts."
+}

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ios-scripts-tests exercises bin/is-nix, bin/build-ios, bin/install-ios,
-# bin/release-ios, and bin/screenshot-ios WITHOUT any real Xcode build, hardware,
-# or booted simulator. xcodebuild and xcrun are shimmed onto
+# bin/release-ios, bin/screenshot-ios, and bin/ios-simulator WITHOUT any real
+# Xcode build, hardware, booted simulator, or Simulator.app window. xcodebuild,
+# xcrun and open are shimmed onto
 # PATH via a temp dir; the shims record their argv to a file the assertions
 # inspect. The ios-app/env/<env>.env files are pointed at a temp fixture dir via
 # UNICOACH_ENV_DIR, and the repo .env (the APP_DOMAIN/SERVER_PORT source) is
@@ -129,6 +130,31 @@ if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "install" ] && [ -n "\${SIMCTL_INST
   echo "Unable to install app: \${4:-}" >&2
   exit 164
 fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "launch" ] && [ -n "\${SIMCTL_LAUNCH_FAIL:-}" ]; then
+  # A launch the app refuses — in practice an argument after \`--\` that it does
+  # not accept, which is why the script's fatal has to quote the arguments back.
+  echo "An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=3):" >&2
+  echo "The request to open \"\${4:-}\" failed." >&2
+  exit 164
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "terminate" ] && [ -n "\${SIMCTL_TERMINATE_NOTHING:-}" ]; then
+  # The NORMAL first-run case, in simctl's verbatim wording (NSPOSIXErrorDomain
+  # code 3, captured from the real tool): nothing was running, so there was
+  # nothing to terminate. The launch must proceed and nothing may be reported —
+  # a warning here would cry wolf on every first run.
+  echo "An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=3):" >&2
+  echo "Simulator device failed to terminate \${4:-}." >&2
+  echo "found nothing to terminate" >&2
+  exit 3
+fi
+if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "terminate" ] && [ -n "\${SIMCTL_TERMINATE_FAIL:-}" ]; then
+  # A terminate that failed for some OTHER reason — a device that has gone busy.
+  # The app is then still running, so the launch that follows exits 0 reporting
+  # the OLD pid: the stale run, made invisible. This must be reported.
+  echo "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405):" >&2
+  echo "Unable to terminate \${4:-}: device is busy" >&2
+  exit 164
+fi
 if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "shutdown" ] && [ -n "\${SIMCTL_SHUTDOWN_FAIL:-}" ]; then
   # A shutdown that fails for a reason that is NOT "it was not booted": the root
   # cause of the delete that then refuses the device, in simctl's own wording.
@@ -238,7 +264,22 @@ if [ "\$#" = 5 ] && [ "\$1" = "-C" ] && [ "\$3" = "worktree" ] && [ "\$4" = "lis
 fi
 exec "$REAL_GIT" "\$@"
 EOF
-chmod +x "$SHIM_DIR/xcodebuild" "$SHIM_DIR/xcrun" "$SHIM_DIR/git"
+# open: bin/ios-simulator's GUI half (`open -a Simulator`) is the one thing it
+# does that bin/screenshot-ios must NOT, so the invocation is recorded like any
+# other tool — that is what makes "the capture does not yank windows around"
+# assertable rather than assumed. Shimmed rather than allowed through, because
+# the real `open` would put a Simulator window on the screen of whoever is
+# running the suite.
+cat > "$SHIM_DIR/open" <<EOF
+#!/usr/bin/env bash
+{ echo "open"; for a in "\$@"; do echo "\$a"; done; } >> "$ARGV_LOG"
+if [ -n "\${OPEN_FAIL:-}" ]; then
+  echo "Unable to find application named 'Simulator'" >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$SHIM_DIR/xcodebuild" "$SHIM_DIR/xcrun" "$SHIM_DIR/git" "$SHIM_DIR/open"
 
 # --- Fixtures ----------------------------------------------------------------
 # Env files now carry ONLY the destination; the backend URL is derived from the
@@ -264,6 +305,17 @@ EOF
 # `devicename=` (or the LAST name= regardless of where the component starts).
 cat > "$ENV_DIR/decoy-name-simulator.env" <<'EOF'
 UNICOACH_DESTINATION="platform=iOS Simulator,devicename=Bogus Lead,name=iPhone 99 Real,simdevicename=Bogus Tail"
+EOF
+
+# A simulator target whose env file tries to redefine the app's bundle
+# identifier. Target files are sourced with `set -a` AFTER bin/ios-functions, so
+# a UNICOACH_-prefixed constant in the lib WOULD be overwritten here and
+# terminate/launch would name a different app than the one just installed. The
+# constant is IOS_BUNDLE_ID for that reason; this fixture is what proves it.
+cat > "$ENV_DIR/bundle-decoy-simulator.env" <<'EOF'
+UNICOACH_DESTINATION="platform=iOS Simulator,name=iPhone 17 Pro"
+UNICOACH_BUNDLE_ID="com.decoy.NotUnicoach"
+BUNDLE_ID="com.decoy.NotUnicoach"
 EOF
 
 # A simulator target naming a model that no installed device type matches — the
@@ -738,6 +790,31 @@ run_release() {
     "$PROJECT_ROOT/bin/release-ios" "$@"
 }
 
+# The simctl/git FIXTURE environment every wrapper that drives a simulator
+# script must pass, built once as an array of `env`-style assignments. It was
+# ten byte-identical lines repeated per wrapper, which is a trap rather than
+# mere duplication: a new SIMCTL_* knob added to one wrapper leaves the other's
+# cases silently reading the REAL machine's devices instead of the fixtures.
+# Rebuilt on every call because each entry reads the per-case override
+# (SIMCTL_DEVICES="$DEVICES_ABSENT" run_screenshot ...) that is set only for the
+# duration of that invocation. Same shape as run_sim_script's block, which is
+# already shared between bin/ios-sim and bin/test-ios.
+simctl_fixture_env() {
+  SIMCTL_FIXTURE_ENV=(
+    SIMCTL_BOOT_BOOTED="${SIMCTL_BOOT_BOOTED:-}"
+    SIMCTL_BOOT_FAIL="${SIMCTL_BOOT_FAIL:-}"
+    SIMCTL_INSTALL_FAIL="${SIMCTL_INSTALL_FAIL:-}"
+    SIMCTL_LAUNCH_FAIL="${SIMCTL_LAUNCH_FAIL:-}"
+    SIMCTL_TERMINATE_NOTHING="${SIMCTL_TERMINATE_NOTHING:-}"
+    SIMCTL_TERMINATE_FAIL="${SIMCTL_TERMINATE_FAIL:-}"
+    SIMCTL_DEVICES="${SIMCTL_DEVICES:-$DEVICES_PRESENT}"
+    SIMCTL_DEVICETYPES="${SIMCTL_DEVICETYPES:-$DEVICETYPES}"
+    SIMCTL_RUNTIMES="${SIMCTL_RUNTIMES:-$RUNTIMES}"
+    SIMCTL_CREATE_UDID="${SIMCTL_CREATE_UDID:-$CREATED_UDID}"
+    GIT_WORKTREES="${GIT_WORKTREES:-$WORKTREES_LIVE}"
+  )
+}
+
 # Run screenshot-ios with the shims first on PATH, the env fixtures and staged
 # products in play, and the default screenshot destination redirected into the
 # temp work dir so no test ever writes into the real repo. SIMCTL_BOOT_BOOTED
@@ -748,22 +825,46 @@ run_release() {
 # "explicitly set to nothing").
 run_screenshot() {
   reset_log
+  simctl_fixture_env
   env PATH="$SHIM_DIR:$PATH" \
+    "${SIMCTL_FIXTURE_ENV[@]}" \
     UNICOACH_ENV_DIR="$ENV_DIR" \
     UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
     UNICOACH_SCREENSHOT_DIR="$SCREENSHOT_DIR" \
-    SIMCTL_BOOT_BOOTED="${SIMCTL_BOOT_BOOTED:-}" \
-    SIMCTL_BOOT_FAIL="${SIMCTL_BOOT_FAIL:-}" \
     SIMCTL_NO_WRITE="${SIMCTL_NO_WRITE:-}" \
-    SIMCTL_INSTALL_FAIL="${SIMCTL_INSTALL_FAIL:-}" \
-    SIMCTL_DEVICES="${SIMCTL_DEVICES:-$DEVICES_PRESENT}" \
-    SIMCTL_DEVICETYPES="${SIMCTL_DEVICETYPES:-$DEVICETYPES}" \
-    SIMCTL_RUNTIMES="${SIMCTL_RUNTIMES:-$RUNTIMES}" \
-    SIMCTL_CREATE_UDID="${SIMCTL_CREATE_UDID:-$CREATED_UDID}" \
-    GIT_WORKTREES="${GIT_WORKTREES:-$WORKTREES_LIVE}" \
     ${SIMULATOR_OVERRIDE:+UNICOACH_SIMULATOR="$SIMULATOR_OVERRIDE"} \
     ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/screenshot-ios" "$@"
+}
+
+# The repo-.env fixture bin/ios-simulator's BUILD leg hands to bin/build-ios.
+# It is its OWN file, not the shared $DOTENV: that one is rewritten by the
+# build-ios cases (a bare-IP APP_DOMAIN among them, which build-ios rejects), so
+# borrowing it would make these cases depend on which case ran last.
+IOS_SIMULATOR_DOTENV="$WORK/ios-simulator-dotenv"
+cat > "$IOS_SIMULATOR_DOTENV" <<'EOF'
+APP_DOMAIN=localhost
+SERVER_PORT=8080
+EOF
+
+# Run ios-simulator with the shims first on PATH and the same env/products
+# fixtures its capture sibling uses. UNICOACH_DOTENV is passed through to the
+# bin/build-ios CHILD (this script builds before it runs), and OPEN_FAIL drives
+# the open shim's failure. Mirrors run_screenshot, including the
+# ${VAR:+...} form for the two overrides that must contribute no argument at all
+# when unset.
+run_ios_simulator() {
+  reset_log
+  simctl_fixture_env
+  env PATH="$SHIM_DIR:$PATH" \
+    "${SIMCTL_FIXTURE_ENV[@]}" \
+    UNICOACH_ENV_DIR="$ENV_DIR" \
+    UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
+    UNICOACH_DOTENV="$IOS_SIMULATOR_DOTENV" \
+    OPEN_FAIL="${OPEN_FAIL:-}" \
+    ${SIMULATOR_OVERRIDE:+UNICOACH_SIMULATOR="$SIMULATOR_OVERRIDE"} \
+    ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
+    "$PROJECT_ROOT/bin/ios-simulator" "$@"
 }
 
 # Run screenshot-ios against the REAL ios-app/env directory (no UNICOACH_ENV_DIR
@@ -774,15 +875,12 @@ run_screenshot() {
 # resolve the device and hide a broken checked-in destination.
 run_screenshot_real_env() {
   reset_log
+  simctl_fixture_env
   env -u UNICOACH_ENV_DIR -u UNICOACH_SIMULATOR \
     PATH="$SHIM_DIR:$PATH" \
+    "${SIMCTL_FIXTURE_ENV[@]}" \
     UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
     UNICOACH_SCREENSHOT_DIR="$SCREENSHOT_DIR" \
-    SIMCTL_DEVICES="${SIMCTL_DEVICES:-$DEVICES_PRESENT}" \
-    SIMCTL_DEVICETYPES="${SIMCTL_DEVICETYPES:-$DEVICETYPES}" \
-    SIMCTL_RUNTIMES="${SIMCTL_RUNTIMES:-$RUNTIMES}" \
-    SIMCTL_CREATE_UDID="${SIMCTL_CREATE_UDID:-$CREATED_UDID}" \
-    GIT_WORKTREES="${GIT_WORKTREES:-$WORKTREES_LIVE}" \
     "$PROJECT_ROOT/bin/screenshot-ios" "$@"
 }
 
@@ -1521,6 +1619,11 @@ test_screenshot_no_built_app() {
   local out
   if out="$(run_screenshot simulator 2>&1)"; then return 1; fi
   echo "$out" | grep -q "build-ios" || return 1
+  # ...and the shared UNICOACH_PRODUCTS_DIR clause (ios_products_dir_note), so
+  # "not built" is never mistaken for "built somewhere else". This suite always
+  # sets the override, which is exactly the situation the clause is for.
+  echo "$out" | grep -q "UNICOACH_PRODUCTS_DIR" || return 1
+  echo "$out" | grep -q "$PRODUCTS_DIR" || return 1
   log_no_tool "xcrun"
 }
 
@@ -1893,6 +1996,391 @@ test_screenshot_help_exits_zero() {
   out="$(run_screenshot -h 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || return 1
   echo "$out" | grep -q "screenshot-ios"
+}
+
+# ========================= ios-simulator tests ===============================
+
+# One command for "build this checkout and run it in the simulator". Everything
+# from boot to launch is bin/ios-functions' shared sequence (the same one
+# screenshot-ios drives), so these cases pin what THIS script adds: the build,
+# the -B skip, the GUI activation, and its own argument grammar.
+
+test_ios_simulator_guard() {
+  stage_built_simulator_app
+  local out rc
+  out="$(DEV_SHELL_MARKER=1 run_ios_simulator simulator 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "ios-simulator" || return 1
+  echo "$out" | grep -qi "system Xcode" || return 1
+  # The guard fires before ANY tool: no build, no simctl, no window.
+  log_no_tool "xcodebuild" || return 1
+  log_no_tool "xcrun" || return 1
+  log_no_tool "open"
+}
+
+test_ios_simulator_missing_env_file() {
+  local out
+  if out="$(run_ios_simulator nonexistent-env 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "nonexistent-env.env" || return 1
+  log_no_tool "xcodebuild" || return 1
+  log_no_tool "xcrun"
+}
+
+# Simulator-only, and refused BEFORE the build: a device target could never be
+# reached by simctl, so spending a signed device build on the way there is pure
+# waste.
+test_ios_simulator_device_env_rejected() {
+  stage_built_app
+  local out
+  if out="$(run_ios_simulator device 2>&1)"; then return 1; fi
+  echo "$out" | grep -qi "simulator" || return 1
+  log_no_tool "xcodebuild" || return 1
+  log_no_tool "xcrun"
+}
+
+# The default path: BUILD, then the shared run sequence, then the GUI. The build
+# must come FIRST — installing before building is how a run silently ships the
+# previous artifact.
+test_ios_simulator_builds_then_runs() {
+  stage_built_simulator_app
+  run_ios_simulator simulator >/dev/null 2>&1 || return 1
+  log_has "xcodebuild" || return 1
+  log_has "simctl" || return 1
+  log_has "boot" || return 1
+  log_has "bootstatus" || return 1
+  log_has "-b" || return 1
+  log_has "install" || return 1
+  log_has "launch" || return 1
+  log_has "coach.uni.UnicoachiOS" || return 1
+  log_has "$PRODUCTS_DIR/Debug-iphonesimulator/UnicoachiOS.app" || return 1
+  local b i
+  b="$(grep -nFx "xcodebuild" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  i="$(grep -nFx "install" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  [ -n "$b" ] && [ -n "$i" ] || return 1
+  [ "$b" -lt "$i" ] || return 1
+  return 0
+}
+
+# The build is a DELEGATION to bin/build-ios, not a second xcodebuild spelled
+# out here: the target reaches it and it builds into the shared DerivedData
+# tree. A hand-rolled invocation would drift from build-ios's backend-URL
+# derivation without anything noticing.
+test_ios_simulator_delegates_the_build_to_build_ios() {
+  stage_built_simulator_app
+  run_ios_simulator simulator >/dev/null 2>&1 || return 1
+  log_has "-scheme" || return 1
+  log_has "UnicoachiOS" || return 1
+  log_has "-derivedDataPath" || return 1
+  log_has "$PROJECT_ROOT/ios-app/build/DerivedData" || return 1
+  # build-ios derived the backend URL from this suite's own dotenv fixture, so
+  # the delegation really went through it rather than around it.
+  log_has "UNICOACH_BACKEND_URL=http://localhost:8080" || return 1
+  return 0
+}
+
+# -B is the fast reinstall/relaunch loop: no build at all, but the install and
+# launch still happen — otherwise it would just be a slower no-op.
+test_ios_simulator_skips_the_build_with_B() {
+  stage_built_simulator_app
+  run_ios_simulator -B simulator >/dev/null 2>&1 || return 1
+  log_no_tool "xcodebuild" || return 1
+  log_has "install" || return 1
+  log_has "launch" || return 1
+  return 0
+}
+
+# -B with nothing built is the operator's mistake, and the message has to name
+# the flag: the generic "run build-ios" advice hides the fact that this run was
+# TOLD not to build.
+test_ios_simulator_B_without_a_built_app_is_fatal() {
+  rm -rf "$PRODUCTS_DIR/Debug-iphonesimulator"
+  local out rc=0
+  out="$(run_ios_simulator -B simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q -- "-B" || return 1
+  echo "$out" | grep -q "build-ios" || return 1
+  # UNICOACH_PRODUCTS_DIR is READ by this script and NOT passed to bin/build-ios,
+  # so when it is set (as it is throughout this suite) the message must say so —
+  # otherwise "no app is there" reads as a failed build rather than as two
+  # different trees, which is the wrong thing to go and check.
+  echo "$out" | grep -q "UNICOACH_PRODUCTS_DIR" || return 1
+  echo "$out" | grep -q "$PRODUCTS_DIR" || return 1
+  log_no_tool "xcodebuild" || return 1
+  log_no_tool "xcrun"
+}
+
+# The defect this script exists for: `simctl launch` does not relaunch a running
+# app and `simctl install` does not restart one, so without a terminate the
+# operator sits looking at the PREVIOUS build. Shared with screenshot-ios via
+# bin/ios-functions, and pinned on BOTH sides so neither can lose it alone.
+test_ios_simulator_terminates_before_launch() {
+  stage_built_simulator_app
+  run_ios_simulator simulator >/dev/null 2>&1 || return 1
+  local t l
+  t="$(grep -nFx "terminate" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  l="$(grep -nFx "launch" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  [ -n "$t" ] || return 1
+  [ -n "$l" ] || return 1
+  [ "$t" -lt "$l" ] || return 1
+  # simctl terminate <device> <bundle>: the bundle id is two lines on.
+  [ "$(sed -n "$((t + 2))p" "$ARGV_LOG")" = "coach.uni.UnicoachiOS" ] || return 1
+  return 0
+}
+
+# Everything after `--` reaches the launch verbatim — the seam an operator uses
+# for -UnicoachEnableStoreKit. The script itself passes nothing about StoreKit,
+# for the reason DEPLOY.md gives: safety is not a flag every future launcher has
+# to remember.
+test_ios_simulator_forwards_launch_args() {
+  stage_built_simulator_app
+  run_ios_simulator simulator -- -UnicoachEnableStoreKit -UnicoachUITestScreen profile >/dev/null 2>&1 || return 1
+  log_has "launch" || return 1
+  log_has "-UnicoachEnableStoreKit" || return 1
+  log_has "-UnicoachUITestScreen" || return 1
+  log_has "profile" || return 1
+  return 0
+}
+
+test_ios_simulator_passes_no_storekit_argument() {
+  stage_built_simulator_app
+  run_ios_simulator simulator >/dev/null 2>&1 || return 1
+  log_has "launch" || return 1
+  log_lacks "StoreKit" || return 1
+  return 0
+}
+
+# The device defaults to THIS CHECKOUT's own (RFC 126), never the shared
+# `iPhone 17 Pro` every other checkout would also resolve, and never the literal
+# "booted".
+test_ios_simulator_device_is_this_checkouts_udid() {
+  stage_built_simulator_app
+  run_ios_simulator simulator >/dev/null 2>&1 || return 1
+  log_has "$CHECKOUT_UDID" || return 1
+  log_lacks "$SHARED_UDID" || return 1
+  log_lacks "booted" || return 1
+  return 0
+}
+
+# -d is the most explicit selector and beats BOTH UNICOACH_SIMULATOR and the
+# destination — exactly as it does for screenshot-ios, because it is the same
+# resolution function.
+test_ios_simulator_device_flag_beats_env_and_destination() {
+  stage_built_simulator_app
+  SIMULATOR_OVERRIDE="ENVVAR-1111-2222-3333-444444444444" \
+    run_ios_simulator -d "FLAG-5555-6666-7777-888888888888" simulator >/dev/null 2>&1 || return 1
+  log_has "FLAG-5555-6666-7777-888888888888" || return 1
+  log_lacks "ENVVAR-1111-2222-3333-444444444444" || return 1
+  log_lacks "$CHECKOUT_UDID" || return 1
+  log_lacks "create" || return 1
+  return 0
+}
+
+# An EMPTY -d is a mistake, not a selection: `ios-simulator -d "$SIM"` with SIM
+# unset would otherwise read as "no -d given" and quietly run on another device.
+test_ios_simulator_empty_device_value() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(run_ios_simulator -d "" simulator 2>&1)" || rc=$?
+  [ "$rc" -eq "$EXIT_INVALID_ARG_VALUE" ] || return 1
+  echo "$out" | grep -q -- "-d" || return 1
+  log_no_tool "xcodebuild"
+}
+
+# The GUI half: `simctl boot` starts the DEVICE, not Simulator.app, so an
+# interactive run that skips this leaves the app running where nobody can touch
+# it. `open -a Simulator` with NO --args, so nothing about the operator's
+# Simulator is decided here.
+test_ios_simulator_brings_the_gui_to_the_front() {
+  stage_built_simulator_app
+  local err
+  err="$WORK/ios-simulator-gui.err"
+  run_ios_simulator simulator >/dev/null 2>"$err" || return 1
+  # Devices are machine-global and Simulator foregrounds whatever windows it
+  # already has, so the window that came up may be another checkout's device.
+  # The operator is told how to get to this one — advice, not an action.
+  grep -q "Open Simulator" "$err" || return 1
+  log_has "open" || return 1
+  log_has "-a" || return 1
+  log_has "Simulator" || return 1
+  log_lacks "--args" || return 1
+  # After the launch, not before: the window comes up on a running app.
+  local l o
+  l="$(grep -nFx "launch" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  o="$(grep -nFx "open" "$ARGV_LOG" | head -n 1 | cut -d: -f1)"
+  [ -n "$l" ] && [ -n "$o" ] || return 1
+  [ "$l" -lt "$o" ] || return 1
+  return 0
+}
+
+# ...and the capture sibling must NOT do it. A headless screenshot run that
+# yanked Simulator.app to the front would steal focus from whoever is working,
+# which is the whole reason the shared sequence stops short of the GUI.
+test_screenshot_does_not_bring_the_gui_to_the_front() {
+  stage_built_simulator_app
+  run_screenshot -w 0 simulator >/dev/null 2>&1 || return 1
+  log_no_tool "open"
+}
+
+# The hardware-keyboard setting decides whether the software keyboard ever
+# appears, and it is global to every simulator on the Mac. This script REMINDS,
+# and must never write it: a tool that silently flips a machine-wide preference
+# is a tool nobody can trust with the next one.
+test_ios_simulator_reminds_about_the_hardware_keyboard() {
+  stage_built_simulator_app
+  local err
+  err="$WORK/ios-simulator-keyboard.err"
+  run_ios_simulator simulator >/dev/null 2>"$err" || return 1
+  grep -qi "hardware keyboard" "$err" || return 1
+  grep -q "shift-cmd-K" "$err" || return 1
+  # No preference is written: not via `defaults`, and not via simctl either.
+  log_lacks "defaults" || return 1
+  log_lacks "com.apple.iphonesimulator" || return 1
+  return 0
+}
+
+# A failed GUI activation still tells the operator the truth — the app IS
+# running — rather than reading as "the run failed".
+test_ios_simulator_open_failure_names_the_running_app() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(OPEN_FAIL=1 run_ios_simulator simulator 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -qi "running" || return 1
+  log_has "launch" || return 1
+  return 0
+}
+
+# Usage errors carry the shared EXIT_* band codes, not a bare 1.
+test_ios_simulator_unknown_option() {
+  local rc=0
+  run_ios_simulator -Z simulator >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_UNKNOWN_OPTION" ]
+}
+
+test_ios_simulator_option_requires_value() {
+  local rc=0
+  run_ios_simulator -d >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_OPTION_REQUIRES_VALUE" ]
+}
+
+test_ios_simulator_stray_positional() {
+  stage_built_simulator_app
+  local rc=0
+  run_ios_simulator simulator stray >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$EXIT_UNEXPECTED_ARG" ]
+}
+
+# An option written AFTER the target gets advice that can actually help
+# (reorder), not the generic "pass launch arguments after --" dead end.
+test_ios_simulator_option_after_target() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(run_ios_simulator simulator -B 2>&1)" || rc=$?
+  [ "$rc" -eq "$EXIT_UNEXPECTED_ARG" ] || return 1
+  echo "$out" | grep -q "options must precede the target" || return 1
+  echo "$out" | grep -q "ios-simulator -B simulator" || return 1
+  return 0
+}
+
+# A terminate that fails for an UNEXPECTED reason must be REPORTED. `simctl
+# launch` then exits 0 reporting the OLD pid, so the stale run this whole
+# sequence exists to prevent is back — invisibly. The old `|| true` swallowed
+# exactly this.
+test_ios_simulator_unexpected_terminate_failure_is_reported() {
+  stage_built_simulator_app
+  local err
+  err="$WORK/ios-simulator-terminate.err"
+  SIMCTL_TERMINATE_FAIL=1 run_ios_simulator simulator >/dev/null 2>"$err" || return 1
+  grep -q "WARNING" "$err" || return 1
+  grep -qi "terminate" "$err" || return 1
+  # simctl's own words are carried, and so is the "you may be looking at the
+  # previous build" reading — the only thing that makes the warning actionable.
+  grep -q "device is busy" "$err" || return 1
+  grep -qi "PREVIOUS build" "$err" || return 1
+  # Reported, not fatal: the launch still happened.
+  log_has "launch" || return 1
+  return 0
+}
+
+# ...and the NORMAL first-run failure — nothing was running, so there was
+# nothing to terminate — must stay SILENT. A warning on every first run is a
+# warning nobody reads by the third.
+test_ios_simulator_nothing_to_terminate_is_silent() {
+  stage_built_simulator_app
+  local err
+  err="$WORK/ios-simulator-terminate-quiet.err"
+  SIMCTL_TERMINATE_NOTHING=1 run_ios_simulator simulator >/dev/null 2>"$err" || return 1
+  if grep -q "WARNING" "$err"; then return 1; fi
+  log_has "launch" || return 1
+  return 0
+}
+
+# The same discrimination on the capture side, since it is one shared function:
+# an unexpected terminate failure is reported on STDERR and leaves the PNG path
+# the only line on stdout.
+test_screenshot_unexpected_terminate_failure_is_reported() {
+  stage_built_simulator_app
+  local out err lines
+  err="$WORK/screenshot-terminate.err"
+  out="$(SIMCTL_TERMINATE_FAIL=1 run_screenshot -w 0 simulator 2>"$err")" || return 1
+  grep -q "WARNING" "$err" || return 1
+  lines="$(printf '%s\n' "$out" | grep -c .)"
+  [ "$lines" -eq 1 ] || return 1
+  [ -f "$out" ] || return 1
+  return 0
+}
+
+# A failed launch is almost always an argument the app rejects, so the fatal has
+# to quote the arguments BACK: they are the state it tells you to go and check,
+# and an operator who passed them through a shell variable may not know what
+# actually arrived.
+test_ios_simulator_launch_failure_names_the_launch_args() {
+  stage_built_simulator_app
+  local out rc=0
+  out="$(SIMCTL_LAUNCH_FAIL=1 run_ios_simulator simulator -- -UnicoachBogusArg 42 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  # This script's own fatal, not simctl's raw 164 (which collides with the
+  # reserved 10-29 usage band).
+  [ "$rc" -lt 10 ] || return 1
+  echo "$out" | grep -q "\[FATAL\]" || return 1
+  echo "$out" | grep -q "Failed to launch" || return 1
+  echo "$out" | grep -q -- "-UnicoachBogusArg 42" || return 1
+  return 0
+}
+
+# A target env file cannot rename the app out from under the run — the pair of
+# cases below, one per script. Target files are sourced with `set -a` AFTER
+# bin/ios-functions, so a UNICOACH_-prefixed bundle-id constant would be
+# overwritten by the bundle-decoy fixture and terminate/launch would name a
+# DIFFERENT app than install just put on the device: the exact "you are looking
+# at someone else's build" failure the lib exists to prevent. That is why the
+# constant is IOS_BUNDLE_ID.
+test_ios_simulator_env_file_cannot_redefine_the_bundle_id() {
+  stage_built_simulator_app
+  run_ios_simulator bundle-decoy-simulator >/dev/null 2>&1 || return 1
+  log_has "coach.uni.UnicoachiOS" || return 1
+  log_lacks "com.decoy.NotUnicoach" || return 1
+  return 0
+}
+
+test_screenshot_env_file_cannot_redefine_the_bundle_id() {
+  stage_built_simulator_app
+  run_screenshot -w 0 bundle-decoy-simulator >/dev/null 2>&1 || return 1
+  log_has "coach.uni.UnicoachiOS" || return 1
+  log_lacks "com.decoy.NotUnicoach" || return 1
+  return 0
+}
+
+test_ios_simulator_help_exits_zero() {
+  local out rc=0
+  out="$(run_ios_simulator -h 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  echo "$out" | grep -q "ios-simulator" || return 1
+  # The help is the -B contract's only home, so it has to state it.
+  echo "$out" | grep -q -- "-B" || return 1
+  # ...and the keyboard reminder is documented, not just printed.
+  echo "$out" | grep -qi "hardware keyboard"
 }
 
 # ============================== ios-sim tests ================================
@@ -2943,6 +3431,36 @@ assert_success "screenshot-ios: device resolves from the destination's id=<UDID>
 assert_success "screenshot-ios: a destination with neither name= nor id= is fatal" test_screenshot_unresolvable_destination_is_fatal
 assert_success "screenshot-ios: a decoy devicename= key does not win over the real name=" test_screenshot_device_ignores_decoy_name_key
 assert_success "screenshot-ios: -h prints help and exits 0" test_screenshot_help_exits_zero
+assert_success "screenshot-ios: does NOT bring Simulator.app to the front" test_screenshot_does_not_bring_the_gui_to_the_front
+
+# ios-simulator
+assert_success "ios-simulator: dev-shell guard fires, no build and no simctl" test_ios_simulator_guard
+assert_success "ios-simulator: missing env file fails, names the missing file" test_ios_simulator_missing_env_file
+assert_success "ios-simulator: device target rejected before any build (simulator-only)" test_ios_simulator_device_env_rejected
+assert_success "ios-simulator: builds first, then boots/installs/launches" test_ios_simulator_builds_then_runs
+assert_success "ios-simulator: the build is bin/build-ios, not a second xcodebuild" test_ios_simulator_delegates_the_build_to_build_ios
+assert_success "ios-simulator: -B skips the build but still installs and launches" test_ios_simulator_skips_the_build_with_B
+assert_success "ios-simulator: -B with nothing built is fatal and names the flag" test_ios_simulator_B_without_a_built_app_is_fatal
+assert_success "ios-simulator: terminates the running app before launching (no stale run)" test_ios_simulator_terminates_before_launch
+assert_success "ios-simulator: args after -- are forwarded to simctl launch" test_ios_simulator_forwards_launch_args
+assert_success "ios-simulator: a run passes no StoreKit argument at all" test_ios_simulator_passes_no_storekit_argument
+assert_success "ios-simulator: device is this checkout's UDID, not the shared one" test_ios_simulator_device_is_this_checkouts_udid
+assert_success "ios-simulator: -d beats UNICOACH_SIMULATOR and the destination" test_ios_simulator_device_flag_beats_env_and_destination
+assert_success "ios-simulator: an empty -d value is rejected, not read as absent" test_ios_simulator_empty_device_value
+assert_success "ios-simulator: brings Simulator.app to the front after the launch" test_ios_simulator_brings_the_gui_to_the_front
+assert_success "ios-simulator: reminds about the hardware keyboard, writes no preference" test_ios_simulator_reminds_about_the_hardware_keyboard
+assert_success "ios-simulator: a failed GUI activation still says the app is running" test_ios_simulator_open_failure_names_the_running_app
+assert_success "ios-simulator: unknown option fails with the usage-band code" test_ios_simulator_unknown_option
+assert_success "ios-simulator: option missing its value fails with the usage-band code" test_ios_simulator_option_requires_value
+assert_success "ios-simulator: stray positional fails with the usage-band code" test_ios_simulator_stray_positional
+assert_success "ios-simulator: an option after the target says to reorder" test_ios_simulator_option_after_target
+assert_success "ios-simulator: an unexpected terminate failure is reported, not swallowed" test_ios_simulator_unexpected_terminate_failure_is_reported
+assert_success "ios-simulator: the normal 'nothing to terminate' stays silent" test_ios_simulator_nothing_to_terminate_is_silent
+assert_success "screenshot-ios: an unexpected terminate failure is reported on stderr only" test_screenshot_unexpected_terminate_failure_is_reported
+assert_success "ios-simulator: a failed launch quotes the launch arguments back" test_ios_simulator_launch_failure_names_the_launch_args
+assert_success "ios-simulator: a target env file cannot redefine the bundle id" test_ios_simulator_env_file_cannot_redefine_the_bundle_id
+assert_success "screenshot-ios: a target env file cannot redefine the bundle id" test_screenshot_env_file_cannot_redefine_the_bundle_id
+assert_success "ios-simulator: -h prints help and exits 0" test_ios_simulator_help_exits_zero
 
 # snapshot-ios
 assert_success "snapshot-ios: dev-shell guard fires, no xcodebuild line" test_snapshot_guard

@@ -24,6 +24,10 @@ machine-global device every other checkout also resolves, which a concurrent
 apps on. See
 [DEPLOY.md — One simulator per checkout](../DEPLOY.md#one-simulator-per-checkout-binios-sim).
 
+To _use_ the app rather than test it, `bin/ios-simulator` builds this checkout
+and runs it on the same per-checkout device (`-B` skips the build); see
+[DEPLOY.md — Running the app in the simulator](../DEPLOY.md#running-the-app-in-the-simulator-binios-simulator).
+
 New test `.swift` files MUST be registered in
 `ios-app/UnicoachiOS.xcodeproj/project.pbxproj` (explicit file references —
 there is no file-system synchronization), or they silently never compile.
