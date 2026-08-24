@@ -5,21 +5,30 @@
 # queue-worker-up/down, the bin/ SUTs it drives) inherit the same stack and target
 # the per-worktree test DB. bin/common resolves each entry against PROJECT_ROOT.
 export ENV_FILES=".env.dev:.env.test"
-# Make fatal/log-* available before the PORT guard. `functions` only defines
+# Make fatal/log-* available before the port guard. `functions` only defines
 # functions — it sources no `.env` — so it does not disturb the bootstrap
 # ordering (`common`/`.env.test` is still sourced afterward and re-defines these
-# idempotently). PORT must still be picked before `common` so .env.test's
-# PORT="${PORT:-8081}" and its SERVER_PORT=$PORT alias both resolve to it, and
-# every service this suite boots (rest-server) binds a port that cannot collide
-# with a developer's daemons running across worktrees. Tests never hardcode a
-# port; only .env (prod/dev) does.
+# idempotently).
+#
+# The port is handed down as REST_SERVER_TEST_PORT, not PORT, and NOT because of
+# any ordering requirement here: `.env` — the base layer every child re-sources
+# — assigns PORT unconditionally, so an exported PORT is clobbered in this
+# process and in every child this harness drives (rest-server-up, daemon-*, the
+# bin/ SUTs). `.env` does not own REST_SERVER_TEST_PORT, so it survives the
+# layering, and each child's `.env.test` re-derives the same PORT/SERVER_PORT
+# from it — which is what makes rest-server-up bind the port rest-server-check
+# later probes (RFC 131). The value is derived from this checkout's name rather
+# than scanned from a fixed base, so two worktrees running this suite
+# concurrently cannot pick the same port. Tests never hardcode a port; only .env
+# (prod/dev) does.
 source "$(dirname "$0")/functions"
-export PORT="$("$(dirname "$0")/find-free-port")"
-# This runs before `common` activates `set -euo pipefail`, so a find-free-port
-# failure would otherwise leave PORT="" and .env.test's `${PORT:-8081}` would
-# silently fall back to the collision-prone 8081. Guard it explicitly via fatal.
-if [ -z "$PORT" ]; then
-  fatal "find-free-port returned no free port; refusing to fall back to a hardcoded port."
+export REST_SERVER_TEST_PORT="$("$(dirname "$0")/checkout-port")"
+# This runs before `common` activates `set -euo pipefail`, so a checkout-port
+# failure would otherwise leave REST_SERVER_TEST_PORT="" and .env.test's
+# `${REST_SERVER_TEST_PORT:-18080}` would silently fall back to a hardcoded
+# port. Guard it explicitly via fatal.
+if [ -z "$REST_SERVER_TEST_PORT" ]; then
+  fatal "checkout-port returned no free port; refusing to fall back to a hardcoded port."
 fi
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
@@ -421,11 +430,15 @@ SHIM
 }
 assert_success "assert_aws_account passes on a match and fatals on a mismatch" test_assert_aws_account_guard
 
-# Three distinct free test ports, found at run time via bin/find-free-port (which
-# uses check-port). Starting the scan at 18000 keeps them well above the harness
-# PORT=8081 so a foreign listener here never collides with a real rest-server. If
-# none is free, find-free-port fails and the suite aborts rather than guessing.
-PORT_FREE="$(bin/find-free-port 18000)"
+# Four distinct free test ports, found at run time via bin/find-free-port (which
+# uses check-port). The scan starts ABOVE $REST_SERVER_TEST_PORT rather than at
+# find-free-port's default base of 18000: checkout-port derives the harness port
+# from 18000 upward, so a scan from 18000 could hand a scratch port the very
+# value this suite's rest-server is about to bind — the harness port is chosen at
+# startup but not bound until test_daemon_wrapper, so a free-port probe here
+# would not see it. Starting at +1 excludes it by construction. If none is free,
+# find-free-port fails and the suite aborts rather than guessing.
+PORT_FREE="$(bin/find-free-port $((REST_SERVER_TEST_PORT + 1)))"
 PORT_IDEM="$(bin/find-free-port $((PORT_FREE + 1)))"
 PORT_HTTP="$(bin/find-free-port $((PORT_IDEM + 1)))"
 PORT_KILL="$(bin/find-free-port $((PORT_HTTP + 1)))"
@@ -454,6 +467,41 @@ if [ "$cp_status" -ne "$EXIT_MISSING_REQUIRED_ARG" ]; then echo "Fail: check-por
 cp_status=0; bin/check-port notaport >/dev/null 2>&1 || cp_status=$?
 if [ "$cp_status" -ne "$EXIT_INVALID_ARG_VALUE" ]; then echo "Fail: check-port notaport did not exit $EXIT_INVALID_ARG_VALUE (got $cp_status)"; exit 1; fi
 pass_test "check-port rejects missing / non-numeric <port> with band codes (21 / 22)"
+
+echo ""
+echo "==== Testing checkout-port and test-port isolation ===="
+# Determinism: the port is derived from the checkout name, so repeated calls in
+# one checkout agree. That is what makes a leaked daemon on it attributable.
+ckp_first="$(bin/checkout-port)"
+ckp_second="$(bin/checkout-port)"
+if [ "$ckp_first" != "$ckp_second" ]; then echo "Fail: checkout-port is not deterministic ($ckp_first vs $ckp_second)"; exit 1; fi
+if ! validate_port "$ckp_first"; then echo "Fail: checkout-port printed an invalid port [$ckp_first]"; exit 1; fi
+pass_test "checkout-port returns the same port on repeated calls in one checkout"
+
+# Liveness fallback: the derived value is a preferred base, not a guarantee. Hold
+# it (the hash-collision / foreign-process case) and the next call must scan past
+# it rather than hand back a port nothing can bind.
+start_foreign_listener "$ckp_first" || { echo "Fail: could not bind foreign listener on $ckp_first"; exit 1; }
+ckp_listener="$FOREIGN_LISTENER_PID"
+ckp_fallback="$(bin/checkout-port)" || { echo "Fail: checkout-port failed while its derived port was held"; stop_foreign_listener "$ckp_listener"; exit 1; }
+if [ "$ckp_fallback" = "$ckp_first" ]; then echo "Fail: checkout-port returned the held port $ckp_first"; stop_foreign_listener "$ckp_listener"; exit 1; fi
+if bin/check-port "$ckp_fallback" >/dev/null 2>&1; then echo "Fail: checkout-port fallback $ckp_fallback is not free"; stop_foreign_listener "$ckp_listener"; exit 1; fi
+stop_foreign_listener "$ckp_listener"
+pass_test "checkout-port falls back to a different free port when its derived port is held"
+# The suite's own rest-server binds this port later; release it before moving on.
+if ! wait_for_port_free "$ckp_first"; then echo "Fail: $ckp_first not released after the checkout-port fallback case"; exit 1; fi
+
+# RFC 131 regression, and it MUST cross a process boundary: `.env` assigns PORT
+# unconditionally, so a PORT exported by this harness is clobbered in every child
+# — which is the process that actually binds the socket. An in-process check of
+# $PORT passes even with the bug. Assert that a CHILD sourcing bin/common lands
+# on the harness's REST_SERVER_TEST_PORT.
+child_port="$(bash -c 'source bin/common; echo $PORT')"
+if [ "$child_port" != "$REST_SERVER_TEST_PORT" ]; then
+  echo "Fail: a child sourcing bin/common resolved PORT to [$child_port], not the harness REST_SERVER_TEST_PORT [$REST_SERVER_TEST_PORT]"
+  exit 1
+fi
+pass_test "a child sourcing bin/common resolves PORT to the harness REST_SERVER_TEST_PORT"
 
 echo ""
 echo "==== Testing daemon-up port preflight ===="
@@ -798,10 +846,13 @@ assert_failure "daemon-check -p (missing value) is rejected" bin/daemon-check -p
 assert_failure "daemon-up -p (missing value) is rejected" bin/daemon-up -p
 assert_failure "daemon-check -x svc is rejected" bin/daemon-check -x svc
 
-# 10. find-free-port.
+# 10. find-free-port and checkout-port.
 assert_success "find-free-port -h exits 0" bin/find-free-port -h
 assert_failure "find-free-port -x is rejected" bin/find-free-port -x
 assert_failure "find-free-port 18000 19000 (too many args) is rejected" bin/find-free-port 18000 19000
+assert_success "checkout-port -h exits 0" bin/checkout-port -h
+assert_failure "checkout-port -x is rejected" bin/checkout-port -x
+assert_failure "checkout-port 18000 (unexpected arg) is rejected" bin/checkout-port 18000
 
 # 12. db-reset still drops after the db-drop -y collapse: the relayed -y bypasses
 #     the confirmation prompt non-interactively.

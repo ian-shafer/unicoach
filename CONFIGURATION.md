@@ -32,6 +32,21 @@ rests on. Full design:
     (SecureStrings) and RDS identity (`PGHOST`/`DATABASE_HOST`/`POSTGRES_USER`/
     `DATABASE_USER`).
 
+  A **harness-only override** is the one thing outside these five roles.
+  `.env`'s `PORT=8080` is unconditional — as the base must be, so a cloud
+  `.env.<env>` that omits a key fatals rather than inheriting ambient
+  environment — which means a test harness cannot hand its children a `PORT`:
+  the base layer destroys it in every child before `.env.test` is reached. The
+  harness therefore exports a key the base deliberately does **not** own, and
+  the last layer re-derives from it: `bin/scripts-tests` exports
+  `REST_SERVER_TEST_PORT` (a per-checkout value from `bin/checkout-port`) and
+  `.env.test` sets `PORT="${REST_SERVER_TEST_PORT:-18080}"`; `bin/test-fuzz`
+  does the same with `FUZZ_PORT` and `.env.fuzz` (RFC 131). The name carries the
+  service, not a generic `TEST_PORT`, so a sibling override can be added without
+  either being renamed. These keys are set only by a harness at run time, never
+  committed to any `.env*`, and never read by the JVM — the JVM sees only the
+  `PORT`/`SERVER_PORT` they resolve to.
+
   `ENV_FILE` selects a single delta; `ENV_FILES` is a PATH-like `:`-separated,
   exported string of deltas layered left-to-right (later wins) — the two are
   mutually exclusive. On a **cloud host** the release bundle carries an

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+checkout-port
+
+Prints a TCP port for this checkout's test stack, then exits 0. The value is
+derived from the checkout directory name:
+
+  18000 + (cksum of "$(basename "$PROJECT_ROOT")") % 10000
+
+so it is STABLE per checkout and DISJOINT between checkouts: two worktrees
+running their test suites concurrently provably never pick the same port, and a
+leaked daemon or wedged socket on a port is attributable to the checkout whose
+name hashes to it (unlike a random or first-free port, which names nobody).
+
+The derived value is a preferred base, not a guarantee. It is verified with
+bin/check-port; if something already holds it, bin/find-free-port scans upward
+from it and that port is printed instead. Two cases need this: a hash collision
+between two simultaneously-running checkouts (10,000 slots), and an unrelated
+foreign process already sitting on the derived port. Determinism in the
+overwhelmingly common case, liveness always.
+
+Note: as with find-free-port, the port is free at the instant of printing; a
+caller that binds it should treat a later bind failure as the port having been
+taken, not retry here.
+
+Exit codes:
+  0: A port was found and printed.
+  1: No free port at or above the derived value.
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "Unexpected argument(s): checkout-port takes none, got [$#]."
+fi
+
+checksum="$(printf '%s' "$(basename "$PROJECT_ROOT")" | cksum | cut -d' ' -f1)"
+port=$((18000 + checksum % 10000))
+
+# check-port exits 0 = in use. The derived port is ours only if nothing holds it.
+if ! "$PROJECT_ROOT/bin/check-port" "$port" >/dev/null 2>&1; then
+  echo "$port"
+  exit 0
+fi
+
+exec "$PROJECT_ROOT/bin/find-free-port" "$port"
