@@ -10,25 +10,26 @@ export ENV_FILES=".env.dev:.env.test"
 # ordering (`common`/`.env.test` is still sourced afterward and re-defines these
 # idempotently).
 #
-# The port is handed down as REST_SERVER_TEST_PORT, not PORT, and NOT because of
+# The block base is handed down as BASE_TEST_PORT, not PORT, and NOT because of
 # any ordering requirement here: `.env` — the base layer every child re-sources
-# — assigns PORT unconditionally, so an exported PORT is clobbered in this
-# process and in every child this harness drives (rest-server-up, daemon-*, the
-# bin/ SUTs). `.env` does not own REST_SERVER_TEST_PORT, so it survives the
-# layering, and each child's `.env.test` re-derives the same PORT/SERVER_PORT
-# from it — which is what makes rest-server-up bind the port rest-server-check
-# later probes (RFC 131). The value is derived from this checkout's name rather
-# than scanned from a fixed base, so two worktrees running this suite
-# concurrently cannot pick the same port. Tests never hardcode a port; only .env
-# (prod/dev) does.
+# — assigns PORT, ADMIN_WEB_PORT and PUBLIC_WEB_PORT unconditionally, so an
+# exported PORT is clobbered in this process and in every child this harness
+# drives (rest-server-up, daemon-*, the bin/ SUTs). `.env` does not own
+# BASE_TEST_PORT, so it survives the layering, and each child's `.env.test`
+# re-derives every service port from it — which is what makes rest-server-up
+# bind the port rest-server-check later probes (RFC 131). The value is the base
+# of this checkout's 16-aligned port block, derived from the checkout's name
+# (bin/checkout-port, RFC 132), so two worktrees running this suite concurrently
+# get provably disjoint blocks — not merely different single ports. Tests never
+# hardcode a port; only .env (prod/dev) does.
 source "$(dirname "$0")/functions"
-export REST_SERVER_TEST_PORT="$("$(dirname "$0")/checkout-port")"
+export BASE_TEST_PORT="$("$(dirname "$0")/checkout-port")"
 # This runs before `common` activates `set -euo pipefail`, so a checkout-port
-# failure would otherwise leave REST_SERVER_TEST_PORT="" and .env.test's
-# `${REST_SERVER_TEST_PORT:-18080}` would silently fall back to a hardcoded
-# port. Guard it explicitly via fatal.
-if [ -z "$REST_SERVER_TEST_PORT" ]; then
-  fatal "checkout-port returned no free port; refusing to fall back to a hardcoded port."
+# failure would otherwise leave BASE_TEST_PORT="" and .env.test's
+# `${BASE_TEST_PORT:-18080}` would silently fall back to a hardcoded port. Guard
+# it explicitly via fatal.
+if [ -z "$BASE_TEST_PORT" ]; then
+  fatal "checkout-port returned no free block; refusing to fall back to hardcoded ports."
 fi
 source "$(dirname "$0")/common"
 source "$(dirname "$0")/tests-common"
@@ -430,18 +431,16 @@ SHIM
 }
 assert_success "assert_aws_account passes on a match and fatals on a mismatch" test_assert_aws_account_guard
 
-# Four distinct free test ports, found at run time via bin/find-free-port (which
-# uses check-port). The scan starts ABOVE $REST_SERVER_TEST_PORT rather than at
-# find-free-port's default base of 18000: checkout-port derives the harness port
-# from 18000 upward, so a scan from 18000 could hand a scratch port the very
-# value this suite's rest-server is about to bind — the harness port is chosen at
-# startup but not bound until test_daemon_wrapper, so a free-port probe here
-# would not see it. Starting at +1 excludes it by construction. If none is free,
-# find-free-port fails and the suite aborts rather than guessing.
-PORT_FREE="$(bin/find-free-port $((REST_SERVER_TEST_PORT + 1)))"
-PORT_IDEM="$(bin/find-free-port $((PORT_FREE + 1)))"
-PORT_HTTP="$(bin/find-free-port $((PORT_IDEM + 1)))"
-PORT_KILL="$(bin/find-free-port $((PORT_HTTP + 1)))"
+# The four scratch ports this suite binds are ASSIGNED from the offset registry
+# in bin/checkout-port's help text (+3..+6), not scanned for. Scanning is what
+# RFC 132 removes: a scan bleeds out of this checkout's block and can hand back
+# a port a NEIGHBOURING checkout has already derived but not yet bound, and
+# find-free-port only ever claims a port is free at the instant of printing.
+# checkout-port has already verified every port in this block is free.
+PORT_FREE=$((BASE_TEST_PORT + 3))
+PORT_IDEM=$((BASE_TEST_PORT + 4))
+PORT_HTTP=$((BASE_TEST_PORT + 5))
+PORT_KILL=$((BASE_TEST_PORT + 6))
 
 echo ""
 echo "==== Testing check-port ===="
@@ -470,38 +469,140 @@ pass_test "check-port rejects missing / non-numeric <port> with band codes (21 /
 
 echo ""
 echo "==== Testing checkout-port and test-port isolation ===="
-# Determinism: the port is derived from the checkout name, so repeated calls in
-# one checkout agree. That is what makes a leaked daemon on it attributable.
+# Determinism: the block base is derived from the checkout name, so repeated
+# calls in one checkout agree. That is what makes a leaked daemon anywhere in the
+# block attributable to this checkout.
 ckp_first="$(bin/checkout-port)"
 ckp_second="$(bin/checkout-port)"
 if [ "$ckp_first" != "$ckp_second" ]; then echo "Fail: checkout-port is not deterministic ($ckp_first vs $ckp_second)"; exit 1; fi
-if ! validate_port "$ckp_first"; then echo "Fail: checkout-port printed an invalid port [$ckp_first]"; exit 1; fi
-pass_test "checkout-port returns the same port on repeated calls in one checkout"
+if ! validate_port "$ckp_first"; then echo "Fail: checkout-port printed an invalid base [$ckp_first]"; exit 1; fi
+if ! validate_port $((ckp_first + 15)); then echo "Fail: checkout-port block top $((ckp_first + 15)) is not a valid port"; exit 1; fi
+pass_test "checkout-port returns the same block base on repeated calls in one checkout"
 
-# Liveness fallback: the derived value is a preferred base, not a guarantee. Hold
-# it (the hash-collision / foreign-process case) and the next call must scan past
-# it rather than hand back a port nothing can bind.
-start_foreign_listener "$ckp_first" || { echo "Fail: could not bind foreign listener on $ckp_first"; exit 1; }
+# Block disjointness — the property RFC 132 adds, and the one RFC 131's
+# single-port derivation cannot provide. Two DIFFERENT checkout names must get
+# blocks that do not OVERLAP, not merely different bases: under a per-port
+# derivation two checkouts 1 apart both "differ" while their in-use windows sit
+# on top of each other. Exercised end to end rather than by re-deriving the hash
+# here: a fake checkout root is a directory of symlinks back into this one, so
+# `basename $PROJECT_ROOT` — the only input — is the only thing that differs.
+CKP_FAKE_PARENT="$(mktemp -d)"
+make_fake_checkout() {
+  local name="$1" entry root
+  # Assigned on its own line: a `local` statement expands all its words before
+  # any of them is assigned, so `local name=$1 root=.../$name` would interpolate
+  # whatever `name` meant OUTSIDE the function (the nix dev shell exports
+  # name=nix-shell-env).
+  root="$CKP_FAKE_PARENT/$name"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  echo "$root"
+}
+ckp_name_a=""; ckp_name_b=""; ckp_base_a=""; ckp_base_b=""
+for suffix in a b c d e f g h; do
+  ckp_root="$(make_fake_checkout "unicoach-blocktest-$suffix")"
+  ckp_base="$("$ckp_root/bin/checkout-port")"
+  if [ -z "$ckp_name_a" ]; then
+    ckp_name_a="unicoach-blocktest-$suffix"; ckp_base_a="$ckp_base"
+  elif [ "$ckp_base" != "$ckp_base_a" ]; then
+    ckp_name_b="unicoach-blocktest-$suffix"; ckp_base_b="$ckp_base"
+    break
+  fi
+done
+rm -rf "$CKP_FAKE_PARENT"
+if [ -z "$ckp_name_b" ]; then echo "Fail: could not find two checkout names with different derived blocks"; exit 1; fi
+# Disjoint, not merely different: neither block may contain any port of the other.
+if [ "$ckp_base_a" -lt "$ckp_base_b" ]; then ckp_lo="$ckp_base_a"; ckp_hi="$ckp_base_b"; else ckp_lo="$ckp_base_b"; ckp_hi="$ckp_base_a"; fi
+if [ $((ckp_lo + 15)) -ge "$ckp_hi" ]; then
+  echo "Fail: blocks for [$ckp_name_a] ($ckp_base_a..$((ckp_base_a + 15))) and [$ckp_name_b] ($ckp_base_b..$((ckp_base_b + 15))) overlap"
+  exit 1
+fi
+pass_test "two different checkout names derive non-overlapping port blocks"
+
+# Ceiling: the highest derivable block must stay entirely below macOS's ephemeral
+# range (net.inet.ip.portrange.first = 49152), where an outbound socket could
+# steal a test port. Read the geometry from the script rather than restating it.
+ckp_floor="$(grep -E '^BLOCK_FLOOR=' bin/checkout-port | cut -d= -f2)"
+ckp_size="$(grep -E '^BLOCK_SIZE=' bin/checkout-port | cut -d= -f2)"
+ckp_count="$(grep -E '^BLOCK_COUNT=' bin/checkout-port | cut -d= -f2)"
+ckp_top=$((ckp_floor + (ckp_count - 1) * ckp_size + ckp_size - 1))
+if [ "$ckp_top" -ge 49152 ]; then echo "Fail: highest derivable port $ckp_top is at or above the ephemeral floor 49152"; exit 1; fi
+pass_test "the highest derivable block stays below the 49152 ephemeral floor ($ckp_top)"
+
+# Block-wise fallback: the derived block is a preference, not a guarantee (hash
+# collision, or a foreign process squatting inside it). Hold a port in the MIDDLE
+# of the block — offset +12, which no consumer uses, so a port-wise fallback
+# would happily return a base whose block still straddles the held port. The
+# whole point of RFC 132 is that checkout-port advances by BLOCK: the fallback
+# must be a different block, entirely free.
+start_foreign_listener $((ckp_first + 12)) || { echo "Fail: could not bind foreign listener on $((ckp_first + 12))"; exit 1; }
 ckp_listener="$FOREIGN_LISTENER_PID"
-ckp_fallback="$(bin/checkout-port)" || { echo "Fail: checkout-port failed while its derived port was held"; stop_foreign_listener "$ckp_listener"; exit 1; }
-if [ "$ckp_fallback" = "$ckp_first" ]; then echo "Fail: checkout-port returned the held port $ckp_first"; stop_foreign_listener "$ckp_listener"; exit 1; fi
-if bin/check-port "$ckp_fallback" >/dev/null 2>&1; then echo "Fail: checkout-port fallback $ckp_fallback is not free"; stop_foreign_listener "$ckp_listener"; exit 1; fi
+ckp_fallback="$(bin/checkout-port)" || { echo "Fail: checkout-port failed while a port inside its derived block was held"; stop_foreign_listener "$ckp_listener"; exit 1; }
+if [ "$ckp_fallback" = "$ckp_first" ]; then echo "Fail: checkout-port returned block $ckp_first, which contains the held port $((ckp_first + 12))"; stop_foreign_listener "$ckp_listener"; exit 1; fi
+if [ "$ckp_fallback" -le $((ckp_first + 15)) ] && [ $((ckp_fallback + 15)) -ge "$ckp_first" ]; then
+  echo "Fail: checkout-port fallback block $ckp_fallback..$((ckp_fallback + 15)) overlaps the held block $ckp_first..$((ckp_first + 15))"
+  stop_foreign_listener "$ckp_listener"; exit 1
+fi
+for ckp_offset in $(seq 0 15); do
+  if bin/check-port $((ckp_fallback + ckp_offset)) >/dev/null 2>&1; then
+    echo "Fail: port $((ckp_fallback + ckp_offset)) in the fallback block $ckp_fallback is not free"
+    stop_foreign_listener "$ckp_listener"; exit 1
+  fi
+done
 stop_foreign_listener "$ckp_listener"
-pass_test "checkout-port falls back to a different free port when its derived port is held"
-# The suite's own rest-server binds this port later; release it before moving on.
-if ! wait_for_port_free "$ckp_first"; then echo "Fail: $ckp_first not released after the checkout-port fallback case"; exit 1; fi
+pass_test "checkout-port advances a whole block when any port in the derived block is held"
+# The suite's own scratch ports live in this block; release it before moving on.
+if ! wait_for_port_free $((ckp_first + 12)); then echo "Fail: $((ckp_first + 12)) not released after the checkout-port fallback case"; exit 1; fi
 
 # RFC 131 regression, and it MUST cross a process boundary: `.env` assigns PORT
 # unconditionally, so a PORT exported by this harness is clobbered in every child
 # — which is the process that actually binds the socket. An in-process check of
 # $PORT passes even with the bug. Assert that a CHILD sourcing bin/common lands
-# on the harness's REST_SERVER_TEST_PORT.
+# on the harness's BASE_TEST_PORT.
 child_port="$(bash -c 'source bin/common; echo $PORT')"
-if [ "$child_port" != "$REST_SERVER_TEST_PORT" ]; then
-  echo "Fail: a child sourcing bin/common resolved PORT to [$child_port], not the harness REST_SERVER_TEST_PORT [$REST_SERVER_TEST_PORT]"
+if [ "$child_port" != "$BASE_TEST_PORT" ]; then
+  echo "Fail: a child sourcing bin/common resolved PORT to [$child_port], not the harness BASE_TEST_PORT [$BASE_TEST_PORT]"
   exit 1
 fi
-pass_test "a child sourcing bin/common resolves PORT to the harness REST_SERVER_TEST_PORT"
+pass_test "a child sourcing bin/common resolves PORT to the harness BASE_TEST_PORT"
+
+# Every port-binding service lands in the block, and the test and fuzz halves
+# never share one (RFC 132 defect 2): before this, .env.test and .env.fuzz
+# overrode only PORT, so admin-web and public-web bound the DEV 8081/8082 under
+# both layerings — the developer's own ports, and identical across the two
+# harnesses. Resolved in CHILDREN, because the layering only happens there.
+ckp_test_ports="$(ENV_FILES=".env.dev:.env.test" bash -c 'source bin/common; echo "$PORT $ADMIN_WEB_PORT $PUBLIC_WEB_PORT"')"
+ckp_fuzz_ports="$(ENV_FILES=".env.dev:.env.fuzz" bash -c 'source bin/common; echo "$PORT $ADMIN_WEB_PORT $PUBLIC_WEB_PORT"')"
+read -r ckp_t0 ckp_t1 ckp_t2 <<< "$ckp_test_ports"
+read -r ckp_f7 ckp_f8 ckp_f9 <<< "$ckp_fuzz_ports"
+# The offset registry in bin/checkout-port's help text is the authority.
+ckp_expected="$BASE_TEST_PORT $((BASE_TEST_PORT + 1)) $((BASE_TEST_PORT + 2)) $((BASE_TEST_PORT + 7)) $((BASE_TEST_PORT + 8)) $((BASE_TEST_PORT + 9))"
+ckp_actual="$ckp_t0 $ckp_t1 $ckp_t2 $ckp_f7 $ckp_f8 $ckp_f9"
+if [ "$ckp_actual" != "$ckp_expected" ]; then
+  echo "Fail: service ports resolved to [$ckp_actual], not the registry's [$ckp_expected] (test PORT/ADMIN_WEB_PORT/PUBLIC_WEB_PORT then fuzz)"
+  exit 1
+fi
+# Distinct and in-block, asserted independently of the offsets above: six ports,
+# six values, all inside this checkout's 16-port block.
+ckp_distinct="$(printf '%s\n' $ckp_actual | sort -u | wc -l | tr -d ' ')"
+if [ "$ckp_distinct" -ne 6 ]; then echo "Fail: the six service ports are not distinct: [$ckp_actual]"; exit 1; fi
+for ckp_port in $ckp_actual; do
+  if [ "$ckp_port" -lt "$BASE_TEST_PORT" ] || [ "$ckp_port" -gt $((BASE_TEST_PORT + 15)) ]; then
+    echo "Fail: service port $ckp_port is outside this checkout's block $BASE_TEST_PORT..$((BASE_TEST_PORT + 15)): [$ckp_actual]"
+    exit 1
+  fi
+done
+pass_test "all three service ports resolve inside the block under both test and fuzz layering, six distinct values"
+
+# The fuzz harness no longer scans for a port (RFC 132 defect 3): find-free-port's
+# default scan base is 18000, exactly the floor of checkout-port's range, so a
+# fuzz run could be handed a port inside some checkout's derived block.
+# Comment lines are stripped first: the prose still names find-free-port when it
+# explains why the TOCTOU guard survived it; what must be gone is the CALL.
+if grep -v '^[[:space:]]*#' bin/test-fuzz | grep -q 'find-free-port'; then echo "Fail: bin/test-fuzz still calls find-free-port"; exit 1; fi
+pass_test "bin/test-fuzz claims no port by scanning"
 
 echo ""
 echo "==== Testing daemon-up port preflight ===="

@@ -5,30 +5,55 @@ help() {
   cat << 'EOF'
 checkout-port
 
-Prints a TCP port for this checkout's test stack, then exits 0. The value is
+Prints the BASE of this checkout's 16-port test block, then exits 0. The base is
 derived from the checkout directory name:
 
-  18000 + (cksum of "$(basename "$PROJECT_ROOT")") % 10000
+  18000 + (cksum of "$(basename "$PROJECT_ROOT")" % 1900) * 16
 
-so it is STABLE per checkout and DISJOINT between checkouts: two worktrees
-running their test suites concurrently provably never pick the same port, and a
-leaked daemon or wedged socket on a port is attributable to the checkout whose
-name hashes to it (unlike a random or first-free port, which names nobody).
+so it is STABLE per checkout and, because the blocks are 16-aligned, two
+checkouts get either entirely disjoint blocks or the identical one — never a
+partial overlap. A leaked daemon or wedged socket anywhere in a block is
+attributable to the checkout whose name hashes to it, and `lsof -i
+:<base>-<base+15>` shows a checkout's whole test footprint (RFC 132).
 
-The derived value is a preferred base, not a guarantee. It is verified with
-bin/check-port; if something already holds it, bin/find-free-port scans upward
-from it and that port is printed instead. Two cases need this: a hash collision
-between two simultaneously-running checkouts (10,000 slots), and an unrelated
-foreign process already sitting on the derived port. Determinism in the
-overwhelmingly common case, liveness always.
+The offset registry below is the AUTHORITY for who owns which port. Ports are
+ASSIGNED, never scanned for and never defined relative to each other; a new
+consumer takes the next reserved offset:
 
-Note: as with find-free-port, the port is free at the instant of printing; a
-caller that binds it should treat a later bind failure as the port having been
-taken, not retry here.
+  +0        rest-server  -- test (PORT / SERVER_PORT)
+  +1        admin-web    -- test (ADMIN_WEB_PORT)
+  +2        public-web   -- test (PUBLIC_WEB_PORT)
+  +3..+6    scripts-tests scratch ports
+  +7        rest-server  -- fuzz (PORT / SERVER_PORT)
+  +8        admin-web    -- fuzz (ADMIN_WEB_PORT)
+  +9        public-web   -- fuzz (PUBLIC_WEB_PORT)
+  +10..+15  reserved
+
+Test and fuzz take disjoint halves of the SAME block: they use different
+databases, so one checkout may legitimately run both at once. queue-worker gets
+no offset -- it binds no port.
+
+The derived block is a preferred base, not a guarantee. EVERY port in it is
+verified with bin/check-port; if any is held, this advances to the NEXT BLOCK
+(base + 16) and re-checks. Advancing by BLOCK and never by port is the whole
+point: a port-wise fallback would hand out a base whose block straddles a
+neighbouring checkout's, which is exactly what the block derivation removes. Two
+cases need the fallback: a hash collision between two simultaneously-running
+checkouts (1900 blocks), and a foreign process sitting inside the derived range.
+
+Range: 18000 is the floor, clear of every daemon port in `.env`. The advance
+stops below 49152 -- macOS begins its ephemeral range there
+(`sysctl net.inet.ip.portrange.first`), and a test port drawn from there can be
+stolen by any outbound socket on the machine. Running out is fatal rather than
+returning a port at or above the ephemeral floor.
+
+Note: as with find-free-port, the block is free at the instant of printing; a
+caller that binds a port in it should treat a later bind failure as the port
+having been taken, not retry here.
 
 Exit codes:
-  0: A port was found and printed.
-  1: No free port at or above the derived value.
+  0: A free block was found and its base printed.
+  1: No free block below the ephemeral floor.
 
 Options:
   -h: Help
@@ -49,13 +74,34 @@ if [ "$#" -ne 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "Unexpected argument(s): checkout-port takes none, got [$#]."
 fi
 
+# Block geometry. BLOCK_COUNT * BLOCK_SIZE spans 18000..48399, entirely below the
+# ephemeral floor, so the derivation itself can never land above it.
+BLOCK_FLOOR=18000
+BLOCK_SIZE=16
+BLOCK_COUNT=1900
+EPHEMERAL_FLOOR=49152
+
+# 0 = every port in the block is free. check-port exits 0 = in use, so a single
+# in-use port disqualifies the whole block: the block is claimed as a unit.
+block_is_free() {
+  local base="$1" offset
+  for ((offset = 0; offset < BLOCK_SIZE; offset++)); do
+    if "$PROJECT_ROOT/bin/check-port" $((base + offset)) >/dev/null 2>&1; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 checksum="$(printf '%s' "$(basename "$PROJECT_ROOT")" | cksum | cut -d' ' -f1)"
-port=$((18000 + checksum % 10000))
+base=$((BLOCK_FLOOR + (checksum % BLOCK_COUNT) * BLOCK_SIZE))
 
-# check-port exits 0 = in use. The derived port is ours only if nothing holds it.
-if ! "$PROJECT_ROOT/bin/check-port" "$port" >/dev/null 2>&1; then
-  echo "$port"
-  exit 0
-fi
+while ! block_is_free "$base"; do
+  base=$((base + BLOCK_SIZE))
+  # The last port of the next block must stay below the ephemeral floor.
+  if [ $((base + BLOCK_SIZE)) -gt "$EPHEMERAL_FLOOR" ]; then
+    fatal "No free ${BLOCK_SIZE}-port block below the ephemeral floor [$EPHEMERAL_FLOOR]."
+  fi
+done
 
-exec "$PROJECT_ROOT/bin/find-free-port" "$port"
+echo "$base"

@@ -101,28 +101,32 @@ provision_schemathesis() {
 }
 provision_schemathesis
 
-# 2. Claim a free port for the ephemeral rest-server. The harness must boot its
-#    own freshly-built server, so rather than pin a port (and refuse when a
-#    foreign listener — e.g. a running dev server — already holds it), ask
-#    bin/find-free-port for one that is currently unbound. Export it as FUZZ_PORT:
-#    .env.fuzz derives PORT (and the JVM's SERVER_PORT) from FUZZ_PORT, and every
-#    child (rest-server-up, rest-server-wait-for-health, daemon-up, …) re-sources
-#    .env.fuzz via bin/common — so the claim must travel as FUZZ_PORT to survive
-#    that re-source; a bare `export PORT` would be reset to the default in each
-#    child. Re-derive PORT/SERVER_PORT in THIS shell too, for the steps below.
-FUZZ_PORT="$("$PROJECT_ROOT/bin/find-free-port")"
-export FUZZ_PORT
-PORT="$FUZZ_PORT"
+# 2. Take this checkout's port block. bin/checkout-port derives a 16-port block
+#    from the checkout name and verifies every port in it is free, so the fuzz
+#    rest-server never collides with a running dev server, with another
+#    checkout, or with this checkout's own test suite (test and fuzz take
+#    disjoint halves of the block — RFC 132's offset registry). Export it as
+#    BASE_TEST_PORT: .env.fuzz derives PORT (and the JVM's SERVER_PORT),
+#    ADMIN_WEB_PORT and PUBLIC_WEB_PORT from it at offsets +7/+8/+9, and every
+#    child (rest-server-up, rest-server-wait-for-health, daemon-up, …)
+#    re-sources .env.fuzz via bin/common — so the value must travel as
+#    BASE_TEST_PORT to survive that re-source; a bare `export PORT` would be
+#    reset to `.env`'s default in each child. Re-derive PORT/SERVER_PORT in THIS
+#    shell too, at the same +7, for the steps below.
+BASE_TEST_PORT="$("$PROJECT_ROOT/bin/checkout-port")"
+export BASE_TEST_PORT
+PORT=$((BASE_TEST_PORT + 7))
 export PORT
 export SERVER_PORT="$PORT"
-log-info "Claimed free port $PORT for the fuzz rest-server."
+log-info "Using fuzz port $PORT from this checkout's block $BASE_TEST_PORT..$((BASE_TEST_PORT + 15))."
 
-# 2a. Guard the find-free-port TOCTOU window: the port was free when reported,
+# 2a. Guard the checkout-port TOCTOU window: the block was free when reported,
 #    but a concurrent run could have bound it before we boot. Assert it is still
 #    unbound with a bash /dev/tcp connect (occupant-agnostic, dependency-free,
 #    refuses instantly on a closed port; see bin/INVARIANTS.md port-liveness
 #    rule) and fatal if it was taken, rather than letting rest-server-up fail
-#    opaquely on the bind.
+#    opaquely on the bind. checkout-port carries the same instant-of-printing
+#    caveat find-free-port did, so the guard stays.
 if (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
   exec 3>&- 3<&-
   fatal "Port $PORT was taken between selection and use. Re-run the fuzz harness."

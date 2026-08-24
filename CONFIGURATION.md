@@ -33,19 +33,23 @@ rests on. Full design:
     `DATABASE_USER`).
 
   A **harness-only override** is the one thing outside these five roles.
-  `.env`'s `PORT=8080` is unconditional — as the base must be, so a cloud
-  `.env.<env>` that omits a key fatals rather than inheriting ambient
-  environment — which means a test harness cannot hand its children a `PORT`:
-  the base layer destroys it in every child before `.env.test` is reached. The
-  harness therefore exports a key the base deliberately does **not** own, and
-  the last layer re-derives from it: `bin/scripts-tests` exports
-  `REST_SERVER_TEST_PORT` (a per-checkout value from `bin/checkout-port`) and
-  `.env.test` sets `PORT="${REST_SERVER_TEST_PORT:-18080}"`; `bin/test-fuzz`
-  does the same with `FUZZ_PORT` and `.env.fuzz` (RFC 131). The name carries the
-  service, not a generic `TEST_PORT`, so a sibling override can be added without
-  either being renamed. These keys are set only by a harness at run time, never
-  committed to any `.env*`, and never read by the JVM — the JVM sees only the
-  `PORT`/`SERVER_PORT` they resolve to.
+  `.env`'s `PORT=8080`, `ADMIN_WEB_PORT=8081` and `PUBLIC_WEB_PORT=8082` are
+  unconditional — as the base must be, so a cloud `.env.<env>` that omits a key
+  fatals rather than inheriting ambient environment — which means a test harness
+  cannot hand its children a `PORT`: the base layer destroys it in every child
+  before `.env.test` is reached. The harness therefore exports one key the base
+  deliberately does **not** own, and the last layer re-derives every service
+  port from it: `bin/scripts-tests` and `bin/test-fuzz` both export
+  `BASE_TEST_PORT`, the base of this checkout's 16-port block from
+  `bin/checkout-port`, and `.env.test` / `.env.fuzz` assign each service an
+  offset inside it (`PORT`/`ADMIN_WEB_PORT`/`PUBLIC_WEB_PORT` at `+0/+1/+2` for
+  test, `+7/+8/+9` for fuzz — RFC 131, RFC 132). The offset registry in
+  `bin/checkout-port`'s help text is the authority for who owns which offset;
+  ports are assigned there, never scanned for. One key, not a per-service one:
+  the block is the unit a checkout owns, so a new consumer takes the next
+  reserved offset rather than a new harness variable. `BASE_TEST_PORT` is set
+  only by a harness at run time, never committed to any `.env*`, and never read
+  by the JVM — the JVM sees only the `PORT`/`SERVER_PORT` it resolves to.
 
   `ENV_FILE` selects a single delta; `ENV_FILES` is a PATH-like `:`-separated,
   exported string of deltas layered left-to-right (later wins) — the two are
