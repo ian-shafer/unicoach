@@ -105,10 +105,16 @@ class CoachingServiceTest {
     // Restore all migration-seeded prompts for cross-module suites on the shared DB.
     connection.createStatement().use { stmt ->
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
+      stmt.execute(
+        "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v2', 'You are Uni, a warm coach who writes Markdown.')",
+      )
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
       stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v1', 'reflect over the model')")
     }
   }
+
+  /** The body seeded above for the coach version service.conf pins (RFC 124: v2). */
+  private val pinnedCoachBody = "You are Uni, a warm coach who writes Markdown."
 
   private val sqlSession =
     object : SqlSession {
@@ -639,20 +645,26 @@ class CoachingServiceTest {
       val turn = turns.single()
       assertEquals("log", turn.call!!.request.provider)
       assertEquals(config.model, turn.call!!.request.modelRequested)
-      val promptId = coachV1PromptId()
+      val promptId = coachPromptId()
       assertEquals(promptId, turn.request.systemPromptId.value)
 
       // delta concatenation == persisted coach content
       assertEquals(ConvoContent.renderText(terminal.content), deltaText(events))
     }
 
-  private fun coachV1PromptId(): UUID {
-    connection.prepareStatement("SELECT id FROM system_prompts WHERE name='coach' AND version='v1'").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return UUID.fromString(rs.getString("id"))
+  /**
+   * The id of the coach prompt row the runtime will actually resolve — the
+   * version service.conf pins (RFC 124 moved it to v2), not a hard-coded one.
+   */
+  private fun coachPromptId(): UUID {
+    connection
+      .prepareStatement("SELECT id FROM system_prompts WHERE name='coach' AND version='${config.systemPromptVersion}'")
+      .use { stmt ->
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return UUID.fromString(rs.getString("id"))
+        }
       }
-    }
   }
 
   @Test
@@ -713,7 +725,7 @@ class CoachingServiceTest {
       assertEquals(ChatRole.ASSISTANT, req.messages[1].role)
       assertEquals(ChatRole.USER, req.messages[2].role)
       assertEquals("second", messageText(req.messages[2]))
-      assertEquals("You are Uni, a warm coach.", req.system)
+      assertEquals(pinnedCoachBody, req.system)
       assertEquals(config.maxTokens, req.maxTokens)
     }
 
@@ -1107,7 +1119,7 @@ class CoachingServiceTest {
       drain(started.reply)
 
       // Internal commitment is neither in the prompt nor marked fulfilled.
-      assertEquals("You are Uni, a warm coach.", captured!!.system)
+      assertEquals(pinnedCoachBody, captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(internalId))
     }
 
@@ -1127,7 +1139,7 @@ class CoachingServiceTest {
       val post = service(provider).postTurn(student, started.convo.id, "second").getOrThrow() as PostTurnResult.Started
       drain(post.reply)
 
-      assertEquals("You are Uni, a warm coach.", captured!!.system)
+      assertEquals(pinnedCoachBody, captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
     }
 
@@ -1143,7 +1155,7 @@ class CoachingServiceTest {
       val started = noSurfaceService(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
       drain(started.reply)
 
-      assertEquals("You are Uni, a warm coach.", captured!!.system)
+      assertEquals(pinnedCoachBody, captured!!.system)
       assertEquals(CommitmentStatus.OPEN, commitmentStatus(commitmentId))
     }
 
@@ -1230,7 +1242,7 @@ class CoachingServiceTest {
       val post = service(provider).postTurn(student, started.convo.id, "second").getOrThrow() as PostTurnResult.Started
       drain(post.reply)
 
-      assertEquals("You are Uni, a warm coach.", captured!!.system)
+      assertEquals(pinnedCoachBody, captured!!.system)
       assertEquals(FitSuggestionStatus.OPEN, fitSuggestionStatus(suggestionId))
     }
 

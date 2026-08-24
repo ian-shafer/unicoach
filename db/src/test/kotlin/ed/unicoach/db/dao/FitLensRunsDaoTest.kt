@@ -48,8 +48,11 @@ class FitLensRunsDaoTest {
   fun resetDatabase() {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
+      // system_prompts is deliberately NOT truncated: it is the migration-seeded,
+      // immutable catalog (RFC 33/0007) that every other module's tests on this
+      // shared database read. See ConvosDaoTest.resetDatabase (RFC 124).
       stmt.execute(
-        "TRUNCATE TABLE fit_lens_runs, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
+        "TRUNCATE TABLE fit_lens_runs, llm_requests, llm_responses, llm_responses_raw, students, users CASCADE",
       )
     }
   }
@@ -71,14 +74,15 @@ class FitLensRunsDaoTest {
     return StudentId(studentId)
   }
 
-  private var promptCounter = 0
-
+  // Unique per row rather than a per-instance counter: system_prompts is no
+  // longer truncated between tests (see resetDatabase), and JUnit builds a fresh
+  // instance per test, so a counter would collide on (name, version).
   private fun createPrompt(name: String): SystemPromptId {
     val id = UUID.randomUUID()
     connection.prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, ?, ?, 'body')").use { stmt ->
       stmt.setObject(1, id)
       stmt.setString(2, name)
-      stmt.setString(3, "p${promptCounter++}")
+      stmt.setString(3, "p-$id")
       stmt.executeUpdate()
     }
     return SystemPromptId(id)

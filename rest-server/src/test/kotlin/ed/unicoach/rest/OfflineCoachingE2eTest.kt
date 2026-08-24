@@ -208,6 +208,10 @@ class OfflineCoachingE2eTest {
       stmt.execute(
         "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'coach') ON CONFLICT (name, version) DO NOTHING",
       )
+      // coach/v2 is the row service.conf pins (RFC 124); v1 stays restorable too.
+      stmt.execute(
+        "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v2', 'coach') ON CONFLICT (name, version) DO NOTHING",
+      )
       stmt.execute(
         "INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v2', 'extraction') ON CONFLICT (name, version) DO NOTHING",
       )

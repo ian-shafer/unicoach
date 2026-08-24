@@ -65,8 +65,14 @@ class ConvosDaoTest {
   fun resetDatabase() {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
+      // system_prompts is deliberately NOT truncated. It is a migration-seeded,
+      // immutable catalog (RFC 33/0007) shared with every other module's tests on
+      // this database; wiping it here left the seeds gone for whoever ran next,
+      // and the suite only stayed green because this class's own fixture rows
+      // happened to re-create the version the runtime pins (RFC 124). The rows
+      // created below carry unique versions and are harmless to leave behind.
       stmt.execute(
-        "TRUNCATE TABLE convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
+        "TRUNCATE TABLE convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, students, users CASCADE",
       )
     }
   }
@@ -97,12 +103,15 @@ class ConvosDaoTest {
     return StudentId(studentId)
   }
 
-  private var promptCounter = 0
-
-  /** Inserts an immutable system_prompts row (RFC 33) and returns its id. */
+  /**
+   * Inserts an immutable system_prompts row (RFC 33) and returns its id. The
+   * version is unique per row rather than a per-instance counter: system_prompts
+   * is no longer truncated between tests (see resetDatabase), and JUnit builds a
+   * fresh instance per test, so a counter would collide on (name, version).
+   */
   private fun createSystemPrompt(): SystemPromptId {
     val id = UUID.randomUUID()
-    val version = "v${promptCounter++}"
+    val version = "v-$id"
     connection
       .prepareStatement(
         "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'coach', ?, 'be a good coach')",
