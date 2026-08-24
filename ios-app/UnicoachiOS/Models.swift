@@ -175,7 +175,11 @@ struct PublicSubscription: Codable, Equatable, Sendable {
 
 /// The status vocabulary as the server spells it today
 /// (`db/.../models/Subscription.kt`). Display-only; it gates nothing.
-enum SubscriptionStatus: String, Sendable {
+/// `CaseIterable` so a rule that must hold for *every* status can be asserted
+/// over the vocabulary itself rather than a hand-listed copy of it that a new
+/// case would silently fall out of (`offersSubscribe`'s "some door is always
+/// open").
+enum SubscriptionStatus: String, Sendable, CaseIterable {
     case active
     case expired
     case grace

@@ -109,9 +109,11 @@ final class SubscriptionViewModel: ObservableObject {
         case failure(String)
     }
 
-    /// The offer block's own state. `bound` is the student who already has an
-    /// active subscription — the one case where showing nothing is the honest
-    /// answer, and the only one.
+    /// The offer block's own state. `bound` is the student for whom a purchase
+    /// is not the answer — `active`, but since RFC 128 also `grace` and
+    /// `billingRetry`, where a subscription exists and only the card failed.
+    /// Which states those are is `offersSubscribe`'s rule and is read from it,
+    /// never restated here.
     enum Offer: Equatable {
         case bound
         case loading
@@ -151,12 +153,86 @@ final class SubscriptionViewModel: ObservableObject {
     // MARK: - Derived presentation
 
     /// Whether to *offer* a purchase — never what the student is entitled to,
-    /// which is `CoachingUsage`, the server's own answer. Only `active`
-    /// suppresses the button: a subscription in `grace` or `billingRetry` is
-    /// *failing to bill*, and hiding the purchase path at exactly that moment
-    /// strands the student with no in-app way forward.
+    /// which is `CoachingUsage`, the server's own answer.
+    ///
+    /// | bound subscription      | offer Subscribe? | why                                                              |
+    /// | ----------------------- | ---------------- | ---------------------------------------------------------------- |
+    /// | nothing bound           | **yes**          | the button's whole purpose                                        |
+    /// | `active`                | no               | one plan is configured; a second purchase is one StoreKit refuses  |
+    /// | `grace`, `billingRetry` | **no**           | they already pay us; the *card* is what is broken                 |
+    /// | `expired`, `revoked`    | **yes**          | there is no live subscription, so buying really is the way back   |
+    /// | unrecognized status     | **yes**          | see below                                                         |
+    ///
+    /// **The `grace` / `billingRetry` rows reverse RFC 119**, which offered the
+    /// button in every non-`active` state and said so: hiding the purchase path
+    /// while a subscription is failing to bill "strands the student with no
+    /// in-app way forward". That was true of RFC 119's screen, which held
+    /// exactly two controls — Subscribe and Restore — and Restore re-binds an
+    /// existing purchase, which does nothing for an expired card. Suppressing
+    /// Subscribe there really would have left no door.
+    ///
+    /// RFC 123 built the door. `ManageSubscriptionLink` opens
+    /// `AppStore.showManageSubscriptions(in:)`, which is *where a payment
+    /// method is updated* — the remedy for this state rather than a workaround
+    /// for it — and it renders whenever anything is bound, these two states
+    /// included. So the premise the exception rested on is gone, and with it
+    /// the exception: the loudest control on the screen was a filled
+    /// `Subscribe` sitting above the sentence naming the quiet one that
+    /// actually fixes the problem (RFC 128).
+    ///
+    /// **The unrecognized arm stays `true`, and the asymmetry is the
+    /// argument.** Unlike `grace` and `billingRetry` — where we know a
+    /// subscription exists and only the card failed — a status this client has
+    /// no case for tells us nothing about whether the student is covered. When
+    /// we cannot tell, offering a purchase that turns out to be unnecessary
+    /// costs a dismissible App Store dialog, while withholding it from someone
+    /// who has nothing costs them the purchase path. The recoverable error is
+    /// the one to make. Note that this is decided on the uncertainty and *not*
+    /// on being the only door: `offersManage` is `true` for any bound
+    /// subscription, so that student is not literally stranded either way.
+    ///
+    /// Exhaustive over **this client's** `SubscriptionStatus` with no
+    /// `default:`, so a case added to *that* enum is a build failure here
+    /// rather than a silent inheritance of another row's answer. A status added
+    /// to the **server's** vocabulary is deliberately not: it decodes to
+    /// `knownStatus == nil` — that is what the raw wire string is for — and
+    /// takes the `nil` arm, which is the answer that arm exists to give. The
+    /// compiler guards the vocabulary this client knows; the `nil` arm guards
+    /// the one it does not.
     var offersSubscribe: Bool {
-        subscription?.knownStatus != .active
+        // Split rather than folded: optional chaining would flatten
+        // `PublicSubscription?.knownStatus` into a single `SubscriptionStatus?`
+        // and put "nothing bound" and "bound with a status this client cannot
+        // resolve" on one `case .none`. They are disjoint domain states that
+        // happen to share an answer, so each is decided on its own merits.
+        guard let subscription else {
+            // Nothing bound: the button's whole purpose, and with nothing
+            // bound it is the only purchase path in the app.
+            return true
+        }
+
+        switch subscription.knownStatus {
+        case nil:
+            // Bound, but this client has no case for the status — so unlike
+            // `grace` / `billingRetry` below, we do not know whether the
+            // student is covered. Decided on that uncertainty, per the
+            // asymmetry above; not on being the only door, since `offersManage`
+            // is true here too.
+            return true
+        case .active:
+            // One plan is configured, so a second purchase is one StoreKit
+            // would refuse.
+            return false
+        case .grace, .billingRetry:
+            // They already pay us: the *card* is what is broken, and
+            // `ManageSubscriptionLink` is its remedy rather than a second
+            // purchase (RFC 128, reversing RFC 119 above).
+            return false
+        case .expired, .revoked:
+            // There is no live subscription to repair, so buying really is the
+            // way back.
+            return true
+        }
     }
 
     /// The shared blocked truth (RFC 121) — **three answers, not two**. The
@@ -252,8 +328,10 @@ final class SubscriptionViewModel: ObservableObject {
     /// a subscriber who has spent the period is otherwise shown a date and
     /// nothing (RFC 121's open item).
     ///
-    /// It is *not* `!offersSubscribe`: those two are near-inverses today and
-    /// would silently diverge the first time a status is added to either rule.
+    /// It is *not* `!offersSubscribe`: RFC 123 kept them apart against exactly
+    /// the divergence RFC 128 then landed — `grace` and `billingRetry` now
+    /// answer `false` to the offer and `true` here, which is the whole point of
+    /// that change (the card is what is broken, and this is where it is fixed).
     var offersManage: Bool {
         subscription != nil
     }
@@ -339,6 +417,15 @@ final class SubscriptionViewModel: ObservableObject {
     /// a cancel is not an error and must not raise a banner. Ask to Buy
     /// (`.pending`) leaves an informational notice; the listener picks the
     /// transaction up if and when Apple approves it.
+    ///
+    /// **Deliberately not guarded by `offersSubscribe`.** Whether to *offer* a
+    /// purchase is a presentation rule, and it is enforced by not rendering the
+    /// button: `offer` answers `.bound` and `SubscriptionOffer` draws nothing,
+    /// so there is no live path from an `active` or `grace` subscription into
+    /// this method. Adding a guard here would put a second copy of that rule in
+    /// a second place to drift, to defend against a caller that does not exist;
+    /// StoreKit is the authority on what may be bought and already refuses a
+    /// duplicate within the group.
     func subscribe() async {
         phase = .purchasing
         notice = nil

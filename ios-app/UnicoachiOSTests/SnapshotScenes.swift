@@ -242,6 +242,23 @@ enum SnapshotCatalogue {
                         .background(Color.dsBackground)
                 )
             },
+            // The Settings section with a FAILING card (RFC 128). Subscribe is
+            // withheld here, so this scene is what pins the composition that
+            // keeps the student from being stranded: the status line naming the
+            // problem, Restore, and `ManageSubscriptionLink` -- the control that
+            // fixes it -- below its hairline.
+            SnapshotScene(name: "subscription-section-billing-retry", size: CGSize(width: 402, height: 560)) {
+                let rail = await SnapshotSeed.boundRail(
+                    status: .billingRetry,
+                    usage: CoachingUsage(usedPercent: 12, exhausted: false, resetsAt: SnapshotClock.pinned)
+                )
+                return AnyView(
+                    SubscriptionSection(viewModel: rail)
+                        .padding(DSSpacing.lg)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .background(Color.dsBackground)
+                )
+            },
 
             // --- The RFC 123 subscription sheet, in the four situations its
             // words are decided by: no subscription, an active one running,

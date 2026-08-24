@@ -483,20 +483,103 @@ final class SubscriptionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.statusLine, "Monthly · renews \(date)")
     }
 
-    /// A subscription that is *failing to bill* still offers the purchase path:
-    /// hiding it at exactly that moment strands the student.
-    func testABillingProblemStillOffersSubscribe() async {
+    /// A subscription that is *failing to bill* is one the student already pays
+    /// for: the offer is suppressed, and that reversal of RFC 119's rule is the
+    /// point of RFC 128.
+    func testABillingProblemSuppressesTheOffer() async {
+        await bind(status: "grace", usage: freeUsage)
+
+        XCTAssertFalse(viewModel.offersSubscribe)
+    }
+
+    /// The same for `billingRetry`, which is the other half of the same
+    /// situation and must not drift from `grace` by being nobody's test.
+    func testBillingRetrySuppressesTheOffer() async {
+        await bind(status: "billing_retry", usage: freeUsage)
+
+        XCTAssertFalse(viewModel.offersSubscribe)
+    }
+
+    /// **Some door is always open.** This is the invariant that makes
+    /// suppressing Subscribe safe, and the only form of it that can fail:
+    /// asserting `offersManage` beside a suppressed offer proves nothing, since
+    /// `offersManage` is `subscription != nil` and is therefore true of every
+    /// bound subscription and was true before RFC 128. What must never become
+    /// representable is `(false, false)` — a surface offering neither a
+    /// purchase nor a way to reach the existing subscription, which is the
+    /// stranding RFC 119 wrote its rule against.
+    ///
+    /// Driven off the whole `SubscriptionStatus` vocabulary rather than a
+    /// hand-listed few, so a case added to this client's enum is covered by
+    /// this test the day it is added, plus the two cases that are not in the
+    /// enum at all: an unrecognized server status, and nothing bound.
+    func testEveryStateOffersAtLeastOneDoor() async {
+        XCTAssertTrue(
+            viewModel.offersSubscribe || viewModel.offersManage,
+            "nothing bound: neither a purchase nor management is offered"
+        )
+
+        for status in SubscriptionStatus.allCases {
+            await bind(status: status.rawValue, usage: freeUsage)
+            XCTAssertTrue(
+                viewModel.offersSubscribe || viewModel.offersManage,
+                "\(status.rawValue): neither a purchase nor management is offered"
+            )
+        }
+
+        await bind(status: "paused_by_apple_2027", usage: freeUsage)
+        XCTAssertTrue(
+            viewModel.offersSubscribe || viewModel.offersManage,
+            "an unrecognized status: neither a purchase nor management is offered"
+        )
+    }
+
+    /// The suppression proven at the value the **view** renders, not only at
+    /// the predicate behind it: `SubscriptionOffer` draws nothing for `.bound`,
+    /// and that is what removes the button from the sheet.
+    func testABillingProblemLeavesNothingToOffer() async {
         store.entitlements = [transaction]
         recorder.outcome = .recorded(PublicSubscription(
             status: "grace",
             productId: SubscriptionProduct.monthlyIdentifier,
-            currentPeriodEnd: Date(timeIntervalSince1970: 1_773_000_000)
+            currentPeriodEnd: periodEnd
         ))
 
         await viewModel.load()
 
-        XCTAssertTrue(viewModel.offersSubscribe)
+        XCTAssertEqual(viewModel.productReading, .ready(product), "the price is there; it is the offer that is withheld")
+        XCTAssertEqual(viewModel.offer, .bound)
+    }
+
+    /// The words are **not** taken with the button. RFC 128 removes a control
+    /// and changes no copy, so the one line on the Settings row that mentions
+    /// the problem is pinned here.
+    func testABillingProblemStillSaysThePaymentIsBeingRetried() async {
+        await bind(status: "grace", usage: freeUsage)
+
         XCTAssertEqual(viewModel.statusLine, "Monthly · payment issue · retrying")
+    }
+
+    /// An **ended** subscription is the opposite case, and the contrast is the
+    /// reason the rule is a table rather than "anything bound suppresses it":
+    /// there is nothing live to repair, so buying really is the way back.
+    func testAnEndedSubscriptionStillOffersSubscribe() async {
+        await bind(status: "expired", usage: freeUsage)
+        XCTAssertTrue(viewModel.offersSubscribe)
+
+        await bind(status: "revoked", usage: freeUsage)
+        XCTAssertTrue(viewModel.offersSubscribe)
+    }
+
+    /// A status this client has no case for offers the purchase, deliberately
+    /// asymmetrically with the two rows above: an unneeded offer costs a
+    /// dismissible App Store dialog, a withheld one costs a student with
+    /// nothing their only purchase path. The recoverable error is the one to
+    /// make.
+    func testAnUnrecognizedStatusOffersSubscribe() async {
+        await bind(status: "paused_by_apple_2027", usage: freeUsage)
+
+        XCTAssertTrue(viewModel.offersSubscribe)
     }
 
     // MARK: - remainingPercent (the composer ring's reading, RFC 123)

@@ -73,9 +73,12 @@ struct SubscriptionOffer: View {
                             .accessibilityLabel("Try again")
                     }
                 case .bound:
-                    // An active subscription: one plan is configured, so a
-                    // second Subscribe button could only invite a duplicate
-                    // purchase StoreKit would refuse. Restore stays below.
+                    // A subscription a purchase would not help: `active`, and
+                    // since RFC 128 also a card failing to bill, where what is
+                    // wrong is the payment method and `ManageSubscriptionLink`
+                    // is what fixes it. Which states those are is
+                    // `offersSubscribe`'s rule, read via `offer` rather than
+                    // restated here. Restore stays below.
                     EmptyView()
                 }
 

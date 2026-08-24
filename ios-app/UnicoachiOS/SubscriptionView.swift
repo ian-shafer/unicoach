@@ -36,8 +36,13 @@ import SwiftUI
 /// only price anyone shows (RFC 119), and it is already on the Subscribe button.
 ///
 /// The switch over `SubscriptionStatus?` is exhaustive with no `default:`, so a
-/// status added to the server's vocabulary is a build failure here rather than
-/// a silent fall-through to the free tier's sentence.
+/// case added to **this client's** `SubscriptionStatus` is a build failure here
+/// rather than a silent fall-through to the free tier's sentence. A status
+/// added to the **server's** vocabulary is not a build failure and is not meant
+/// to be: it decodes to `knownStatus == nil` — that is what the raw wire string
+/// is for — and lands on `boundUnknownStatus`, the arm that exists to say the
+/// one thing still true of it. The compiler guards the vocabulary this client
+/// knows; the `nil` arm guards the one it does not.
 enum SubscriptionExplanation: Equatable {
     /// Nothing bound, coaching left.
     case freeAllowanceAvailable

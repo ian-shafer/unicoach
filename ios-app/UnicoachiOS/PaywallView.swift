@@ -139,11 +139,11 @@ struct PaywallCopy: Equatable {
 /// its own: `usage` is the server's answer, `offersSubscribe` is the view
 /// model's, and both are read rather than re-computed.
 ///
-/// A subscriber who has spent the period is offered **no** Subscribe button —
-/// one plan is configured, so it could only invite a duplicate purchase
-/// StoreKit would refuse — which is exactly what `offersSubscribe` already
-/// says. Restore stays in both states, because a student whose purchase never
-/// bound to this account is precisely who needs it.
+/// Whether a Subscribe button appears at all is `offersSubscribe`, read here
+/// and never paraphrased — this comment used to enumerate the states, and that
+/// enumeration is exactly what went stale when the rule changed. Restore stays
+/// in every state, because a student whose purchase never bound to this account
+/// is precisely who needs it.
 struct PaywallView: View {
     @ObservedObject var viewModel: SubscriptionViewModel
     @Environment(\.dismiss) private var dismiss
