@@ -48,8 +48,35 @@ show you a navigation bug BETWEEN screens; each scene is constructed directly.
   -b <dir>     Compare each capture against the same-named PNG in this
                directory — a corpus a PREVIOUS run wrote, not a committed
                golden — and print which scenes moved, writing a red-overlay
-               <scene>.diff.png for each. It REPORTS; it never fails the run.
+               <scene>.diff.png for each. DRIFT is REPORTED, never failed: no
+               scene's movement, however large, fails the run. What DOES fail
+               is a comparison that could not be PERFORMED — a baseline PNG
+               that exists and cannot be decoded — because that is a broken
+               instrument rather than drift, and dropping it would shrink the
+               compared-scene count the report presents as evidence. A MISSING
+               baseline is ordinary (a new scene has none by definition) and is
+               merely noted.
+               Every compared scene also reports what sits UNDER the tolerance:
+               its maximum per-channel delta and how many pixels differ at all.
   -h           Help
+
+THE CORPUS IS REPRODUCIBLE TO A TOLERANCE, NOT BYTE FOR BYTE (RFC 130): compare
+two corpora with `bin/snapshot-ios -b`, which applies the gate's own rule (a
+pixel moved only when one of its channels differs by more than the harness's
+per-channel tolerance) — NEVER with md5, cmp, or any pixel-exact diff, which
+asserts something the platform does not promise. The tolerance itself is NOT
+restated here: `SnapshotBaseline.epsilon` in
+ios-app/UnicoachiOSTests/SnapshotHost.swift is its one authority, and the -b
+report prints the number it actually applied. The reason for the rule is a
+finding, not a fudge: iOS 26's Liquid Glass toolbar backdrop quantises bistably,
+so an unchanged tree captured twice lands a quantisation step apart on the
+compose button's capsule. The discriminator is that BUTTON, not chrome at large:
+twelve of the 46 captures render a navigation bar and ten of them are
+byte-identical run to run, while in the two that wobble the bar, the title and
+the glyph are byte-stable and every differing pixel is inside the capsule. The
+conversation-list scenes are the corpus's only ones with a toolbar ITEM. Dark is
+where that rounding is unlucky; light is lower amplitude, not immune, so the
+rule is the same for both.
 
 There is no device option: under RFC 126 the device is this checkout's and the
 model comes from the target's env file, so a second device selector would be a
@@ -145,18 +172,31 @@ export TEST_RUNNER_TZ="UTC"
 
 log-info "Capturing the snapshot corpus to [$OUT] (target [$ENV_NAME], this checkout's simulator)..."
 if [ -n "$BASELINE" ]; then
-  log-info "Comparing against the baseline corpus [$BASELINE]; differences are REPORTED, never failed."
+  log-info "Comparing against the baseline corpus [$BASELINE]; drift is REPORTED, never failed. A baseline PNG that exists and cannot be decoded is not drift and DOES fail; a missing one is ordinary and is merely noted."
+  # No numeral: SnapshotBaseline.epsilon is the tolerance's one authority and
+  # the report below prints the value it applied. A copy here would go stale
+  # silently the first time the tolerance is widened.
+  log-info "The corpus is reproducible to a per-channel tolerance, NOT byte for byte (RFC 130) — this comparison is the rule; md5/cmp is not."
 fi
 
 # bin/test-ios owns -project/-scheme/-destination/-derivedDataPath; only what is
 # specific to THIS run goes after `--`. All of its output goes to stderr: this
 # script's stdout is reserved for its RESULT — the corpus directory — so $(...)
 # returns a usable path and not a thousand lines of build log.
-"$PROJECT_ROOT/bin/test-ios" "$ENV_NAME" -- \
+if ! "$PROJECT_ROOT/bin/test-ios" "$ENV_NAME" -- \
   -only-testing:UnicoachiOSTests/SnapshotTests \
   -testLanguage en \
-  -testRegion US >&2 \
-  || fatal "bin/test-ios failed for the snapshot scenes (target [$ENV_NAME]). Read the log above: a scene that no longer constructs is a real failure of this gate, not a harness problem."
+  -testRegion US >&2; then
+  # The corpus is usually WRITTEN even when the run fails — under -b the walk
+  # captures every scene and only then reports, and an undecodable baseline
+  # fails at that point. So if PNGs are on disk, honour the stdout contract
+  # before dying: `DIR="$(bin/snapshot-ios -b old)"` otherwise hands the
+  # operator an empty string and nothing to look at.
+  if [ -n "$(find "$OUT" -maxdepth 1 -name '*.png' ! -name '*.diff.png' -print -quit)" ]; then
+    echo "$OUT"
+  fi
+  fatal "bin/test-ios failed for the snapshot scenes (target [$ENV_NAME]). Read the log above: a scene that no longer constructs is a real failure of this gate; under -b, a baseline PNG that exists and cannot be decoded fails here too (grep for 'could not be read'). Neither is a harness problem. Whatever was captured before the failure is in [$OUT]."
+fi
 
 # A `xcodebuild test` that runs ZERO tests exits 0 — the exact failure mode of a
 # scene file that never got registered in project.pbxproj — so the corpus is

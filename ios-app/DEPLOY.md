@@ -495,9 +495,10 @@ pixels. Afterwards it proves the corpus is non-empty, because a
 `xcodebuild test` that ran ZERO tests exits 0 — the signature of a scene file
 that was never registered in `project.pbxproj`.
 
-Nothing here is a committed golden and `-b` never fails the run: it compares
-against a corpus a previous run wrote (typically one captured from the base
-commit), reports the fraction of pixels that moved per scene, and writes a
+Nothing here is a committed golden and `-b` never fails the run on DRIFT (a
+baseline PNG that exists and cannot be decoded is not drift and does fail): it
+compares against a corpus a previous run wrote (typically one captured from the
+base commit), reports the fraction of pixels that moved per scene, and writes a
 red-overlay `<scene>.diff.png` for the ones that did. Adding a scene is one
 entry in `SnapshotCatalogue.scenes` — see
 [UnicoachiOSTests/TESTING.md](./UnicoachiOSTests/TESTING.md).

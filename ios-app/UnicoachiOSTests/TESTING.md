@@ -181,6 +181,71 @@ are "it renders", "it is not blank", "nothing draws outside the device width",
 and "the files exist". `-b` reports drift against a corpus you captured
 yourself; the rest is a human looking at the PNGs.
 
+### The corpus is reproducible to a tolerance, not to the byte (RFC 130)
+
+**Compare two corpora with `bin/snapshot-ios -b` — never with `md5`, `cmp`,
+`git diff` or any other pixel-exact rule.** The contract the harness makes, and
+the only one the platform can keep, is that a pixel moves when one of R, G, B
+differs by more than `SnapshotBaseline.epsilon`; the value is deliberately not
+restated here — that constant is the authority and the `-b` report prints the
+one it applied, exactly as `bin/snapshot-ios` states the rule without the
+numeral. Byte equality is not claimed anywhere.
+
+The reason is a finding, not a fudge: iOS 26's Liquid Glass toolbar backdrop is
+a compositing filter the render server evaluates off-tree, and its resolved
+colour quantises **bistably** — capture an unchanged tree twice and the compose
+button's capsule lands ±2/255 apart over ~0.4% of the frame. The discriminator
+is that **button**, not chrome at large. Twelve of the 46 captures render
+navigation chrome — six scenes wrapped in a `NavigationStack` with an inline
+`.navigationTitle` (`settings-populated`, the three conversation scenes, both
+conversation-list scenes) — and ten of them are byte-identical run to run.
+`ConversationListView` is the only view in the corpus with a visible toolbar
+**item**, and in the two captures that do wobble the bar, the title and the
+glyph strokes are all byte-stable: every differing pixel lies inside the compose
+button's glass capsule. So "has chrome" predicts nothing; "has a glass toolbar
+button" is what does. The two conversation-list **light** captures have the same
+button and come out byte-identical anyway. Dark mode is where that rounding
+boundary is unlucky against a near-black capsule; **light is lower amplitude,
+not immune** — the same mechanism, so the same rule applies to both. Do not
+"fix" it with a longer settle or an extra draw pass: the state is bistable
+rather than converging, and a third draw pass measurably reshuffles it rather
+than pinning it.
+
+Because a tolerance necessarily hides what sits below it, `-b` also reports each
+compared scene's **maximum per-channel delta** and **how many pixels differ at
+all**. Max delta 2 on a conversation-list scene is the noise above; max delta 7
+across a broad area is a real change hiding under the tolerance, and the moved
+fraction alone would have said "nothing moved". Those figures are reported,
+never failed (RFC 122's posture on **drift** is unchanged). What does fail a
+`-b` run is a comparison that could not be performed — a baseline PNG that
+exists and cannot be decoded — because that is a broken instrument rather than
+drift, and dropping it would shrink the compared-scene count the report presents
+as evidence. A _missing_ baseline is ordinary and is merely noted.
+
+**Read those figures as measured on the analysis downscale, not on the PNG.**
+`-b` decodes through `SnapshotRaster`, which caps the longest side at 1024 for
+the memory reason RFC 122 paid for, so the divisor is `ceil(longest / 1024)`,
+which across this corpus takes three values: **1** — no downscale, so those
+figures _are_ full resolution — for `coaching-budget-strip` (402×400pt at
+captureScale 2 = 804×800px) and `usage-meter-strip` (402×480pt = 804×960px);
+**2** for the device-sized scenes (402×874pt = 804×1748px) and the other short
+strips; and **3** for the two tall ones, `conversation-markdown-worstcase`
+(402×1400pt = 804×2800px) and `design-system-catalogue` (402×1500pt =
+804×3000px). A delta of 2 survives that averaging; a single stray subpixel can
+vanish into it, how much averaging it faces depends on which scene printed the
+row, and a **pixel count is not comparable between scenes of different
+heights**. The ±2/255 over ~0.4% of the frame quoted above is a full-resolution
+measurement, which is why the repeatability assertion below does not downscale.
+
+`SnapshotRepeatabilityTests.testOneSceneCapturedTwiceIsEqualUnderTheEpsilonRule`
+executes that contract: one scene captured twice in one process, both captures
+round-tripped through PNG (the corpus is PNG files, and the codec moves the
+numbers), equal under the epsilon rule, with the observed maximum delta asserted
+**strictly below** epsilon so a future OS widening the wobble fails loudly while
+there is still headroom. It lives in a class of its own, outside the class
+`bin/snapshot-ios` runs, so that failing it reports a problem instead of killing
+corpus capture.
+
 ## Fixing a bug: failing test first
 
 When resolving a reported bug, write a test that **reproduces the real failure

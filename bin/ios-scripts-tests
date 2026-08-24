@@ -3226,6 +3226,34 @@ test_snapshot_test_failure_is_fatal() {
   out="$(SNAPSHOT_TEST_FAIL=1 run_snapshot simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "bin/test-ios failed for the snapshot scenes" || return 1
+  # The message must name BOTH causes: under -b an undecodable baseline fails
+  # here too (RFC 130), and reporting that as "a scene no longer constructs"
+  # sends the operator to project.pbxproj for a corrupt PNG.
+  echo "$out" | grep -q "cannot be decoded" || return 1
+  return 0
+}
+
+# A failing run still WROTE the corpus (the walk captures every scene and only
+# then compares, so an undecodable baseline fails after the PNGs are on disk).
+# `DIR="$(bin/snapshot-ios -b old)"` must therefore not hand the operator an
+# empty string with nothing to look at.
+test_snapshot_test_failure_still_reports_the_corpus_dir() {
+  local out err="$WORK/snapshot-fail-stdout.txt" rc=0
+  out="$(SNAPSHOT_TEST_FAIL=1 run_snapshot simulator 2>"$err")" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  [ "$out" = "$SNAPSHOT_DIR" ] || return 1
+  grep -q "$SNAPSHOT_DIR" "$err" || return 1
+  return 0
+}
+
+# ...but not when nothing was captured: an empty string is honest there, and a
+# path to an empty directory would be worse than none.
+test_snapshot_test_failure_with_no_corpus_prints_nothing_on_stdout() {
+  local out rc=0
+  rm -rf "$SNAPSHOT_DIR"
+  out="$(SNAPSHOT_TEST_FAIL=1 SNAPSHOT_NO_WRITE=1 run_snapshot simulator 2>/dev/null)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  [ -z "$out" ] || return 1
   return 0
 }
 
@@ -3284,6 +3312,38 @@ test_snapshot_help_exits_zero() {
   out="$(run_snapshot -h 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || return 1
   echo "$out" | grep -q "snapshot-ios"
+}
+
+# RFC 130. The help is where an operator learns HOW to compare two corpora, and
+# the obvious means (md5/cmp) is the wrong one: the corpus is reproducible to a
+# per-channel tolerance, not byte for byte. If that sentence ever falls out of
+# the help, the next person re-runs the whole flake investigation.
+#
+# The PROSE is pinned, never the tolerance's value: SnapshotBaseline.epsilon is
+# its one authority (the shell deliberately does not restate the numeral), so a
+# grep for "8/255" here would pin a duplicate and go green while the help lied.
+# All greps are case-insensitive — the help shouts the claim and the log line
+# does not, and a test that is correct only because someone remembered which
+# casing each used is a trap.
+test_snapshot_help_states_the_tolerance_contract() {
+  local out
+  out="$(run_snapshot -h 2>&1)" || return 1
+  echo "$out" | grep -qi "not byte for byte" || return 1
+  echo "$out" | grep -qi "tolerance" || return 1
+  echo "$out" | grep -q "SnapshotBaseline.epsilon" || return 1
+  echo "$out" | grep -qi "md5" || return 1
+  return 0
+}
+
+# And the -b run says it on the way past, so the verdict in the log cannot be
+# read as a claim of byte equality.
+test_snapshot_baseline_log_states_the_tolerance_contract() {
+  local err="$WORK/snapshot-baseline-contract.txt"
+  mkdir -p "$WORK/baseline-contract"
+  run_snapshot -b "$WORK/baseline-contract" simulator >/dev/null 2>"$err" || return 1
+  grep -qi "not byte for byte" "$err" || return 1
+  grep -qi "per-channel tolerance" "$err" || return 1
+  return 0
 }
 
 # Note: run_install/run_build wrappers reset the argv log; export the
@@ -3477,6 +3537,8 @@ assert_success "snapshot-ios: -b forwards the baseline dir to the test runner" t
 assert_success "snapshot-ios: a nonexistent -b directory fails before any build" test_snapshot_missing_baseline_dir_is_fatal
 assert_success "snapshot-ios: xcodebuild exiting 0 with an empty corpus is fatal" test_snapshot_empty_corpus_is_fatal
 assert_success "snapshot-ios: a failing bin/test-ios is this script's fatal" test_snapshot_test_failure_is_fatal
+assert_success "snapshot-ios: a failing run still reports the corpus directory on stdout" test_snapshot_test_failure_still_reports_the_corpus_dir
+assert_success "snapshot-ios: a failing run with no corpus prints nothing on stdout" test_snapshot_test_failure_with_no_corpus_prints_nothing_on_stdout
 assert_success "snapshot-ios: unknown option fails with the usage-band code" test_snapshot_unknown_option
 assert_success "snapshot-ios: option missing its value fails with the usage-band code" test_snapshot_option_requires_value
 assert_success "snapshot-ios: stray positional fails with the usage-band code" test_snapshot_stray_positional
@@ -3484,5 +3546,7 @@ assert_success "snapshot-ios: an option after the target says to reorder" test_s
 assert_success "snapshot-ios: empty -o / -b values are rejected, not read as absent" test_snapshot_empty_option_values_rejected
 assert_success "snapshot-ios: stdout is EXACTLY the corpus directory" test_snapshot_stdout_is_only_the_corpus_dir
 assert_success "snapshot-ios: -h prints help and exits 0" test_snapshot_help_exits_zero
+assert_success "snapshot-ios: -h states the epsilon contract (not byte-for-byte)" test_snapshot_help_states_the_tolerance_contract
+assert_success "snapshot-ios: -b logs the epsilon contract" test_snapshot_baseline_log_states_the_tolerance_contract
 
 end_tests

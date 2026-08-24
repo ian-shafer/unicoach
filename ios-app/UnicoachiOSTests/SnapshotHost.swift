@@ -106,23 +106,140 @@ enum SnapshotOutput {
     }
 }
 
+// MARK: Scene identity — the ONE owner of a corpus filename
+
+/// One corpus entry: a scene and the colour scheme it was captured in.
+///
+/// THE ONE OWNER of the `<scene>-<light|dark>` name and of the URLs derived
+/// from it. Before RFC 130's review the convention was re-typed in three places
+/// — `SnapshotHost.render` composed the filename privately, and `SnapshotTests`
+/// composed it again to write and a THIRD time to read the file back — so a
+/// rename in one of them would have left the read-back silently missing its
+/// file and degrading to the very comparison it exists to remove. Derive names
+/// here or not at all; `SnapshotSceneIDTests` pins the agreement — both
+/// filenames, and that `SnapshotHost.render` writes exactly the URL this type
+/// names.
+struct SnapshotSceneID: Equatable {
+    /// The catalogue scene's own name, e.g. `conversation-list-empty` — NOT the
+    /// corpus filename, which adds the mode. Spelled `sceneName` rather than
+    /// `scene` because `SnapshotScene` is a real type in this target and a
+    /// member called `scene` reads as one.
+    let sceneName: String
+    let dark: Bool
+
+    var mode: String { dark ? "dark" : "light" }
+
+    /// The corpus identity, e.g. `conversation-list-empty-dark`. This is what
+    /// the baseline lookup, the diff overlay and the report all key on, and it
+    /// is deliberately NOT called `name`: it is not the scene's name.
+    var corpusName: String { "\(sceneName)-\(mode)" }
+
+    /// The corpus PNG for this entry inside `directory`.
+    func url(in directory: URL) -> URL {
+        directory.appendingPathComponent("\(corpusName).png")
+    }
+
+    /// The red-overlay diff written for this entry when it moved. The ONLY
+    /// place `.diff.png` is spelled: the report names the overlay by carrying
+    /// the URL this produced, never by composing the filename a second time.
+    func diffURL(in directory: URL) -> URL {
+        directory.appendingPathComponent("\(corpusName).diff.png")
+    }
+}
+
+/// What can go wrong writing one corpus entry or its diff overlay.
+/// `pngEncodingFailed` and `overlayGeometryMismatch` are DEFECTS — the image
+/// came from this type's own renderer, and the mask from its own comparator.
+/// `writeFailed` may be an operator CONDITION: the directory can come from
+/// `UNICOACH_SNAPSHOT_DIR`, so a missing parent or a permissions problem
+/// reaches here too. The underlying error is carried verbatim because it is
+/// what tells the two apart.
+enum SnapshotHostError: Error, CustomStringConvertible {
+    case pngEncodingFailed(URL)
+    /// The moved mask and the raster it would be painted over disagree about
+    /// their dimensions. Its OWN case, carrying BOTH sizes: this is the guard
+    /// standing over the defect RFC 130's overlay path was rewritten to close
+    /// (a `CGContext` sized from one raster over another's bytes), and it used
+    /// to be reported as `pngEncodingFailed` — "produced no PNG data" — which
+    /// names neither what happened nor either of the two numbers that explain
+    /// it, both of which are in scope at the throw.
+    case overlayGeometryMismatch(URL, mask: RasterSize, capture: RasterSize)
+    case writeFailed(URL, underlying: Error)
+
+    var description: String {
+        switch self {
+        case let .pngEncodingFailed(url):
+            return "the capture for [\(url.lastPathComponent)] produced no PNG data"
+        case let .overlayGeometryMismatch(url, mask, capture):
+            return "the diff overlay for [\(url.lastPathComponent)] cannot be painted: the moved "
+                + "mask is \(mask) and the capture it would be painted over is \(capture)"
+        case let .writeFailed(url, underlying):
+            return "could not write the capture to [\(url.path)]: \(underlying)"
+        }
+    }
+}
+
+// MARK: Percentages
+
+extension Double {
+    /// A fraction in 0...1 rendered as a percentage, for operator-facing output.
+    /// Every `* 100` in the snapshot reports used to be written by hand at the
+    /// point of printing; this is that conversion with one owner.
+    func percentText(decimals: Int = 3) -> String {
+        String(format: "%.\(decimals)f%%", self * 100)
+    }
+}
+
 // MARK: Raster helpers
+
+/// A raster's dimensions as ONE value. Width and height used to travel as two
+/// loose arguments, which is how a `CGContext` came to be sized from one raster
+/// over another raster's bytes; as a pair they compare in a single `==` and
+/// print themselves for the operator.
+struct RasterSize: Equatable, CustomStringConvertible {
+    let width: Int
+    let height: Int
+
+    var description: String { "\(width)x\(height)" }
+}
+
+/// The MOVED pixels together with the raster they index, in row-major order.
+/// The geometry travels WITH the mask so an overlay cannot be painted at
+/// dimensions the mask was not built for.
+struct MovedMask {
+    let size: RasterSize
+    let moved: [Bool]
+
+    var isEmpty: Bool { !moved.contains(true) }
+}
 
 /// A decoded RGBA bitmap, so the assertions below reason about pixels rather
 /// than about `UIImage`.
 struct SnapshotRaster {
+    /// Pass this as `maxDimension` to mean DO NOT DOWNSCALE. It is a cap, not a
+    /// size: the tallest capture in the corpus is the 402x1500pt catalogue
+    /// scene at `captureScale` 2, i.e. 804x3000 px, so 8192 leaves the divisor
+    /// at `ceil(3000 / 8192)` = 1 and the bytes are the ones the renderer
+    /// produced. Spelled as a name because a bare `8192` at a call site reads
+    /// as a resolution choice rather than as the opt-out it is.
+    static let noDownscale = 8192
+
     let width: Int
     let height: Int
     /// Row-major RGBA, 4 bytes per pixel.
     let bytes: [UInt8]
 
+    var size: RasterSize { RasterSize(width: width, height: height) }
+
     /// - Parameter maxDimension: the analysis is done on a DOWNSCALED copy
-    ///   whose longest side is at most this. A retina capture of the tall
-    ///   catalogue scene is 1206x4500, and decoding that at full size (21MB per
-    ///   raster, twice per scene) is what killed the test process mid-run
-    ///   during the RFC 122 build. Nothing the assertions ask -- "is this
-    ///   uniform", "did this move" -- needs retina detail; the PNG that a human
-    ///   looks at is written at full resolution regardless.
+    ///   whose longest side is at most this. The corpus captures the tall
+    ///   catalogue scene at `captureScale` 2, i.e. 804x3000 (9.6MB per RGBA
+    ///   raster, twice per scene) — and it was the 3x form the harness started
+    ///   with, 1206x4500 at 21MB, that killed the test process mid-run during
+    ///   the RFC 122 build. At 1024 the divisor for that scene is
+    ///   ceil(3000/1024) = 3. Nothing the assertions ask — "is this uniform",
+    ///   "did this move" — needs retina detail; the PNG that a human looks at
+    ///   is written at full resolution regardless.
     init?(_ image: UIImage, maxDimension: Int = 1024) {
         guard let cgImage = image.cgImage else { return nil }
         // Locals, not the stored properties: referencing `self.width` inside
@@ -154,6 +271,17 @@ struct SnapshotRaster {
         bytes = buffer
     }
 
+    /// A raster built directly from bytes, for tests that need a bitmap with a
+    /// KNOWN per-channel difference. It is not a convenience: writing two PNGs
+    /// and reading them back would put a colour-space conversion between the
+    /// bytes the test wrote and the bytes the comparator sees, so a unit test
+    /// of a 1-of-255 delta would be measuring the codec instead of the rule.
+    init(width: Int, height: Int, bytes: [UInt8]) {
+        self.width = width
+        self.height = height
+        self.bytes = bytes
+    }
+
     func pixel(x: Int, y: Int) -> (UInt8, UInt8, UInt8, UInt8) {
         let i = (y * width + x) * 4
         return (bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3])
@@ -180,21 +308,34 @@ struct SnapshotRaster {
 
 @MainActor
 enum SnapshotHost {
-    /// Renders `content` into a window of exactly `size`, writes
-    /// `<dir>/<name>-<light|dark>.png`, and returns the image.
+    /// Renders `content` into a window of exactly `size`, writes the corpus PNG
+    /// for `id`, and returns BOTH the image and the URL it actually wrote.
+    ///
+    /// The URL is returned rather than left to the caller to re-derive: the
+    /// caller reads that same file back (RFC 130's PNG-to-PNG comparison), and
+    /// a second copy of the naming convention is how that read-back would come
+    /// to miss. `SnapshotSceneID` owns the name; this returns what it used.
+    ///
+    /// It THROWS rather than swallowing the write: the file is load-bearing
+    /// downstream, and a `try?` here would surface as a puzzling comparison
+    /// failure an iteration later instead of at the line that failed.
     @discardableResult
     static func render(
-        name: String,
-        dark: Bool,
+        id: SnapshotSceneID,
         size: CGSize = SnapshotOutput.deviceSize,
         settle: TimeInterval = 0.4,
         into directory: URL = SnapshotOutput.directory,
         content: () -> AnyView
-    ) -> UIImage {
-        let image = capture(size: size, dark: dark, settle: settle, scale: SnapshotOutput.captureScale) { content() }
-        let url = directory.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png")
-        try? image.pngData()?.write(to: url)
-        return image
+    ) throws -> (image: UIImage, url: URL) {
+        let image = capture(size: size, dark: id.dark, settle: settle, scale: SnapshotOutput.captureScale) { content() }
+        let url = id.url(in: directory)
+        guard let data = image.pngData() else { throw SnapshotHostError.pngEncodingFailed(url) }
+        do {
+            try data.write(to: url)
+        } catch {
+            throw SnapshotHostError.writeFailed(url, underlying: error)
+        }
+        return (image, url)
     }
 
     /// THE BLEED CANVAS (RFC 122 §3, declared as an experiment).
@@ -208,16 +349,21 @@ enum SnapshotHost {
     /// class that recurred twice (a table drawing wider than its bubble, a
     /// column running off the trailing edge).
     ///
-    /// Returns the fraction of margin pixels that are not the backdrop colour.
+    /// Returns the fraction of margin pixels that are not the backdrop colour,
+    /// or `nil` when the margin could NOT BE MEASURED — the canvas did not
+    /// decode, or the margin is too thin to scan. That is deliberately not 0:
+    /// 0 means "nothing bled", a passing answer, and returning it for an
+    /// unmeasured scene made a failed measurement indistinguishable from a
+    /// clean one across all 46 assertions. Callers must unwrap rather than
+    /// default it.
     static func bleedFraction(
         dark: Bool,
         contentWidth: CGFloat = SnapshotOutput.deviceSize.width,
         height: CGFloat = SnapshotOutput.deviceSize.height,
         margin: CGFloat = SnapshotOutput.bleedMargin,
         settle: TimeInterval = 0.4,
-        writeTo url: URL? = nil,
         content: () -> AnyView
-    ) -> Double {
+    ) -> Double? {
         let backdrop = Color(red: 1, green: 0, blue: 1) // magenta: appears in no asset
         let canvas = CGSize(width: contentWidth + 2 * margin, height: height)
         let inner = content()
@@ -231,14 +377,19 @@ enum SnapshotHost {
                 .frame(width: canvas.width, height: canvas.height)
             )
         }
-        if let url { try? image.pngData()?.write(to: url) }
+        // No PNG is written here. This pass had a `writeTo:` parameter that
+        // swallowed its write with `try?` — no caller ever passed it, and one
+        // file cannot hold two write policies while `render`'s doc calls
+        // swallowing a corpus write the defect. The bleed verdict is a number,
+        // not a file.
+        //
         // No downscale here: the bleed pass already renders at scale 1, so the
         // bitmap is small, and a downscale would blend content INTO the margin
         // it is scanning.
-        guard let raster = SnapshotRaster(image, maxDimension: 8192) else { return 0 }
+        guard let raster = SnapshotRaster(image, maxDimension: SnapshotRaster.noDownscale) else { return nil }
         let scale = CGFloat(raster.width) / canvas.width
         let marginPixels = Int((margin * scale).rounded(.down))
-        guard marginPixels > 2 else { return 0 }
+        guard marginPixels > 2 else { return nil }
         // Inset by one pixel on every edge: the outermost row/column carries
         // the renderer's own antialiasing seam against the window edge, which
         // is not overdraw by anybody's view.
@@ -255,7 +406,7 @@ enum SnapshotHost {
                 }
             }
         }
-        return total == 0 ? 0 : Double(offenders) / Double(total)
+        return total == 0 ? nil : Double(offenders) / Double(total)
     }
 
     /// The settle, in short slices with a CoreAnimation flush after each.
@@ -418,84 +569,381 @@ enum SnapshotHost {
 
 // MARK: Baseline comparison (`bin/snapshot-ios -b`)
 
-/// Reports which scenes MOVED against a previously captured corpus. It reports;
-/// it never fails the test (RFC 122 §4: "the question it answers is 'which
-/// screens did my change move'").
+/// Reports which scenes MOVED against a previously captured corpus. DRIFT is
+/// reported and never fails the test (RFC 122 §4: "the question it answers is
+/// 'which screens did my change move'"). A comparison that could not be
+/// PERFORMED is a different thing and does fail: a baseline PNG that exists and
+/// cannot be decoded is a broken instrument, not drift, and dropping it would
+/// shrink the compared-scene count the report presents as its evidence. A
+/// MISSING baseline stays ordinary — a new scene has none by definition — and
+/// is merely noted.
+///
+/// THE CONTRACT (RFC 130). **The corpus is reproducible to `epsilon` per
+/// channel, not byte for byte.** Compare two corpora with `bin/snapshot-ios -b`
+/// — never with `md5`, `cmp`, `git diff` or any other pixel-exact rule, which
+/// asserts something the platform does not promise and this harness has never
+/// claimed. The reason is a finding, not a fudge: iOS 26's Liquid Glass
+/// toolbar backdrop is a compositing filter evaluated off-tree by the render
+/// server, and its resolved colour quantises BISTABLY — two captures of an
+/// unchanged tree land one 8-bit step apart (±2/255) on the compose button's
+/// capsule.
+///
+/// THE DISCRIMINATOR IS THAT BUTTON, NOT CHROME AT LARGE. Twelve of the 46
+/// captures render navigation chrome — six scenes wrapped in a
+/// `NavigationStack` with an inline `.navigationTitle` (`settings-populated`,
+/// the three conversation scenes and both conversation-list scenes) — and ten
+/// of them are byte-identical run to run. `ConversationListView` is the only
+/// view in the corpus with a visible toolbar ITEM, and in the two captures that
+/// do wobble the bar, the title and the glyph strokes are all byte-stable:
+/// every differing pixel lies inside the compose button's glass capsule. So
+/// "has chrome" predicts nothing; "has a glass toolbar button" is what does,
+/// and that is the rule to carry to the next screen that gains one.
+///
+/// The two conversation-list LIGHT captures have the same button and come out
+/// byte-identical anyway: the same wobble, at an amplitude that rounds away.
+/// Dark is where the quantisation grid is unlucky against a near-black
+/// backdrop; light is LOWER AMPLITUDE, not immune, so do not write a byte
+/// comparison "just for light".
+///
+/// A tolerance necessarily hides what sits under it, so a comparison also
+/// carries `drift`: the maximum observed per-channel delta and how many pixels
+/// differ at all. Max-delta 2 is the platform noise above, while max-delta 7
+/// over a broad area is a real change hiding below the tolerance and would
+/// otherwise be reported as "nothing moved".
 enum SnapshotBaseline {
-    /// A per-channel difference above this is a changed pixel.
+    /// A per-channel difference above this is a changed pixel. 8 is 4x the
+    /// observed platform wobble; that headroom is what makes the verdict mean
+    /// something, and `Drift.maxDelta` is what keeps the gap visible instead
+    /// of silent.
+    ///
+    /// THIS CONSTANT IS THE AUTHORITY for the tolerance. `bin/snapshot-ios`
+    /// deliberately states the RULE without the numeral and points here, so
+    /// widening the tolerance cannot leave a shell help text quietly lying.
     static let epsilon: UInt8 = 8
     /// A scene whose changed fraction exceeds this gets a diff overlay written.
     static let threshold: Double = 0.001
 
-    struct Result {
-        let name: String
-        let fraction: Double
+    /// One scene's comparison: the corpus entry it is about, the OUTCOME of
+    /// applying the rule to it, and the overlay that outcome caused to be
+    /// written (when one was).
+    struct Comparison {
+        /// The corpus entry compared, NOT its rendered name: the report sorts
+        /// and groups these, and "both DARK scenes moved" is a question a
+        /// `<scene>-<mode>` concatenation cannot answer. It is also the ONE
+        /// owner of the two filenames.
+        let id: SnapshotSceneID
+        let outcome: Outcome
+        /// The diff overlay this comparison caused to be written, or nil when
+        /// none was. CARRIED rather than recomposed: spelling `.diff.png` here
+        /// would make `Comparison` a second owner of the convention
+        /// `SnapshotSceneID` owns, and the operator is sent to this exact
+        /// string. Non-nil means the file is on disk — `writeOverlay` throws
+        /// rather than failing quietly, so there is no third state where the
+        /// report names a file that was never written.
+        let overlayURL: URL?
+
+        init(id: SnapshotSceneID, outcome: Outcome, overlayURL: URL? = nil) {
+            self.id = id
+            self.outcome = outcome
+            self.overlayURL = overlayURL
+        }
+
+        /// DISJOINT BY CONSTRUCTION. Either the two rasters were the same size
+        /// and every figure below exists, or they were not and NOTHING was
+        /// measured — in which case the verdict is a total move by definition
+        /// rather than by count, there is no mask, and therefore no overlay is
+        /// reachable. Before RFC 130's re-review these were one struct with an
+        /// optional `drift` and a separate `[Bool]` mask, which admitted
+        /// `movedFraction: 0.5, drift: nil` and — worse — let the resized case
+        /// reach the overlay writer with an EMPTY mask and the baseline's
+        /// dimensions over the capture's bytes.
+        enum Outcome {
+            case measured(Measured)
+            case notComparable(baseline: RasterSize, capture: RasterSize)
+        }
+
+        /// The figures of a scene whose rasters WERE comparable pixel for
+        /// pixel, and the mask of what moved.
+        struct Measured {
+            /// Fraction of pixels that moved, i.e. whose R, G or B differs by
+            /// MORE than `epsilon`. This is the only figure the verdict is
+            /// made of.
+            let movedFraction: Double
+            /// The sub-tolerance evidence: reported, never failed.
+            let drift: Drift
+            /// The moved pixels, carrying the raster they index. The only
+            /// input an overlay can be painted from.
+            let mask: MovedMask
+        }
+
+        /// The sub-tolerance figures of a scene whose rasters WERE comparable.
+        struct Drift {
+            /// The largest per-channel difference seen anywhere in the scene
+            /// (0-255), whether or not it cleared `epsilon`. 0 means the two
+            /// rasters are byte-identical.
+            let maxDelta: Int
+            /// How many pixels differ AT ALL — any of R, G, B off by 1 or more.
+            /// Alpha is excluded, exactly as in the moved rule.
+            let differingPixels: Int
+            /// What the two counts above are out of, so a reader can size them.
+            let pixelCount: Int
+
+            var differingFraction: Double {
+                pixelCount == 0 ? 0 : Double(differingPixels) / Double(pixelCount)
+            }
+
+            /// The evidence-table columns for this scene, at the widths
+            /// `reportLine` aligns to. Not a general rendering: the field
+            /// widths only mean anything inside that one table.
+            var tableColumns: String {
+                String(format: "max delta %3d/255  %8d of %8d px differ (%@)",
+                       maxDelta, differingPixels, pixelCount,
+                       differingFraction.percentText())
+            }
+        }
+
+        /// The measured figures, or nil for a scene that was not comparable.
+        var measured: Measured? {
+            switch outcome {
+            case let .measured(measured): return measured
+            case .notComparable: return nil
+            }
+        }
+
+        var drift: Drift? { measured?.drift }
+
+        /// The verdict. A resized scene is a TOTAL move — the rasters cannot be
+        /// compared, so the whole scene is treated as changed.
+        var movedFraction: Double {
+            switch outcome {
+            case let .measured(measured): return measured.movedFraction
+            case .notComparable: return 1
+            }
+        }
+
+        var moved: Bool { movedFraction > SnapshotBaseline.threshold }
+
+        /// Loudest first: highest max delta, ties broken by how much of the
+        /// scene differs at all. A scene that could NOT be measured sorts to
+        /// the top — "no figure exists" is the row a reader must not skim past.
+        /// Named and owned here rather than written as a tuple expression
+        /// inside the printing routine, where nothing could test it.
+        static func byLoudestDrift(_ lhs: Comparison, _ rhs: Comparison) -> Bool {
+            (lhs.drift?.maxDelta ?? Int.max, lhs.drift?.differingFraction ?? 1)
+                > (rhs.drift?.maxDelta ?? Int.max, rhs.drift?.differingFraction ?? 1)
+        }
+
+        /// One row of the evidence table. Presentation lives here rather than in
+        /// a format string at each call site, so the two places that print a
+        /// comparison cannot drift into rendering the same fields differently.
+        ///
+        /// The name is padded in Swift rather than with a `%-40@` width:
+        /// `String(format:)` honours a width on `%@` only through Foundation's
+        /// object formatting, which is not a promise worth making a column
+        /// layout depend on. The identifier is bracketed
+        /// (`code-review-bracket-serialization`); the numeric columns are not,
+        /// because brackets would break the alignment that makes the table
+        /// scannable — that is the deliberate exemption for this one table.
+        var reportLine: String {
+            let bracketed = "[\(id.corpusName)]"
+            let padded = bracketed.padding(
+                toLength: max(42, bracketed.count), withPad: " ", startingAt: 0
+            )
+            switch outcome {
+            case let .measured(measured):
+                return "  \(padded)  \(measured.drift.tableColumns)  "
+                    + "moved \(measured.movedFraction.percentText())"
+            case let .notComparable(baselineSize, captureSize):
+                // The two sizes, not just the fact that they differ: the
+                // operator's next question is always "changed to what".
+                return "  \(padded)  NOT MEASURED (raster \(baselineSize) -> \(captureSize); no "
+                    + "per-pixel figure exists)  moved \(movedFraction.percentText())"
+            }
+        }
+
+        /// The line for a scene that moved, naming the overlay to open — by
+        /// `lastPathComponent` of the URL that was actually written, so the
+        /// report cannot name a file the harness did not produce.
+        var movedLine: String {
+            let overlay = overlayURL.map { " (diff overlay: [\($0.lastPathComponent)])" } ?? ""
+            return "  MOVED  [\(id.corpusName)]  \(movedFraction.percentText()) of pixels" + overlay
+        }
     }
 
-    /// Compares `image` against `<baseline>/<name>.png`, writing
-    /// `<dir>/<name>.diff.png` (a red overlay) when it moved beyond threshold.
-    /// Returns nil when there is no baseline for this scene (a new scene).
+    /// Why a scene produced no comparison — or the comparison it produced.
+    ///
+    /// `missing` is the ORDINARY case: a scene that is new since the baseline
+    /// was captured. `unreadable` is a corrupt, truncated or undecodable
+    /// baseline PNG, which is INFRASTRUCTURE FAILURE and must be reported: both
+    /// used to return the same `nil` and the walk dropped the scene silently,
+    /// which now quietly shrinks the compared-scene count the report prints as
+    /// its headline evidence.
+    ///
+    /// `captureUndecodable` is the THIRD subject, and it is not about the
+    /// baseline at all: it is THIS RUN's own capture that produced no bitmap.
+    /// It used to share `unreadable`'s branch, so the operator was told "the
+    /// baseline at [<path>] could not be read" — a false diagnosis complete
+    /// with a path, sending them to re-capture a baseline that was fine. It
+    /// carries the scene rather than a URL because the failing thing is an
+    /// in-memory image, and there is no file to name.
+    enum BaselineLookup {
+        case compared(Comparison)
+        case missing(URL)
+        case unreadable(URL, underlying: Error?)
+        case captureUndecodable(SnapshotSceneID)
+    }
+
+    /// Compares `image` against the baseline PNG `id` names, writing the red
+    /// overlay `id` names when it moved beyond threshold.
+    ///
+    /// It THROWS only for the overlay write, on the same policy as
+    /// `SnapshotHost.render`: the report tells the operator to open that exact
+    /// file, so failing to produce it is a defect at the line that failed
+    /// rather than a puzzling absence later. A baseline that is missing or
+    /// unreadable, or a capture that did not decode, is not a throw — it is the
+    /// answer, and it is `BaselineLookup`'s job to say WHICH, and about which
+    /// of the two files.
     static func compare(
         image: UIImage,
-        name: String,
+        id: SnapshotSceneID,
         baseline baselineDirectory: URL,
         writingDiffsTo directory: URL
-    ) -> Result? {
-        let baselineURL = baselineDirectory.appendingPathComponent("\(name).png")
-        guard let data = try? Data(contentsOf: baselineURL),
-              let baselineImage = UIImage(data: data),
-              let a = SnapshotRaster(baselineImage),
-              let b = SnapshotRaster(image)
-        else { return nil }
-        guard a.width == b.width, a.height == b.height else {
-            // A resized scene is a total move; no overlay is meaningful.
-            return Result(name: name, fraction: 1)
+    ) throws -> BaselineLookup {
+        let baselineURL = id.url(in: baselineDirectory)
+        guard FileManager.default.fileExists(atPath: baselineURL.path) else {
+            return .missing(baselineURL)
         }
+        let data: Data
+        do {
+            data = try Data(contentsOf: baselineURL)
+        } catch {
+            return .unreadable(baselineURL, underlying: error)
+        }
+        guard let baselineImage = UIImage(data: data),
+              let baselineRaster = SnapshotRaster(baselineImage)
+        else { return .unreadable(baselineURL, underlying: nil) }
+        // NOT `unreadable`: the thing that failed here is the image this run
+        // just captured, and naming `baselineURL` at this line is what sent the
+        // operator to delete a good baseline.
+        guard let captureRaster = SnapshotRaster(image) else {
+            return .captureUndecodable(id)
+        }
+
+        let comparison = compare(baseline: baselineRaster, capture: captureRaster, id: id)
+        // An overlay is reachable ONLY from the measured case, which is what
+        // makes the mask and the bitmap it is painted onto the same size by
+        // construction. No `!mask.isEmpty` guard: `moved` implies the mask has
+        // moved pixels in it, because both come from the same count.
+        guard case let .measured(measured) = comparison.outcome, comparison.moved else {
+            return .compared(comparison)
+        }
+        let overlayURL = id.diffURL(in: directory)
+        try writeOverlay(capture: captureRaster, mask: measured.mask, to: overlayURL)
+        return .compared(Comparison(id: id, outcome: comparison.outcome, overlayURL: overlayURL))
+    }
+
+    /// THE RULE ITSELF, over two decoded rasters — pulled out of the image path
+    /// so it can be unit-tested against synthesized bitmaps with a known delta,
+    /// with no PNG codec or colour-space conversion in between.
+    ///
+    /// The two sides are NOT interchangeable, which is why they are named
+    /// rather than `a`/`b`: `baseline` is the corpus already on disk and
+    /// `capture` is what this run produced.
+    ///
+    /// One pass computes all three figures: the moved fraction (the verdict,
+    /// unchanged — a channel must move by MORE than `epsilon`), and alongside
+    /// it the maximum per-channel delta and the count of pixels differing at
+    /// all. The mask is the moved pixels, for the red overlay.
+    ///
+    /// Rasters of DIFFERENT sizes yield `.notComparable` carrying both sizes.
+    /// That case has no figures and no mask to invent, so nothing downstream
+    /// can paint an overlay from it.
+    static func compare(
+        baseline: SnapshotRaster,
+        capture: SnapshotRaster,
+        id: SnapshotSceneID
+    ) -> Comparison {
+        guard baseline.size == capture.size else {
+            return Comparison(
+                id: id,
+                outcome: .notComparable(baseline: baseline.size, capture: capture.size)
+            )
+        }
+        let pixels = baseline.width * baseline.height
         var changed = 0
-        var mask = [Bool](repeating: false, count: a.width * a.height)
-        for index in 0 ..< (a.width * a.height) {
+        var differing = 0
+        var maxDelta = 0
+        var mask = [Bool](repeating: false, count: pixels)
+        for index in 0 ..< pixels {
             let i = index * 4
-            var moved = false
-            for channel in 0 ..< 3 where !moved {
-                let lhs = Int(a.bytes[i + channel])
-                let rhs = Int(b.bytes[i + channel])
-                if abs(lhs - rhs) > Int(epsilon) { moved = true }
+            var pixelMax = 0
+            for channel in 0 ..< 3 {
+                let delta = abs(Int(baseline.bytes[i + channel]) - Int(capture.bytes[i + channel]))
+                if delta > pixelMax { pixelMax = delta }
             }
-            if moved {
+            if pixelMax > maxDelta { maxDelta = pixelMax }
+            if pixelMax > 0 { differing += 1 }
+            if pixelMax > Int(epsilon) {
                 changed += 1
                 mask[index] = true
             }
         }
-        let fraction = Double(changed) / Double(a.width * a.height)
-        if fraction > threshold {
-            writeOverlay(base: image, mask: mask, width: a.width, height: a.height,
-                         to: directory.appendingPathComponent("\(name).diff.png"))
-        }
-        return Result(name: name, fraction: fraction)
+        let measured = Comparison.Measured(
+            movedFraction: pixels == 0 ? 0 : Double(changed) / Double(pixels),
+            drift: Comparison.Drift(
+                maxDelta: maxDelta, differingPixels: differing, pixelCount: pixels
+            ),
+            mask: MovedMask(size: baseline.size, moved: mask)
+        )
+        return Comparison(id: id, outcome: .measured(measured))
     }
 
-    private static func writeOverlay(base: UIImage, mask: [Bool], width: Int, height: Int, to url: URL) {
-        guard var raster = SnapshotRaster(base)?.bytes else { return }
-        for index in 0 ..< min(mask.count, width * height) where mask[index] {
+    /// Paints the moved pixels red over the CAPTURE and writes the PNG.
+    ///
+    /// It takes the decoded capture raster rather than a `UIImage` plus loose
+    /// `width`/`height`: those dimensions used to come from the BASELINE while
+    /// the bytes came from the capture, which is an out-of-bounds read the
+    /// moment the two differ. Here the geometry has one source and the mask
+    /// carries its own, so a DIMENSION mismatch is a thrown defect rather than
+    /// a bad read. What is not checked is the mask ARRAY's length against the
+    /// size it declares — the write loop runs on `moved.count` — so a
+    /// `MovedMask` built with a longer array than its `RasterSize` traps here
+    /// rather than reading past the end of the buffer. Trapping is the floor
+    /// this guard guarantees, not absence.
+    ///
+    /// Throws rather than swallowing: `Comparison.movedLine` sends the operator
+    /// to this exact file.
+    private static func writeOverlay(capture: SnapshotRaster, mask: MovedMask, to url: URL) throws {
+        guard mask.size == capture.size else {
+            throw SnapshotHostError.overlayGeometryMismatch(url, mask: mask.size, capture: capture.size)
+        }
+        var bytes = capture.bytes
+        for index in 0 ..< mask.moved.count where mask.moved[index] {
             let i = index * 4
-            raster[i] = 255
-            raster[i + 1] = 0
-            raster[i + 2] = 0
-            raster[i + 3] = 255
+            bytes[i] = 255
+            bytes[i + 1] = 0
+            bytes[i + 2] = 0
+            bytes[i + 3] = 255
         }
         let space = CGColorSpaceCreateDeviceRGB()
         let info = CGImageAlphaInfo.premultipliedLast.rawValue
-        raster.withUnsafeMutableBytes { buffer in
+        let overlay: UIImage? = bytes.withUnsafeMutableBytes { buffer in
             guard let context = CGContext(
                 data: buffer.baseAddress,
-                width: width,
-                height: height,
+                width: capture.width,
+                height: capture.height,
                 bitsPerComponent: 8,
-                bytesPerRow: width * 4,
+                bytesPerRow: capture.width * 4,
                 space: space,
                 bitmapInfo: info
-            ), let cgImage = context.makeImage() else { return }
-            try? UIImage(cgImage: cgImage).pngData()?.write(to: url)
+            ), let cgImage = context.makeImage() else { return nil }
+            return UIImage(cgImage: cgImage)
+        }
+        guard let data = overlay?.pngData() else { throw SnapshotHostError.pngEncodingFailed(url) }
+        do {
+            try data.write(to: url)
+        } catch {
+            throw SnapshotHostError.writeFailed(url, underlying: error)
         }
     }
 }
