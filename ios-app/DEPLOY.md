@@ -360,21 +360,26 @@ else's build**. RFC 126 gives each checkout its own device instead:
 ```sh
 bin/ios-sim              # prints this checkout's device UDID, creating it if needed
 bin/ios-sim -D           # deletes it
+bin/ios-sim -G           # lists this repo's ORPHANED devices (see below)
+bin/ios-sim -G -f        # ...and deletes them
 ```
 
-The device is named `<model> (<basename of the checkout directory>)` — e.g.
-`iPhone 17 Pro (unicoach-rfc-126)` — where `<model>` is the `name=` component of
-the target's `UNICOACH_DESTINATION`. That **name is the identity and the lookup
-key**; the UDID is what callers use, and it is the only thing on stdout, so
-`-destination "platform=iOS Simulator,id=$(bin/ios-sim)"` works. Nothing is
-cached on disk: `xcrun simctl list devices` is the source of truth, so deleting
-the device by hand or from Simulator.app self-heals on the next call. A missing
-device is **created** (`simctl create`, never `clone` — nothing on the shared
-device is worth inheriting) against the exact device type for the model, with no
-runtime named — `simctl` itself picks the newest runtime compatible with that
-device type. An uninstalled model fatals with the list of the ones you do have,
-and a failing `create` fatals with simctl's own message and the installed
-runtime list (which is what "no iOS runtime installed" looks like).
+The device is named `<model> (<repo>/<checkout>)` — e.g.
+`iPhone 17 Pro (unicoach/unicoach-rfc-126)` — where `<repo>` is the basename of
+the **main checkout** (the first entry of `git worktree list --porcelain`),
+`<checkout>` is this checkout's directory basename, and `<model>` is the `name=`
+component of the target's `UNICOACH_DESTINATION`. That **name is the identity
+and the lookup key**; the UDID is what callers use, and it is the only thing on
+stdout, so `-destination "platform=iOS Simulator,id=$(bin/ios-sim)"` works.
+Nothing is cached on disk: `xcrun simctl list devices` is the source of truth,
+so deleting the device by hand or from Simulator.app self-heals on the next
+call. A missing device is **created** (`simctl create`, never `clone` — nothing
+on the shared device is worth inheriting) against the exact device type for the
+model, with no runtime named — `simctl` itself picks the newest runtime
+compatible with that device type. An uninstalled model fatals with the list of
+the ones you do have, and a failing `create` fatals with simctl's own message
+and the installed runtime list (which is what "no iOS runtime installed" looks
+like).
 
 The checked-in `UNICOACH_DESTINATION` is unchanged and is now read as a **model
 selector**, not a device selector. `bin/screenshot-ios` and `bin/test-ios` both
@@ -382,17 +387,51 @@ route through `bin/ios-sim`; `bin/build-ios` deliberately does not, because a
 simulator `xcodebuild build` boots no device and the produced `.app` is not tied
 to one.
 
+### Orphans: `bin/ios-sim -G`
+
+A device outlives the directory it was made for. Delete a worktree without
+running `bin/ios-sim -D` first — which is what always happens — and its device
+stays on the machine forever, with nothing left to say what it was for.
+
+`bin/ios-sim -G` collects them: every device named `<model> (<repo>/<checkout>)`
+for **this** repo whose `<checkout>` is not the basename of a live
+`git worktree list --porcelain` entry. Git is the authority on which checkouts
+exist, so an orphan is derived, not guessed — and a git that cannot answer is
+fatal rather than an empty list, which would read as "everything is an orphan".
+
+That is what the `<repo>` half of the name buys. A `.claude/worktrees/` checkout
+is called something like `sad-clarke-6b73f4`, and a device named
+`iPhone 17 Pro (sad-clarke-6b73f4)` is indistinguishable from one a human made
+by hand; tagged with the repo it is provably ours, which is what lets `-G` run
+unattended.
+
+`-G` **lists only**; `-G -f` deletes (shutdown, then delete). Its stdout is the
+orphan list — one `<UDID>  <name>` line each, nothing else, empty when there are
+none — and everything else goes to stderr. It takes no target and reads no env
+file: it is about devices, not about a build. Devices carrying another repo's
+tag, no tag at all (including the pre-repo-tag `<model> (<checkout>)` names), or
+a live checkout's are never touched.
+
+**Devices from before the `<repo>` tag** are migrated by being used: the first
+`bin/ios-sim` in a checkout that still has a single available
+`<model> (<checkout>)` device **adopts** it — `simctl rename` in place, so the
+installed app and its data survive — instead of creating a second one. That only
+fires for checkouts that resolve again, so a pre-tag device whose checkout is
+already gone is reachable by nothing here (`-G` will not claim it: nothing
+proves it is this repo's); delete those once by hand with
+`xcrun simctl list devices` and `xcrun simctl delete <UDID>`.
+
 `simctl` does not enforce unique device names, so a lost race (two first-runs in
 one checkout) or a runtime removal can leave **two** devices carrying the name.
 That is refused rather than resolved to an arbitrary one; `bin/ios-sim -D`
 clears the lot — every device with the name, unavailable ones included — and the
 next call creates one fresh device.
 
-Two checkouts whose directories share a basename share a device — the documented
-limit of the scheme, and not a silent one: `bin/ios-sim` prints the name it
-resolved on stderr every time. To deliberately drive the shared device, pass
-`-d` or set `UNICOACH_SIMULATOR="iPhone 17 Pro"`; both beat the per-checkout
-device.
+Two checkouts of the same repo whose directories share a basename share a device
+— the documented limit of the scheme, and not a silent one: `bin/ios-sim` prints
+the name it resolved on stderr every time. To deliberately drive the shared
+device, pass `-d` or set `UNICOACH_SIMULATOR="iPhone 17 Pro"`; both beat the
+per-checkout device.
 
 ## Running the unit suite: `bin/test-ios`
 

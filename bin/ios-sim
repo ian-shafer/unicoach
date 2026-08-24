@@ -17,6 +17,13 @@
 # Nothing is cached on disk — `xcrun simctl list devices` is the source of
 # truth — so deleting the device by hand (or from Simulator.app) self-heals on
 # the next call.
+#
+# The name carries the REPOSITORY as well as the checkout —
+# "<model> (<repo>/<checkout>)" — because a checkout can be deleted without
+# anyone running -D, and the device outlives the directory. `-G` collects those
+# orphans, using `git worktree list --porcelain` as the authority on which
+# checkouts are still alive; the repo tag is what makes "this device is ours"
+# exact rather than a guess about a name like `sad-clarke-6b73f4`.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,6 +32,7 @@ source "$PROJECT_ROOT/bin/functions"
 help() {
   cat << 'EOF'
 ios-sim [-D] [target]
+ios-sim -G [-f]
 
 Prints the UDID of THIS CHECKOUT's iOS Simulator device, creating it if it does
 not exist yet. Runs under system Xcode, not the Nix dev shell.
@@ -35,18 +43,27 @@ not exist yet. Runs under system Xcode, not the Nix dev shell.
           names no model (e.g. prod-simulator, or a device target) is an error —
           there is nothing to create.
 
-The device is named "<model> (<basename of the checkout directory>)", e.g.
-`iPhone 17 Pro (unicoach)`, and that name is the lookup key: if a device with
-exactly that name exists its UDID is printed, otherwise one is created with
-`xcrun simctl create` (never `clone` — a clone copies the source device's data
-directory, and nothing on the shared device is worth inheriting) against the
-matching device type; simctl itself picks the runtime. Nothing is cached, so
-deleting the device by hand self-heals on the next call.
+The device is named "<model> (<repo>/<checkout>)", e.g.
+`iPhone 17 Pro (unicoach/unicoach-rfc-126)`, where <repo> is the basename of the
+MAIN checkout (the first entry of `git worktree list --porcelain`) and <checkout>
+is the basename of this checkout's directory. That name is the lookup key: if a
+device with exactly that name exists its UDID is printed, otherwise one is
+created with `xcrun simctl create` (never `clone` — a clone copies the source
+device's data directory, and nothing on the shared device is worth inheriting)
+against the matching device type; simctl itself picks the runtime. Nothing is
+cached, so deleting the device by hand self-heals on the next call. A single
+device left under the pre-repo-tag name "<model> (<checkout>)" is ADOPTED rather
+than duplicated: it is renamed in place, keeping its installed app and data.
+
+The <repo> half is what makes ownership decidable: a `.claude/worktrees/`
+checkout is named `sad-clarke-6b73f4`, which on its own is indistinguishable
+from a device a human made by hand. With the repo tag, "is this device ours?"
+is exact — which is what lets -G delete unattended.
 
 Checkout identity is the directory BASENAME, short enough to read in Simulator's
-device list. Two checkouts with the same basename under different parents share
-a device; that is the documented limit of the scheme — the resolved name is
-printed on stderr so it is never silent.
+device list. Two checkouts of the same repo with the same basename under
+different parents share a device; that is the documented limit of the scheme —
+the resolved name is printed on stderr so it is never silent.
 
 The UDID is the ONLY thing on stdout (all logging goes to stderr), so a caller
 can use it directly:
@@ -57,21 +74,56 @@ Options:
   -D     Delete this checkout's device instead of printing it — EVERY device
          carrying the name, including unavailable ones. A no-op (exit 0) when
          none exists. Prints nothing on stdout.
+  -G     Garbage-collect ORPHANED devices of THIS REPO: every device named
+         "<model> (<repo>/<checkout>)" whose <checkout> is not the basename of a
+         live `git worktree list --porcelain` entry. A checkout deleted with a
+         plain `rm -rf` counts as gone, not only one removed with `git worktree
+         remove`: git leaves such an entry listed but marks it `prunable`, and
+         that is git's own verdict that the directory is no longer there.
+         Deleting a worktree without running -D is otherwise permanent — the
+         device outlives the directory and nothing else knows it existed. Takes
+         no target: it is about devices, not about a build, so no env file is
+         read.
+
+         Its stdout is the ORPHAN LIST, one `<UDID>  <name>` line per orphan and
+         nothing else (empty when there are none); commentary is on stderr.
+         Listing is all it does WITHOUT -f — the resolve mode's "stdout is
+         exactly one UDID" contract is unaffected, since that is a different
+         mode.
+  -f     With -G: actually delete the orphans (shutdown, then delete), instead
+         of only listing them. Meaningless on its own.
   -h     Help
 EOF
   exit 0
 }
 
+
 DELETE=0
-while getopts ":hD" opt; do
+GC=0
+FORCE=0
+while getopts ":hDGf" opt; do
   case "$opt" in
   h) help ;;
   D) DELETE=1 ;;
+  G) GC=1 ;;
+  f) FORCE=1 ;;
   \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
   :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
 shift $((OPTIND-1))
+
+# -D is about THIS checkout's device, -G about every OTHER checkout's; asking for
+# both is a typo, not a composition.
+if [ "$DELETE" -eq 1 ] && [ "$GC" -eq 1 ]; then
+  fatal -s "$EXIT_EXCLUSIVE_OPTIONS" "[-D] (delete this checkout's device) and [-G] (collect orphaned devices of other checkouts) cannot combine."
+fi
+# -f arms a destructive -G. On its own it would silently mean nothing, and the
+# obvious misreading — "force" applied to -D or to a resolve — is exactly the
+# command someone would type expecting devices to be deleted.
+if [ "$FORCE" -eq 1 ] && [ "$GC" -eq 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "[-f] only means something with [-G]: write [ios-sim -G -f] to delete the orphans it lists."
+fi
 
 # Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
 # xcrun is shadowed by a stub with no simctl. Detection lives in bin/is-nix; the
@@ -79,6 +131,292 @@ shift $((OPTIND-1))
 # when an env file is also missing.
 if "$PROJECT_ROOT/bin/is-nix" -q; then
   fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/ios-sim simulator), not via 'nix develop -c'."
+fi
+
+# `xcrun simctl list <kind>`, or a fatal carrying simctl's own words. The
+# listings below are this script's ONLY source of truth, so a simctl that cannot
+# run at all (Command Line Tools selected rather than a full Xcode, a
+# CoreSimulator service error) must say WHY. Discarding the stderr would make
+# that read as an empty list — or, under `set -e`, as a wordless non-zero exit
+# from the caller's command substitution, before any fallback fatal could run.
+simctl_list() {
+  local kind="$1" out
+  out="$(xcrun simctl list "$kind" 2>&1)" \
+    || fatal "Failed to list simulator [$kind] (run [xcrun simctl list $kind]): [$out]. Check that a full Xcode is selected (xcode-select -p) and retry."
+  printf '%s\n' "$out"
+}
+
+# Every device simctl lists, one "<udid>\t<name>\t<available|unavailable>" line
+# each — the ONLY place the listing's text shape is decoded, so every mode below
+# provably sees the same devices.
+#
+# `simctl list devices` lines look like
+#   "    iPhone 17 Pro (unicoach/unicoach-rfc-126) (BB47-...-3793) (Shutdown)"
+# — the NAME itself contains parentheses here, so the UDID is located by its own
+# shape rather than by counting parenthesised groups. Plain text, not `-j`:
+# these scripts run outside the dev shell, so no jq/python3 can be assumed.
+# The awk regexes avoid ERE interval syntax ({8}), which the system awk does not
+# support.
+device_lines() {
+  simctl_list devices | awk '
+    {
+      line = $0
+      sub(/^[ \t]+/, "", line)
+      sub(/[ \t]+$/, "", line)
+      if (!match(line, /\([0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+\)/)) next
+      # RSTART points at the "(" of the UDID group, which is preceded by a
+      # space: the name is everything before that space.
+      if (RSTART < 3) next
+      print substr(line, RSTART + 1, RLENGTH - 2) "\t" substr(line, 1, RSTART - 2) "\t" \
+        (index(line, "(unavailable") > 0 ? "unavailable" : "available")
+    }'
+}
+
+# Every UDID whose device is named EXACTLY $1, one per line.
+#
+# A SET, not a first match: simctl does not enforce unique device names, so two
+# first-runs in this one checkout (screenshot-ios and test-ios in the same
+# iteration) can each list-then-create, and the caller has to be told rather than
+# handed an arbitrary one.
+#
+# $2 is an availability filter, and the callers want different answers.
+# `available` skips an "(unavailable" device — its runtime is gone, so it cannot
+# be booted and must never be handed back as this checkout's device. `all`
+# includes it, because an unavailable duplicate is exactly the orphan that makes
+# the next resolve ambiguous, and -D is the one path whose job is to clear the
+# broken state it finds. Those two are the WHOLE vocabulary: anything else — a
+# typo like `Available` — would otherwise read as `all` and hand a resolve caller
+# an unbootable device, the one input class this parameter exists to exclude, so
+# it is refused here as the programming error it is.
+find_udids() {
+  local name="$1" availability="$2"
+  case "$availability" in
+  available | all) ;;
+  *) fatal "find_udids: availability must be [available] or [all], not [$availability]." ;;
+  esac
+  device_lines | awk -F'\t' -v name="$name" -v availability="$availability" '
+    $2 != name { next }
+    availability == "available" && $3 == "unavailable" { next }
+    { print $1 }'
+}
+
+# Number of non-empty lines in $1 (a possibly-empty UDID list).
+#
+# The empty-string branch is not a shortcut: `grep -c .` PRINTS 0 but EXITS 1 on
+# no match, so folding it away makes the caller's
+# `UDID_COUNT="$(count_udids ...)"` fail under `set -e` — on every first run,
+# where this checkout has no device yet and the list is legitimately empty.
+count_udids() {
+  [ -n "$1" ] || { echo 0; return 0; }
+  printf '%s\n' "$1" | grep -c .
+}
+
+# Shutdown-then-delete ONE device, by UDID. Both -D and -G route through this:
+# `simctl delete` refuses a BOOTED device, and booted is the state
+# screenshot-ios/test-ios leave one in — the most common way to arrive here.
+#
+# A failing shutdown is not itself fatal — "not booted" is the other normal
+# state — but it is the ROOT CAUSE when the delete then refuses a booted device,
+# so its output is carried rather than discarded, and spent only in the failure
+# message: the normal case stays quiet.
+#
+# It REPORTS and returns non-zero rather than calling `fatal`, because both
+# callers delete a SET. One device that refuses to go — another agent's booted
+# orphan, say — must not leave the rest of the set unattempted, least of all on
+# the unattended -G -f path; the caller counts the failures and fails once at the
+# end, naming every one.
+delete_device() {
+  local name="$1" udid="$2" shutdown_out delete_out
+  log-info "Deleting simulator device [$name] [$udid]..."
+  shutdown_out="$(xcrun simctl shutdown "$udid" 2>&1)" || true
+  delete_out="$(xcrun simctl delete "$udid" 2>&1)" && return 0
+  log-error "Failed to delete simulator device [$name] [$udid] (xcrun simctl delete): [$delete_out]; the preceding [xcrun simctl shutdown $udid] said: [$shutdown_out]. Check it is not in use (xcrun simctl list devices) and retry."
+  return 1
+}
+
+# Every LIVE checkout of this repo, one path per line, the MAIN checkout first.
+#
+# `git worktree list --porcelain` is authoritative and works identically from
+# any worktree, which is what makes "this checkout is gone" derivable rather
+# than guessed. A failure is fatal with git's own words: an empty list would
+# read as "every device is an orphan", and -G -f acts on that answer.
+worktree_paths() {
+  local out paths
+  out="$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>&1)" \
+    || fatal "Failed to list git worktrees (run [git -C $PROJECT_ROOT worktree list --porcelain]): [$out]. This must be a git checkout — the repository name is half of every device name."
+  # Parsed per STANZA, not per line, because the `worktree` line alone does not
+  # say whether the directory is still there. A checkout deleted with `rm -rf`
+  # stays listed — git prunes lazily, and gc.worktreePruneExpire is 3 months —
+  # annotated `prunable`. That annotation is git's own verdict that the checkout
+  # is gone, i.e. exactly the orphan -G exists for; folding it into "live" would
+  # make the commonest case uncollectable. `locked` is NOT prunable: a worktree
+  # on an unmounted volume is still live, and its device is still someone's. A
+  # git too old to emit the annotation simply behaves as before.
+  paths="$(printf '%s\n' "$out" | awk '
+    $1 == "worktree" { path = substr($0, index($0, " ") + 1); prunable = 0; next }
+    $1 == "prunable" { prunable = 1; next }
+    $0 == "" { if (path != "" && !prunable) print path; path = ""; prunable = 0; next }
+    END { if (path != "" && !prunable) print path }')"
+  # The raw text is still in scope here, and it is the only thing that explains a
+  # parse that matched nothing — every device name is built from it, so an empty
+  # answer must carry what git actually said rather than an empty [].
+  if [ -z "$paths" ]; then
+    fatal "[git -C $PROJECT_ROOT worktree list --porcelain] succeeded but named no live worktree (no stanza survived: an output line beginning [worktree ] and not marked [prunable]). It printed: [$out]. Every device name is tagged with this repository's name, so there is nothing safe to do."
+  fi
+  printf '%s\n' "$paths"
+}
+
+# This repository's own name: the basename of the MAIN checkout, which is the
+# first stanza by git's documented ordering. A named step, like every sibling
+# notion here — it is the value stamped into every device name, not a detail of
+# the body's text handling.
+repo_name() {
+  # Reads the global WORKTREES rather than re-running git: it is the same
+  # listing, and a second call could answer differently mid-run. That makes the
+  # order of the two assignments below load-bearing — WORKTREES first, then
+  # REPO; reversed, this reads an empty listing and dies in basename.
+  local main_checkout repo
+  main_checkout="$(printf '%s\n' "$WORKTREES" | head -n 1)"
+  repo="$(basename "$main_checkout")"
+  if [ -z "$repo" ] || [ "$repo" = "." ] || [ "$repo" = "/" ]; then
+    fatal "Cannot derive this repository's name from [git -C $PROJECT_ROOT worktree list --porcelain] (first entry: [$main_checkout]); every device name is tagged with it, so there is nothing safe to do."
+  fi
+  printf '%s\n' "$repo"
+}
+
+# Derived for EVERY mode, before the mode dispatch below, because the repo tag is
+# half of the device NAME: a resolve or -D that skipped it would look up a
+# different device than -G collects. The price is that `git` is now a hard
+# requirement of every ios-sim call, which is deliberate — a checkout that cannot
+# name its repository cannot name its device either, so worktree_paths fatals
+# rather than degrading to an untagged name. WORKTREES is derived first because
+# repo_name reads it (see there).
+WORKTREES="$(worktree_paths)"
+REPO="$(repo_name)"
+# The tag every device of this repo carries: "<model> (<REPO_TAG><checkout>)".
+# Defined ONCE, because DEVICE_NAME below writes it and find_tagged_devices
+# reads it back a couple of hundred lines apart — a separator that drifted
+# between the two would make every device of this repo look like nobody's.
+REPO_TAG="$REPO/"
+
+# Every device whose name ends in the tag "(<REPO>/<checkout>)", printed as
+# "<checkout>\t<udid>\t<name>".
+#
+# The tag is the LAST parenthesised group of the NAME, not the only one: models
+# have their own parentheses (`iPad Pro 13-inch (M5) (unicoach/foo)`), so it is
+# found by scanning back from the name's final ")". A tag with a further "/" in
+# it is not ours — this scheme's <checkout> is a basename.
+#
+# Availability is deliberately NOT filtered here (device_lines reports it, and
+# this is the one caller that ignores it): an orphan whose runtime is gone is
+# still an orphan, and skipping it would leave it behind forever.
+find_tagged_devices() {
+  local prefix="$1"
+  device_lines | awk -F'\t' -v prefix="$prefix" '
+    {
+      dev = $2
+      if (substr(dev, length(dev), 1) != ")") next
+      # Scanned back from the last ")". The bound is 2, not 1: this script always
+      # writes "<model> (<repo>/<checkout>)", so a name whose "(" is its first
+      # character has no model half and was not made here — not ours to delete.
+      open = 0
+      for (i = length(dev) - 1; i >= 2; i--) {
+        if (substr(dev, i, 1) == "(") { open = i; break }
+      }
+      if (open == 0) next
+      tag = substr(dev, open + 1, length(dev) - open - 1)
+      if (index(tag, prefix) != 1) next
+      checkout = substr(tag, length(prefix) + 1)
+      if (checkout == "" || index(checkout, "/") > 0) next
+      print checkout "\t" $1 "\t" dev
+    }'
+}
+
+# The basenames of the LIVE checkouts, one per line: the same identity the
+# device names carry.
+live_checkouts() {
+  local path
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    basename "$path"
+  done <<< "$WORKTREES"
+}
+
+# "<udid>\t<name>" per ORPHAN: a device tagged for THIS repo whose <checkout> is
+# not the basename of a live worktree.
+#
+# This is the one computation in the script whose error deletes another
+# checkout's device, so it is named and answerable on its own rather than
+# inlined into the branch that acts on it.
+find_orphans() {
+  local live tagged checkout udid name
+  # Both inputs are bound to variables and STATUS-CHECKED. A command
+  # substitution does not inherit errexit (bash's inherit_errexit is off) and one
+  # used as a here-string redirection has no status anyone can check at all, so a
+  # `fatal` inside find_tagged_devices — a simctl that cannot list — would
+  # otherwise leave this function answering "no orphans", exit 0, on a machine
+  # whose devices were never read. That is the one wrong answer -G -f acts on.
+  live="$(live_checkouts)" || return $?
+  tagged="$(find_tagged_devices "$REPO_TAG")" || return $?
+  while IFS=$'\t' read -r checkout udid name; do
+    [ -n "$udid" ] || continue
+    # -qxF: a WHOLE-LINE match. A substring one would read `acme-rfc-1` as live
+    # because `acme` is, leaving that orphan uncollectable — and, the other way
+    # round, would count a live checkout's device as an orphan and delete it.
+    if printf '%s\n' "$live" | grep -qxF -- "$checkout"; then
+      continue
+    fi
+    printf '%s\t%s\n' "$udid" "$name"
+  done <<< "$tagged"
+}
+
+if [ "$GC" -eq 1 ]; then
+  # -G is about DEVICES, not about a build: no target, no env file, no model.
+  # Accepting a target would imply it only collects that model's devices, which
+  # is the opposite of what it does.
+  if [ "$#" -gt 0 ]; then
+    fatal -s "$EXIT_UNEXPECTED_ARG" "[-G] takes no target (it reads no env file and collects every orphaned device of repo [$REPO], whatever its model): $*"
+  fi
+
+  # A command substitution, not an inline loop: find_orphans status-checks its
+  # own inputs and returns their failure, so a simctl or git that cannot answer
+  # propagates from this assignment under `set -e` — an empty ORPHANS here means
+  # "read the machine, found none", never "could not read the machine".
+  ORPHANS="$(find_orphans)"
+
+  if [ -z "$ORPHANS" ]; then
+    log-info "No orphaned simulator devices for repo [$REPO]: every device tagged [<model> ($REPO_TAG<checkout>)] belongs to a live worktree."
+    exit 0
+  fi
+
+  # The orphan list is the RESULT, so it goes to stdout — one "<UDID>  <name>"
+  # line each, and nothing else, whether or not they are then deleted. (The
+  # resolve mode's "stdout is exactly one UDID" contract is a different mode's;
+  # callers of that one never pass -G.)
+  while IFS=$'\t' read -r udid name; do
+    [ -n "$udid" ] || continue
+    printf '%s  %s\n' "$udid" "$name"
+  done <<< "$ORPHANS"
+
+  if [ "$FORCE" -eq 0 ]; then
+    log-info "Listed only. Re-run [bin/ios-sim -G -f] to delete them."
+    exit 0
+  fi
+
+  # Best-effort over the SET: every orphan is attempted, each failure says why on
+  # stderr as it happens, and the run fails ONCE at the end naming the count.
+  # Halting on the first refusal would leave the rest of an unattended sweep
+  # unattempted and unnamed — and the devices that did go are not coming back,
+  # so there is no atomicity to protect.
+  GC_FAILED=0
+  while IFS=$'\t' read -r udid name; do
+    [ -n "$udid" ] || continue
+    delete_device "$name" "$udid" || GC_FAILED=$((GC_FAILED + 1))
+  done <<< "$ORPHANS"
+  if [ "$GC_FAILED" -gt 0 ]; then
+    fatal "[$GC_FAILED] of the orphaned devices listed above could not be deleted (each said why on stderr); the others were. Free them (they are usually still booted) and re-run [bin/ios-sim -G -f]."
+  fi
+  exit 0
 fi
 
 ENV_NAME="${1:-simulator}"
@@ -112,77 +450,16 @@ if [ -z "$MODEL" ]; then
   fatal "Cannot resolve a simulator model: UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] carries no 'name=' component, so there is no model to create a device from (this is why prod-simulator, and any device target, has no per-checkout device). Pass a target whose destination names a model (e.g. simulator), or add name=<model> to the destination."
 fi
 
-# Checkout identity: the directory BASENAME, not the full path.
+# Checkout identity: the directory BASENAME, not the full path, tagged with the
+# repository the checkout belongs to (REPO, derived above). The repo half is not
+# decoration: it is what makes a device provably ours, and so what makes -G safe
+# to run unattended.
 CHECKOUT="$(basename "$PROJECT_ROOT")"
-DEVICE_NAME="$MODEL ($CHECKOUT)"
+DEVICE_NAME="$MODEL ($REPO_TAG$CHECKOUT)"
 
-# Always announced, on stderr: two checkouts with the same basename would share
-# a device, and this line is what keeps that from being silent.
+# Always announced, on stderr: two checkouts of one repo with the same basename
+# would share a device, and this line is what keeps that from being silent.
 log-info "This checkout's simulator device is [$DEVICE_NAME] (model [$MODEL] from [$ENV_FILE], checkout [$PROJECT_ROOT])."
-
-# `xcrun simctl list <kind>`, or a fatal carrying simctl's own words. The
-# listings below are this script's ONLY source of truth, so a simctl that cannot
-# run at all (Command Line Tools selected rather than a full Xcode, a
-# CoreSimulator service error) must say WHY. Discarding the stderr would make
-# that read as an empty list — or, under `set -e`, as a wordless non-zero exit
-# from the caller's command substitution, before any fallback fatal could run.
-simctl_list() {
-  local kind="$1" out
-  out="$(xcrun simctl list "$kind" 2>&1)" \
-    || fatal "Failed to list simulator [$kind] (run [xcrun simctl list $kind]): [$out]. Check that a full Xcode is selected (xcode-select -p) and retry."
-  printf '%s\n' "$out"
-}
-
-# Every UDID whose device is named EXACTLY $1, one per line.
-#
-# `simctl list devices` lines look like
-#   "    iPhone 17 Pro (unicoach) (BB47-...-3793) (Shutdown)"
-# — the NAME itself contains parentheses here, so the UDID is located by its own
-# shape rather than by counting parenthesised groups. Plain text, not `-j`:
-# these scripts run outside the dev shell, so no jq/python3 can be assumed.
-# The awk regexes avoid ERE interval syntax ({8}), which the system awk does not
-# support.
-#
-# A SET, not a first match: simctl does not enforce unique device names, so two
-# first-runs in this one checkout (screenshot-ios and test-ios in the same
-# iteration) can each list-then-create, and the caller has to be told rather than
-# handed an arbitrary one.
-#
-# $2 is an availability filter, and the two callers want different answers.
-# `available` skips an "(unavailable" device — its runtime is gone, so it cannot
-# be booted and must never be handed back as this checkout's device. `all`
-# includes it, because an unavailable duplicate is exactly the orphan that makes
-# the next resolve ambiguous, and -D is the one path whose job is to clear the
-# broken state it finds.
-find_udids() {
-  local name="$1" availability="$2"
-  simctl_list devices | awk -v name="$name" -v availability="$availability" '
-    {
-      line = $0
-      sub(/^[ \t]+/, "", line)
-      sub(/[ \t]+$/, "", line)
-      if (availability == "available" && index(line, "(unavailable") > 0) next
-      if (match(line, /\([0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+-[0-9A-Fa-f]+\)/)) {
-        # RSTART points at the "(" of the UDID group, which is preceded by a
-        # space: the name is everything before that space.
-        if (RSTART < 3) next
-        dev = substr(line, 1, RSTART - 2)
-        udid = substr(line, RSTART + 1, RLENGTH - 2)
-        if (dev == name) print udid
-      }
-    }'
-}
-
-# Number of non-empty lines in $1 (a possibly-empty UDID list).
-#
-# The empty-string branch is not a shortcut: `grep -c .` PRINTS 0 but EXITS 1 on
-# no match, so folding it away makes the caller's
-# `UDID_COUNT="$(count_udids ...)"` fail under `set -e` — on every first run,
-# where this checkout has no device yet and the list is legitimately empty.
-count_udids() {
-  [ -n "$1" ] || { echo 0; return 0; }
-  printf '%s\n' "$1" | grep -c .
-}
 
 if [ "$DELETE" -eq 1 ]; then
   DELETE_UDIDS="$(find_udids "$DEVICE_NAME" all)"
@@ -192,19 +469,19 @@ if [ "$DELETE" -eq 1 ]; then
   fi
   # The whole set, not the first: leaving a twin behind is what makes the next
   # resolve fatal with nothing the operator can do about it. A here-string, not
-  # a pipe, so the loop runs in THIS shell and a `fatal` inside it exits the
-  # script rather than a subshell.
+  # a pipe, so the loop runs in THIS shell and its failure count survives it.
+  #
+  # Best-effort, and then fatal once: a twin that refuses to go must not stop the
+  # others being attempted, but until EVERY one is gone the next resolve is still
+  # ambiguous, so the run cannot report success either.
+  DELETE_FAILED=0
   while IFS= read -r udid; do
     [ -n "$udid" ] || continue
-    log-info "Deleting simulator device [$DEVICE_NAME] [$udid]..."
-    # Shut it down first: `simctl delete` refuses a BOOTED device, and booted is
-    # the state screenshot-ios/test-ios leave this one in — the most common way to
-    # arrive here. The failure is ignored because "not booted" is the other normal
-    # state, and a shutdown that did not happen shows up as the delete failing.
-    xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
-    xcrun simctl delete "$udid" >&2 \
-      || fatal "Failed to delete simulator device [$DEVICE_NAME] [$udid] (xcrun simctl delete). Check it is not in use (xcrun simctl list devices) and retry."
+    delete_device "$DEVICE_NAME" "$udid" || DELETE_FAILED=$((DELETE_FAILED + 1))
   done <<< "$DELETE_UDIDS"
+  if [ "$DELETE_FAILED" -gt 0 ]; then
+    fatal "[$DELETE_FAILED] device(s) named [$DEVICE_NAME] could not be deleted (each said why on stderr); any others were. Until every one is gone [bin/ios-sim $ENV_NAME] stays ambiguous — free them and re-run [bin/ios-sim -D $ENV_NAME]."
+  fi
   exit 0
 fi
 
@@ -221,6 +498,40 @@ if [ -n "$UDID" ]; then
   log-info "Simulator device [$DEVICE_NAME] already exists [$UDID]."
   echo "$UDID"
   exit 0
+fi
+
+# Migration off the pre-repo-tag name. This checkout's device used to be called
+# "<model> (<checkout>)"; nothing resolves, deletes or collects that name any
+# more, so leaving it behind strands exactly the kind of device -G exists to
+# collect — one per live checkout, on the day this lands. Adopt it instead: it
+# carries THIS checkout's own basename and only this checkout ever looked it up,
+# so it is ours by construction, and a RENAME rather than a recreate keeps its
+# installed bundle and data.
+#
+# Exactly one, and available: two legacy twins are the same ambiguity the tagged
+# name refuses above, and an unavailable one cannot be booted — either way, fall
+# through and create a clean device rather than guess. The migration disappears
+# by itself once every checkout has resolved once.
+LEGACY_NAME="$MODEL ($CHECKOUT)"
+LEGACY_UDIDS="$(find_udids "$LEGACY_NAME" available)"
+if [ "$(count_udids "$LEGACY_UDIDS")" -eq 1 ]; then
+  log-info "Adopting pre-repo-tag device [$LEGACY_NAME] [$LEGACY_UDIDS] as [$DEVICE_NAME]."
+  xcrun simctl rename "$LEGACY_UDIDS" "$DEVICE_NAME" >&2 \
+    || fatal "Failed to rename simulator device [$LEGACY_NAME] [$LEGACY_UDIDS] to [$DEVICE_NAME] (xcrun simctl rename). Delete it by hand [xcrun simctl delete $LEGACY_UDIDS] and re-run to get a fresh device."
+  echo "$LEGACY_UDIDS"
+  exit 0
+fi
+
+# Candidates existed but none was adopted: say which, and what to do with them.
+# No mode of this script reaches an untagged name again — -D and -G both act on
+# the TAGGED one — so an unannounced skip leaves devices only `xcrun simctl` can
+# find, while the identical ambiguity under the tagged name fatals with its
+# UDIDs listed.
+LEGACY_LEFTOVERS="$(find_udids "$LEGACY_NAME" all)"
+if [ -n "$LEGACY_LEFTOVERS" ]; then
+  log-info "Not adopting [$(count_udids "$LEGACY_LEFTOVERS")] pre-repo-tag device(s) named [$LEGACY_NAME] — adoption needs exactly ONE available device, and two twins are an unresolvable guess while an unavailable one cannot be booted:
+$LEGACY_LEFTOVERS
+A fresh [$DEVICE_NAME] is created instead; nothing in this script collects these, so delete the ones you do not want by hand with [xcrun simctl delete <UDID>]."
 fi
 
 # Not there: create it. `simctl list devicetypes` lines look like

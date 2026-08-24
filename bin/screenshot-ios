@@ -53,7 +53,7 @@ UNICOACH_SIMULATOR when set; else the `id=<UDID>` component of the target's
 UNICOACH_DESTINATION; else THIS CHECKOUT's own simulator device, which
 bin/ios-sim resolves — creating it on demand — from the destination's
 `name=<model>` component (`iPhone 17 Pro` -> a device named
-`iPhone 17 Pro (<checkout>)`). The per-checkout device is what keeps a
+`iPhone 17 Pro (<repo>/<checkout>)`). The per-checkout device is what keeps a
 concurrent capture in another checkout from terminating this app or installing
 over this bundle; UNICOACH_SIMULATOR="iPhone 17 Pro" is how you deliberately
 drive the shared device instead. The resolved value is passed to simctl as the
@@ -202,8 +202,9 @@ resolve_device() {
     return 0
   fi
   # A `name=<model>` component: hand the target to bin/ios-sim, which resolves
-  # (creating on demand) the device named "<model> (<checkout>)" and prints its
-  # UDID — its own stdout contract, so nothing but a UDID can land here. Its
+  # (creating on demand) the device named "<model> (<repo>/<checkout>)" and
+  # prints its UDID — its own stdout contract, so nothing but a UDID can land
+  # here. Its
   # fatals surface verbatim, and kill this script too: the assignment below runs
   # under `set -e`.
   if [ -n "$(destination_component "$UNICOACH_DESTINATION" name)" ]; then
