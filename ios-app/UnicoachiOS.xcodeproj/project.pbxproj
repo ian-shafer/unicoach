@@ -57,6 +57,8 @@
 		AAAA00030000000000000B03 /* MarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00030000000000000F03 /* MarkdownView.swift */; };
 		AAAA00030000000000000B04 /* MarkdownParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00030000000000000F04 /* MarkdownParserTests.swift */; };
 		FC77AD0A11BE5F2251659DB4 /* MessageCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94DBFA125B53E8F9EB8CD52C /* MessageCopyTests.swift */; };
+		AAAA01270000000000000B01 /* ComposerFocus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA01270000000000000F01 /* ComposerFocus.swift */; };
+		AAAA01270000000000000B02 /* ComposerFocusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA01270000000000000F02 /* ComposerFocusTests.swift */; };
 		AAAA01220000000000000B01 /* SnapshotHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA01220000000000000F01 /* SnapshotHost.swift */; };
 		AAAA01220000000000000B02 /* SnapshotScenes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA01220000000000000F02 /* SnapshotScenes.swift */; };
 		AAAA01220000000000000B03 /* SnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA01220000000000000F03 /* SnapshotTests.swift */; };
@@ -177,6 +179,8 @@
 		AAAA00030000000000000F03 /* MarkdownView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MarkdownView.swift; sourceTree = "<group>"; };
 		AAAA00030000000000000F04 /* MarkdownParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MarkdownParserTests.swift; sourceTree = "<group>"; };
 		94DBFA125B53E8F9EB8CD52C /* MessageCopyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MessageCopyTests.swift; sourceTree = "<group>"; };
+		AAAA01270000000000000F01 /* ComposerFocus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ComposerFocus.swift; sourceTree = "<group>"; };
+		AAAA01270000000000000F02 /* ComposerFocusTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ComposerFocusTests.swift; sourceTree = "<group>"; };
 		AAAA01220000000000000F01 /* SnapshotHost.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SnapshotHost.swift; sourceTree = "<group>"; };
 		AAAA01220000000000000F02 /* SnapshotScenes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SnapshotScenes.swift; sourceTree = "<group>"; };
 		AAAA01220000000000000F03 /* SnapshotTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SnapshotTests.swift; sourceTree = "<group>"; };
@@ -305,6 +309,7 @@
 				AAAA00020000000000000F02 /* ConversationClient.swift */,
 				AAAA00020000000000000F03 /* ConversationViewModel.swift */,
 				AAAA00020000000000000F04 /* ConversationView.swift */,
+				AAAA01270000000000000F01 /* ComposerFocus.swift */,
 				05C466B15546C2F98B05E1BE /* MessageCopy.swift */,
 				AAAA00020000000000000F09 /* ConversationListViewModel.swift */,
 				AAAA00020000000000000F0A /* ConversationListView.swift */,
@@ -387,6 +392,7 @@
 				FFFF00010000000000000F0D /* SubscriptionStoreMocks.swift */,
 				FFFF00020000000000000F02 /* StoreKitConfigurationTests.swift */,
 				FFFF00030000000000000F03 /* PaywallViewModelTests.swift */,
+				AAAA01270000000000000F02 /* ComposerFocusTests.swift */,
 				AAAA01220000000000000F01 /* SnapshotHost.swift */,
 				AAAA01220000000000000F02 /* SnapshotScenes.swift */,
 				AAAA01220000000000000F03 /* SnapshotTests.swift */,
@@ -567,6 +573,7 @@
 				AAAA00020000000000000B02 /* ConversationClient.swift in Sources */,
 				AAAA00020000000000000B03 /* ConversationViewModel.swift in Sources */,
 				AAAA00020000000000000B04 /* ConversationView.swift in Sources */,
+				AAAA01270000000000000B01 /* ComposerFocus.swift in Sources */,
 				73186811AC74AD1C6810C195 /* MessageCopy.swift in Sources */,
 				AAAA00020000000000000B09 /* ConversationListViewModel.swift in Sources */,
 				AAAA00020000000000000B0A /* ConversationListView.swift in Sources */,
@@ -635,6 +642,7 @@
 				FFFF00010000000000000B0D /* SubscriptionStoreMocks.swift in Sources */,
 				FFFF00020000000000000B02 /* StoreKitConfigurationTests.swift in Sources */,
 				FFFF00030000000000000B03 /* PaywallViewModelTests.swift in Sources */,
+				AAAA01270000000000000B02 /* ComposerFocusTests.swift in Sources */,
 				AAAA01220000000000000B01 /* SnapshotHost.swift in Sources */,
 				AAAA01220000000000000B02 /* SnapshotScenes.swift in Sources */,
 				AAAA01220000000000000B03 /* SnapshotTests.swift in Sources */,

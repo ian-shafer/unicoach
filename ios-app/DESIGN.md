@@ -366,6 +366,90 @@ has no status line to show. Entitlement itself is never derived on the client:
 the meter renders the server's own answer, and nothing inspects `status` or
 `currentPeriodEnd` to unlock anything.
 
+### 7.1 Composer focus and the keyboard (RFC 127)
+
+The keyboard is navigation too: it covers half the screen, and the drawer this
+section specifies opens over it. **This is the maintained copy of the model** —
+RFC 127 holds the record of what was decided, this holds what the code does.
+
+One piece of state per `ConversationView`, `isComposerFocused`. Focused means
+the keyboard is up.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Closed: app launches into the root conversation
+    Closed --> Open: tap composer
+    Closed --> Open: New conversation (drawer)
+    Open --> Open: New conversation (drawer)
+    Open --> Closed: menu opens
+    Open --> Closed: drag the thread
+    Open --> Closed: tap the thread / empty state
+    Open --> Closed: send
+    Open --> Closed: composer becomes disabled (blocked / streaming)
+    Closed --> Closed: menu closes (scrim, swipe, selection)
+    Closed --> Closed: root re-appears (pop, rebuild)
+
+    note right of Closed
+        Closed = no keyboard. A pushed existing
+        conversation is its own instance and
+        starts here; nothing restores focus.
+    end note
+```
+
+**App launch is not a transition** — it is the initial state, and the initial
+state is CLOSED.
+
+| Event                                          | From   | To     | Why                                                                    |
+| ---------------------------------------------- | ------ | ------ | ---------------------------------------------------------------------- |
+| App launches into the root conversation        | —      | CLOSED | Nothing was asked for. Read first, type when you choose.               |
+| Root conversation re-appears (pop, rebuild)    | any    | CLOSED | Appearance is not intent.                                              |
+| **New conversation** tapped in the drawer      | any    | OPEN   | The one explicit "give me a blank page and let me type" gesture.       |
+| A blank page pushed from the conversation list | any    | OPEN   | Its compose button and **Start a conversation** are the same gesture.  |
+| Student taps the composer                      | CLOSED | OPEN   | System behaviour; nothing is implemented for it.                       |
+| Menu opens (button, from any keyboard state)   | any    | CLOSED | The drawer's own rows — Settings especially — must be reachable.       |
+| Menu closes (scrim, swipe, selection)          | CLOSED | CLOSED | Focus is **not** restored: closing a drawer is not a request to type.  |
+| Drag on the thread                             | OPEN   | CLOSED | `.scrollDismissesKeyboard(.interactively)` — the platform gesture.     |
+| Tap on the thread / empty state                | OPEN   | CLOSED | The only exit on a blank conversation, which has nothing to scroll.    |
+| Send tapped                                    | OPEN   | CLOSED | The turn is away; show the reply.                                      |
+| Composer becomes disabled (blocked/stream)     | OPEN   | CLOSED | A keyboard over a field that cannot accept a turn invites dead typing. |
+| An existing conversation is pushed             | —      | CLOSED | History must not open under a keyboard.                                |
+| Settings / All conversations pushed            | any    | CLOSED | Follows from _menu opens_: those pushes are only reachable through it. |
+
+How it is wired:
+
+- **Opening** is carried in as intent, never derived from appearance. The
+  fresh-conversation initialiser takes `focusesComposerOnAppear`, and
+  `AuthenticatedRootView` sets it only in **New conversation** — on one value,
+  `RootConversation`, that carries the blank page's identity and its intent
+  together, because a rebuild that forgot the intent (or an intent that forgot
+  the rebuild) is the same page twice. The old rule — focus whenever the
+  conversation is fresh — fired on launch, because the root chat is a fresh
+  conversation too.
+- The intent is **consumed once**, inside `ConversationView`
+  (`hasConsumedInitialFocus`). Construction timing is not the guarantee: the
+  root's value is not cleared, and `.onAppear` fires again on every return, so
+  without the consume a pop back from Settings would raise the keyboard on a
+  page requested long before. The view that owns the focus is the only place
+  that knows when the request was spent.
+- **Closing from outside** goes through `ComposerFocus`, a `@MainActor`
+  `ObservableObject` publishing a fresh `UUID` per request, which
+  `ConversationView` mirrors into its `@FocusState`. Only the **root** chat can
+  be given the object: the existing-conversation initialiser takes no such
+  parameter at all, so a pushed screen answering the root's drawer is a call
+  that cannot be written. `setMenu(open:)` requests a close whenever it opens
+  the drawer, which is every route into the menu and therefore into Settings.
+- **Closing from inside** is the three rules in the table:
+  `.scrollDismissesKeyboard(.interactively)` on the thread, a
+  `contentShape(Rectangle())` tap over the thread area — the only dismissal an
+  _empty_ conversation has, and a vertical-axis `TextField`'s Return inserts a
+  newline rather than resigning — and an `onChange` of the composer's disabled
+  state.
+
+Two absences are deliberate. There is no "restore focus on return": a stack of
+screens each remembering a keyboard is the surprise this model removes. And
+there is no scene-phase rule — backgrounding is not a state change here.
+
 ## 8. What the reference does not cover
 
 The mockups show **only the login screen and one onboarding step.** Everything

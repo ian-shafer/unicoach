@@ -46,14 +46,48 @@ struct AuthenticatedRootView: View {
 
     @State private var path: [Destination] = []
     @State private var isMenuOpen = false
-    /// Re-identifies the root conversation. **New conversation** in the drawer
-    /// pops back to the root, but once the root has been used it is a real
-    /// conversation, so popping to it alone leaves the same thread on screen —
-    /// a visible no-op. Bumping the token rebuilds the root view (and its view
-    /// model) as a blank thread whose composer takes focus on appearance.
-    /// Nothing is created server-side: a conversation exists only once its
-    /// first message is sent.
-    @State private var rootConversationToken = UUID()
+    /// The blank page currently at the root: which one it is, and whether the
+    /// student asked for it. **One value, not two `@State`s** — the identity and
+    /// the intent are the same fact, and split apart they were two things a
+    /// future writer had to remember to set together, in order (RFC 127).
+    ///
+    /// The identity exists because **New conversation** pops back to the root,
+    /// and once the root has been used it is a real conversation, so popping to
+    /// it alone leaves the same thread on screen — a visible no-op. A new `id`
+    /// rebuilds the root view (and its view model) as a blank thread. Nothing is
+    /// created server-side: a conversation exists only once its first message is
+    /// sent.
+    ///
+    /// The intent is handed to `ConversationView`, which **consumes** it on its
+    /// first appearance. This value is not cleared afterwards and does not need
+    /// to be: consuming it there is what keeps a pop back from Settings from
+    /// raising the keyboard again.
+    private struct RootConversation {
+        let id = UUID()
+        let focusesComposer: Bool
+
+        /// Launch: a blank page nobody asked for. A function rather than a
+        /// `static let` because every call must mint a fresh `id` — a shared
+        /// constant would re-identify to the value already on screen, and the
+        /// rebuild would silently not happen.
+        static func unrequested() -> RootConversation {
+            RootConversation(focusesComposer: false)
+        }
+
+        /// **New conversation**: a different blank page, and a request to type
+        /// on it.
+        static func requested() -> RootConversation {
+            RootConversation(focusesComposer: true)
+        }
+    }
+
+    @State private var rootConversation = RootConversation.unrequested()
+    /// The root composer's close-from-outside channel. Owned here because this
+    /// view owns the drawer, and opening the drawer over a raised keyboard put
+    /// **Settings** — its bottom row — behind it, unreachable. Handed to the
+    /// root chat only: a pushed conversation is never under this drawer, so it
+    /// gets `nil` and one request can never address two composers (RFC 127).
+    @StateObject private var composerFocus = ComposerFocus()
     /// Which subscription sheet is up, if either (RFC 121, RFC 123). Presented
     /// from **here**, not from the conversation screen, so one presentation
     /// serves the whole stack: a 402 on a pushed conversation, a "See options"
@@ -228,9 +262,11 @@ struct AuthenticatedRootView: View {
         ConversationView(
             conversationClient: conversationClient,
             paywallGate: paywallGate,
+            focusesComposerOnAppear: rootConversation.focusesComposer,
+            focus: composerFocus,
             onProfileRequired: onProfileRequired
         )
-        .id(rootConversationToken)
+        .id(rootConversation.id)
     }
 
     // MARK: - Menu
@@ -252,13 +288,7 @@ struct AuthenticatedRootView: View {
     private func menu(width: CGFloat) -> some View {
         SlideOverMenu(
             viewModel: menuViewModel,
-            // Pop anything pushed on top of the root, blank the root itself,
-            // and close the menu.
-            onNewConversation: {
-                path.removeAll()
-                rootConversationToken = UUID()
-                setMenu(open: false)
-            },
+            onNewConversation: startNewConversation,
             onSelect: { conversation in push(.conversation(conversation)) },
             onAllConversations: { push(.conversations) },
             onSettings: { push(.settings) }
@@ -308,12 +338,29 @@ struct AuthenticatedRootView: View {
         }
     }
 
+    /// **New conversation**: pop anything pushed on top of the root, put a
+    /// fresh blank page at the root — requested, so its composer takes focus
+    /// once — and close the menu. The only gesture in the app that means "give
+    /// me a blank page and let me type" (RFC 127).
+    private func startNewConversation() {
+        path.removeAll()
+        rootConversation = .requested()
+        setMenu(open: false)
+    }
+
     private func push(_ destination: Destination) {
         setMenu(open: false)
         path.append(destination)
     }
 
+    /// Every route into the drawer goes through here, which is why the close
+    /// request lives here rather than on the menu button: the button, and so
+    /// Settings and All conversations, which are only reachable through it.
+    /// Opening lowers the keyboard first, or the drawer's own bottom row is
+    /// behind it. Closing does **not** restore focus — dismissing a drawer is
+    /// not a request to type (RFC 127).
     private func setMenu(open: Bool) {
+        if open { composerFocus.requestClose() }
         withAnimation { isMenuOpen = open }
     }
 }

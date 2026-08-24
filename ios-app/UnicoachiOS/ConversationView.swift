@@ -12,18 +12,47 @@ struct ConversationView: View {
     /// view: the sheet is the authenticated root's, so it survives a push and
     /// covers the whole stack.
     private let paywallGate: PaywallGate
-    /// Whether this view was opened as a *new* conversation rather than an
-    /// existing one. A new conversation has nothing to read, so the composer
-    /// takes focus on appearance and the student can type immediately; an
-    /// existing one must not, or the keyboard covers the history they just
-    /// opened. Note this creates nothing server-side — a conversation is only
-    /// created when the first message is sent.
-    private let startsFresh: Bool
+    /// Whether the student **asked for this blank page**, and so whether the
+    /// composer takes focus when it appears. Not "is this conversation fresh?":
+    /// the root chat is fresh at launch too, and deriving focus from that is
+    /// exactly what raised the keyboard over a thread nobody had read yet (RFC
+    /// 127). Only an explicit gesture — **New conversation** in the drawer, and
+    /// the conversation list's compose button and **Start a conversation** —
+    /// passes `true`.
+    ///
+    /// It is an intent, so it is **consumed**: `hasConsumedInitialFocus` below
+    /// is what limits it to one raise per view instance. The caller's value
+    /// outlives the appearance that used it (it is `@State` up there, and
+    /// nothing clears it), and `.onAppear` fires again on every RE-appearance —
+    /// so without the consume, popping back from Settings would raise the
+    /// keyboard on a page the student asked for minutes ago.
+    private let focusesComposerOnAppear: Bool
+    /// Whether this instance has already honoured `focusesComposerOnAppear`.
+    /// The RFC's "root re-appears → CLOSED" rule in one flag: appearance is not
+    /// intent, and an intent already acted on is not intent either.
+    @State private var hasConsumedInitialFocus = false
+    /// The close-from-outside channel, mirrored into `isComposerFocused` below.
+    /// `nil` for a **pushed** conversation: the drawer that needs this only ever
+    /// covers the root, so a pushed screen has no outside closer and must not
+    /// answer the root's (RFC 127).
+    ///
+    /// **A plain `let`, and it cannot be a property wrapper**: the pushed case
+    /// has no object at all, and `@ObservedObject` does not accept an optional.
+    /// So this view subscribes to NOTHING — the `onChange` below fires because
+    /// `AuthenticatedRootView` holds the object as a `@StateObject`, and its
+    /// re-render on each publish rebuilds this view and re-evaluates the body.
+    /// Both halves are load-bearing and neither is enforced by the compiler:
+    /// "tidying" this to a wrapper, or the root's `@StateObject` to a `let`,
+    /// breaks the keyboard silently, with no build error and no failing unit
+    /// test. `ComposerFocusWiringTests` is the only thing that notices.
+    private let focus: ComposerFocus?
     @FocusState private var isComposerFocused: Bool
 
     init(
         conversationClient: ConversationClientProtocol,
         paywallGate: PaywallGate,
+        focusesComposerOnAppear: Bool,
+        focus: ComposerFocus?,
         onProfileRequired: @escaping () -> Void
     ) {
         _viewModel = StateObject(wrappedValue: ConversationViewModel(
@@ -33,9 +62,16 @@ struct ConversationView: View {
         ))
         _subscriptionViewModel = ObservedObject(wrappedValue: paywallGate.subscriptions)
         self.paywallGate = paywallGate
-        self.startsFresh = true
+        self.focusesComposerOnAppear = focusesComposerOnAppear
+        self.focus = focus
     }
 
+    /// An **existing** conversation, which is always a push. It never focuses on
+    /// appearance — history must not open under a keyboard — and it takes **no
+    /// `ComposerFocus` parameter at all**: the drawer that closes a keyboard
+    /// from outside only ever covers the root, so wiring one in here is not a
+    /// mistake to catch in review, it is a call that cannot be written (RFC
+    /// 127).
     init(
         conversation: Conversation,
         conversationClient: ConversationClientProtocol,
@@ -50,12 +86,22 @@ struct ConversationView: View {
         ))
         _subscriptionViewModel = ObservedObject(wrappedValue: paywallGate.subscriptions)
         self.paywallGate = paywallGate
-        self.startsFresh = false
+        self.focusesComposerOnAppear = false
+        self.focus = nil
     }
 
     var body: some View {
         VStack(spacing: 0) {
             threadArea
+                // Tap the thread to lower the keyboard. `contentShape` is what
+                // makes the gesture cover the whole area rather than the glyphs
+                // in it — and on the **empty** conversation, the screen the app
+                // launches on, this is the only dismissal there is: there is
+                // nothing to scroll and Return in a vertical-axis field inserts
+                // a newline (RFC 127). A child's own gesture still wins, so
+                // Retry and the copy menu are unaffected.
+                .contentShape(Rectangle())
+                .onTapGesture { isComposerFocused = false }
             validationArea
             blockedArea
             composer
@@ -65,14 +111,42 @@ struct ConversationView: View {
         .navigationTitle("Coaching")
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.loadHistory() }
-        // A new conversation is a blank page: put the cursor in the composer so
-        // the student can type without a tap. Guarded by `isComposerDisabled`
-        // because raising the keyboard over a composer that cannot accept a turn
-        // (blocked by the paywall) invites typing into a dead field.
-        .onAppear {
-            guard startsFresh, !isComposerDisabled else { return }
-            isComposerFocused = true
+        .onAppear(perform: consumeInitialFocusIntent)
+        // The close-from-outside channel: the root asks when it opens the
+        // drawer, so Settings — the drawer's bottom row — is not left behind a
+        // keyboard. The request's value is meaningless; that it *changed* is the
+        // whole signal, which is why it is a fresh UUID each time.
+        .onChange(of: focus?.closeRequest) { _, _ in
+            isComposerFocused = false
         }
+        // A keyboard raised over a composer that has just stopped accepting
+        // turns — the paywall blocked mid-thread, or a send started streaming —
+        // is an invitation to type into a dead field.
+        .onChange(of: isComposerDisabled) { _, disabled in
+            if disabled { isComposerFocused = false }
+        }
+    }
+
+    /// The one raise in the whole view, and the only place the caller's intent
+    /// is read.
+    ///
+    /// A blank page that was *asked for* puts the cursor in the composer, so the
+    /// student can type without a tap. `isComposerDisabled` vetoes it, because
+    /// raising the keyboard over a composer that cannot accept a turn (blocked
+    /// by the paywall) invites typing into a dead field.
+    ///
+    /// It runs from `.onAppear`, but it is no longer *derived from* appearance,
+    /// which is the whole point of RFC 127: the intent is CONSUMED on the first
+    /// appearance, so a pop back from Settings or from a pushed conversation
+    /// re-appears with the keyboard down. The consume is here rather than at the
+    /// caller because this is the view that owns the focus — the caller cannot
+    /// know when its intent was spent, and a flag it clears "afterwards" is a
+    /// second thing to keep in step with this one.
+    private func consumeInitialFocusIntent() {
+        guard !hasConsumedInitialFocus else { return }
+        hasConsumedInitialFocus = true
+        guard focusesComposerOnAppear, !isComposerDisabled else { return }
+        isComposerFocused = true
     }
 
     private var isComposerDisabled: Bool {
@@ -170,6 +244,11 @@ struct ConversationView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(DSSpacing.md)
             }
+            // The platform gesture: drag the thread and the keyboard follows
+            // your finger down. Interactive rather than `.immediately` because
+            // a thread you are only skimming should not lose the keyboard the
+            // instant you touch it.
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: scrollAnchor) { _, _ in
                 guard let lastId = viewModel.turns.last?.id else { return }
                 withAnimation { proxy.scrollTo(lastId, anchor: .bottom) }
@@ -578,6 +657,8 @@ private final class ConversationPreviewClient: ConversationClientProtocol, @unch
         ConversationView(
             conversationClient: ConversationPreviewClient(),
             paywallGate: conversationPreviewGate(),
+            focusesComposerOnAppear: false,
+            focus: nil,
             onProfileRequired: {}
         )
     }

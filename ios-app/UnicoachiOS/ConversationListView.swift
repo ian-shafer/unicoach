@@ -243,10 +243,18 @@ struct ConversationListView: View {
         .accessibilityLabel("Start a conversation")
     }
 
+    /// Pushed by **both** of this screen's blank-page affordances — the toolbar
+    /// compose button and the empty state's **Start a conversation** — and each
+    /// is the same explicit "give me a blank page and let me type" gesture the
+    /// drawer's **New conversation** is, so it focuses its composer on
+    /// appearance (RFC 127). It is handed no `ComposerFocus`: the drawer that
+    /// closes a keyboard from outside never covers a pushed screen.
     private var freshConversation: some View {
         ConversationView(
             conversationClient: conversationClient,
             paywallGate: paywallGate,
+            focusesComposerOnAppear: true,
+            focus: nil,
             onProfileRequired: onProfileRequired
         )
     }

@@ -263,7 +263,11 @@ enum SnapshotHost {
     /// commits the layer tree of an OFFSCREEN window, whose CADisplayLink never
     /// fires, and without it a NavigationStack's content appearance (and so the
     /// `.task` that seeds it) can sit pending for the whole settle.
-    private static func spin(_ seconds: TimeInterval) {
+    ///
+    /// Not private: any test that mounts a window through `mount` needs the
+    /// same knowledge to let SwiftUI act, and a hand-rolled `RunLoop.run(until:)`
+    /// beside it is the same defect written again.
+    static func settle(_ seconds: TimeInterval) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
@@ -283,13 +287,66 @@ enum SnapshotHost {
         scale: CGFloat = 0,
         content: () -> AnyView
     ) -> UIImage {
-        // A LIVE UIWindowScene. A detached UIWindow gets no real traits.
+        let window = mount(content(), size: size, dark: dark)
+        // The settle: SwiftUI async measurement (the MarkdownView width probe)
+        // has not converged at the end of `mount`'s layout pass.
+        SnapshotHost.settle(settle)
+
+        // A SECOND layout pass, after the settle. Whatever the settle let
+        // through -- an `ObservableObject` publish from a view's own `.task`
+        // (ConversationView's history load is the case that caught this) -- has
+        // marked the hierarchy dirty but not necessarily laid it out or
+        // displayed it, and `layer.render(in:)` draws what has been COMMITTED,
+        // not what is pending. Without this the conversation screens capture
+        // their loading spinner even though the fetch demonstrably returned.
+        window.rootViewController?.view.setNeedsLayout()
+        window.rootViewController?.view.layoutIfNeeded()
+        SnapshotHost.settle(0.1)
+
+        // drawHierarchy(afterScreenUpdates:) FIRST, layer.render(in:) only as a
+        // fallback. See `rasterize` for why the preference is this way round --
+        // it is the RFC 122 nav-chrome defect, and it is the opposite of what
+        // this file said before that defect was diagnosed.
+        let image = rasterize(window: window, scale: scale)
+        dismiss(window)
+        return image
+    }
+
+    /// Puts a SwiftUI view on screen in a real window, laid out and ready to be
+    /// driven — the prologue every hosted test needs and the capture path shares.
+    /// Each line is load-bearing; see the file header.
+    ///
+    /// **The caller owns the returned window and must take it down**, which for
+    /// a test means the first line after this one:
+    ///
+    /// ```swift
+    /// let window = SnapshotHost.mount(AnyView(view))
+    /// addTeardownBlock { @MainActor in SnapshotHost.dismiss(window) }
+    /// ```
+    ///
+    /// It is key and visible: left standing it outlives the test that made it,
+    /// the next `mount` stacks another key window on top of it, and from then on
+    /// "the first responder" and "the window on screen" are questions with two
+    /// answers. `capture` dismisses its own before returning the image.
+    ///
+    /// Not folded into `capture` any more because a hosted assertion (RFC 127's
+    /// keyboard wiring asserts on the first responder, which only exists in a
+    /// window like this) needs the mounting without the rasterizing, and a test
+    /// that re-types this recipe drifts from it — the first copy had already
+    /// lost the CoreAnimation flush and never dismissed its window.
+    static func mount(
+        _ content: AnyView,
+        size: CGSize = SnapshotOutput.deviceSize,
+        dark: Bool = false
+    ) -> UIWindow {
+        // A LIVE UIWindowScene. A detached UIWindow gets no real traits -- and
+        // no first responder either.
         let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene
         let window = scene.map { UIWindow(windowScene: $0) } ?? UIWindow()
         window.frame = CGRect(origin: .zero, size: size)
         // Dark mode is a WINDOW TRAIT, never `.colorScheme(.dark)`.
         window.overrideUserInterfaceStyle = dark ? .dark : .light
-        let hosting = UIHostingController(rootView: content())
+        let hosting = UIHostingController(rootView: content)
         hosting.view.frame = window.bounds
         window.rootViewController = hosting
         window.makeKeyAndVisible()
@@ -305,29 +362,13 @@ enum SnapshotHost {
         window.layoutIfNeeded()
         hosting.view.setNeedsLayout()
         hosting.view.layoutIfNeeded()
-        // The settle: SwiftUI async measurement (the MarkdownView width probe)
-        // has not converged at the end of layoutIfNeeded().
-        spin(settle)
+        return window
+    }
 
-        // A SECOND layout pass, after the settle. Whatever the settle let
-        // through -- an `ObservableObject` publish from a view's own `.task`
-        // (ConversationView's history load is the case that caught this) -- has
-        // marked the hierarchy dirty but not necessarily laid it out or
-        // displayed it, and `layer.render(in:)` draws what has been COMMITTED,
-        // not what is pending. Without this the conversation screens capture
-        // their loading spinner even though the fetch demonstrably returned.
-        hosting.view.setNeedsLayout()
-        hosting.view.layoutIfNeeded()
-        spin(0.1)
-
-        // drawHierarchy(afterScreenUpdates:) FIRST, layer.render(in:) only as a
-        // fallback. See `rasterize` for why the preference is this way round --
-        // it is the RFC 122 nav-chrome defect, and it is the opposite of what
-        // this file said before that defect was diagnosed.
-        let image = rasterize(window: window, scale: scale)
+    /// Takes a mounted window down; see `mount` for whose job this is.
+    static func dismiss(_ window: UIWindow) {
         window.isHidden = true
         window.rootViewController = nil
-        return image
     }
 
     /// THE RASTERIZER, and the one place the two capture paths are weighed.
