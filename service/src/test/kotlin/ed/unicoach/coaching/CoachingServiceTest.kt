@@ -96,25 +96,26 @@ class CoachingServiceTest {
   fun resetDatabase() {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
+      // system_prompts is deliberately NOT truncated: it is the migration-seeded,
+      // immutable catalog (RFC 33/0007) that every other module's tests on this
+      // shared database read. bin/test re-migrates before every run, so it is
+      // already complete; wiping it and hand-restoring a stale list left the seeds
+      // partial for whoever ran next (RFC 129).
       stmt.execute(
         "TRUNCATE TABLE commitment_support, commitments, fit_suggestions, convos, convo_requests, " +
           "llm_requests, llm_responses, llm_responses_raw, " +
-          "claims, colleges, system_prompts, students, users CASCADE",
+          "claims, colleges, students, users CASCADE",
       )
-    }
-    // Restore all migration-seeded prompts for cross-module suites on the shared DB.
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
-      stmt.execute(
-        "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v2', 'You are Uni, a warm coach who writes Markdown.')",
-      )
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v1', 'reflect over the model')")
     }
   }
 
-  /** The body seeded above for the coach version service.conf pins (RFC 124: v2). */
-  private val pinnedCoachBody = "You are Uni, a warm coach who writes Markdown."
+  /**
+   * The body of the coach prompt the runtime will actually resolve — the row
+   * `service.conf` pins, read from the migration-seeded catalog rather than
+   * hard-coded (RFC 129), so a version bump costs no edit here. Lazy: the
+   * connection is only open once [setupAll] has run.
+   */
+  private val pinnedCoachBody: String by lazy { coachPromptBody() }
 
   private val sqlSession =
     object : SqlSession {
@@ -658,11 +659,24 @@ class CoachingServiceTest {
    */
   private fun coachPromptId(): UUID {
     connection
-      .prepareStatement("SELECT id FROM system_prompts WHERE name='coach' AND version='${config.systemPromptVersion}'")
+      .prepareStatement("SELECT id FROM system_prompts WHERE name='${config.systemPromptName}' AND version='${config.systemPromptVersion}'")
       .use { stmt ->
         stmt.executeQuery().use { rs ->
           rs.next()
           return UUID.fromString(rs.getString("id"))
+        }
+      }
+  }
+
+  /** The body of that same row. Backs [pinnedCoachBody]. */
+  private fun coachPromptBody(): String {
+    connection
+      .prepareStatement(
+        "SELECT body FROM system_prompts WHERE name='${config.systemPromptName}' AND version='${config.systemPromptVersion}'",
+      ).use { stmt ->
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          return rs.getString("body")
         }
       }
   }

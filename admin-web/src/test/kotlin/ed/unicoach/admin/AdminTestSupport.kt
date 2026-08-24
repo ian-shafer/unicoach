@@ -468,23 +468,16 @@ object AdminTestSupport {
         }.getOrThrow()
     }
 
-  // Find-or-create: the fit-lens prompts are migration-seeded, but a sibling
-  // module's test on the shared DB may TRUNCATE system_prompts and restore only
-  // its own rows, so a self-healing lookup keeps the fit-lens seeders robust
-  // under the full-suite run order.
+  // A plain lookup: the fit-lens prompts are migration-seeded, and no fixture
+  // truncates system_prompts any more, so the row is always there. It is an
+  // immutable catalog (RFC 33/0007) that bin/test re-migrates before every run
+  // (RFC 129) — the find-or-create this used to be only ever healed a sibling
+  // module's wipe.
   private fun fitLensPromptId(name: String): ed.unicoach.db.models.SystemPromptId =
     runBlocking {
       database
-        .withConnection { session ->
-          SystemPromptsDao.findByNameAndVersion(session, name, "v1").recoverCatching {
-            SystemPromptsDao
-              .create(
-                session,
-                ed.unicoach.db.models
-                  .NewSystemPrompt(name, "v1", "$name test body"),
-              ).getOrThrow()
-          }
-        }.getOrThrow()
+        .withConnection { session -> SystemPromptsDao.findByNameAndVersion(session, name, "v1") }
+        .getOrThrow()
         .id
     }
 

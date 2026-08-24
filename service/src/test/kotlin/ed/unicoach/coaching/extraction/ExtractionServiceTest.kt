@@ -60,22 +60,15 @@ class ExtractionServiceTest {
   fun resetDatabase() {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
+      // system_prompts is deliberately NOT truncated: it is the migration-seeded,
+      // immutable catalog (RFC 33/0007) that every other module's tests on this
+      // shared database read. bin/test re-migrates before every run, so it is
+      // already complete; wiping it and hand-restoring a stale list left the seeds
+      // partial for whoever ran next (RFC 129).
       stmt.execute(
         "TRUNCATE TABLE observations, claim_support, claims, extraction_runs, " +
-          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
+          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, students, users CASCADE",
       )
-    }
-    // Re-seed BOTH migration-seeded prompts the truncate cleared. Leaving the
-    // catalog as the migrations left it keeps the shared test DB usable by other
-    // modules' suites that resolve coach/v1 (cross-suite isolation).
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v2', 'call the record_extraction tool')")
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
-      stmt.execute(
-        "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v2', 'You are Uni, a warm coach who writes Markdown.')",
-      )
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v1', 'reflect over the model')")
     }
   }
 

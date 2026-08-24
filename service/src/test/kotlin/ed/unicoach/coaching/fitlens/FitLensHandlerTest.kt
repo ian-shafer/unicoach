@@ -68,14 +68,15 @@ class FitLensHandlerTest {
   fun resetDatabase() {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
+      // system_prompts is deliberately NOT truncated: it is the migration-seeded,
+      // immutable catalog (RFC 33/0007) that every other module's tests on this
+      // shared database read. bin/test re-migrates before every run, so it is
+      // already complete; wiping it and hand-restoring a stale list left the seeds
+      // partial for whoever ran next (RFC 129).
       stmt.execute(
         "TRUNCATE TABLE fit_suggestions, fit_lens_runs, claims, college_list_entries, colleges, " +
-          "system_prompts, students, users CASCADE",
+          "students, users CASCADE",
       )
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_query', 'v1', 'formulate')")
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_reason', 'v1', 'reason')")
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_query', 'v2', 'call record_college_query')")
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('fit_lens_reason', 'v2', 'call record_fit_reason')")
     }
   }
 

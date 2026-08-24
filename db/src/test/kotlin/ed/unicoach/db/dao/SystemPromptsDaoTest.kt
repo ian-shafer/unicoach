@@ -51,24 +51,11 @@ class SystemPromptsDaoTest {
     }
 
   /**
-   * Re-asserts the migration 0011 seed before each case. A sibling DAO test
-   * (ConvosDaoTest) truncates system_prompts in its own setup, and JVM test
-   * ordering is unspecified, so this case cannot assume the seed survives.
-   * The insert mirrors 0011 exactly and is a no-op when the row is present.
+   * Reads the migration 0011 seed directly. No fixture seeds or truncates
+   * system_prompts: it is a migration-seeded, immutable catalog (RFC 33/0007)
+   * and bin/test re-migrates before every run, so the row is simply there
+   * (RFC 129).
    */
-  @org.junit.jupiter.api.BeforeEach
-  fun ensureSeed() {
-    connection.autoCommit = true
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO system_prompts (name, version, body)
-        VALUES ('coach', 'v1', 'You are Uni, a warm coach.')
-        ON CONFLICT (name, version) DO NOTHING
-        """.trimIndent(),
-      ).use { it.executeUpdate() }
-  }
-
   @Test
   fun `findByNameAndVersion returns the seeded coach prompt`() {
     val prompt = SystemPromptsDao.findByNameAndVersion(session, "coach", "v1").getOrThrow()

@@ -196,27 +196,11 @@ class OfflineCoachingE2eTest {
   @BeforeEach
   fun resetTables() {
     connection.createStatement().use { stmt ->
+      // The prompts this flow reads need no seeding here: system_prompts is a
+      // migration-seeded, immutable catalog (RFC 33/0007) that bin/test re-migrates
+      // before every run, and no fixture truncates it any more (RFC 129).
       stmt.execute(
         "TRUNCATE TABLE convos, llm_requests, extraction_runs, synthesis_runs, claims, observations, commitments, jobs CASCADE",
-      )
-      // Self-heal the prompts this flow reads. system_prompts is immutable, so the
-      // codebase's convention for resetting it is TRUNCATE + re-seed, and a sibling
-      // module's DAO test on the shared DB may have wiped the migration seed by the
-      // time this class runs (see admin-web's fitLensPromptId self-healing lookup).
-      // Bodies are irrelevant here (the provider is faked); only the (name, version)
-      // rows must resolve, so ON CONFLICT DO NOTHING keeps whatever body is present.
-      stmt.execute(
-        "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'coach') ON CONFLICT (name, version) DO NOTHING",
-      )
-      // coach/v2 is the row service.conf pins (RFC 124); v1 stays restorable too.
-      stmt.execute(
-        "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v2', 'coach') ON CONFLICT (name, version) DO NOTHING",
-      )
-      stmt.execute(
-        "INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v2', 'extraction') ON CONFLICT (name, version) DO NOTHING",
-      )
-      stmt.execute(
-        "INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v2', 'synthesis') ON CONFLICT (name, version) DO NOTHING",
       )
     }
   }

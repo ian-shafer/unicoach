@@ -1,6 +1,7 @@
 package ed.unicoach.admin.resources
 
 import ed.unicoach.admin.AdminTestSupport
+import io.ktor.client.HttpClient
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -16,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 class SystemPromptsResourceTest {
   @BeforeTest
@@ -32,6 +34,9 @@ class SystemPromptsResourceTest {
   /** A unique name per test so cases never collide on (name, version). */
   private fun uniqueName(prefix: String): String = "rfc63-$prefix-${UUID.randomUUID()}"
 
+  /** admin-web's list page size (`AdminRouting.PAGE_SIZE`). */
+  private val pageSize = 50
+
   @Test
   fun `gate allows the list and the dashboard lists the resource in nav`() =
     testApplication {
@@ -47,6 +52,30 @@ class SystemPromptsResourceTest {
       assertTrue(dashboard.bodyAsText().contains("/system-prompt"), "Dashboard must link to /system-prompt")
     }
 
+  /**
+   * The admin list is ordered by name and paged at 50. system_prompts is an
+   * insert-only catalog that no fixture truncates (RFC 129), so on the shared
+   * test DB it legitimately holds every other module's throwaway fixture rows by
+   * the time admin-web runs and a freshly seeded row is not on page one. Walk
+   * the pager to the page that carries it rather than assuming the first page.
+   */
+  private suspend fun pageContaining(
+    client: HttpClient,
+    cookie: String,
+    name: String,
+  ): String {
+    var offset = 0
+    while (true) {
+      val page = client.get("/system-prompt?offset=$offset") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      if (page.contains(name)) return page
+      val next = offset + pageSize
+      if (!page.contains("/system-prompt?offset=$next")) {
+        fail("Seeded prompt $name appeared on no /system-prompt page (last offset $offset)")
+      }
+      offset = next
+    }
+  }
+
   @Test
   fun `list omits the body but shows name and version`() =
     testApplication {
@@ -56,7 +85,7 @@ class SystemPromptsResourceTest {
       val body = "UNIQUE_BODY_MARKER_${UUID.randomUUID()} ".repeat(50)
       AdminTestSupport.seedSystemPrompt(name, "v1", body)
 
-      val list = client().get("/system-prompt") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      val list = pageContaining(client(), cookie, name)
       assertTrue(list.contains(name), "List must render the name")
       assertTrue(list.contains("v1"), "List must render the version")
       assertFalse(list.contains("UNIQUE_BODY_MARKER_"), "List must omit the body (inList = false)")

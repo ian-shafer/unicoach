@@ -48,17 +48,15 @@ class SynthesisRunsDaoTest {
   fun resetDatabase() {
     connection.autoCommit = true
     connection.createStatement().use { stmt ->
+      // system_prompts is deliberately NOT truncated: it is the migration-seeded,
+      // immutable catalog (RFC 33/0007) that every other module's tests on this
+      // shared database read. bin/test re-migrates before every run, so it is
+      // already complete; wiping it and hand-restoring a stale list left the seeds
+      // partial for whoever ran next (RFC 129).
       stmt.execute(
         "TRUNCATE TABLE commitment_support, commitments, synthesis_runs, observations, claim_support, claims, extraction_runs, " +
-          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, system_prompts, students, users CASCADE",
+          "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, students, users CASCADE",
       )
-      // Restore all migration-seeded prompts for cross-module suites on the shared DB.
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v1', 'You are Uni, a warm coach.')")
-      stmt.execute(
-        "INSERT INTO system_prompts (name, version, body) VALUES ('coach', 'v2', 'You are Uni, a warm coach who writes Markdown.')",
-      )
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('extraction', 'v1', 'distill the transcript')")
-      stmt.execute("INSERT INTO system_prompts (name, version, body) VALUES ('synthesis', 'v1', 'reflect over the model')")
     }
   }
 
@@ -79,13 +77,14 @@ class SynthesisRunsDaoTest {
     return StudentId(studentId)
   }
 
-  private var promptCounter = 0
-
+  // Unique per row rather than a per-instance counter: system_prompts is no
+  // longer truncated between tests (see resetDatabase), and JUnit builds a fresh
+  // instance per test, so a counter would collide on (name, version).
   private fun createSystemPrompt(): SystemPromptId {
     val id = UUID.randomUUID()
     connection.prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')").use { stmt ->
       stmt.setObject(1, id)
-      stmt.setString(2, "p${promptCounter++}")
+      stmt.setString(2, "v-$id")
       stmt.executeUpdate()
     }
     return SystemPromptId(id)
