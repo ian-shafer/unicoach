@@ -35,7 +35,7 @@ IOS_BUNDLE_ID="coach.uni.UnicoachiOS"
 
 # Echoes the simulator to drive, most explicit first: $1 (the -d option) beats
 # UNICOACH_SIMULATOR, which beats the destination's own `id=<UDID>` component,
-# which beats THIS CHECKOUT's device — the per-checkout simulator bin/ios-sim
+# which beats THIS CHECKOUT's device — the per-checkout simulator bin/ios-device
 # resolves (and creates on demand) from the destination's `name=<model>`
 # component.
 #
@@ -79,13 +79,13 @@ ios_resolve_simulator_device() {
     echo "$device"
     return 0
   fi
-  # A `name=<model>` component: hand the target to bin/ios-sim, which resolves
+  # A `name=<model>` component: hand the target to bin/ios-device, which resolves
   # (creating on demand) the device named "<model> (<repo>/<checkout>)" and
   # prints its UDID — its own stdout contract, so nothing but a UDID can land
   # here. Its fatals surface verbatim, and kill the caller too: the assignment
   # runs under `set -e`.
   if [ -n "$(destination_component "$destination" name)" ]; then
-    "$PROJECT_ROOT/bin/ios-sim" "$env_name"
+    "$PROJECT_ROOT/bin/ios-device" "$env_name"
     return 0
   fi
   # Neither component: nothing to resolve and nothing to create, and this is the

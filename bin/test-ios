@@ -4,7 +4,7 @@
 # .env / Postgres / the Nix shell) — only bin/functions for log-info/fatal.
 #
 # It runs the UnicoachiOS unit suite in the iOS Simulator, pinned to THIS
-# CHECKOUT's device (bin/ios-sim) rather than the shared device the checked-in
+# CHECKOUT's device (bin/ios-device) rather than the shared device the checked-in
 # destination names. A hand-typed
 # `xcodebuild test -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`
 # boots and drives the one machine-global device, so two checkouts testing at
@@ -19,7 +19,7 @@ help() {
 test-ios [target] [-- <xcodebuild args>...]
 
 Runs the UnicoachiOS test suite in the iOS Simulator on THIS CHECKOUT's own
-simulator device (bin/ios-sim, created on demand), so a concurrent run in
+simulator device (bin/ios-device, created on demand), so a concurrent run in
 another checkout cannot boot, drive, or reinstall over it. Runs under system
 Xcode, not the Nix dev shell.
 
@@ -96,10 +96,10 @@ if [[ "$UNICOACH_DESTINATION" != *Simulator* ]]; then
   fatal "Target [$ENV_NAME] targets a physical device (UNICOACH_DESTINATION [$UNICOACH_DESTINATION] in [$ENV_FILE] does not contain 'Simulator'); test-ios runs the suite in the simulator only. Use a simulator target (e.g. simulator)."
 fi
 
-# This checkout's device, created on demand. ios-sim logs the name it resolved
+# This checkout's device, created on demand. ios-device logs the name it resolved
 # to stderr and prints ONLY the UDID, so the destination below can never pick up
 # stray output. Its fatals (no name= component, unknown model) surface verbatim.
-DEVICE_UDID="$("$PROJECT_ROOT/bin/ios-sim" "$ENV_NAME")"
+DEVICE_UDID="$("$PROJECT_ROOT/bin/ios-device" "$ENV_NAME")"
 
 log-info "Running UnicoachiOS tests [env=$ENV_NAME] on this checkout's simulator [$DEVICE_UDID]..."
 

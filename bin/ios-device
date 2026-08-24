@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# ios-sim runs under SYSTEM Xcode (xcrun simctl), NOT the Nix dev shell. Like
+# ios-device runs under SYSTEM Xcode (xcrun simctl), NOT the Nix dev shell. Like
 # build-ios/install-ios/release-ios/screenshot-ios it deliberately does NOT
 # source bin/common (which requires .env / Postgres / the Nix shell) — only
 # bin/functions for log-info/fatal.
+#
+# It is called ios-DEVICE, not ios-sim, because what it returns is a DEVICE
+# IDENTITY — a UDID — and nothing else. `bin/ios-simulator` beside it BUILDS AND
+# RUNS the app; the old name was a strict PREFIX of it, so `bin/ios-sim<TAB>`
+# completed to `ios-simulator` and stopped — ambiguous exactly where the two
+# differ most — and a reader debugging a capture would reasonably assume the
+# snapshot path went through the one spelled "simulator" when in fact it goes
+# through this one. The name now says which is which, and no longer completes
+# into its sibling.
 #
 # CoreSimulator devices are machine-GLOBAL, and everything else about a checkout
 # is not (var/run/ gives each checkout its own daemon identity,
@@ -31,8 +40,8 @@ source "$PROJECT_ROOT/bin/functions"
 
 help() {
   cat << 'EOF'
-ios-sim [-D] [target]
-ios-sim -G [-f]
+ios-device [-D] [target]
+ios-device -G [-f]
 
 Prints the UDID of THIS CHECKOUT's iOS Simulator device, creating it if it does
 not exist yet. Runs under system Xcode, not the Nix dev shell.
@@ -68,7 +77,7 @@ the resolved name is printed on stderr so it is never silent.
 The UDID is the ONLY thing on stdout (all logging goes to stderr), so a caller
 can use it directly:
 
-  xcodebuild test -destination "platform=iOS Simulator,id=$(bin/ios-sim)"
+  xcodebuild test -destination "platform=iOS Simulator,id=$(bin/ios-device)"
 
 Options:
   -D     Delete this checkout's device instead of printing it — EVERY device
@@ -122,7 +131,7 @@ fi
 # obvious misreading — "force" applied to -D or to a resolve — is exactly the
 # command someone would type expecting devices to be deleted.
 if [ "$FORCE" -eq 1 ] && [ "$GC" -eq 0 ]; then
-  fatal -s "$EXIT_UNEXPECTED_ARG" "[-f] only means something with [-G]: write [ios-sim -G -f] to delete the orphans it lists."
+  fatal -s "$EXIT_UNEXPECTED_ARG" "[-f] only means something with [-G]: write [ios-device -G -f] to delete the orphans it lists."
 fi
 
 # Dev-shell guard. This must run under SYSTEM Xcode: inside the Nix dev shell
@@ -130,7 +139,7 @@ fi
 # refusal is here. Placed before any env/tool logic so this message wins even
 # when an env file is also missing.
 if "$PROJECT_ROOT/bin/is-nix" -q; then
-  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/ios-sim simulator), not via 'nix develop -c'."
+  fatal "${0##*/} must run under system Xcode, not the Nix dev shell. Run it directly (e.g. bin/ios-device simulator), not via 'nix develop -c'."
 fi
 
 # `xcrun simctl list <kind>`, or a fatal carrying simctl's own words. The
@@ -287,7 +296,7 @@ repo_name() {
 # Derived for EVERY mode, before the mode dispatch below, because the repo tag is
 # half of the device NAME: a resolve or -D that skipped it would look up a
 # different device than -G collects. The price is that `git` is now a hard
-# requirement of every ios-sim call, which is deliberate — a checkout that cannot
+# requirement of every ios-device call, which is deliberate — a checkout that cannot
 # name its repository cannot name its device either, so worktree_paths fatals
 # rather than degrading to an untagged name. WORKTREES is derived first because
 # repo_name reads it (see there).
@@ -399,7 +408,7 @@ if [ "$GC" -eq 1 ]; then
   done <<< "$ORPHANS"
 
   if [ "$FORCE" -eq 0 ]; then
-    log-info "Listed only. Re-run [bin/ios-sim -G -f] to delete them."
+    log-info "Listed only. Re-run [bin/ios-device -G -f] to delete them."
     exit 0
   fi
 
@@ -414,7 +423,7 @@ if [ "$GC" -eq 1 ]; then
     delete_device "$name" "$udid" || GC_FAILED=$((GC_FAILED + 1))
   done <<< "$ORPHANS"
   if [ "$GC_FAILED" -gt 0 ]; then
-    fatal "[$GC_FAILED] of the orphaned devices listed above could not be deleted (each said why on stderr); the others were. Free them (they are usually still booted) and re-run [bin/ios-sim -G -f]."
+    fatal "[$GC_FAILED] of the orphaned devices listed above could not be deleted (each said why on stderr); the others were. Free them (they are usually still booted) and re-run [bin/ios-device -G -f]."
   fi
   exit 0
 fi
@@ -422,9 +431,9 @@ fi
 ENV_NAME="${1:-simulator}"
 if [ "$#" -gt 1 ]; then
   if [[ "$2" == -* ]]; then
-    fatal -s "$EXIT_UNEXPECTED_ARG" "options must precede the target: write [ios-sim $2 $ENV_NAME], not [ios-sim $ENV_NAME $2]."
+    fatal -s "$EXIT_UNEXPECTED_ARG" "options must precede the target: write [ios-device $2 $ENV_NAME], not [ios-device $ENV_NAME $2]."
   fi
-  fatal -s "$EXIT_UNEXPECTED_ARG" "ios-sim accepts at most one positional argument (target): $*"
+  fatal -s "$EXIT_UNEXPECTED_ARG" "ios-device accepts at most one positional argument (target): $*"
 fi
 
 # ENV_DIR defaults to the in-repo env directory; UNICOACH_ENV_DIR overrides it
@@ -480,7 +489,7 @@ if [ "$DELETE" -eq 1 ]; then
     delete_device "$DEVICE_NAME" "$udid" || DELETE_FAILED=$((DELETE_FAILED + 1))
   done <<< "$DELETE_UDIDS"
   if [ "$DELETE_FAILED" -gt 0 ]; then
-    fatal "[$DELETE_FAILED] device(s) named [$DEVICE_NAME] could not be deleted (each said why on stderr); any others were. Until every one is gone [bin/ios-sim $ENV_NAME] stays ambiguous — free them and re-run [bin/ios-sim -D $ENV_NAME]."
+    fatal "[$DELETE_FAILED] device(s) named [$DEVICE_NAME] could not be deleted (each said why on stderr); any others were. Until every one is gone [bin/ios-device $ENV_NAME] stays ambiguous — free them and re-run [bin/ios-device -D $ENV_NAME]."
   fi
   exit 0
 fi
@@ -490,7 +499,7 @@ UDID_COUNT="$(count_udids "$UDIDS")"
 if [ "$UDID_COUNT" -gt 1 ]; then
   fatal "[$UDID_COUNT] simulator devices are named [$DEVICE_NAME], so this checkout's device is ambiguous:
 $UDIDS
-Delete them all with [bin/ios-sim -D $ENV_NAME] and re-run to get a single fresh device."
+Delete them all with [bin/ios-device -D $ENV_NAME] and re-run to get a single fresh device."
 fi
 UDID="$UDIDS"
 

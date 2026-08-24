@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ios-scripts-tests exercises bin/is-nix, bin/build-ios, bin/install-ios,
-# bin/release-ios, bin/screenshot-ios, and bin/ios-simulator WITHOUT any real
+# bin/release-ios, bin/screenshot-ios, bin/ios-simulator, bin/ios-device,
+# bin/test-ios and bin/snapshot-ios WITHOUT any real
 # Xcode build, hardware, booted simulator, or Simulator.app window. xcodebuild,
 # xcrun and open are shimmed onto
 # PATH via a temp dir; the shims record their argv to a file the assertions
@@ -174,7 +175,7 @@ if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "delete" ] \
 fi
 if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "rename" ] && [ -n "\${SIMCTL_RENAME_FAIL:-}" ]; then
   # A rename that fails, in simctl's own wording. The device is then neither
-  # adopted nor replaced, so bin/ios-sim must say so rather than exit wordlessly
+  # adopted nor replaced, so bin/ios-device must say so rather than exit wordlessly
   # under set -e or print a UDID it did not rename.
   echo "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=162):" >&2
   echo "Invalid device: \${3:-}" >&2
@@ -182,7 +183,7 @@ if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "rename" ] && [ -n "\${SIMCTL_RENAM
 fi
 if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "list" ] && [ -n "\${SIMCTL_LIST_FAIL:-}" ]; then
   # simctl itself refusing to run at all: the Command Line Tools / broken
-  # CoreSimulator case, in xcrun's own wording and on STDERR. bin/ios-sim must
+  # CoreSimulator case, in xcrun's own wording and on STDERR. bin/ios-device must
   # turn this into a [FATAL] naming the listing, not die wordlessly under set -e.
   echo "xcrun: error: unable to find utility \"simctl\", not a developer tool or in PATH" >&2
   exit 72
@@ -197,7 +198,7 @@ fi
 if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "list" ]; then
   # Fixture-driven \`simctl list\`. Each of the three listings is a per-test file
   # (SIMCTL_DEVICES / SIMCTL_DEVICETYPES / SIMCTL_RUNTIMES) in the REAL simctl
-  # plain-text shape, which is what bin/ios-sim parses — no jq/python3 is
+  # plain-text shape, which is what bin/ios-device parses — no jq/python3 is
   # available to these scripts, so the parser is text and so is the fixture.
   case "\${3:-}" in
   devices)
@@ -213,7 +214,7 @@ if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "list" ]; then
 fi
 if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "create" ]; then
   # The real \`simctl create\` prints the new device's UDID on stdout, and that is
-  # the value bin/ios-sim must relay as ITS stdout.
+  # the value bin/ios-device must relay as ITS stdout.
   echo "\${SIMCTL_CREATE_UDID:-}"
 fi
 if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "bootstatus" ]; then
@@ -232,13 +233,13 @@ if [ "\${1:-}" = "simctl" ] && [ "\${2:-}" = "io" ] && [ "\${4:-}" = "screenshot
 fi
 exit 0
 EOF
-# git: bin/ios-sim asks git which checkouts are ALIVE
+# git: bin/ios-device asks git which checkouts are ALIVE
 # (`git worktree list --porcelain`), and that answer is what decides whether a
 # tagged simulator device is an orphan — plus the first entry's basename is the
 # REPO tag in every device name. Shimmed so the suite presents a fixed set of
 # worktrees instead of whatever this machine happens to have checked out.
 #
-# The fixture answers EXACTLY the invocation bin/ios-sim makes —
+# The fixture answers EXACTLY the invocation bin/ios-device makes —
 # `git -C <root> worktree list --porcelain` — and only when
 # GIT_WORKTREES/GIT_WORKTREE_FAIL is set; every other git call, in any shape, is
 # exec'd through to the real binary by ABSOLUTE path (bin/release-ios derives its
@@ -440,7 +441,7 @@ iPhone B (model)  22222222-3333333333333333  available
 EOF
 
 # --- Per-checkout simulator fixtures (RFC 126) --------------------------------
-# bin/ios-sim names this checkout's device "<model> (<repo>/<checkout>)" — the
+# bin/ios-device names this checkout's device "<model> (<repo>/<checkout>)" — the
 # basename of the MAIN checkout (the first entry of
 # `git worktree list --porcelain`) and the basename of PROJECT_ROOT — and looks
 # THAT name up in `simctl list devices`. The <checkout> half must be built from
@@ -634,7 +635,7 @@ cat > "$DEVICES_HANDMADE_ONLY" <<EOF
     $HANDMADE_DEVICE_NAME ($HANDMADE_UDID) (Shutdown) 
 EOF
 
-# --- Orphan-collection fixtures (bin/ios-sim -G) ------------------------------
+# --- Orphan-collection fixtures (bin/ios-device -G) ------------------------------
 # A worktree can be deleted without anyone running -D, and the device outlives
 # the directory. The listing below mixes the two orphans with every kind of
 # device that must SURVIVE, because -G -f is destructive and unattended: this
@@ -730,12 +731,12 @@ EOF
 NEWEST_RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-10"
 OLDER_RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-2"
 UNAVAILABLE_RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-27-0"
-# `simctl list runtimes`. bin/ios-sim does NOT rank these: it omits the runtime
+# `simctl list runtimes`. bin/ios-device does NOT rank these: it omits the runtime
 # argument from `simctl create` so that CoreSimulator picks the newest runtime
 # COMPATIBLE WITH THE DEVICE TYPE, which needs a compatibility table this script
 # cannot see. The fixture is kept because the create fatal quotes the runtime
 # list as its diagnosis of "no iOS runtime installed", and because a version of
-# ios-sim that went back to choosing a runtime itself would have to name one of
+# ios-device that went back to choosing a runtime itself would have to name one of
 # these ids in the argv log — which the create case asserts it does not.
 RUNTIMES="$WORK/runtimes.txt"
 cat > "$RUNTIMES" <<EOF
@@ -798,7 +799,7 @@ run_release() {
 # Rebuilt on every call because each entry reads the per-case override
 # (SIMCTL_DEVICES="$DEVICES_ABSENT" run_screenshot ...) that is set only for the
 # duration of that invocation. Same shape as run_sim_script's block, which is
-# already shared between bin/ios-sim and bin/test-ios.
+# already shared between bin/ios-device and bin/test-ios.
 simctl_fixture_env() {
   SIMCTL_FIXTURE_ENV=(
     SIMCTL_BOOT_BOOTED="${SIMCTL_BOOT_BOOTED:-}"
@@ -888,7 +889,7 @@ run_screenshot_real_env() {
 # first on PATH and the three `simctl list` fixtures in play. SIMCTL_DEVICES
 # defaults to the listing where this checkout's device ALREADY EXISTS (the
 # steady state); a case drives the first-run path by prefixing
-# SIMCTL_DEVICES="$DEVICES_ABSENT". test-ios shells out to ios-sim, which needs
+# SIMCTL_DEVICES="$DEVICES_ABSENT". test-ios shells out to ios-device, which needs
 # the same fixtures and inherits them through the environment — which is why the
 # two share one wrapper rather than carrying their own env blocks.
 #
@@ -917,7 +918,7 @@ run_sim_script() {
     "$PROJECT_ROOT/bin/$script" "$@"
 }
 
-run_ios_sim() { run_sim_script ios-sim "$@"; }
+run_ios_device() { run_sim_script ios-device "$@"; }
 run_test_ios() { run_sim_script test-ios "$@"; }
 
 # Run snapshot-ios with the shims first on PATH, the env fixtures in play, and
@@ -929,8 +930,8 @@ run_test_ios() { run_sim_script test-ios "$@"; }
 #
 # The three `simctl list` fixtures are here because snapshot-ios no longer calls
 # xcodebuild itself: it delegates to bin/test-ios, which resolves this checkout's
-# device through bin/ios-sim (RFC 126). Both inherit them through the
-# environment, exactly as run_sim_script's two callers do. Without them ios-sim
+# device through bin/ios-device (RFC 126). Both inherit them through the
+# environment, exactly as run_sim_script's two callers do. Without them ios-device
 # would query the REAL simulator list and the cases below would depend on the
 # machine.
 run_snapshot() {
@@ -1902,7 +1903,7 @@ test_screenshot_real_simulator_target_resolves_device() {
   [ -n "$device" ] || return 1
   [ "$device" != "booted" ] || return 1
   # ...and it is THIS CHECKOUT's device, resolved from the checked-in
-  # destination's model through bin/ios-sim.
+  # destination's model through bin/ios-device.
   [ "$device" = "$CHECKOUT_UDID" ] || return 1
   return 0
 }
@@ -2383,7 +2384,7 @@ test_ios_simulator_help_exits_zero() {
   echo "$out" | grep -qi "hardware keyboard"
 }
 
-# ============================== ios-sim tests ================================
+# ============================== ios-device tests ================================
 
 # The per-checkout simulator device (RFC 126). Every case is fixture-driven: the
 # xcrun shim answers `simctl list devices/devicetypes/runtimes` from files and
@@ -2393,9 +2394,9 @@ test_ios_simulator_help_exits_zero() {
 # its UDID is printed and NOTHING is created. The shared `iPhone 17 Pro` is in the
 # same listing, so returning it (a model-keyed rather than name-keyed lookup)
 # fails here.
-test_iossim_prints_existing_udid() {
+test_ios_device_prints_existing_udid() {
   local out
-  out="$(run_ios_sim simulator 2>/dev/null)" || return 1
+  out="$(run_ios_device simulator 2>/dev/null)" || return 1
   [ "$out" = "$CHECKOUT_UDID" ] || return 1
   log_lacks "create" || return 1
   # ...and nothing is adopted either: the pre-repo-tag device is in this listing
@@ -2413,9 +2414,9 @@ test_iossim_prints_existing_udid() {
 # The argv is read positionally rather than with log_has, because "no runtime
 # argument" is a statement about the shape of the invocation: a `create` that
 # grew a third argument would still satisfy every membership assertion.
-test_iossim_creates_when_absent() {
+test_ios_device_creates_when_absent() {
   local out create_at trailing
-  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_sim simulator 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_device simulator 2>/dev/null)" || return 1
   [ "$out" = "$CREATED_UDID" ] || return 1
   # Not the shared device, which the listing still offers under the bare model.
   [ "$out" != "$SHARED_UDID" ] || return 1
@@ -2441,9 +2442,9 @@ test_iossim_creates_when_absent() {
 # words — the shape of the real "no iOS runtime is installed" failure, which is
 # simctl's to report now that the runtime choice is simctl's. The installed
 # runtimes are printed too, so that case still diagnoses itself.
-test_iossim_create_failure_is_fatal() {
+test_ios_device_create_failure_is_fatal() {
   local out rc=0
-  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" SIMCTL_CREATE_FAIL=1 run_ios_sim simulator 2>&1)" || rc=$?
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" SIMCTL_CREATE_FAIL=1 run_ios_device simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "Unable to find a runtime for device type" || return 1
@@ -2455,11 +2456,11 @@ test_iossim_create_failure_is_fatal() {
 # for the UDID's SHAPE before it is relayed. 36 dashes are 36 characters from
 # the UDID's own alphabet, so a length-and-charset check passes them straight
 # through to a caller's `-destination ...,id=`.
-test_iossim_create_output_must_be_udid_shaped() {
+test_ios_device_create_output_must_be_udid_shaped() {
   local out rc=0
   out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" \
     SIMCTL_CREATE_UDID="------------------------------------" \
-    run_ios_sim simulator 2>&1)" || rc=$?
+    run_ios_device simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "printed no UDID" || return 1
@@ -2470,9 +2471,9 @@ test_iossim_create_output_must_be_udid_shaped() {
 # run at all must produce a [FATAL] naming the listing and carrying xcrun's own
 # text. Without it the caller's command substitution dies under `set -e` with no
 # message whatsoever — a bare non-zero exit out of bin/test-ios.
-test_iossim_list_failure_is_fatal() {
+test_ios_device_list_failure_is_fatal() {
   local out rc=0
-  out="$(SIMCTL_LIST_FAIL=1 run_ios_sim simulator 2>&1)" || rc=$?
+  out="$(SIMCTL_LIST_FAIL=1 run_ios_device simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "list simulator \[devices\]" || return 1
@@ -2485,14 +2486,14 @@ test_iossim_list_failure_is_fatal() {
 # can each list-then-create. Two devices carrying this name is a broken state,
 # not a choice to make quietly: fatal, naming both UDIDs and the command that
 # clears them — and creating nothing.
-test_iossim_duplicate_devices_are_fatal() {
+test_ios_device_duplicate_devices_are_fatal() {
   local out rc=0
-  out="$(SIMCTL_DEVICES="$DEVICES_DUPLICATE" run_ios_sim simulator 2>&1)" || rc=$?
+  out="$(SIMCTL_DEVICES="$DEVICES_DUPLICATE" run_ios_device simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "$CHECKOUT_UDID" || return 1
   echo "$out" | grep -q "$DUPLICATE_UDID" || return 1
-  echo "$out" | grep -q "bin/ios-sim -D simulator" || return 1
+  echo "$out" | grep -q "bin/ios-device -D simulator" || return 1
   log_lacks "create" || return 1
   return 0
 }
@@ -2502,9 +2503,9 @@ test_iossim_duplicate_devices_are_fatal() {
 # included (resolution skips those because they cannot be booted, but leaving
 # one behind is exactly what makes the next resolve fatal). The decoy and the
 # shared machine-global device are left alone.
-test_iossim_delete_removes_every_match() {
+test_ios_device_delete_removes_every_match() {
   local out rc=0
-  out="$(SIMCTL_DEVICES="$DEVICES_DUPLICATE" run_ios_sim -D simulator 2>/dev/null)" || rc=$?
+  out="$(SIMCTL_DEVICES="$DEVICES_DUPLICATE" run_ios_device -D simulator 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] || return 1
   [ -z "$out" ] || return 1
   log_has "$CHECKOUT_UDID" || return 1
@@ -2518,22 +2519,22 @@ test_iossim_delete_removes_every_match() {
 # An unavailable device (its runtime is gone) carries the right NAME in the
 # listing but cannot be booted, so it must not be handed back as this
 # checkout's device — the available one is.
-test_iossim_ignores_an_unavailable_device() {
+test_ios_device_ignores_an_unavailable_device() {
   local out
-  out="$(run_ios_sim simulator 2>/dev/null)" || return 1
+  out="$(run_ios_device simulator 2>/dev/null)" || return 1
   [ "$out" != "$UNAVAILABLE_UDID" ] || return 1
   return 0
 }
 
 # The family's stdout contract: a caller does
-# `-destination "platform=iOS Simulator,id=$(bin/ios-sim)"`, so stdout is EXACTLY
+# `-destination "platform=iOS Simulator,id=$(bin/ios-device)"`, so stdout is EXACTLY
 # the UDID and every log line — including the resolved device name, and simctl's
 # own chatter — is on stderr. Driven through the CREATE path, where simctl
 # itself prints a UDID that would otherwise leak straight through.
-test_iossim_stdout_is_only_the_udid() {
+test_ios_device_stdout_is_only_the_udid() {
   local out err lines
-  err="$WORK/ios-sim-stdout.err"
-  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_sim simulator 2>"$err")" || return 1
+  err="$WORK/ios-device-stdout.err"
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_device simulator 2>"$err")" || return 1
   lines="$(printf '%s\n' "$out" | grep -c .)"
   [ "$lines" -eq 1 ] || return 1
   [ "$out" = "$CREATED_UDID" ] || return 1
@@ -2546,9 +2547,9 @@ test_iossim_stdout_is_only_the_udid() {
 # "That model is not installed locally" is the expected human error, so the
 # fatal names the model AND prints the actual list to choose from — and nothing
 # is created.
-test_iossim_unknown_model_is_fatal() {
+test_ios_device_unknown_model_is_fatal() {
   local out rc=0
-  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_sim unknown-model-simulator 2>&1)" || rc=$?
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_device unknown-model-simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "iPhone Nonexistent 42" || return 1
@@ -2559,29 +2560,29 @@ test_iossim_unknown_model_is_fatal() {
 
 # A destination with no `name=` component (prod-simulator's shape) names no
 # model, so there is nothing to create: fatal, not an arbitrary device.
-test_iossim_no_name_component_is_fatal() {
+test_ios_device_no_name_component_is_fatal() {
   local out rc=0
-  out="$(run_ios_sim explicit-simulator 2>&1)" || rc=$?
+  out="$(run_ios_device explicit-simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "name=" || return 1
   log_no_tool "xcrun"
 }
 
 # Same dev-shell guard as the rest of the -ios family, before any tool runs.
-test_iossim_guard() {
+test_ios_device_guard() {
   local out rc=0
-  out="$(DEV_SHELL_MARKER=1 run_ios_sim simulator 2>&1)" || rc=$?
+  out="$(DEV_SHELL_MARKER=1 run_ios_device simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
-  echo "$out" | grep -q "ios-sim" || return 1
+  echo "$out" | grep -q "ios-device" || return 1
   echo "$out" | grep -qi "system Xcode" || return 1
   log_no_tool "xcrun"
 }
 
 # -D deletes by UDID (the name is the lookup key, the UDID is what simctl acts
 # on) and prints nothing on stdout.
-test_iossim_delete_by_udid() {
+test_ios_device_delete_by_udid() {
   local out shutdown_at delete_at
-  out="$(run_ios_sim -D simulator 2>/dev/null)" || return 1
+  out="$(run_ios_device -D simulator 2>/dev/null)" || return 1
   [ -z "$out" ] || return 1
   log_has "delete" || return 1
   log_has "$CHECKOUT_UDID" || return 1
@@ -2598,9 +2599,9 @@ test_iossim_delete_by_udid() {
 
 # ...and deleting a device that is not there is a no-op, not a failure: nothing
 # is cached on disk, so a hand-deleted device is the normal state.
-test_iossim_delete_absent_is_a_noop() {
+test_ios_device_delete_absent_is_a_noop() {
   local out rc=0
-  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_sim -D simulator 2>&1)" || rc=$?
+  out="$(SIMCTL_DEVICES="$DEVICES_ABSENT" run_ios_device -D simulator 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || return 1
   echo "$out" | grep -q "nothing to delete" || return 1
   log_lacks "delete" || return 1
@@ -2612,10 +2613,10 @@ test_iossim_delete_absent_is_a_noop() {
 # against a listing that also carries the ORIGINAL RFC 126 name for this same
 # checkout — a lookup that dropped the repo tag would find that one and pass
 # every other case in this file.
-test_iossim_device_name_carries_the_repo_tag() {
+test_ios_device_device_name_carries_the_repo_tag() {
   local out err
-  err="$WORK/ios-sim-repo-tag.err"
-  out="$(run_ios_sim simulator 2>"$err")" || return 1
+  err="$WORK/ios-device-repo-tag.err"
+  out="$(run_ios_device simulator 2>"$err")" || return 1
   [ "$out" = "$CHECKOUT_UDID" ] || return 1
   [ "$out" != "$LEGACY_UDID" ] || return 1
   grep -qF "iPhone 17 Pro ($FIXTURE_REPO/$CHECKOUT)" "$err" || return 1
@@ -2625,8 +2626,8 @@ test_iossim_device_name_carries_the_repo_tag() {
 # ...and -D deletes the tagged device only. Neither the pre-repo-tag device (the
 # resolve path adopts that one, and -D is not the resolve path) nor a hand-made
 # untagged device is this checkout's device by name.
-test_iossim_delete_leaves_the_untagged_devices() {
-  run_ios_sim -D simulator >/dev/null 2>&1 || return 1
+test_ios_device_delete_leaves_the_untagged_devices() {
+  run_ios_device -D simulator >/dev/null 2>&1 || return 1
   log_has "$CHECKOUT_UDID" || return 1
   log_lacks "$LEGACY_UDID" || return 1
   log_lacks "$HANDMADE_UDID" || return 1
@@ -2638,9 +2639,9 @@ test_iossim_delete_leaves_the_untagged_devices() {
 # "<model> (<checkout>)" ADOPTS it — one `simctl rename` to the tagged name,
 # that device's own UDID printed, and NOTHING created. A create here would strand
 # the old device under a name no mode of this script can reach.
-test_iossim_adopts_the_pre_tag_device() {
+test_ios_device_adopts_the_pre_tag_device() {
   local out rename_at
-  out="$(SIMCTL_DEVICES="$DEVICES_LEGACY" run_ios_sim simulator 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_LEGACY" run_ios_device simulator 2>/dev/null)" || return 1
   # The SAME device, so its installed app and data survive.
   [ "$out" = "$LEGACY_UDID" ] || return 1
   [ "$out" != "$CREATED_UDID" ] || return 1
@@ -2656,9 +2657,9 @@ test_iossim_adopts_the_pre_tag_device() {
 
 # ...and it is announced on stderr, not silently: the operator's device changed
 # its name under them.
-test_iossim_adoption_is_announced() {
+test_ios_device_adoption_is_announced() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_LEGACY" run_ios_sim simulator 2>&1 >/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_LEGACY" run_ios_device simulator 2>&1 >/dev/null)" || return 1
   echo "$out" | grep -q "Adopting" || return 1
   echo "$out" | grep -qF "$LEGACY_DEVICE_NAME" || return 1
   echo "$out" | grep -qF "$SIM_DEVICE_NAME" || return 1
@@ -2668,9 +2669,9 @@ test_iossim_adoption_is_announced() {
 # Adoption is keyed on THIS CHECKOUT's exact legacy name, which is what makes it
 # safe: a hand-made untagged device of the same model — and the machine-global
 # `iPhone 17 Pro` — belong to someone else. A create, and not one rename.
-test_iossim_does_not_adopt_a_foreign_untagged_device() {
+test_ios_device_does_not_adopt_a_foreign_untagged_device() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_HANDMADE_ONLY" run_ios_sim simulator 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_HANDMADE_ONLY" run_ios_device simulator 2>/dev/null)" || return 1
   [ "$out" = "$CREATED_UDID" ] || return 1
   log_lacks "rename" || return 1
   log_lacks "$HANDMADE_UDID" || return 1
@@ -2682,9 +2683,9 @@ test_iossim_does_not_adopt_a_foreign_untagged_device() {
 # on the resolve path — picking one renames a device that may not be the one with
 # the data. Fall through and create a clean device; both legacy twins are left
 # exactly where they are.
-test_iossim_two_pre_tag_twins_are_not_adopted() {
+test_ios_device_two_pre_tag_twins_are_not_adopted() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_LEGACY_TWINS" run_ios_sim simulator 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_LEGACY_TWINS" run_ios_device simulator 2>/dev/null)" || return 1
   [ "$out" = "$CREATED_UDID" ] || return 1
   log_lacks "rename" || return 1
   log_lacks "$LEGACY_UDID" || return 1
@@ -2696,10 +2697,10 @@ test_iossim_two_pre_tag_twins_are_not_adopted() {
 # be a [FATAL] carrying simctl's words and the one command that clears the state
 # — not a wordless exit under `set -e`, and not the un-renamed UDID printed as if
 # the migration had happened.
-test_iossim_adoption_rename_failure_is_fatal() {
+test_ios_device_adoption_rename_failure_is_fatal() {
   local out rc=0
   out="$(SIMCTL_DEVICES="$DEVICES_LEGACY" SIMCTL_RENAME_FAIL=1 \
-    run_ios_sim simulator 2>&1)" || rc=$?
+    run_ios_device simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "Failed to rename" || return 1
@@ -2713,9 +2714,9 @@ test_iossim_adoption_rename_failure_is_fatal() {
 # are no orphans) and nothing is deleted — the untagged, foreign-tagged and
 # machine-global devices in the listing are not orphans just because they did
 # not match.
-test_iossim_gc_no_orphans_lists_nothing() {
+test_ios_device_gc_no_orphans_lists_nothing() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_GC_CLEAN" run_ios_sim -G 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_GC_CLEAN" run_ios_device -G 2>/dev/null)" || return 1
   [ -z "$out" ] || return 1
   log_lacks "delete" || return 1
   log_lacks "shutdown" || return 1
@@ -2723,9 +2724,9 @@ test_iossim_gc_no_orphans_lists_nothing() {
 }
 
 # ...and it says so, on stderr.
-test_iossim_gc_no_orphans_says_so() {
+test_ios_device_gc_no_orphans_says_so() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_GC_CLEAN" run_ios_sim -G 2>&1)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_GC_CLEAN" run_ios_device -G 2>&1)" || return 1
   echo "$out" | grep -q "No orphaned simulator devices" || return 1
   return 0
 }
@@ -2734,9 +2735,9 @@ test_iossim_gc_no_orphans_says_so() {
 # live worktree, one "<UDID>  <name>" line each on stdout — and, without -f,
 # NOTHING is deleted. Both orphans are here, including the one whose model
 # carries its own parentheses and the one whose runtime is gone.
-test_iossim_gc_lists_orphans_without_deleting() {
+test_ios_device_gc_lists_orphans_without_deleting() {
   local out lines
-  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_sim -G 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_device -G 2>/dev/null)" || return 1
   echo "$out" | grep -qx "$ORPHAN_UDID  iPhone 17 Pro ($FIXTURE_REPO/$ORPHAN_CHECKOUT)" || return 1
   echo "$out" | grep -qx "$ORPHAN_PAREN_UDID  iPad Pro 13-inch (M5) ($FIXTURE_REPO/$ORPHAN_PAREN_CHECKOUT)" || return 1
   echo "$out" | grep -qx "$ORPHAN_UNAVAILABLE_UDID  iPhone 17 Pro ($FIXTURE_REPO/$ORPHAN_UNAVAILABLE_CHECKOUT)" || return 1
@@ -2754,22 +2755,22 @@ test_iossim_gc_lists_orphans_without_deleting() {
 
 # ...and the hint that turns the list into an action is on stderr, not mixed
 # into the machine-readable list.
-test_iossim_gc_stdout_is_only_the_orphan_list() {
+test_ios_device_gc_stdout_is_only_the_orphan_list() {
   local out err
-  err="$WORK/ios-sim-gc.err"
-  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_sim -G 2>"$err")" || return 1
+  err="$WORK/ios-device-gc.err"
+  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_device -G 2>"$err")" || return 1
   echo "$out" | grep -q "Re-run" && return 1
   echo "$out" | grep -q "\[INFO\]" && return 1
-  grep -q "bin/ios-sim -G -f" "$err" || return 1
+  grep -q "bin/ios-device -G -f" "$err" || return 1
   return 0
 }
 
 # -f is what deletes, and it deletes EXACTLY the orphans: shutdown-then-delete
 # for each (a booted orphan is the normal case — the run that abandoned it left
 # it booted), and not one command aimed at a device that is still someone's.
-test_iossim_gc_force_deletes_exactly_the_orphans() {
+test_ios_device_gc_force_deletes_exactly_the_orphans() {
   local out shutdown_at delete_at
-  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_sim -G -f 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_device -G -f 2>/dev/null)" || return 1
   log_has "$ORPHAN_UDID" || return 1
   log_has "$ORPHAN_PAREN_UDID" || return 1
   log_has "$ORPHAN_UNAVAILABLE_UDID" || return 1
@@ -2802,10 +2803,10 @@ test_iossim_gc_force_deletes_exactly_the_orphans() {
 # -G is about DEVICES, not about a build: it reads no env file, so it works in a
 # checkout with none at all. Driven by pointing the env directory at one that
 # does not exist — the resolve path fatals on exactly that.
-test_iossim_gc_needs_no_env_file() {
+test_ios_device_gc_needs_no_env_file() {
   local out rc=0
   out="$(SIM_ENV_DIR="$WORK/no-such-env-dir" SIMCTL_DEVICES="$DEVICES_GC" \
-    run_ios_sim -G 2>&1)" || rc=$?
+    run_ios_device -G 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || return 1
   echo "$out" | grep -q "Environment file not found" && return 1
   echo "$out" | grep -q "$ORPHAN_UDID" || return 1
@@ -2814,9 +2815,9 @@ test_iossim_gc_needs_no_env_file() {
 
 # ...and a target is refused rather than ignored: accepting one would imply -G
 # collects only that model's devices, which is the opposite of what it does.
-test_iossim_gc_rejects_a_target() {
+test_ios_device_gc_rejects_a_target() {
   local out rc=0
-  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_sim -G simulator 2>&1)" || rc=$?
+  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_device -G simulator 2>&1)" || rc=$?
   [ "$rc" -eq "$EXIT_UNEXPECTED_ARG" ] || return 1
   echo "$out" | grep -q "takes no target" || return 1
   log_lacks "delete" || return 1
@@ -2826,9 +2827,9 @@ test_iossim_gc_rejects_a_target() {
 # git is the authority on which checkouts are alive, so a git that cannot answer
 # must be FATAL. The empty list it would otherwise degrade to reads as "every
 # tagged device is an orphan" — and -G -f acts on that answer.
-test_iossim_gc_git_failure_is_fatal() {
+test_ios_device_gc_git_failure_is_fatal() {
   local out rc=0
-  out="$(GIT_WORKTREE_FAIL=1 SIMCTL_DEVICES="$DEVICES_GC" run_ios_sim -G -f 2>&1)" || rc=$?
+  out="$(GIT_WORKTREE_FAIL=1 SIMCTL_DEVICES="$DEVICES_GC" run_ios_device -G -f 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "not a git repository" || return 1
@@ -2838,9 +2839,9 @@ test_iossim_gc_git_failure_is_fatal() {
 
 # -D is this checkout's device, -G is every other checkout's: asking for both is
 # a typo, and guessing which was meant is a delete either way.
-test_iossim_gc_and_delete_are_exclusive() {
+test_ios_device_gc_and_delete_are_exclusive() {
   local out rc=0
-  out="$(run_ios_sim -D -G simulator 2>&1)" || rc=$?
+  out="$(run_ios_device -D -G simulator 2>&1)" || rc=$?
   [ "$rc" -eq "$EXIT_EXCLUSIVE_OPTIONS" ] || return 1
   log_no_tool "xcrun" || return 1
   return 0
@@ -2849,9 +2850,9 @@ test_iossim_gc_and_delete_are_exclusive() {
 # -f on its own would silently mean nothing, and the obvious misreading —
 # "force" applied to a resolve or to -D — is exactly what someone would type
 # expecting devices to be deleted.
-test_iossim_force_without_gc_is_refused() {
+test_ios_device_force_without_gc_is_refused() {
   local out rc=0
-  out="$(run_ios_sim -f simulator 2>&1)" || rc=$?
+  out="$(run_ios_device -f simulator 2>&1)" || rc=$?
   [ "$rc" -eq "$EXIT_UNEXPECTED_ARG" ] || return 1
   echo "$out" | grep -q "\-G" || return 1
   log_no_tool "xcrun" || return 1
@@ -2864,9 +2865,9 @@ test_iossim_force_without_gc_is_refused() {
 # that checkout live and never collect its device. `locked` is the opposite
 # annotation (an unmounted volume, still live), so it is pinned in the same case:
 # reading it as "gone" would delete a device that is someone's.
-test_iossim_gc_collects_a_prunable_worktrees_device() {
+test_ios_device_gc_collects_a_prunable_worktrees_device() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_sim -G 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_device -G 2>/dev/null)" || return 1
   echo "$out" | grep -qx "$PRUNABLE_UDID  iPhone 17 Pro ($FIXTURE_REPO/$PRUNABLE_CHECKOUT)" || return 1
   echo "$out" | grep -qF "$LOCKED_UDID" && return 1
   return 0
@@ -2877,9 +2878,9 @@ test_iossim_gc_collects_a_prunable_worktrees_device() {
 # an orphan nothing ever collects again. Both overlap directions are here, so the
 # guarantee does not depend on which way round the fixture happened to be
 # spelled, and the two live devices whose names overlap the orphans must survive.
-test_iossim_gc_live_membership_is_a_whole_line_match() {
+test_ios_device_gc_live_membership_is_a_whole_line_match() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_sim -G 2>/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_GC" run_ios_device -G 2>/dev/null)" || return 1
   echo "$out" | grep -qx "$SUBSTR_ORPHAN_SHORT_UDID  iPhone 17 Pro ($FIXTURE_REPO/$SUBSTR_ORPHAN_SHORT)" || return 1
   echo "$out" | grep -qx "$SUBSTR_ORPHAN_LONG_UDID  iPhone 17 Pro ($FIXTURE_REPO/$SUBSTR_ORPHAN_LONG)" || return 1
   echo "$out" | grep -qF "$SUBSTR_LIVE_LONG_UDID" && return 1
@@ -2891,9 +2892,9 @@ test_iossim_gc_live_membership_is_a_whole_line_match() {
 # not an empty machine. Degrading to "no orphans, exit 0" would tell an operator
 # — or an unattended caller of -G -f — that the collection ran on a machine whose
 # devices were never read.
-test_iossim_gc_simctl_failure_is_fatal() {
+test_ios_device_gc_simctl_failure_is_fatal() {
   local out rc=0
-  out="$(SIMCTL_LIST_FAIL=1 SIMCTL_DEVICES="$DEVICES_GC" run_ios_sim -G -f 2>&1)" || rc=$?
+  out="$(SIMCTL_LIST_FAIL=1 SIMCTL_DEVICES="$DEVICES_GC" run_ios_device -G -f 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "No orphaned simulator devices" && return 1
@@ -2905,10 +2906,10 @@ test_iossim_gc_simctl_failure_is_fatal() {
 # that refuses to go — another agent's, still booted — must not leave the rest
 # unattempted. Every orphan is attempted, and the run still FAILS at the end,
 # naming how many could not be deleted.
-test_iossim_gc_force_is_best_effort_over_the_set() {
+test_ios_device_gc_force_is_best_effort_over_the_set() {
   local out rc=0
   out="$(SIMCTL_DEVICES="$DEVICES_GC" SIMCTL_DELETE_FAIL_UDID="$ORPHAN_UDID" \
-    run_ios_sim -G -f 2>&1)" || rc=$?
+    run_ios_device -G -f 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "\[1\] of the orphaned devices" || return 1
@@ -2925,10 +2926,10 @@ test_iossim_gc_force_is_best_effort_over_the_set() {
 # Same for -D over a set of same-named twins: the surviving twin is exactly what
 # makes the next resolve ambiguous, so every one is attempted — and the run fails
 # anyway, because until all of them are gone the checkout is still broken.
-test_iossim_delete_is_best_effort_over_the_set() {
+test_ios_device_delete_is_best_effort_over_the_set() {
   local out rc=0
   out="$(SIMCTL_DEVICES="$DEVICES_DUPLICATE" SIMCTL_DELETE_FAIL_UDID="$CHECKOUT_UDID" \
-    run_ios_sim -D simulator 2>&1)" || rc=$?
+    run_ios_device -D simulator 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -q "could not be deleted" || return 1
@@ -2943,10 +2944,10 @@ test_iossim_delete_is_best_effort_over_the_set() {
 # under -G -f, where nobody is watching the device it stopped on. Carried into
 # the failure message, and only there: a shutdown that merely found the device
 # not booted adds no line to a successful delete.
-test_iossim_delete_failure_carries_the_shutdown_output() {
+test_ios_device_delete_failure_carries_the_shutdown_output() {
   local out rc=0
   out="$(SIMCTL_DEVICES="$DEVICES_GC" SIMCTL_SHUTDOWN_FAIL=1 \
-    SIMCTL_DELETE_FAIL_UDID="$ORPHAN_UDID" run_ios_sim -G -f 2>&1)" || rc=$?
+    SIMCTL_DELETE_FAIL_UDID="$ORPHAN_UDID" run_ios_device -G -f 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "Unable to shutdown device in current state" || return 1
   echo "$out" | grep -q "Unable to delete device in current state" || return 1
@@ -2955,9 +2956,9 @@ test_iossim_delete_failure_carries_the_shutdown_output() {
 
 # ...and the normal case stays quiet: a shutdown of a device that was not booted
 # is not news, so a successful sweep says nothing about it.
-test_iossim_gc_successful_delete_is_quiet_about_shutdown() {
+test_ios_device_gc_successful_delete_is_quiet_about_shutdown() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_GC" SIMCTL_SHUTDOWN_FAIL=1 run_ios_sim -G -f 2>&1)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_GC" SIMCTL_SHUTDOWN_FAIL=1 run_ios_device -G -f 2>&1)" || return 1
   echo "$out" | grep -q "Unable to shutdown" && return 1
   echo "$out" | grep -q "\[ERROR\]" && return 1
   return 0
@@ -2967,9 +2968,9 @@ test_iossim_gc_successful_delete_is_quiet_about_shutdown() {
 # failing one is — every device name is built from the repo tag derived from it.
 # The fatal has to carry what git PRINTED: the parsed result is empty by
 # definition here, so quoting only that says nothing at all.
-test_iossim_worktree_list_without_a_worktree_is_fatal() {
+test_ios_device_worktree_list_without_a_worktree_is_fatal() {
   local out rc=0
-  out="$(GIT_WORKTREES="$WORKTREES_UNPARSEABLE" run_ios_sim -G 2>&1)" || rc=$?
+  out="$(GIT_WORKTREES="$WORKTREES_UNPARSEABLE" run_ios_device -G 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || return 1
   echo "$out" | grep -q "\[FATAL\]" || return 1
   echo "$out" | grep -qF "warning: this repository has no worktrees to report" || return 1
@@ -2981,9 +2982,9 @@ test_iossim_worktree_list_without_a_worktree_is_fatal() {
 # the TAGGED name fatals with its UDIDs listed. Nothing in this script reaches an
 # untagged name again, so the devices it declined to adopt have to be named here
 # or they are findable only with `xcrun simctl` by hand.
-test_iossim_refused_adoption_names_the_devices() {
+test_ios_device_refused_adoption_names_the_devices() {
   local out
-  out="$(SIMCTL_DEVICES="$DEVICES_LEGACY_TWINS" run_ios_sim simulator 2>&1 >/dev/null)" || return 1
+  out="$(SIMCTL_DEVICES="$DEVICES_LEGACY_TWINS" run_ios_device simulator 2>&1 >/dev/null)" || return 1
   echo "$out" | grep -q "Not adopting" || return 1
   echo "$out" | grep -qF "$LEGACY_UDID" || return 1
   echo "$out" | grep -qF "$LEGACY_TWIN_UDID" || return 1
@@ -3034,7 +3035,7 @@ test_testios_device_target_rejected() {
   [ "$rc" -ne 0 ] || return 1
   # THIS script's guard, pinned by its own wording: a device destination also
   # has no `name=` component, so deleting the guard would still fail — inside
-  # bin/ios-sim, with a message about models. A loose /simulator/i match would
+  # bin/ios-device, with a message about models. A loose /simulator/i match would
   # accept that and the guard could be removed unnoticed.
   echo "$out" | grep -q "physical device" || return 1
   echo "$out" | grep -q "test-ios runs the suite in the simulator only" || return 1
@@ -3128,7 +3129,7 @@ test_snapshot_happy_path() {
 # DerivedData tree are test-ios's answers and cannot drift from bin/test-ios or
 # bin/build-ios. bin/test-ios is invoked by absolute path, so it cannot be
 # shimmed onto PATH — the delegation is pinned by the thing only test-ios and
-# ios-sim can produce: a destination naming THIS CHECKOUT's device by UDID.
+# ios-device can produce: a destination naming THIS CHECKOUT's device by UDID.
 # Restoring a local `xcodebuild test -destination ...,name=iPhone 17 Pro` here,
 # the collision RFC 126 exists to prevent, fails on both lines.
 test_snapshot_delegates_to_test_ios() {
@@ -3145,7 +3146,7 @@ test_snapshot_delegates_to_test_ios() {
 }
 
 # The target positional is FORWARDED, not consumed: it is the only thing that
-# selects the simulator MODEL, and test-ios/ios-sim are what read it. A second
+# selects the simulator MODEL, and test-ios/ios-device are what read it. A second
 # fixture target names a different model, so it must land on a DIFFERENT device
 # — which a hardcoded default target, or a target quietly dropped on the way to
 # test-ios, could not do.
@@ -3409,47 +3410,47 @@ assert_success "release-ios: deploy target derives https://api.\$APP_DOMAIN from
 assert_success "release-ios: manual signing when a provisioning profile is named" test_release_manual_signing_with_profile
 assert_success "release-ios: automatic signing by default (no profile)" test_release_automatic_signing_default
 
-# ios-sim
-assert_success "ios-sim: prints the existing per-checkout UDID, creates nothing" test_iossim_prints_existing_udid
-assert_success "ios-sim: creates with the exact devicetype and no runtime argument" test_iossim_creates_when_absent
-assert_success "ios-sim: a failing simctl create is fatal, carrying simctl's message" test_iossim_create_failure_is_fatal
-assert_success "ios-sim: a failing simctl list is fatal, naming the listing" test_iossim_list_failure_is_fatal
-assert_success "ios-sim: create output that is not UDID-SHAPED is fatal, not relayed" test_iossim_create_output_must_be_udid_shaped
-assert_success "ios-sim: an unavailable same-named device is not handed back" test_iossim_ignores_an_unavailable_device
-assert_success "ios-sim: two same-named devices are fatal, not an arbitrary pick" test_iossim_duplicate_devices_are_fatal
-assert_success "ios-sim: stdout is EXACTLY the UDID; the name goes to stderr" test_iossim_stdout_is_only_the_udid
-assert_success "ios-sim: an unknown model is fatal and lists the installed types" test_iossim_unknown_model_is_fatal
-assert_success "ios-sim: a destination with no name= component is fatal" test_iossim_no_name_component_is_fatal
-assert_success "ios-sim: dev-shell guard fires, no xcrun line" test_iossim_guard
-assert_success "ios-sim: -D deletes this checkout's device by UDID" test_iossim_delete_by_udid
-assert_success "ios-sim: -D deletes EVERY same-named device, unavailable included" test_iossim_delete_removes_every_match
-assert_success "ios-sim: -D on an absent device is a no-op" test_iossim_delete_absent_is_a_noop
-assert_success "ios-sim: the device name carries the <repo>/<checkout> tag" test_iossim_device_name_carries_the_repo_tag
-assert_success "ios-sim: -D leaves the pre-tag and hand-made devices alone" test_iossim_delete_leaves_the_untagged_devices
-assert_success "ios-sim: a lone pre-repo-tag device is ADOPTED, not duplicated" test_iossim_adopts_the_pre_tag_device
-assert_success "ios-sim: the adoption is announced on stderr" test_iossim_adoption_is_announced
-assert_success "ios-sim: an untagged device that is not ours is never adopted" test_iossim_does_not_adopt_a_foreign_untagged_device
-assert_success "ios-sim: TWO pre-tag twins create instead of guessing one" test_iossim_two_pre_tag_twins_are_not_adopted
-assert_success "ios-sim: a failing rename is fatal, naming the manual cleanup" test_iossim_adoption_rename_failure_is_fatal
-assert_success "ios-sim: -G with no orphans prints nothing and deletes nothing" test_iossim_gc_no_orphans_lists_nothing
-assert_success "ios-sim: -G with no orphans says so on stderr" test_iossim_gc_no_orphans_says_so
-assert_success "ios-sim: -G lists the orphans and, without -f, deletes none" test_iossim_gc_lists_orphans_without_deleting
-assert_success "ios-sim: -G stdout is EXACTLY the orphan list; advice on stderr" test_iossim_gc_stdout_is_only_the_orphan_list
-assert_success "ios-sim: -G -f deletes exactly the orphans, nothing else" test_iossim_gc_force_deletes_exactly_the_orphans
-assert_success "ios-sim: -G needs no target and reads no env file" test_iossim_gc_needs_no_env_file
-assert_success "ios-sim: -G with a target is refused, not ignored" test_iossim_gc_rejects_a_target
-assert_success "ios-sim: -G with an unanswerable git is fatal, deleting nothing" test_iossim_gc_git_failure_is_fatal
-assert_success "ios-sim: -D and -G cannot combine" test_iossim_gc_and_delete_are_exclusive
-assert_success "ios-sim: -f without -G is refused" test_iossim_force_without_gc_is_refused
-assert_success "ios-sim: -G collects the device of an rm -rf'd (prunable) worktree" test_iossim_gc_collects_a_prunable_worktrees_device
-assert_success "ios-sim: -G matches live checkouts whole-line, not by substring" test_iossim_gc_live_membership_is_a_whole_line_match
-assert_success "ios-sim: -G with an unanswerable simctl is fatal, not 'no orphans'" test_iossim_gc_simctl_failure_is_fatal
-assert_success "ios-sim: -G -f attempts every orphan, then fails naming the count" test_iossim_gc_force_is_best_effort_over_the_set
-assert_success "ios-sim: -D attempts every twin, then fails naming the count" test_iossim_delete_is_best_effort_over_the_set
-assert_success "ios-sim: a failed delete carries the shutdown's own words" test_iossim_delete_failure_carries_the_shutdown_output
-assert_success "ios-sim: a successful delete says nothing about the shutdown" test_iossim_gc_successful_delete_is_quiet_about_shutdown
-assert_success "ios-sim: a worktree list naming no worktree is fatal, quoting git" test_iossim_worktree_list_without_a_worktree_is_fatal
-assert_success "ios-sim: a refused adoption names the devices it skipped" test_iossim_refused_adoption_names_the_devices
+# ios-device
+assert_success "ios-device: prints the existing per-checkout UDID, creates nothing" test_ios_device_prints_existing_udid
+assert_success "ios-device: creates with the exact devicetype and no runtime argument" test_ios_device_creates_when_absent
+assert_success "ios-device: a failing simctl create is fatal, carrying simctl's message" test_ios_device_create_failure_is_fatal
+assert_success "ios-device: a failing simctl list is fatal, naming the listing" test_ios_device_list_failure_is_fatal
+assert_success "ios-device: create output that is not UDID-SHAPED is fatal, not relayed" test_ios_device_create_output_must_be_udid_shaped
+assert_success "ios-device: an unavailable same-named device is not handed back" test_ios_device_ignores_an_unavailable_device
+assert_success "ios-device: two same-named devices are fatal, not an arbitrary pick" test_ios_device_duplicate_devices_are_fatal
+assert_success "ios-device: stdout is EXACTLY the UDID; the name goes to stderr" test_ios_device_stdout_is_only_the_udid
+assert_success "ios-device: an unknown model is fatal and lists the installed types" test_ios_device_unknown_model_is_fatal
+assert_success "ios-device: a destination with no name= component is fatal" test_ios_device_no_name_component_is_fatal
+assert_success "ios-device: dev-shell guard fires, no xcrun line" test_ios_device_guard
+assert_success "ios-device: -D deletes this checkout's device by UDID" test_ios_device_delete_by_udid
+assert_success "ios-device: -D deletes EVERY same-named device, unavailable included" test_ios_device_delete_removes_every_match
+assert_success "ios-device: -D on an absent device is a no-op" test_ios_device_delete_absent_is_a_noop
+assert_success "ios-device: the device name carries the <repo>/<checkout> tag" test_ios_device_device_name_carries_the_repo_tag
+assert_success "ios-device: -D leaves the pre-tag and hand-made devices alone" test_ios_device_delete_leaves_the_untagged_devices
+assert_success "ios-device: a lone pre-repo-tag device is ADOPTED, not duplicated" test_ios_device_adopts_the_pre_tag_device
+assert_success "ios-device: the adoption is announced on stderr" test_ios_device_adoption_is_announced
+assert_success "ios-device: an untagged device that is not ours is never adopted" test_ios_device_does_not_adopt_a_foreign_untagged_device
+assert_success "ios-device: TWO pre-tag twins create instead of guessing one" test_ios_device_two_pre_tag_twins_are_not_adopted
+assert_success "ios-device: a failing rename is fatal, naming the manual cleanup" test_ios_device_adoption_rename_failure_is_fatal
+assert_success "ios-device: -G with no orphans prints nothing and deletes nothing" test_ios_device_gc_no_orphans_lists_nothing
+assert_success "ios-device: -G with no orphans says so on stderr" test_ios_device_gc_no_orphans_says_so
+assert_success "ios-device: -G lists the orphans and, without -f, deletes none" test_ios_device_gc_lists_orphans_without_deleting
+assert_success "ios-device: -G stdout is EXACTLY the orphan list; advice on stderr" test_ios_device_gc_stdout_is_only_the_orphan_list
+assert_success "ios-device: -G -f deletes exactly the orphans, nothing else" test_ios_device_gc_force_deletes_exactly_the_orphans
+assert_success "ios-device: -G needs no target and reads no env file" test_ios_device_gc_needs_no_env_file
+assert_success "ios-device: -G with a target is refused, not ignored" test_ios_device_gc_rejects_a_target
+assert_success "ios-device: -G with an unanswerable git is fatal, deleting nothing" test_ios_device_gc_git_failure_is_fatal
+assert_success "ios-device: -D and -G cannot combine" test_ios_device_gc_and_delete_are_exclusive
+assert_success "ios-device: -f without -G is refused" test_ios_device_force_without_gc_is_refused
+assert_success "ios-device: -G collects the device of an rm -rf'd (prunable) worktree" test_ios_device_gc_collects_a_prunable_worktrees_device
+assert_success "ios-device: -G matches live checkouts whole-line, not by substring" test_ios_device_gc_live_membership_is_a_whole_line_match
+assert_success "ios-device: -G with an unanswerable simctl is fatal, not 'no orphans'" test_ios_device_gc_simctl_failure_is_fatal
+assert_success "ios-device: -G -f attempts every orphan, then fails naming the count" test_ios_device_gc_force_is_best_effort_over_the_set
+assert_success "ios-device: -D attempts every twin, then fails naming the count" test_ios_device_delete_is_best_effort_over_the_set
+assert_success "ios-device: a failed delete carries the shutdown's own words" test_ios_device_delete_failure_carries_the_shutdown_output
+assert_success "ios-device: a successful delete says nothing about the shutdown" test_ios_device_gc_successful_delete_is_quiet_about_shutdown
+assert_success "ios-device: a worktree list naming no worktree is fatal, quoting git" test_ios_device_worktree_list_without_a_worktree_is_fatal
+assert_success "ios-device: a refused adoption names the devices it skipped" test_ios_device_refused_adoption_names_the_devices
 
 # test-ios
 assert_success "test-ios: xcodebuild test is pinned to this checkout's device by id=" test_testios_destination_is_the_checkout_device

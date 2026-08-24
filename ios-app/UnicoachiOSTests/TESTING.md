@@ -15,14 +15,14 @@ bin/test-ios simulator -- -only-testing:UnicoachiOSTests/PaywallViewModelTests
 ```
 
 `bin/test-ios` is `xcodebuild test` with the destination pinned to **this
-checkout's own simulator device** (`bin/ios-sim`, created on demand), sharing
+checkout's own simulator device** (`bin/ios-device`, created on demand), sharing
 `bin/build-ios`'s DerivedData tree; everything after `--` is forwarded to
 `xcodebuild`. Type the raw command and you get
 `-destination 'platform=iOS Simulator,name=iPhone 17 Pro'` — the one
 machine-global device every other checkout also resolves, which a concurrent
 `ship` run or screenshot capture is booting, installing over, and terminating
 apps on. See
-[DEPLOY.md — One simulator per checkout](../DEPLOY.md#one-simulator-per-checkout-binios-sim).
+[DEPLOY.md — One simulator per checkout](../DEPLOY.md#one-simulator-per-checkout-binios-device).
 
 To _use_ the app rather than test it, `bin/ios-simulator` builds this checkout
 and runs it on the same per-checkout device (`-B` skips the build); see

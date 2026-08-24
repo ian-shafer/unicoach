@@ -13,7 +13,7 @@
 # The xcodebuild invocation itself is NOT here: this is a thin front end over
 # bin/test-ios, which owns the project, the scheme, the DerivedData tree and —
 # the reason the delegation exists — the destination, THIS CHECKOUT's own
-# simulator device (bin/ios-sim, RFC 126). A duplicated `xcodebuild test
+# simulator device (bin/ios-device, RFC 126). A duplicated `xcodebuild test
 # -destination ...,name=iPhone 17 Pro` here would put two checkouts capturing
 # at once back on the one machine-global device. Everything this script still
 # does is what test-ios does not know about: the corpus directory, the baseline,
@@ -38,7 +38,7 @@ show you a navigation bug BETWEEN screens; each scene is constructed directly.
   target       Target name (default: simulator). Handed to bin/test-ios, which
                sources ios-app/env/<target>.env and takes its destination's
                `name=<model>` component as the simulator MODEL. The device is
-               THIS CHECKOUT's own (bin/ios-sim, created on demand), so a
+               THIS CHECKOUT's own (bin/ios-device, created on demand), so a
                concurrent capture in another checkout cannot collide with this
                one. Simulator only — test-ios rejects a device target.
   -o <dir>     Write the corpus to this directory (created if absent, and
@@ -80,7 +80,7 @@ rule is the same for both.
 
 There is no device option: under RFC 126 the device is this checkout's and the
 model comes from the target's env file, so a second device selector would be a
-contradiction. bin/ios-sim is where that resolution lives.
+contradiction. bin/ios-device is where that resolution lives.
 
 Determinism: the test runner is pinned to en_US and UTC (-testLanguage /
 -testRegion, and TZ), so a machine's locale cannot move the pixels.
@@ -131,7 +131,7 @@ if [ "$#" -gt 1 ]; then
 fi
 
 # The target is NOT resolved here: bin/test-ios sources ios-app/env/<target>.env,
-# requires UNICOACH_DESTINATION, and rejects a device target — and bin/ios-sim
+# requires UNICOACH_DESTINATION, and rejects a device target — and bin/ios-device
 # turns the destination's model into this checkout's device. Re-deriving any of
 # that here is what would let the two drift apart. Their fatals surface verbatim.
 

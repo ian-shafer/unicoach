@@ -6,7 +6,7 @@ none of this — see [UnicoachiOSTests/TESTING.md](UnicoachiOSTests/TESTING.md).
 
 The scripts here run under **system Xcode**, not the Nix dev shell. Do not wrap
 them in `nix develop`; just run `bin/build-ios` / `bin/install-ios` (and
-`bin/release-ios` / `bin/ios-sim` / `bin/test-ios` / `bin/ios-simulator` /
+`bin/release-ios` / `bin/ios-device` / `bin/test-ios` / `bin/ios-simulator` /
 `bin/screenshot-ios`, below) directly. They all call `bin/is-nix` and refuse to
 run if launched inside the dev shell, because there `xcrun` is shadowed by a
 stub and `DEVELOPER_DIR`/`SDKROOT` point into the Nix store — silently targeting
@@ -345,7 +345,7 @@ The build targets the live `https://api.uni.coach` deployment under the existing
 `NSAllowsArbitraryLoads` ATS exception — no transport-security change, same as
 the `prod` device build.
 
-## One simulator per checkout: `bin/ios-sim`
+## One simulator per checkout: `bin/ios-device`
 
 CoreSimulator devices are **machine-global**; everything else about a checkout
 is not (`var/run/` gives each checkout its own daemon identity,
@@ -358,11 +358,18 @@ sibling just installed, so the next capture is a real screenshot of **someone
 else's build**. RFC 126 gives each checkout its own device instead:
 
 ```sh
-bin/ios-sim              # prints this checkout's device UDID, creating it if needed
-bin/ios-sim -D           # deletes it
-bin/ios-sim -G           # lists this repo's ORPHANED devices (see below)
-bin/ios-sim -G -f        # ...and deletes them
+bin/ios-device           # prints this checkout's device UDID, creating it if needed
+bin/ios-device -D        # deletes it
+bin/ios-device -G        # lists this repo's ORPHANED devices (see below)
+bin/ios-device -G -f     # ...and deletes them
 ```
+
+It is `ios-device`, not `ios-sim`, because what it returns is a **device
+identity** and nothing else. `bin/ios-simulator`
+([below](#running-the-app-in-the-simulator-binios-simulator)) is the one that
+**builds and runs the app**; the old name was a strict **prefix** of it, so
+`bin/ios-sim<TAB>` completed to `ios-simulator` and stopped, and the script
+spelled "simulator" looked like the one a capture went through when it does not.
 
 The device is named `<model> (<repo>/<checkout>)` — e.g.
 `iPhone 17 Pro (unicoach/unicoach-rfc-126)` — where `<repo>` is the basename of
@@ -370,7 +377,7 @@ the **main checkout** (the first entry of `git worktree list --porcelain`),
 `<checkout>` is this checkout's directory basename, and `<model>` is the `name=`
 component of the target's `UNICOACH_DESTINATION`. That **name is the identity
 and the lookup key**; the UDID is what callers use, and it is the only thing on
-stdout, so `-destination "platform=iOS Simulator,id=$(bin/ios-sim)"` works.
+stdout, so `-destination "platform=iOS Simulator,id=$(bin/ios-device)"` works.
 Nothing is cached on disk: `xcrun simctl list devices` is the source of truth,
 so deleting the device by hand or from Simulator.app self-heals on the next
 call. A missing device is **created** (`simctl create`, never `clone` — nothing
@@ -383,21 +390,22 @@ like).
 
 The checked-in `UNICOACH_DESTINATION` is unchanged and is now read as a **model
 selector**, not a device selector. `bin/screenshot-ios` and `bin/test-ios` both
-route through `bin/ios-sim`; `bin/build-ios` deliberately does not, because a
+route through `bin/ios-device`; `bin/build-ios` deliberately does not, because a
 simulator `xcodebuild build` boots no device and the produced `.app` is not tied
 to one.
 
-### Orphans: `bin/ios-sim -G`
+### Orphans: `bin/ios-device -G`
 
 A device outlives the directory it was made for. Delete a worktree without
-running `bin/ios-sim -D` first — which is what always happens — and its device
-stays on the machine forever, with nothing left to say what it was for.
+running `bin/ios-device -D` first — which is what always happens — and its
+device stays on the machine forever, with nothing left to say what it was for.
 
-`bin/ios-sim -G` collects them: every device named `<model> (<repo>/<checkout>)`
-for **this** repo whose `<checkout>` is not the basename of a live
-`git worktree list --porcelain` entry. Git is the authority on which checkouts
-exist, so an orphan is derived, not guessed — and a git that cannot answer is
-fatal rather than an empty list, which would read as "everything is an orphan".
+`bin/ios-device -G` collects them: every device named
+`<model> (<repo>/<checkout>)` for **this** repo whose `<checkout>` is not the
+basename of a live `git worktree list --porcelain` entry. Git is the authority
+on which checkouts exist, so an orphan is derived, not guessed — and a git that
+cannot answer is fatal rather than an empty list, which would read as
+"everything is an orphan".
 
 That is what the `<repo>` half of the name buys. A `.claude/worktrees/` checkout
 is called something like `sad-clarke-6b73f4`, and a device named
@@ -413,7 +421,7 @@ tag, no tag at all (including the pre-repo-tag `<model> (<checkout>)` names), or
 a live checkout's are never touched.
 
 **Devices from before the `<repo>` tag** are migrated by being used: the first
-`bin/ios-sim` in a checkout that still has a single available
+`bin/ios-device` in a checkout that still has a single available
 `<model> (<checkout>)` device **adopts** it — `simctl rename` in place, so the
 installed app and its data survive — instead of creating a second one. That only
 fires for checkouts that resolve again, so a pre-tag device whose checkout is
@@ -423,15 +431,15 @@ proves it is this repo's); delete those once by hand with
 
 `simctl` does not enforce unique device names, so a lost race (two first-runs in
 one checkout) or a runtime removal can leave **two** devices carrying the name.
-That is refused rather than resolved to an arbitrary one; `bin/ios-sim -D`
+That is refused rather than resolved to an arbitrary one; `bin/ios-device -D`
 clears the lot — every device with the name, unavailable ones included — and the
 next call creates one fresh device.
 
 Two checkouts of the same repo whose directories share a basename share a device
-— the documented limit of the scheme, and not a silent one: `bin/ios-sim` prints
-the name it resolved on stderr every time. To deliberately drive the shared
-device, pass `-d` or set `UNICOACH_SIMULATOR="iPhone 17 Pro"`; both beat the
-per-checkout device.
+— the documented limit of the scheme, and not a silent one: `bin/ios-device`
+prints the name it resolved on stderr every time. To deliberately drive the
+shared device, pass `-d` or set `UNICOACH_SIMULATOR="iPhone 17 Pro"`; both beat
+the per-checkout device.
 
 ## Running the unit suite: `bin/test-ios`
 
@@ -473,8 +481,8 @@ It is a front end over `bin/test-ios` above — it runs
 and calls `xcodebuild` nowhere itself. So it inherits, rather than repeats,
 everything that section describes: the project, the scheme, `bin/build-ios`'s
 `-derivedDataPath`, the simulator-only guard — and, the reason the delegation
-exists, **this checkout's own simulator device** (`bin/ios-sim`, RFC 126). Two
-checkouts capturing at once therefore cannot collide; a duplicated
+exists, **this checkout's own simulator device** (`bin/ios-device`, RFC 126).
+Two checkouts capturing at once therefore cannot collide; a duplicated
 `-destination ...,name=iPhone 17 Pro` here would put them straight back on the
 one machine-global device.
 
@@ -489,7 +497,7 @@ stderr.
 Like its siblings it runs under **system Xcode** and refuses inside the Nix dev
 shell with its own name in the message. There is **no `-d`**: the device is this
 checkout's and the model comes from the target's env file, so a second device
-selector would be a contradiction — `bin/ios-sim` is where that resolution
+selector would be a contradiction — `bin/ios-device` is where that resolution
 lives. The run is pinned to `en`/`US`/UTC so a machine's locale cannot move the
 pixels. Afterwards it proves the corpus is non-empty, because a
 `xcodebuild test` that ran ZERO tests exits 0 — the signature of a scene file
@@ -575,10 +583,11 @@ names no device), and anything after `--` is forwarded to `xcrun simctl launch`
 — the seam for driving the app to a particular screen before the capture.
 
 The simulator it drives is **this checkout's own device**
-([above](#one-simulator-per-checkout-binios-sim)), resolved most-explicit-first:
-`-d`, else `UNICOACH_SIMULATOR`, else the destination's `id=<UDID>` component,
-else `bin/ios-sim` on the destination's `name=<model>`. A target carrying
-neither component (`prod-simulator`) still needs `-d` or `UNICOACH_SIMULATOR`.
+([above](#one-simulator-per-checkout-binios-device)), resolved
+most-explicit-first: `-d`, else `UNICOACH_SIMULATOR`, else the destination's
+`id=<UDID>` component, else `bin/ios-device` on the destination's
+`name=<model>`. A target carrying neither component (`prod-simulator`) still
+needs `-d` or `UNICOACH_SIMULATOR`.
 
 ### The StoreKit trap: a configuration is bound to the launch, not the artifact
 
@@ -676,12 +685,12 @@ store rather than a launch argument for a catalogue nobody injected.
   `signing.env` to the intended UDID (`xcrun devicectl list devices`).
 - **Dev-shell guard error (`must run under system Xcode`).** The script was
   wrapped in `nix develop -c`. Run it directly: `bin/build-ios` /
-  `bin/install-ios` / `bin/release-ios` / `bin/ios-sim` / `bin/test-ios` /
+  `bin/install-ios` / `bin/release-ios` / `bin/ios-device` / `bin/test-ios` /
   `bin/ios-simulator` / `bin/screenshot-ios`.
 - **A capture or test run shows another checkout's build.** You bypassed the
   per-checkout device — `UNICOACH_SIMULATOR` is set in your environment, or the
   target's destination carries an explicit `id=<UDID>`. Unset it, or check what
-  `bin/ios-sim` prints.
+  `bin/ios-device` prints.
 - **TestFlight upload rejected: duplicate build number.** App Store Connect
   already has a build with that `CFBundleVersion`. `bin/release-ios` derives the
   build number from the HEAD commit count, so commit first (or pass a higher

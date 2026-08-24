@@ -110,7 +110,7 @@ validate_port() {
 # asked for — `devicename=` for `name=`, `udid=` for `id=` — can never be
 # mistaken for it, and the value runs to the next comma or the end of the
 # string. The single owner of the destination-parsing rule shared by
-# bin/ios-sim and bin/screenshot-ios. Depends on nothing else in this file.
+# bin/ios-device and bin/screenshot-ios. Depends on nothing else in this file.
 destination_component() {
   local destination="$1" key="$2"
   printf '%s' "$destination" | sed -nE "s/^.*(^|,)$key=([^,]*).*/\2/p"
