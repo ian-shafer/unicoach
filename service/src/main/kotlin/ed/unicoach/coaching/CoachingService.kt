@@ -14,8 +14,11 @@ import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
+import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.FitSuggestionsDao
+import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.SystemPromptsDao
+import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.ArchiveScope
 import ed.unicoach.db.models.Commitment
 import ed.unicoach.db.models.CommitmentId
@@ -28,6 +31,7 @@ import ed.unicoach.db.models.ConvoWithActivity
 import ed.unicoach.db.models.FitSuggestionForOpener
 import ed.unicoach.db.models.FitSuggestionId
 import ed.unicoach.db.models.LlmRequestId
+import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.NewConvo
 import ed.unicoach.db.models.NewConvoRequest
 import ed.unicoach.db.models.SoftDeleteScope
@@ -265,11 +269,12 @@ class CoachingService(
           // raises them naturally in its first reply.
           val pending = openExplicitCommitments(session, studentId)
           val pendingFits = openFitSuggestions(session, studentId)
+          val moneyProfile = activeMoneyProfile(session, studentId)
           PreFlight.Ready(
             Prepared(
               convo,
               prompt,
-              composeSystem(prompt, pending, pendingFits),
+              composeSystem(prompt, pending, pendingFits, moneyProfile),
               messages,
               pending.map { it.id },
               pendingFits.map { it.id },
@@ -326,8 +331,13 @@ class CoachingService(
           val messages = visibleHistory(session, convoId) + ChatMessage.text(ChatRole.USER, message)
           // postTurn never surfaces commitments or fit suggestions: only a new
           // conversation opens with reflection, so an insight is not re-raised
-          // mid-conversation.
-          PreFlight.Ready(Prepared(owned, prompt, prompt.body, messages, emptyList(), emptyList()))
+          // mid-conversation. The money-profile block (RFC 134) IS composed on
+          // every turn: what may be used and what must not be re-asked applies
+          // mid-conversation too.
+          val moneyProfile = activeMoneyProfile(session, studentId)
+          PreFlight.Ready(
+            Prepared(owned, prompt, composeSystem(prompt, emptyList(), emptyList(), moneyProfile), messages, emptyList(), emptyList()),
+          )
         }
       when (preFlight) {
         is PreFlight.Refused -> {
@@ -560,7 +570,7 @@ class CoachingService(
 
               // Dispatch every requested tool, then continue the loop with the
               // assistant's verbatim tool_use message and one tool_result answer.
-              val toolResultContent = ConvoContent.blockArray(dispatchTools(toolUses))
+              val toolResultContent = ConvoContent.blockArray(dispatchTools(toolUses, prepared.convo.studentId))
               messages.appendToolRound(chatResponse.content, toolResultContent)
               currentCall = openContinuation(prepared, messages, currentCall.request.turnId, toolRounds + 1 >= config.maxToolRounds)
               toolRounds++
@@ -689,12 +699,20 @@ class CoachingService(
    * or a throwing tool yields an `is_error` result with a structured failure
    * object, so the model can recover — a tool defect is never a turn failure.
    *
+   * A [StudentScopedChatTool] receives the turn's [studentId] (RFC 134) so it
+   * writes the owning student's data without the model ever seeing or
+   * supplying an id; a plain [ed.unicoach.chat.ChatTool] is dispatched
+   * unchanged.
+   *
    * The failure that is sent to (and persisted for) the model is squashed to a
    * fixed failure-kind marker; the throwable's message and type — which may
    * carry internals — stay in the log only. `ChatTool.execute` is total by
    * contract, so a throw is an exceptional defect worth a full stack trace.
    */
-  private suspend fun dispatchTools(toolUses: List<ConvoContent.ToolUse>): List<JsonObject> =
+  private suspend fun dispatchTools(
+    toolUses: List<ConvoContent.ToolUse>,
+    studentId: StudentId,
+  ): List<JsonObject> =
     toolUses.map { toolUse ->
       val tool = tools.get(toolUse.name)
       if (tool == null) {
@@ -706,7 +724,12 @@ class CoachingService(
         )
       }
       try {
-        ConvoContent.toolResultBlock(toolUse.id, tool.execute(toolUse.input), isError = false)
+        val result =
+          when (tool) {
+            is StudentScopedChatTool -> tool.execute(studentId, toolUse.input)
+            else -> tool.execute(toolUse.input)
+          }
+        ConvoContent.toolResultBlock(toolUse.id, result, isError = false)
       } catch (e: Throwable) {
         logger.warn("tool [{}] threw during dispatch id=[{}] input=[{}]", toolUse.name, toolUse.id, toolUse.input, e)
         ConvoContent.toolResultBlock(
@@ -797,17 +820,35 @@ class CoachingService(
     }
 
   /**
+   * The student's active money profile for the coach context block (RFC 134),
+   * or null before the first write — an absent row composes nothing, so a
+   * student who has never touched money topics keeps the prompt verbatim.
+   * Any other failure propagates like the sibling context loaders
+   * ([openExplicitCommitments], [openFitSuggestions]): a DB outage must fail
+   * the turn, never silently drop the declined-field guard.
+   */
+  private fun activeMoneyProfile(
+    session: ed.unicoach.db.dao.SqlSession,
+    studentId: StudentId,
+  ): MoneyProfile? =
+    MoneyProfilesDao.findActiveByStudent(session, studentId).getOrElse { e ->
+      if (e is ed.unicoach.db.dao.NotFoundException) null else throw e
+    }
+
+  /**
    * Composes the outgoing system text: the prompt body verbatim when nothing is
    * pending (identical to today), else the body plus a rendered reflection block
    * so the coach raises the commitments (RFC 93) and fit-lens suggestions (RFC 98)
-   * naturally in its first reply.
+   * naturally in its first reply, plus the money-profile block (RFC 134) once a
+   * profile row exists.
    */
   private fun composeSystem(
     prompt: SystemPrompt,
     pending: List<Commitment>,
     pendingFits: List<FitSuggestionForOpener>,
+    moneyProfile: MoneyProfile? = null,
   ): String {
-    if (pending.isEmpty() && pendingFits.isEmpty()) return prompt.body
+    if (pending.isEmpty() && pendingFits.isEmpty() && moneyProfile == null) return prompt.body
     val block =
       buildString {
         appendLine(prompt.body)
@@ -824,9 +865,56 @@ class CoachingService(
           appendLine()
           appendLine("I found a school you'd love: ${fit.collegeName} (${fit.city}, ${fit.state}) — ${fit.rationale}")
         }
+        if (moneyProfile != null) {
+          appendLine()
+          appendLine(
+            "Money profile (use answered values; a declined field was asked and declined — never re-ask it " +
+              "unless the student reopens the topic; an unanswered field is still open):",
+          )
+          appendLine(
+            "- household income band: " +
+              renderMoneyField(moneyProfile.incomeBandStatus, moneyProfile.incomeBand?.value, "income_band", moneyProfile),
+          )
+          appendLine(
+            "- state of residency: " +
+              renderMoneyField(moneyProfile.residencyStatus, moneyProfile.residencyState, "residency_state", moneyProfile),
+          )
+        }
       }
     return block.trimEnd()
   }
+
+  /**
+   * One money-profile field line: `answered (value)` | `declined` |
+   * `unanswered` (RFC 134). An `answered` status with no value violates the
+   * schema's value-iff-answered CHECK — row corruption, surfaced as
+   * [CorruptPersistedValueException] naming the [column] and [profile] row
+   * (the DAO's convention for a corrupt read), never rendered into the prompt.
+   */
+  private fun renderMoneyField(
+    status: AnswerStatus,
+    value: String?,
+    column: String,
+    profile: MoneyProfile,
+  ): String =
+    when (status) {
+      AnswerStatus.ANSWERED -> {
+        value?.let { "answered ($it)" }
+          ?: throw CorruptPersistedValueException(
+            "null",
+            ValidationError.InvalidFormat(expected = "a value present when status is 'answered'"),
+            location = "money_profiles.$column (row ${profile.id.value})",
+          )
+      }
+
+      AnswerStatus.DECLINED -> {
+        "declined"
+      }
+
+      AnswerStatus.UNANSWERED -> {
+        "unanswered"
+      }
+    }
 
   /**
    * Marks the commitments disclosed in this turn's opener (RFC 93) fulfilled

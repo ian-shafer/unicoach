@@ -12,7 +12,8 @@ sealed class DaoException(
 
 class NotFoundException(
   message: String = "Record not found",
-) : DaoException(message),
+  cause: Throwable? = null,
+) : DaoException(message, cause),
   PermanentError
 
 /**
@@ -60,10 +61,17 @@ class DatabaseException(
 ) : DaoException("General database error", cause),
   PermanentError
 
+/**
+ * A persisted value failed reconstruction into its domain type. [location]
+ * (optional, defaulted so existing construction sites are unchanged) names
+ * where the corrupt value sits — column and row id — so the offending row can
+ * be found straight from the log.
+ */
 class CorruptPersistedValueException(
   val value: String,
   val error: ValidationError,
-) : DaoException("Persisted value failed reconstruction: $error"),
+  location: String? = null,
+) : DaoException("Persisted value failed reconstruction: $error" + (location?.let { " at $it" } ?: "")),
   PermanentError
 
 class LockAcquisitionFailureException(

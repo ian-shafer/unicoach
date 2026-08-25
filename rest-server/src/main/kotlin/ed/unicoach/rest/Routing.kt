@@ -5,6 +5,7 @@ import ed.unicoach.rest.routing.AuthRouteHandler
 import ed.unicoach.rest.routing.CoachingUsageRouteHandler
 import ed.unicoach.rest.routing.CollegeListRouteHandler
 import ed.unicoach.rest.routing.ConvoRouteHandler
+import ed.unicoach.rest.routing.MoneyProfileRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
 import ed.unicoach.rest.routing.SubscriptionRouteHandler
 import io.ktor.http.ContentType
@@ -40,6 +41,7 @@ fun Application.configureRouting(
   queueService: ed.unicoach.queue.QueueService,
   extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
   collegeListService: ed.unicoach.coaching.collegelist.CollegeListService,
+  moneyProfileService: ed.unicoach.coaching.moneyprofile.MoneyProfileService,
   budgetService: ed.unicoach.coaching.budget.BudgetService,
   subscriptionService: ed.unicoach.subscriptions.SubscriptionService,
   appleNotificationVerifier: ed.unicoach.appstore.AppleNotificationVerifier,
@@ -50,6 +52,8 @@ fun Application.configureRouting(
     ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)
   val collegeListRouteHandler =
     CollegeListRouteHandler(authService, studentService, collegeListService, sessionConfig)
+  val moneyProfileRouteHandler =
+    MoneyProfileRouteHandler(authService, studentService, moneyProfileService, sessionConfig)
   val coachingUsageRouteHandler =
     CoachingUsageRouteHandler(authService, studentService, budgetService, sessionConfig)
   val subscriptionRouteHandler =
@@ -70,6 +74,7 @@ fun Application.configureRouting(
     studentRouteHandler.registerRoutes(this)
     convoRouteHandler.registerRoutes(this)
     collegeListRouteHandler.registerRoutes(this)
+    moneyProfileRouteHandler.registerRoutes(this)
     coachingUsageRouteHandler.registerRoutes(this)
     subscriptionRouteHandler.registerRoutes(this)
     appleNotificationRouteHandler.registerRoutes(this)

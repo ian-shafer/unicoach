@@ -295,12 +295,16 @@ fun Application.appModule(
   val authService =
     AuthService(database, argon2Hasher, tokenGenerator, emailVerificationService, googleTokenVerifier, appleTokenVerifier)
   val studentService = ed.unicoach.student.StudentService(database)
+  val moneyProfileService =
+    ed.unicoach.coaching.moneyprofile
+      .MoneyProfileService(database)
   // The tool registry advertised on every coaching turn (RFC 94). New tools
   // append here; nothing else in the loop changes.
   val toolRegistry =
     ToolRegistry(
       listOf(
         CollegeChatTool(CollegeSearchTool(CollegeSearchService(database))),
+        ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
       ),
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the
@@ -322,6 +326,7 @@ fun Application.appModule(
     queueService,
     extractionConfig,
     collegeListService,
+    moneyProfileService,
     budgetService,
     subscriptionService,
     appleNotificationVerifier,

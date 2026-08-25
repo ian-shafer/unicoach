@@ -827,6 +827,110 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+
+  /api/v1/students/me/money-profile:
+    get:
+      summary: Get the current student's money profile
+      operationId: getMoneyProfile
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: The caller's money profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoneyProfileResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No money profile yet (nothing has been written)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Create or update the current student's money profile
+      description: >
+        Idempotent create-or-update of any subset of fields. Per field, at most
+        one of value / declined / clear may be supplied; an omitted field is
+        untouched. Declining or clearing a field removes its value (the schema
+        holds a value exactly when a field is answered).
+      operationId: putMoneyProfile
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMoneyProfileRequest'
+      responses:
+        '200':
+          description: The full post-write money profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoneyProfileResponse'
+        '400':
+          description: Validation failure (unknown income band, malformed state code, or value+declined for one field)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Owning student not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: No student profile (code student_profile_required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds the configured size limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Request body could not be deserialized into the expected shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/students/me/coaching-usage:
     get:
       summary: Read the caller's coaching usage
@@ -1592,6 +1696,63 @@ components:
       properties:
         student:
           $ref: '#/components/schemas/PublicStudent'
+    UpdateMoneyProfileRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        incomeBand:
+          type: string
+          enum: [under_30k, 30k_to_48k, 48k_to_75k, 75k_to_110k, over_110k]
+          nullable: true
+        incomeBandDeclined:
+          type: boolean
+          default: false
+        incomeBandClear:
+          type: boolean
+          default: false
+        residencyState:
+          type: string
+          nullable: true
+          description: Two-letter USPS state code (case-insensitive on input).
+        residencyDeclined:
+          type: boolean
+          default: false
+        residencyClear:
+          type: boolean
+          default: false
+    PublicMoneyProfile:
+      type: object
+      required: [incomeBandStatus, residencyStatus, version, createdAt, updatedAt]
+      properties:
+        incomeBandStatus:
+          type: string
+          enum: [unanswered, answered, declined]
+        incomeBand:
+          type: string
+          enum: [under_30k, 30k_to_48k, 48k_to_75k, 75k_to_110k, over_110k]
+          nullable: true
+        residencyStatus:
+          type: string
+          enum: [unanswered, answered, declined]
+        residencyState:
+          type: string
+          nullable: true
+          pattern: '^[A-Z]{2}$'
+        version:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    MoneyProfileResponse:
+      type: object
+      required: [profile]
+      properties:
+        profile:
+          $ref: '#/components/schemas/PublicMoneyProfile'
     CreateCollegeListEntryRequest:
       type: object
       additionalProperties: false

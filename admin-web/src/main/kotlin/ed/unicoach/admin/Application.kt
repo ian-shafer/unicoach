@@ -16,6 +16,7 @@ import ed.unicoach.admin.resources.ExtractionRunsResource
 import ed.unicoach.admin.resources.FitLensRunsResource
 import ed.unicoach.admin.resources.FitSuggestionsResource
 import ed.unicoach.admin.resources.LlmRequestsResource
+import ed.unicoach.admin.resources.MoneyProfilesResource
 import ed.unicoach.admin.resources.ObservationsResource
 import ed.unicoach.admin.resources.PeriodicJobsResource
 import ed.unicoach.admin.resources.SessionsResource
@@ -148,6 +149,7 @@ fun Application.adminModule(
         ConvoRequestsResource,
         CollegesResource,
         CollegeListEntriesResource,
+        MoneyProfilesResource,
         PeriodicJobsResource(PeriodicJobsDao()),
       ),
     )

@@ -1914,4 +1914,128 @@ class CoachingServiceTest {
           .jsonPrimitive.content
       assertTrue(resultText.contains("\"count\":0"), "expected real result JSON, got: $resultText")
     }
+
+  // ===========================================================================
+  // Money profile (RFC 134): context injection + student-scoped tool dispatch
+  // ===========================================================================
+
+  private fun createMoneyProfile(
+    student: StudentId,
+    incomeBand: ed.unicoach.db.models.IncomeBand?,
+    incomeBandStatus: ed.unicoach.db.models.AnswerStatus,
+    residencyState: String?,
+    residencyStatus: ed.unicoach.db.models.AnswerStatus,
+  ) {
+    ed.unicoach.db.dao.MoneyProfilesDao
+      .create(
+        sqlSession,
+        ed.unicoach.db.models.NewMoneyProfile(
+          studentId = student,
+          incomeBand = incomeBand,
+          incomeBandStatus = incomeBandStatus,
+          residencyState = residencyState,
+          residencyStatus = residencyStatus,
+        ),
+      ).getOrThrow()
+  }
+
+  @Test
+  fun `startConvo composes the money-profile block rendering answered with its value and declined as declined`() =
+    runBlocking {
+      val student = createStudent()
+      createMoneyProfile(
+        student,
+        incomeBand = ed.unicoach.db.models.IncomeBand.UNDER_30K,
+        incomeBandStatus = ed.unicoach.db.models.AnswerStatus.ANSWERED,
+        residencyState = null,
+        residencyStatus = ed.unicoach.db.models.AnswerStatus.DECLINED,
+      )
+
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      val systemText = captured!!.system!!
+      assertTrue(systemText.contains("Money profile"), "the money-profile block must be composed in")
+      assertTrue(systemText.contains("household income band: answered (under_30k)"), "answered must render its value")
+      assertTrue(systemText.contains("state of residency: declined"), "declined must render as declined, not be absent")
+      assertTrue(systemText.contains("You are Uni"), "the base prompt must still be present")
+    }
+
+  @Test
+  fun `an unanswered money-profile field renders as unanswered and postTurn composes the block too`() =
+    runBlocking {
+      val student = createStudent()
+      createMoneyProfile(
+        student,
+        incomeBand = null,
+        incomeBandStatus = ed.unicoach.db.models.AnswerStatus.UNANSWERED,
+        residencyState = "CA",
+        residencyStatus = ed.unicoach.db.models.AnswerStatus.ANSWERED,
+      )
+
+      val requests = mutableListOf<ChatRequest>()
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { requests.add(it) })
+      val svc = service(provider)
+      val started = svc.startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      val post = svc.postTurn(student, started.convo.id, "next").getOrThrow() as PostTurnResult.Started
+      assertTrue(terminalOf(drain(post.reply)) is ReplyEvent.Completed)
+
+      for (request in requests) {
+        val systemText = request.system!!
+        assertTrue(systemText.contains("household income band: unanswered"), "unanswered must render as open")
+        assertTrue(systemText.contains("state of residency: answered (CA)"), "answered must render its value")
+      }
+      assertEquals(2, requests.size)
+    }
+
+  @Test
+  fun `a student without a money profile keeps the prompt body verbatim`() =
+    runBlocking {
+      val student = createStudent()
+      var captured: ChatRequest? = null
+      val provider =
+        ScriptedProvider(deltas = listOf("hi"), terminal = completedTerminal("hi"), onRequest = { captured = it })
+      val started = service(provider).startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+      assertEquals(pinnedCoachBody, captured!!.system)
+    }
+
+  /** A StudentScopedChatTool spy: records the studentId each dispatch carried. */
+  private class StudentScopedSpyTool(
+    override val name: String,
+    private val result: JsonObject = buildJsonObject { },
+  ) : StudentScopedChatTool() {
+    val studentIds = mutableListOf<StudentId>()
+
+    override val definition = buildJsonObject { put("name", name) }
+
+    override suspend fun execute(
+      studentId: StudentId,
+      input: JsonObject,
+    ): JsonObject {
+      studentIds.add(studentId)
+      return result
+    }
+  }
+
+  @Test
+  fun `a StudentScopedChatTool is dispatched with the turn's studentId`() =
+    runBlocking {
+      val student = createStudent()
+      val spy = StudentScopedSpyTool("update_money_profile")
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("update_money_profile" to """{"income_band":"under_30k"}"""), completedTerminal("noted")),
+        )
+      val started =
+        serviceWith(provider, registry(spy)).startConvo(student, "we make under 30k", null).getOrThrow() as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+      assertEquals(listOf(student), spy.studentIds, "the tool must receive the owning student's id")
+    }
 }
