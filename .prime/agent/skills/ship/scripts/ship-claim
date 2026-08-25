@@ -123,6 +123,25 @@ if ! git -C "$worktree_path" check-ignore -q .scratch/probe 2>/dev/null; then
   fatal ".scratch/ is not gitignored in this repo — run state would be committed. Add it to .gitignore first."
 fi
 
+# Sweep orphaned per-checkout simulator devices (RFC 126 + bin/ios-device -G).
+#
+# Claim time, not land time, and deliberately so. ship-land already deletes its
+# OWN run's device, but that only covers runs that reach it: an abandoned run, a
+# worktree removed by hand, and every Claude Code rfc-pipeline run (which this
+# skill must never modify) all leak a machine-global CoreSimulator device that
+# nothing else will ever name. Claiming a run is the moment those are provably
+# dead — `bin/ios-device -G` derives liveness from `git worktree list` — and
+# it is a moment someone is reading the output.
+#
+# Best-effort: a claim must never fail over housekeeping. It no-ops on a base
+# that predates bin/ios-device and when ship-claim is itself run inside the Nix
+# dev shell (ios-device refuses there). -G -f prints what it reaped on stdout,
+# which is folded into stderr here so it cannot contaminate the KEY=value state
+# block this script's caller parses.
+if [ -x "$ORIGINAL_CHECKOUT/bin/ios-device" ]; then
+  "$ORIGINAL_CHECKOUT/bin/ios-device" -G -f >&2 || true
+fi
+
 BASE_SHA="$(git -C "$ORIGINAL_CHECKOUT" rev-parse "$BASE_BRANCH")"
 RUN_SCRATCH="$worktree_path/.scratch/ship/$RUN_ID"
 mkdir -p "$RUN_SCRATCH/artifacts" "$RUN_SCRATCH/findings"

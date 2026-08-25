@@ -43,10 +43,29 @@ so do not "simplify" them away:
 The app talks to the backend baked in at build time, so with nothing serving
 locally the capture is the app's "No Connection" state, not a real screen.
 
-A bare launch only ever reaches the first screen. Deeper screens need XCUITest
-launch arguments — anything after `--` is forwarded to `simctl launch`, which is
-the seam — but `ios-app` still has **no UI tests**, so that harness remains
-unbuilt.
+A bare launch only ever reaches the first screen. **For anything deeper, use
+`bin/snapshot-ios`** (RFC 122), which is the answer to six runs' worth of
+"nobody looked at the billing screens": it hosts each view in a `UIWindow`
+inside the test process, so it needs no backend, no session and no booted app,
+and it reaches every authenticated surface.
+
+    OUT=$(bin/snapshot-ios)     # 32 PNGs, 16 scenes x light/dark; the dir is the only stdout line
+    bin/snapshot-ios -b "$PREV" # report which scenes MOVED against an earlier corpus
+
+It runs through `bin/test-ios`, so it uses this checkout's own simulator device
+and cannot fight a sibling run. A new screen must be added to the catalogue in
+`ios-app/UnicoachiOSTests/SnapshotScenes.swift` — the gate cannot see a view
+that nobody listed. What it cannot show is a navigation bug _between_ screens:
+each scene is constructed, not arrived at. `bin/screenshot-ios` remains the tool
+for the running app.
+
+Two rasterizing traps, both paid for with phantom defect reports, are recorded
+in `SnapshotHost.swift` and must not be re-derived: **`ImageRenderer` is banned**
+(it does not rasterize `ScrollView` content and ignores a SwiftUI `colorScheme`
+override for asset colours), and **`layer.render(in:)` silently drops iOS 26's
+Liquid Glass navigation chrome** (a title renders as its raw white mask —
+correct on a dark capture, invisible on the light one). Use
+`drawHierarchy(in:afterScreenUpdates:)` on a window attached to a live scene.
 
 ## Judging
 

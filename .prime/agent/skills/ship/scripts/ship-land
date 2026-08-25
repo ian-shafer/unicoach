@@ -70,6 +70,29 @@ rm -rf "$archive"
 cp -R "$RUN_SCRATCH" "$archive"
 
 # 5. Tear down.
+#
+# The worktree's own simulator device first, while the worktree still exists to
+# name it. Per-checkout devices (RFC 126) are machine-global CoreSimulator
+# objects, so `git worktree remove` alone orphans one per run — and nothing ever
+# reaps it, because the checkout it was named for is what identified it.
+#
+# Both names are tried because this one runs against the RUN'S worktree, not the
+# original checkout: a branch cut before the bin/ios-sim → bin/ios-device rename
+# still carries the old name, and its device is just as real. ship-claim needs
+# no such fallback — it sweeps from the original checkout, which is current.
+#
+# Best-effort by design, and never a reason to fail a land: the run's work is
+# already on the base branch by this point. It no-ops when the branch predates
+# the script entirely, when the run never created a device, and when ship-land
+# is itself invoked inside the Nix dev shell (it refuses there, by design).
+# Anything this misses is swept by `bin/ios-device -G -f` at the next ship-claim.
+for _ios_device in "$CODEBASE_ROOT/bin/ios-device" "$CODEBASE_ROOT/bin/ios-sim"; do
+  if [ -x "$_ios_device" ]; then
+    "$_ios_device" -D simulator > /dev/null 2>&1 || true
+    break
+  fi
+done
+
 git worktree remove "$CODEBASE_ROOT"
 git branch -d "$BRANCH"
 
