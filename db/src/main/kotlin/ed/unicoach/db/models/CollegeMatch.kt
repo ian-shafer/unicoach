@@ -5,6 +5,11 @@ package ed.unicoach.db.models
  * curated college fields plus [programTitles] — the `cip_title`s of programs
  * matched by the query's `cipPrefix` (empty when no program filter was applied).
  *
+ * [netPriceQ1]..[netPriceQ5] are the average annual net price by household
+ * income band ($0-30k / 30,001-48k / 48,001-75k / 75,001-110k / 110k+) and
+ * [medianDebt] the median cumulative federal debt of completers (RFC 133) --
+ * returned context only, never filters.
+ *
  * [graduationRate], [medianEarnings], and [pctPell] are returned context for the
  * coach to reason over in prose; only [graduationRate] is also a filter
  * (`minGraduationRate`). Earnings and Pell share are surfaced, never thresholded
@@ -21,8 +26,14 @@ data class CollegeMatch(
   val undergradEnrollment: Int?,
   val admissionRate: Double?,
   val netPrice: Int?,
+  val netPriceQ1: Int?,
+  val netPriceQ2: Int?,
+  val netPriceQ3: Int?,
+  val netPriceQ4: Int?,
+  val netPriceQ5: Int?,
   val graduationRate: Double?,
   val medianEarnings: Int?,
+  val medianDebt: Int?,
   val pctPell: Double?,
   val website: String?,
   val programTitles: List<String>,

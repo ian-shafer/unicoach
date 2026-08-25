@@ -32,6 +32,37 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
     }
 
   @Test
+  fun `income-band net prices and median debt load from real rows (RFC 133)`() =
+    runBlocking {
+      loader.load(institutionCsv, fieldsCsv)
+
+      // Ventura (public): the low-income bands are genuinely negative in the
+      // published data and must load un-coerced.
+      val ventura = withSession { CollegesDao.findByUnitId(it, 125028).getOrThrow() }
+      assertNotNull(ventura)
+      assertEquals(-1913, ventura.netPriceQ1)
+      assertEquals(-2393, ventura.netPriceQ2)
+      assertEquals(524, ventura.netPriceQ3)
+      assertEquals(4165, ventura.netPriceQ4)
+      assertEquals(6577, ventura.netPriceQ5)
+      assertEquals(13876, ventura.medianDebt)
+
+      // Auburn Montgomery (public): plain positive bands from the _PUB columns.
+      val auburn = withSession { CollegesDao.findByUnitId(it, 100830).getOrThrow() }
+      assertNotNull(auburn)
+      assertEquals(11706, auburn.netPriceQ1)
+      assertEquals(16117, auburn.netPriceQ5)
+      assertEquals(25000, auburn.medianDebt)
+
+      // Pensacola Christian (private): every band cell is the NA sentinel.
+      val pensacola = withSession { CollegesDao.findByUnitId(it, 136455).getOrThrow() }
+      assertNotNull(pensacola)
+      assertNull(pensacola.netPriceQ1)
+      assertNull(pensacola.netPriceQ5)
+      assertNull(pensacola.medianDebt)
+    }
+
+  @Test
   fun `out-of-domain optional locale is nulled, institution kept (mechanism A)`() =
     runBlocking {
       val result = loader.load(institutionCsv, fieldsCsv)

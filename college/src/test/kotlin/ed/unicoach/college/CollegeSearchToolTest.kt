@@ -8,6 +8,7 @@ import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeProgram
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
@@ -72,10 +73,16 @@ class CollegeSearchToolTest {
       satAvg = null,
       costAttendance = null,
       netPrice = 18000,
+      netPriceQ1 = null,
+      netPriceQ2 = null,
+      netPriceQ3 = null,
+      netPriceQ4 = null,
+      netPriceQ5 = null,
       tuitionInState = null,
       tuitionOutState = null,
       graduationRate = 0.7,
       medianEarnings = 55000,
+      medianDebt = null,
       pctPell = 0.4,
       website = null,
     )
@@ -250,6 +257,42 @@ class CollegeSearchToolTest {
       val lowerNames = (lower["colleges"] as JsonArray).map { it.jsonObject["name"]!!.jsonPrimitive.content }
       assertEquals(upperNames, lowerNames)
     }
+
+  @Test
+  fun `result objects carry the income-band net prices and median debt, nulls as JsonNull`() =
+    runBlocking {
+      // RFC 133: seed a college with a negative low band (valid, 0022 precedent)
+      // and some bands absent, then assert the six fields serialize -- values as
+      // numbers, absent bands as explicit JsonNull, matching the existing style.
+      database.withConnection { session ->
+        CollegesDao
+          .upsert(
+            session,
+            newCollege(820).copy(netPriceQ1 = -1200, netPriceQ3 = 14500, medianDebt = 21000),
+          ).getOrThrow()
+      }
+
+      val result = tool.execute(buildJsonObject {})
+      assertNull(result["error"])
+      val first = (result["colleges"] as JsonArray).single().jsonObject
+      assertEquals(-1200, first["net_price_q1"]!!.jsonPrimitive.intOrNull)
+      assertEquals(14500, first["net_price_q3"]!!.jsonPrimitive.intOrNull)
+      assertEquals(21000, first["median_debt"]!!.jsonPrimitive.intOrNull)
+      assertTrue(first["net_price_q2"] is JsonNull)
+      assertTrue(first["net_price_q4"] is JsonNull)
+      assertTrue(first["net_price_q5"] is JsonNull)
+    }
+
+  @Test
+  fun `definition description names the five income brackets`() {
+    // The coach must be able to pick the right band conversationally, so the
+    // description spells out which bracket each field covers.
+    val description = tool.definition["description"]!!.jsonPrimitive.content
+    assertTrue(description.contains("net_price_q1"))
+    assertTrue(description.contains("median_debt"))
+    assertTrue(description.contains("0-30k"))
+    assertTrue(description.contains("110k+"))
+  }
 
   @Test
   fun `execute on a zero-match query returns count 0`() =

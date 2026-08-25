@@ -38,11 +38,31 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       assertEquals(52000, public.medianEarnings)
       assertEquals(0.42, public.pctPell)
 
+      // Public row: band prices read from NPT4n_PUB (RFC 133). The fixture row
+      // carries decoy NPT4n_PRIV values (99001..99005), so these assertions fail
+      // under a blind PRIV-first coalesce — the read must be keyed on control.
+      assertEquals(9000, public.netPriceQ1)
+      assertEquals(11000, public.netPriceQ2)
+      assertEquals(14000, public.netPriceQ3)
+      assertEquals(17000, public.netPriceQ4)
+      assertEquals(21000, public.netPriceQ5)
+      assertEquals(21000, public.medianDebt)
+
       // Private row: net_price coalesced from NPT4_PRIV (NPT4_PUB blank).
       val private = withSession { CollegesDao.findByUnitId(it, 220200).getOrThrow() }
       assertNotNull(private)
       assertEquals(2, private.control)
       assertEquals(41000, private.netPrice)
+
+      // Private row: band prices read from NPT4n_PRIV (RFC 133). The fixture row
+      // carries decoy NPT4n_PUB values (88001..88005), so these assertions fail
+      // under a blind PUB-first coalesce — the read must be keyed on control.
+      assertEquals(24000, private.netPriceQ1)
+      assertEquals(27000, private.netPriceQ2)
+      assertEquals(31000, private.netPriceQ3)
+      assertEquals(36000, private.netPriceQ4)
+      assertEquals(41000, private.netPriceQ5)
+      assertEquals(27000, private.medianDebt)
     }
 
   @Test
@@ -108,6 +128,34 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
         rs.next()
         rs.getInt(1)
       }
+    }
+
+  @Test
+  fun `band price sentinels, blanks and negatives load per RFC 133`() =
+    runBlocking {
+      loader.load(institutionCsv, fieldsCsv)
+
+      // 330300: NPT43_PUB=PrivacySuppressed loads as null via the intOrNull
+      // path -- never a skip, never a coercion tally; neighbors load intact.
+      val mountain = withSession { CollegesDao.findByUnitId(it, 330300).getOrThrow() }
+      assertNotNull(mountain)
+      assertNull(mountain.netPriceQ3)
+      assertEquals(12000, mountain.netPriceQ1)
+      assertEquals(19000, mountain.netPriceQ5)
+
+      // 550500: a negative NPT41_PUB loads un-coerced (the band columns are
+      // excluded from mechanism A, matching net_price/0022); the blank
+      // NPT42_PUB cell is null.
+      val bayfront = withSession { CollegesDao.findByUnitId(it, 550500).getOrThrow() }
+      assertNotNull(bayfront)
+      assertEquals(-1500, bayfront.netPriceQ1)
+      assertNull(bayfront.netPriceQ2)
+      assertEquals(10000, bayfront.medianDebt)
+
+      // 440400: GRAD_DEBT_MDN=PrivacySuppressed loads as null.
+      val plains = withSession { CollegesDao.findByUnitId(it, 440400).getOrThrow() }
+      assertNotNull(plains)
+      assertNull(plains.medianDebt)
     }
 
   @Test
@@ -179,9 +227,14 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       assertEquals(1, result.collegesLoaded)
       assertEquals(1, result.fieldsCoercedToNull["admission_rate"])
 
+      // GRAD_DEBT_MDN=-100 is likewise out-of-domain (median_debt is a genuine
+      // nonneg money field, RFC 133): nulled and counted, row kept.
+      assertEquals(1, result.fieldsCoercedToNull["median_debt"])
+
       val college = withSession { CollegesDao.findByUnitId(it, 600600).getOrThrow() }
       assertNotNull(college)
       assertNull(college.admissionRate)
+      assertNull(college.medianDebt)
     }
 
   @Test

@@ -404,9 +404,27 @@ class CollegeScorecardLoader(
       return MapResult.Skipped(SkipReason.MissingRequiredField(missing))
     }
 
-    // net_price coalesce: public uses NPT4_PUB, all else NPT4_PRIV; both blank => null.
-    // net_price is excluded from mechanism-A coercion: negatives are valid (0022).
-    val netPrice = if (control == 1) intOrNull(record, "NPT4_PUB") else intOrNull(record, "NPT4_PRIV")
+    // Net-price selection is keyed on control: public (control=1) reads the
+    // *_PUB column, all else *_PRIV; both blank => null. All net-price columns
+    // are EXCLUDED from mechanism-A coercion -- negatives are valid (0022), and
+    // the low-income bands go negative most often (aid exceeding cost). The
+    // Scorecard PrivacySuppressed/NULL sentinels fall out as null via the
+    // toIntOrNull path in intOrNull.
+    fun readControlKeyed(base: String): Int? = if (control == 1) intOrNull(record, "${base}_PUB") else intOrNull(record, "${base}_PRIV")
+
+    val netPrice = readControlKeyed("NPT4")
+
+    // Income-band net prices (RFC 133): the five household income brackets,
+    // read from NPT41_PUB, NPT42_PUB, NPT43_PUB, NPT44_PUB, NPT45_PUB or
+    // NPT41_PRIV, NPT42_PRIV, NPT43_PRIV, NPT44_PRIV, NPT45_PRIV per control
+    // (full names spelled out so a grep for any column finds this read). The
+    // band domain is fixed by the Scorecard schema; anything outside
+    // [INCOME_BANDS] is a programming error, failed loudly rather than read as
+    // a fabricated column name.
+    fun readBandPrice(band: Int): Int? {
+      require(band in INCOME_BANDS) { "income band must be in [$INCOME_BANDS], got [$band]" }
+      return readControlKeyed("NPT4$band")
+    }
 
     val coercions = mutableMapOf<String, Int>()
     val college =
@@ -429,12 +447,20 @@ class CollegeScorecardLoader(
         satAvg = intInDomainOrNull(record, "SAT_AVG", 0, Int.MAX_VALUE, "sat_avg", coercions),
         costAttendance = intInDomainOrNull(record, "COSTT4_A", 0, Int.MAX_VALUE, "cost_attendance", coercions),
         netPrice = netPrice,
+        netPriceQ1 = readBandPrice(1),
+        netPriceQ2 = readBandPrice(2),
+        netPriceQ3 = readBandPrice(3),
+        netPriceQ4 = readBandPrice(4),
+        netPriceQ5 = readBandPrice(5),
         tuitionInState = intInDomainOrNull(record, "TUITIONFEE_IN", 0, Int.MAX_VALUE, "tuition_in_state", coercions),
         tuitionOutState =
           intInDomainOrNull(record, "TUITIONFEE_OUT", 0, Int.MAX_VALUE, "tuition_out_state", coercions),
         graduationRate = doubleInDomainOrNull(record, "C150_4", RATE_MIN, RATE_MAX, "graduation_rate", coercions),
         medianEarnings =
           intInDomainOrNull(record, "MD_EARN_WNE_P10", 0, Int.MAX_VALUE, "median_earnings", coercions),
+        // median_debt is a loan amount: genuinely nonneg, so mechanism A applies
+        // like the sibling money fields.
+        medianDebt = intInDomainOrNull(record, "GRAD_DEBT_MDN", 0, Int.MAX_VALUE, "median_debt", coercions),
         pctPell = doubleInDomainOrNull(record, "PCTPELL", RATE_MIN, RATE_MAX, "pct_pell", coercions),
         website = stringOrNull(record, "INSTURL"),
       )
@@ -634,6 +660,10 @@ class CollegeScorecardLoader(
 
   companion object {
     private const val ROW_SAVEPOINT = "scorecard_row"
+
+    // The Scorecard's five NPT4n household-income brackets (RFC 133):
+    // 1 = $0-30k, 2 = $30,001-48k, 3 = $48,001-75k, 4 = $75,001-110k, 5 = $110k+.
+    private val INCOME_BANDS = 1..5
 
     // Optional-metric domains, mirrored from the 0015 CHECKs (the DB CHECK is the
     // backstop; this duplication is intentional defense-in-depth). Required-field

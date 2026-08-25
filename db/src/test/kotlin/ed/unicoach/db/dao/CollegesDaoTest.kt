@@ -72,8 +72,14 @@ class CollegesDaoTest {
     undergradEnrollment: Int? = 5000,
     admissionRate: Double? = 0.5,
     netPrice: Int? = 20000,
+    netPriceQ1: Int? = 9000,
+    netPriceQ2: Int? = 11000,
+    netPriceQ3: Int? = 14000,
+    netPriceQ4: Int? = 17000,
+    netPriceQ5: Int? = 21000,
     graduationRate: Double? = 0.7,
     medianEarnings: Int? = 55000,
+    medianDebt: Int? = 23000,
     pctPell: Double? = 0.4,
     locale: Int? = 13,
     region: Int? = 8,
@@ -93,10 +99,16 @@ class CollegesDaoTest {
     satAvg = 1200,
     costAttendance = 40000,
     netPrice = netPrice,
+    netPriceQ1 = netPriceQ1,
+    netPriceQ2 = netPriceQ2,
+    netPriceQ3 = netPriceQ3,
+    netPriceQ4 = netPriceQ4,
+    netPriceQ5 = netPriceQ5,
     tuitionInState = 12000,
     tuitionOutState = 30000,
     graduationRate = graduationRate,
     medianEarnings = medianEarnings,
+    medianDebt = medianDebt,
     pctPell = pctPell,
     website = "https://test$unitId.edu",
   )
@@ -114,6 +126,12 @@ class CollegesDaoTest {
     assertEquals(100100, college.unitId)
     assertEquals(1, college.control)
     assertEquals(20000, college.netPrice)
+    assertEquals(9000, college.netPriceQ1)
+    assertEquals(11000, college.netPriceQ2)
+    assertEquals(14000, college.netPriceQ3)
+    assertEquals(17000, college.netPriceQ4)
+    assertEquals(21000, college.netPriceQ5)
+    assertEquals(23000, college.medianDebt)
   }
 
   @Test
@@ -193,6 +211,21 @@ class CollegesDaoTest {
     val result = CollegesDao.upsert(session, newCollege(100650, netPrice = -982))
     assertTrue(result.isSuccess, "expected negative net_price to be accepted")
     assertEquals(-982, result.getOrThrow().netPrice)
+  }
+
+  @Test
+  fun `negative band net price is accepted, negative median_debt is rejected`() {
+    // The five band columns follow the net_price precedent (0022): no nonneg
+    // CHECK, because aid exceeding cost publishes a negative figure -- and the
+    // low-income bands go negative most often.
+    val ok = CollegesDao.upsert(session, newCollege(100660, netPriceQ1 = -1913))
+    assertTrue(ok.isSuccess, "expected negative net_price_q1 to be accepted")
+    assertEquals(-1913, ok.getOrThrow().netPriceQ1)
+
+    // median_debt is a loan amount: genuinely nonneg, CHECK-backed.
+    val bad = CollegesDao.upsert(session, newCollege(100661, medianDebt = -1))
+    assertTrue(bad.isFailure)
+    assertTrue(bad.exceptionOrNull() is ConstraintViolationException)
   }
 
   @Test
@@ -348,6 +381,12 @@ class CollegesDaoTest {
     assertEquals(0.65, match.graduationRate)
     assertEquals(62000, match.medianEarnings)
     assertEquals(0.33, match.pctPell)
+    assertEquals(9000, match.netPriceQ1)
+    assertEquals(11000, match.netPriceQ2)
+    assertEquals(14000, match.netPriceQ3)
+    assertEquals(17000, match.netPriceQ4)
+    assertEquals(21000, match.netPriceQ5)
+    assertEquals(23000, match.medianDebt)
   }
 
   @Test
@@ -430,6 +469,28 @@ class CollegesDaoTest {
 
     val history = CollegesDao.listVersions(session, first.id).getOrThrow()
     assertEquals(1, history.size)
+  }
+
+  @Test
+  fun `a change in only net_price_q3 bumps version and logs history carrying all six new fields`() {
+    // RFC 133: the six new columns are in the upsert's IS DISTINCT FROM tuple,
+    // so a re-ingest differing only in one band price is a real content change.
+    val first = CollegesDao.upsert(session, newCollege(800250)).getOrThrow()
+    assertEquals(1, first.version)
+
+    val second = CollegesDao.upsert(session, newCollege(800250, netPriceQ3 = 14500)).getOrThrow()
+    assertEquals(2, second.version)
+    assertEquals(14500, second.netPriceQ3)
+
+    val history = CollegesDao.listVersions(session, first.id).getOrThrow()
+    assertEquals(listOf(1, 2), history.map { it.version })
+    val latest = history.last().entity
+    assertEquals(9000, latest.netPriceQ1)
+    assertEquals(11000, latest.netPriceQ2)
+    assertEquals(14500, latest.netPriceQ3)
+    assertEquals(17000, latest.netPriceQ4)
+    assertEquals(21000, latest.netPriceQ5)
+    assertEquals(23000, latest.medianDebt)
   }
 
   @Test

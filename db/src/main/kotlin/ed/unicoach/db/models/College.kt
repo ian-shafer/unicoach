@@ -29,10 +29,21 @@ data class College(
   val satAvg: Int?,
   val costAttendance: Int?,
   val netPrice: Int?,
+  // Average annual net price by household income bracket (RFC 133, Scorecard
+  // NPT41..NPT45 keyed on control): q1 = $0-30k, q2 = $30,001-48k,
+  // q3 = $48,001-75k, q4 = $75,001-110k, q5 = $110k+. Negative values are
+  // legitimate (aid exceeding cost, 0022); null = not reported/suppressed.
+  val netPriceQ1: Int?,
+  val netPriceQ2: Int?,
+  val netPriceQ3: Int?,
+  val netPriceQ4: Int?,
+  val netPriceQ5: Int?,
   val tuitionInState: Int?,
   val tuitionOutState: Int?,
   val graduationRate: Double?,
   val medianEarnings: Int?,
+  // Median cumulative federal debt of completers (Scorecard GRAD_DEBT_MDN, RFC 133).
+  val medianDebt: Int?,
   val pctPell: Double?,
   val website: String?,
   override val createdAt: Instant,

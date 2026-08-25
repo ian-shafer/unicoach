@@ -89,10 +89,16 @@ object CollegesDao :
       satAvg = rs.intOrNull("sat_avg"),
       costAttendance = rs.intOrNull("cost_attendance"),
       netPrice = rs.intOrNull("net_price"),
+      netPriceQ1 = rs.intOrNull("net_price_q1"),
+      netPriceQ2 = rs.intOrNull("net_price_q2"),
+      netPriceQ3 = rs.intOrNull("net_price_q3"),
+      netPriceQ4 = rs.intOrNull("net_price_q4"),
+      netPriceQ5 = rs.intOrNull("net_price_q5"),
       tuitionInState = rs.intOrNull("tuition_in_state"),
       tuitionOutState = rs.intOrNull("tuition_out_state"),
       graduationRate = rs.doubleOrNull("graduation_rate"),
       medianEarnings = rs.intOrNull("median_earnings"),
+      medianDebt = rs.intOrNull("median_debt"),
       pctPell = rs.doubleOrNull("pct_pell"),
       website = rs.getString("website"),
       createdAt = rs.getInstant("created_at"),
@@ -129,8 +135,14 @@ object CollegesDao :
       undergradEnrollment = rs.intOrNull("undergrad_enrollment"),
       admissionRate = rs.doubleOrNull("admission_rate"),
       netPrice = rs.intOrNull("net_price"),
+      netPriceQ1 = rs.intOrNull("net_price_q1"),
+      netPriceQ2 = rs.intOrNull("net_price_q2"),
+      netPriceQ3 = rs.intOrNull("net_price_q3"),
+      netPriceQ4 = rs.intOrNull("net_price_q4"),
+      netPriceQ5 = rs.intOrNull("net_price_q5"),
       graduationRate = rs.doubleOrNull("graduation_rate"),
       medianEarnings = rs.intOrNull("median_earnings"),
+      medianDebt = rs.intOrNull("median_debt"),
       pctPell = rs.doubleOrNull("pct_pell"),
       website = rs.getString("website"),
       programTitles = titles,
@@ -148,7 +160,7 @@ object CollegesDao :
    *
    * The version bumps (`version = colleges.version + 1`) and a history row is
    * logged **only on a real content change** — the `DO UPDATE` carries a `WHERE`
-   * comparing the 21 curated columns as a row-tuple with `IS DISTINCT FROM`, so
+   * comparing every curated column as a row-tuple with `IS DISTINCT FROM`, so
    * re-ingesting an unchanged row neither writes nor bumps. (A whole-row
    * `colleges IS DISTINCT FROM EXCLUDED` would be unconditionally true —
    * `EXCLUDED.id`/`version`/`created_at`/`updated_at` all differ — defeating the
@@ -171,9 +183,10 @@ object CollegesDao :
           unit_id, opeid, name, city, state, region, locale, latitude, longitude,
           control, undergrad_enrollment, admission_rate, sat_avg, cost_attendance,
           net_price, tuition_in_state, tuition_out_state, graduation_rate,
-          median_earnings, pct_pell, website
+          median_earnings, pct_pell, website, net_price_q1, net_price_q2,
+          net_price_q3, net_price_q4, net_price_q5, median_debt
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (unit_id) DO UPDATE SET
           opeid = EXCLUDED.opeid,
           name = EXCLUDED.name,
@@ -195,6 +208,12 @@ object CollegesDao :
           median_earnings = EXCLUDED.median_earnings,
           pct_pell = EXCLUDED.pct_pell,
           website = EXCLUDED.website,
+          net_price_q1 = EXCLUDED.net_price_q1,
+          net_price_q2 = EXCLUDED.net_price_q2,
+          net_price_q3 = EXCLUDED.net_price_q3,
+          net_price_q4 = EXCLUDED.net_price_q4,
+          net_price_q5 = EXCLUDED.net_price_q5,
+          median_debt = EXCLUDED.median_debt,
           version = colleges.version + 1
         WHERE (
           colleges.opeid, colleges.name, colleges.city, colleges.state,
@@ -203,7 +222,9 @@ object CollegesDao :
           colleges.sat_avg, colleges.cost_attendance, colleges.net_price,
           colleges.tuition_in_state, colleges.tuition_out_state,
           colleges.graduation_rate, colleges.median_earnings, colleges.pct_pell,
-          colleges.website, colleges.unit_id
+          colleges.website, colleges.net_price_q1, colleges.net_price_q2,
+          colleges.net_price_q3, colleges.net_price_q4, colleges.net_price_q5,
+          colleges.median_debt, colleges.unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.opeid, EXCLUDED.name, EXCLUDED.city, EXCLUDED.state,
           EXCLUDED.region, EXCLUDED.locale, EXCLUDED.latitude, EXCLUDED.longitude,
@@ -211,7 +232,9 @@ object CollegesDao :
           EXCLUDED.sat_avg, EXCLUDED.cost_attendance, EXCLUDED.net_price,
           EXCLUDED.tuition_in_state, EXCLUDED.tuition_out_state,
           EXCLUDED.graduation_rate, EXCLUDED.median_earnings, EXCLUDED.pct_pell,
-          EXCLUDED.website, EXCLUDED.unit_id
+          EXCLUDED.website, EXCLUDED.net_price_q1, EXCLUDED.net_price_q2,
+          EXCLUDED.net_price_q3, EXCLUDED.net_price_q4, EXCLUDED.net_price_q5,
+          EXCLUDED.median_debt, EXCLUDED.unit_id
         )
         RETURNING *
       )
@@ -243,7 +266,13 @@ object CollegesDao :
         stmt.setIntOrNull(19, input.medianEarnings)
         stmt.setDoubleOrNull(20, input.pctPell)
         stmt.setStringOrNull(21, input.website)
-        stmt.setInt(22, input.unitId)
+        stmt.setIntOrNull(22, input.netPriceQ1)
+        stmt.setIntOrNull(23, input.netPriceQ2)
+        stmt.setIntOrNull(24, input.netPriceQ3)
+        stmt.setIntOrNull(25, input.netPriceQ4)
+        stmt.setIntOrNull(26, input.netPriceQ5)
+        stmt.setIntOrNull(27, input.medianDebt)
+        stmt.setInt(28, input.unitId)
       },
       map = ::mapCollege,
       mapError = ::mapCollegeError,
@@ -447,8 +476,9 @@ object CollegesDao :
       """
       SELECT
         c.id, c.unit_id, c.name, c.city, c.state, c.control, c.locale,
-        c.undergrad_enrollment, c.admission_rate, c.net_price, c.graduation_rate,
-        c.median_earnings, c.pct_pell, c.website,
+        c.undergrad_enrollment, c.admission_rate, c.net_price, c.net_price_q1,
+        c.net_price_q2, c.net_price_q3, c.net_price_q4, c.net_price_q5,
+        c.graduation_rate, c.median_earnings, c.median_debt, c.pct_pell, c.website,
         $selectTitles
       FROM colleges c
       $join

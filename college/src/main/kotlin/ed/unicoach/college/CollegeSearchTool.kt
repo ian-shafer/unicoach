@@ -329,8 +329,14 @@ class CollegeSearchTool(
       putOrNull("undergrad_enrollment", match.undergradEnrollment)
       putOrNull("admission_rate", match.admissionRate)
       putOrNull("net_price", match.netPrice)
+      putOrNull("net_price_q1", match.netPriceQ1)
+      putOrNull("net_price_q2", match.netPriceQ2)
+      putOrNull("net_price_q3", match.netPriceQ3)
+      putOrNull("net_price_q4", match.netPriceQ4)
+      putOrNull("net_price_q5", match.netPriceQ5)
       putOrNull("graduation_rate", match.graduationRate)
       putOrNull("median_earnings", match.medianEarnings)
+      putOrNull("median_debt", match.medianDebt)
       putOrNull("pct_pell", match.pctPell)
       putJsonArray("programs") {
         match.programTitles.forEach { add(it) }
@@ -391,7 +397,11 @@ class CollegeSearchTool(
         "undergraduate enrollment size, admission rate (selectivity), maximum net " +
         "price (affordability), and minimum graduation rate. Returns matching real " +
         "institutions with size, selectivity, net price, and outcome context " +
-        "(graduation rate, median earnings, Pell share). This tool filters on " +
+        "(graduation rate, median earnings, Pell share). Each result also carries " +
+        "average annual net price by household income band -- net_price_q1..q5 for " +
+        "incomes ${'$'}0-30k / ${'$'}30,001-48k / ${'$'}48,001-75k / ${'$'}75,001-110k / ${'$'}110k+ -- " +
+        "and median_debt, the median cumulative federal loan debt of graduates, so " +
+        "cost answers can cite the band matching the family's income. This tool filters on " +
         "structured fields only; it CANNOT reason about geographic distance, " +
         "proximity to the coastline, or how close two places are — to approximate " +
         "\"near the ocean\" or a region, pass the relevant set of coastal/nearby " +
