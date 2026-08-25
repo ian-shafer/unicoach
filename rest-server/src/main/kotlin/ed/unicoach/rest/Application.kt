@@ -305,6 +305,11 @@ fun Application.appModule(
       listOf(
         CollegeChatTool(CollegeSearchTool(CollegeSearchService(database))),
         ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
+        ed.unicoach.coaching.costs
+          .CollegeCostChatTool(
+            ed.unicoach.coaching.costs
+              .CollegeCostService(database),
+          ),
       ),
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the

@@ -2038,4 +2038,41 @@ class CoachingServiceTest {
       assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
       assertEquals(listOf(student), spy.studentIds, "the tool must receive the owning student's id")
     }
+
+  @Test
+  fun `the real college_cost_profile tool is dispatchable student-scoped through the loop`() =
+    runBlocking {
+      val student = createStudent()
+      val tool =
+        ed.unicoach.coaching.costs
+          .CollegeCostChatTool(
+            ed.unicoach.coaching.costs
+              .CollegeCostService(database),
+          )
+      val requests = mutableListOf<ChatRequest>()
+      val provider =
+        SequencedProvider(
+          terminals = listOf(toolUseTerminal("college_cost_profile" to "{}"), completedTerminal("no schools listed yet")),
+          onRequest = { requests.add(it) },
+        )
+      val started =
+        serviceWith(provider, registry(tool)).startConvo(student, "what would my schools cost?", null).getOrThrow()
+          as StartConvoResult.Started
+      assertTrue(terminalOf(drain(started.reply)) is ReplyEvent.Completed)
+
+      // The continuation's tool_result carries the structured empty-list read
+      // (RFC 135): a valid outcome with the money-profile block, not an error.
+      assertEquals(2, requests.size)
+      // The tool's JSON rides tool_result.content as a string, so quotes are
+      // escaped in the serialized message; assert on the bare markers.
+      val toolResult =
+        requests[1]
+          .messages
+          .last()
+          .content
+          .toString()
+      assertTrue(toolResult.contains("count"), "got $toolResult")
+      assertTrue(toolResult.contains("income_band_status"), "the money-profile block must ride the result")
+      assertTrue(toolResult.contains("College Scorecard"), "the attribution must ride the result")
+    }
 }

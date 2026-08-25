@@ -1,5 +1,6 @@
 package ed.unicoach.coaching
 
+import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.fitlens.FitLensConfig
 import ed.unicoach.coaching.synthesis.SynthesisConfig
@@ -12,6 +13,8 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -95,5 +98,31 @@ class SystemPromptCatalogTest {
     assertPinned("synthesis.promptVersion", synthesis.promptName, synthesis.promptVersion)
     assertPinned("fitLens.queryPromptVersion", fitLens.queryPromptName, fitLens.queryPromptVersion)
     assertPinned("fitLens.reasonPromptVersion", fitLens.reasonPromptName, fitLens.reasonPromptVersion)
+  }
+
+  /**
+   * The 0047 seed's structural contract (RFC 135, mirroring 0044's v2-over-v1
+   * convention): v3 is the v2 body byte-identical as a prefix, joined by a
+   * single space to exactly one appended paragraph — the know-your-real-price
+   * instruction. The paragraph's markers are asserted, not its full copy: the
+   * seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v3 is the v2 body verbatim plus one appended cost paragraph`() {
+    val v2 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v2").getOrThrow().body
+    val v3 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v3").getOrThrow().body
+    assertTrue(v3.startsWith(v2), "the v2 prefix must be byte-identical, so the cost paragraph is the only change")
+    val appended = v3.removePrefix(v2)
+    assertTrue(appended.startsWith(" When the student has schools on their college list"), "single-space paragraph join")
+    assertTrue(appended.contains(CollegeCostChatTool.TOOL_NAME), "the paragraph must name the cost tool")
+    assertTrue(appended.contains("precision_offer"), "the paragraph must key the in-answer invitation off the result")
+    assertTrue(
+      appended.contains("offer to record their household income band"),
+      "the paragraph must cover recording the band in-conversation",
+    )
+    // The paragraph deliberately does NOT name the write tool: the coach is
+    // told what to offer; which tool records it is the tool description's job.
+    assertFalse(appended.contains(MoneyProfileChatTool.TOOL_NAME), "the write tool's name does not ride the prompt")
+    assertTrue(appended.contains("U.S. Department of Education College Scorecard"), "the paragraph must require attribution")
   }
 }

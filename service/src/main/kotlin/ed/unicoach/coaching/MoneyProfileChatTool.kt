@@ -10,7 +10,6 @@ import ed.unicoach.db.models.StudentId
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -115,42 +114,57 @@ class MoneyProfileChatTool(
 
   /** Maps the wire shape onto the service's [FieldUpdate] vocabulary; every malformation is an [ParsedInput.Invalid]. */
   private fun parseInput(input: JsonObject): ParsedInput {
-    val unknown = input.keys - KNOWN_FIELDS
-    if (unknown.isNotEmpty()) {
-      return ParsedInput.Invalid("unknown field(s): ${unknown.sorted().joinToString(", ") { "[$it]" }}")
-    }
+    unknownFieldsReason(input, KNOWN_FIELDS)?.let { return ParsedInput.Invalid(it) }
 
-    val incomeBandRaw = optString(input, "income_band") ?: return ParsedInput.Invalid("income_band must be a string")
+    val incomeBandRaw =
+      when (val read = getString(input, "income_band")) {
+        is OptRead.Present -> read.value
+        OptRead.Absent -> null
+        is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
+      }
     val incomeDeclined =
-      optBoolean(input, "income_band_declined") ?: return ParsedInput.Invalid("income_band_declined must be a boolean")
-    val residencyRaw = optString(input, "residency_state") ?: return ParsedInput.Invalid("residency_state must be a string")
+      when (val read = getBoolean(input, "income_band_declined")) {
+        is OptRead.Present -> read.value
+        OptRead.Absent -> null
+        is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
+      }
+    val residencyRaw =
+      when (val read = getString(input, "residency_state")) {
+        is OptRead.Present -> read.value
+        OptRead.Absent -> null
+        is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
+      }
     val residencyDeclined =
-      optBoolean(input, "residency_declined") ?: return ParsedInput.Invalid("residency_declined must be a boolean")
+      when (val read = getBoolean(input, "residency_declined")) {
+        is OptRead.Present -> read.value
+        OptRead.Absent -> null
+        is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
+      }
 
     // The decline flags are literal-true (RFC 134 tool contract): `false` is
     // not "don't decline", it is a malformed call -- omission is the only way
     // to leave a field unchanged.
-    if (incomeDeclined.value == false) {
+    if (incomeDeclined == false) {
       return ParsedInput.Invalid("income_band_declined must be true when present; omit it to leave the field unchanged")
     }
-    if (residencyDeclined.value == false) {
+    if (residencyDeclined == false) {
       return ParsedInput.Invalid("residency_declined must be true when present; omit it to leave the field unchanged")
     }
 
-    if (incomeBandRaw.value != null && incomeDeclined.value == true) {
+    if (incomeBandRaw != null && incomeDeclined == true) {
       return ParsedInput.Invalid("income_band and income_band_declined cannot both be set in one call")
     }
-    if (residencyRaw.value != null && residencyDeclined.value == true) {
+    if (residencyRaw != null && residencyDeclined == true) {
       return ParsedInput.Invalid("residency_state and residency_declined cannot both be set in one call")
     }
 
     val incomeUpdate =
-      when (val parsed = parseIncomeUpdate(incomeBandRaw.value, incomeDeclined.value == true)) {
+      when (val parsed = parseIncomeUpdate(incomeBandRaw, incomeDeclined == true)) {
         is FieldParse.Ok -> parsed.update
         is FieldParse.Invalid -> return ParsedInput.Invalid(parsed.reason)
       }
     val residencyUpdate =
-      when (val parsed = parseResidencyUpdate(residencyRaw.value, residencyDeclined.value == true)) {
+      when (val parsed = parseResidencyUpdate(residencyRaw, residencyDeclined == true)) {
         is FieldParse.Ok -> parsed.update
         is FieldParse.Invalid -> return ParsedInput.Invalid(parsed.reason)
       }
@@ -221,34 +235,6 @@ class MoneyProfileChatTool(
         profile.residencyState?.let { put("residency_state", it) }
       }
     }
-
-  private fun errorObject(reason: String): JsonObject = buildJsonObject { put("error", reason) }
-
-  /** An optional field: [value] null when absent; an unwrapped null from a reader signals a type mismatch. */
-  private class Opt<T>(
-    val value: T?,
-  )
-
-  private fun optString(
-    input: JsonObject,
-    field: String,
-  ): Opt<String>? {
-    val element = input[field] ?: return Opt(null)
-    val primitive = element as? JsonPrimitive ?: return null
-    if (!primitive.isString) return null
-    return Opt(primitive.content)
-  }
-
-  private fun optBoolean(
-    input: JsonObject,
-    field: String,
-  ): Opt<Boolean>? {
-    val element = input[field] ?: return Opt(null)
-    val primitive = element as? JsonPrimitive ?: return null
-    // A JSON string "true" is not a boolean: the input contract is strict.
-    if (primitive.isString) return null
-    return primitive.booleanOrNull?.let { Opt(it) }
-  }
 
   companion object {
     private val logger = LoggerFactory.getLogger(MoneyProfileChatTool::class.java)

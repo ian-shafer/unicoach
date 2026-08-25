@@ -325,23 +325,35 @@ object CollegesDao :
     )
 
   /**
-   * The display names of the given college [ids], in no particular order. Used by
-   * the fit-lens read phase to render its exclusion set (college-list + prior
-   * suggestions) into LLM call #1 by name. An empty [ids] short-circuits to an
-   * empty list without a query.
+   * The display names of the given college [ids], in no particular order —
+   * [listByIds] projected to names. Used by the fit-lens read phase to render
+   * its exclusion set (college-list + prior suggestions) into LLM call #1 by
+   * name (bounded by list size, so the wider SELECT is immaterial). An empty
+   * [ids] short-circuits to an empty list without a query.
    */
   fun listNamesByIds(
     session: SqlSession,
     ids: Collection<CollegeId>,
-  ): Result<List<String>> {
+  ): Result<List<String>> = listByIds(session, ids).map { rows -> rows.map { it.name } }
+
+  /**
+   * The full [College] rows for the given [ids], in no particular order (the
+   * caller re-orders; RFC 135's cost read joins them back to the student's
+   * list entries). An empty [ids] short-circuits to an empty list without a
+   * query; ids with no row are simply absent from the result.
+   */
+  fun listByIds(
+    session: SqlSession,
+    ids: Collection<CollegeId>,
+  ): Result<List<College>> {
     if (ids.isEmpty()) return Result.success(emptyList())
     val placeholders = ids.joinToString(", ") { "?" }
     return session.queryList(
-      "SELECT name FROM colleges WHERE id IN ($placeholders)",
+      "SELECT * FROM colleges WHERE id IN ($placeholders)",
       bind = { stmt ->
         ids.forEachIndexed { i, id -> stmt.setObject(i + 1, id.value) }
       },
-      map = { it.getString("name") },
+      map = ::mapCollege,
     )
   }
 

@@ -179,11 +179,23 @@ class MoneyProfileChatToolTest {
     }
 
   @Test
-  fun `a string-typed decline flag is a structured error, not a parsed boolean`() =
+  fun `a string-typed decline flag is a structured error naming the offending element, not a parsed boolean`() =
     runBlocking {
       val student = createStudent()
       val result = tool.execute(student, input("""{"income_band_declined":"true"}"""))
-      assertEquals("income_band_declined must be a boolean", errorOf(result), "got $result")
+      assertEquals("""[income_band_declined] must be a [boolean], got: ["true"]""", errorOf(result), "got $result")
+      assertTrue(
+        MoneyProfilesDao.findActiveByStudent(sqlSession, student).isFailure,
+        "a mistyped call must not create a profile row",
+      )
+    }
+
+  @Test
+  fun `a non-string income_band is a type-mismatch error, distinct from an absent field`() =
+    runBlocking {
+      val student = createStudent()
+      val result = tool.execute(student, input("""{"income_band":42}"""))
+      assertEquals("[income_band] must be a [string], got: [42]", errorOf(result), "got $result")
       assertTrue(
         MoneyProfilesDao.findActiveByStudent(sqlSession, student).isFailure,
         "a mistyped call must not create a profile row",

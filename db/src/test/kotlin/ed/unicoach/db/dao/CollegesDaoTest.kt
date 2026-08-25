@@ -537,6 +537,19 @@ class CollegesDaoTest {
   }
 
   @Test
+  fun `listByIds returns the full rows for the given ids and skips absent ones`() {
+    val a = seed(newCollege(800750, name = "Alpha U"))
+    val b = seed(newCollege(800751, name = "Beta U"))
+    seed(newCollege(800752, name = "Gamma U"))
+
+    val rows = CollegesDao.listByIds(session, listOf(a, b, CollegeId(UUID.randomUUID()))).getOrThrow()
+    assertEquals(setOf("Alpha U", "Beta U"), rows.map { it.name }.toSet())
+    assertEquals(9000, rows.first { it.id == a }.netPriceQ1, "the full cost columns must ride the row")
+
+    assertEquals(emptyList(), CollegesDao.listByIds(session, emptyList()).getOrThrow(), "empty ids short-circuit")
+  }
+
+  @Test
   fun `physical delete on colleges is rejected`() {
     val college = CollegesDao.upsert(session, newCollege(800800)).getOrThrow()
     assertFailsWith<SQLException> {
