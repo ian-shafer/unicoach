@@ -1,5 +1,5 @@
 ---
-name: product
+name: chart
 description: >-
   Runs the unicoach product layer: takes a product question from Ian and
   carries it through FRAME -> PRIORITISE -> DISCOVER -> SPEC & SLICE ->
@@ -7,14 +7,14 @@ description: >-
   research reports, exactly two human gates (prioritisation and spec), a set
   of /ship-ready slice instructions, and a ledger mapping slices to landed
   SHAs. Use when Ian raises a product question, asks what to build next, asks
-  to run or resume a product brief, or invokes /skill:product. Sits strictly
+  to run or resume a product brief, or invokes /skill:chart. Sits strictly
   above the ship skill: it decides WHAT to build and writes instructions;
   /ship builds them. Worked examples: product/0001-v1-differentiator (brief +
   spec + research, S1-S3 landed as RFCs 133-135) and
   product/0002-account-data-deletion (framed brief awaiting gate 1).
 ---
 
-# product
+# chart
 
 A product question in; landed, user-reachable value out. Two human touchpoints:
 the prioritisation gate and the spec gate. Everything else is this skill's job.
