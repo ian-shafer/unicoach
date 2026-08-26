@@ -53,7 +53,11 @@ class CollegeListChatTool(
           }
           putJsonObject("college_id") {
             put("type", "string")
-            put("description", "The college's id, from a college search or cost result.")
+            put(
+              "description",
+              "The college's identifier: the `college_id` field of a college search result or a college cost " +
+                "result, copied verbatim. Never construct or guess one.",
+            )
           }
           putJsonObject("status") {
             put("type", "string")

@@ -1,6 +1,8 @@
 package ed.unicoach.coaching.collegelist
 
 import ed.unicoach.coaching.costs.CostsTestDb
+import ed.unicoach.college.CollegeSearchService
+import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
@@ -98,6 +100,36 @@ class CollegeListChatToolTest {
     val persisted = activeEntries(student).single()
     assertEquals(CollegeListEntryStatus.CONSIDERING, persisted.status)
     assertNull(persisted.reasons)
+  }
+
+  // The round trip the tools are actually used through: the model never types a
+  // uuid, it copies `college_id` out of a search result. Driving the REAL
+  // CollegeSearchTool here is the point — a hand-written uuid would pass even if
+  // search never emitted the id at all.
+  @Test
+  fun `a college_id copied out of a real search result drives an add end to end`() {
+    val student = createStudent()
+    val seeded = seedCollege("Round Trip University")
+
+    val searchTool = CollegeSearchTool(CollegeSearchService(CostsTestDb.database))
+    val searchResult = runBlocking { searchTool.execute(input("""{"states":["CA"]}""")) }
+    val match =
+      searchResult
+        .getValue("colleges")
+        .jsonArray
+        .map { it.jsonObject }
+        .single { it["name"]!!.jsonPrimitive.content == "Round Trip University" }
+    val collegeId = match["college_id"]!!.jsonPrimitive.content
+    // Throws if the search emitted anything but a uuid string.
+    assertEquals(seeded.value, UUID.fromString(collegeId))
+
+    val result = execute(student, """{"action":"add","college_id":"$collegeId"}""")
+
+    assertNull(errorOf(result), "got $result")
+    val row = collegeListOf(result).single()
+    assertEquals(collegeId, row["college_id"]!!.jsonPrimitive.content)
+    assertEquals("Round Trip University", row["name"]!!.jsonPrimitive.content)
+    assertEquals(1, countOf(result))
   }
 
   @Test

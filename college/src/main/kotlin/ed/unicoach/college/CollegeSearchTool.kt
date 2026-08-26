@@ -322,6 +322,10 @@ class CollegeSearchTool(
 
   private fun matchObject(match: CollegeMatch): JsonObject =
     buildJsonObject {
+      // First key by design: the id the model must copy into
+      // `update_college_list`'s `college_id`, ahead of the name — the only
+      // other field it could mistake for a handle on the school.
+      put("college_id", match.id.value.toString())
       put("name", match.name)
       put("city", match.city)
       put("state", match.state)
@@ -397,7 +401,10 @@ class CollegeSearchTool(
         "undergraduate enrollment size, admission rate (selectivity), maximum net " +
         "price (affordability), and minimum graduation rate. Returns matching real " +
         "institutions with size, selectivity, net price, and outcome context " +
-        "(graduation rate, median earnings, Pell share). Each result also carries " +
+        "(graduation rate, median earnings, Pell share). Each result carries " +
+        "`college_id`, the college's stable identifier — exactly what the " +
+        "`update_college_list` tool's `college_id` parameter takes, so copy it " +
+        "verbatim from a result and never construct or guess one. Each result also carries " +
         "average annual net price by household income band -- net_price_q1..q5 for " +
         "incomes ${'$'}0-30k / ${'$'}30,001-48k / ${'$'}48,001-75k / ${'$'}75,001-110k / ${'$'}110k+ -- " +
         "and median_debt, the median cumulative federal loan debt of graduates, so " +

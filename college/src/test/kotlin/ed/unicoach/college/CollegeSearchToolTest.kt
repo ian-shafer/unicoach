@@ -169,6 +169,28 @@ class CollegeSearchToolTest {
     }
 
   @Test
+  fun `each search result carries the college_id update_college_list takes`() =
+    runBlocking {
+      val seeded = database.withConnection { session -> CollegesDao.upsert(session, newCollege(842)).getOrThrow() }
+
+      val result = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("CA")) }) })
+
+      assertNull(result["error"])
+      val first = (result["colleges"] as JsonArray).single().jsonObject
+      assertEquals(seeded.id.value.toString(), first["college_id"]!!.jsonPrimitive.content)
+      // First key by design: the model reads the id before anything it might
+      // mistake for one (the name, the unit id).
+      assertEquals("college_id", first.keys.first())
+    }
+
+  @Test
+  fun `definition description tells the model to copy college_id verbatim`() {
+    val description = tool.definition["description"]!!.jsonPrimitive.content
+    assertTrue(description.contains("college_id"))
+    assertTrue(description.contains("verbatim"))
+  }
+
+  @Test
   fun `execute on malformed input returns an error object, not an exception`() =
     runBlocking {
       val nonDigitPrefix = tool.execute(buildJsonObject { put("cipPrefix", "bio") })
