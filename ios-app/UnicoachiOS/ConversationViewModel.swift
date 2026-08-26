@@ -120,16 +120,35 @@ final class ConversationViewModel: ObservableObject {
     /// blocked truth is the server's and every conversation in the stack sees
     /// the same one (RFC 121).
     private let onBudgetExhausted: () async -> Void
+    /// Reported upward after **every** turn that terminates, so the layer above
+    /// can re-read whatever a turn has just consumed. The composer's coaching
+    /// budget ring is the reason it exists: `SubscriptionViewModel`'s meter was
+    /// refreshed only at launch and on foreground, so the one number sitting
+    /// beside the send button went stale the moment coaching was actually
+    /// spent, and the only per-turn re-read in the app was the 402's — a meter
+    /// that moved only once it was already too late.
+    ///
+    /// It is deliberately **not** the same hook as `onBudgetExhausted`, and not
+    /// fired alongside it: the refusal path forces its own *invalidating*
+    /// re-read, so calling both would mean two GETs for one turn and a race
+    /// between an ordinary read and the read the paywall is waiting on.
+    ///
+    /// A **failed** turn still fires it: a stream that died mid-reply burned
+    /// tokens, and a screen that only refreshed after clean turns would drift
+    /// exactly on the turns that cost the most.
+    private let onTurnFinished: () async -> Void
 
     /// Fresh conversation (Start Coaching / compose): no established conversation
     /// and no history to fetch, so `historyLoad` starts `.ready` and `stream()`
     /// routes the first turn to `streamConversation`.
     init(conversationClient: ConversationClientProtocol,
          onProfileRequired: @escaping () -> Void,
-         onBudgetExhausted: @escaping () async -> Void) {
+         onBudgetExhausted: @escaping () async -> Void,
+         onTurnFinished: @escaping () async -> Void) {
         self.conversationClient = conversationClient
         self.onProfileRequired = onProfileRequired
         self.onBudgetExhausted = onBudgetExhausted
+        self.onTurnFinished = onTurnFinished
     }
 
     /// Re-enter an established conversation: seeds `conversation` (so every turn
@@ -138,11 +157,13 @@ final class ConversationViewModel: ObservableObject {
     init(conversation: Conversation,
          conversationClient: ConversationClientProtocol,
          onProfileRequired: @escaping () -> Void,
-         onBudgetExhausted: @escaping () async -> Void) {
+         onBudgetExhausted: @escaping () async -> Void,
+         onTurnFinished: @escaping () async -> Void) {
         self.conversation = conversation
         self.conversationClient = conversationClient
         self.onProfileRequired = onProfileRequired
         self.onBudgetExhausted = onBudgetExhausted
+        self.onTurnFinished = onTurnFinished
         self.historyLoad = .loading
     }
 
@@ -217,12 +238,25 @@ final class ConversationViewModel: ObservableObject {
     /// above — **after** `isStreaming` has been cleared, so a screen-level
     /// escalation's network round trip cannot hold the composer disabled on a
     /// turn that has already finished failing.
+    ///
+    /// The same rule governs `onTurnFinished`, which is why it is reported from
+    /// here rather than from inside `stream`: it is another round trip on
+    /// another layer's behalf (a usage re-read), and a meter refresh that held
+    /// the composer disabled would be a worse bargain than the stale number it
+    /// exists to fix.
+    ///
+    /// The two hooks are **exclusive**, not sequenced. The refusal arm already
+    /// forces its own invalidating re-read of exactly this meter, so firing the
+    /// ordinary one alongside it would issue two GETs for one turn and let an
+    /// ordinary read land on top of the one the paywall is being presented on.
+    /// Switched exhaustively so a future `TurnEscalation` case has to state
+    /// which side of that it falls on.
     private func streamAndEscalate(turnId: ChatTurn.ID, content: String) async {
         switch await stream(turnId: turnId, content: content) {
         case .budgetExhausted:
             await onBudgetExhausted()
         case nil:
-            break
+            await onTurnFinished()
         }
     }
 

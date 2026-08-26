@@ -215,6 +215,33 @@ enum DSFraction {
     }
 }
 
+/// The one timing the coaching budget moves on, shared by the ring's sweep and
+/// by the label beside it.
+///
+/// A token rather than a literal in each file, because the two are only right
+/// **together**: the arc gliding while "95% left" snapped to "93% left" is the
+/// exact contradiction `CoachingBudgetGlance` exists to prevent, arriving
+/// through timing instead of through arithmetic. Neither control reads this
+/// directly — `DSBudgetChangeModifier` applies it, along with the two rules
+/// that must travel with it (no animation on the first reading, none at all
+/// under Reduce Motion), so "the budget moved" is one behaviour rather than a
+/// number two files happen to share.
+///
+/// Slow by UI standards (a tap's feedback is ~0.2s) and meant to be: this is
+/// not a response to a gesture, it is a quantity that changed while the student
+/// was reading a coach's reply. Ease-in-out so it starts and settles rather
+/// than arriving, which is what makes it read as a level dropping rather than
+/// as a control redrawing.
+enum DSMotion {
+    /// How long the budget ring and its label take to travel to a new reading.
+    static let budgetChangeDuration: TimeInterval = 0.9
+
+    /// The curve both of them animate on.
+    static var budgetChange: Animation {
+        .easeInOut(duration: budgetChangeDuration)
+    }
+}
+
 /// Opacity tokens for interactive state feedback, shared by the design system's
 /// button styles and by wrapped UIKit controls that must dim to match them.
 /// Held here rather than in each style so a wrapped control (which cannot use a

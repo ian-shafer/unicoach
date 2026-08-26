@@ -58,7 +58,8 @@ struct ConversationView: View {
         _viewModel = StateObject(wrappedValue: ConversationViewModel(
             conversationClient: conversationClient,
             onProfileRequired: onProfileRequired,
-            onBudgetExhausted: paywallGate.handleBudgetExhausted
+            onBudgetExhausted: paywallGate.handleBudgetExhausted,
+            onTurnFinished: paywallGate.refreshBudget
         ))
         _subscriptionViewModel = ObservedObject(wrappedValue: paywallGate.subscriptions)
         self.paywallGate = paywallGate
@@ -82,7 +83,8 @@ struct ConversationView: View {
             conversation: conversation,
             conversationClient: conversationClient,
             onProfileRequired: onProfileRequired,
-            onBudgetExhausted: paywallGate.handleBudgetExhausted
+            onBudgetExhausted: paywallGate.handleBudgetExhausted,
+            onTurnFinished: paywallGate.refreshBudget
         ))
         _subscriptionViewModel = ObservedObject(wrappedValue: paywallGate.subscriptions)
         self.paywallGate = paywallGate

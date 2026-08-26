@@ -7,18 +7,25 @@ final class ConversationViewModelTests: XCTestCase {
     private var profileRequiredCount = 0
     /// Counts `onBudgetExhausted` invocations — the 402's report upward.
     private var budgetExhaustedCount = 0
+    /// Counts `onTurnFinished` invocations — the per-turn "re-read the meter"
+    /// report. Counted rather than flagged: the point of most of these cases is
+    /// that it fires **once** per terminated turn, and a `Bool` cannot tell one
+    /// call from two.
+    private var turnFinishedCount = 0
 
     override func setUp() {
         super.setUp()
         profileRequiredCount = 0
         budgetExhaustedCount = 0
+        turnFinishedCount = 0
     }
 
     private func makeViewModel(_ client: ConversationClientProtocol) -> ConversationViewModel {
         ConversationViewModel(
             conversationClient: client,
             onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 },
-            onBudgetExhausted: { [weak self] in self?.budgetExhaustedCount += 1 }
+            onBudgetExhausted: { [weak self] in self?.budgetExhaustedCount += 1 },
+            onTurnFinished: { [weak self] in self?.turnFinishedCount += 1 }
         )
     }
 
@@ -531,7 +538,8 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = ConversationViewModel(
             conversationClient: mock,
             onProfileRequired: {},
-            onBudgetExhausted: { probe.observed = probe.viewModel?.isStreaming }
+            onBudgetExhausted: { probe.observed = probe.viewModel?.isStreaming },
+            onTurnFinished: {}
         )
         probe.viewModel = vm
         vm.messageText = "Should I apply early?"
@@ -541,6 +549,79 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(probe.observed, false, "the escalation must not hold isStreaming across its round trip")
         XCTAssertFalse(vm.isStreaming)
         XCTAssertEqual(vm.turns[0].failure, .blocked, "and the failure was mapped before the escalation ran")
+    }
+
+    // MARK: - Per-turn meter refresh (onTurnFinished)
+
+    /// The reason the hook exists: a turn that completed spent coaching, so the
+    /// layer above is told exactly once and can re-read the meter beside the
+    /// send button instead of leaving launch's number there all session.
+    func testACompletedTurnReportsTurnFinishedOnce() async {
+        let mock = MockConversationClient()
+        mock.scripts = [startScript(conversation: makeConversation())]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Hi"
+
+        await vm.send()
+
+        XCTAssertEqual(turnFinishedCount, 1)
+        XCTAssertEqual(budgetExhaustedCount, 0)
+    }
+
+    /// A stream that died mid-reply burned tokens all the same, so the meter is
+    /// re-read on failure too. Skipping this would drift the number on exactly
+    /// the turns that cost the most.
+    func testAFailedTurnAlsoReportsTurnFinished() async {
+        let mock = MockConversationClient()
+        let error = ErrorResponse(code: "coach_unavailable", message: "Coach unavailable", fieldErrors: nil, status: 503)
+        mock.scripts = [MockConversationClient.Script(events: [.delta("Well"), .delta(" then")], terminalError: error)]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Hi"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.turns[0].failure, .server(error))
+        XCTAssertEqual(turnFinishedCount, 1)
+    }
+
+    /// The two reports are exclusive. A 402 escalates and does **not** also ask
+    /// for an ordinary re-read: the refusal path forces its own invalidating
+    /// one, and firing both would mean two GETs for one turn with the paywall
+    /// waiting on the loser.
+    func testA402ReportsTheEscalationAndNotTurnFinished() async {
+        let mock = MockConversationClient()
+        mock.scripts = [MockConversationClient.Script(events: [], terminalError: budgetExhausted())]
+        let vm = makeViewModel(mock)
+        vm.messageText = "Should I apply early?"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.turns[0].failure, .blocked)
+        XCTAssertEqual(budgetExhaustedCount, 1)
+        XCTAssertEqual(turnFinishedCount, 0, "the refusal re-reads usage itself; a second GET would race it")
+    }
+
+    /// The same rule the escalation is held to, for the same reason: the meter
+    /// refresh is a network round trip on another layer's behalf, and running
+    /// it with `isStreaming` still true would leave the composer disabled and
+    /// the send button spinning on a turn that has already finished.
+    func testTurnFinishedRunsAfterStreamingHasCleared() async {
+        let mock = MockConversationClient()
+        mock.scripts = [startScript(conversation: makeConversation())]
+        let probe = StreamingProbe()
+        let vm = ConversationViewModel(
+            conversationClient: mock,
+            onProfileRequired: {},
+            onBudgetExhausted: {},
+            onTurnFinished: { probe.observed = probe.viewModel?.isStreaming }
+        )
+        probe.viewModel = vm
+        vm.messageText = "Hi"
+
+        await vm.send()
+
+        XCTAssertEqual(probe.observed, false, "the meter refresh must not hold isStreaming across its round trip")
+        XCTAssertFalse(vm.isStreaming)
     }
 
     /// Regression: every other server code keeps its own message and its Retry.
@@ -702,7 +783,8 @@ final class ConversationViewModelTests: XCTestCase {
             conversation: conversation,
             conversationClient: client,
             onProfileRequired: { [weak self] in self?.profileRequiredCount += 1 },
-            onBudgetExhausted: { [weak self] in self?.budgetExhaustedCount += 1 }
+            onBudgetExhausted: { [weak self] in self?.budgetExhaustedCount += 1 },
+            onTurnFinished: { [weak self] in self?.turnFinishedCount += 1 }
         )
     }
 

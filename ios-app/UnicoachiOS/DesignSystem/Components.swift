@@ -843,6 +843,79 @@ extension View {
     func dsOutlinedCard() -> some View { modifier(DSOutlinedCardModifier()) }
 }
 
+// MARK: - DSBudgetChange
+
+/// How the coaching budget travels to a new reading — the ring's sweep and the
+/// words beside it — as one rule owned in one place.
+///
+/// There are **three** rules here, and they are inseparable, which is why they
+/// are a modifier rather than three lines copied into two files:
+///
+/// 1. **One timing.** `DSMotion.budgetChange`, applied by this modifier rather
+///    than passed in, so no call site can hand the ring one curve and the
+///    label another — the arc gliding while "95% left" snapped to "93% left"
+///    is the exact contradiction `CoachingBudgetGlance` exists to prevent,
+///    arriving through timing instead of through arithmetic.
+/// 2. **The first reading does not animate.** A ring that winds itself up from
+///    empty on every cold launch reads as a progress bar — the app loading —
+///    rather than as a budget, and it makes the one moment the number is being
+///    consulted (before sending) the one moment it is still moving. Every
+///    reading *after* it is a quantity that fell while the student was reading
+///    a reply, and that is what the animation is for. `hasSettled` is `@State`
+///    on the modifier, so it is a property of this instance's drawing history
+///    and no call site has to know whether the control it is placing has been
+///    on screen before.
+/// 3. **Reduce Motion is honoured.** SwiftUI does **not** suppress an explicit
+///    `.animation(_:value:)` under `accessibilityReduceMotion`; it only drops
+///    its own implicit transitions. This is the app's first deliberately slow
+///    animation — near a second, against ~0.2s for a tap's feedback — so a
+///    student who has asked the system for less motion must get the new number
+///    immediately rather than a glide plus rolling digits.
+///
+/// `hasReading` and not `value != nil`: what counts as "there is something on
+/// screen to move" belongs to the control (a drawn fraction for the ring, a
+/// label for the button), and this type must not have to know either shape.
+struct DSBudgetChangeModifier<V: Equatable>: ViewModifier {
+    /// What travelling means here: the ring passes its clamped fraction, the
+    /// button its whole glance. A change in this is the animated event.
+    let value: V
+    /// Whether `value` currently represents a reading at all — the input to
+    /// rule 2, kept at the call site because only it knows.
+    let hasReading: Bool
+
+    /// Whether a reading has ever been on screen, and therefore whether the
+    /// next change is a *change* rather than the meter arriving.
+    @State private var hasSettled = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            // `.animation(_:value:)` reads this on the same body evaluation the
+            // change arrives in, and `onChange` below fires only after it — so
+            // the no-reading -> first-reading step runs unanimated by
+            // construction rather than by a call site remembering to wrap it.
+            .animation(hasSettled && !reduceMotion ? DSMotion.budgetChange : nil, value: value)
+            .onChange(of: value) { _, _ in
+                if hasReading { hasSettled = true }
+            }
+            // A control that is already showing a reading when it first appears
+            // (a re-entered screen, a preview, a snapshot scene) has had its
+            // first one too — without this it would animate from empty the
+            // first time that reading changed.
+            .onAppear {
+                if hasReading { hasSettled = true }
+            }
+    }
+}
+
+extension View {
+    /// Animates this control to a new coaching-budget reading — see
+    /// ``DSBudgetChangeModifier`` for the three rules it owns.
+    func dsBudgetChange<V: Equatable>(value: V, hasReading: Bool) -> some View {
+        modifier(DSBudgetChangeModifier(value: value, hasReading: hasReading))
+    }
+}
+
 // MARK: - DSHairline
 
 /// **The** separator. DESIGN.md §8 gives this design exactly one — a 1pt

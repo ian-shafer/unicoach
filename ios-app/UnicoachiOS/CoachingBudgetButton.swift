@@ -153,6 +153,14 @@ struct CoachingBudgetButton: View {
                     Text(label)
                         .font(.dsCaption)
                         .foregroundStyle(glance.isExhausted ? Color.dsError : Color.dsTextSecondary)
+                        // The digits roll rather than snap, on the ring's own
+                        // timing: "95% left" becoming "93% left" is the same
+                        // event as the arc retreating, and the two reading as
+                        // one movement is the whole point of a token they
+                        // share. `value:` is the number itself, so the
+                        // transition knows the reading went *down* and rolls
+                        // that way.
+                        .contentTransition(.numericText(value: numericValue))
                         // The label yields its width to the send button under
                         // large Dynamic Type: the send control is the one thing
                         // on this row that must never be squeezed.
@@ -167,6 +175,12 @@ struct CoachingBudgetButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // The same modifier the ring inside it applies, which is what makes the
+        // arc and the words one movement rather than two that happen to have
+        // been given the same number. Keyed on the whole glance because the
+        // colour is part of the change too — an exhausted budget turns the
+        // words `dsError` at the moment the arc reaches empty.
+        .dsBudgetChange(value: glance, hasReading: glance.label != nil)
         // One element, not two: split, VoiceOver reads the ring and then the
         // percentage that is already in the value. `children: .ignore` is also
         // why neither the ring nor the label carries an identifier of its own:
@@ -187,6 +201,15 @@ struct CoachingBudgetButton: View {
 
     private var glance: CoachingBudgetGlance {
         viewModel.budgetGlance
+    }
+
+    /// What `.numericText` counts *to*. `ringRemainingPercent` rather than a
+    /// second reading of the percentage, so the digits and the arc travel to
+    /// the same number — including `.exhausted`, which the glance draws as 0
+    /// whatever the arithmetic rounded to. `.noReading` has no label to
+    /// transition at all, so its value is never used.
+    private var numericValue: Double {
+        Double(glance.ringRemainingPercent ?? 0)
     }
 }
 

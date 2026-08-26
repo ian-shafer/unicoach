@@ -132,6 +132,24 @@ struct PaywallGate {
         }
     }
 
+    /// The per-turn meter re-read: every finished coaching turn spent budget, so
+    /// the ring beside the send button is re-read from the server rather than
+    /// left saying whatever it said at launch.
+    ///
+    /// It exists on the gate — rather than the composer screens reaching into
+    /// `subscriptions` themselves — for the reason the type exists at all: the
+    /// screens take one opaque value and never touch the rail directly, so the
+    /// meter, the block and the sheets stay one answer that cannot disagree.
+    ///
+    /// The **ordinary** read, `refreshUsage()`, not `refreshUsageAfterRefusal()`.
+    /// Nothing here has been disproved: the turn succeeded (or died mid-reply),
+    /// so a failed re-read should leave the last good reading on screen rather
+    /// than blanking the ring to `.unknown` — which would additionally read as
+    /// a *blocked-ish* budget on a student who has just been coached.
+    func refreshBudget() async {
+        await subscriptions.refreshUsage()
+    }
+
     /// The composer budget control's tap: the explanation sheet, not the block
     /// (RFC 123). It is offered in every state, including while blocked — a
     /// student who has just been blocked needs exactly this door.

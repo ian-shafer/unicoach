@@ -72,6 +72,15 @@ struct CoachingBudgetRing: View {
             }
         }
         .frame(width: diameter, height: diameter)
+        // Driven off the drawn `fraction`, not off `remainingPercent`: the
+        // clamp is what the arc actually travels to, so two out-of-range
+        // percentages that both clamp to a full ring are not a change and must
+        // not restart the sweep.
+        //
+        // The timing, the first-reading rule and Reduce Motion all live in the
+        // modifier, which the label beside this ring applies too — the two only
+        // read as one movement if neither of them states the rules itself.
+        .dsBudgetChange(value: fraction, hasReading: fraction != nil)
     }
 
     /// The drawn sweep. `DSFraction.clamped(percent:)` is the **only** bound
