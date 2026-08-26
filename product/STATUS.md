@@ -12,12 +12,13 @@ Updated: 2026-08-26. Live-run discovery from any checkout:
 
 ## TL;DR — next steps, most important first
 
-1. **Phone test S1–S3.5** (Ian, no session) — now UNBLOCKED, RFC 136 landed the
-   chat door. Everything downstream waits on this read.
-2. **Finish RFC 137** (iOS college-list) — run is at landing, one `ship-rebase`
-   from done. Resume the session, don't restart.
+1. **Phone test S1–S3.5** (Ian, no session) — UNBLOCKED, and better than
+   planned: both doors exist now (RFC 136 chat tool + RFC 137 iOS screen).
+   Everything downstream waits on this read.
+2. **Land RFC 138** (`bin/state-apply`) — in flight (Ian's session, at
+   implementing); rebase before verify, it is 5 behind main.
 3. **Gate 1 on brief 0002** (account deletion) — App-Store-blocking; six
-   decisions D1–D6 are framed and waiting for you.
+   decisions D1–D6 are framed and waiting. Next after 138.
 4. **Deploy S1–S3.5 to prod** — after the phone test says the coaching holds.
 
 _Rule: this list is rewritten every time the file is updated; it never says "see
@@ -72,9 +73,9 @@ The student's working list of schools — the substrate the cost feature keys of
 - **How a user reaches it:** conversationally, via the `update_college_list`
   chat tool (RFC 136): add, restatus, remove. The coach offers, never nags; an
   entry is always changeable.
-- **Doors still missing:** no iOS screen yet (RFC 137 in flight — view, add via
-  name search, restatus, remove). Until it lands, the list is chat-and-REST
-  only.
+- **Native door:** the iOS college-list screen (RFC 137) — view the list, add
+  via name search (`GET /api/v1/colleges?q=…`), restatus, edit reasons, remove.
+  Entries now carry `collegeName` on the wire.
 - History: this was the reachability lesson — S1–S3 shipped behind a list no
   user could edit; S3.5/RFC 136 opened the door.
 
@@ -96,15 +97,14 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                              | State                                                                                                               | Where                                    |
-| --- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | Phone test of S1–S3.5             | **Unblocked** (RFC 136 landed the chat door). Ian, no session. Dev stack notes in prompt below.                     | Ian                                      |
-| P1  | iOS college-list screen (RFC 137) | In flight: ship run at **landing**, needs `ship-rebase` (1 behind). Resume, don't restart.                          | worktree `unicoach-rfc-137`              |
-| P1  | Account deletion (brief 0002)     | FRAMED, awaiting gate 1 (six decisions D1–D6). App-Store-blocking + gives repeatable clean-slate testing.           | `product/0002-account-data-deletion`     |
-| P1  | Deploy S1–S3.5 to prod            | Not started; **after** phone test. Known trap: rebuild college dist before ingest (stale jar no-ops).               | prompt below                             |
-| P2  | Beat 1 remainder: S4 → S5 → S6    | Not started. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent.        | `product/0001-v1-differentiator/spec.md` |
-| P2  | Ingest observability              | Small, before S4's data build: `bin/ingest-colleges` change summary + header assertion (silent no-op cost an hour). | note in brief 0002                       |
-| P3  | `bin/state-apply` (RFC 138)       | In flight: ship run at **implementing** (v1 = users world file, create-only; per-entity reset waits on 0002).       | worktree `unicoach-rfc-138`              |
+| Pri | Work                           | State                                                                                                                                       | Where                                    |
+| --- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | Phone test of S1–S3.5          | **Unblocked** (RFC 136 landed the chat door). Ian, no session. Dev stack notes in prompt below.                                             | Ian                                      |
+| P1  | Account deletion (brief 0002)  | FRAMED, awaiting gate 1 (six decisions D1–D6). App-Store-blocking + gives repeatable clean-slate testing.                                   | `product/0002-account-data-deletion`     |
+| P1  | Deploy S1–S3.5 to prod         | Not started; **after** phone test. Known trap: rebuild college dist before ingest (stale jar no-ops).                                       | prompt below                             |
+| P2  | Beat 1 remainder: S4 → S5 → S6 | Not started. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent.                                | `product/0001-v1-differentiator/spec.md` |
+| P2  | Ingest observability           | Small, before S4's data build: `bin/ingest-colleges` change summary + header assertion (silent no-op cost an hour).                         | note in brief 0002                       |
+| P3  | `bin/state-apply` (RFC 138)    | In flight (Ian's session): **implementing**, 5 behind main — rebase before verify. v1 = users world file, create-only; reset waits on 0002. | worktree `unicoach-rfc-138`              |
 
 ## Backlog
 
