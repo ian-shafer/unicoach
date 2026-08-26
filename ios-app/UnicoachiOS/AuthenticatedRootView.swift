@@ -12,6 +12,7 @@ struct AuthenticatedRootView: View {
     let user: PublicUser
     let authClient: AuthClientProtocol
     let conversationClient: ConversationClientProtocol
+    let collegeListClient: CollegeListClientProtocol
     let onProfileRequired: () -> Void
     let onEmailChanged: (PublicUser) async -> Void
     let onLogout: () async -> Void
@@ -39,6 +40,7 @@ struct AuthenticatedRootView: View {
     private enum Destination: Hashable {
         case conversation(Conversation)
         case conversations
+        case collegeList
         case settings
     }
 
@@ -115,6 +117,7 @@ struct AuthenticatedRootView: View {
         user: PublicUser,
         authClient: AuthClientProtocol,
         conversationClient: ConversationClientProtocol,
+        collegeListClient: CollegeListClientProtocol,
         coachingUsageClient: CoachingUsageClientProtocol,
         subscriptionStore: SubscriptionStoreProtocol,
         transactionRecorder: TransactionRecording,
@@ -125,6 +128,7 @@ struct AuthenticatedRootView: View {
         self.user = user
         self.authClient = authClient
         self.conversationClient = conversationClient
+        self.collegeListClient = collegeListClient
         self.onProfileRequired = onProfileRequired
         self.onEmailChanged = onEmailChanged
         self.onLogout = onLogout
@@ -290,6 +294,7 @@ struct AuthenticatedRootView: View {
             viewModel: menuViewModel,
             onNewConversation: startNewConversation,
             onSelect: { conversation in push(.conversation(conversation)) },
+            onMyColleges: { push(.collegeList) },
             onAllConversations: { push(.conversations) },
             onSettings: { push(.settings) }
         )
@@ -325,6 +330,11 @@ struct AuthenticatedRootView: View {
             ConversationListView(
                 conversationClient: conversationClient,
                 paywallGate: paywallGate,
+                onProfileRequired: onProfileRequired
+            )
+        case .collegeList:
+            CollegeListView(
+                client: collegeListClient,
                 onProfileRequired: onProfileRequired
             )
         case .settings:
@@ -409,11 +419,24 @@ private final class AuthenticatedRootPreviewAuthClient: AuthClientProtocol, @unc
     }
 }
 
+private final class AuthenticatedRootPreviewCollegeListClient: CollegeListClientProtocol, @unchecked Sendable {
+    func listEntries() async throws -> [CollegeListEntry] { [] }
+    func addEntry(collegeId: UUID) async throws -> CollegeListEntry {
+        throw ErrorResponse(code: "SERVER_ERROR", message: "Preview", fieldErrors: nil)
+    }
+    func updateEntry(id: UUID, version: Int, status: CollegeListStatus, reasons: String?) async throws -> CollegeListEntry {
+        throw ErrorResponse(code: "SERVER_ERROR", message: "Preview", fieldErrors: nil)
+    }
+    func removeEntry(id: UUID, version: Int) async throws {}
+    func searchColleges(query: String) async throws -> [CollegeSummary] { [] }
+}
+
 @MainActor private var authenticatedRootPreview: some View {
     AuthenticatedRootView(
         user: PublicUser(id: UUID(), email: "preview@example.com", name: "Preview User", emailVerified: true),
         authClient: AuthenticatedRootPreviewAuthClient(),
         conversationClient: AuthenticatedRootPreviewClient(),
+        collegeListClient: AuthenticatedRootPreviewCollegeListClient(),
         coachingUsageClient: PreviewCoachingUsageClient(),
         subscriptionStore: PreviewSubscriptionStore(),
         transactionRecorder: PreviewTransactionRecorder(),

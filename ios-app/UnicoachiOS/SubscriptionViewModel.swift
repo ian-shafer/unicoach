@@ -615,7 +615,8 @@ final class SubscriptionViewModel: ObservableObject {
                 return String(localized: "We couldn't complete your purchase. Please try again.")
             }
             return PaywallCopy(basis: coachingBasis).detail
-        case .studentAlreadyExists, .studentProfileRequired, .payloadTooLarge, nil:
+        case .studentAlreadyExists, .studentProfileRequired, .payloadTooLarge,
+             .versionConflict, .conflict, .notFound, nil:
             return String(localized: "We couldn't complete your purchase. Please try again.")
         }
     }

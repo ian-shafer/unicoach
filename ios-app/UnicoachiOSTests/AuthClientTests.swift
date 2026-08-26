@@ -37,6 +37,33 @@ class MockURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+/// Resolves a request's body whether URLSession carried it as `httpBody` or
+/// re-materialized it as an `httpBodyStream` (which is what a custom
+/// `URLProtocol` like `MockURLProtocol` sees). Shared by every client test
+/// that asserts on outgoing bytes.
+extension URLRequest {
+    var resolvedBody: Data? {
+        if let body = httpBody {
+            return body
+        }
+        guard let stream = httpBodyStream else {
+            return nil
+        }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 1024
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+        while stream.hasBytesAvailable {
+            let read = stream.read(buffer, maxLength: bufferSize)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data.isEmpty ? nil : data
+    }
+}
+
 class AuthClientTests: XCTestCase {
     var authClient: AuthClient!
     var session: URLSession!

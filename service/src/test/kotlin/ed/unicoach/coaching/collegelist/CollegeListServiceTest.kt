@@ -343,4 +343,30 @@ class CollegeListServiceTest {
       val getResult = service.getForStudent(student, entry.id).getOrThrow()
       assertTrue(getResult is GetEntryResult.NotFound)
     }
+
+  // ---------------------------------------------------------------------------
+  // listNames (RFC 137)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `listNames returns names keyed by id in one batch`() =
+    runTest {
+      val a = createCollege()
+      val b = createCollege()
+
+      val names = service.listNames(listOf(a, b)).getOrThrow()
+      assertEquals(mapOf(a to "Test College", b to "Test College"), names)
+    }
+
+  @Test
+  fun `listNames omits absent ids and short-circuits on empty input`() =
+    runTest {
+      val a = createCollege()
+      val phantom = CollegeId(UUID.randomUUID())
+
+      val names = service.listNames(listOf(a, phantom)).getOrThrow()
+      assertEquals(setOf(a), names.keys)
+
+      assertEquals(emptyMap(), service.listNames(emptyList()).getOrThrow())
+    }
 }

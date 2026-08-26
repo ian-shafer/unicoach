@@ -1,9 +1,13 @@
 package ed.unicoach.rest
 
+import ed.unicoach.error.FieldError
+import ed.unicoach.rest.models.ErrorCode
+import ed.unicoach.rest.models.ErrorResponse
 import ed.unicoach.rest.routing.AppleNotificationRouteHandler
 import ed.unicoach.rest.routing.AuthRouteHandler
 import ed.unicoach.rest.routing.CoachingUsageRouteHandler
 import ed.unicoach.rest.routing.CollegeListRouteHandler
+import ed.unicoach.rest.routing.CollegeRouteHandler
 import ed.unicoach.rest.routing.ConvoRouteHandler
 import ed.unicoach.rest.routing.MoneyProfileRouteHandler
 import ed.unicoach.rest.routing.StudentRouteHandler
@@ -14,11 +18,18 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+
+/** The uniform 400 shape: `VALIDATION_FAILED` with per-field detail — one value, shared by every route handler. */
+suspend fun RoutingContext.respondValidationFailed(fieldErrors: List<FieldError>) {
+  call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", fieldErrors))
+}
 
 fun Route.rejectUnsupportedMethods(vararg methods: HttpMethod) {
   handle {
@@ -41,6 +52,7 @@ fun Application.configureRouting(
   queueService: ed.unicoach.queue.QueueService,
   extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
   collegeListService: ed.unicoach.coaching.collegelist.CollegeListService,
+  collegeSearchService: ed.unicoach.college.CollegeSearchService,
   moneyProfileService: ed.unicoach.coaching.moneyprofile.MoneyProfileService,
   budgetService: ed.unicoach.coaching.budget.BudgetService,
   subscriptionService: ed.unicoach.subscriptions.SubscriptionService,
@@ -52,6 +64,8 @@ fun Application.configureRouting(
     ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)
   val collegeListRouteHandler =
     CollegeListRouteHandler(authService, studentService, collegeListService, sessionConfig)
+  val collegeRouteHandler =
+    CollegeRouteHandler(authService, studentService, collegeSearchService, sessionConfig)
   val moneyProfileRouteHandler =
     MoneyProfileRouteHandler(authService, studentService, moneyProfileService, sessionConfig)
   val coachingUsageRouteHandler =
@@ -74,6 +88,7 @@ fun Application.configureRouting(
     studentRouteHandler.registerRoutes(this)
     convoRouteHandler.registerRoutes(this)
     collegeListRouteHandler.registerRoutes(this)
+    collegeRouteHandler.registerRoutes(this)
     moneyProfileRouteHandler.registerRoutes(this)
     coachingUsageRouteHandler.registerRoutes(this)
     subscriptionRouteHandler.registerRoutes(this)

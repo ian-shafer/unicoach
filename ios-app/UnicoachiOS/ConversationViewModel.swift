@@ -326,7 +326,8 @@ final class ConversationViewModel: ObservableObject {
         case .unauthorized, .emailNotVerified, .accountEmailNotVerified,
              .accountDisabled, .serviceUnavailable, .studentAlreadyExists,
              .subscriptionNotFound, .subscriptionOwnedByOtherAccount,
-             .validationFailed, .payloadTooLarge, .decodeError, nil:
+             .validationFailed, .payloadTooLarge, .decodeError,
+             .versionConflict, .conflict, .notFound, nil:
             setFailure(.server(error), turnId: turnId)
         }
         return nil
@@ -357,11 +358,7 @@ final class ConversationViewModel: ObservableObject {
         } catch let error as ErrorResponse {
             historyLoad = .failed(error)
         } catch {
-            historyLoad = .failed(ErrorResponse(
-                code: "SERVER_ERROR",
-                message: String(localized: "An unexpected error occurred."),
-                fieldErrors: nil
-            ))
+            historyLoad = .failed(.unexpected)
         }
     }
 

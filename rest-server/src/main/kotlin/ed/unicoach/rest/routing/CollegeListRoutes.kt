@@ -23,6 +23,7 @@ import ed.unicoach.rest.models.ObservationSummary
 import ed.unicoach.rest.models.PublicCollegeListEntry
 import ed.unicoach.rest.models.UpdateCollegeListEntryRequest
 import ed.unicoach.rest.rejectUnsupportedMethods
+import ed.unicoach.rest.respondValidationFailed
 import ed.unicoach.student.StudentService
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -70,10 +71,6 @@ class CollegeListRouteHandler(
   private fun observationNotFoundFieldErrors(observationId: ObservationId): List<FieldError> =
     listOf(FieldError("observationId", "No such observation: ${observationId.value}"))
 
-  private suspend fun RoutingContext.respondValidationFailed(fieldErrors: List<FieldError>) {
-    call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", fieldErrors))
-  }
-
   private suspend fun RoutingContext.respondVersionConflict() {
     call.respond(HttpStatusCode.Conflict, ErrorResponse(ErrorCode.VERSION_CONFLICT, "College list entry was modified concurrently"))
   }
@@ -109,7 +106,8 @@ class CollegeListRouteHandler(
 
     when (outcome) {
       is AddToListResult.Success -> {
-        call.respond(HttpStatusCode.Created, CollegeListEntryResponse(toPublicEntry(outcome.entry, outcome.supportingObservations)))
+        val name = resolveName(outcome.entry)
+        call.respond(HttpStatusCode.Created, CollegeListEntryResponse(toPublicEntry(outcome.entry, outcome.supportingObservations, name)))
       }
 
       is AddToListResult.CollegeNotFound -> {
@@ -135,7 +133,11 @@ class CollegeListRouteHandler(
     val student = resolveStudent(user) ?: return respondStudentProfileRequired()
 
     val entries = collegeListService.listForStudent(student.id).getOrThrow()
-    call.respond(HttpStatusCode.OK, CollegeListResponse(entries.map { toPublicEntry(it.entry, it.supportingObservations) }))
+    val names = resolveNames(entries.map { it.entry })
+    call.respond(
+      HttpStatusCode.OK,
+      CollegeListResponse(entries.zip(names) { row, name -> toPublicEntry(row.entry, row.supportingObservations, name) }),
+    )
   }
 
   private suspend fun RoutingContext.handleGet() {
@@ -145,7 +147,8 @@ class CollegeListRouteHandler(
 
     when (val outcome = collegeListService.getForStudent(student.id, entryId).getOrThrow()) {
       is GetEntryResult.Found -> {
-        call.respond(HttpStatusCode.OK, CollegeListEntryResponse(toPublicEntry(outcome.entry, outcome.supportingObservations)))
+        val name = resolveName(outcome.entry)
+        call.respond(HttpStatusCode.OK, CollegeListEntryResponse(toPublicEntry(outcome.entry, outcome.supportingObservations, name)))
       }
 
       GetEntryResult.NotFound -> {
@@ -178,7 +181,8 @@ class CollegeListRouteHandler(
 
     when (outcome) {
       is UpdateEntryResult.Success -> {
-        call.respond(HttpStatusCode.OK, CollegeListEntryResponse(toPublicEntry(outcome.entry, outcome.supportingObservations)))
+        val name = resolveName(outcome.entry)
+        call.respond(HttpStatusCode.OK, CollegeListEntryResponse(toPublicEntry(outcome.entry, outcome.supportingObservations, name)))
       }
 
       is UpdateEntryResult.NotFound -> {
@@ -229,13 +233,32 @@ class CollegeListRouteHandler(
   // Projections
   // ---------------------------------------------------------------------------
 
+  /**
+   * Resolves the display name for each of [entries]' colleges (RFC 137),
+   * index-aligned with [entries]: one batch read for the whole response,
+   * whatever its size. A college id that resolves to no name is a broken FK
+   * invariant (`ON DELETE RESTRICT`; colleges are never deleted), so the
+   * thrown error surfaces as a 500 rather than a fabricated placeholder name.
+   */
+  private suspend fun resolveNames(entries: List<CollegeListEntry>): List<String> {
+    val names = collegeListService.listNames(entries.map { it.collegeId }).getOrThrow()
+    return entries.map { entry ->
+      checkNotNull(names[entry.collegeId]) { "No college row for [${entry.collegeId.value}] (broken FK invariant)" }
+    }
+  }
+
+  /** The single-entry handlers' fetch: resolves the one name [resolveNames] proves present. */
+  private suspend fun resolveName(entry: CollegeListEntry): String = resolveNames(listOf(entry)).single()
+
   private fun toPublicEntry(
     entry: CollegeListEntry,
     observations: List<Observation>,
+    collegeName: String,
   ): PublicCollegeListEntry =
     PublicCollegeListEntry(
       id = entry.id.value,
       collegeId = entry.collegeId.value,
+      collegeName = collegeName,
       status = entry.status.value,
       reasons = entry.reasons,
       version = entry.version,

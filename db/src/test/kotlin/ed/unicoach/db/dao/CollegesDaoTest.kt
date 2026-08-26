@@ -577,4 +577,58 @@ class CollegesDaoTest {
       }
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // searchByName (RFC 137)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `searchByName matches case-insensitive substrings`() {
+    seed(newCollege(810100, name = "Columbia University"))
+    seed(newCollege(810101, name = "University of Michigan"))
+
+    val matches = CollegesDao.searchByName(session, "columbia", 25).getOrThrow()
+    assertEquals(listOf("Columbia University"), matches.map { it.name })
+    assertEquals("Townsville", matches.single().city)
+    assertEquals("CA", matches.single().state)
+  }
+
+  @Test
+  fun `searchByName orders prefix matches first, then enrollment desc, then name`() {
+    seed(newCollege(810200, name = "District of Columbia College", undergradEnrollment = 90000))
+    seed(newCollege(810201, name = "Columbia College", undergradEnrollment = 900))
+    seed(newCollege(810202, name = "Columbia University", undergradEnrollment = 30000))
+    seed(newCollege(810203, name = "Columbia Bible College", undergradEnrollment = null))
+
+    val matches = CollegesDao.searchByName(session, "Columbia", 25).getOrThrow()
+    assertEquals(
+      listOf("Columbia University", "Columbia College", "Columbia Bible College", "District of Columbia College"),
+      matches.map { it.name },
+    )
+  }
+
+  @Test
+  fun `searchByName escapes LIKE wildcards in the query`() {
+    seed(newCollege(810300, name = "A percent % College"))
+    seed(newCollege(810301, name = "A plain College"))
+    seed(newCollege(810302, name = "Under_score College"))
+    seed(newCollege(810303, name = "Underscore College"))
+
+    val percent = CollegesDao.searchByName(session, "percent %", 25).getOrThrow()
+    assertEquals(listOf("A percent % College"), percent.map { it.name })
+
+    // An unescaped underscore would also match "Underscore"; the literal must not.
+    val underscore = CollegesDao.searchByName(session, "Under_score", 25).getOrThrow()
+    assertEquals(listOf("Under_score College"), underscore.map { it.name })
+
+    val backslash = CollegesDao.searchByName(session, "\\", 25).getOrThrow()
+    assertEquals(emptyList(), backslash.map { it.name })
+  }
+
+  @Test
+  fun `searchByName applies the limit`() {
+    for (u in 810400..810410) seed(newCollege(u, name = "Limit U $u"))
+    val matches = CollegesDao.searchByName(session, "Limit U", 3).getOrThrow()
+    assertEquals(3, matches.size)
+  }
 }

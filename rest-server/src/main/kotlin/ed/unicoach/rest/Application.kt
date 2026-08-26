@@ -303,10 +303,13 @@ fun Application.appModule(
   val collegeListService = CollegeListService(database)
   // The tool registry advertised on every coaching turn (RFC 94). New tools
   // append here; nothing else in the loop changes.
+  // One CollegeSearchService serves both the chat tool and the REST search
+  // endpoint (RFC 137), so the two doors answer from the same clamp and SQL.
+  val collegeSearchService = CollegeSearchService(database)
   val toolRegistry =
     ToolRegistry(
       listOf(
-        CollegeChatTool(CollegeSearchTool(CollegeSearchService(database))),
+        CollegeChatTool(CollegeSearchTool(collegeSearchService)),
         ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
         ed.unicoach.coaching.costs
           .CollegeCostChatTool(
@@ -335,6 +338,7 @@ fun Application.appModule(
     queueService,
     extractionConfig,
     collegeListService,
+    collegeSearchService,
     moneyProfileService,
     budgetService,
     subscriptionService,

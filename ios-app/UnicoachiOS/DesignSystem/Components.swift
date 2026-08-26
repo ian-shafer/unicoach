@@ -819,6 +819,30 @@ struct LogoMark: View {
     }
 }
 
+// MARK: - DSOutlinedCard
+
+/// The outlined-card chrome (DESIGN.md §2/§3): `dsSurface` fill, continuous
+/// `DSRadius.control` corners, `dsFieldBorder` hairline. The drawer-row /
+/// conversation-card shape, owned once so a radius or border change is an
+/// edit, not a grep. Padding and frame stay at the call site — cards differ
+/// in their insets, never in their chrome.
+struct DSOutlinedCardModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(Color.dsSurface)
+            .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                    .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+            )
+    }
+}
+
+extension View {
+    /// Applies the outlined-card chrome — see ``DSOutlinedCardModifier``.
+    func dsOutlinedCard() -> some View { modifier(DSOutlinedCardModifier()) }
+}
+
 // MARK: - DSHairline
 
 /// **The** separator. DESIGN.md §8 gives this design exactly one — a 1pt

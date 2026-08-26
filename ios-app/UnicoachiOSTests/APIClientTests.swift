@@ -5,31 +5,6 @@ private struct SamplePayload: Codable, Equatable {
     let value: String
 }
 
-private extension URLRequest {
-    /// URLSession moves `httpBody` into `httpBodyStream` before the request reaches
-    /// a custom URLProtocol, so read whichever is populated.
-    var resolvedBody: Data? {
-        if let body = httpBody {
-            return body
-        }
-        guard let stream = httpBodyStream else {
-            return nil
-        }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        let bufferSize = 1024
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-        defer { buffer.deallocate() }
-        while stream.hasBytesAvailable {
-            let read = stream.read(buffer, maxLength: bufferSize)
-            if read <= 0 { break }
-            data.append(buffer, count: read)
-        }
-        return data.isEmpty ? nil : data
-    }
-}
-
 class APIClientTests: XCTestCase {
     var apiClient: APIClient!
     var session: URLSession!

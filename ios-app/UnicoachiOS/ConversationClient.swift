@@ -228,11 +228,7 @@ final class ConversationClient: ConversationClientProtocol, @unchecked Sendable 
         }
     }
 
-    private static let malformedFrameError = ErrorResponse(
-        code: "SERVER_ERROR",
-        message: String(localized: "An unexpected error occurred."),
-        fieldErrors: nil
-    )
+    private static let malformedFrameError = ErrorResponse.unexpected
 
     /// Minimal decoder used only to read the `type` discriminator of a frame.
     private struct FrameType: Codable {

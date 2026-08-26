@@ -23,6 +23,7 @@ struct SlideOverMenu: View {
 
     private let onNewConversation: () -> Void
     private let onSelect: (Conversation) -> Void
+    private let onMyColleges: () -> Void
     private let onAllConversations: () -> Void
     private let onSettings: () -> Void
 
@@ -30,12 +31,14 @@ struct SlideOverMenu: View {
         viewModel: ConversationListViewModel,
         onNewConversation: @escaping () -> Void,
         onSelect: @escaping (Conversation) -> Void,
+        onMyColleges: @escaping () -> Void,
         onAllConversations: @escaping () -> Void,
         onSettings: @escaping () -> Void
     ) {
         self.viewModel = viewModel
         self.onNewConversation = onNewConversation
         self.onSelect = onSelect
+        self.onMyColleges = onMyColleges
         self.onAllConversations = onAllConversations
         self.onSettings = onSettings
     }
@@ -86,6 +89,8 @@ struct SlideOverMenu: View {
             // bottom. Without the ScrollView that used to hold the space, the
             // footer would float up under the last row.
             Spacer(minLength: DSSpacing.md)
+
+            myCollegesButton
 
             allConversationsButton
 
@@ -167,6 +172,12 @@ struct SlideOverMenu: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("menuConversationRow")
+    }
+
+    /// The college list (RFC 137): a durable non-chat surface, so it joins
+    /// the pinned footer index rather than the recents area.
+    private var myCollegesButton: some View {
+        menuRow("My colleges", systemImage: "graduationcap", identifier: "myCollegesButton", action: onMyColleges)
     }
 
     /// The full management surface, one tap further on.

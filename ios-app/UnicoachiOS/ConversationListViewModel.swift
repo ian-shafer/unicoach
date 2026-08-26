@@ -40,11 +40,7 @@ final class ConversationListViewModel: ObservableObject {
         } catch let error as ErrorResponse {
             state = .failed(error)
         } catch {
-            state = .failed(ErrorResponse(
-                code: "SERVER_ERROR",
-                message: String(localized: "An unexpected error occurred."),
-                fieldErrors: nil
-            ))
+            state = .failed(.unexpected)
         }
     }
 
@@ -110,11 +106,7 @@ final class ConversationListViewModel: ObservableObject {
             var current = currentConversations()
             current.insert(conversation, at: min(originalIndex, current.count))
             state = .loaded(current)
-            actionError = (error as? ErrorResponse) ?? ErrorResponse(
-                code: "SERVER_ERROR",
-                message: String(localized: "An unexpected error occurred."),
-                fieldErrors: nil
-            )
+            actionError = (error as? ErrorResponse) ?? .unexpected
         }
     }
 

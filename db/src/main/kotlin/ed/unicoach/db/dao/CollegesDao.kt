@@ -6,6 +6,7 @@ import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeProgram
 import ed.unicoach.db.models.CollegeProgramId
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CollegeSummary
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeProgram
 import ed.unicoach.db.models.Version
@@ -114,6 +115,15 @@ object CollegesDao :
       credentialLevel = rs.getInt("credential_level"),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
+    )
+
+  /** Maps a [searchByName] result row into the picker's [CollegeSummary] projection. */
+  private fun mapSummary(rs: ResultSet): CollegeSummary =
+    CollegeSummary(
+      id = CollegeId(UUID.fromString(rs.getString("id"))),
+      name = rs.getString("name"),
+      city = rs.getString("city"),
+      state = rs.getString("state"),
     )
 
   /**
@@ -510,6 +520,54 @@ object CollegesDao :
       map = ::mapMatch,
     )
   }
+
+  /**
+   * Student-facing name search (RFC 137): case-insensitive substring match on
+   * `name`, with the caller's raw query escaped so `%`/`_`/`\` in it match
+   * literally rather than acting as wildcards. Ordered prefix-matches-first
+   * (a "Columbia" query surfaces Columbia University before "District of
+   * Columbia..."), then `undergrad_enrollment DESC NULLS LAST` (big
+   * institutions before small same-named ones), then `name, unit_id` for a
+   * total, deterministic order. [limit] is clamped to the supported range by
+   * the service boundary before reaching here (the [search] convention).
+   */
+  fun searchByName(
+    session: SqlSession,
+    query: String,
+    limit: Int,
+  ): Result<List<CollegeSummary>> {
+    val escaped = escapeLikePattern(query)
+    val sql =
+      """
+      SELECT id, name, city, state
+      FROM colleges
+      WHERE name ILIKE '%' || ? || '%'
+      ORDER BY (name ILIKE ? || '%') DESC, undergrad_enrollment DESC NULLS LAST, name, unit_id
+      LIMIT ?
+      """.trimIndent()
+    return session.queryList(
+      sql,
+      bind = { stmt ->
+        stmt.setString(1, escaped)
+        stmt.setString(2, escaped)
+        stmt.setInt(3, limit)
+      },
+      map = ::mapSummary,
+    )
+  }
+
+  /**
+   * Escapes LIKE metacharacters so caller text matches literally (backslash
+   * first, so it never re-escapes its own output). Backslash-as-escape is
+   * Postgres's **implicit default** — the query above carries no `ESCAPE`
+   * clause and relies on it (standard SQL would require `ESCAPE '\\'`
+   * explicitly), so this helper and that default are one contract.
+   */
+  private fun escapeLikePattern(raw: String): String =
+    raw
+      .replace("\\", "\\\\")
+      .replace("%", "\\%")
+      .replace("_", "\\_")
 
   // ---------------------------------------------------------------------------
   // Error mapping

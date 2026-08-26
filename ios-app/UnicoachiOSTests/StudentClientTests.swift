@@ -1,29 +1,6 @@
 import XCTest
 @testable import UnicoachiOS
 
-private extension URLRequest {
-    var resolvedBody: Data? {
-        if let body = httpBody {
-            return body
-        }
-        guard let stream = httpBodyStream else {
-            return nil
-        }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        let bufferSize = 1024
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-        defer { buffer.deallocate() }
-        while stream.hasBytesAvailable {
-            let read = stream.read(buffer, maxLength: bufferSize)
-            if read <= 0 { break }
-            data.append(buffer, count: read)
-        }
-        return data.isEmpty ? nil : data
-    }
-}
-
 class StudentClientTests: XCTestCase {
     var studentClient: StudentClient!
     var session: URLSession!

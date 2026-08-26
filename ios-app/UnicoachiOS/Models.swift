@@ -42,6 +42,16 @@ extension ErrorResponse {
     func fieldError(for field: String) -> String? {
         fieldErrors?.first(where: { $0.field == field })?.message
     }
+
+    /// The app's uniform fallback for a failure with no decodable server
+    /// error — a thrown non-`ErrorResponse`, or a body the client could not
+    /// read. One value, one home: view models reference it instead of minting
+    /// their own copy of the code/message pair.
+    static let unexpected = ErrorResponse(
+        code: "SERVER_ERROR",
+        message: String(localized: "An unexpected error occurred."),
+        fieldErrors: nil
+    )
 }
 
 /// The wire `code` vocabulary the client branches on: the server's `ErrorCode`
@@ -68,6 +78,16 @@ enum ServerErrorCode: String {
     /// `ConversationViewModel.handle` branches on `knownCode`, and a code it
     /// must act on cannot be one this enum has never heard of.
     case studentProfileRequired = "student_profile_required"
+    /// A 409 from a college-list mutation whose `version` lost the race
+    /// (RFC 91): the chat tool or another device moved the entry. The list
+    /// screen recovers with a fresh read (RFC 137).
+    case versionConflict = "version_conflict"
+    /// The create-path 409: the college is already on the list (RFC 91).
+    case conflict = "conflict"
+    /// The 404 from a college-list mutation whose entry another device or the
+    /// chat tool already removed (RFC 91): the same lost race as
+    /// `version_conflict`, resolved the same way — a fresh read (RFC 137).
+    case notFound = "not_found"
     /// The 402 both streaming turn endpoints answer once the coaching budget is
     /// spent (RFC 109). Action-scoped: reads stay open, so this is never an auth
     /// state — see RFC 121.

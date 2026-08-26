@@ -114,4 +114,66 @@ class CollegeSearchServiceTest {
       assertTrue(result.isSuccess)
       assertTrue(result.getOrThrow().isEmpty())
     }
+
+  // ---------------------------------------------------------------------------
+  // searchByName (RFC 137)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `searchByName clamps limit to the supported range`() =
+    runBlocking {
+      for (u in 101..130) seed(newCollege(u))
+
+      val tooMany = service.searchByName("Test U", 100).getOrThrow()
+      assertEquals(CollegeSearchService.MAX_LIMIT, tooMany.size)
+
+      val tooFew = service.searchByName("Test U", 0).getOrThrow()
+      assertTrue(tooFew.size >= CollegeSearchService.MIN_LIMIT)
+    }
+
+  @Test
+  fun `searchByName delegates matching to the DAO`() =
+    runBlocking {
+      seed(newCollege(141))
+      seed(newCollege(142))
+
+      val matches = service.searchByName("Test U 141", 25).getOrThrow()
+      assertEquals(listOf("Test U 141"), matches.map { it.name })
+    }
+
+  @Test
+  fun `searchByName zero matches returns an empty list, not a failure`() =
+    runBlocking {
+      seed(newCollege(151))
+      val result = service.searchByName("No Such College", 25)
+      assertTrue(result.isSuccess)
+      assertTrue(result.getOrThrow().isEmpty())
+    }
+
+  @Test
+  fun `searchByName blank query is an empty success, never an unbounded scan`() =
+    runBlocking {
+      seed(newCollege(161))
+      val blank = service.searchByName("   ", 25)
+      assertTrue(blank.isSuccess)
+      assertTrue(blank.getOrThrow().isEmpty())
+    }
+
+  @Test
+  fun `searchByName trims the query before matching`() =
+    runBlocking {
+      seed(newCollege(171))
+      val matches = service.searchByName("  Test U 171  ", 25).getOrThrow()
+      assertEquals(listOf("Test U 171"), matches.map { it.name })
+    }
+
+  @Test
+  fun `searchByName oversized query is a failure naming the bound`() =
+    runBlocking {
+      val result = service.searchByName("x".repeat(CollegeSearchService.MAX_QUERY_LENGTH + 1), 25)
+      assertTrue(result.isFailure)
+      val exception = result.exceptionOrNull()
+      assertTrue(exception is IllegalArgumentException)
+      assertTrue(exception.message!!.contains("${CollegeSearchService.MAX_QUERY_LENGTH}"))
+    }
 }

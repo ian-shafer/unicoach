@@ -139,6 +139,80 @@ enum SnapshotSeed {
         emailVerified: true
     )
 
+    // MARK: - College-list fixtures (RFC 137)
+
+    static let collegeEntries: [CollegeListEntry] = [
+        CollegeListEntry(
+            id: UUID(uuidString: "77770000-0000-0000-0000-000000000001")!,
+            collegeId: UUID(uuidString: "88880000-0000-0000-0000-000000000001")!,
+            collegeName: "University of Michigan",
+            status: .admitted,
+            reasons: "Great engineering program and the aid offer works.",
+            version: 3,
+            supportingObservations: []
+        ),
+        CollegeListEntry(
+            id: UUID(uuidString: "77770000-0000-0000-0000-000000000002")!,
+            collegeId: UUID(uuidString: "88880000-0000-0000-0000-000000000002")!,
+            collegeName: "Columbia University",
+            status: .applying,
+            reasons: nil,
+            version: 1,
+            supportingObservations: []
+        ),
+        CollegeListEntry(
+            id: UUID(uuidString: "77770000-0000-0000-0000-000000000003")!,
+            collegeId: UUID(uuidString: "88880000-0000-0000-0000-000000000003")!,
+            collegeName: "Reed College",
+            status: .considering,
+            reasons: nil,
+            version: 1,
+            supportingObservations: []
+        ),
+    ]
+
+    static let detailEntry = CollegeListEntry(
+        id: UUID(uuidString: "77770000-0000-0000-0000-000000000001")!,
+        collegeId: UUID(uuidString: "88880000-0000-0000-0000-000000000001")!,
+        collegeName: "University of Michigan",
+        status: .admitted,
+        reasons: "Great engineering program and the aid offer works.",
+        version: 3,
+        supportingObservations: [
+            SupportingObservation(
+                id: 1,
+                quote: "I really clicked with the campus when we visited.",
+                utteredAt: SnapshotClock.pinned
+            ),
+            SupportingObservation(
+                id: 2,
+                quote: "Engineering is the one subject I never get tired of.",
+                utteredAt: SnapshotClock.pinned
+            ),
+        ]
+    )
+
+    static let collegeSearchResults: [CollegeSummary] = [
+        CollegeSummary(
+            id: UUID(uuidString: "99990000-0000-0000-0000-000000000001")!,
+            name: "Columbia University",
+            city: "New York",
+            state: "NY"
+        ),
+        CollegeSummary(
+            id: UUID(uuidString: "99990000-0000-0000-0000-000000000002")!,
+            name: "Columbia College",
+            city: "Columbia",
+            state: "SC"
+        ),
+        CollegeSummary(
+            id: UUID(uuidString: "99990000-0000-0000-0000-000000000003")!,
+            name: "College of Charleston",
+            city: "Charleston",
+            state: "SC"
+        ),
+    ]
+
     static let thread: [Message] = [
         Message(id: "u1", role: .user, content: "Where do I start with my personal statement?",
                 createdAt: SnapshotClock.agoHours(2)),
@@ -503,6 +577,57 @@ enum SnapshotCatalogue {
                 )
             },
 
+            // --- The college list (RFC 137): the drawer's "My colleges"
+            // destination, its empty state, the entry detail, and the add
+            // picker's results. The list scenes hand the view a seeded mock
+            // client and let its own `.task` load — the conversation-list
+            // precedent — while the add scene pre-seeds its view model, because
+            // typing into a debounced field is not a render.
+            SnapshotScene(name: "college-list-populated") {
+                let client = MockCollegeListClient()
+                client.listEntriesResult = .success(SnapshotSeed.collegeEntries)
+                return AnyView(
+                    NavigationStack {
+                        CollegeListView(client: client, onProfileRequired: {})
+                    }
+                )
+            },
+            SnapshotScene(name: "college-list-empty") {
+                let client = MockCollegeListClient()
+                client.listEntriesResult = .success([])
+                return AnyView(
+                    NavigationStack {
+                        CollegeListView(client: client, onProfileRequired: {})
+                    }
+                )
+            },
+            SnapshotScene(name: "college-entry-detail") {
+                let client = MockCollegeListClient()
+                let entry = SnapshotSeed.detailEntry
+                client.listEntriesResult = .success([entry])
+                let listViewModel = CollegeListViewModel(client: client, onProfileRequired: {})
+                await listViewModel.load()
+                return AnyView(
+                    NavigationStack {
+                        CollegeEntryDetailView(viewModel: listViewModel, entry: entry)
+                    }
+                )
+            },
+            SnapshotScene(name: "add-college-results") {
+                let client = MockCollegeListClient()
+                client.searchCollegesResult = .success(SnapshotSeed.collegeSearchResults)
+                let viewModel = AddCollegeViewModel(
+                    client: client, onProfileRequired: {}, debounce: .zero
+                )
+                viewModel.query = "col"
+                await viewModel.awaitPendingSearch()
+                return AnyView(
+                    NavigationStack {
+                        AddCollegeView(viewModel: viewModel, focusesSearchOnAppear: false)
+                    }
+                )
+            },
+
             // --- The unauthenticated entry point: Apple/Google button parity is
             // a PNG question, not a test question.
             SnapshotScene(name: "login-idle") {
@@ -533,6 +658,7 @@ enum SnapshotCatalogue {
                 viewModel: viewModel,
                 onNewConversation: {},
                 onSelect: { _ in },
+                onMyColleges: {},
                 onAllConversations: {},
                 onSettings: {}
             )

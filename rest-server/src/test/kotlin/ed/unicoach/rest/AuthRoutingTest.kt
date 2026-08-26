@@ -176,6 +176,22 @@ class AuthRoutingTest {
     }
 
   @Test
+  fun `register with a NUL character in name returns 400 not 500`() =
+    runBlocking {
+      // PostgreSQL refuses NUL bytes in UTF-8 text (SQLSTATE 22021). The bytes
+      // are the caller's data, so the contract answer is a 400, not the 500
+      // this used to produce — found by the pre-commit fuzzer (RFC 137).
+      val email = uniqueEmail()
+      val response =
+        client.post(buildUrl("/api/v1/auth/register")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          setBody("""{"email":"$email","password":"Password123","name":"Nul\u0000Name"}""")
+        }
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      assertTrue(response.bodyAsText().contains("cannot be stored"))
+    }
+
+  @Test
   fun `register with malformed email returns 400`() =
     runBlocking {
       val response =

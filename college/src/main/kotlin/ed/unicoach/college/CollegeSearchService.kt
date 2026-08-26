@@ -4,6 +4,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CollegeSummary
 
 /**
  * Orchestrates structured college retrieval over the `db` module's
@@ -26,8 +27,35 @@ class CollegeSearchService(
     return database.withConnection { session -> CollegesDao.search(session, clamped) }
   }
 
+  /**
+   * Student-facing name search (RFC 137): [CollegesDao.searchByName] behind
+   * the same connection boundary and `limit` clamp as [search]. The service
+   * owns the query boundary so every caller inherits it, not just the REST
+   * route: [query] is trimmed, a blank query is an empty success (nothing can
+   * match nothing — never an unbounded scan), and a query longer than
+   * [MAX_QUERY_LENGTH] is a failure. A zero-match query yields an empty list,
+   * not a failure.
+   */
+  suspend fun searchByName(
+    query: String,
+    limit: Int,
+  ): Result<List<CollegeSummary>> {
+    val trimmed = query.trim()
+    if (trimmed.isEmpty()) return Result.success(emptyList())
+    if (trimmed.length > MAX_QUERY_LENGTH) {
+      return Result.failure(
+        IllegalArgumentException("query must be at most [$MAX_QUERY_LENGTH] characters (got [${trimmed.length}])"),
+      )
+    }
+    val clamped = limit.coerceIn(MIN_LIMIT, MAX_LIMIT)
+    return database.withConnection { session -> CollegesDao.searchByName(session, trimmed, clamped) }
+  }
+
   companion object {
     const val MIN_LIMIT = 1
     const val MAX_LIMIT = 25
+
+    /** The `q` boundary for [searchByName], referenced by the REST route's 400 validation. */
+    const val MAX_QUERY_LENGTH = 100
   }
 }

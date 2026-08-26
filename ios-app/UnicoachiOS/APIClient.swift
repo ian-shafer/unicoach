@@ -85,8 +85,43 @@ final class APIClient: @unchecked Sendable {
         try await perform(method: "GET", path: path, body: Never?.none)
     }
 
+    /// `GET` with query items. Values are percent-encoded here, in the one
+    /// transport owner — free text cannot smuggle a second parameter or read
+    /// as query structure.
+    func get(_ path: String, query: [URLQueryItem]) async throws -> (data: Data, response: HTTPURLResponse) {
+        try await get(try Self.pathWithQuery(path, query))
+    }
+
     func delete(_ path: String) async throws -> (data: Data, response: HTTPURLResponse) {
         try await perform(method: "DELETE", path: path, body: Never?.none)
+    }
+
+    /// `DELETE` with query items — same encoding contract as `get(_:query:)`.
+    func delete(_ path: String, query: [URLQueryItem]) async throws -> (data: Data, response: HTTPURLResponse) {
+        try await delete(try Self.pathWithQuery(path, query))
+    }
+
+    /// Assembles `path?name=value&…` with every name and value encoded via
+    /// `urlQueryValueAllowed`, so `&`, `=`, `+`, and `?` in a value stay data.
+    /// (`URLComponents` is deliberately not used here: it leaves `+`
+    /// unencoded, which the server would decode as a space.)
+    private static func pathWithQuery(_ path: String, _ query: [URLQueryItem]) throws -> String {
+        guard !query.isEmpty else { return path }
+        let encoded = try query.map { item in
+            "\(try encodeQueryComponent(item.name))=\(try encodeQueryComponent(item.value ?? ""))"
+        }
+        return "\(path)?\(encoded.joined(separator: "&"))"
+    }
+
+    /// A `nil` from `addingPercentEncoding` is a thrown `URLError`, never a
+    /// fall-back to the raw value — the encoding is the defence that keeps
+    /// free text from reading as query structure, so it must not silently
+    /// disable itself on the one path where it matters.
+    private static func encodeQueryComponent(_ raw: String) throws -> String {
+        guard let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed) else {
+            throw URLError(.badURL)
+        }
+        return encoded
     }
 
     func patch<B: Encodable>(_ path: String, body: B) async throws -> (data: Data, response: HTTPURLResponse) {
@@ -216,4 +251,16 @@ final class APIClient: @unchecked Sendable {
             return ErrorResponse(code: "SERVER_ERROR", message: String(localized: "An unexpected error occurred."), fieldErrors: nil, status: status)
         }
     }
+}
+
+extension CharacterSet {
+    /// `.urlQueryAllowed` minus the characters that are query-structural
+    /// (`&`, `=`, `+`, `?`), so a free-text value cannot smuggle a second
+    /// parameter or read as one. Owned by `APIClient`, the transport layer's
+    /// one home for query assembly.
+    static let urlQueryValueAllowed: CharacterSet = {
+        var set = CharacterSet.urlQueryAllowed
+        set.remove(charactersIn: "&=+?")
+        return set
+    }()
 }

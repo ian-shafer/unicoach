@@ -16,6 +16,7 @@ import ed.unicoach.rest.models.MoneyProfileResponse
 import ed.unicoach.rest.models.PublicMoneyProfile
 import ed.unicoach.rest.models.UpdateMoneyProfileRequest
 import ed.unicoach.rest.rejectUnsupportedMethods
+import ed.unicoach.rest.respondValidationFailed
 import ed.unicoach.student.StudentService
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -47,10 +48,6 @@ class MoneyProfileRouteHandler(
       put { handlePut() }
       rejectUnsupportedMethods(HttpMethod.Get, HttpMethod.Put)
     }
-  }
-
-  private suspend fun RoutingContext.respondValidationFailed(fieldErrors: List<FieldError>) {
-    call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", fieldErrors))
   }
 
   private suspend fun RoutingContext.handleGet() {

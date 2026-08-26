@@ -10,6 +10,7 @@ data class CollegeListEntryResponse(
 data class PublicCollegeListEntry(
   val id: UUID,
   val collegeId: UUID,
+  val collegeName: String,
   val status: String,
   val reasons: String?,
   val version: Int,

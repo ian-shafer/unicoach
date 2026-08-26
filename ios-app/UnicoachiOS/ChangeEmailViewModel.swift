@@ -35,7 +35,7 @@ class ChangeEmailViewModel: ObservableObject {
         } catch let error as ErrorResponse {
             errorResponse = error
         } catch {
-            errorResponse = ErrorResponse(code: "SERVER_ERROR", message: String(localized: "An unexpected error occurred."), fieldErrors: nil)
+            errorResponse = .unexpected
         }
     }
 }

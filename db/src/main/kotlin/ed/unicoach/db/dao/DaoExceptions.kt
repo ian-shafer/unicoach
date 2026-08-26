@@ -62,6 +62,19 @@ class DatabaseException(
   PermanentError
 
 /**
+ * Client-supplied text PostgreSQL cannot store: SQLSTATE `22021`
+ * (character_not_in_repertoire — e.g. a NUL byte inside a UTF-8 string) or
+ * `22P05` (untranslatable_character). The bytes are the caller's data, not a
+ * server fault, so StatusPages' generic [PermanentError] arm answers 400
+ * rather than the 500 a [DatabaseException] would produce — found by the
+ * pre-commit contract fuzzer sending `\u0000` in a register name (RFC 137).
+ */
+class UnstorableTextException(
+  cause: Throwable,
+) : DaoException("Text contains characters that cannot be stored", cause),
+  PermanentError
+
+/**
  * A persisted value failed reconstruction into its domain type. [location]
  * (optional, defaulted so existing construction sites are unchanged) names
  * where the corrupt value sits — column and row id — so the offending row can
@@ -87,10 +100,10 @@ class ConcurrentModificationException(
 fun mapDatabaseError(e: Exception): Exception {
   if (e is DaoException) return e
   val sqlState = (e as? java.sql.SQLException)?.sqlState
-  return if (sqlState != null && isTransientSqlState(sqlState)) {
-    TransientDatabaseException(e)
-  } else {
-    DatabaseException(e)
+  return when {
+    sqlState != null && isTransientSqlState(sqlState) -> TransientDatabaseException(e)
+    sqlState == "22021" || sqlState == "22P05" -> UnstorableTextException(e)
+    else -> DatabaseException(e)
   }
 }
 

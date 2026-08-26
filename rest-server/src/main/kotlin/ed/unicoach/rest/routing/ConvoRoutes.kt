@@ -42,6 +42,7 @@ import ed.unicoach.rest.models.StreamErrorEvent
 import ed.unicoach.rest.models.UpdateConversationRequest
 import ed.unicoach.rest.models.UserMessageEvent
 import ed.unicoach.rest.rejectUnsupportedMethods
+import ed.unicoach.rest.respondValidationFailed
 import ed.unicoach.student.StudentService
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -389,14 +390,12 @@ class ConvoRouteHandler(
     )
   }
 
+  /** Single-field convenience over the shared [ed.unicoach.rest.respondValidationFailed]. */
   private suspend fun RoutingContext.respondValidationFailed(
     field: String,
     message: String,
   ) {
-    call.respond(
-      HttpStatusCode.BadRequest,
-      ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", listOf(ed.unicoach.error.FieldError(field, message))),
-    )
+    respondValidationFailed(listOf(ed.unicoach.error.FieldError(field, message)))
   }
 
   private fun validationError(fieldErrors: List<ed.unicoach.error.FieldError>): ErrorResponse =

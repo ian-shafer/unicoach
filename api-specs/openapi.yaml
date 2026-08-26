@@ -828,6 +828,58 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 
+  /api/v1/colleges:
+    get:
+      summary: Search the college catalog by name
+      description: >
+        Case-insensitive substring match on the college name, prefix matches
+        first, then larger institutions. Requires an authenticated session but
+        no student profile — the catalog is not the caller's college list.
+      operationId: searchColleges
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+          description: The name fragment to search for. Trimmed; must be non-blank.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+          description: Maximum results; clamped server-side to 1..25.
+      responses:
+        '200':
+          description: Matching colleges, best match first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollegeSearchResponse'
+        '400':
+          description: Validation failure (q missing/blank/too long, limit non-integer)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/students/me/money-profile:
     get:
       summary: Get the current student's money profile
@@ -1811,7 +1863,7 @@ components:
           format: date-time
     PublicCollegeListEntry:
       type: object
-      required: [id, collegeId, status, reasons, version, createdAt, updatedAt, supportingObservations]
+      required: [id, collegeId, collegeName, status, reasons, version, createdAt, updatedAt, supportingObservations]
       properties:
         id:
           type: string
@@ -1819,6 +1871,8 @@ components:
         collegeId:
           type: string
           format: uuid
+        collegeName:
+          type: string
         status:
           type: string
           enum: [considering, applying, admitted, rejected]
@@ -1853,6 +1907,27 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PublicCollegeListEntry'
+    PublicCollegeSummary:
+      type: object
+      required: [id, name, city, state]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+    CollegeSearchResponse:
+      type: object
+      required: [colleges]
+      properties:
+        colleges:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicCollegeSummary'
     CoachingUsageResponse:
       type: object
       required: [usage]

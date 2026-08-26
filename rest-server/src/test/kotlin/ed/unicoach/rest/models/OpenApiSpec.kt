@@ -45,4 +45,28 @@ object OpenApiSpec {
       child
     }
   }
+
+  /**
+   * The parameter named [name] on `paths.[path].[method]`, or throws naming
+   * the operation and the step that was missing. The schema-shaped [get]
+   * cannot reach operation parameters, so guards over query-parameter bounds
+   * come through here.
+   */
+  fun parameter(
+    path: String,
+    method: String,
+    name: String,
+  ): JsonNode {
+    val steps = listOf("paths", path, method, "parameters")
+    val parameters =
+      steps.fold(document) { parent, key ->
+        val child = parent.path(key)
+        if (child.isMissingNode) {
+          throw AssertionError("[$specFile] has no [${steps.joinToString(".")}] — missing at [$key]")
+        }
+        child
+      }
+    return parameters.firstOrNull { it.path("name").asText() == name }
+      ?: throw AssertionError("[$specFile] has no parameter [$name] on [paths.$path.$method]")
+  }
 }

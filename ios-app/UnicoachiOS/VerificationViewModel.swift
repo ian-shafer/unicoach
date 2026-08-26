@@ -45,7 +45,7 @@ class VerificationViewModel: ObservableObject {
         } catch let error as ErrorResponse {
             resendError = error
         } catch {
-            resendError = ErrorResponse(code: "SERVER_ERROR", message: String(localized: "An unexpected error occurred."), fieldErrors: nil)
+            resendError = .unexpected
         }
     }
 

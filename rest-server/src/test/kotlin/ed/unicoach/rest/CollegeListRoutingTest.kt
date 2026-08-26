@@ -245,19 +245,24 @@ class CollegeListRoutingTest {
       val created = mapper.readTree(createResponse.bodyAsText())
       val entryId = created["entry"]["id"].asText()
       assertEquals(1, created["entry"]["version"].asInt())
+      // RFC 137: every success body names the college, not just its id.
+      assertEquals("Test College", created["entry"]["collegeName"].asText())
 
       val listResponse =
         client.get(buildUrl("/api/v1/students/me/college-list")) {
           header(HttpHeaders.Cookie, cookie)
         }
       assertEquals(HttpStatusCode.OK, listResponse.status)
-      assertTrue(listResponse.bodyAsText().contains(entryId))
+      val listBody = listResponse.bodyAsText()
+      assertTrue(listBody.contains(entryId))
+      assertTrue(listBody.contains("Test College"), "collection GET must carry collegeName")
 
       val getResponse =
         client.get(buildUrl("/api/v1/students/me/college-list/$entryId")) {
           header(HttpHeaders.Cookie, cookie)
         }
       assertEquals(HttpStatusCode.OK, getResponse.status)
+      assertEquals("Test College", mapper.readTree(getResponse.bodyAsText())["entry"]["collegeName"].asText())
 
       val patchResponse =
         client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
@@ -269,6 +274,7 @@ class CollegeListRoutingTest {
       val patched = mapper.readTree(patchResponse.bodyAsText())
       assertEquals("applying", patched["entry"]["status"].asText())
       assertEquals(2, patched["entry"]["version"].asInt())
+      assertEquals("Test College", patched["entry"]["collegeName"].asText())
 
       val deleteResponse =
         client.delete(buildUrl("/api/v1/students/me/college-list/$entryId?version=2")) {

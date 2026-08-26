@@ -76,25 +76,28 @@ class CollegeListService(
 
   /**
    * The active list with each entry's college display name resolved in the
-   * same session ([CollegesDao.findById] per entry -- the list is small by
-   * construction, a student curates it by hand). The chat tool's read (RFC
-   * 136): the tool renders names into its echo without reaching past this
-   * service.
+   * same session. The chat tool's read (RFC 136): the tool renders names into
+   * its echo without reaching past this service. Names come from one batch
+   * read ([CollegesDao.listByIds] projected to a map) — the RFC 136/137
+   * reconciliation point: both surfaces converge on the batch form rather
+   * than a per-entry `findById`.
    */
   suspend fun listActiveWithNames(studentId: StudentId): Result<List<EntryWithCollegeName>> =
     try {
       database.withConnection { session ->
         CollegeListEntriesDao.listActiveByStudent(session, studentId).map { entries ->
+          val names =
+            CollegesDao
+              .listByIds(session, entries.map { it.collegeId })
+              .getOrThrow()
+              .associate { it.id to it.name }
           entries.map { entry ->
-            val college =
-              CollegesDao.findById(session, entry.collegeId).getOrElse { e ->
-                // FK-guaranteed present; a miss is corruption worth naming.
-                throw IllegalStateException(
-                  "college [${entry.collegeId.value}] missing for active list entry [${entry.id.value}]",
-                  e,
-                )
+            // FK-guaranteed present; a miss is corruption worth naming.
+            val name =
+              checkNotNull(names[entry.collegeId]) {
+                "college [${entry.collegeId.value}] missing for active list entry [${entry.id.value}]"
               }
-            EntryWithCollegeName(entry, college.name)
+            EntryWithCollegeName(entry, name)
           }
         }
       }
@@ -202,6 +205,24 @@ class CollegeListService(
         }
 
         Result.success(RemoveEntryResult.Success(deleteResult.getOrThrow()))
+      }
+    } catch (e: Exception) {
+      Result.failure(e)
+    }
+
+  /**
+   * The display names of the given college [ids], keyed by id (RFC 137). One
+   * batch read ([CollegesDao.listByIds] projected to a map) rather than a
+   * per-entry `findById`, so REST enrichment of a whole list is one query. An
+   * id that resolves to no row is simply absent from the map — under
+   * `ON DELETE RESTRICT` that is a broken FK invariant the caller treats as a
+   * server error, never a state to paper over. Strictly additive: no existing
+   * outcome changes (the RFC 136 conflict-surface rule).
+   */
+  suspend fun listNames(ids: List<CollegeId>): Result<Map<CollegeId, String>> =
+    try {
+      database.withConnection { session ->
+        CollegesDao.listByIds(session, ids).map { rows -> rows.associate { it.id to it.name } }
       }
     } catch (e: Exception) {
       Result.failure(e)
