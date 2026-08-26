@@ -15,11 +15,11 @@ Updated: 2026-08-26. Live-run discovery from any checkout:
 1. **Phone test S1–S3.5** (Ian, no session) — UNBLOCKED, and better than
    planned: both doors exist now (RFC 136 chat tool + RFC 137 iOS screen).
    Everything downstream waits on this read.
-2. **Land RFC 138** (`bin/state-apply`) — in flight (Ian's session, at
-   implementing); rebase before verify, it is 5 behind main.
-3. **Gate 1 on brief 0002** (account deletion) — App-Store-blocking; six
-   decisions D1–D6 are framed and waiting. Next after 138.
-4. **Deploy S1–S3.5 to prod** — after the phone test says the coaching holds.
+2. **Gate 1 on brief 0002** (account deletion) — App-Store-blocking; six
+   decisions D1–D6 are framed and waiting. Priority raised (Ian, 2026-08-26):
+   RFC 138's `bin/state-apply` (landed) is create-only by design and gets
+   per-entity replace only from 0002's reset/delete engine — a second consumer.
+3. **Deploy S1–S3.5 to prod** — after the phone test says the coaching holds.
 
 _Rule: this list is rewritten every time the file is updated; it never says "see
 below"._
