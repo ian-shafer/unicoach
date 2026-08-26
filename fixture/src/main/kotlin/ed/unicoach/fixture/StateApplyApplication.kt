@@ -61,8 +61,4 @@ fun main(args: Array<String>) {
   } finally {
     database.close()
   }
-  // Explicit exit: password hashing ran on Dispatchers.Crypto, whose fixed
-  // thread pool is non-daemon and would otherwise pin this JVM alive after
-  // main returns (fine for the servers, fatal for a CLI).
-  kotlin.system.exitProcess(0)
 }

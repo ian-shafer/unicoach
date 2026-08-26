@@ -1532,4 +1532,24 @@ test_json_string_roundtrips_multiline() {
 }
 assert_success "json_string round-trips the multi-line deploy script through JSON" test_json_string_roundtrips_multiline
 
+# state-apply must TERMINATE, not merely succeed. Argon2 hashing runs on
+# Dispatchers.Crypto's pool; when those threads were non-daemon they kept the JVM
+# alive after main returned, and the CLI hung forever after doing all its work
+# (once for 12 hours). That was patched per-CLI with an exitProcess(0); the real
+# fix made the pool daemon, and this asserts the behaviour that fix must deliver.
+#
+# The assertion is the `timeout`, so the failure mode is exit 124 in ~3 minutes
+# rather than a wedged suite: a silent hang is exactly what regressed before, and
+# a test that only checked the exit code would pass on a hang by never returning.
+# Deliberately end-to-end — a unit test of Thread.isDaemon checks the mechanism,
+# not that this process exits, and any future non-daemon pool would reproduce the
+# original symptom while leaving such a unit test green.
+STATE_APPLY_TIMEOUT_SECS=180
+test_state_apply_terminates() {
+  bin/build-fixture >/dev/null 2>&1 || return 1
+  # -f rebuilds the world from empty, so the create-only applier is re-runnable.
+  timeout "$STATE_APPLY_TIMEOUT_SECS" bin/state-apply -f fixtures/dev-users.yaml >/dev/null 2>&1
+}
+assert_success "state-apply exits on its own after argon2 hashing (no non-daemon pool pinning the JVM)" test_state_apply_terminates
+
 end_tests
