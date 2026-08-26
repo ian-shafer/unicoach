@@ -57,7 +57,7 @@ the prioritisation gate and the spec gate. Everything else is this skill's job.
 ## The artifact: `product/NNNN-slug/`
 
     product/
-      WORK-QUEUE.md                  # cross-brief queue: paste-ready kickoffs
+      STATUS.md                      # cross-brief tracker: manual, priorities, prompts
       NNNN-slug/
         brief.md                     # framing, candidates, gate-1 Ds, ledger
         research/*.md                # DISCOVER reports, one per subagent
@@ -71,6 +71,14 @@ Number = max existing + 1, zero-padded to four digits. The brief opens with a
 
 Update the ledger immediately after each /ship run lands (code SHA + doc SHA).
 Resume a brief by reading `Status:`, never from session memory.
+
+**`product/STATUS.md` is the cross-brief tracker** — a user manual of shipped
+features (each entry names its door), the prioritised work table with honest
+partial-progress state, and Ian's paste-ready kickoff prompts. Read it FIRST
+when this skill is invoked (it answers "where are we?" before any brief does),
+and update it whenever a slice lands, a feature's reachability changes, or
+priorities move. Briefs' ledgers are the ground truth; STATUS.md is the view —
+when they disagree, fix STATUS.md.
 
 ## Phases
 
@@ -136,10 +144,11 @@ briefs inherit them without re-asking.
 One /ship run per slice, in order (parallel only when slices are truly disjoint
 — /ship's rebase machinery tolerates a moved base). The kickoff is the slice
 instruction from `spec.md`, pasted or invoked as `/skill:ship`, optionally via
-`product/WORK-QUEUE.md` for cross-session dispatch. In each run, Ian (or this
+`product/STATUS.md` for cross-session dispatch. In each run, Ian (or this
 session) is /ship's approval gate; product questions that surface mid-run come
 back to the brief as appended decisions or new slices. After each land: update
-the ledger line, and re-check the next slice's instruction against what actually
+the ledger line and `product/STATUS.md` (work table + the landed feature's
+manual entry), and re-check the next slice's instruction against what actually
 landed (the code wins over the spec).
 
 ### LEARN
