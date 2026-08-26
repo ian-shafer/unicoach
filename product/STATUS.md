@@ -1,13 +1,27 @@
 # Product status
 
-One page, three jobs: what the product does today (a user manual, one entry per
-feature), what we are building next (prioritised, with honest in-progress
-state), and paste-ready prompts to kick off new sessions. **/chart reads this
-file first and updates it after every landed slice** — if this file and a brief
-disagree, the brief's ledger wins and this file gets fixed.
+One page, five jobs: a glanceable TL;DR of the next steps, what the product does
+today (a user manual, one entry per feature), what we are building next
+(prioritised, with honest in-progress state), a backlog for unscheduled ideas,
+and paste-ready prompts to kick off new sessions. **/chart reads this file first
+and updates it after every landed slice** — if this file and a brief disagree,
+the brief's ledger wins and this file gets fixed.
 
 Updated: 2026-08-26. Live-run discovery from any checkout:
 `.prime/agent/skills/ship/scripts/ship-status`
+
+## TL;DR — next steps, most important first
+
+1. **Phone test S1–S3.5** (Ian, no session) — now UNBLOCKED, RFC 136 landed the
+   chat door. Everything downstream waits on this read.
+2. **Finish RFC 137** (iOS college-list) — run is at landing, one `ship-rebase`
+   from done. Resume the session, don't restart.
+3. **Gate 1 on brief 0002** (account deletion) — App-Store-blocking; six
+   decisions D1–D6 are framed and waiting for you.
+4. **Deploy S1–S3.5 to prod** — after the phone test says the coaching holds.
+
+_Rule: this list is rewritten every time the file is updated; it never says "see
+below"._
 
 ## The product today
 
@@ -78,8 +92,9 @@ added here as slices touch them._
 ## Work — prioritised
 
 P1 = needed for public launch or unblocking others; P2 = the differentiator
-beat's remainder; P3 = valuable, unscheduled. "State" is honest partial progress
-— this is the column /chart reads to know what "halfway done" means.
+beat's remainder; P3 = in flight but not on the critical path. Unprioritised
+ideas live in the Backlog below, not in the table. "State" is honest partial
+progress — this is the column /chart reads to know what "halfway done" means.
 
 | Pri | Work                              | State                                                                                                               | Where                                    |
 | --- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
@@ -90,7 +105,23 @@ beat's remainder; P3 = valuable, unscheduled. "State" is honest partial progress
 | P2  | Beat 1 remainder: S4 → S5 → S6    | Not started. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent.        | `product/0001-v1-differentiator/spec.md` |
 | P2  | Ingest observability              | Small, before S4's data build: `bin/ingest-colleges` change summary + header assertion (silent no-op cost an hour). | note in brief 0002                       |
 | P3  | `bin/state-apply` (RFC 138)       | In flight: ship run at **implementing** (v1 = users world file, create-only; per-entity reset waits on 0002).       | worktree `unicoach-rfc-138`              |
-| P3  | Beat 2: parent partner accounts   | Deliberately unspecced until Beat 1 ships and share-rate is observed (0001 D9).                                     | future brief section                     |
+
+## Backlog
+
+Valuable, unscheduled, unprioritised — the parking lot. Append freely (one
+bullet, enough context to pick it up cold); /chart promotes an item into the
+work table by giving it a priority, or into a brief when it deserves gates.
+Nothing here is committed work.
+
+- **Beat 2: parent partner accounts** — claim-the-report onboarding, linked
+  family, parent-side coaching. Deliberately unspecced until Beat 1 ships and
+  share-rate is observed (0001 D9).
+- **`bin/state-apply` growth** — per-entity replacement/reset once brief 0002's
+  delete engine exists (RFC 138 explicitly defers to it); more resource types
+  (students, college lists, money profiles) for one-command test worlds.
+- **Ingest observability, the general version** — the P2 row covers
+  `bin/ingest-colleges`; the same silent-no-op shape likely exists in other
+  loaders.
 
 ## Kickoff prompts
 

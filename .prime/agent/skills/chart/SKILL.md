@@ -72,13 +72,15 @@ Number = max existing + 1, zero-padded to four digits. The brief opens with a
 Update the ledger immediately after each /ship run lands (code SHA + doc SHA).
 Resume a brief by reading `Status:`, never from session memory.
 
-**`product/STATUS.md` is the cross-brief tracker** — a user manual of shipped
+**`product/STATUS.md` is the cross-brief tracker** — a glanceable TL;DR of next
+steps (rewritten on every update, never "see below"), a user manual of shipped
 features (each entry names its door), the prioritised work table with honest
-partial-progress state, and Ian's paste-ready kickoff prompts. Read it FIRST
-when this skill is invoked (it answers "where are we?" before any brief does),
-and update it whenever a slice lands, a feature's reachability changes, or
-priorities move. Briefs' ledgers are the ground truth; STATUS.md is the view —
-when they disagree, fix STATUS.md.
+partial-progress state, a backlog of unscheduled ideas (/chart promotes backlog
+items into the table or a brief; Ian appends freely), and Ian's paste-ready
+kickoff prompts. Read it FIRST when this skill is invoked (it answers "where are
+we?" before any brief does), and update it whenever a slice lands, a feature's
+reachability changes, or priorities move. Briefs' ledgers are the ground truth;
+STATUS.md is the view — when they disagree, fix STATUS.md.
 
 ## Phases
 
