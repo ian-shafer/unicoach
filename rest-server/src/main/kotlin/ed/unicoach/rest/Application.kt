@@ -298,6 +298,9 @@ fun Application.appModule(
   val moneyProfileService =
     ed.unicoach.coaching.moneyprofile
       .MoneyProfileService(database)
+  // Hoisted above the tool registry (RFC 136): the chat tool and the REST
+  // routes share this one instance.
+  val collegeListService = CollegeListService(database)
   // The tool registry advertised on every coaching turn (RFC 94). New tools
   // append here; nothing else in the loop changes.
   val toolRegistry =
@@ -310,13 +313,14 @@ fun Application.appModule(
             ed.unicoach.coaching.costs
               .CollegeCostService(database),
           ),
+        ed.unicoach.coaching.collegelist
+          .CollegeListChatTool(collegeListService),
       ),
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the
   // verdict a student is blocked on is the verdict their usage bar renders.
   val budgetService = BudgetService(database, budgetConfig, subscriptionPlans)
   val coachingService = CoachingService(database, llmCallLog, coachingConfig, budgetService, toolRegistry)
-  val collegeListService = CollegeListService(database)
   val subscriptionService = SubscriptionService(database, appStoreServerApi, subscriptionPlans)
 
   configureEmailVerificationGate(authService, sessionConfig)

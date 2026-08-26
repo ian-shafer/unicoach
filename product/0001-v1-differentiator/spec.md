@@ -37,6 +37,15 @@ band, debt/earnings context, every number cited to its source-year. Coach prompt
 updated to make this a first-session moment. AC: a new student with 3 listed
 schools gets a cited cost answer in session one.
 
+S3.5. College list in chat (lane A, small — inserted after S3 shipped) Gap found
+after S1-S3 landed: no student-facing door to the list existed — no chat tool
+wrote it and no iOS UI exists — so the condition guarding the whole S1-S3 cost
+chain (schools on the list) was never true outside tests. This slice closes it
+conversationally: an `update_college_list` chat tool (add / restatus / remove,
+mirroring the S2 write tool's shape) plus a coach-prompt update carrying the D12
+offer policy. AC: a student can add, restatus, and remove a school entirely in
+chat; the coach offers — never nags.
+
 S4. Admissions Intelligence Layer v0 (lane A, largest — may split in design) New
 reference tables for CDS-derived facts: H2A merit-aid practice (% of no-need
 freshmen receiving merit, avg award), C7 admissions factors, deadlines by round.

@@ -1,5 +1,6 @@
 package ed.unicoach.coaching
 
+import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.fitlens.FitLensConfig
@@ -124,5 +125,31 @@ class SystemPromptCatalogTest {
     // told what to offer; which tool records it is the tool description's job.
     assertFalse(appended.contains(MoneyProfileChatTool.TOOL_NAME), "the write tool's name does not ride the prompt")
     assertTrue(appended.contains("U.S. Department of Education College Scorecard"), "the paragraph must require attribution")
+  }
+
+  /**
+   * The 0048 seed's structural contract (RFC 136, the same convention): v4 is
+   * the v3 body byte-identical as a prefix, joined by a single space to
+   * exactly one appended paragraph — the college-list keeper instruction. The
+   * paragraph's markers are asserted, not its full copy: the seed migration is
+   * the single home of the approved wording.
+   */
+  @Test
+  fun `coach v4 is the v3 body verbatim plus one appended college-list paragraph`() {
+    val v3 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v3").getOrThrow().body
+    val v4 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v4").getOrThrow().body
+    assertTrue(v4.startsWith(v3), "the v3 prefix must be byte-identical, so the list paragraph is the only change")
+    val appended = v4.removePrefix(v3)
+    assertTrue(appended.startsWith(" The student's college list is theirs"), "single-space paragraph join")
+    // v3 named the action tool (college_cost_profile); v4 follows: the list
+    // tool is this slice's action tool, so its name rides the prompt.
+    assertTrue(appended.contains(CollegeListChatTool.TOOL_NAME), "the paragraph must name the list tool")
+    assertTrue(appended.contains("offer to add it to their list"), "the paragraph must carry the proactive offer")
+    assertTrue(
+      appended.contains("only when the student asks or agrees"),
+      "the paragraph must forbid writing without the student's say-so",
+    )
+    assertTrue(appended.contains("let it go without comment"), "a declined offer is never pushed")
+    assertTrue(appended.contains("offer to update the school's status"), "milestones prompt a status offer")
   }
 }

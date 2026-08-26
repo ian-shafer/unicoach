@@ -3,6 +3,7 @@ package ed.unicoach.coaching.collegelist
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegeListEntrySupportDao
+import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.ConcurrentModificationException
 import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.NotFoundException
@@ -67,6 +68,34 @@ class CollegeListService(
       database.withConnection { session ->
         CollegeListEntriesDao.listActiveByStudent(session, studentId).map { entries ->
           entries.map { entry -> CollegeListEntryWithSupport(entry, supportingObservationsFor(session, entry.id)) }
+        }
+      }
+    } catch (e: Exception) {
+      Result.failure(e)
+    }
+
+  /**
+   * The active list with each entry's college display name resolved in the
+   * same session ([CollegesDao.findById] per entry -- the list is small by
+   * construction, a student curates it by hand). The chat tool's read (RFC
+   * 136): the tool renders names into its echo without reaching past this
+   * service.
+   */
+  suspend fun listActiveWithNames(studentId: StudentId): Result<List<EntryWithCollegeName>> =
+    try {
+      database.withConnection { session ->
+        CollegeListEntriesDao.listActiveByStudent(session, studentId).map { entries ->
+          entries.map { entry ->
+            val college =
+              CollegesDao.findById(session, entry.collegeId).getOrElse { e ->
+                // FK-guaranteed present; a miss is corruption worth naming.
+                throw IllegalStateException(
+                  "college [${entry.collegeId.value}] missing for active list entry [${entry.id.value}]",
+                  e,
+                )
+              }
+            EntryWithCollegeName(entry, college.name)
+          }
         }
       }
     } catch (e: Exception) {
