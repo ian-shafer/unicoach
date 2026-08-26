@@ -87,15 +87,20 @@ class CollegeSearchToolTest {
       website = null,
     )
 
-  private fun seedWithMarineBiology(unitId: Int) =
-    runBlocking {
-      database.withConnection { session ->
-        val college = CollegesDao.upsert(session, newCollege(unitId)).getOrThrow()
-        CollegesDao
-          .upsertProgram(session, NewCollegeProgram(college.id, "260702", "Marine Biology", 3))
-          .getOrThrow()
-      }
+  private fun seedWithMarineBiology(unitId: Int) = seedWithProgram(unitId, "260702", "Marine Biology")
+
+  private fun seedWithProgram(
+    unitId: Int,
+    cipCode: String,
+    title: String,
+  ) = runBlocking {
+    database.withConnection { session ->
+      val college = CollegesDao.upsert(session, newCollege(unitId)).getOrThrow()
+      CollegesDao
+        .upsertProgram(session, NewCollegeProgram(college.id, cipCode, title, 3))
+        .getOrThrow()
     }
+  }
 
   // ---------------------------------------------------------------------------
   // Definition
@@ -130,6 +135,18 @@ class CollegeSearchToolTest {
     // No field is required (all optional).
     val required = schema["required"] as JsonArray
     assertTrue(required.isEmpty())
+  }
+
+  @Test
+  fun `definition documents that dotted CIP notation is accepted`() {
+    val cip =
+      tool.definition["input_schema"]!!
+        .jsonObject["properties"]!!
+        .jsonObject["cipPrefix"]!!
+        .jsonObject["description"]!!
+        .jsonPrimitive.content
+    assertTrue(cip.contains("26.0702"), "the dotted form should be shown")
+    assertTrue(cip.contains("canonical"), "the canonical form should be named")
   }
 
   @Test
@@ -201,6 +218,62 @@ class CollegeSearchToolTest {
 
       val unknownField = tool.execute(buildJsonObject { put("nearOcean", true) })
       assertTrue(unknownField.containsKey("error"))
+    }
+
+  @Test
+  fun `execute accepts CIP prefixes in the conventional dotted notation`() =
+    runBlocking {
+      seedWithMarineBiology(800)
+
+      // The dotted form a model naturally writes, and the digits-only canonical
+      // form, are the same query.
+      for (prefix in listOf("2607", "26.07", "260702", "26.0702", " 26.0702 ", "26")) {
+        val result = tool.execute(buildJsonObject { put("cipPrefix", prefix) })
+        assertNull(result["error"], "cipPrefix [$prefix] should be accepted")
+        assertEquals(1, result["count"]!!.jsonPrimitive.intOrNull, "cipPrefix [$prefix] should match")
+      }
+    }
+
+  @Test
+  fun `execute reads a CIP prefix the model wrote unquoted`() =
+    runBlocking {
+      seedWithMarineBiology(802)
+
+      // The schema says string, but a model writing 26.07 often omits the quotes;
+      // the number's literal text is still a readable prefix.
+      val result = tool.execute(buildJsonObject { put("cipPrefix", JsonPrimitive(26.07)) })
+      assertNull(result["error"])
+      assertEquals(1, result["count"]!!.jsonPrimitive.intOrNull)
+    }
+
+  @Test
+  fun `execute reads a dotted CIP prefix whose family lost its leading zero`() =
+    runBlocking {
+      seedWithProgram(801, "050103", "Asian Studies")
+
+      // "5.0103" is 05.0103 with the leading zero elided -- splitting on the dot
+      // and padding the family recovers it, where deleting the dot would not.
+      for (prefix in listOf("050103", "5.0103", "05.0103")) {
+        val result = tool.execute(buildJsonObject { put("cipPrefix", prefix) })
+        assertNull(result["error"], "cipPrefix [$prefix] should be accepted")
+        assertEquals(1, result["count"]!!.jsonPrimitive.intOrNull, "cipPrefix [$prefix] should match")
+      }
+    }
+
+  @Test
+  fun `execute still rejects ambiguous or malformed CIP prefixes`() =
+    runBlocking {
+      // "5.138" is ambiguous (05.138? 51.38?) -- refuse rather than guess, since
+      // guessing "5138" would silently answer about 51.38 Nursing instead.
+      for (prefix in listOf("5.138", "26.07.02", ".2607", "26.070", "bio", "26.b7", "2.6.0.7")) {
+        val result = tool.execute(buildJsonObject { put("cipPrefix", prefix) })
+        val error = result["error"]
+        assertNotNull(error, "cipPrefix [$prefix] should be rejected")
+        val message = error.jsonPrimitive.content
+        assertTrue(message.contains("26.07"), "error should show the accepted dotted form")
+        assertTrue(message.contains(prefix), "error should echo the rejected input [$prefix]")
+        assertNull(result["count"])
+      }
     }
 
   @Test

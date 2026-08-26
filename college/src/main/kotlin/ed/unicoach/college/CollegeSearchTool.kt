@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.db.models.CipPrefix
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.error.PermanentError
@@ -45,7 +46,10 @@ class CollegeSearchTool(
             put(
               "description",
               "A 2-, 4-, or 6-digit CIP code prefix to require a matching program " +
-                "(e.g. \"26\" biology, \"2613\" ecology, \"260702\" marine biology).",
+                "(e.g. \"26\" biology, \"2613\" ecology, \"260702\" marine biology). " +
+                "The conventional dotted notation is also accepted -- \"26.13\" and " +
+                "\"26.0702\" mean the same as \"2613\" and \"260702\" -- but the canonical " +
+                "form is digits only.",
             )
           }
           putStringArrayProperty(
@@ -123,13 +127,10 @@ class CollegeSearchTool(
     }
 
     val cipPrefix =
-      when (val r = optString(input, "cipPrefix")) {
+      when (val r = parseCipPrefix(input)) {
         is Parsed.Err -> return ParseResult.Err(r.reason)
         is Parsed.Ok -> r.value
       }
-    if (cipPrefix != null && !cipPrefix.matches(CIP_PREFIX_REGEX)) {
-      return ParseResult.Err("cipPrefix must be 2, 4, or 6 digits")
-    }
 
     val states =
       when (val r = optStringList(input, "states")) {
@@ -238,6 +239,29 @@ class CollegeSearchTool(
     )
   }
 
+  /**
+   * Reads `cipPrefix` in the same shape as the other opt* readers: absent stays
+   * `Parsed.Ok(null)`, an unreadable prefix is a `Parsed.Err` carrying its reason
+   * -- so "no program filter" and "rejected program filter" can never collapse
+   * onto the same value on the way into [CollegeQuery].
+   *
+   * The dotted notation a model naturally writes is accepted here and stored
+   * canonical; see [CipPrefix].
+   */
+  private fun parseCipPrefix(input: JsonObject): Parsed<String?> {
+    val el = field(input, "cipPrefix") ?: return Parsed.Ok(null)
+    // Deliberately more permissive about TYPE than the other readers, and stricter
+    // about VALUE. The schema says string, but a model writing a dotted CIP code
+    // often drops the quotes ({"cipPrefix": 26.07}), and the literal text of that
+    // number is still a readable prefix -- so any scalar is read and canonicalized,
+    // and only an unreadable VALUE is refused. FitLensService.canonicalCipPrefix
+    // reads the other model-facing cipPrefix the same way, on purpose: the same
+    // input gets the same verdict at both boundaries.
+    val raw = (el as? JsonPrimitive)?.content ?: return Parsed.Err("$CIP_PREFIX_ERROR; got [$el]")
+    val canonical = CipPrefix.parseOrNull(raw) ?: return Parsed.Err("$CIP_PREFIX_ERROR; got [$raw]")
+    return Parsed.Ok(canonical)
+  }
+
   private sealed interface Parsed<out T> {
     data class Ok<T>(
       val value: T,
@@ -252,16 +276,6 @@ class CollegeSearchTool(
     input: JsonObject,
     key: String,
   ): JsonElement? = input[key]?.takeUnless { it is JsonNull }
-
-  private fun optString(
-    input: JsonObject,
-    key: String,
-  ): Parsed<String?> {
-    val el = field(input, key) ?: return Parsed.Ok(null)
-    val prim = el as? JsonPrimitive ?: return Parsed.Err("$key must be a string")
-    if (!prim.isString) return Parsed.Err("$key must be a string")
-    return Parsed.Ok(prim.content)
-  }
 
   private fun optInt(
     input: JsonObject,
@@ -374,7 +388,9 @@ class CollegeSearchTool(
     const val MIN_LIMIT = CollegeSearchService.MIN_LIMIT
     const val MAX_LIMIT = CollegeSearchService.MAX_LIMIT
 
-    private val CIP_PREFIX_REGEX = Regex("^([0-9]{2}|[0-9]{4}|[0-9]{6})$")
+    private const val CIP_PREFIX_ERROR =
+      "cipPrefix must be a 2-, 4-, or 6-digit CIP code, with or without the " +
+        "conventional dot (e.g. \"26\", \"2607\" or \"26.07\", \"260702\" or \"26.0702\")"
 
     private val STATE_CODE_REGEX = Regex("^[A-Za-z]{2}$")
 

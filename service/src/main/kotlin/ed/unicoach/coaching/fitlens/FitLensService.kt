@@ -24,6 +24,7 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SystemPromptsDao
+import ed.unicoach.db.models.CipPrefix
 import ed.unicoach.db.models.Claim
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
@@ -99,6 +100,8 @@ class FitLensService(
             "student's claims. Omit any axis you are unsure of.",
         inputSchema =
           ToolSchema.objectSchema(
+            // Dotted CIP notation ("26.07") is accepted and canonicalized at
+            // parse; an unreadable prefix fails the pass. See CipPrefix.
             "cipPrefix" to ToolSchema.string(),
             "states" to ToolSchema.arrayOf(ToolSchema.string()),
             "region" to ToolSchema.integer(),
@@ -672,7 +675,28 @@ class FitLensService(
     studentId: StudentId,
     root: JsonObject,
   ): QueryParse {
-    fun stringField(name: String): String? = (root[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+    /**
+     * Reads `cipPrefix` and canonicalizes it (see [CipPrefix]).
+     *
+     * Deliberately more permissive than the other readers about TYPE and stricter
+     * about VALUE. A model asked for a CIP code writes the conventional dotted
+     * notation, and often writes it unquoted (`"cipPrefix": 26.07`), so the
+     * literal text of any scalar is accepted and canonicalized. What is not
+     * accepted is a prefix that cannot be read one way: forwarding it into
+     * `cip_code LIKE ? || '%'` would match no program and surface as an honest
+     * "no fit" rather than the defect it is, so it fails the parse like any other
+     * invalid field.
+     */
+    fun canonicalCipPrefix(): Result<String?> {
+      val el = root["cipPrefix"] ?: return Result.success(null)
+      val raw =
+        (el as? JsonPrimitive)?.contentOrNull
+          ?: return Result.failure(IllegalArgumentException("cipPrefix"))
+      val canonical =
+        CipPrefix.parseOrNull(raw)
+          ?: return Result.failure(IllegalArgumentException("cipPrefix: unreadable CIP code [$raw]"))
+      return Result.success(canonical)
+    }
 
     // An absent key is a legitimately unconstrained axis (null). A present key
     // that is not the expected scalar type fails the whole parse.
@@ -712,7 +736,7 @@ class FitLensService(
     return try {
       QueryParse.Parsed(
         CollegeQuery(
-          cipPrefix = stringField("cipPrefix"),
+          cipPrefix = canonicalCipPrefix().getOrThrow(),
           states = stringList("states").getOrThrow(),
           region = intField("region").getOrThrow(),
           locales = intList("locales").getOrThrow(),

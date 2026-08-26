@@ -30,6 +30,7 @@ import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeListEntry
+import ed.unicoach.db.models.NewCollegeProgram
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
 import ed.unicoach.db.models.StudentId
@@ -248,6 +249,17 @@ class FitLensServiceTest {
         ),
       ).getOrThrow()
       .id
+
+  private fun createCollegeWithProgram(
+    cipCode: String,
+    title: String,
+  ): CollegeId {
+    val collegeId = createCollege()
+    CollegesDao
+      .upsertProgram(session, NewCollegeProgram(collegeId, cipCode, title, 3))
+      .getOrThrow()
+    return collegeId
+  }
 
   /**
    * Inserts one minimal `llm_requests` row and returns its id. Used to satisfy
@@ -528,6 +540,62 @@ class FitLensServiceTest {
       assertEquals(1, runRows(student), "an applied run records the spent tokens")
       assertEquals(FitLensOutcome.Applied(suggestionsWritten = 0), latestRun(student).outcome)
       assertEquals(0, latestRun(student).matchesConsidered)
+    }
+
+  @Test
+  fun `an unquoted dotted CIP prefix is read from the number literal the model wrote`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      createCollegeWithProgram("260702", "Marine Biology")
+
+      // A model writing a CIP code often omits the quotes; the literal text is
+      // still a readable prefix, and dropping it would silently widen the search
+      // to every college.
+      val provider = scripted("""{"cipPrefix":26.07}""", """{}""")
+      service(provider).discover(student)
+
+      assertEquals(1, latestRun(student).matchesConsidered)
+    }
+
+  @Test
+  fun `an unreadable CIP prefix fails the pass instead of silently retrieving nothing`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      createCollegeWithProgram("260702", "Marine Biology")
+
+      // "5.138" cannot be read one way (05.138? 51.38?). Forwarded verbatim it
+      // would match no program and look like an honest "no fit".
+      val provider = scripted("""{"cipPrefix":"5.138"}""", """{}""")
+      val result = service(provider).discover(student)
+
+      assertTrue(result is FitLensResult.Failed, "Expected Failed, got: $result")
+      assertEquals(
+        FitLensFailureCategory.MALFORMED_OUTPUT,
+        (latestRun(student).outcome as FitLensOutcome.Failed).category,
+      )
+      assertEquals(0, suggestionRows(student))
+    }
+
+  @Test
+  fun `a dotted CIP prefix from the model retrieves the same programs as the canonical form`() =
+    runBlocking {
+      // The model writes CIP codes dotted; cip_code is stored digits-only, so an
+      // un-canonicalized prefix silently matches nothing and the pass reports
+      // "no fit" instead of an error.
+      // One seeded college for the whole loop: the table is not truncated between
+      // iterations, so re-seeding would inflate matches_considered per pass.
+      createCollegeWithProgram("260702", "Marine Biology")
+      for (prefix in listOf("260702", "26.0702", "26.07")) {
+        val student = createStudent()
+        createClaims(student, 3)
+
+        val provider = scripted("""{"cipPrefix":"$prefix"}""", """{}""")
+        service(provider).discover(student)
+
+        assertEquals(1, latestRun(student).matchesConsidered, "cipPrefix [$prefix] should retrieve the program")
+      }
     }
 
   @Test
