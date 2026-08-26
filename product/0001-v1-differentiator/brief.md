@@ -1,0 +1,81 @@
+# Product Brief 0001 — The v1 differentiator (DRAFT / pilot run)
+
+Status: EXECUTE in progress. Gate 1: report-as-wedge (C4 via scoped C1,
+invite-parent mechanic first-class). Gate 2: slices S1-S6 approved (see spec.md,
+D5-D12). LEDGER: S1 LANDED as RFC 133 (main@dcf93207 + 8e65011f, 2026-08-24). S2
+LANDED as RFC 134 (main@583c108a + d550012d, 2026-08-25) — money_profiles
+tri-state entity, atomic DAO upsert, service-owned write path,
+update_money_profile chat tool, context injection, admin read-only;
+IncomeBand.netPriceFor ready for S3. S3 LANDED as RFC 135 (main@c9935c51 +
+14ccbe37, 2026-08-25) — college_cost_profile tool (list x money profile x
+Scorecard costs, self-describing basis, derived honest precision_offer) + coach
+prompt v3 (rollback COACHING_SYSTEM_PROMPT_VERSION=v2). THE FIRST-SESSION AHA IS
+LIVE END-TO-END. Next: S4 (Admissions Intelligence Layer) or S5 (Family Cost
+Report) — or pause to codify the product-layer skill from three completed runs.
+Not committed until the process itself is validated.
+
+## The question
+
+Unicoach v1 is chat-centric and reads as "another AI chat app." Before public
+launch, which feature should we build (or finish) so a first-time student or
+parent immediately sees value that ChatGPT / competitors don't offer?
+
+## Candidates
+
+| ID | Candidate                                                                                     | Existing foundation in repo                                           |
+| -- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| C1 | Rich institution database — every post-HS institution, incl. data not readily on the internet | `colleges` + Scorecard ingest (RFC 82), CollegeSearchTool (RFC 67/94) |
+| C2 | Top-schools / college list surface                                                            | `college_list_entries` (RFC 91), fit-lens (RFC 98)                    |
+| C3 | Todo / roadmap to keep students on track                                                      | Synthesis commitments + triggers (RFC 93), periodic tasks (RFC 97)    |
+| C4 | Financial piece — what will it actually cost                                                  | Scorecard has net-price fields; nothing surfaced                      |
+| C5 | Parent–student collaboration                                                                  | Nothing; auth is single-user                                          |
+
+## Success criteria for the decision
+
+- The chosen bet is visibly different from generic AI chat within the first
+  session of a new user.
+- It compounds: later candidates get cheaper or better because it exists.
+- It is buildable to a launchable slice by /ship in weeks, not quarters.
+- Parents (the payers — paid-subscriptions exists) can see the value.
+
+## Process (pilot of the product layer)
+
+FRAME -> PRIORITIZE (Ian gates) -> DISCOVER -> SPEC & SLICE (Ian gates) ->
+EXECUTE via /ship -> LEARN
+
+Research fan-out (parallel subagents), reports land in `research/`:
+
+1. `competitor-scan.md` — landscape, table stakes vs. gaps
+2. `data-feasibility.md` — can we build the data moat; sources, cost, ToS
+3. `user-value.md` — what students/parents value and pay for; parent-payer
+   dynamics
+
+## PRIORITIZE — synthesis of the three research reports
+
+All reports in `research/`. Three independent agents converged:
+
+| Rank | Bet                                                  | Verdict across reports                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | **C4 cost truth**, powered by a scoped C1 data slice | #1 in competitor-scan and user-value. Cost opacity is the top family pain (Princeton Review 2026: #1 stressor at 37%; Sallie Mae: 79% eliminate schools on cost alone). Competitors are structurally conflicted — lead-gen paid by colleges. NPT4 net-price-by-income-band and earnings/debt-by-major are ALREADY in the Scorecard ingest; the scarce layer (CDS H2A real merit-aid practice, C7 admissions factors) is buildable for ~$1-5K/cycle with an open-source seed corpus (collegedata.fyi). |
+| 2    | **C5 parent collaboration — one thin slice**         | Parent is the payer (counselor packages $4-6.5K; 75% of parents want direct communication) but live-monitoring backfires. v1 slice: student-initiated shareable **Family Cost Report** — gives the parent a reason to subscribe with zero surveillance surface. Full collaboration is a fast-follow, not v1.                                                                                                                                                                                          |
+| 3    | **C3 roadmap**                                       | Invisible coach scaffolding on RFC 93 commitments; table-stakes retention spine, never the pitch.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 4    | **C2 top-schools list**                              | Fully commoditized (every competitor has search/match/chancing; 57% of parents already use ChatGPT for this). Keep RFC 91 as scaffolding; leading with it guarantees the "another chat app" read.                                                                                                                                                                                                                                                                                                     |
+| 5    | **C1 as a standalone product**                       | Not a headline feature ("rich database" is not an aha) — it is the FUEL for C4 and the coach. Build the Admissions Intelligence Layer (~CDS C+H, deadlines, prompts for ~1,200 schools) behind the cost feature and the chat tool, cited with receipts.                                                                                                                                                                                                                                               |
+
+**Positioning candidate:** "Every other app helps colleges find students.
+Unicoach is the coach your family pays — so it tells you the truth, starting
+with the price."
+
+**First-session aha:** "Know your real price" — net price + merit-aid estimate
+for each school on the student's list, in session one, with citations.
+
+## Gate 1 decision (defaults, veto or amend)
+
+- D1. v1 differentiator = C4 cost truth ("Know your real price"). DEFAULT: yes
+- D2. Data build = scoped Admissions Intelligence Layer (CDS C+H, deadlines,
+  merit practice) for ~300-500 schools at launch, seeded from collegedata.fyi +
+  existing Scorecard NPT4; NO net-price-calculator automation. DEFAULT: yes
+- D3. Include the thin C5 slice (student-initiated Family Cost Report) in the v1
+  scope. DEFAULT: yes
+- D4. C2 list and C3 roadmap stay scaffolding; no new headline work. DEFAULT:
+  yes
