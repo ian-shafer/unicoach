@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+state-apply [-f] <world.yaml>
+
+Applies a declarative world file (RFC 138) to the database the layered env
+resolves: real signup validation, real argon2id hashing, DAO writes in one
+all-or-nothing transaction. Create-only — a declared user that already exists
+is a hard error; -f rebuilds the world from empty via bin/db-reset first.
+Local-only tooling; never deployed.
+
+Run inside the nix dev shell (the JVM lives there):
+  nix develop -c bin/state-apply -f fixtures/dev-users.yaml
+
+Options:
+  -f: Fresh — run bin/db-reset before applying, so the world is built from empty
+  -h: Help
+EOF
+  exit 0
+}
+
+FRESH=0
+while getopts ":fh" opt; do
+  case "$opt" in
+  f) FRESH=1 ;;
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -ne 1 ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "state-apply requires exactly one argument: <world.yaml>"
+fi
+
+WORLD_FILE="$1"
+[ -f "$WORLD_FILE" ] || fatal "world file not found [$WORLD_FILE]"
+
+if [ "$FRESH" -eq 1 ]; then
+  "$PROJECT_ROOT/bin/db-reset"
+fi
+
+# Run the prebuilt installDist launcher directly (never Gradle), fataling if the
+# build artifact is absent (bin/INVARIANTS.md pre-built-launcher rule). The
+# fixture dist is local-only: bin/deploy does not ship it.
+LAUNCHER="$PROJECT_ROOT/fixture/build/install/fixture/bin/fixture"
+[ -x "$LAUNCHER" ] || fatal "fixture launcher not found at [$LAUNCHER]; run bin/build-fixture first"
+"$LAUNCHER" "$WORLD_FILE"

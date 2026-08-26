@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+build-fixture [options]
+
+Produces a self-contained installDist distribution for :fixture via
+Gradle. The resulting launch script is located at:
+  fixture/build/install/fixture/bin/fixture
+
+Options:
+  -h: Help
+EOF
+  exit 0
+}
+
+while getopts ":h" opt; do
+  case "$opt" in
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -gt 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "build-fixture does not accept positional arguments: [$*]"
+fi
+
+"$PROJECT_ROOT/gradlew" :fixture:installDist

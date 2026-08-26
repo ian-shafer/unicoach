@@ -1,0 +1,13 @@
+# Canned dev world for bin/state-apply (RFC 138). Living documentation of the
+# world-file format and the smoke input for manual use:
+#   nix develop -c bin/state-apply -f fixtures/dev-users.yaml
+users:
+  - email: dev@example.com
+    password: Hunter2hunter2
+    name: Dev User
+  - email: unverified@example.com
+    password: Hunter2hunter2
+    verified: false
+  - email: admin@example.com
+    password: Hunter2hunter2
+    admin: true
