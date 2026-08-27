@@ -7,19 +7,22 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-26. Live-run discovery from any checkout:
+Updated: 2026-08-27. Live-run discovery from any checkout:
 `.prime/agent/skills/ship/scripts/ship-status`
 
 ## TL;DR — next steps, most important first
 
-1. **Phone test S1–S3.5** (Ian, no session) — UNBLOCKED, and better than
-   planned: both doors exist now (RFC 136 chat tool + RFC 137 iOS screen).
-   Everything downstream waits on this read.
+1. **Deploy S1–S3.5 to prod** — the phone test passed (Ian, 2026-08-27: the
+   coaching holds), so this is now unblocked and first. Known trap: rebuild the
+   college dist before ingest — a stale jar silently no-ops the whole load.
 2. **Gate 1 on brief 0002** (account deletion) — App-Store-blocking; six
    decisions D1–D6 are framed and waiting. Priority raised (Ian, 2026-08-26):
    RFC 138's `bin/state-apply` (landed) is create-only by design and gets
    per-entity replace only from 0002's reset/delete engine — a second consumer.
-3. **Deploy S1–S3.5 to prod** — after the phone test says the coaching holds.
+   Runnable in parallel with the deploy.
+3. **Beat 1 remainder: S4 → S5 → S6** — with the differentiator validated on a
+   real phone, the beat's remainder is the next build. Do the small
+   ingest-observability fix (P2) before S4's data build.
 
 _Rule: this list is rewritten every time the file is updated; it never says "see
 below"._
@@ -54,6 +57,8 @@ The v1 differentiator: per-school cost truth in session one.
   such; partial profile → best answer from what exists; unreported data says
   "not reported", never evades. No cost feature is gated on profile completion
   (0001 D11/D12).
+- **Validated on device** (Ian, 2026-08-27): end-to-end phone test of S1–S3.5
+  passed — the coaching holds. Prod deploy unblocked.
 
 ### Money profile (brief 0001 S2, RFC 134)
 
@@ -97,14 +102,13 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                           | State                                                                                                                                       | Where                                    |
-| --- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | Phone test of S1–S3.5          | **Unblocked** (RFC 136 landed the chat door). Ian, no session. Dev stack notes in prompt below.                                             | Ian                                      |
-| P1  | Account deletion (brief 0002)  | FRAMED, awaiting gate 1 (six decisions D1–D6). App-Store-blocking + gives repeatable clean-slate testing.                                   | `product/0002-account-data-deletion`     |
-| P1  | Deploy S1–S3.5 to prod         | Not started; **after** phone test. Known trap: rebuild college dist before ingest (stale jar no-ops).                                       | prompt below                             |
-| P2  | Beat 1 remainder: S4 → S5 → S6 | Not started. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent.                                | `product/0001-v1-differentiator/spec.md` |
-| P2  | Ingest observability           | Small, before S4's data build: `bin/ingest-colleges` change summary + header assertion (silent no-op cost an hour).                         | note in brief 0002                       |
-| P3  | `bin/state-apply` (RFC 138)    | In flight (Ian's session): **implementing**, 5 behind main — rebase before verify. v1 = users world file, create-only; reset waits on 0002. | worktree `unicoach-rfc-138`              |
+| Pri | Work                           | State                                                                                                                                                                    | Where                                    |
+| --- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
+| P1  | Deploy S1–S3.5 to prod         | Not started, now **unblocked** — phone test passed 2026-08-27. Known trap: rebuild college dist before ingest (stale jar no-ops).                                        | prompt below                             |
+| P1  | Account deletion (brief 0002)  | FRAMED, awaiting gate 1 (six decisions D1–D6). App-Store-blocking + gives repeatable clean-slate testing.                                                                | `product/0002-account-data-deletion`     |
+| P2  | Beat 1 remainder: S4 → S5 → S6 | Not started; validated on a real phone, so the beat's remainder is next. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
+| P2  | Ingest observability           | Small, before S4's data build: `bin/ingest-colleges` change summary + header assertion (silent no-op cost an hour).                                                      | note in brief 0002                       |
+| P3  | `bin/state-apply` (RFC 138)    | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                              | `bin/state-apply`                        |
 
 ## Backlog
 
@@ -131,15 +135,6 @@ approval gate in each session. Slices from a brief are kicked off with the slice
 instruction from its `spec.md` — the prompts below add only session context the
 spec can't know.
 
-### Phone test (Ian, no session)
-
-Dev stack: migrations applied, bands backfilled (q1 4945, debt 4777, version 2),
-college jar rebuilt, coach v3 pinned, fresh account `fresh1@test.local`. Seed
-the list by chatting (RFC 136 landed). Watch for: does the coach raise cost
-unprompted; does the invitation feel like an offer or an ask; is "not reported"
-honest or evasive; does a decline stay declined. Rollback if coaching misfires:
-`COACHING_SYSTEM_PROMPT_VERSION=v2`.
-
 ### Account deletion (brief 0002)
 
 PASTE: Run product brief 0002 (product/0002-account-data-deletion/brief.md) with
@@ -151,7 +146,7 @@ mapped in the brief. I approve every new table personally, with visible DDL at
 the gate. Note RFC 138 (bin/state-apply) deliberately deferred its delete/reset
 semantics to this brief's engine.
 
-### Deploy S1–S3.5 to prod (after the phone test)
+### Deploy S1–S3.5 to prod (unblocked — phone test passed 2026-08-27)
 
 PASTE: Deploy the landed S1–S3.5 work (RFCs 133–136) to prod and make the data
 real there. Prod will hit the same trap dev did: the college dist must be
