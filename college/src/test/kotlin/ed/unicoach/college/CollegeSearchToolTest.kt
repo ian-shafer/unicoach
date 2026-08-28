@@ -9,10 +9,13 @@ import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeProgram
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -219,6 +222,11 @@ class CollegeSearchToolTest {
 
       val unknownField = tool.execute(buildJsonObject { put("nearOcean", true) })
       assertTrue(unknownField.containsKey("error"))
+
+      // An error envelope is a model-facing tool result too, and a malformed-arg
+      // retry is an ordinary path -- so it owes the same no-bare-source-code
+      // property as the success payload (RFC 143).
+      assertEquals(emptyList(), bareSourceCodes(unknownField), "the malformed-input error must carry no source code")
     }
 
   @Test
@@ -393,24 +401,88 @@ class CollegeSearchToolTest {
     }
 
   @Test
-  fun `no source-bucket jargon reaches the model through search`() =
+  fun `search results name the control in words`() =
+    runBlocking {
+      // The gap RFC 143 closes: the sibling cost tool already said "public"
+      // while search shipped the raw IPEDS integer beside it.
+      database.withConnection { session ->
+        CollegesDao.upsert(session, newCollege(822).copy(control = 2)).getOrThrow()
+      }
+
+      val first = ((tool.execute(buildJsonObject {}))["colleges"] as JsonArray).single().jsonObject
+      val control = first["control"]!!.jsonPrimitive
+      assertEquals("private_nonprofit", control.content, "the label, from InstitutionControl's one home")
+      assertNull(control.intOrNull, "never the bare code the model would have to translate")
+    }
+
+  @Test
+  fun `no bare source code reaches a tool result`() =
     runBlocking {
       // The leak RFC 142 was actually about: search is what puts net prices in
       // front of the model on the ordinary path, so BOTH surfaces it sees --
       // the rendered result and the tool description it reads first -- must be
-      // free of the source's own bucket names.
+      // free of the source's own codes. The assertion is the general property
+      // (RFC 143), not a grep for the two tokens that leaked before.
+      // Every optional measure is populated on purpose: `matchObject` renders
+      // them with `putOrNull`, so a field left null is simply absent and the
+      // guard never sees it -- and `foo?.let { put("foo", code) }` is exactly
+      // the shape the NEXT coded field will take. A sparse fixture would let it
+      // sleep through.
       database.withConnection { session ->
-        CollegesDao.upsert(session, newCollege(821).copy(netPriceQ5 = 31000)).getOrThrow()
+        CollegesDao
+          .upsert(
+            session,
+            newCollege(821).copy(
+              netPriceQ5 = 31000,
+              control = 3,
+              medianDebt = 21000,
+              satAvg = 1200,
+              costAttendance = 40000,
+              tuitionInState = 12000,
+              tuitionOutState = 30000,
+            ),
+          ).getOrThrow()
       }
 
-      val payload = tool.execute(buildJsonObject {}).toString()
+      val result = tool.execute(buildJsonObject {})
+      assertEquals(emptyList(), bareSourceCodes(result), "the search result must carry no source code")
+      assertTrue(result.toString().contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
+
+      // ...and the clean verdict above is over a payload that actually contains
+      // every allowlisted field, so the allowlist is exercised rather than
+      // vacuously satisfied by absent keys.
+      val rendered = numericFields(result).toSet()
+      assertEquals(emptySet(), NUMBERS_BY_CONTRACT - rendered, "every field the allowlist sanctions must be in the payload")
+
+      // The description is prose the model reads before any result, so only the
+      // token half applies to it -- its `control` filter documents the CODES on
+      // purpose: there the code is the input contract.
       val description = tool.definition["description"]!!.jsonPrimitive.content
-      val quintile = Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE)
-      assertNull(quintile.find(payload), "a quintile code must never reach the wire: [$payload]")
-      assertNull(quintile.find(description), "nor the description the model reads first: [$description]")
-      assertFalse(payload.contains("NPT4"), "nor a Scorecard column family: [$payload]")
+      assertNull(QUINTILE_CODE.find(description), "nor the description the model reads first: [$description]")
       assertFalse(description.contains("NPT4"), "nor in the description: [$description]")
-      assertTrue(payload.contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
+
+      // Positive control: the guard must react to ALL THREE shapes it exists to
+      // catch -- including `NPT4`, whose old direct `assertFalse(contains(...))`
+      // this guard replaced -- or the assertions above prove nothing and an
+      // NPT4 typo in the helper would pass unnoticed.
+      val doctored =
+        JsonObject(
+          result +
+            mapOf(
+              "control" to JsonPrimitive(2),
+              "net_price_q5" to JsonPrimitive(31000),
+              "source_column" to JsonPrimitive("NPT41"),
+            ),
+        )
+      assertEquals(
+        listOf(
+          "quintile code [q5]",
+          "source column family [NPT4]",
+          "bare code in field [control]",
+          "bare code in field [net_price_q5]",
+        ),
+        bareSourceCodes(doctored),
+      )
     }
 
   @Test
@@ -457,6 +529,10 @@ class CollegeSearchToolTest {
         assertEquals("permanent", errorObj["category"]!!.jsonPrimitive.content)
         assertEquals(false, errorObj["transient"]!!.jsonPrimitive.booleanOrNull)
         assertNull(result["count"])
+        // The failure envelope interpolates an UPSTREAM message, so it is the
+        // error shape most able to leak a source column name to the model; it
+        // goes through the same guard as the success payload (RFC 143).
+        assertEquals(emptyList(), bareSourceCodes(result), "the search-failure error must carry no source code")
       } finally {
         database.createRawConnection().use { conn ->
           conn.createStatement().use {
@@ -469,3 +545,67 @@ class CollegeSearchToolTest {
       }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The generalised source-code guard (RFC 143)
+// ---------------------------------------------------------------------------
+
+/**
+ * The field names whose value is a NUMBER by contract -- the measures this tool
+ * reports, plus the result count -- so a number under them is a fact, not a
+ * code. Every other numeric field is a coded dimension until sanctioned here;
+ * `control` was exactly that, and this list is the one place to admit the next
+ * one, deliberately short enough to read in a review.
+ *
+ * The documented codes the model hands back (`income_band`, which
+ * `update_money_profile` accepts, and `college_id`) ride as STRINGS and so
+ * never reach this check.
+ */
+private val NUMBERS_BY_CONTRACT =
+  setOf(
+    "count",
+    "undergrad_enrollment",
+    "admission_rate",
+    "net_price",
+    "graduation_rate",
+    "median_earnings",
+    "median_debt",
+    "pct_pell",
+  )
+
+// No leading \b, deliberately: `_` is a word character, so `\bq[1-5]\b` does
+// NOT match `net_price_q5` -- the very key this guard has to catch.
+private val QUINTILE_CODE = Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE)
+
+/**
+ * Every way [payload] carries a bare source code, in the general form RFC 143
+ * put in place of RFC 142's string-specific grep: a `qN` bucket token, the
+ * `NPT4` column family, or any field carrying a bare number that is not a
+ * number by contract. Read over the WHOLE payload, so a field added later is
+ * covered without anyone remembering to extend the test.
+ *
+ * Returns the reasons rather than asserting them, so a test can also drive it
+ * with a doctored payload and prove it still reacts.
+ */
+private fun bareSourceCodes(payload: JsonElement): List<String> =
+  buildList {
+    val text = payload.toString()
+    QUINTILE_CODE.find(text)?.let { add("quintile code [${it.value}]") }
+    if (text.contains("NPT4")) add("source column family [NPT4]")
+    addAll(
+      numericFields(payload)
+        .filterNot { it in NUMBERS_BY_CONTRACT }
+        .map { "bare code in field [$it]" },
+    )
+  }
+
+/** Every field name in [element], at any depth, whose value is a bare number. */
+private fun numericFields(
+  element: JsonElement,
+  key: String? = null,
+): List<String> =
+  when (element) {
+    is JsonObject -> element.flatMap { (name, value) -> numericFields(value, name) }
+    is JsonArray -> element.flatMap { numericFields(it, key) }
+    is JsonPrimitive -> if (key != null && !element.isString && element.doubleOrNull != null) listOf(key) else emptyList()
+  }

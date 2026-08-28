@@ -4,6 +4,7 @@ import ed.unicoach.db.models.CipPrefix
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.putIncomeBand
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
@@ -345,7 +346,11 @@ class CollegeSearchTool(
       put("name", match.name)
       put("city", match.city)
       put("state", match.state)
-      put("control", match.control)
+      // The label, never the raw IPEDS code (RFC 143): the model sees the
+      // vocabulary the coach speaks, from its one home. The `control` INPUT
+      // filter stays coded -- there the code is the contract, and its schema
+      // description documents it.
+      put("control", InstitutionControl.labelFor(match.control))
       putOrNull("undergrad_enrollment", match.undergradEnrollment)
       putOrNull("admission_rate", match.admissionRate)
       putOrNull("net_price", match.netPrice)

@@ -14,6 +14,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.StudentId
 import java.time.ZoneOffset
@@ -65,11 +66,13 @@ enum class TuitionApplicable(
 }
 
 /**
- * Scorecard control (`colleges.control`) as the cost read renders it — the one
- * home for the code -> label vocabulary on the cost service/tool paths
- * (RFC 135; the codes are mapped in [CollegeCostService]). Tuition
- * applicability lives only on the [Public] case, so a private college cannot
- * carry an in-state price.
+ * Scorecard control (`colleges.control`) as the cost read renders it: the
+ * cost-domain shape around the vocabulary, which lives in one home for every
+ * module in [InstitutionControl] (RFC 143). The codes are mapped to these
+ * cases in [CollegeCostService]; the [label] each case renders is read from
+ * [InstitutionControl], never hand-written here, so search and the cost tool
+ * cannot drift apart. Tuition applicability lives only on the [Public] case,
+ * so a private college cannot carry an in-state price (RFC 135).
  */
 sealed interface CollegeControl {
   /** The wire `control` label the coach reads. */
@@ -79,24 +82,31 @@ sealed interface CollegeControl {
   data class Public(
     val tuitionApplicable: TuitionApplicable,
   ) : CollegeControl {
-    override val label: String get() = "public"
+    override val label: String get() = InstitutionControl.PUBLIC.label
   }
 
   /** Code 2 — one price, no residency distinction. */
   data object PrivateNonprofit : CollegeControl {
-    override val label: String get() = "private_nonprofit"
+    override val label: String get() = InstitutionControl.PRIVATE_NONPROFIT.label
   }
 
   /** Code 3 — one price, no residency distinction. */
   data object PrivateForProfit : CollegeControl {
-    override val label: String get() = "private_for_profit"
+    override val label: String get() = InstitutionControl.PRIVATE_FOR_PROFIT.label
   }
 
-  /** A code the Scorecard vocabulary does not define; the label carries the raw code so it stays observable at the wire. */
+  /**
+   * A code the Scorecard vocabulary does not define; the label carries the raw
+   * code so it stays observable at the wire. It renders through
+   * [InstitutionControl.unknownLabel], NOT the total `labelFor`: this case
+   * means "outside the vocabulary" by construction, so it must read as unknown
+   * for whatever code it holds rather than picking up a recognised phrase if
+   * one were ever passed here.
+   */
   data class Unrecognized(
     val code: Int,
   ) : CollegeControl {
-    override val label: String get() = "unknown (control [$code])"
+    override val label: String get() = InstitutionControl.unknownLabel(code)
   }
 }
 
@@ -305,16 +315,24 @@ class CollegeCostService(
     }
   }
 
-  /** The one home for the Scorecard control codes: code -> [CollegeControl], residency resolved on the public case. */
+  /**
+   * The cost domain's reading of a control: [InstitutionControl] (the one home
+   * for the codes themselves) -> [CollegeControl], residency resolved on the
+   * public case. Branching on the enum rather than the raw integers keeps the
+   * literals 1/2/3 in that one file, and the `when` is exhaustive with no
+   * `else` on purpose: a member added to the vocabulary must fail to compile
+   * here — the one site that owes it a cost decision — instead of quietly
+   * falling through to [CollegeControl.Unrecognized].
+   */
   private fun controlOf(
     college: College,
     moneyProfile: MoneyProfileStatuses,
   ): CollegeControl =
-    when (college.control) {
-      1 -> CollegeControl.Public(tuitionApplicabilityOf(college, moneyProfile))
-      2 -> CollegeControl.PrivateNonprofit
-      3 -> CollegeControl.PrivateForProfit
-      else -> CollegeControl.Unrecognized(college.control)
+    when (InstitutionControl.fromCode(college.control)) {
+      InstitutionControl.PUBLIC -> CollegeControl.Public(tuitionApplicabilityOf(college, moneyProfile))
+      InstitutionControl.PRIVATE_NONPROFIT -> CollegeControl.PrivateNonprofit
+      InstitutionControl.PRIVATE_FOR_PROFIT -> CollegeControl.PrivateForProfit
+      null -> CollegeControl.Unrecognized(college.control)
     }
 
   /**

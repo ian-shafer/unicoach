@@ -209,6 +209,17 @@ class CollegeCostServiceTest {
     val control = CollegeControl.Unrecognized(9)
     assertEquals(9, control.code)
     assertEquals("unknown (control [9])", control.label, "the out-of-vocabulary code must ride the wire label")
+
+    // The case means "outside the vocabulary" by construction, so it must read
+    // as unknown even for a code the vocabulary DOES define -- otherwise the
+    // state survives only because `controlOf` routes 1/2/3 elsewhere, and any
+    // other caller could ship a confident "private_nonprofit" for a control
+    // nothing ever recognised (RFC 143).
+    assertEquals(
+      "unknown (control [2])",
+      CollegeControl.Unrecognized(2).label,
+      "an Unrecognized case never renders a recognised label",
+    )
   }
 
   // ---------------------------------------------------------------------------

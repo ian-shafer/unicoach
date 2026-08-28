@@ -11,7 +11,11 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -19,7 +23,6 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -38,6 +41,10 @@ class CollegeCostChatToolTest {
     state: String = "CA",
     control: Int = 1,
     medianEarnings: Int? = 55000,
+    stickerCostAttendance: Int? = 40000,
+    tuitionInState: Int? = 12000,
+    tuitionOutState: Int? = 30000,
+    medianDebt: Int? = 23000,
     bandPricing: Boolean = true,
   ): CollegeId {
     val id =
@@ -45,6 +52,10 @@ class CollegeCostChatToolTest {
         name,
         state = state,
         control = control,
+        costAttendance = stickerCostAttendance,
+        tuitionInState = tuitionInState,
+        tuitionOutState = tuitionOutState,
+        medianDebt = medianDebt,
         medianEarnings = medianEarnings,
         netPriceQ1 = if (bandPricing) CostsTestDb.NET_PRICE_Q1 else null,
         netPriceQ2 = if (bandPricing) CostsTestDb.NET_PRICE_Q2 else null,
@@ -127,23 +138,73 @@ class CollegeCostChatToolTest {
   }
 
   @Test
-  fun `no qN-style source code reaches the wire`() {
+  fun `no bare source code reaches a tool result`() {
     val student = createStudent()
-    seedListedCollege(student, "Wire U")
+    // Every optional cost field is populated on purpose: `collegeObject` renders
+    // them with `cost.foo?.let { put(...) }`, so a field left null is simply
+    // absent and the guard never sees it -- and that is exactly the shape the
+    // NEXT coded field will take. A sparse fixture would let it sleep through.
+    seedListedCollege(
+      student,
+      "Wire U",
+      stickerCostAttendance = 40000,
+      tuitionInState = 12000,
+      tuitionOutState = 30000,
+      medianDebt = 23000,
+    )
     runBlocking {
       moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.OVER_110K))).getOrThrow()
     }
 
     // The whole rendered payload, not one field: the leak this guards against
-    // (RFC 142) is a FUTURE field quietly carrying the Scorecard's own bucket
-    // names into the model's context, where it will happily say them aloud.
-    val payload = execute(student).toString()
-    assertNull(
-      Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE).find(payload),
-      "a quintile code must never reach the wire: [$payload]",
+    // (RFC 142) is a FUTURE field quietly carrying the source's own codes into
+    // the model's context, where it will happily say them aloud. RFC 143 makes
+    // the assertion the general property rather than a grep for the two tokens
+    // that leaked before -- `control` sat inside the old grep's own payload.
+    val payload = execute(student)
+    assertEquals(emptyList(), bareSourceCodes(payload), "the cost result must carry no source code")
+    assertTrue(payload.toString().contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
+
+    // ...and the clean verdict above is over a payload that actually renders
+    // every cost field, so the allowlist is exercised rather than vacuously
+    // satisfied by keys the fixture left null.
+    val college = collegesOf(payload).single()
+    assertEquals(
+      emptySet(),
+      CostField.entries.map { it.wireName }.toSet() - college.keys,
+      "every cost field the allowlist sanctions must be in the payload",
     )
-    assertFalse(payload.contains("NPT4"), "nor a Scorecard column family: [$payload]")
-    assertTrue(payload.contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
+
+    // Positive control: the guard must react to ALL THREE shapes it exists to
+    // catch -- including `NPT4`, whose old direct `assertFalse(contains(...))`
+    // this guard replaced -- or the assertions above prove nothing and an NPT4
+    // typo in the helper would pass unnoticed.
+    val doctored =
+      JsonObject(
+        payload +
+          mapOf(
+            "control" to JsonPrimitive(2),
+            "net_price_q5" to JsonPrimitive(31000),
+            "source_column" to JsonPrimitive("NPT41"),
+          ),
+      )
+    assertEquals(
+      listOf(
+        "quintile code [q5]",
+        "source column family [NPT4]",
+        "bare code in field [control]",
+        "bare code in field [net_price_q5]",
+      ),
+      bareSourceCodes(doctored),
+    )
+
+    // An error envelope is a model-facing tool result too, and a malformed-arg
+    // retry is an ordinary path -- so it owes the same property (RFC 143).
+    assertEquals(
+      emptyList(),
+      bareSourceCodes(execute(student, """{"college_ids":["not-a-uuid"]}""")),
+      "the malformed-input error must carry no source code",
+    )
   }
 
   @Test
@@ -437,3 +498,58 @@ class CollegeCostChatToolTest {
     )
   }
 }
+
+// ---------------------------------------------------------------------------
+// The generalised source-code guard (RFC 143)
+// ---------------------------------------------------------------------------
+
+/**
+ * The field names whose value is a NUMBER by contract -- the cost measures this
+ * tool renders (read from [CostField], their one home), the result count, and
+ * the net-price `amount` -- so a number under them is a fact, not a code. Every
+ * other numeric field is a coded dimension until sanctioned here; `control` was
+ * exactly that, and this list is the one place to admit the next one,
+ * deliberately short enough to read in a review.
+ *
+ * The documented codes the model hands back (`income_band`, which
+ * `update_money_profile` accepts, and `college_id`) ride as STRINGS and so
+ * never reach this check.
+ */
+private val NUMBERS_BY_CONTRACT = CostField.entries.map { it.wireName }.toSet() + setOf("count", "amount")
+
+// No leading \b, deliberately: `_` is a word character, so `\bq[1-5]\b` does
+// NOT match `net_price_q5` -- the very key this guard has to catch.
+private val QUINTILE_CODE = Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE)
+
+/**
+ * Every way [payload] carries a bare source code, in the general form RFC 143
+ * put in place of RFC 142's string-specific grep: a `qN` bucket token, the
+ * `NPT4` column family, or any field carrying a bare number that is not a
+ * number by contract. Read over the WHOLE payload, so a field added later is
+ * covered without anyone remembering to extend the test.
+ *
+ * Returns the reasons rather than asserting them, so a test can also drive it
+ * with a doctored payload and prove it still reacts.
+ */
+private fun bareSourceCodes(payload: JsonElement): List<String> =
+  buildList {
+    val text = payload.toString()
+    QUINTILE_CODE.find(text)?.let { add("quintile code [${it.value}]") }
+    if (text.contains("NPT4")) add("source column family [NPT4]")
+    addAll(
+      numericFields(payload)
+        .filterNot { it in NUMBERS_BY_CONTRACT }
+        .map { "bare code in field [$it]" },
+    )
+  }
+
+/** Every field name in [element], at any depth, whose value is a bare number. */
+private fun numericFields(
+  element: JsonElement,
+  key: String? = null,
+): List<String> =
+  when (element) {
+    is JsonObject -> element.flatMap { (name, value) -> numericFields(value, name) }
+    is JsonArray -> element.flatMap { numericFields(it, key) }
+    is JsonPrimitive -> if (key != null && !element.isString && element.doubleOrNull != null) listOf(key) else emptyList()
+  }
