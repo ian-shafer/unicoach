@@ -36,6 +36,12 @@ import kotlin.test.fail
  */
 class SystemPromptCatalogTest {
   companion object {
+    /** The first words of v4's cost paragraph — the boundary v5 replaces from. */
+    private const val COST_PARAGRAPH_OPENER = " When the student has schools on their college list"
+
+    /** The first words of v4's college-list paragraph — the boundary v5 preserves. */
+    private const val LIST_PARAGRAPH_OPENER = " The student's college list is theirs"
+
     private lateinit var connection: Connection
 
     @JvmStatic
@@ -114,7 +120,10 @@ class SystemPromptCatalogTest {
     val v3 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v3").getOrThrow().body
     assertTrue(v3.startsWith(v2), "the v2 prefix must be byte-identical, so the cost paragraph is the only change")
     val appended = v3.removePrefix(v2)
-    assertTrue(appended.startsWith(" When the student has schools on their college list"), "single-space paragraph join")
+    assertTrue(
+      appended.startsWith(" When the student has schools on their college list"),
+      "the money paragraph must open with the single space that joins it to the paragraph before it",
+    )
     assertTrue(appended.contains(CollegeCostChatTool.TOOL_NAME), "the paragraph must name the cost tool")
     assertTrue(appended.contains("precision_offer"), "the paragraph must key the in-answer invitation off the result")
     assertTrue(
@@ -140,7 +149,10 @@ class SystemPromptCatalogTest {
     val v4 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v4").getOrThrow().body
     assertTrue(v4.startsWith(v3), "the v3 prefix must be byte-identical, so the list paragraph is the only change")
     val appended = v4.removePrefix(v3)
-    assertTrue(appended.startsWith(" The student's college list is theirs"), "single-space paragraph join")
+    assertTrue(
+      appended.startsWith(" The student's college list is theirs"),
+      "the money paragraph must open with the single space that joins it to the paragraph before it",
+    )
     // v3 named the action tool (college_cost_profile); v4 follows: the list
     // tool is this slice's action tool, so its name rides the prompt.
     assertTrue(appended.contains(CollegeListChatTool.TOOL_NAME), "the paragraph must name the list tool")
@@ -151,5 +163,90 @@ class SystemPromptCatalogTest {
     )
     assertTrue(appended.contains("let it go without comment"), "a declined offer is never pushed")
     assertTrue(appended.contains("offer to update the school's status"), "milestones prompt a status offer")
+  }
+
+  /**
+   * The 0049 seed's structural contract (RFC 141). Unlike 0047/0048, v5 does
+   * not append: it REPLACES v4's cost paragraph, which sits in the middle of
+   * the body followed by the college-list paragraph. So the contract is a
+   * byte-identical prefix AND a byte-identical suffix, with the new money
+   * paragraph in between; both boundaries are located from the v4 body at
+   * runtime, so the seed migration stays the single home of the approved copy.
+   *
+   * The middle is asserted by markers only, and absence of the banned terms is
+   * deliberately NOT asserted: the glossary is stated contrastively ("housing
+   * and food, never room and board"), so the prompt must name a term in order
+   * to forbid it.
+   */
+  @Test
+  fun `coach v5 is v4 with the cost paragraph replaced`() {
+    // The prefix/suffix assertions themselves live in moneyParagraph(), which
+    // refuses to return a vacuous extraction; this test owns the markers that
+    // say the replacement is the RIGHT paragraph, not merely a well-formed one.
+    val moneyParagraph = moneyParagraph()
+
+    assertTrue(
+      moneyParagraph.startsWith(COST_PARAGRAPH_OPENER),
+      "the money paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(moneyParagraph.contains(CollegeCostChatTool.TOOL_NAME), "the paragraph must name the cost tool")
+    assertTrue(
+      moneyParagraph.contains("precision_offer"),
+      "the paragraph must key the in-answer invitation off the result",
+    )
+    assertTrue(
+      moneyParagraph.contains("U.S. Department of Education College Scorecard"),
+      "the paragraph must require attribution",
+    )
+    assertTrue(moneyParagraph.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(moneyParagraph.contains("housing and food"), "the glossary term that retires room and board")
+  }
+
+  /**
+   * The glossary half of the 0049 seed's contract (RFC 141), split from the
+   * structural test so a drifted glossary pair is never reported under the
+   * structural test's name — `assertTrue` short-circuits, so one test would
+   * let a prefix regression mask every glossary assertion behind it.
+   *
+   * The pairs are asserted CONTRASTIVELY ("housing and food, never room and
+   * board"): the prompt must name a banned term in order to forbid it, so
+   * absence of the banned tokens is deliberately not assertable.
+   */
+  @Test
+  fun `coach v5 states each contrastive glossary pair`() {
+    val moneyParagraph = moneyParagraph()
+
+    assertTrue(moneyParagraph.contains("never tuition on its own"), "contrastive pair: tuition and fees")
+    assertTrue(moneyParagraph.contains("never room and board"), "contrastive pair: housing and food")
+    assertTrue(moneyParagraph.contains("never the sticker price"), "contrastive pair: the published price")
+    assertTrue(moneyParagraph.contains("never an award"), "contrastive pair: a financial aid offer")
+    assertTrue(
+      moneyParagraph.contains("never subtract loans or work-study from a price"),
+      "loans and work-study change who pays and when; they never make a school cheaper",
+    )
+  }
+
+  /**
+   * The v5 money paragraph: v5 with v4's byte-identical prefix and college-list
+   * suffix removed. Both boundaries are located from the v4 body at runtime, so
+   * the seed migration stays the single home of the approved copy.
+   *
+   * Every extraction primitive here degrades SILENTLY — `substringBefore`
+   * returns the whole receiver when the delimiter is missing, and
+   * `removePrefix`/`removeSuffix` are no-ops when the affix does not match — so
+   * a future version that moved a paragraph boundary would hand back the entire
+   * v5 body and every `contains` assertion downstream would still pass. The
+   * boundaries are therefore asserted here, not assumed: a vacuous extraction
+   * fails loudly instead of quietly certifying a prompt nobody checked.
+   */
+  private fun moneyParagraph(): String {
+    val v4 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v4").getOrThrow().body
+    val v5 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v5").getOrThrow().body
+    val prefix = v4.substringBefore(COST_PARAGRAPH_OPENER)
+    val suffix = LIST_PARAGRAPH_OPENER + v4.substringAfter(LIST_PARAGRAPH_OPENER)
+    assertTrue(prefix != v4, "v4 must contain the cost-paragraph opener, or the extraction is vacuous")
+    assertTrue(v5.startsWith(prefix), "everything before the cost paragraph must be v4 byte-for-byte")
+    assertTrue(v5.endsWith(suffix), "v4's college-list paragraph must survive as a byte-identical suffix")
+    return v5.removePrefix(prefix).removeSuffix(suffix)
   }
 }
