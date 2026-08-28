@@ -1,4 +1,8 @@
-# Brief 0003 — SPEC & SLICE (gate 2 draft)
+# Brief 0003 — SPEC & SLICE
+
+**Gate 2 APPROVED by Ian 2026-08-28** (D10-D19). Slices are /ship instructions;
+a /ship RFC may refine implementation detail, but the decisions here are binding
+— a change comes back as a new numbered decision.
 
 Gate-1 decisions (Ian, approved 2026-08-28, verbatim in `brief.md`): build the
 money language as four slices M1-M4; the axis is **price vs estimate**, not

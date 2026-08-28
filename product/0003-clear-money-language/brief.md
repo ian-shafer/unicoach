@@ -2,7 +2,7 @@
 
 Status:
 
-    PHASE: DISCOVER complete; SPEC & SLICE written (spec.md), awaiting gate 2.
+    PHASE: EXECUTE. Both gates approved; spec.md is binding.
     GATE 1: APPROVED by Ian 2026-08-28 — "Settled. go".
             D1, D3-D9 approved as defaulted. D2 approved AS REVISED
             (price-vs-estimate, not CCTI's billed-vs-unbilled).
@@ -11,7 +11,10 @@ Status:
             omitting the word invites families to double-count it -- but the
             product asserts NOTHING about how far students travel until a
             primary source is cited. See spec.md open question OQ1.
-    GATE 2: not yet presented (spec.md drafted).
+    GATE 2: APPROVED by Ian 2026-08-28 — "approve". D10-D17 as defaulted;
+            D18 (columns named housing_food_*, not room_board_*) and D19
+            (nonneg CHECK on all six) decided by Ian at the same gate.
+    PHASE NOW: EXECUTE — M1 first (copy-only, no dependencies).
     LEDGER: (empty -- no slices landed)
 
 ## The question

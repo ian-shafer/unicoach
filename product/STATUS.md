@@ -26,11 +26,11 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
    **Waits for 0004 S1–S3** (the admissions layer builds on the search index —
    0004 D13); note 0004 D10 declined CDS scraping for now, which narrows S4's
    deadline sourcing — revisit at S4's design gate.
-3. **Brief 0003 — clear money language — gate 1 APPROVED, gate 2 pending.**
-   `product/0003-clear-money-language/spec.md` specs four slices. **M1 (the
-   money glossary, copy-only prompt v5) is independent and can ship now** — it
-   improves every cost answer already live. M2 (six Scorecard component columns
-   → the tuition vs housing-and-food split) must land **after 0004 S1/S2**,
+3. **Brief 0003 — clear money language — EXECUTING.** Both gates approved
+   (2026-08-28); `product/0003-clear-money-language/spec.md` is binding. Active
+   slice: **M1**, the money glossary as coach prompt v5 — copy-only, no
+   dependencies, improves every cost answer already live. Then M2 (six
+   `colleges` component columns, DDL approved as D18/D19) **after 0004 S1/S2**,
    which is rewriting the same loader, and **before 0001's S5**.
 4. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
    S6 is the wedge and its token becomes Beat 2's parent-account claim path. S5
@@ -120,7 +120,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | Pri | Work                              | State                                                                                                                                                                                         | Where                                    |
 | --- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                          | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003) | SPECCED — gate 1 approved 2026-08-28; gate 2 pending on `spec.md` (M1–M4). M1 is copy-only and shippable now; M2 waits on 0004 S1/S2 (same loader) and precedes 0001 S5.                      | `product/0003-clear-money-language`      |
+| P1  | Clear money language (brief 0003) | EXECUTING — gates 1+2 approved 2026-08-28 (D1–D19). M1 (coach prompt v5 glossary, copy-only) is the active slice; M2 waits on 0004 S1/S2 (same loader) and precedes 0001 S5.                  | `product/0003-clear-money-language`      |
 | P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
 
