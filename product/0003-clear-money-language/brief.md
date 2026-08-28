@@ -27,6 +27,11 @@ Status:
          array; prompt v6 bans source jargon generally. 1734 tests green.
          OPEN: college_search still emits the raw IPEDS `control` integer with
          no phrase beside it -- same defect class, deferred, pick up in M2/M3.
+      RFC 143 LANDED (main@3e03ed92 + f3dad8a9, 2026-08-28) -- the item M1.1
+         deferred: college_search's raw IPEDS control integer now carries its
+         label from one home (InstitutionControl), and the jargon guard became
+         a PROPERTY (no bare source code in a tool result, allowlist-based)
+         rather than a string match. 1738 tests green.
       M1.2 ADDED 2026-08-28 (Ian): ask residency BEFORE income. Measured on
          our own data, residency is worth ~$6,300/yr at a public vs ~$1,376
          for a mid-band family's income correction -- and prompt v6 never
