@@ -43,6 +43,7 @@ class IncomeBandTest {
       medianDebt = null,
       pctPell = null,
       website = null,
+      aliases = emptyList(),
       createdAt = Instant.EPOCH,
       updatedAt = Instant.EPOCH,
     )

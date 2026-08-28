@@ -132,6 +132,8 @@ class CollegeSearchToolTest {
         "maxAdmissionRate",
         "maxNetPrice",
         "minGraduationRate",
+        "sort_by",
+        "credential_level",
         "limit",
       )
     assertEquals(expected, properties.keys)
@@ -544,6 +546,143 @@ class CollegeSearchToolTest {
         }
       }
     }
+
+  // ---------------------------------------------------------------------------
+  // sort_by / credential_level / total_matches (RFC 139)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `definition exposes sort_by and credential_level as word enums only`() {
+    val properties =
+      tool.definition["input_schema"]!!
+        .jsonObject["properties"]!!
+        .jsonObject
+
+    val sortWords = (properties["sort_by"]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content }
+    assertEquals(listOf("enrollment", "admission_rate", "net_price", "graduation_rate", "name"), sortWords)
+
+    val credentialWords =
+      (properties["credential_level"]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content }
+    assertEquals(listOf("certificate", "associate", "bachelors", "masters", "doctoral"), credentialWords)
+    // Raw CREDLEV codes never reach the LLM (brief 0004 amendment): the schema
+    // text for credential_level carries words, not numeric codes.
+    val description = properties["credential_level"]!!.jsonObject["description"]!!.jsonPrimitive.content
+    assertTrue(Regex("[0-9]").containsMatchIn(description).not(), "no raw code may appear: $description")
+  }
+
+  @Test
+  fun `execute sorts by name when sort_by is name`() =
+    runBlocking {
+      seedNamed(910, "Zebra College")
+      seedNamed(911, "Aardvark College")
+
+      val result = tool.execute(buildJsonObject { put("sort_by", "name") })
+      assertNull(result["error"])
+      val names = (result["colleges"] as JsonArray).map { it.jsonObject["name"]!!.jsonPrimitive.content }
+      assertEquals(listOf("Aardvark College", "Zebra College"), names)
+    }
+
+  @Test
+  fun `execute rejects an unknown sort_by word`() =
+    runBlocking {
+      val result = tool.execute(buildJsonObject { put("sort_by", "biggest") })
+      assertTrue(result.containsKey("error"))
+      val detail = result["error"]!!.toString()
+      assertTrue(detail.contains("biggest"), "the rejection echoes the offending word: $detail")
+      assertTrue(detail.contains("enrollment"), "the rejection lists the vocabulary: $detail")
+    }
+
+  @Test
+  fun `execute maps credential_level words to the program join at the boundary`() =
+    runBlocking {
+      seedWithProgram(920, "230101", "English")
+      // A master's-only sibling: same CIP, credential level 5.
+      runBlocking {
+        database.withConnection { session ->
+          val college = CollegesDao.upsert(session, newCollege(921)).getOrThrow()
+          CollegesDao
+            .upsertProgram(
+              session,
+              ed.unicoach.db.models
+                .NewCollegeProgram(college.id, "230101", "English", 5),
+            ).getOrThrow()
+        }
+      }
+
+      val bachelors =
+        tool.execute(
+          buildJsonObject {
+            put("cipPrefix", "23")
+            put("credential_level", "bachelors")
+          },
+        )
+      assertNull(bachelors["error"])
+      assertEquals(1, (bachelors["colleges"] as JsonArray).size)
+      assertEquals(
+        "Coastal College 920",
+        (bachelors["colleges"] as JsonArray)
+          .single()
+          .jsonObject["name"]!!
+          .jsonPrimitive.content,
+      )
+
+      val masters =
+        tool.execute(
+          buildJsonObject {
+            put("cipPrefix", "23")
+            put("credential_level", "masters")
+          },
+        )
+      assertNull(masters["error"])
+      assertEquals(
+        "Coastal College 921",
+        (masters["colleges"] as JsonArray)
+          .single()
+          .jsonObject["name"]!!
+          .jsonPrimitive.content,
+      )
+    }
+
+  @Test
+  fun `execute rejects credential_level without cipPrefix and unknown words`() =
+    runBlocking {
+      val alone = tool.execute(buildJsonObject { put("credential_level", "bachelors") })
+      assertTrue(alone.containsKey("error"))
+
+      val unknown =
+        tool.execute(
+          buildJsonObject {
+            put("cipPrefix", "23")
+            put("credential_level", "bachelor's degree")
+          },
+        )
+      assertTrue(unknown.containsKey("error"))
+      assertTrue(
+        unknown["error"]!!.toString().contains("bachelor's degree"),
+        "the rejection echoes the offending word: ${unknown["error"]}",
+      )
+    }
+
+  @Test
+  fun `total_matches is unclamped while count is the returned slice`() =
+    runBlocking {
+      for (u in 930..934) seedNamed(u, "Count College $u")
+
+      val result = tool.execute(buildJsonObject { put("limit", 2) })
+      assertNull(result["error"])
+      assertEquals(2, result["count"]!!.jsonPrimitive.intOrNull)
+      assertEquals(5, result["total_matches"]!!.jsonPrimitive.intOrNull)
+      assertEquals(2, (result["colleges"] as JsonArray).size)
+    }
+
+  private fun seedNamed(
+    unitId: Int,
+    name: String,
+  ) = runBlocking {
+    database.withConnection { session ->
+      CollegesDao.upsert(session, newCollege(unitId).copy(name = name)).getOrThrow()
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -564,6 +703,10 @@ class CollegeSearchToolTest {
 private val NUMBERS_BY_CONTRACT =
   setOf(
     "count",
+    // RFC 139: the honest, unclamped match total beside `count`'s returned
+    // slice. A count of colleges is a number by contract in exactly the way
+    // `count` is -- it is not, and can never become, a Scorecard code.
+    "total_matches",
     "undergrad_enrollment",
     "admission_rate",
     "net_price",

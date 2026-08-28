@@ -2,8 +2,8 @@ package ed.unicoach.college
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CollegesDao
-import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CollegeSearchPage
 import ed.unicoach.db.models.CollegeSummary
 
 /**
@@ -20,9 +20,19 @@ class CollegeSearchService(
 ) {
   /**
    * Runs [query] after clamping its `limit` to [MIN_LIMIT]`..`[MAX_LIMIT]. A
-   * zero-match query yields an empty list (a valid outcome), not a failure.
+   * zero-match query yields an empty page (a valid outcome), not a failure.
+   * `credentialLevel` narrows the program join, so it is rejected without a
+   * `cipPrefix` to join on (RFC 139) — validated here so every caller inherits
+   * the boundary, not just the chat tool.
    */
-  suspend fun search(query: CollegeQuery): Result<List<CollegeMatch>> {
+  suspend fun search(query: CollegeQuery): Result<CollegeSearchPage> {
+    if (query.credentialLevel != null && query.cipPrefix == null) {
+      return Result.failure(
+        IllegalArgumentException(
+          "credentialLevel [${query.credentialLevel}] requires a cipPrefix program filter, but cipPrefix was absent",
+        ),
+      )
+    }
     val clamped = query.copy(limit = query.limit.coerceIn(MIN_LIMIT, MAX_LIMIT))
     return database.withConnection { session -> CollegesDao.search(session, clamped) }
   }

@@ -6,6 +6,7 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CredentialLevel
 import ed.unicoach.db.models.NewCollege
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -89,10 +90,10 @@ class CollegeSearchServiceTest {
     runBlocking {
       for (u in 1..30) seed(newCollege(u))
 
-      val tooMany = service.search(CollegeQuery(limit = 100)).getOrThrow()
+      val tooMany = service.search(CollegeQuery(limit = 100)).getOrThrow().matches
       assertEquals(CollegeSearchService.MAX_LIMIT, tooMany.size)
 
-      val tooFew = service.search(CollegeQuery(limit = 0)).getOrThrow()
+      val tooFew = service.search(CollegeQuery(limit = 0)).getOrThrow().matches
       assertTrue(tooFew.size >= CollegeSearchService.MIN_LIMIT)
     }
 
@@ -102,7 +103,7 @@ class CollegeSearchServiceTest {
       seed(newCollege(11, state = "CA"))
       seed(newCollege(12, state = "TX"))
 
-      val matches = service.search(CollegeQuery(states = listOf("CA"), limit = 25)).getOrThrow()
+      val matches = service.search(CollegeQuery(states = listOf("CA"), limit = 25)).getOrThrow().matches
       assertEquals(listOf(11), matches.map { it.unitId })
     }
 
@@ -112,7 +113,19 @@ class CollegeSearchServiceTest {
       seed(newCollege(21, state = "CA"))
       val result = service.search(CollegeQuery(states = listOf("ZZ"), limit = 25))
       assertTrue(result.isSuccess)
-      assertTrue(result.getOrThrow().isEmpty())
+      assertTrue(result.getOrThrow().matches.isEmpty())
+      assertEquals(0, result.getOrThrow().totalMatches)
+    }
+
+  @Test
+  fun `credentialLevel without cipPrefix is rejected at the service boundary`() =
+    runBlocking {
+      val result = service.search(CollegeQuery(credentialLevel = CredentialLevel.BACHELORS, limit = 25))
+      assertTrue(result.isFailure)
+      assertTrue(result.exceptionOrNull() is IllegalArgumentException)
+      val message = result.exceptionOrNull()!!.message!!
+      assertTrue(message.contains("BACHELORS"), "the rejection names the offending value: $message")
+      assertTrue(message.contains("cipPrefix"), "the rejection names the absent field: $message")
     }
 
   // ---------------------------------------------------------------------------
@@ -138,7 +151,9 @@ class CollegeSearchServiceTest {
       seed(newCollege(142))
 
       val matches = service.searchByName("Test U 141", 25).getOrThrow()
-      assertEquals(listOf("Test U 141"), matches.map { it.name })
+      // The trigram arms (RFC 139) legitimately surface the near-identical
+      // "Test U 142" as a fuzzy neighbour; the exact match must rank first.
+      assertEquals("Test U 141", matches.first().name)
     }
 
   @Test

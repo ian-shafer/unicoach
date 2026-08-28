@@ -204,6 +204,27 @@ class CollegeSearchRoutingTest {
     }
 
   @Test
+  fun `search finds a typo'd name via the fuzzy arms (RFC 139)`() =
+    runBlocking {
+      val cookie = registerAndGetCookie()
+      val marker = UUID.randomUUID().toString().take(8)
+      val id = seedCollege("Amherst $marker College")
+
+      // "Amhurst ... Colege": no substring arm can match this — only the
+      // trigram similarity arm added by RFC 139. Route contract is otherwise
+      // unchanged: same shape, same fields.
+      val response =
+        client.get(buildUrl("/api/v1/colleges?q=${encode("Amhurst $marker Colege")}")) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.OK, response.status)
+      val colleges = mapper.readTree(response.bodyAsText())["colleges"]
+      assertTrue(colleges.size() >= 1)
+      assertEquals(id.toString(), colleges[0]["id"].asText())
+      assertEquals("Amherst $marker College", colleges[0]["name"].asText())
+    }
+
+  @Test
   fun `search respects the limit parameter`() =
     runBlocking {
       val cookie = registerAndGetCookie()

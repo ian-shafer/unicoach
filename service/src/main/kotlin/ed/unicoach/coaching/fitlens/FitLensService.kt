@@ -265,7 +265,7 @@ class FitLensService(
     // Retrieve — run the query directly in the worker (no shared txn).
     val matches =
       try {
-        collegeSearchService.search(query.copy(limit = config.searchLimit)).getOrThrow()
+        collegeSearchService.search(query.copy(limit = config.searchLimit)).getOrThrow().matches
       } catch (e: Exception) {
         logger.warn("fit-lens retrieval failed for student=[{}]", studentId.asString, e)
         return FitLensResult.TransientFailure("retrieval: ${e.message}", e)

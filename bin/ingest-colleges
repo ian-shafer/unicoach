@@ -3,12 +3,17 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-ingest-colleges <institution.csv> <fields.csv>
+ingest-colleges <institution.csv> <fields.csv> [aliases.json]
 
 Loads a version-pinned College Scorecard CSV pair into the `colleges` and
 `college_programs` reference tables via the :college ingester (RFC 67). Upserts
 on the natural keys, so re-running re-applies the same snapshot with no
-duplicates. Malformed rows are logged and skipped.
+duplicates. Malformed rows are logged and skipped — but a CSV missing a column
+the loader reads is FATAL before any write (RFC 139).
+
+The optional third argument is the curated college-aliases JSON (RFC 139),
+defaulting to the repo's db/data/college-aliases.json. Each run ends with a
+printed change summary and one college_index_build provenance row.
 
 Run inside the nix dev shell (the JVM lives there):
   nix develop -c bin/ingest-colleges <institution.csv> <fields.csv>
@@ -28,8 +33,16 @@ while getopts ":h" opt; do
 done
 shift $((OPTIND-1))
 
-if [ "$#" -ne 2 ]; then
-  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges requires exactly two arguments: <institution.csv> <fields.csv>"
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges requires two or three arguments: <institution.csv> <fields.csv> [aliases.json]"
+fi
+
+# An explicitly-passed EMPTY third argument is a wrong value, not an omitted
+# one: `${3-...}` (not `${3:-...}`) keeps the two cases distinct, and the empty
+# one is refused rather than silently ingesting the repo default. Checked with
+# the other grammar guards, before any download or resolve work.
+if [ "$#" -eq 3 ] && [ -z "$3" ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges: the aliases argument, when given, must not be empty"
 fi
 
 # Own the scratch dir resolve_file_arg downloads s3:// args into: the file
@@ -43,13 +56,22 @@ trap 'rm -rf "$INGEST_SCRATCH"' EXIT
 INSTITUTION_CSV="$(resolve_file_arg "$1" "$INGEST_SCRATCH")"
 FIELDS_CSV="$(resolve_file_arg "$2" "$INGEST_SCRATCH")"
 
+# The curated aliases file (RFC 139): optional third arg, defaulting to the
+# repo-committed seed. Resolved like the CSVs so an s3:// alias file also works.
+ALIASES_ARG="${3-$PROJECT_ROOT/db/data/college-aliases.json}"
+ALIASES_JSON="$(resolve_file_arg "$ALIASES_ARG" "$INGEST_SCRATCH")"
+
 # Run the prebuilt installDist launcher directly (never Gradle), fataling if the
 # build artifact is absent (bin/INVARIANTS.md pre-built-launcher rule). The path is
 # a single $PROJECT_ROOT-relative path that resolves identically in the local dev
 # tree and under /opt/unicoach/current (bin/deploy tars the college dist preserving
 # its build/install path, and bin/remote runs the tool from /opt/unicoach/current).
-# IngestApplication takes the two CSV paths as argv. COLLEGE_DIST (bin/functions)
-# is the single source of truth for the dist path, shared with bin/deploy.
+# IngestApplication takes the three resolved paths as positional argv, followed by
+# the provenance flags (RFC 139) carrying each source's ORIGINAL argument (local
+# path or s3:// URL) — the college_index_build row records these so a run is
+# traceable to its real source. COLLEGE_DIST (bin/functions) is the single source
+# of truth for the dist path, shared with bin/deploy.
 LAUNCHER="$PROJECT_ROOT/$COLLEGE_DIST/bin/college"
 [ -x "$LAUNCHER" ] || fatal "college launcher not found at [$LAUNCHER]; run bin/build-college first"
-"$LAUNCHER" "$INSTITUTION_CSV" "$FIELDS_CSV"
+"$LAUNCHER" "$INSTITUTION_CSV" "$FIELDS_CSV" "$ALIASES_JSON" \
+  --institution-source="$1" --fields-source="$2" --aliases-source="$ALIASES_ARG"

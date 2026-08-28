@@ -1189,11 +1189,58 @@ assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "remote -p (missing value) is rej
 assert_success "ingest-colleges -h exits 0" bin/ingest-colleges -h
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with no args exits 21" bin/ingest-colleges
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with one arg exits 21" bin/ingest-colleges only.csv
-assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with three args exits 21" bin/ingest-colleges a.csv b.csv c.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with four args exits 21" bin/ingest-colleges a.csv b.csv c.json d.csv
 test_ingest_colleges_missing_file() {
   bin/ingest-colleges "/no/such/$$-institution.csv" "/no/such/$$-fields.csv" >/dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent local CSV path" test_ingest_colleges_missing_file
+
+# Provenance routing (RFC 139): the launcher must receive the caller's ORIGINAL
+# source args as explicit --*-source flags after the three resolved paths — no
+# environment side channel. Exercised end to end against a fake checkout whose
+# college launcher is a stub that captures its argv.
+test_ingest_colleges_source_flags() {
+  local root parent stub argv inst fields entry rc
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-ingestflags"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  # Keep the run's output and replay it on failure only: a green run stays
+  # quiet, a red one explains itself instead of reporting a bare "test failed".
+  local log="$parent/ingest.log"
+  # rc must be captured from the command itself, NOT inside `if ! cmd; then`:
+  # there $? is the NEGATION's status (always 0), so the failure path would
+  # return success and this test would pass vacuously on a broken ingest.
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "ingest-colleges exited [$rc]:" >&2
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  grep -qxF -- "--institution-source=$inst" "$argv" &&
+    grep -qxF -- "--fields-source=$fields" "$argv" &&
+    grep -qxF -- "--aliases-source=$root/db/data/college-aliases.json" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { echo "launcher argv was:" >&2; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges passes original source args to the launcher as --*-source flags" test_ingest_colleges_source_flags
+# An explicitly-empty aliases argument is a wrong value, not an omitted one: it
+# must be refused, never silently replaced by the repo default (RFC 139).
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects an explicitly-empty aliases argument" \
+  bin/ingest-colleges a.csv b.csv ""
 
 # ── bin/common layering (RFC 95): ENV_FILES string, both-set, empty base ───────
 echo "==== Testing bin/common dotenv layering ===="

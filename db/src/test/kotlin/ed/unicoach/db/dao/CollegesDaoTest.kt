@@ -2,8 +2,14 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CredentialLevel
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeProgram
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -297,7 +303,7 @@ class CollegesDaoTest {
     seed(newCollege(202, undergradEnrollment = 9000))
     seed(newCollege(203, undergradEnrollment = 9000))
 
-    val matches = CollegesDao.search(session, CollegeQuery(limit = 25)).getOrThrow()
+    val matches = CollegesDao.search(session, CollegeQuery(limit = 25)).getOrThrow().matches
     assertEquals(listOf(202, 203, 201), matches.map { it.unitId })
   }
 
@@ -307,12 +313,12 @@ class CollegesDaoTest {
     CollegesDao.upsertProgram(session, NewCollegeProgram(collegeId, "260702", "Marine Biology", 3)).getOrThrow()
 
     for (prefix in listOf("26", "2607", "260702")) {
-      val matches = CollegesDao.search(session, CollegeQuery(cipPrefix = prefix, limit = 25)).getOrThrow()
+      val matches = CollegesDao.search(session, CollegeQuery(cipPrefix = prefix, limit = 25)).getOrThrow().matches
       assertEquals(1, matches.size, "prefix $prefix should match")
       assertEquals(listOf("Marine Biology"), matches.single().programTitles)
     }
 
-    val miss = CollegesDao.search(session, CollegeQuery(cipPrefix = "27", limit = 25)).getOrThrow()
+    val miss = CollegesDao.search(session, CollegeQuery(cipPrefix = "27", limit = 25)).getOrThrow().matches
     assertTrue(miss.isEmpty())
   }
 
@@ -320,7 +326,7 @@ class CollegesDaoTest {
   fun `search by maxNetPrice includes and excludes`() {
     seed(newCollege(401, netPrice = 10000))
     seed(newCollege(402, netPrice = 40000))
-    val matches = CollegesDao.search(session, CollegeQuery(maxNetPrice = 20000, limit = 25)).getOrThrow()
+    val matches = CollegesDao.search(session, CollegeQuery(maxNetPrice = 20000, limit = 25)).getOrThrow().matches
     assertEquals(listOf(401), matches.map { it.unitId })
   }
 
@@ -333,6 +339,7 @@ class CollegesDaoTest {
       CollegesDao
         .search(session, CollegeQuery(minUndergradEnrollment = 1000, maxUndergradEnrollment = 10000, limit = 25))
         .getOrThrow()
+        .matches
     assertEquals(listOf(412), matches.map { it.unitId })
   }
 
@@ -341,7 +348,7 @@ class CollegesDaoTest {
     seed(newCollege(421, state = "CA"))
     seed(newCollege(422, state = "OR"))
     seed(newCollege(423, state = "TX"))
-    val matches = CollegesDao.search(session, CollegeQuery(states = listOf("CA", "OR"), limit = 25)).getOrThrow()
+    val matches = CollegesDao.search(session, CollegeQuery(states = listOf("CA", "OR"), limit = 25)).getOrThrow().matches
     assertEquals(setOf(421, 422), matches.map { it.unitId }.toSet())
   }
 
@@ -350,7 +357,7 @@ class CollegesDaoTest {
     seed(newCollege(431, control = 1))
     seed(newCollege(432, control = 2))
     seed(newCollege(433, control = 3))
-    val matches = CollegesDao.search(session, CollegeQuery(control = listOf(2, 3), limit = 25)).getOrThrow()
+    val matches = CollegesDao.search(session, CollegeQuery(control = listOf(2, 3), limit = 25)).getOrThrow().matches
     assertEquals(setOf(432, 433), matches.map { it.unitId }.toSet())
   }
 
@@ -363,6 +370,7 @@ class CollegesDaoTest {
       CollegesDao
         .search(session, CollegeQuery(minAdmissionRate = 0.2, maxAdmissionRate = 0.6, limit = 25))
         .getOrThrow()
+        .matches
     assertEquals(listOf(442), matches.map { it.unitId })
   }
 
@@ -370,14 +378,19 @@ class CollegesDaoTest {
   fun `search by minGraduationRate includes and excludes`() {
     seed(newCollege(451, graduationRate = 0.4))
     seed(newCollege(452, graduationRate = 0.8))
-    val matches = CollegesDao.search(session, CollegeQuery(minGraduationRate = 0.6, limit = 25)).getOrThrow()
+    val matches = CollegesDao.search(session, CollegeQuery(minGraduationRate = 0.6, limit = 25)).getOrThrow().matches
     assertEquals(listOf(452), matches.map { it.unitId })
   }
 
   @Test
   fun `search returns the outcome columns`() {
     seed(newCollege(501, graduationRate = 0.65, medianEarnings = 62000, pctPell = 0.33))
-    val match = CollegesDao.search(session, CollegeQuery(limit = 25)).getOrThrow().single()
+    val match =
+      CollegesDao
+        .search(session, CollegeQuery(limit = 25))
+        .getOrThrow()
+        .matches
+        .single()
     assertEquals(0.65, match.graduationRate)
     assertEquals(62000, match.medianEarnings)
     assertEquals(0.33, match.pctPell)
@@ -418,13 +431,14 @@ class CollegesDaoTest {
             limit = 25,
           ),
         ).getOrThrow()
+        .matches
     assertEquals(listOf(601), matches.map { it.unitId })
   }
 
   @Test
   fun `search applies limit and the limit is honored at the SQL level`() {
     for (u in 700..710) seed(newCollege(u, undergradEnrollment = u))
-    val matches = CollegesDao.search(session, CollegeQuery(limit = 3)).getOrThrow()
+    val matches = CollegesDao.search(session, CollegeQuery(limit = 3)).getOrThrow().matches
     assertEquals(3, matches.size)
   }
 
@@ -614,12 +628,19 @@ class CollegesDaoTest {
     seed(newCollege(810302, name = "Under_score College"))
     seed(newCollege(810303, name = "Underscore College"))
 
+    // The ILIKE arm is escaped: '%' must not act as a wildcard, so the literal
+    // '%' name matches and "A plain College" is only reachable via the trigram
+    // arms (which ignore punctuation) — the literal match must rank first.
     val percent = CollegesDao.searchByName(session, "percent %", 25).getOrThrow()
-    assertEquals(listOf("A percent % College"), percent.map { it.name })
+    assertEquals("A percent % College", percent.first().name)
 
-    // An unescaped underscore would also match "Underscore"; the literal must not.
+    // An unescaped underscore would ALSO match "Underscore" on the ILIKE arm.
+    // Since RFC 139 the trigram arms legitimately surface "Underscore College"
+    // as a fuzzy neighbour (trigrams ignore '_'), so the literal-match guarantee
+    // is ranking, not exclusivity: the exact row must come first.
     val underscore = CollegesDao.searchByName(session, "Under_score", 25).getOrThrow()
-    assertEquals(listOf("Under_score College"), underscore.map { it.name })
+    assertEquals("Under_score College", underscore.first().name)
+    assertTrue("Underscore College" in underscore.map { it.name }, "the fuzzy arm should also surface the near-identical name")
 
     val backslash = CollegesDao.searchByName(session, "\\", 25).getOrThrow()
     assertEquals(emptyList(), backslash.map { it.name })
@@ -630,5 +651,309 @@ class CollegesDaoTest {
     for (u in 810400..810410) seed(newCollege(u, name = "Limit U $u"))
     val matches = CollegesDao.searchByName(session, "Limit U", 3).getOrThrow()
     assertEquals(3, matches.size)
+  }
+
+  // ---------------------------------------------------------------------------
+  // searchByName — fuzzy arms (RFC 139)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `searchByName finds a typo'd full name via trigram similarity`() {
+    seed(newCollege(820100, name = "Amherst College"))
+    seed(newCollege(820101, name = "Hampshire College"))
+
+    val matches = CollegesDao.searchByName(session, "Amhurst Colege", 25).getOrThrow()
+    assertEquals("Amherst College", matches.first().name)
+  }
+
+  @Test
+  fun `searchByName finds a nickname via the aliases word-similarity arm`() {
+    seed(newCollege(820200, name = "University of Missouri-Columbia"))
+    seed(newCollege(820201, name = "University of Central Missouri"))
+    CollegesDao.updateAliases(session, 820200, listOf("Mizzou", "University of Missouri")).getOrThrow()
+
+    val matches = CollegesDao.searchByName(session, "Mizzou", 25).getOrThrow()
+    assertEquals("University of Missouri-Columbia", matches.first().name)
+  }
+
+  @Test
+  fun `searchByName substring arm ranges over alias text, not just the name`() {
+    // "izzo" is an exact substring of the alias "Mizzou" but of no college
+    // name, and it is too dissimilar for either trigram arm's threshold — so
+    // only the ILIKE arm over college_search_text(name, aliases) can find it.
+    seed(newCollege(820400, name = "University of Missouri-Columbia"))
+    CollegesDao.updateAliases(session, 820400, listOf("Mizzou")).getOrThrow()
+
+    val matches = CollegesDao.searchByName(session, "izzo", 25).getOrThrow()
+    assertEquals(listOf("University of Missouri-Columbia"), matches.map { it.name })
+  }
+
+  @Test
+  fun `searchByName finds a multi-word alias fragment`() {
+    seed(newCollege(820300, name = "University of Massachusetts-Amherst"))
+    CollegesDao.updateAliases(session, 820300, listOf("UMass Amherst", "UMass")).getOrThrow()
+
+    val matches = CollegesDao.searchByName(session, "UMass Amherst", 25).getOrThrow()
+    assertEquals("University of Massachusetts-Amherst", matches.first().name)
+  }
+
+  @Test
+  fun `searchByName pins its own trigram thresholds, ignoring hostile session GUCs`() {
+    seed(newCollege(820500, name = "Amherst College"))
+    seed(newCollege(820501, name = "Hampshire College"))
+
+    // Hostile session defaults: at 1.0 neither trigram arm can ever fire, so a
+    // search that inherited its bounds from the server would find nothing. The
+    // DAO's SET LOCAL must win inside the transaction it runs in.
+    connection.autoCommit = false
+    try {
+      connection.createStatement().use { stmt ->
+        stmt.execute("SET pg_trgm.similarity_threshold = 1")
+        stmt.execute("SET pg_trgm.word_similarity_threshold = 1")
+      }
+
+      val matches = CollegesDao.searchByName(session, "Amhurst Colege", 25).getOrThrow()
+      assertEquals("Amherst College", matches.first().name)
+
+      connection.createStatement().use { stmt ->
+        stmt
+          .executeQuery(
+            "SELECT current_setting('pg_trgm.similarity_threshold') AS s, " +
+              "current_setting('pg_trgm.word_similarity_threshold') AS w",
+          ).use { rs ->
+            assertTrue(rs.next())
+            assertEquals(CollegesDao.SIMILARITY_THRESHOLD, rs.getString("s").toDouble())
+            assertEquals(CollegesDao.WORD_SIMILARITY_THRESHOLD, rs.getString("w").toDouble())
+          }
+      }
+    } finally {
+      connection.rollback()
+      connection.autoCommit = true
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // nonNullCounts (RFC 139)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `nonNullCounts counts only allowlisted columns and refuses anything else`() {
+    seed(newCollege(825100, admissionRate = 0.4))
+    seed(newCollege(825101, admissionRate = null))
+
+    val counts = CollegesDao.nonNullCounts(session, listOf("admission_rate", "net_price")).getOrThrow()
+    assertEquals(1, counts["admission_rate"])
+    assertEquals(2, counts["net_price"])
+
+    // An identifier outside the allowlist never reaches SQL — including one
+    // that would otherwise be a valid injection point.
+    val thrown =
+      assertFailsWith<IllegalArgumentException> {
+        CollegesDao.nonNullCounts(session, listOf("admission_rate", "1) AS x, (SELECT 1"))
+      }
+    assertTrue(thrown.message!!.contains("unknown colleges column"), "the refusal names the fault: ${thrown.message}")
+    assertFailsWith<IllegalArgumentException> { CollegesDao.nonNullCounts(session, listOf("name")) }
+  }
+
+  // ---------------------------------------------------------------------------
+  // updateAliases (RFC 139)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `updateAliases applies a change with a version bump and history row`() {
+    val id = seed(newCollege(830100))
+    val outcome = CollegesDao.updateAliases(session, 830100, listOf("Nickname U")).getOrThrow()
+    assertEquals(CollegesDao.AliasUpdateOutcome.APPLIED, outcome)
+
+    val college = CollegesDao.findById(session, id).getOrThrow()
+    assertEquals(listOf("Nickname U"), college.aliases)
+    assertEquals(2, college.version)
+
+    val history = CollegesDao.listVersions(session, id).getOrThrow()
+    assertEquals(listOf(1, 2), history.map { it.version })
+    assertEquals(listOf("Nickname U"), history.last().entity.aliases)
+  }
+
+  @Test
+  fun `updateAliases with the same aliases is suppressed - no bump, no history`() {
+    val id = seed(newCollege(830200))
+    CollegesDao.updateAliases(session, 830200, listOf("Steady", "Nick")).getOrThrow()
+
+    val again = CollegesDao.updateAliases(session, 830200, listOf("Steady", "Nick")).getOrThrow()
+    assertEquals(CollegesDao.AliasUpdateOutcome.UNCHANGED, again)
+
+    val college = CollegesDao.findById(session, id).getOrThrow()
+    assertEquals(2, college.version, "the suppressed re-apply must not bump")
+    assertEquals(2, CollegesDao.listVersions(session, id).getOrThrow().size)
+  }
+
+  @Test
+  fun `updateAliases on an unknown unit_id reports it, never throws`() {
+    val outcome = CollegesDao.updateAliases(session, 999999, listOf("Ghost U")).getOrThrow()
+    assertEquals(CollegesDao.AliasUpdateOutcome.UNKNOWN_UNIT_ID, outcome)
+  }
+
+  @Test
+  fun `scorecard upsert of a changed row preserves curated aliases`() {
+    seed(newCollege(830300, name = "Before"))
+    CollegesDao.updateAliases(session, 830300, listOf("Kept")).getOrThrow()
+
+    val after = CollegesDao.upsert(session, newCollege(830300, name = "After")).getOrThrow()
+    assertEquals(listOf("Kept"), after.aliases, "the Scorecard upsert must not clobber curated aliases")
+  }
+
+  // ---------------------------------------------------------------------------
+  // search — sortBy / credentialLevel / totalMatches (RFC 139)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `search sortBy admission rate ascends with NULLS LAST`() {
+    seed(newCollege(840100, admissionRate = 0.9))
+    seed(newCollege(840101, admissionRate = 0.1))
+    seed(newCollege(840102, admissionRate = null))
+
+    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.ADMISSION_RATE_ASC, limit = 25)
+    val matches = CollegesDao.search(session, query).getOrThrow().matches
+    assertEquals(listOf(840101, 840100, 840102), matches.map { it.unitId })
+  }
+
+  @Test
+  fun `search sortBy net price ascends with NULLS LAST`() {
+    seed(newCollege(840200, netPrice = 30000))
+    seed(newCollege(840201, netPrice = null))
+    seed(newCollege(840202, netPrice = 5000))
+
+    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.NET_PRICE_ASC, limit = 25)
+    val matches = CollegesDao.search(session, query).getOrThrow().matches
+    assertEquals(listOf(840202, 840200, 840201), matches.map { it.unitId })
+  }
+
+  @Test
+  fun `search sortBy graduation rate descends with NULLS LAST`() {
+    seed(newCollege(840300, graduationRate = 0.5))
+    seed(newCollege(840301, graduationRate = null))
+    seed(newCollege(840302, graduationRate = 0.9))
+
+    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.GRADUATION_RATE_DESC, limit = 25)
+    val matches = CollegesDao.search(session, query).getOrThrow().matches
+    assertEquals(listOf(840302, 840300, 840301), matches.map { it.unitId })
+  }
+
+  @Test
+  fun `search sortBy name ascends with unit_id tiebreak`() {
+    seed(newCollege(840401, name = "Bravo College"))
+    seed(newCollege(840400, name = "Alpha College"))
+    seed(newCollege(840403, name = "Same Name College"))
+    seed(newCollege(840402, name = "Same Name College"))
+
+    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.NAME_ASC, limit = 25)
+    val matches = CollegesDao.search(session, query).getOrThrow().matches
+    assertEquals(listOf(840400, 840401, 840402, 840403), matches.map { it.unitId })
+  }
+
+  @Test
+  fun `search sortBy never filters - a NULL-keyed row sinks, it does not vanish`() {
+    seed(newCollege(840500, netPrice = null))
+    val query = CollegeQuery(sortBy = CollegeQuery.SortBy.NET_PRICE_ASC, limit = 25)
+    val page = CollegesDao.search(session, query).getOrThrow()
+    assertEquals(listOf(840500), page.matches.map { it.unitId })
+    assertEquals(1, page.totalMatches)
+  }
+
+  @Test
+  fun `search credentialLevel narrows the program join`() {
+    val bachelor = seed(newCollege(850100))
+    CollegesDao.upsertProgram(session, NewCollegeProgram(bachelor, "230101", "English", 3)).getOrThrow()
+    val master = seed(newCollege(850101))
+    CollegesDao.upsertProgram(session, NewCollegeProgram(master, "230101", "English", 5)).getOrThrow()
+
+    val bachelors =
+      CollegesDao
+        .search(session, CollegeQuery(cipPrefix = "23", credentialLevel = CredentialLevel.BACHELORS, limit = 25))
+        .getOrThrow()
+    assertEquals(listOf(850100), bachelors.matches.map { it.unitId })
+    assertEquals(1, bachelors.totalMatches)
+
+    val unfiltered =
+      CollegesDao
+        .search(session, CollegeQuery(cipPrefix = "23", limit = 25))
+        .getOrThrow()
+    assertEquals(setOf(850100, 850101), unfiltered.matches.map { it.unitId }.toSet())
+  }
+
+  @Test
+  fun `search totalMatches exceeds the returned slice when more rows match`() {
+    for (u in 860100..860129) seed(newCollege(u))
+    val page = CollegesDao.search(session, CollegeQuery(limit = 5)).getOrThrow()
+    assertEquals(5, page.matches.size)
+    assertEquals(30, page.totalMatches)
+  }
+
+  // ---------------------------------------------------------------------------
+  // insertIndexBuild (RFC 139)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `insertIndexBuild writes one provenance row and returns its id`() {
+    val started =
+      java.time.Instant
+        .now()
+        .minusSeconds(60)
+    val id =
+      CollegesDao
+        .insertIndexBuild(
+          session,
+          ed.unicoach.db.models.NewCollegeIndexBuild(
+            startedAt = started,
+            finishedAt = started.plusSeconds(41),
+            sources =
+              Json
+                .parseToJsonElement(
+                  """[{"file":"institution.csv","sha256":"ab12","bytes":143,"source_arg":"institution.csv"}]""",
+                ).jsonArray,
+            rowsIngested =
+              Json
+                .parseToJsonElement(
+                  """{"colleges":{"seen":5,"inserted":5,"changed":0,"unchanged":0,"skipped":0}}""",
+                ).jsonObject,
+            indexRows = null,
+            changeSummary =
+              Json
+                .parseToJsonElement(
+                  """{"non_null":{"admission_rate":{"before":0,"after":4}},"version_bumps":5}""",
+                ).jsonObject,
+            methodVersion = 1,
+          ),
+        ).getOrThrow()
+
+    connection.prepareStatement("SELECT method_version, index_rows FROM college_index_build WHERE id = ?").use { stmt ->
+      stmt.setObject(1, id)
+      stmt.executeQuery().use { rs ->
+        assertTrue(rs.next())
+        assertEquals(1, rs.getInt("method_version"))
+        rs.getInt("index_rows")
+        assertTrue(rs.wasNull())
+      }
+    }
+  }
+
+  @Test
+  fun `insertIndexBuild rejects finished_at before started_at`() {
+    val started = java.time.Instant.now()
+    val result =
+      CollegesDao.insertIndexBuild(
+        session,
+        ed.unicoach.db.models.NewCollegeIndexBuild(
+          startedAt = started,
+          finishedAt = started.minusSeconds(1),
+          sources = JsonArray(emptyList()),
+          rowsIngested = JsonObject(emptyMap()),
+          indexRows = null,
+          changeSummary = JsonObject(emptyMap()),
+          methodVersion = 1,
+        ),
+      )
+    assertTrue(result.isFailure)
+    assertTrue(result.exceptionOrNull() is ConstraintViolationException)
   }
 }

@@ -3,6 +3,7 @@ package ed.unicoach.college
 import ed.unicoach.db.models.CipPrefix
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CredentialLevel
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.putIncomeBand
@@ -71,6 +72,22 @@ class CollegeSearchTool(
           putNumberProperty("maxAdmissionRate", "Maximum admission rate (0-1).")
           putIntProperty("maxNetPrice", "Maximum average annual net price, USD.")
           putNumberProperty("minGraduationRate", "Minimum 6-year graduation rate (0-1).")
+          putWordEnumProperty(
+            "sort_by",
+            SORT_BY_WORDS.keys,
+            "Result ordering. \"enrollment\" (default): largest undergraduate " +
+              "enrollment first; \"admission_rate\": most selective first; " +
+              "\"net_price\": cheapest first; \"graduation_rate\": best completion " +
+              "first; \"name\": alphabetical. Sorting never filters: colleges " +
+              "missing the sort field are listed last, not dropped.",
+          )
+          putWordEnumProperty(
+            "credential_level",
+            CREDENTIAL_LEVEL_WORDS.keys,
+            "Require the cipPrefix program at this credential level (e.g. " +
+              "\"bachelors\" for a bachelor's degree in the program). Only valid " +
+              "together with cipPrefix.",
+          )
           putJsonObject("limit") {
             put("type", "integer")
             put(
@@ -96,16 +113,19 @@ class CollegeSearchTool(
         is ParseResult.Err -> return errorObject(parsed.reason)
       }
 
-    val matches =
+    val page =
       service.search(query).getOrElse { error ->
         return searchFailureObject(error)
       }
 
     return buildJsonObject {
       putJsonArray("colleges") {
-        matches.forEach { add(matchObject(it)) }
+        page.matches.forEach { add(matchObject(it)) }
       }
-      put("count", matches.size)
+      put("count", page.matches.size)
+      // The honest population count (RFC 139): unclamped, so the model can say
+      // "total_matches match; showing count".
+      put("total_matches", page.totalMatches)
     }
   }
 
@@ -126,7 +146,7 @@ class CollegeSearchTool(
   private fun parseQuery(input: JsonObject): ParseResult {
     val unknown = input.keys - KNOWN_FIELDS
     if (unknown.isNotEmpty()) {
-      return ParseResult.Err("unknown field(s): ${unknown.sorted().joinToString(", ")}")
+      return ParseResult.Err("unknown field(s): [${unknown.sorted().joinToString(", ")}]")
     }
 
     val cipPrefix =
@@ -218,6 +238,21 @@ class CollegeSearchTool(
     if (minGraduation != null && minGraduation !in 0.0..1.0) {
       return ParseResult.Err("minGraduationRate must be 0.0-1.0")
     }
+    val sortBy =
+      when (val r = optWordEnum(input, "sort_by", SORT_BY_WORDS)) {
+        is Parsed.Err -> return ParseResult.Err(r.reason)
+        is Parsed.Ok -> r.value ?: CollegeQuery.SortBy.ENROLLMENT_DESC
+      }
+    // The word-to-level mapping lives here, at the boundary: raw CREDLEV codes
+    // never appear in the tool schema or reach the LLM (brief 0004 amendment).
+    val credentialLevel =
+      when (val r = optWordEnum(input, "credential_level", CREDENTIAL_LEVEL_WORDS)) {
+        is Parsed.Err -> return ParseResult.Err(r.reason)
+        is Parsed.Ok -> r.value
+      }
+    if (credentialLevel != null && cipPrefix == null) {
+      return ParseResult.Err("credential_level is only valid together with cipPrefix")
+    }
     val limit =
       when (val r = optInt(input, "limit")) {
         is Parsed.Err -> return ParseResult.Err(r.reason)
@@ -237,6 +272,8 @@ class CollegeSearchTool(
         maxAdmissionRate = maxAdmission,
         maxNetPrice = maxNetPrice,
         minGraduationRate = minGraduation,
+        sortBy = sortBy,
+        credentialLevel = credentialLevel,
         limit = limit,
       ),
     )
@@ -300,6 +337,38 @@ class CollegeSearchTool(
     if (prim.isString) return Parsed.Err("$key must be a number")
     val value = prim.content.toDoubleOrNull() ?: return Parsed.Err("$key must be a number")
     return Parsed.Ok(value)
+  }
+
+  /**
+   * Reads an optional word-enum field: absent stays `Ok(null)`, a non-string is
+   * the [optString] type error, and a string outside [words] names the whole
+   * closed vocabulary. Shared by `sort_by` and `credential_level` so the
+   * word-to-value lookup and its error shape exist once.
+   */
+  private fun <T> optWordEnum(
+    input: JsonObject,
+    key: String,
+    words: Map<String, T>,
+  ): Parsed<T?> {
+    val word =
+      when (val r = optString(input, key)) {
+        is Parsed.Err -> return r
+        is Parsed.Ok -> r.value ?: return Parsed.Ok(null)
+      }
+    val value =
+      words[word]
+        ?: return Parsed.Err("$key must be one of [${words.keys.joinToString(", ")}]; got [$word]")
+    return Parsed.Ok(value)
+  }
+
+  private fun optString(
+    input: JsonObject,
+    key: String,
+  ): Parsed<String?> {
+    val el = field(input, key) ?: return Parsed.Ok(null)
+    val prim = el as? JsonPrimitive ?: return Parsed.Err("$key must be a string")
+    if (!prim.isString) return Parsed.Err("$key must be a string")
+    return Parsed.Ok(prim.content)
   }
 
   private fun optStringList(
@@ -428,7 +497,42 @@ class CollegeSearchTool(
         "maxAdmissionRate",
         "maxNetPrice",
         "minGraduationRate",
+        "sort_by",
+        "credential_level",
         "limit",
+      )
+
+    /**
+     * The `sort_by` word enum → [CollegeQuery.SortBy]. LinkedHashMap order is
+     * the schema's enum order (default first).
+     */
+    private val SORT_BY_WORDS: Map<String, CollegeQuery.SortBy> =
+      CollegeQuery.SortBy.entries.associateBy { sortBy ->
+        // Exhaustive `when` over the enum, so a sort added to CollegeQuery
+        // fails THIS compile rather than silently going unofferable to the LLM.
+        when (sortBy) {
+          CollegeQuery.SortBy.ENROLLMENT_DESC -> "enrollment"
+          CollegeQuery.SortBy.ADMISSION_RATE_ASC -> "admission_rate"
+          CollegeQuery.SortBy.NET_PRICE_ASC -> "net_price"
+          CollegeQuery.SortBy.GRADUATION_RATE_DESC -> "graduation_rate"
+          CollegeQuery.SortBy.NAME_ASC -> "name"
+        }
+      }
+
+    /**
+     * The `credential_level` word enum → [CredentialLevel], the named level the
+     * query carries; the Scorecard CREDLEV code lives only in that enum, so raw
+     * codes reach neither the LLM nor this file. [CredentialLevel] deliberately
+     * omits 4 (post-bacc certificate), 6 (post-master's certificate) and 8
+     * (first professional): real codes, not offered as words.
+     */
+    private val CREDENTIAL_LEVEL_WORDS: Map<String, CredentialLevel> =
+      linkedMapOf(
+        "certificate" to CredentialLevel.CERTIFICATE,
+        "associate" to CredentialLevel.ASSOCIATE,
+        "bachelors" to CredentialLevel.BACHELORS,
+        "masters" to CredentialLevel.MASTERS,
+        "doctoral" to CredentialLevel.DOCTORAL,
       )
 
     // Not `const`: the income-band ranges are rendered from IncomeBand.bracket,
@@ -439,7 +543,11 @@ class CollegeSearchTool(
         "filters: program of study (CIP code prefix), location (US states, IPEDS " +
         "region, urbanization locale), institutional control (public/private), " +
         "undergraduate enrollment size, admission rate (selectivity), maximum net " +
-        "price (affordability), and minimum graduation rate. Returns matching real " +
+        "price (affordability), and minimum graduation rate — plus an optional " +
+        "`sort_by` ordering and a `credential_level` word for the program filter. " +
+        "The response carries `count` (returned rows, capped at $MAX_LIMIT) and " +
+        "`total_matches` (every college matching the filters, uncapped) — cite " +
+        "`total_matches` when stating how many schools match. Returns matching real " +
         "institutions with size, selectivity, net price, and outcome context " +
         "(graduation rate, median earnings, Pell share). Each result carries " +
         "`college_id`, the college's stable identifier — exactly what the " +
@@ -493,6 +601,18 @@ private fun kotlinx.serialization.json.JsonObjectBuilder.putNumberProperty(
 ) {
   putJsonObject(key) {
     put("type", "number")
+    put("description", description)
+  }
+}
+
+private fun kotlinx.serialization.json.JsonObjectBuilder.putWordEnumProperty(
+  key: String,
+  words: Collection<String>,
+  description: String,
+) {
+  putJsonObject(key) {
+    put("type", "string")
+    putJsonArray("enum") { words.forEach { add(it) } }
     put("description", description)
   }
 }

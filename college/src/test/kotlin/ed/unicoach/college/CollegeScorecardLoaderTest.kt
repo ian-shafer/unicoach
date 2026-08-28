@@ -8,6 +8,7 @@ import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
+import java.io.File
 import java.sql.SQLException
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -18,6 +19,51 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
   private val loader = CollegeScorecardLoader(database)
   private val institutionCsv = fixture("scorecard-institutions-fixture.csv")
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
+
+  @Test
+  fun `the REQUIRED column lists cover every column the mappers read`() =
+    runBlocking {
+      // Coverage guarantee (RFC 139): synthesize CSVs whose headers are EXACTLY
+      // the REQUIRED_* lists. Every cell read goes through the loud isMapped
+      // check in the loader, so a mapper reading any column missing from the
+      // shared definition throws IllegalStateException and fails this test.
+      // Two institution rows (control 1 and 2) drive both control-keyed
+      // branches of the NPT4* reads.
+      val institutionHeader = CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS
+      val institutionValues =
+        mapOf(
+          "UNITID" to listOf("910001", "910002"),
+          "INSTNM" to listOf("Coverage Public U", "Coverage Private U"),
+          "CITY" to listOf("Townsville", "Cityburg"),
+          "STABBR" to listOf("CA", "NY"),
+          "CONTROL" to listOf("1", "2"),
+        )
+      val institutions = File.createTempFile("coverage-institutions", ".csv")
+      institutions.deleteOnExit()
+      institutions.writeText(
+        buildString {
+          appendLine(institutionHeader.joinToString(","))
+          for (row in 0..1) {
+            appendLine(institutionHeader.joinToString(",") { institutionValues[it]?.get(row) ?: "" })
+          }
+        },
+      )
+
+      val fieldsHeader = CollegeScorecardLoader.REQUIRED_FIELDS_COLUMNS
+      val fieldsValues = mapOf("UNITID" to "910001", "CIPCODE" to "2601", "CIPDESC" to "Biology", "CREDLEV" to "3")
+      val fields = File.createTempFile("coverage-fields", ".csv")
+      fields.deleteOnExit()
+      fields.writeText(
+        buildString {
+          appendLine(fieldsHeader.joinToString(","))
+          appendLine(fieldsHeader.joinToString(",") { fieldsValues.getValue(it) })
+        },
+      )
+
+      val result = loader.load(institutions, fields)
+      assertEquals(2, result.collegesLoaded)
+      assertEquals(1, result.programsLoaded)
+    }
 
   @Test
   fun `loads institutions and programs from fixture CSVs`() =

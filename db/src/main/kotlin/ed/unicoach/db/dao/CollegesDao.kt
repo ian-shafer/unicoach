@@ -6,10 +6,14 @@ import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeProgram
 import ed.unicoach.db.models.CollegeProgramId
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CollegeSearchPage
 import ed.unicoach.db.models.CollegeSummary
 import ed.unicoach.db.models.NewCollege
+import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
 import ed.unicoach.db.models.Version
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import org.postgresql.util.PSQLException
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -102,6 +106,7 @@ object CollegesDao :
       medianDebt = rs.intOrNull("median_debt"),
       pctPell = rs.doubleOrNull("pct_pell"),
       website = rs.getString("website"),
+      aliases = rs.getStringList("aliases"),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
     )
@@ -419,23 +424,28 @@ object CollegesDao :
    * appending one `AND` clause per non-null filter; joins `college_programs` only
    * when `cipPrefix` is set (matching `cip_code LIKE prefix || '%'` so 2/4/6-digit
    * prefixes all resolve, and aggregating the matched titles into
-   * `program_titles`). Applies the deterministic
-   * `ORDER BY undergrad_enrollment DESC NULLS LAST, unit_id ASC` and the
-   * caller-supplied `LIMIT`. Every value is bound as a parameter — no filter value
-   * is interpolated into SQL text.
+   * `program_titles`; a `credentialLevel` alone joins without title aggregation).
+   * Applies the [CollegeQuery.SortBy] ordering (see [orderBy]) and the
+   * caller-supplied `LIMIT`, then runs the companion unclamped COUNT over the
+   * same FROM/WHERE for [CollegeSearchPage.totalMatches] (RFC 139). Every value
+   * is bound as a parameter — no filter value is interpolated into SQL text.
    */
   fun search(
     session: SqlSession,
     query: CollegeQuery,
-  ): Result<List<CollegeMatch>> {
+  ): Result<CollegeSearchPage> {
     val binders = mutableListOf<(PreparedStatement, Int) -> Unit>()
     val wheres = mutableListOf<String>()
-    val hasProgramFilter = query.cipPrefix != null
+    val hasProgramFilter = query.cipPrefix != null || query.credentialLevel != null
 
     if (query.cipPrefix != null) {
       wheres += "p.cip_code LIKE ? || '%'"
       val prefix = query.cipPrefix
       binders += { stmt, i -> stmt.setString(i, prefix) }
+    }
+    query.credentialLevel?.let { level ->
+      wheres += "p.credential_level = ?"
+      binders += { stmt, i -> stmt.setInt(i, level.code) }
     }
     query.states?.let { states ->
       if (states.isNotEmpty()) {
@@ -485,7 +495,7 @@ object CollegesDao :
     }
 
     val selectTitles =
-      if (hasProgramFilter) {
+      if (query.cipPrefix != null) {
         "array_agg(DISTINCT p.cip_title) AS program_titles"
       } else {
         "ARRAY[]::text[] AS program_titles"
@@ -506,55 +516,166 @@ object CollegesDao :
       $join
       $whereClause
       GROUP BY c.id
-      ORDER BY c.undergrad_enrollment DESC NULLS LAST, c.unit_id ASC
+      ORDER BY ${orderBy(query.sortBy)}
       LIMIT ?
       """.trimIndent()
 
-    return session.queryList(
-      sql,
-      bind = { stmt ->
-        var idx = 1
-        binders.forEach { b -> b(stmt, idx++) }
-        stmt.setInt(idx, query.limit)
-      },
-      map = ::mapMatch,
-    )
+    val matches =
+      session
+        .queryList(
+          sql,
+          bind = { stmt ->
+            var idx = 1
+            binders.forEach { b -> b(stmt, idx++) }
+            stmt.setInt(idx, query.limit)
+          },
+          map = ::mapMatch,
+        ).getOrElse { return Result.failure(it) }
+
+    // The honest population count: same FROM/WHERE, no GROUP BY, no LIMIT. Two
+    // statements on one connection; at ~6k rows the COUNT costs microseconds and
+    // keeps the main query untouched.
+    val countSql = "SELECT COUNT(DISTINCT c.id) AS total FROM colleges c $join $whereClause"
+    return session
+      .queryOne(
+        countSql,
+        bind = { stmt ->
+          var idx = 1
+          binders.forEach { b -> b(stmt, idx++) }
+        },
+        map = { rs -> rs.getInt("total") },
+      ).map { total -> CollegeSearchPage(matches = matches, totalMatches = total) }
   }
 
   /**
-   * Student-facing name search (RFC 137): case-insensitive substring match on
-   * `name`, with the caller's raw query escaped so `%`/`_`/`\` in it match
-   * literally rather than acting as wildcards. Ordered prefix-matches-first
-   * (a "Columbia" query surfaces Columbia University before "District of
-   * Columbia..."), then `undergrad_enrollment DESC NULLS LAST` (big
-   * institutions before small same-named ones), then `name, unit_id` for a
-   * total, deterministic order. [limit] is clamped to the supported range by
-   * the service boundary before reaching here (the [search] convention).
+   * The ORDER BY clause for a [CollegeQuery.SortBy] — a closed enum-to-constant
+   * mapping (no caller text reaches SQL). A sort never filters: rows NULL on the
+   * sort key sink (`NULLS LAST`), they do not vanish (brief 0004 D11); every
+   * ordering ends with the `unit_id ASC` tiebreak for a total, deterministic
+   * order (`name` is not unique, so NAME_ASC needs the tiebreak too).
+   */
+  private fun orderBy(sortBy: CollegeQuery.SortBy): String =
+    when (sortBy) {
+      CollegeQuery.SortBy.ENROLLMENT_DESC -> "c.undergrad_enrollment DESC NULLS LAST"
+      CollegeQuery.SortBy.ADMISSION_RATE_ASC -> "c.admission_rate ASC NULLS LAST"
+      CollegeQuery.SortBy.NET_PRICE_ASC -> "c.net_price ASC NULLS LAST"
+      CollegeQuery.SortBy.GRADUATION_RATE_DESC -> "c.graduation_rate DESC NULLS LAST"
+      CollegeQuery.SortBy.NAME_ASC -> "c.name ASC NULLS LAST"
+    } + ", c.unit_id ASC"
+
+  /**
+   * Student-facing fuzzy name search (RFC 137 boundary, RFC 139 matching): a
+   * three-arm OR over `search_text = college_search_text(name, aliases)` (the
+   * 0051 IMMUTABLE expression the trigram GIN index is built on):
+   *
+   * 1. `search_text % ?` — whole-string trigram similarity at
+   *    [SIMILARITY_THRESHOLD]: catches typos of full-ish names ("Amhurst
+   *    Colege").
+   * 2. `? <% search_text` — word similarity at [WORD_SIMILARITY_THRESHOLD]: catches
+   *    fragments and nicknames ("Mizzou", "UMass Amherst"), which score far too
+   *    low on whole-string similarity against a long search text. Verified
+   *    empirically against the real dataset: the `%` arm alone finds nothing
+   *    for "Mizzou"; this arm scores it 1.0.
+   * 3. `search_text ILIKE '%'||?||'%'` — the escaped-literal substring arm,
+   *    kept on merit for short fragments ("Amh") that trigram thresholds miss;
+   *    ranging over the search text (not bare `name`) means a short alias
+   *    fragment ("Miz") also matches.
+   *
+   * All three arms range over the indexed expression, so the whole OR is
+   * served by `colleges_search_text_trgm_idx` (`gin_trgm_ops` supports `%`,
+   * `<%`, and `ILIKE`) — no arm forces a seq scan. The trgm arms take the raw
+   * trimmed query (trigrams ignore LIKE metacharacters); only the ILIKE arms
+   * take the escaped one, so `%`/`_`/`\` still match literally there.
+   *
+   * Ranking: exact-prefix-of-name first (RFC 137 behaviour preserved), then
+   * `word_similarity(?, search_text)` DESC (chosen over `similarity()` for the
+   * same fragment reason as arm 2), then `undergrad_enrollment DESC NULLS
+   * LAST, name, unit_id` as the deterministic tail. [limit] is clamped by the
+   * service boundary before reaching here (the [search] convention).
+   *
+   * The two trigram bounds are owned here, not inherited: every call first
+   * pins [SIMILARITY_THRESHOLD] and [WORD_SIMILARITY_THRESHOLD] with `SET
+   * LOCAL` in the caller's transaction, so what search returns cannot drift
+   * with a server- or role-level `pg_trgm.*` default between dev, CI and RDS.
+   * `SET LOCAL` reverts at commit, so no other query on the pooled connection
+   * sees them, and the operators stay index-backed (the thresholds are read by
+   * the same `gin_trgm_ops` operators, not written into the predicate).
    */
   fun searchByName(
     session: SqlSession,
     query: String,
     limit: Int,
   ): Result<List<CollegeSummary>> {
+    pinTrigramThresholds(session).getOrElse { return Result.failure(it) }
     val escaped = escapeLikePattern(query)
     val sql =
       """
       SELECT id, name, city, state
       FROM colleges
-      WHERE name ILIKE '%' || ? || '%'
-      ORDER BY (name ILIKE ? || '%') DESC, undergrad_enrollment DESC NULLS LAST, name, unit_id
+      WHERE college_search_text(name, aliases) % ?
+         OR ? <% college_search_text(name, aliases)
+         OR college_search_text(name, aliases) ILIKE '%' || ? || '%'
+      ORDER BY (name ILIKE ? || '%') DESC,
+        word_similarity(?, college_search_text(name, aliases)) DESC,
+        undergrad_enrollment DESC NULLS LAST, name, unit_id
       LIMIT ?
       """.trimIndent()
     return session.queryList(
       sql,
       bind = { stmt ->
-        stmt.setString(1, escaped)
-        stmt.setString(2, escaped)
-        stmt.setInt(3, limit)
+        // The raw/escaped split is load-bearing and positional: the two trigram
+        // arms (1, 2) and the similarity ORDER BY (5) take the RAW query, because
+        // trigrams treat `%`/`_` as ordinary characters; only the ILIKE arms
+        // (3, 4) take the ESCAPED one, so a literal `%` in a school's name
+        // cannot act as a wildcard. Swapping a raw for an escaped binding here
+        // silently changes what matches, and no test of a metacharacter-free
+        // query would notice.
+        stmt.setString(1, query)
+        stmt.setString(2, query)
+        stmt.setString(3, escaped)
+        stmt.setString(4, escaped)
+        stmt.setString(5, query)
+        stmt.setInt(6, limit)
       },
       map = ::mapSummary,
     )
   }
+
+  /**
+   * The `%` arm's whole-string trigram bound (RFC 139). Postgres' own default
+   * value, but owned here rather than inherited: [searchByName] pins it per
+   * call so recall is a property of this code, not of cluster config.
+   */
+  const val SIMILARITY_THRESHOLD = 0.3
+
+  /**
+   * The `<%` arm's word-similarity bound (RFC 139), pinned per call for the
+   * same reason as [SIMILARITY_THRESHOLD]. This is the arm nicknames match on
+   * ("Mizzou"), so a drifted server default would silently change what
+   * students find.
+   */
+  const val WORD_SIMILARITY_THRESHOLD = 0.6
+
+  /**
+   * Pins the two `pg_trgm` thresholds for the remainder of the caller's
+   * transaction. `SET LOCAL` is transaction-scoped, so it neither leaks onto
+   * the pooled connection nor requires a cluster/database-level `ALTER`; the
+   * values are compile-time constants, never caller text.
+   */
+  private fun pinTrigramThresholds(session: SqlSession): Result<Unit> =
+    try {
+      session
+        .prepareStatement(
+          "SET LOCAL pg_trgm.similarity_threshold = $SIMILARITY_THRESHOLD",
+        ).use { it.execute() }
+      session
+        .prepareStatement(
+          "SET LOCAL pg_trgm.word_similarity_threshold = $WORD_SIMILARITY_THRESHOLD",
+        ).use { it.execute() }
+      Result.success(Unit)
+    } catch (e: SQLException) {
+      Result.failure(mapDatabaseError(e))
+    }
 
   /**
    * Escapes LIKE metacharacters so caller text matches literally (backslash
@@ -568,6 +689,178 @@ object CollegesDao :
       .replace("\\", "\\\\")
       .replace("%", "\\%")
       .replace("_", "\\_")
+
+  // ---------------------------------------------------------------------------
+  // Aliases + ingest provenance (RFC 139)
+  // ---------------------------------------------------------------------------
+
+  /** The outcome of one [updateAliases] call, tallied by the ingest summary. */
+  enum class AliasUpdateOutcome {
+    /** The row existed with a different alias set: written, version bumped. */
+    APPLIED,
+
+    /** The row existed with this exact alias set: nothing written, no bump. */
+    UNCHANGED,
+
+    /** No college carries this `unit_id`: counted by the caller, never fatal. */
+    UNKNOWN_UNIT_ID,
+  }
+
+  /**
+   * Applies one curated alias entry (RFC 139), change-suppressed like the
+   * Scorecard upsert: the UPDATE's `aliases IS DISTINCT FROM ?` arm means an
+   * unchanged alias set writes nothing and bumps nothing (the suppressed no-op
+   * UPDATE also never fires the history trigger). When zero rows update, a
+   * companion existence probe splits [AliasUpdateOutcome.UNCHANGED] from
+   * [AliasUpdateOutcome.UNKNOWN_UNIT_ID] so the ingest summary can count
+   * unknown `unit_id`s precisely.
+   */
+  fun updateAliases(
+    session: SqlSession,
+    unitId: Int,
+    aliases: List<String>,
+  ): Result<AliasUpdateOutcome> =
+    try {
+      // The alias set is bound as one jsonb parameter and expanded to text[] by
+      // Postgres, not built client-side with `Connection.createArrayOf`: the
+      // [SqlSession] boundary deliberately withholds the pooled connection (its
+      // commit/rollback guarantee), and reaching through a returned statement to
+      // recover it would make that boundary advisory. It also removes the
+      // `java.sql.Array` handle entirely, so there is no `finally { free() }`
+      // that could replace the real SQLException with a cleanup one.
+      val sql =
+        """
+        UPDATE colleges
+        SET aliases = ARRAY(SELECT jsonb_array_elements_text(?::jsonb)), version = version + 1
+        WHERE unit_id = ?
+          AND aliases IS DISTINCT FROM ARRAY(SELECT jsonb_array_elements_text(?::jsonb))
+        """.trimIndent()
+      val aliasesJson = JsonArray(aliases.map { JsonPrimitive(it) }).toString()
+      val updated =
+        session.prepareStatement(sql).use { stmt ->
+          stmt.setString(1, aliasesJson)
+          stmt.setInt(2, unitId)
+          stmt.setString(3, aliasesJson)
+          stmt.executeUpdate()
+        }
+      if (updated > 0) {
+        Result.success(AliasUpdateOutcome.APPLIED)
+      } else {
+        session.prepareStatement("SELECT 1 FROM colleges WHERE unit_id = ?").use { stmt ->
+          stmt.setInt(1, unitId)
+          stmt.executeQuery().use { rs ->
+            Result.success(if (rs.next()) AliasUpdateOutcome.UNCHANGED else AliasUpdateOutcome.UNKNOWN_UNIT_ID)
+          }
+        }
+      }
+    } catch (e: SQLException) {
+      Result.failure(mapCollegeError(e))
+    } catch (e: Exception) {
+      Result.failure(mapDatabaseError(e))
+    }
+
+  /**
+   * Every college's current `version` keyed by `unit_id` (RFC 139): the
+   * ingest's pre-load snapshot, so each Scorecard upsert outcome can be split
+   * into inserted / changed / unchanged for the provenance build row. ~6k rows.
+   */
+  fun currentVersionsByUnitId(session: SqlSession): Result<Map<Int, Int>> =
+    session
+      .queryList(
+        "SELECT unit_id, version FROM colleges",
+        bind = {},
+        map = { rs -> rs.getInt("unit_id") to rs.getInt("version") },
+      ).map { it.toMap() }
+
+  /**
+   * Every `colleges` column [nonNullCounts] may count — the closed identifier
+   * allowlist (RFC 139). SQL has no identifier binding, so the boundary is this
+   * set: anything outside it never becomes SQL text.
+   */
+  val NON_NULL_COUNTABLE_COLUMNS: Set<String> =
+    setOf(
+      "opeid",
+      "region",
+      "locale",
+      "latitude",
+      "longitude",
+      "undergrad_enrollment",
+      "admission_rate",
+      "sat_avg",
+      "cost_attendance",
+      "net_price",
+      "net_price_q1",
+      "net_price_q2",
+      "net_price_q3",
+      "net_price_q4",
+      "net_price_q5",
+      "tuition_in_state",
+      "tuition_out_state",
+      "graduation_rate",
+      "median_earnings",
+      "median_debt",
+      "pct_pell",
+      "website",
+    )
+
+  /**
+   * Non-null counts over the given `colleges` columns in one SELECT (RFC 139):
+   * the ingest change-summary's before/after axis. [columns] must be members of
+   * [NON_NULL_COUNTABLE_COLUMNS] — they are interpolated as identifiers, not
+   * bound, so an unknown name is rejected here rather than reaching SQL, and
+   * every accepted name is emitted double-quoted.
+   */
+  fun nonNullCounts(
+    session: SqlSession,
+    columns: List<String>,
+  ): Result<Map<String, Int>> {
+    val unknown = columns.toSet() - NON_NULL_COUNTABLE_COLUMNS
+    require(unknown.isEmpty()) {
+      "nonNullCounts: unknown colleges column(s) ${unknown.sorted()}; allowed: ${NON_NULL_COUNTABLE_COLUMNS.sorted()}"
+    }
+    val select = columns.joinToString(", ") { """count("$it") AS "$it"""" }
+    return session.queryOne(
+      "SELECT $select FROM colleges",
+      bind = {},
+      map = { rs -> columns.associateWith { rs.getInt(it) } },
+    )
+  }
+
+  /**
+   * Inserts the one `college_index_build` provenance row a successful ingest
+   * run ends with (RFC 139), returning its generated id. The JSON payloads
+   * arrive structured and are serialized here, at the JDBC edge, by
+   * [setJsonbOrNull] binding `?::jsonb` (the [ConvosDao]/[LlmCallsDao]
+   * convention — the JDBC driver has no native jsonb binding).
+   */
+  fun insertIndexBuild(
+    session: SqlSession,
+    input: NewCollegeIndexBuild,
+  ): Result<UUID> {
+    val sql =
+      """
+      INSERT INTO college_index_build (
+        started_at, finished_at, sources, rows_ingested, index_rows,
+        change_summary, method_version
+      )
+      VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?::jsonb, ?)
+      RETURNING id
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { stmt ->
+        stmt.setTimestamp(1, java.sql.Timestamp.from(input.startedAt))
+        stmt.setTimestamp(2, java.sql.Timestamp.from(input.finishedAt))
+        stmt.setJsonbOrNull(3, input.sources)
+        stmt.setJsonbOrNull(4, input.rowsIngested)
+        stmt.setIntOrNull(5, input.indexRows)
+        stmt.setJsonbOrNull(6, input.changeSummary)
+        stmt.setInt(7, input.methodVersion)
+      },
+      map = { rs -> UUID.fromString(rs.getString("id")) },
+      mapError = ::mapCollegeError,
+    )
+  }
 
   // ---------------------------------------------------------------------------
   // Error mapping

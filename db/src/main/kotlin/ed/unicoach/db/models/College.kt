@@ -46,6 +46,10 @@ data class College(
   val medianDebt: Int?,
   val pctPell: Double?,
   val website: String?,
+  // Curated nicknames ("Mizzou", "UMass Amherst") from db/data/college-aliases.json
+  // (RFC 139): repo data, not Scorecard data, applied by ingest after the
+  // Scorecard upsert phase. Feeds the trigram search text; empty when uncurated.
+  val aliases: List<String>,
   override val createdAt: Instant,
   override val updatedAt: Instant,
 ) : Identifiable<CollegeId>,

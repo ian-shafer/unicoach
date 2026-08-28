@@ -5,6 +5,16 @@ package ed.unicoach.db.models
  * except [limit] is nullable; an absent field is an unconstrained axis. List
  * fields are OR-sets (any member matches). [limit] is mandatory and clamped to
  * `1..25` by the service boundary before reaching the DAO.
+ *
+ * [sortBy] (RFC 139) selects the result ordering; it never filters — rows NULL
+ * on the sort key sink to the end (`NULLS LAST`), they do not vanish (brief
+ * 0004 D11). Every ordering ends with the `unit_id ASC` tiebreak, so the order
+ * is total and deterministic. [credentialLevel] narrows the program join (which
+ * program credential must exist), so it is only meaningful alongside
+ * [cipPrefix]; the service boundary rejects it without one. It is a named
+ * [CredentialLevel] rather than a raw CREDLEV code, so an out-of-domain level
+ * is unrepresentable and no reader has to remember which number is a
+ * bachelor's.
  */
 data class CollegeQuery(
   val cipPrefix: String? = null,
@@ -18,5 +28,25 @@ data class CollegeQuery(
   val maxAdmissionRate: Double? = null,
   val maxNetPrice: Int? = null,
   val minGraduationRate: Double? = null,
+  val sortBy: SortBy = SortBy.ENROLLMENT_DESC,
+  val credentialLevel: CredentialLevel? = null,
   val limit: Int,
-)
+) {
+  /** Result orderings for [ed.unicoach.db.dao.CollegesDao.search] (RFC 139). */
+  enum class SortBy {
+    /** Today's default: biggest undergraduate enrollment first. */
+    ENROLLMENT_DESC,
+
+    /** Most selective first (lowest admission rate). */
+    ADMISSION_RATE_ASC,
+
+    /** Cheapest first (lowest average annual net price). */
+    NET_PRICE_ASC,
+
+    /** Best completion first (highest 6-year graduation rate). */
+    GRADUATION_RATE_DESC,
+
+    /** Alphabetical by institution name. */
+    NAME_ASC,
+  }
+}
