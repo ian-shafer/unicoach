@@ -159,10 +159,27 @@ less — most of a year's tuition._
 **Decided here.**
 
 - Six nullable INTEGER columns on `colleges` + `colleges_versions`, mirroring
-  0045 exactly: `room_board_on`, `room_board_off`, `books_supply`,
-  `other_expense_on`, `other_expense_off`, `other_expense_family`. **No nonneg
-  CHECK is required by the data, but follow the sibling-column house pattern —
-  present the DDL at the gate and let Ian rule (0001 D10).**
+  `0045` exactly (`ALTER TABLE` x2 +
+  `CREATE OR REPLACE FUNCTION
+  log_college_version()`, picked up by the
+  existing `trigger_04_log_college_version` by name). Whole USD per year,
+  AY2022-23:
+
+  | Column                 | Scorecard field    | Meaning                              |
+  | ---------------------- | ------------------ | ------------------------------------ |
+  | `housing_food_on`      | `ROOMBOARD_ON`     | housing + food, living on campus     |
+  | `housing_food_off`     | `ROOMBOARD_OFF`    | housing + food, renting off campus   |
+  | `books_supply`         | `BOOKSUPPLY`       | books and supplies (one figure, all) |
+  | `other_expense_on`     | `OTHEREXPENSE_ON`  | travel + personal, on campus         |
+  | `other_expense_off`    | `OTHEREXPENSE_OFF` | travel + personal, off campus        |
+  | `other_expense_family` | `OTHEREXPENSE_FAM` | travel + personal, living at home    |
+
+  Six, not seven: there is no `ROOMBOARD_FAM`, which is why `with_family`
+  renders no housing line rather than a `$0` one.
+- All six carry a **nonneg CHECK** (D19). They are gross costs, not net of
+  anything, so a negative is meaningless and the check catches a loader bug.
+  This deliberately differs from `0045`'s band columns, which have no such check
+  because Scorecard publishes legitimate negative NET prices.
 - The tool gains a per-college **breakdown keyed by living arrangement** —
   `on_campus`, `off_campus`, `with_family` — each carrying tuition and fees
   (selected by the existing `TuitionApplicable`), housing and food, books-and-
@@ -313,3 +330,12 @@ breakdown; 0001 D11/D12 (never forced).
   land after 0004 S1/S2 (loader collision) and **before** 0001's S5 (Family Cost
   Report), so the parent-facing artifact is born speaking this language. 0001 S4
   is unaffected. DEFAULT: yes.
+- **D18. (Ian, 2026-08-28) Schema vocabulary follows the product vocabulary, not
+  the retired source vocabulary:** the columns are `housing_food_on` /
+  `housing_food_off`, not `room_board_*`. The Scorecard field name lives in the
+  column comment, per the `0015` house pattern (`cost_attendance` for
+  `COSTT4_A`). Schema, `CostField` wire names and user copy therefore all speak
+  one language. DECIDED.
+- **D19. (Ian, 2026-08-28) All six component columns carry a nonneg CHECK,**
+  matching the sibling `cost_attendance`/`tuition_*` columns and deliberately
+  unlike `0045`'s net-price band columns. DECIDED.
