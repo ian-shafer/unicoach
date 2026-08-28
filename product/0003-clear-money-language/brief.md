@@ -19,6 +19,10 @@ Status:
       M1 LANDED as RFC 141 (main@7ecd6a5a + 935c6f2d, 2026-08-28) -- coach
          prompt v5: the money glossary, the contrastive ban list, and the
          three rules. Copy-only; v4 remains the rollback. 1727 tests green.
+      M1.1 ADDED 2026-08-28 after M1's first phone test -- the coach said
+         "Q5 net price". A ban list cannot cover jargon we never gave the
+         model a replacement for: the fix is to hand it the dollar range on
+         the wire. See spec.md M1.1.
 
 ## The question
 

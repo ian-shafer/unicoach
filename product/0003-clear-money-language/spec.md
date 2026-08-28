@@ -148,6 +148,54 @@ model-facing keys and M2 restructures them anyway; renaming twice is churn.
 
 ---
 
+## M1.1 — Name the band in dollars, never in source jargon (small; inserted after M1 landed)
+
+**Why it exists.** Found in the first phone test of M1 (Ian, 2026-08-28): the
+coach described a figure as the **"Q5 net price"**. It explained the meaning
+correctly, but "Q5" is College Scorecard's internal quintile label — exactly the
+jargon this brief exists to eliminate, and a term no family can read.
+
+**Root cause, grounded.** Nothing in our wire says "Q5". `college_cost_profile`
+emits `income_band: "over_110k"` and `net_price.basis: "your_income_band"`, and
+the `net_price_qN` names are column names that never leave the DAO. The model
+supplied "Q5" from its own knowledge of the Scorecard because **we never handed
+it the human phrase**. `IncomeBand.bracket` ("$110k+") already exists and its
+KDoc calls it "the one home for display copy" — but it is used only in the
+money-profile tool's _description_, never in the cost tool's _answer_.
+
+So this is the impossible-misuse shape: the coach was left to name a bucket we
+gave it only a code for, and it reached for the source's vocabulary. The durable
+fix is on the wire; the prompt rule is the belt to that braces.
+
+**Decided here.**
+
+- `college_cost_profile` emits a human band label beside the code, from
+  `IncomeBand.bracket` — one home, already written — everywhere a band appears
+  (`net_price.income_band` and the `money_profile` echo).
+- Coach prompt **v6**: never name a data source's internal buckets, codes or
+  field names — not Q1-Q5, not NPT4, not quintiles, not `net_price_q5`. Name the
+  band by its dollar range ("families earning $110,000 or more"). This
+  generalises beyond income bands: source jargon of any kind is banned from
+  user-facing copy.
+- The wording of `IncomeBand.bracket` itself is reviewed for reading aloud
+  ("$110k+" is a spreadsheet label; "$110,000 or more" is a sentence).
+
+**Left to /ship's design phase.** The JSON key for the label; whether the
+`bracket` strings are rewritten in place or given a second, prose form.
+
+**Acceptance criteria.**
+
+- Every band the tool emits carries a dollar-range label the coach can say
+  verbatim.
+- A test asserts the cost tool's band output contains no `qN`-style code beyond
+  the enum's own `value`, and that the label is present whenever a band is.
+- Prompt v6 carries the source-jargon ban; v5 remains the rollback.
+- **Reachability:** every band-specific cost answer in the chat coach.
+- **First-session test:** a student whose income band is recorded hears "for
+  families earning $110,000 or more" — never "Q5", "NPT45", or "quintile 5".
+
+---
+
 ## M2 — The component cost split (medium; adds columns, DDL at the gate)
 
 **Why it exists.** Tuition and fees is a median of only 37% of a public
