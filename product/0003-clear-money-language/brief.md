@@ -15,7 +15,10 @@ Status:
             D18 (columns named housing_food_*, not room_board_*) and D19
             (nonneg CHECK on all six) decided by Ian at the same gate.
     PHASE NOW: EXECUTE — M1 first (copy-only, no dependencies).
-    LEDGER: (empty -- no slices landed)
+    LEDGER:
+      M1 LANDED as RFC 141 (main@7ecd6a5a + 935c6f2d, 2026-08-28) -- coach
+         prompt v5: the money glossary, the contrastive ban list, and the
+         three rules. Copy-only; v4 remains the rollback. 1727 tests green.
 
 ## The question
 

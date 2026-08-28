@@ -26,12 +26,13 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
    **Waits for 0004 S1–S3** (the admissions layer builds on the search index —
    0004 D13); note 0004 D10 declined CDS scraping for now, which narrows S4's
    deadline sourcing — revisit at S4's design gate.
-3. **Brief 0003 — clear money language — EXECUTING.** Both gates approved
-   (2026-08-28); `product/0003-clear-money-language/spec.md` is binding. Active
-   slice: **M1**, the money glossary as coach prompt v5 — copy-only, no
-   dependencies, improves every cost answer already live. Then M2 (six
-   `colleges` component columns, DDL approved as D18/D19) **after 0004 S1/S2**,
-   which is rewriting the same loader, and **before 0001's S5**.
+3. **Brief 0003 — clear money language — M1 LANDED (RFC 141), M2 next.** Coach
+   prompt v5 is on `main` and goes live on the next `service` deploy; the coach
+   now speaks one money vocabulary. **M2** (six `colleges` component columns →
+   the tuition vs housing-and-food split, DDL approved as D18/D19) must land
+   **after 0004 S1/S2**, which is rewriting the same loader, and **before 0001's
+   S5**. Note RFC 141 took migration `0049`, so 0004 S1 claims the next free
+   number.
 4. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
    S6 is the wedge and its token becomes Beat 2's parent-account claim path. S5
    waits on 0003 M2+M3 so the parent-facing artifact speaks the language.
@@ -74,6 +75,23 @@ The v1 differentiator: per-school cost truth in session one.
   (0001 D11/D12).
 - **Live in prod** (2026-08-27): end-to-end phone test passed — the coaching
   holds — and S1–S3.5 (RFCs 133–136) is deployed.
+
+### Money language (brief 0003 M1, RFC 141)
+
+One vocabulary for money, spoken everywhere the coach talks about cost.
+
+- **How a user reaches it:** every cost answer in the chat coach — no user
+  action, live on the next `service` deploy.
+- **What it does:** the coach says _tuition and fees_ (the price the school
+  sets), _housing and food_ (never "room and board"), _the published price_
+  (never "sticker price"), _a financial aid offer_ (never an "award"), and
+  always uses the word _loan_ for a loan. It never subtracts loans or work-study
+  from a price. Parents and students get the same words; only the pronoun and
+  time horizon change.
+- **Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v4`; the v4 row is immutable and
+  stays in the catalog.
+- Honest limit: no test can assert what the coach actually says — the tests pin
+  the seed's structure and content only.
 
 ### Money profile (brief 0001 S2, RFC 134)
 
@@ -120,7 +138,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | Pri | Work                              | State                                                                                                                                                                                         | Where                                    |
 | --- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                          | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003) | EXECUTING — gates 1+2 approved 2026-08-28 (D1–D19). M1 (coach prompt v5 glossary, copy-only) is the active slice; M2 waits on 0004 S1/S2 (same loader) and precedes 0001 S5.                  | `product/0003-clear-money-language`      |
+| P1  | Clear money language (brief 0003) | **M1 LANDED** (RFC 141, 2026-08-28) — coach prompt v5, the money glossary. M2 (component split) is next: waits on 0004 S1/S2, precedes 0001 S5. M3, M4 after.                                 | `product/0003-clear-money-language`      |
 | P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
 
