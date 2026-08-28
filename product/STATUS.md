@@ -26,9 +26,16 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
    **Waits for 0004 S1–S3** (the admissions layer builds on the search index —
    0004 D13); note 0004 D10 declined CDS scraping for now, which narrows S4's
    deadline sourcing — revisit at S4's design gate.
-3. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
-   S6 is the wedge and its token becomes Beat 2's parent-account claim path.
-4. **Before any App Store submission: brief 0002, account deletion** — parked in
+3. **Brief 0003 — clear money language — gate 1 APPROVED, gate 2 pending.**
+   `product/0003-clear-money-language/spec.md` specs four slices. **M1 (the
+   money glossary, copy-only prompt v5) is independent and can ship now** — it
+   improves every cost answer already live. M2 (six Scorecard component columns
+   → the tuition vs housing-and-food split) must land **after 0004 S1/S2**,
+   which is rewriting the same loader, and **before 0001's S5**.
+4. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
+   S6 is the wedge and its token becomes Beat 2's parent-account claim path. S5
+   waits on 0003 M2+M3 so the parent-facing artifact speaks the language.
+5. **Before any App Store submission: brief 0002, account deletion** — parked in
    the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR Art.
    17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
 
@@ -113,6 +120,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | Pri | Work                              | State                                                                                                                                                                                         | Where                                    |
 | --- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                          | `product/0004-college-search-index`      |
+| P1  | Clear money language (brief 0003) | SPECCED — gate 1 approved 2026-08-28; gate 2 pending on `spec.md` (M1–M4). M1 is copy-only and shippable now; M2 waits on 0004 S1/S2 (same loader) and precedes 0001 S5.                      | `product/0003-clear-money-language`      |
 | P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
 
@@ -130,6 +138,10 @@ Nothing here is committed work.
   regardless — so this is deferred, not resolved, and it gates public launch.
   Also blocks `bin/state-apply`'s per-entity reset (RFC 138 defers to its
   engine) and repeatable clean-slate testing.
+- **IPEDS IC as a cost-data upgrade path** (brief 0003 D7) — public-domain,
+  ~300KB/yr, same UNITID key; adds in-district tuition, separately-reported
+  fees, and multi-year trend that the Scorecard lumps. Deferred, not rejected.
+  The Common Data Set stays out until someone proves the licence.
 - **Beat 2: parent partner accounts** — claim-the-report onboarding, linked
   family, parent-side coaching. Deliberately unspecced until Beat 1 ships and
   share-rate is observed (0001 D9).
@@ -210,6 +222,16 @@ an honest answer; inventing or interpolating a figure is not.
 
 AC (from the spec): launch-set coverage report, and cited merit answers in chat.
 Update the brief's ledger and product/STATUS.md when the slice lands.
+
+### Clear money language (brief 0003)
+
+PASTE: Ship M<n> from product brief 0003: use the slice instruction in
+product/0003-clear-money-language/spec.md verbatim as the /ship instruction,
+plus gate-1 D1–D9 and gate-2 D10–D17 as standing context, and brief 0001's
+standing D10 (Ian approves all DDL at the gate) and D12 (value before ask). M1
+is copy-only (coach prompt v5) and has no dependencies. M2 must rebase onto
+whatever brief 0004 S1/S2 landed in bin/ingest-colleges — check first. Update
+the brief's ledger and product/STATUS.md when the slice lands.
 
 ### Beat 1 remainder — S5 / S6
 
