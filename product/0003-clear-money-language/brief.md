@@ -19,10 +19,14 @@ Status:
       M1 LANDED as RFC 141 (main@7ecd6a5a + 935c6f2d, 2026-08-28) -- coach
          prompt v5: the money glossary, the contrastive ban list, and the
          three rules. Copy-only; v4 remains the rollback. 1727 tests green.
-      M1.1 ADDED 2026-08-28 after M1's first phone test -- the coach said
-         "Q5 net price". A ban list cannot cover jargon we never gave the
-         model a replacement for: the fix is to hand it the dollar range on
-         the wire. See spec.md M1.1.
+      M1.1 LANDED as RFC 142 (main@e5cdca5b + a8008ad4, 2026-08-28) -- the
+         "Q5 net price" fix. The cause was OURS, not the model's: college_search
+         emitted net_price_q1..q5 as literal keys AND told the model to cite
+         the matching band. One putIncomeBand construct now emits code+label
+         together at every emitter; search's five keys became one labelled
+         array; prompt v6 bans source jargon generally. 1734 tests green.
+         OPEN: college_search still emits the raw IPEDS `control` integer with
+         no phrase beside it -- same defect class, deferred, pick up in M2/M3.
 
 ## The question
 

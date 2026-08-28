@@ -26,13 +26,14 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
    **Waits for 0004 S1–S3** (the admissions layer builds on the search index —
    0004 D13); note 0004 D10 declined CDS scraping for now, which narrows S4's
    deadline sourcing — revisit at S4's design gate.
-3. **Brief 0003 — clear money language — M1 LANDED (RFC 141), M2 next.** Coach
-   prompt v5 is on `main` and goes live on the next `service` deploy; the coach
-   now speaks one money vocabulary. **M2** (six `colleges` component columns →
-   the tuition vs housing-and-food split, DDL approved as D18/D19) must land
-   **after 0004 S1/S2**, which is rewriting the same loader, and **before 0001's
-   S5**. Note RFC 141 took migration `0049`, so 0004 S1 claims the next free
-   number.
+3. **Brief 0003 — clear money language — M1 + M1.1 LANDED (RFCs 141, 142).** The
+   coach speaks one money vocabulary and no longer leaks Scorecard bucket codes;
+   both go live on the next `service` deploy. **M2** (six `colleges` component
+   columns → the tuition vs housing-and-food split, DDL approved as D18/D19)
+   waits on 0004 S1/S2, which shares the loader, and precedes 0001's S5. **Carry
+   into M2/M3:** `college_search` still emits the raw IPEDS `control` integer
+   with no phrase beside it — the same defect class RFC 142 closed for income
+   bands. RFCs 141/142 took migrations `0049`/`0050`.
 4. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
    S6 is the wedge and its token becomes Beat 2's parent-account claim path. S5
    waits on 0003 M2+M3 so the parent-facing artifact speaks the language.
@@ -92,6 +93,10 @@ One vocabulary for money, spoken everywhere the coach talks about cost.
   stays in the catalog.
 - Honest limit: no test can assert what the coach actually says — the tests pin
   the seed's structure and content only.
+- **RFC 142** closed the first live defect: the coach said "Q5 net price"
+  because `college_search` sent it `net_price_q1..q5` and told it to cite the
+  matching band. Every band now travels with its dollar range ("$110,000 or
+  more") from one emitter, and prompt v6 bans source jargon generally.
 
 ### Money profile (brief 0001 S2, RFC 134)
 
@@ -138,7 +143,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | Pri | Work                              | State                                                                                                                                                                                         | Where                                    |
 | --- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                          | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003) | **M1 LANDED** (RFC 141, 2026-08-28) — coach prompt v5, the money glossary. M2 (component split) is next: waits on 0004 S1/S2, precedes 0001 S5. M3, M4 after.                                 | `product/0003-clear-money-language`      |
+| P1  | Clear money language (brief 0003) | **M1 + M1.1 LANDED** (RFCs 141, 142 — 2026-08-28): the money glossary, and the fix for source-jargon leaks. M2 (component split) next: waits on 0004 S1/S2, precedes 0001 S5. M3, M4 after.   | `product/0003-clear-money-language`      |
 | P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
 
