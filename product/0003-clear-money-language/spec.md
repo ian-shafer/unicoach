@@ -196,6 +196,65 @@ fix is on the wire; the prompt rule is the belt to that braces.
 
 ---
 
+## M1.2 — Ask where they live before asking what they earn (small; inserted after M1.1 landed)
+
+**Why it exists.** Ian, 2026-08-28: residency is the biggest lever on the
+_stable_ half of the cost, and it is a far cheaper question than household
+income. He is right, and the gap is worse than an ordering problem — **coach
+prompt v6 never mentions residency at all.** It asks for the household income
+band three times over and never once asks what state the family lives in, even
+though `money_profiles.residency_state` has existed since RFC 134 and
+`TuitionApplicable` is `UNKNOWN` without it.
+
+**The evidence, measured on our own `colleges` table.**
+
+| Question                            | What knowing it corrects                                            | Median size                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| What state do you live in?          | in-state vs out-of-state tuition at a public (n=1,689)              | **$6,300/yr** (in-state $5,507 vs out-of-state $11,010 — 2x)                |
+| What is your household income band? | the net price, versus the overall average we already show (n=3,223) | **$1,376/yr** for a middle-band family ($1,983 lowest band, $5,007 highest) |
+
+So for the typical family the cheap question is worth roughly **4.5x** the
+sensitive one. The asymmetry is sharper than the numbers alone: residency
+selects a **published price** we can state exactly, while the income band
+selects an **average within a bracket** — a statistic about other families.
+Value before ask (0001 D12) points the same way as the arithmetic.
+
+**The honest limit.** Residency only moves tuition at **public** colleges (1,689
+of 3,612 reporting tuition — 47%). A list of only private schools gains nothing
+from it, and there the income band is the whole story. This is a re-ordering and
+a repair, not a demotion of the income band.
+
+**Decided here.**
+
+- Coach prompt **v7**: ask residency first, and ask it at all. The invitation is
+  offered when a **public** college is on the list and residency is unanswered —
+  naming what it unlocks ("whether you'd pay the in-state or out-of-state
+  price"). The income-band offer follows, unchanged in substance.
+- The tool's in-answer invitation stops being income-only: `precision_offer`
+  gains a residency case, so the coach is cued by the result rather than by
+  memory. A public college with `tuition_applicable: "unknown"` is the trigger.
+- Both offers keep the 0001 D11/D12 ethos verbatim: invite, accept a decline
+  permanently, never gate an answer on either field.
+
+**Left to /ship's design phase.** Whether `precision_offer` becomes a list or a
+richer object; whether the residency ask is one question or two (state, then
+"have you lived there a while?" — residency is a legal test, not an address).
+
+**Acceptance criteria.**
+
+- With a public college listed and residency unanswered, the coach offers to
+  record the state before it raises income, and says what that unlocks.
+- With only private colleges listed, no residency offer is made — it would buy
+  nothing.
+- A declined residency question is never re-raised, and every cost answer still
+  works without it, naming the basis it used.
+- **Reachability:** the chat coach, in the flow of a cost answer.
+- **First-session test:** a student with one in-state public on their list is
+  asked what state they live in, and sees the tuition line change from "$5,507
+  in-state / $11,010 out-of-state" to the one number that applies.
+
+---
+
 ## M2 — The component cost split (medium; adds columns, DDL at the gate)
 
 **Why it exists.** Tuition and fees is a median of only 37% of a public

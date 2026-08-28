@@ -27,6 +27,10 @@ Status:
          array; prompt v6 bans source jargon generally. 1734 tests green.
          OPEN: college_search still emits the raw IPEDS `control` integer with
          no phrase beside it -- same defect class, deferred, pick up in M2/M3.
+      M1.2 ADDED 2026-08-28 (Ian): ask residency BEFORE income. Measured on
+         our own data, residency is worth ~$6,300/yr at a public vs ~$1,376
+         for a mid-band family's income correction -- and prompt v6 never
+         asks for residency at all. See spec.md M1.2.
 
 ## The question
 
