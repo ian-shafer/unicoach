@@ -16,16 +16,12 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
    decisions D1–D6 are framed and waiting. RFC 138's `bin/state-apply` (landed)
    is create-only by design and gets per-entity replace only from 0002's
    reset/delete engine — a second consumer.
-2. **Ingest observability** — small, and wanted _before_ S4 because S4 is a data
-   build. Today a stale jar and a real load are indistinguishable: the ingester
-   reports `colleges=N` either way while every new column stays NULL. Wants a
-   header assertion (fatal if the CSV lacks the columns this build reads) and a
-   change summary (non-null counts per new field + the `colleges.version` bump).
-3. **Beat 1 remainder: S4 → S5 → S6** — S4 = Admissions Intelligence Layer v0
+2. **Beat 1 remainder: S4 → S5 → S6** — S4 = Admissions Intelligence Layer v0
    (CDS-derived merit-aid/admissions-factors/deadlines tables, seeded for the
    ~300–500-school launch set, exposed as a cited tool). Largest slice; may
    split in design. Adds new tables → D10 applies (Ian approves DDL at the
-   gate).
+   gate). Go straight at it — the ingest-observability fix was dropped (Ian,
+   2026-08-27), so verify S4's seed load by hand.
 
 _Rule: this list is rewritten every time the file is updated; it never says "see
 below"._
@@ -109,7 +105,6 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | --- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | P1  | Account deletion (brief 0002)  | FRAMED, awaiting gate 1 (six decisions D1–D6). App-Store-blocking + gives repeatable clean-slate testing.                                                                                     | `product/0002-account-data-deletion`     |
 | P1  | Beat 1 remainder: S4 → S5 → S6 | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
-| P1  | Ingest observability           | Small, before S4's data build: `bin/ingest-colleges` change summary + header assertion (silent no-op cost an hour).                                                                           | note in brief 0002                       |
 | P3  | `bin/state-apply` (RFC 138)    | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
 
 ## Backlog
@@ -125,9 +120,13 @@ Nothing here is committed work.
 - **`bin/state-apply` growth** — per-entity replacement/reset once brief 0002's
   delete engine exists (RFC 138 explicitly defers to it); more resource types
   (students, college lists, money profiles) for one-command test worlds.
-- **Ingest observability, the general version** — the P2 row covers
-  `bin/ingest-colleges`; the same silent-no-op shape likely exists in other
-  loaders.
+- **Ingest observability** — dropped from the work table (Ian, 2026-08-27), kept
+  here as a known trap, not committed work: `bin/ingest-colleges` runs a
+  PREBUILT launcher and checks only that it is executable, so a stale jar loads
+  every row, logs `colleges=N`, and leaves new columns NULL — indistinguishable
+  from a real load. It has cost an hour twice (dev S1, prod deploy). Verify a
+  load by hand instead: `SELECT count(<new_col>), max(version) FROM colleges`.
+  The same shape likely exists in other loaders.
 
 ## Kickoff prompts
 
@@ -152,7 +151,8 @@ semantics to this brief's engine.
 
 PASTE: Ship S<n> from product brief 0001: use the slice instruction in
 product/0001-v1-differentiator/spec.md verbatim as the /ship instruction, plus
-gate-2 decisions D7–D12 as standing context. Before S4, check whether the
-ingest-observability note (product/STATUS.md, P2) has been done; if not, fold
-its fix in or do it first — S4 is a data build and needs a loud ingest. Update
-the brief's ledger and product/STATUS.md when the slice lands.
+gate-2 decisions D7–D12 as standing context. S4 is a data build and the ingest
+tooling is deliberately quiet (see Backlog, ingest observability): do not trust
+a successful-looking load — verify the seed landed with a direct SELECT on the
+new tables before calling the slice done. Update the brief's ledger and
+product/STATUS.md when the slice lands.
