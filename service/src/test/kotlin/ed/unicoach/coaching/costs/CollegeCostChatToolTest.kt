@@ -19,6 +19,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -67,6 +68,85 @@ class CollegeCostChatToolTest {
   ): JsonObject = runBlocking { tool.execute(student, input(raw)) }
 
   @Test
+  fun `income_band_label is emitted with every band-specific net price`() {
+    val student = createStudent()
+    seedListedCollege(student, "Label U")
+    runBlocking {
+      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.OVER_110K))).getOrThrow()
+    }
+
+    val netPrice =
+      collegesOf(execute(student)).single().getValue("net_price").jsonObject
+    assertEquals("over_110k", netPrice["income_band"]!!.jsonPrimitive.content, "the code stays: it is the stable identifier")
+    assertEquals(
+      IncomeBand.OVER_110K.bracket,
+      netPrice["income_band_label"]!!.jsonPrimitive.content,
+      "the label is the band's own display copy, not a second home for it",
+    )
+    assertEquals(
+      "\$110,000 or more",
+      netPrice["income_band_label"]!!.jsonPrimitive.content,
+      "and it is a phrase a coach can read into a sentence",
+    )
+  }
+
+  @Test
+  fun `an overall-average net price carries no band label`() {
+    val student = createStudent()
+    seedListedCollege(student, "NoBand U")
+
+    val netPrice =
+      collegesOf(execute(student)).single().getValue("net_price").jsonObject
+    assertEquals("overall_average", netPrice["basis"]!!.jsonPrimitive.content)
+    assertNull(netPrice["income_band"], "an overall average has no band")
+    assertNull(netPrice["income_band_label"], "and so has nothing to label")
+  }
+
+  @Test
+  fun `the money-profile echo labels an answered band and omits the label otherwise`() {
+    val student = createStudent()
+
+    val unanswered = execute(student).getValue("money_profile").jsonObject
+    assertEquals("unanswered", unanswered["income_band_status"]!!.jsonPrimitive.content)
+    assertNull(unanswered["income_band_label"], "an unanswered band has no label")
+
+    runBlocking {
+      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.K48_TO_75K))).getOrThrow()
+    }
+    val answered = execute(student).getValue("money_profile").jsonObject
+    assertEquals("48k_to_75k", answered["income_band"]!!.jsonPrimitive.content)
+    assertEquals(IncomeBand.K48_TO_75K.bracket, answered["income_band_label"]!!.jsonPrimitive.content)
+
+    runBlocking {
+      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Decline)).getOrThrow()
+    }
+    val declined = execute(student).getValue("money_profile").jsonObject
+    assertEquals("declined", declined["income_band_status"]!!.jsonPrimitive.content)
+    assertNull(declined["income_band"], "a decline clears the value")
+    assertNull(declined["income_band_label"], "and with it the label")
+  }
+
+  @Test
+  fun `no qN-style source code reaches the wire`() {
+    val student = createStudent()
+    seedListedCollege(student, "Wire U")
+    runBlocking {
+      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.OVER_110K))).getOrThrow()
+    }
+
+    // The whole rendered payload, not one field: the leak this guards against
+    // (RFC 142) is a FUTURE field quietly carrying the Scorecard's own bucket
+    // names into the model's context, where it will happily say them aloud.
+    val payload = execute(student).toString()
+    assertNull(
+      Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE).find(payload),
+      "a quintile code must never reach the wire: [$payload]",
+    )
+    assertFalse(payload.contains("NPT4"), "nor a Scorecard column family: [$payload]")
+    assertTrue(payload.contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
+  }
+
+  @Test
   fun `the definition carries the name, the schema, and the ethos contract`() {
     assertEquals("college_cost_profile", tool.name)
     assertEquals("college_cost_profile", tool.definition["name"]!!.jsonPrimitive.content)
@@ -75,6 +155,10 @@ class CollegeCostChatToolTest {
     assertTrue(description.contains("never estimate"), "the no-invented-numbers rule must ride the description")
     assertTrue(description.contains("never re-raise"), "the decline etiquette must ride the description")
     assertTrue(description.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
+    assertTrue(
+      description.contains("income_band_label"),
+      "the model must be told the band's dollar range rides the result (RFC 142)",
+    )
     assertTrue(description.contains("Read-only"))
 
     val properties =

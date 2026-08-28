@@ -65,6 +65,17 @@ class IncomeBandTest {
   }
 
   @Test
+  fun `each bracket is a spoken dollar range, not a spreadsheet label`() {
+    // bracket is display copy the coach says aloud (RFC 142): it rides the wire
+    // as income_band_label, so an abbreviation here becomes one in the answer.
+    assertEquals("\$0 to \$30,000", IncomeBand.UNDER_30K.bracket)
+    assertEquals("\$30,001 to \$48,000", IncomeBand.K30_TO_48K.bracket)
+    assertEquals("\$48,001 to \$75,000", IncomeBand.K48_TO_75K.bracket)
+    assertEquals("\$75,001 to \$110,000", IncomeBand.K75_TO_110K.bracket)
+    assertEquals("\$110,000 or more", IncomeBand.OVER_110K.bracket)
+  }
+
+  @Test
   fun `fromValue round-trips every member and rejects an unknown label`() {
     for (band in IncomeBand.entries) {
       assertEquals(band, IncomeBand.fromValue(band.value))

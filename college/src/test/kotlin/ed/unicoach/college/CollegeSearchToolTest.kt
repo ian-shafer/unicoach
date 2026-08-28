@@ -4,11 +4,11 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeProgram
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
@@ -22,6 +22,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -354,11 +355,12 @@ class CollegeSearchToolTest {
     }
 
   @Test
-  fun `result objects carry the income-band net prices and median debt, nulls as JsonNull`() =
+  fun `result objects carry the reported income bands, each labeled, and median debt`() =
     runBlocking {
       // RFC 133: seed a college with a negative low band (valid, 0022 precedent)
-      // and some bands absent, then assert the six fields serialize -- values as
-      // numbers, absent bands as explicit JsonNull, matching the existing style.
+      // and some bands absent. RFC 142: the five opaque net_price_qN keys are
+      // gone -- what serializes is one entry per REPORTED band, each carrying
+      // the band code, the dollar range a coach says aloud, and the amount.
       database.withConnection { session ->
         CollegesDao
           .upsert(
@@ -370,23 +372,58 @@ class CollegeSearchToolTest {
       val result = tool.execute(buildJsonObject {})
       assertNull(result["error"])
       val first = (result["colleges"] as JsonArray).single().jsonObject
-      assertEquals(-1200, first["net_price_q1"]!!.jsonPrimitive.intOrNull)
-      assertEquals(14500, first["net_price_q3"]!!.jsonPrimitive.intOrNull)
       assertEquals(21000, first["median_debt"]!!.jsonPrimitive.intOrNull)
-      assertTrue(first["net_price_q2"] is JsonNull)
-      assertTrue(first["net_price_q4"] is JsonNull)
-      assertTrue(first["net_price_q5"] is JsonNull)
+
+      val bands = (first["net_price_by_income_band"] as JsonArray).map { it.jsonObject }
+      // Only the two reported bands: an unreported bracket is absent, never a
+      // labeled null a model could read as a price.
+      assertEquals(
+        listOf(IncomeBand.UNDER_30K.value, IncomeBand.K48_TO_75K.value),
+        bands.map { it["income_band"]!!.jsonPrimitive.content },
+      )
+      assertEquals(listOf(-1200, 14500), bands.map { it["net_price"]!!.jsonPrimitive.intOrNull })
+      // The label is the band's own bracket, from the one home for that copy --
+      // so a wire label can never drift from what the prompt teaches.
+      assertEquals(
+        listOf(IncomeBand.UNDER_30K.bracket, IncomeBand.K48_TO_75K.bracket),
+        bands.map { it["income_band_label"]!!.jsonPrimitive.content },
+      )
+      assertNull(first["net_price_q1"], "the opaque quintile keys are gone (RFC 142)")
+      assertNull(first["net_price_q5"], "including the one a real user was read back as \"Q5\"")
     }
 
   @Test
-  fun `definition description names the five income brackets`() {
+  fun `no source-bucket jargon reaches the model through search`() =
+    runBlocking {
+      // The leak RFC 142 was actually about: search is what puts net prices in
+      // front of the model on the ordinary path, so BOTH surfaces it sees --
+      // the rendered result and the tool description it reads first -- must be
+      // free of the source's own bucket names.
+      database.withConnection { session ->
+        CollegesDao.upsert(session, newCollege(821).copy(netPriceQ5 = 31000)).getOrThrow()
+      }
+
+      val payload = tool.execute(buildJsonObject {}).toString()
+      val description = tool.definition["description"]!!.jsonPrimitive.content
+      val quintile = Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE)
+      assertNull(quintile.find(payload), "a quintile code must never reach the wire: [$payload]")
+      assertNull(quintile.find(description), "nor the description the model reads first: [$description]")
+      assertFalse(payload.contains("NPT4"), "nor a Scorecard column family: [$payload]")
+      assertFalse(description.contains("NPT4"), "nor in the description: [$description]")
+      assertTrue(payload.contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
+    }
+
+  @Test
+  fun `definition description names the five income brackets in dollars`() {
     // The coach must be able to pick the right band conversationally, so the
-    // description spells out which bracket each field covers.
+    // description spells out each band's range -- rendered from IncomeBand, the
+    // one home for that copy, never hand-typed here or there.
     val description = tool.definition["description"]!!.jsonPrimitive.content
-    assertTrue(description.contains("net_price_q1"))
+    assertTrue(description.contains("net_price_by_income_band"))
     assertTrue(description.contains("median_debt"))
-    assertTrue(description.contains("0-30k"))
-    assertTrue(description.contains("110k+"))
+    IncomeBand.entries.forEach { band ->
+      assertTrue(description.contains(band.bracket), "the description must name [${band.bracket}]")
+    }
   }
 
   @Test

@@ -871,9 +871,17 @@ class CoachingService(
             "Money profile (use answered values; a declined field was asked and declined — never re-ask it " +
               "unless the student reopens the topic; an unanswered field is still open):",
           )
+          // The band's dollar range, never the bare `over_110k` code (RFC 142):
+          // whatever the coach reads here it may repeat aloud, and a code read
+          // aloud is exactly the source jargon the prompt forbids.
           appendLine(
             "- household income band: " +
-              renderMoneyField(moneyProfile.incomeBandStatus, moneyProfile.incomeBand?.value, "income_band", moneyProfile),
+              renderMoneyField(
+                moneyProfile.incomeBandStatus,
+                moneyProfile.incomeBand?.bracket,
+                "income_band",
+                moneyProfile,
+              ),
           )
           appendLine(
             "- state of residency: " +

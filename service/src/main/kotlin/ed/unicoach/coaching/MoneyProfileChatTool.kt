@@ -7,6 +7,7 @@ import ed.unicoach.coaching.moneyprofile.UpsertMoneyProfileResult
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.putIncomeBand
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -225,12 +226,18 @@ class MoneyProfileChatTool(
       }
     }
 
-  /** The full post-write profile echo: per-field status, value present iff answered. */
+  /**
+   * The full post-write profile echo: per-field status, value present iff
+   * answered. An answered band echoes through [putIncomeBand], so the code
+   * always arrives with its spoken dollar range (RFC 142) — this is the moment
+   * right after the student stated their band, and the likeliest place for the
+   * coach to read a bare code back to them.
+   */
   private fun profileObject(profile: MoneyProfile): JsonObject =
     buildJsonObject {
       putJsonObject("money_profile") {
         put("income_band_status", profile.incomeBandStatus.value)
-        profile.incomeBand?.let { put("income_band", it.value) }
+        profile.incomeBand?.let { putIncomeBand(it) }
         put("residency_status", profile.residencyStatus.value)
         profile.residencyState?.let { put("residency_state", it) }
       }

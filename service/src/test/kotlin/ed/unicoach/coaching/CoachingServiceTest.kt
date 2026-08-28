@@ -1959,7 +1959,16 @@ class CoachingServiceTest {
 
       val systemText = captured!!.system!!
       assertTrue(systemText.contains("Money profile"), "the money-profile block must be composed in")
-      assertTrue(systemText.contains("household income band: answered (under_30k)"), "answered must render its value")
+      // The dollar range, not the `under_30k` code (RFC 142): the coach may
+      // repeat this line aloud, so what it reads must already be sayable.
+      assertTrue(
+        systemText.contains("household income band: answered (${ed.unicoach.db.models.IncomeBand.UNDER_30K.bracket})"),
+        "answered must render the band's dollar range as its value",
+      )
+      assertFalse(
+        systemText.contains(ed.unicoach.db.models.IncomeBand.UNDER_30K.value),
+        "and never the bare band code the model could say aloud",
+      )
       assertTrue(systemText.contains("state of residency: declined"), "declined must render as declined, not be absent")
       assertTrue(systemText.contains("You are Uni"), "the base prompt must still be present")
     }

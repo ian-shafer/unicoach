@@ -3,6 +3,8 @@ package ed.unicoach.college
 import ed.unicoach.db.models.CipPrefix
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.putIncomeBand
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 import ed.unicoach.error.errorCategory
@@ -347,11 +349,25 @@ class CollegeSearchTool(
       putOrNull("undergrad_enrollment", match.undergradEnrollment)
       putOrNull("admission_rate", match.admissionRate)
       putOrNull("net_price", match.netPrice)
-      putOrNull("net_price_q1", match.netPriceQ1)
-      putOrNull("net_price_q2", match.netPriceQ2)
-      putOrNull("net_price_q3", match.netPriceQ3)
-      putOrNull("net_price_q4", match.netPriceQ4)
-      putOrNull("net_price_q5", match.netPriceQ5)
+      // One self-describing array rather than five opaque `net_price_qN` keys
+      // (RFC 142): every amount arrives beside the band code AND the dollar
+      // range a coach says aloud, so the model never has to translate a source
+      // bucket name into English -- and cannot say "Q5" because it never saw it.
+      putJsonArray("net_price_by_income_band") {
+        IncomeBand.entries.forEach { band ->
+          // An unreported bracket is omitted entirely rather than carried as a
+          // labelled null: the array names the bands this college actually
+          // reports, so there is nothing to mistake for a price of zero.
+          band.netPriceFor(match)?.let { amount ->
+            add(
+              buildJsonObject {
+                putIncomeBand(band)
+                put("net_price", amount)
+              },
+            )
+          }
+        }
+      }
       putOrNull("graduation_rate", match.graduationRate)
       putOrNull("median_earnings", match.medianEarnings)
       putOrNull("median_debt", match.medianDebt)
@@ -410,7 +426,10 @@ class CollegeSearchTool(
         "limit",
       )
 
-    private const val DESCRIPTION =
+    // Not `const`: the income-band ranges are rendered from IncomeBand.bracket,
+    // the one home for that copy (RFC 142), so the description can never drift
+    // from the labels the results themselves carry.
+    private val DESCRIPTION =
       "Search the College Scorecard dataset of real US colleges by structured " +
         "filters: program of study (CIP code prefix), location (US states, IPEDS " +
         "region, urbanization locale), institutional control (public/private), " +
@@ -421,9 +440,13 @@ class CollegeSearchTool(
         "`college_id`, the college's stable identifier — exactly what the " +
         "`update_college_list` tool's `college_id` parameter takes, so copy it " +
         "verbatim from a result and never construct or guess one. Each result also carries " +
-        "average annual net price by household income band -- net_price_q1..q5 for " +
-        "incomes ${'$'}0-30k / ${'$'}30,001-48k / ${'$'}48,001-75k / ${'$'}75,001-110k / ${'$'}110k+ -- " +
-        "and median_debt, the median cumulative federal loan debt of graduates, so " +
+        "net_price_by_income_band, the average annual net price for each household income band " +
+        "the college reports: one entry per band carrying income_band_label, the band's income " +
+        "range in plain words -- " +
+        IncomeBand.entries.joinToString(" / ") { it.bracket } +
+        " -- alongside the net_price a family in that band pays. Name a band by that dollar " +
+        "range when you say it aloud, never by a data source's own bucket name. Each result also " +
+        "carries median_debt, the median cumulative federal loan debt of graduates, so " +
         "cost answers can cite the band matching the family's income. This tool filters on " +
         "structured fields only; it CANNOT reason about geographic distance, " +
         "proximity to the coastline, or how close two places are — to approximate " +

@@ -8,6 +8,7 @@ import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SystemPromptsDao
+import ed.unicoach.db.models.IncomeBand
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -39,7 +40,7 @@ class SystemPromptCatalogTest {
     /** The first words of v4's cost paragraph — the boundary v5 replaces from. */
     private const val COST_PARAGRAPH_OPENER = " When the student has schools on their college list"
 
-    /** The first words of v4's college-list paragraph — the boundary v5 preserves. */
+    /** The first words of v4's college-list paragraph — the boundary v5 preserves and v6 inserts before. */
     private const val LIST_PARAGRAPH_OPENER = " The student's college list is theirs"
 
     private lateinit var connection: Connection
@@ -227,26 +228,84 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The v5 money paragraph: v5 with v4's byte-identical prefix and college-list
-   * suffix removed. Both boundaries are located from the v4 body at runtime, so
-   * the seed migration stays the single home of the approved copy.
+   * The 0050 seed's structural contract (RFC 142). v6 neither appends nor
+   * replaces: it INSERTS one sentence at a known interior boundary — the end of
+   * v5's money paragraph, immediately before the college-list paragraph. So the
+   * contract is a byte-identical v5 prefix AND a byte-identical v5 college-list
+   * suffix, with the appended sentence between them.
    *
-   * Every extraction primitive here degrades SILENTLY — `substringBefore`
-   * returns the whole receiver when the delimiter is missing, and
-   * `removePrefix`/`removeSuffix` are no-ops when the affix does not match — so
-   * a future version that moved a paragraph boundary would hand back the entire
-   * v5 body and every `contains` assertion downstream would still pass. The
-   * boundaries are therefore asserted here, not assumed: a vacuous extraction
-   * fails loudly instead of quietly certifying a prompt nobody checked.
+   * The sentence is asserted by markers only, and the absence of the jargon it
+   * forbids is deliberately NOT asserted: like v5's glossary, the rule names
+   * the terms to avoid ("no quintiles") in order to forbid them.
    */
-  private fun moneyParagraph(): String {
-    val v4 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v4").getOrThrow().body
-    val v5 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v5").getOrThrow().body
-    val prefix = v4.substringBefore(COST_PARAGRAPH_OPENER)
-    val suffix = LIST_PARAGRAPH_OPENER + v4.substringAfter(LIST_PARAGRAPH_OPENER)
-    assertTrue(prefix != v4, "v4 must contain the cost-paragraph opener, or the extraction is vacuous")
-    assertTrue(v5.startsWith(prefix), "everything before the cost paragraph must be v4 byte-for-byte")
-    assertTrue(v5.endsWith(suffix), "v4's college-list paragraph must survive as a byte-identical suffix")
-    return v5.removePrefix(prefix).removeSuffix(suffix)
+  @Test
+  fun `coach v6 is v5 plus the source-jargon sentence`() {
+    // The prefix/suffix assertions themselves live in sourceJargonSentence(),
+    // which refuses to return a vacuous extraction; this test owns the markers
+    // that say the inserted sentence is the RIGHT one.
+    val sentence = sourceJargonSentence()
+
+    assertTrue(
+      sentence.startsWith(" Never name a data source's internal buckets"),
+      "the sentence must open with the single space that joins it to the sentence before it",
+    )
+    assertTrue(sentence.contains("no quintiles"), "the rule must name quintiles as one instance of the banned class")
+    assertTrue(
+      sentence.contains("the band's dollar range"),
+      "the rule must say what to say INSTEAD, or it is a ban list with a vacuum behind it",
+    )
+    // The example phrase in the prompt must be a phrase the wire actually
+    // sends: a later bracket rewrite would otherwise leave the coach taught a
+    // dollar range no tool result carries.
+    assertTrue(
+      sentence.contains(IncomeBand.OVER_110K.bracket),
+      "the example range must be the live IncomeBand.bracket, not a hand-typed copy of it",
+    )
+  }
+
+  /**
+   * The v6 source-jargon sentence: the sentence v6 inserts at the end of v5's
+   * money paragraph, extracted through the guarded [revisedMiddle].
+   */
+  private fun sourceJargonSentence(): String = revisedMiddle(base = "v5", revised = "v6", prefixOpener = LIST_PARAGRAPH_OPENER)
+
+  /**
+   * The v5 money paragraph: the paragraph v5 puts where v4's cost paragraph
+   * was, extracted through the guarded [revisedMiddle].
+   */
+  private fun moneyParagraph(): String = revisedMiddle(base = "v4", revised = "v5", prefixOpener = COST_PARAGRAPH_OPENER)
+
+  /**
+   * The one guarded extractor behind [moneyParagraph] and
+   * [sourceJargonSentence]: the middle of the [revised] coach prompt, with the
+   * [base] version's byte-identical prefix (everything up to [prefixOpener])
+   * and its byte-identical college-list suffix removed. Both boundaries are
+   * located from the [base] body at runtime, so the seed migration stays the
+   * single home of the approved copy.
+   *
+   * Shared rather than cloned per version because every guard here is about the
+   * MECHANISM, not the copy: each extraction primitive degrades SILENTLY —
+   * `substringBefore` returns the whole receiver when the delimiter is missing,
+   * and `removePrefix`/`removeSuffix` are no-ops when the affix does not match —
+   * and `prefix + suffix` is the whole of [base], so a [revised] that changed
+   * nothing would hand back the empty string and every `contains` downstream
+   * would still be reached and still pass. A duplicated copy of this drifts
+   * (one grew the emptiness check, the other did not); one copy cannot.
+   */
+  private fun revisedMiddle(
+    base: String,
+    revised: String,
+    prefixOpener: String,
+  ): String {
+    val baseBody = SystemPromptsDao.findByNameAndVersion(session, "coach", base).getOrThrow().body
+    val revisedBody = SystemPromptsDao.findByNameAndVersion(session, "coach", revised).getOrThrow().body
+    val prefix = baseBody.substringBefore(prefixOpener)
+    val suffix = LIST_PARAGRAPH_OPENER + baseBody.substringAfter(LIST_PARAGRAPH_OPENER)
+    assertTrue(prefix != baseBody, "$base must contain the opener [$prefixOpener], or the extraction is vacuous")
+    assertTrue(revisedBody.startsWith(prefix), "everything before the opener must be $base byte-for-byte")
+    assertTrue(revisedBody.endsWith(suffix), "$base's college-list paragraph must survive as a byte-identical suffix")
+    val middle = revisedBody.removePrefix(prefix).removeSuffix(suffix)
+    assertTrue(middle.isNotEmpty(), "$revised must actually change the middle; an empty extraction means it equals $base")
+    return middle
   }
 }

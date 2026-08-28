@@ -118,6 +118,13 @@ class MoneyProfileChatToolTest {
       val profile = profileOf(result)
       assertEquals("answered", profile["income_band_status"]!!.jsonPrimitive.content)
       assertEquals("48k_to_75k", profile["income_band"]!!.jsonPrimitive.content)
+      // The echo is the moment right after the student stated their band, so
+      // the code never travels without its spoken dollar range (RFC 142).
+      assertEquals(
+        IncomeBand.K48_TO_75K.bracket,
+        profile["income_band_label"]!!.jsonPrimitive.content,
+        "the echoed band must carry the range a coach says aloud",
+      )
       assertEquals("unanswered", profile["residency_status"]!!.jsonPrimitive.content)
       assertNull(profile["residency_state"], "an unanswered field must carry no value in the echo")
 
@@ -137,6 +144,7 @@ class MoneyProfileChatToolTest {
       val profile = profileOf(result)
       assertEquals("declined", profile["income_band_status"]!!.jsonPrimitive.content)
       assertNull(profile["income_band"], "a declined field must carry no value")
+      assertNull(profile["income_band_label"], "and so has nothing to label")
       assertEquals("answered", profile["residency_status"]!!.jsonPrimitive.content)
       assertEquals("CA", profile["residency_state"]!!.jsonPrimitive.content, "the untouched field survives, uppercased")
     }

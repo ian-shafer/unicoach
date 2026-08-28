@@ -3,7 +3,9 @@ package ed.unicoach.coaching.costs
 import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.putIncomeBand
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -178,7 +180,12 @@ class CollegeCostChatTool(
       }
     }
 
-  /** The `net_price` sub-object: amount when reported, the basis label, the band only on the band-specific case. */
+  /**
+   * The `net_price` sub-object: amount when reported, the basis label, and —
+   * only on the band-specific case — the band's code and its spoken dollar
+   * range (`IncomeBand.bracket`, RFC 142). The label rides beside the code so
+   * the model never has to invent a phrase for the bucket it is naming aloud.
+   */
   private fun netPriceObject(netPrice: NetPrice): JsonObject =
     buildJsonObject {
       netPrice.amount?.let { put("amount", it) }
@@ -188,18 +195,23 @@ class CollegeCostChatTool(
       // than ship an unlabeled basis. Do not collapse this to an `if`.
       when (netPrice) {
         is NetPrice.BandSpecific -> {
-          put("income_band", netPrice.band.value)
+          putIncomeBand(netPrice.band)
         }
 
         is NetPrice.OverallAverage -> {}
       }
     }
 
-  /** The money-profile echo: both field statuses, values only when answered. */
+  /**
+   * The money-profile echo: both field statuses, values only when answered.
+   * An answered band carries its spoken dollar range alongside its code
+   * (`IncomeBand.bracket`, RFC 142); an unanswered or declined band carries
+   * neither.
+   */
   private fun moneyProfileObject(profile: MoneyProfileStatuses): JsonObject =
     buildJsonObject {
       put("income_band_status", profile.incomeBandStatus.value)
-      profile.incomeBand?.let { put("income_band", it.value) }
+      profile.incomeBand?.let { putIncomeBand(it) }
       put("residency_status", profile.residencyStatus.value)
       profile.residencyState?.let { put("residency_state", it) }
     }
@@ -231,14 +243,20 @@ class CollegeCostChatTool(
 
     // The ethos contract rides the tool description (RFC 135): real numbers
     // with a named source, the basis always labeled, never re-raise a decline.
-    const val DESCRIPTION =
+    // Not `const`: the example band range is rendered from IncomeBand.bracket,
+    // the one home for that copy (RFC 142), so the description can never quote
+    // a range the results themselves no longer carry.
+    val DESCRIPTION =
       "Read the real cost facts for the colleges on the student's list: sticker cost, tuition, " +
         "the net price their family would actually pay, median debt and median earnings. " +
         "Data comes from the U.S. Department of Education College Scorecard - always attribute figures " +
         "to it, and when a field appears in data_availability the college does not report it: say so " +
         "plainly, never estimate. Each net_price is labeled with its basis: your_income_band means it is " +
         "specific to the student's answered household income band; overall_average means the band is not " +
-        "on file and the figure is the all-family average - say which it is. When a college's result carries " +
+        "on file and the figure is the all-family average - say which it is. When a net price is band-specific it " +
+        "also carries income_band_label, the band's dollar range in plain words (e.g. \"${IncomeBand.OVER_110K.bracket}\") - say that " +
+        "range when you name the band aloud, never the income_band code and never a data-source bucket name. " +
+        "When a college's result carries " +
         "precision_offer, you may offer to record the income band (${MoneyProfileChatTool.TOOL_NAME}) so the numbers " +
         "become family-specific. money_profile.income_band_status is the authority on whether to raise income: " +
         "declined means the student said no - never re-raise it yourself; answered means the band is already on file. " +
