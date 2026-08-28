@@ -12,16 +12,16 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
 
 ## TL;DR — next steps, most important first
 
-1. **Gate 1 on brief 0002** (account deletion) — App-Store-blocking; six
-   decisions D1–D6 are framed and waiting. RFC 138's `bin/state-apply` (landed)
-   is create-only by design and gets per-entity replace only from 0002's
-   reset/delete engine — a second consumer.
-2. **Beat 1 remainder: S4 → S5 → S6** — S4 = Admissions Intelligence Layer v0
-   (CDS-derived merit-aid/admissions-factors/deadlines tables, seeded for the
-   ~300–500-school launch set, exposed as a cited tool). Largest slice; may
-   split in design. Adds new tables → D10 applies (Ian approves DDL at the
-   gate). Go straight at it — the ingest-observability fix was dropped (Ian,
-   2026-08-27), so verify S4's seed load by hand.
+1. **S4 — Admissions Intelligence Layer v0** (brief 0001, the largest slice of
+   Beat 1). CDS-derived merit-aid / admissions-factors / deadlines tables,
+   seeded for the ~300–500-school launch set, exposed as a cited tool; merit
+   practice feeds S3's cost answers. May split in design. Adds new tables → D10
+   applies: DDL goes in front of Ian at the /ship gate. Kickoff prompt below.
+2. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
+   S6 is the wedge and its token becomes Beat 2's parent-account claim path.
+3. **Before any App Store submission: brief 0002, account deletion** — parked in
+   the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR Art.
+   17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
 
 _Rule: this list is rewritten every time the file is updated; it never says "see
 below"._
@@ -103,7 +103,6 @@ progress — this is the column /chart reads to know what "halfway done" means.
 
 | Pri | Work                           | State                                                                                                                                                                                         | Where                                    |
 | --- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | Account deletion (brief 0002)  | FRAMED, awaiting gate 1 (six decisions D1–D6). App-Store-blocking + gives repeatable clean-slate testing.                                                                                     | `product/0002-account-data-deletion`     |
 | P1  | Beat 1 remainder: S4 → S5 → S6 | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)    | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
 
@@ -114,6 +113,13 @@ bullet, enough context to pick it up cold); /chart promotes an item into the
 work table by giving it a priority, or into a brief when it deserves gates.
 Nothing here is committed work.
 
+- **Account deletion (brief 0002)** — moved out of the work table (Ian,
+  2026-08-27). Brief is FRAMED with six decisions D1–D6 awaiting gate 1 at
+  `product/0002-account-data-deletion`. Still App-Store-blocking when we submit:
+  5.1.1(v) requires in-app account deletion, and GDPR Art. 17 / CCPA apply
+  regardless — so this is deferred, not resolved, and it gates public launch.
+  Also blocks `bin/state-apply`'s per-entity reset (RFC 138 defers to its
+  engine) and repeatable clean-slate testing.
 - **Beat 2: parent partner accounts** — claim-the-report onboarding, linked
   family, parent-side coaching. Deliberately unspecced until Beat 1 ships and
   share-rate is observed (0001 D9).
@@ -136,7 +142,7 @@ approval gate in each session. Slices from a brief are kicked off with the slice
 instruction from its `spec.md` — the prompts below add only session context the
 spec can't know.
 
-### Account deletion (brief 0002)
+### Account deletion (brief 0002) — parked in Backlog, kept ready
 
 PASTE: Run product brief 0002 (product/0002-account-data-deletion/brief.md) with
 /chart: account data deletion. The brief is FRAMED and awaiting gate 1 — bring
@@ -147,12 +153,46 @@ mapped in the brief. I approve every new table personally, with visible DDL at
 the gate. Note RFC 138 (bin/state-apply) deliberately deferred its delete/reset
 semantics to this brief's engine.
 
-### Beat 1 — S4 / S5 / S6
+### S4 — Admissions Intelligence Layer v0 (next up)
+
+PASTE: Ship S4 from product brief 0001 (Admissions Intelligence Layer v0). Use
+the S4 slice instruction in product/0001-v1-differentiator/spec.md verbatim as
+the /ship instruction; gate-2 decisions D7–D12 are standing context, and D8
+fixes the launch set at ~300–500 schools ranked by college-list popularity plus
+national popularity. Scope: new reference tables for CDS-derived facts — H2A
+merit-aid practice (% of no-need freshmen receiving merit, average award), C7
+admissions factors, and deadlines by round — seeded from the collegedata.fyi
+corpus for the launch set and exposed as a cited LLM tool, with merit-aid
+feeding S3's cost answers ("X% of freshmen without need got merit here, avg
+$Y"). Explicitly NOT in scope: any net-price-calculator automation.
+
+Four things this session must respect:
+
+D10 is binding — this slice adds new tables, so the /ship approval gate must put
+the proposed DDL in front of me explicitly, columns and constraints and
+versioning choice, not buried in the RFC. I approve every new table personally.
+
+This is the largest slice in the beat and the spec pre-authorises splitting it
+in design. If the honest read is that the ingest, the schema, and the tool are
+three slices, say so at the design gate rather than shipping one 3000-line
+branch.
+
+The ingest tooling is deliberately quiet: bin/ingest-colleges runs a PREBUILT
+launcher and only checks it is executable, so a stale jar loads every row, logs
+a cheerful count, and leaves new columns NULL. Rebuild the dist before any load,
+and prove the seed landed with a direct SELECT on the new tables plus a
+launch-set coverage report — a successful-looking load is not evidence.
+
+Cited means cited: every fact the tool returns carries its source and
+source-year, matching how S1–S3 already cite Scorecard data. "Not reported" is
+an honest answer; inventing or interpolating a figure is not.
+
+AC (from the spec): launch-set coverage report, and cited merit answers in chat.
+Update the brief's ledger and product/STATUS.md when the slice lands.
+
+### Beat 1 remainder — S5 / S6
 
 PASTE: Ship S<n> from product brief 0001: use the slice instruction in
 product/0001-v1-differentiator/spec.md verbatim as the /ship instruction, plus
-gate-2 decisions D7–D12 as standing context. S4 is a data build and the ingest
-tooling is deliberately quiet (see Backlog, ingest observability): do not trust
-a successful-looking load — verify the seed landed with a direct SELECT on the
-new tables before calling the slice done. Update the brief's ledger and
+gate-2 decisions D7–D12 as standing context. Update the brief's ledger and
 product/STATUS.md when the slice lands.
