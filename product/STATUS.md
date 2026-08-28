@@ -12,12 +12,15 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
 
 ## TL;DR — next steps, most important first
 
-1. **Brief 0004 — college search index — EXECUTING.** Both gates approved
-   (2026-08-27); slices S1→S5 specced with approved DDL in
-   `product/0004-college-search-index/spec.md`. Next /ship run: **0004 S1**
-   (trigram fuzzy names + aliases, honest totalMatches/sortBy, ingest
-   provenance + header assertion + change summary — absorbs the
-   ingest-observability item). By 0004 D13, S1–S3 land **before** 0001's S4.
+1. **Brief 0004 — college search index — EXECUTING; S1 LANDED (RFC 139,
+   2026-08-28).** Fuzzy names, honest match counts, and ingest provenance are
+   live; the ingest-observability item is absorbed and closed. Next /ship run:
+   **0004 S2** (IPEDS `HD`+`IC`+`ADM`+`C_A` loader → `college_ipeds` +
+   `college_programs_census`: religion, ROTC, study abroad, disability, housing,
+   athletics, test policy, closure status, 6-digit program census). Then S3 (the
+   derived index + subject taxonomy — the aha), S4 (query-time
+   `similar_colleges`), S5 (consumer sweep). By 0004 D13, S1–S3 land **before**
+   0001's S4.
 2. **S4 — Admissions Intelligence Layer v0** (brief 0001, the largest slice of
    Beat 1). CDS-derived merit-aid / admissions-factors / deadlines tables,
    seeded for the ~300–500-school launch set, exposed as a cited tool; merit
@@ -107,6 +110,24 @@ can be chosen.
   across sessions, skip entirely. Never forced, never a form.
 - Tri-state per field (unset / declined / value), atomic upsert, admin read-only
   view.
+
+### Finding a college by name (brief 0004 S1, RFC 139)
+
+Typing a school's name finds it even when the typing is imperfect.
+
+- **How a user reaches it:** the iOS college-list screen's name search
+  (`GET /api/v1/colleges?q=…`), and the coach's `search_colleges` tool in chat —
+  both inherited the upgrade with no API change.
+- **What it does:** trigram matching (`pg_trgm`) over the school's name plus a
+  curated alias list, so "Amhurst Colege" finds Amherst College and "Mizzou"
+  finds Missouri-Columbia. Exact and prefix matches still rank first.
+- **For the coach:** results now carry an unclamped `total_matches` ("312 match;
+  showing 25" is finally sayable), a `sort_by` that never filters, and a
+  `credential_level` word enum ("bachelors"), never raw Scorecard codes.
+- **Operationally:** every ingest writes a `college_index_build` provenance row
+  (source sha256s, per-table counts, skip taxonomy, non-null deltas), asserts
+  its source headers before writing a single row, and prints a change summary —
+  a no-op load can no longer masquerade as a real one.
 
 ### College list (RFC 91 schema/REST; RFC 136 chat door)
 

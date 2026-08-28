@@ -7,7 +7,10 @@ framing time: **139**.
 
 Ledger (updated as slices land):
 
-    (none yet)
+    S1 LANDED as RFC 139 (main@cb1c598a + 5d1df831, 2026-08-28) — trigram fuzzy
+       name search + curated aliases, unclamped total_matches + sort_by +
+       credential_level, and ingest provenance (college_index_build, fatal
+       header assertion, loud change summary). Migrations 0051/0052.
 
 ## The question
 
