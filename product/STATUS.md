@@ -12,14 +12,23 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
 
 ## TL;DR — next steps, most important first
 
-1. **S4 — Admissions Intelligence Layer v0** (brief 0001, the largest slice of
+1. **Brief 0004 — college search index — EXECUTING.** Both gates approved
+   (2026-08-27); slices S1→S5 specced with approved DDL in
+   `product/0004-college-search-index/spec.md`. Next /ship run: **0004 S1**
+   (trigram fuzzy names + aliases, honest totalMatches/sortBy, ingest
+   provenance + header assertion + change summary — absorbs the
+   ingest-observability item). By 0004 D13, S1–S3 land **before** 0001's S4.
+2. **S4 — Admissions Intelligence Layer v0** (brief 0001, the largest slice of
    Beat 1). CDS-derived merit-aid / admissions-factors / deadlines tables,
    seeded for the ~300–500-school launch set, exposed as a cited tool; merit
    practice feeds S3's cost answers. May split in design. Adds new tables → D10
    applies: DDL goes in front of Ian at the /ship gate. Kickoff prompt below.
-2. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
+   **Waits for 0004 S1–S3** (the admissions layer builds on the search index —
+   0004 D13); note 0004 D10 declined CDS scraping for now, which narrows S4's
+   deadline sourcing — revisit at S4's design gate.
+3. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
    S6 is the wedge and its token becomes Beat 2's parent-account claim path.
-3. **Before any App Store submission: brief 0002, account deletion** — parked in
+4. **Before any App Store submission: brief 0002, account deletion** — parked in
    the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR Art.
    17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
 
@@ -101,10 +110,11 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                           | State                                                                                                                                                                                         | Where                                    |
-| --- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | Beat 1 remainder: S4 → S5 → S6 | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)    | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
+| Pri | Work                              | State                                                                                                                                                                                         | Where                                    |
+| --- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                          | `product/0004-college-search-index`      |
+| P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
 
 ## Backlog
 
@@ -141,6 +151,17 @@ Open a new Prime Agent session in `/Users/ian/Work/unicoach` and paste one. Each
 approval gate in each session. Slices from a brief are kicked off with the slice
 instruction from its `spec.md` — the prompts below add only session context the
 spec can't know.
+
+### College search index (brief 0004)
+
+PASTE: Ship S<n> from product brief 0004: use the slice instruction in
+product/0004-college-search-index/spec.md verbatim as the /ship instruction.
+Both gates are approved; gate decisions D1–D22 (brief.md + spec.md) are binding
+context — notably: Postgres-only, no queue, two-phase ingest (rows first, one
+transactional index rebuild at the end), raw source codes in schema with word
+enums at the tool boundary, tri-state unknowns with excluded counts, outcome
+measures never ranked. I approve every new table with visible DDL at the /ship
+gate; the spec's DDL is the approved shape.
 
 ### Account deletion (brief 0002) — parked in Backlog, kept ready
 
