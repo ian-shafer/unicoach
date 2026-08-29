@@ -7,8 +7,8 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-29. Live-run discovery from any checkout:
-`.prime/agent/skills/ship/scripts/ship-status`
+Updated: 2026-08-29 (RFC 140 / brief 0001 S4a landed). Live-run discovery from
+any checkout: `.prime/agent/skills/ship/scripts/ship-status`
 
 ## TL;DR — next steps, most important first
 
@@ -19,16 +19,29 @@ Updated: 2026-08-29. Live-run discovery from any checkout:
    `college_programs_census`: religion, ROTC, study abroad, disability, housing,
    athletics, test policy, closure status, 6-digit program census). Then S3 (the
    derived index + subject taxonomy — the aha), S4 (query-time
-   `similar_colleges`), S5 (consumer sweep). By 0004 D13, S1–S3 land **before**
-   0001's S4.
-2. **S4 — Admissions Intelligence Layer v0** (brief 0001, the largest slice of
-   Beat 1). CDS-derived merit-aid / admissions-factors / deadlines tables,
-   seeded for the ~300–500-school launch set, exposed as a cited tool; merit
-   practice feeds S3's cost answers. May split in design. Adds new tables → D10
-   applies: DDL goes in front of Ian at the /ship gate. Kickoff prompt below.
-   **Waits for 0004 S1–S3** (the admissions layer builds on the search index —
-   0004 D13); note 0004 D10 declined CDS scraping for now, which narrows S4's
-   deadline sourcing — revisit at S4's design gate.
+   `similar_colleges`), S5 (consumer sweep). 0004 D13 (S1–S3 before 0001's S4)
+   was consciously narrowed at RFC 140's gate and is now moot for S4a: only S1's
+   conventions were a real dependency, and S4a landed after RFC 139 with its
+   ingest CLI merged into 139's (aliases + `--*-source` provenance + the CDS
+   group in one launcher).
+2. **S4a LANDED (RFC 140, 2026-08-28); S4b is the next 0001 run.** The CDS
+   reference layer is live: `college_merit_aid` (H2A no-need merit practice),
+   `college_admission_factors` (the C7 grid), and `college_deadlines` (rounds),
+   migration 0054, every row cited to the school's own document (`source_url` +
+   `archive_url`). `bin/fetch-cds-seed` pulls the MIT-licensed collegedata.fyi
+   corpus and writes a committed, reviewable seed under `db/seed/cds/` with
+   `PROVENANCE.json`; `bin/ingest-colleges -m/-a/-d` loads it and prints the
+   launch-set coverage report — **415 launch-set colleges: merit 366, factors
+   374, deadline flags 314 (234 with a concrete date), 0 student-listed schools
+   missing** (D8 satisfied). Ian approved the DDL at the gate plus three
+   tightening deltas. **Next: S4b** — the cited `college_admissions_profile`
+   chat tool, the merit feed into S3's cost answers ("X% of freshmen got merit
+   here, avg $Y"), and the coach-prompt update. It carries S4's remaining AC
+   (cited merit answers in chat). Kickoff prompt below. NOTE the honest
+   denominator: CDS reports no count of no-need freshmen, so the computable
+   figure is "X% of ALL full-time freshmen received no-need merit" — S4b's copy
+   must say that, never "% of freshmen without need".
+
 3. **Brief 0003 — clear money language — M1, M1.1, RFC 143 and M1.2 LANDED (RFCs
    141–143, 145).** The coach speaks one money vocabulary, no bare source code
    reaches a tool result, and — as of 2026-08-29 — it **asks where the family
@@ -153,6 +166,19 @@ Typing a school's name finds it even when the typing is imperfect.
   its source headers before writing a single row, and prints a change summary —
   a no-op load can no longer masquerade as a real one.
 
+### Admissions data — CDS layer (brief 0001 S4a, RFC 140)
+
+**Landed, deliberately NOT user-visible yet.** The database now holds
+school-authored Common Data Set facts for the launch set: real merit-aid
+practice (H2A: how many freshmen with no financial need got merit, and the
+average award), the C7 admissions-factor grid (what each school says it weighs),
+and application rounds with their deadlines. 415 launch-set colleges — merit
+366, factors 374, deadline flags 314. Every row is cited to the school's own CDS
+document, so the coach can attribute each fact. Nothing surfaces this in chat
+until **S4b** builds the tool; until then it is groundwork, not a feature.
+Refresh with `nix develop -c bin/fetch-cds-seed` (review the diff, commit), load
+with `bin/ingest-colleges -m/-a/-d`.
+
 ### College list (RFC 91 schema/REST; RFC 136 chat door)
 
 The student's working list of schools — the substrate the cost feature keys off.
@@ -253,69 +279,35 @@ mapped in the brief. I approve every new table personally, with visible DDL at
 the gate. Note RFC 138 (bin/state-apply) deliberately deferred its delete/reset
 semantics to this brief's engine.
 
-### S4 — Admissions Intelligence Layer v0 (next up)
+### S4b — the cited admissions tool (next up for brief 0001)
 
-PASTE: Ship S4 from product brief 0001 (Admissions Intelligence Layer v0). Use
-the S4 slice instruction in product/0001-v1-differentiator/spec.md verbatim as
-the /ship instruction; gate-2 decisions D7–D12 are standing context, and D8
-fixes the launch set at ~300–500 schools ranked by college-list popularity plus
-national popularity. Scope: new reference tables for CDS-derived facts — H2A
-merit-aid practice (% of no-need freshmen receiving merit, average award), C7
-admissions factors, and deadlines by round — seeded from the collegedata.fyi
-corpus for the launch set and exposed as a cited LLM tool, with merit-aid
-feeding S3's cost answers ("X% of freshmen without need got merit here, avg
-$Y"). Explicitly NOT in scope: any net-price-calculator automation.
+PASTE: Ship S4b from product brief 0001 — the second half of the Admissions
+Intelligence Layer, whose schema half landed as RFC 140. S4a built three cited
+CDS reference tables (college_merit_aid, college_admission_factors,
+college_deadlines; migration 0054), the collegedata.fyi seed under db/seed/cds/,
+bin/ingest-colleges -m/-a/-d, and the launch-set coverage report (415 colleges:
+merit 366, factors 374, deadline flags 314). Build: (1) a cited
+`college_admissions_profile` chat tool over those tables, mirroring
+college_cost_profile's shape, every fact carrying its source and source-year
+from source_url/archive_url; (2) the merit-aid feed into S3's cost answers; and
+(3) the coach-prompt update. Standing context: gate-2 D7–D12, plus brief 0003's
+money-language rules (RFCs 141–143, 145) — the tool's output is a money surface
+and must speak that vocabulary, never bare source jargon.
 
-Four things this session must respect:
+BINDING HONESTY CONSTRAINT: CDS publishes no count of no-need freshmen, so the
+computable share is "X% of ALL full-time freshmen received non-need (merit) aid,
+average $Y". Do NOT phrase it as "% of freshmen without need" — that denominator
+does not exist in the data. "Not reported" is an honest answer for any school
+without a row; never interpolate. Deadlines are flags + best-effort dates: a
+month with no day renders as "January, day not reported", and only a complete
+month+day is a concrete date.
 
-D10 is binding — this slice adds new tables, so the /ship approval gate must put
-the proposed DDL in front of me explicitly, columns and constraints and
-versioning choice, not buried in the RFC. I approve every new table personally.
+AC (the remainder of S4's): cited merit answers in chat. Update the brief's
+ledger and product/STATUS.md when the slice lands.
 
-This is the largest slice in the beat and the spec pre-authorises splitting it
-in design. If the honest read is that the ingest, the schema, and the tool are
-three slices, say so at the design gate rather than shipping one 3000-line
-branch.
-
-The ingest tooling is deliberately quiet: bin/ingest-colleges runs a PREBUILT
-launcher and only checks it is executable, so a stale jar loads every row, logs
-a cheerful count, and leaves new columns NULL. Rebuild the dist before any load,
-and prove the seed landed with a direct SELECT on the new tables plus a
-launch-set coverage report — a successful-looking load is not evidence.
-
-Cited means cited: every fact the tool returns carries its source and
-source-year, matching how S1–S3 already cite Scorecard data. "Not reported" is
-an honest answer; inventing or interpolating a figure is not.
-
-AC (from the spec): launch-set coverage report, and cited merit answers in chat.
-Update the brief's ledger and product/STATUS.md when the slice lands.
-
-### Clear money language — M1.2 (residency before income)
-
-PASTE: Ship M1.2 from product brief 0003 with /skill:ship. Use the slice
-instruction in product/0003-clear-money-language/spec.md ("M1.2 — Ask where they
-live before asking what they earn") verbatim as the /ship instruction, plus
-gate-1 D1–D9 and gate-2 D10–D19 as standing context, and brief 0001's standing
-D10 (Ian approves all DDL at the gate) and D12 (value before ask).
-
-The one-line why: knowing the family's state corrects tuition by a median
-$6,300/yr at a public (in-state $5,507 vs out-of-state $11,010, n=1,689),
-against ~$1,376 for a middle-band family's income-band correction — and coach
-prompt v6 never asks for residency AT ALL (0 mentions; 3 for income band), even
-though money_profiles.residency_state has existed since RFC 134 and
-TuitionApplicable is UNKNOWN without it.
-
-Scope: coach prompt v7 (a new immutable seed, the 0049/0050 pattern — v6 stays
-the rollback) plus a residency case on college_cost_profile's precision_offer,
-so the coach is cued by the tool result rather than by memory. Offer residency
-only when a PUBLIC college is on the list and residency is unanswered; make no
-residency offer for an all-private list. No new tables. No schema change beyond
-the seed row. Read RFCs 141–143 first: they are the three prompt/vocabulary
-slices immediately before this one, and 143's guard ("no bare source code
-reaches a tool result") must keep passing.
-
-I am the approval gate. Land it, then update the brief ledger and
-product/STATUS.md.
+Open item inherited from RFC 140: wire the CDS sources into RFC 139's
+college_index_build provenance row (S4a left PROVENANCE.json as its provenance
+because RFC 139 landed only at rebase time).
 
 ### Clear money language (brief 0003)
 

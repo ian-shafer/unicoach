@@ -55,6 +55,14 @@ answers ("X% of freshmen without need got merit here, avg $Y"). NO
 net-price-calculator automation. AC: launch-set coverage report; cited merit
 answers in chat.
 
+    SPLIT IN DESIGN (RFC 140, approved at the /ship gate): S4a = the three
+    reference tables + the seed fetcher + ingest + coverage report; S4b = the
+    cited `college_admissions_profile` tool + the merit feed into S3's cost
+    answers + the coach-prompt update. S4a LANDED as RFC 140 (main@81354dbf,
+    2026-08-28) with 415 launch-set colleges (merit 366 / factors 374 /
+    deadline flags 314, 234 with a concrete date, 0 student-listed missing).
+    S4b is NEXT and carries the second half of the AC.
+
 S5. Family Cost Report (lane A) Student-initiated shareable artifact: tokenized
 public-web page rendering the per-school cost table (sticker, likely net, merit
 practice, debt context) for the student's list. Revocable token; no parent auth

@@ -10,9 +10,22 @@ IncomeBand.netPriceFor ready for S3. S3 LANDED as RFC 135 (main@c9935c51 +
 14ccbe37, 2026-08-25) — college_cost_profile tool (list x money profile x
 Scorecard costs, self-describing basis, derived honest precision_offer) + coach
 prompt v3 (rollback COACHING_SYSTEM_PROMPT_VERSION=v2). THE FIRST-SESSION AHA IS
-LIVE END-TO-END. Next: S4 (Admissions Intelligence Layer) or S5 (Family Cost
-Report) — or pause to codify the product-layer skill from three completed runs.
-Not committed until the process itself is validated.
+LIVE END-TO-END. S3.5 LANDED as RFC 137/138 (the conversational door to the
+list). S4 SPLIT IN DESIGN into S4a (schema + seed + ingest) and S4b (cited tool
+
+- merit feed + prompt); **S4a LANDED as RFC 140 (main@51a1ab8c + 81354dbf,
+  2026-08-28)** — three CDS reference tables (migration 0054: college_merit_aid,
+  college_admission_factors, college_deadlines, all cited by source_url +
+  archive_url), bin/fetch-cds-seed over the MIT-licensed collegedata.fyi corpus
+  with a committed seed + PROVENANCE.json, and the launch-set coverage report:
+  **415 launch-set colleges — merit aid 366, admission factors 374, deadline
+  flags 314 (234 with a concrete date), 0 student-listed schools missing**. Ian
+  approved the DDL at the gate (D10) plus three tightening deltas
+  (day_requires_month CHECK, CREATE DOMAIN for the rating vocabulary and the
+  year bound). Next: **S4b** (the `college_admissions_profile` tool + merit into
+  S3's cost answers + prompt), which carries S4's remaining AC ("cited merit
+  answers in chat"), then S5 (Family Cost Report) — S5 also waits on brief 0003
+  M2+M3.
 
 ## The question
 
