@@ -7,7 +7,7 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-27. Live-run discovery from any checkout:
+Updated: 2026-08-29. Live-run discovery from any checkout:
 `.prime/agent/skills/ship/scripts/ship-status`
 
 ## TL;DR — next steps, most important first
@@ -29,13 +29,15 @@ Updated: 2026-08-27. Live-run discovery from any checkout:
    **Waits for 0004 S1–S3** (the admissions layer builds on the search index —
    0004 D13); note 0004 D10 declined CDS scraping for now, which narrows S4's
    deadline sourcing — revisit at S4's design gate.
-3. **Brief 0003 — clear money language — M1, M1.1 and RFC 143 LANDED; M1.2 is
-   next.** The coach speaks one money vocabulary and no bare source code reaches
-   a tool result (the guard is now a property, not a string match). **M1.2**
-   (ask residency before income — measured at ~$6,300/yr vs ~$1,376, and prompt
-   v6 never asks for residency at all) is small, unblocked, and should go next.
-   **M2** (component split, DDL approved as D18/D19) still waits on 0004 S1/S2
-   and precedes 0001's S5. RFCs 141/142 took migrations `0049`/`0050`.
+3. **Brief 0003 — clear money language — M1, M1.1, RFC 143 and M1.2 LANDED (RFCs
+   141–143, 145).** The coach speaks one money vocabulary, no bare source code
+   reaches a tool result, and — as of 2026-08-29 — it **asks where the family
+   lives before it asks what they earn**: `precision_offer` is an ordered list
+   of upgrade invitations (residency first, offered only where a public college
+   makes it worth something), and prompt **v7** teaches the ordering. **M2**
+   (component split, DDL approved as D18/D19) is the next slice of this brief
+   but still waits on 0004 S1/S2, and precedes 0001's S5. Migrations:
+   `0049`/`0050` (RFCs 141/142), `0053` (RFC 145).
 4. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
    S6 is the wedge and its token becomes Beat 2's parent-account claim path. S5
    waits on 0003 M2+M3 so the parent-facing artifact speaks the language.
@@ -55,8 +57,8 @@ standing rule.
 ### Chat coaching (the core)
 
 The product is a chat-first AI college coach (iOS app, RFC 117 navigation). The
-coach runs on `COACHING_SYSTEM_PROMPT_VERSION=v3` (RFC 135; rollback knob:
-`v2`), builds durable memory from conversation (claims/observations, RFC 93
+coach runs on `COACHING_SYSTEM_PROMPT_VERSION=v7` (RFC 145; rollback knob:
+`v6`), builds durable memory from conversation (claims/observations, RFC 93
 commitments), and calls tools mid-conversation. Door: the iOS chat screen; new
 users can chat before subscribing (chat-before-subscription is the house
 value-before-ask pattern).
@@ -99,6 +101,28 @@ One vocabulary for money, spoken everywhere the coach talks about cost.
   because `college_search` sent it `net_price_q1..q5` and told it to cite the
   matching band. Every band now travels with its dollar range ("$110,000 or
   more") from one emitter, and prompt v6 bans source jargon generally.
+
+### Asking where you live before asking what you earn (brief 0003 M1.2, RFC 145)
+
+The cheap question that moves the bigger number now gets asked, and gets asked
+first.
+
+- **How a user reaches it:** any cost answer in the chat coach about a
+  **public** school on their list, while we do not know their state — no user
+  action, live on the next `service` deploy.
+- **What it does:** the coach offers to record the state the family lives in,
+  naming what it unlocks (whether they would pay the in-state or the
+  out-of-state published price), **before** it raises household income —
+  residency corrects a public school's tuition by a median $6,300/yr against
+  ~$1,376 for a middle-band income correction. The cue rides the tool result
+  (`precision_offer` is now an ordered list of invitations), not the model's
+  memory.
+- **Where it stays quiet:** a list of only private schools gets no residency
+  offer — there is one price and the question would buy nothing.
+- **Never forced (0001 D11/D12):** a declined state is never raised again, and
+  every cost answer still works without it, naming the basis it used.
+- **Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v6`; the v6 row is immutable and
+  stays in the catalog.
 
 ### Money profile (brief 0001 S2, RFC 134)
 
@@ -163,7 +187,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | Pri | Work                              | State                                                                                                                                                                                         | Where                                    |
 | --- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                          | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003) | **M1 + M1.1 + RFC 143 LANDED** (RFCs 141–143, 2026-08-28). **M1.2 next** (residency before income — small, unblocked). Then M2 (waits on 0004 S1/S2, precedes 0001 S5), M3, M4.               | `product/0003-clear-money-language`      |
+| P1  | Clear money language (brief 0003) | **M1 + M1.1 + RFC 143 + M1.2 LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: M2 (waits on 0004 S1/S2, precedes 0001 S5), then M3, M4.          | `product/0003-clear-money-language`      |
 | P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
 

@@ -36,6 +36,22 @@ Status:
          our own data, residency is worth ~$6,300/yr at a public vs ~$1,376
          for a mid-band family's income correction -- and prompt v6 never
          asks for residency at all. See spec.md M1.2.
+      M1.2 LANDED as RFC 145 (main@90dedee6 + e53d3c32, 2026-08-29) -- the
+         coach now asks where the family lives, and asks it first.
+         precision_offer stopped being income-only: it is an ordered array of
+         {field, offer} objects, residency first, derived from a PrecisionOffer
+         enum whose members own their own applicability rule, so a public
+         college with tuition_applicable "unknown" and residency unanswered
+         cues the question while an all-private list cues nothing. The offer
+         keys off residency_status, not TuitionApplicable.UNKNOWN (which
+         covers declined too) -- that is what keeps a decline permanent.
+         Prompt v7 (db/schema/0053) REPLACES v6's money paragraph rather than
+         appending, because v6's income-only precision_offer rule would have
+         misfired; RFC 142's source-jargon sentence survives byte-identically
+         and RFC 143's guard still passes. v6 is the rollback. One INSERT, no
+         DDL. 1,800 tests green; bin/test check and 272 shell assertions pass.
+         Also generalised the money-profile row-intactness guard, since
+         residency_status is now decision-bearing.
 
 ## The question
 
