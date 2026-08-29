@@ -266,6 +266,33 @@ an honest answer; inventing or interpolating a figure is not.
 AC (from the spec): launch-set coverage report, and cited merit answers in chat.
 Update the brief's ledger and product/STATUS.md when the slice lands.
 
+### Clear money language — M1.2 (residency before income)
+
+PASTE: Ship M1.2 from product brief 0003 with /skill:ship. Use the slice
+instruction in product/0003-clear-money-language/spec.md ("M1.2 — Ask where they
+live before asking what they earn") verbatim as the /ship instruction, plus
+gate-1 D1–D9 and gate-2 D10–D19 as standing context, and brief 0001's standing
+D10 (Ian approves all DDL at the gate) and D12 (value before ask).
+
+The one-line why: knowing the family's state corrects tuition by a median
+$6,300/yr at a public (in-state $5,507 vs out-of-state $11,010, n=1,689),
+against ~$1,376 for a middle-band family's income-band correction — and coach
+prompt v6 never asks for residency AT ALL (0 mentions; 3 for income band), even
+though money_profiles.residency_state has existed since RFC 134 and
+TuitionApplicable is UNKNOWN without it.
+
+Scope: coach prompt v7 (a new immutable seed, the 0049/0050 pattern — v6 stays
+the rollback) plus a residency case on college_cost_profile's precision_offer,
+so the coach is cued by the tool result rather than by memory. Offer residency
+only when a PUBLIC college is on the list and residency is unanswered; make no
+residency offer for an all-private list. No new tables. No schema change beyond
+the seed row. Read RFCs 141–143 first: they are the three prompt/vocabulary
+slices immediately before this one, and 143's guard ("no bare source code
+reaches a tool result") must keep passing.
+
+I am the approval gate. Land it, then update the brief ledger and
+product/STATUS.md.
+
 ### Clear money language (brief 0003)
 
 PASTE: Ship M<n> from product brief 0003: use the slice instruction in
