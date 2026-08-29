@@ -309,15 +309,77 @@ Open item inherited from RFC 140: wire the CDS sources into RFC 139's
 college_index_build provenance row (S4a left PROVENANCE.json as its provenance
 because RFC 139 landed only at rebase time).
 
-### Clear money language (brief 0003)
+### Clear money language — M2 (brief 0003; the component cost split)
 
-PASTE: Ship M<n> from product brief 0003: use the slice instruction in
-product/0003-clear-money-language/spec.md verbatim as the /ship instruction,
-plus gate-1 D1–D9 and gate-2 D10–D17 as standing context, and brief 0001's
-standing D10 (Ian approves all DDL at the gate) and D12 (value before ask). M1
-is copy-only (coach prompt v5) and has no dependencies. M2 must rebase onto
-whatever brief 0004 S1/S2 landed in bin/ingest-colleges — check first. Update
-the brief's ledger and product/STATUS.md when the slice lands.
+PASTE: Ship M2 from product brief 0003 with /skill:ship. Use the slice
+instruction in product/0003-clear-money-language/spec.md ("M2 — The component
+cost split") verbatim as the /ship instruction, plus gate-1 D1–D9 and gate-2
+D10–D19 as standing context, and brief 0001's standing D10 (Ian approves all DDL
+at the gate) and D12 (value before ask). Read the brief's DISCOVER section and
+research/data-feasibility.md before designing — they are the grounding.
+
+WHY THIS IS THE PAYLOAD OF THE BRIEF: M1/M1.1/M1.2 (RFCs 141, 142, 145) changed
+how the coach TALKS about money. Nothing yet changed what numbers it HAS. At a
+public four-year, tuition & fees is a median of only 37% of the on-campus
+sticker total; the other 63% is the part a family can actually influence, and
+today we cannot see it. This slice is what makes the product's one irreplaceable
+sentence sayable: "living at home instead would cost $7,368 less — most of a
+year's tuition."
+
+DDL, ALREADY APPROVED BY IAN (D18/D19) — present it explicitly at the gate
+anyway, per 0001 D10. Six nullable INTEGER columns on `colleges` AND
+`colleges_versions`, plus CREATE OR REPLACE FUNCTION log_college_version() (the
+existing trigger_04 picks it up by name — the db/schema/0045 pattern):
+housing_food_on <- ROOMBOARD_ON housing_food_off <- ROOMBOARD_OFF books_supply
+<- BOOKSUPPLY other_expense_on <- OTHEREXPENSE_ON other_expense_off <-
+OTHEREXPENSE_OFF other_expense_family <- OTHEREXPENSE_FAM Named for the product
+vocabulary, not the source's retired wording (D18: the Scorecard field name goes
+in the column comment, the 0015 pattern). All six carry a nonneg CHECK (D19) —
+they are gross costs, unlike 0045's band columns where negatives are legitimate.
+Six, not seven: there is no ROOMBOARD_FAM.
+
+NO NEW DATA SOURCE. The values are already in the pinned Scorecard snapshot we
+ingest — verified present in college/src/test/resources/scorecard-institutions-
+real-fixture.csv. This is a migration + loader + DAO + tool change and a
+re-ingest of the same file.
+
+FIVE HARD RULES, each grounded in the research and non-negotiable:
+
+1. COSTT4_A is NOT the component sum. It is a weighted BLEND across living
+   arrangements and a year older (AY2021-22 vs the components' AY2022-23);
+   measured, it equals the on-campus sum in 0% of publics, median gap -10.1%.
+   Display the component sum on a NAMED living arrangement; keep COSTT4_A and
+   net price labelled as the blended figures they are.
+2. NEVER compute net_price - tuition, in code or in prompt. Aid applies to the
+   blend, not to a component. Assert it in a test.
+3. Never sum figures of different vintages. Introduce documented per-figure
+   academic-year constants for the pinned snapshot and retire "data ingested
+   YYYY" as a vintage claim — ingestYear is when we loaded the file, not the
+   year of the figures.
+4. `with_family` carries NO housing-and-food line (the source has none) — an
+   explicit absence, never a zero.
+5. "This school has no residence halls" is a FIRST-CLASS case, distinct from
+   "not reported": 296 bachelor-predominant schools legitimately report
+   off-campus figures and no on-campus ones. 78.7% of bachelor-predominant
+   schools render a full on-campus split.
+
+DO NOT build ingest observability (D15) — brief 0004 S1 (RFC 139) landed it.
+REBASE ONTO THE CURRENT LOADER: RFC 139 restructured bin/ingest-colleges with
+provenance, a fatal header assertion and a change summary; RFC 140 merged the
+CDS seed into the same CLI (-m/-a/-d). Use that change summary to prove the six
+columns actually loaded. Consider — and decide in the RFC — whether the six
+columns belong in 0004's derived college_search_index.
+
+ALSO: a coach prompt version (v8; v7 is live, seeded at db/schema/0053) teaching
+the coach to lead with the split, name the living arrangement, and mark the
+estimate lines as estimates. Keep RFC 141's glossary and RFC 142's source-jargon
+sentence intact — say "housing and food", never "room and board" — and RFC 143's
+guard ("no bare source code reaches a tool result") must keep passing. Numbers
+move: claim the next free RFC and migration at run time (0054 and RFC 145 are
+taken).
+
+I am the approval gate. Land it, then update the brief ledger and
+product/STATUS.md.
 
 ### Beat 1 remainder — S5 / S6
 
