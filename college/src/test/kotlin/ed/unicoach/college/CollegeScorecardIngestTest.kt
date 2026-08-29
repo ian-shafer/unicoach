@@ -24,7 +24,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   private val fieldsCsv = fixture("scorecard-fields-fixture.csv")
   private val aliasesJson = fixture("college-aliases-fixture.json")
 
-  private fun source(file: File): CollegeScorecardLoader.SourceFile = CollegeScorecardLoader.SourceFile(file, file.path)
+  private fun source(file: File): SourceFile = SourceFile(file, file.path)
 
   private fun ingest(): CollegeScorecardLoader.IngestReport =
     runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
@@ -38,7 +38,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     val missingColumn = fixture("scorecard-institutions-missing-column-fixture.csv")
 
     val thrown =
-      assertThrows<CollegeScorecardLoader.MissingSourceColumnsException> {
+      assertThrows<MissingSourceColumnsException> {
         runBlocking { loader.ingest(source(missingColumn), source(fieldsCsv), source(aliasesJson)) }
       }
     assertEquals(listOf("ADM_RATE"), thrown.missing)
@@ -52,7 +52,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   @Test
   fun `the legacy load path asserts headers too`() {
     val missingColumn = fixture("scorecard-institutions-missing-column-fixture.csv")
-    assertThrows<CollegeScorecardLoader.MissingSourceColumnsException> {
+    assertThrows<MissingSourceColumnsException> {
       runBlocking { loader.load(missingColumn, fieldsCsv) }
     }
     assertEquals(0, withSession { count(it, "colleges") })
@@ -90,10 +90,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     val callerArg = "s3://unicoach-scorecard/2024-25/institution.csv"
 
     val thrown =
-      assertThrows<CollegeScorecardLoader.MissingSourceColumnsException> {
+      assertThrows<MissingSourceColumnsException> {
         runBlocking {
           loader.ingest(
-            CollegeScorecardLoader.SourceFile(missingColumn, callerArg),
+            SourceFile(missingColumn, callerArg),
             source(fieldsCsv),
             source(aliasesJson),
           )
@@ -184,7 +184,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     val buildRowsBefore = withSession { count(it, "college_index_build") }
 
     val thrown =
-      assertThrows<CollegeScorecardLoader.PartialIngestException> {
+      assertThrows<PartialIngestException> {
         runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(hostile)) }
       }
     assertEquals(listOf("institutions", "fields"), thrown.committedPhases)
@@ -243,7 +243,9 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // The build row exists and says what the report says.
     val row = withSession { buildRow(it, report.buildId) }
     assertNotNull(row)
-    assertEquals(1, row.methodVersion)
+    // Deliberately 2, not 1: RFC 144 added a second source family, which is
+    // exactly the derivation change method_version exists to record.
+    assertEquals(2, row.methodVersion)
     assertTrue(row.rowsIngested.contains("\"inserted\": 5"), "rows_ingested carries the insert count: ${row.rowsIngested}")
     assertTrue(row.sources.contains(institutionCsv.name), "sources carries the file name")
     assertTrue(row.changeSummary.contains("version_bumps"), "change_summary carries version bumps")

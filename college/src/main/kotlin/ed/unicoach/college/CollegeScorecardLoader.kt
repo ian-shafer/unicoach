@@ -1,18 +1,25 @@
 package ed.unicoach.college
 
-import ed.unicoach.common.util.DataSize
+import ed.unicoach.college.CsvIngestSupport.assertRequiredColumns
+import ed.unicoach.college.CsvIngestSupport.describe
+import ed.unicoach.college.CsvIngestSupport.digest
+import ed.unicoach.college.CsvIngestSupport.doubleInDomainOrNull
+import ed.unicoach.college.CsvIngestSupport.doubleOrNull
+import ed.unicoach.college.CsvIngestSupport.intInDomainOrNull
+import ed.unicoach.college.CsvIngestSupport.intOrNull
+import ed.unicoach.college.CsvIngestSupport.phase
+import ed.unicoach.college.CsvIngestSupport.recordUpsertFailure
+import ed.unicoach.college.CsvIngestSupport.stringOrNull
+import ed.unicoach.college.CsvIngestSupport.upsertWithSavepoint
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegesDao
-import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
-import ed.unicoach.error.PermanentError
-import ed.unicoach.error.TransientError
-import ed.unicoach.error.errorCategory
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -32,10 +39,7 @@ import kotlinx.serialization.json.putJsonObject
 import org.apache.commons.csv.CSVRecord
 import org.slf4j.LoggerFactory
 import java.io.File
-import java.security.MessageDigest
-import java.sql.SQLException
 import java.time.Instant
-import java.util.HexFormat
 
 /**
  * Re-runnable ingester for a version-pinned College Scorecard CSV pair (RFC 67):
@@ -57,81 +61,6 @@ class CollegeScorecardLoader(
   private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
   private val logger = LoggerFactory.getLogger(CollegeScorecardLoader::class.java)
-
-  /**
-   * Why a row was skipped, bucketed precisely so the end-of-load summary reports
-   * a counted reason for every dropped row — never a silent loss. The buckets are
-   * the three disposition mechanisms' skip outcomes (mechanism A nulls a cell and
-   * does not skip): missing required/key field, no owning college, the two known
-   * field-of-study source sentinels, a constraint violation keyed by its name,
-   * and a retryable transient fault.
-   */
-  sealed interface SkipReason {
-    /** One or more required/key columns were absent or blank, named in
-     * [missingFields] so the structured result carries which columns were missing
-     * — not only the log. */
-    data class MissingRequiredField(
-      val missingFields: List<String>,
-    ) : SkipReason
-
-    data object NoCollegeForUnitId : SkipReason
-
-    /** `UNITID=NA` field-of-study rows: non-IPEDS institutions absent from the
-     * institution file (RFC 78). Detected and counted, not linked. */
-    data object UnitIdNa : SkipReason
-
-    /** `CREDLEV` outside `1..8`: the `99` "Non-Credential Program" sentinel and
-     * any other out-of-domain credential level. */
-    data object CredentialLevelOutOfDomain : SkipReason
-
-    /** A DB CHECK/unique violation, keyed by the violated constraint name (null
-     * when the driver did not report one). */
-    data class ConstraintViolation(
-      val constraint: String?,
-    ) : SkipReason
-
-    data object Transient : SkipReason
-
-    /** An upsert failure that is neither transient, a constraint violation, nor
-     * any other permanent DB error with a known mapping — including a null
-     * exception or an unexpected [DaoException] subtype. Bucketed distinctly so a
-     * genuinely-unnamed [ConstraintViolation] is never conflated with "we could
-     * not classify this at all". */
-    data object UnknownFailure : SkipReason
-
-    /**
-     * Stable, payload-independent key for provenance JSON. Two
-     * [MissingRequiredField] skips naming different columns are the same KIND of
-     * loss and must aggregate under one key; the columns themselves stay in the
-     * log, where the detail is actionable. Exhaustive `when` over the sealed
-     * interface, so a new bucket cannot silently miss a key.
-     */
-    val kind: String
-      get() =
-        when (this) {
-          is MissingRequiredField -> "missing_required_field"
-          NoCollegeForUnitId -> "no_college_for_unit_id"
-          UnitIdNa -> "unit_id_na"
-          CredentialLevelOutOfDomain -> "credential_level_out_of_domain"
-          is ConstraintViolation -> "constraint_violation"
-          Transient -> "transient"
-          UnknownFailure -> "unknown_failure"
-        }
-  }
-
-  /**
-   * A source CSV/JSON header (or shape) violation: the run aborts before any
-   * write, naming the [missing] columns — the "silent NULL column" failure mode
-   * RFC 139 closes. Thrown by [assertRequiredColumns] from [ingest] (and
-   * [load]); [IngestApplication] maps it to a non-zero exit.
-   */
-  class MissingSourceColumnsException(
-    val fileName: String,
-    val sourceArg: String,
-    val missing: List<String>,
-  ) : RuntimeException(
-      "source file [$fileName] (from [$sourceArg]) is missing required column(s) $missing; nothing was written",
-    )
 
   /**
    * A curated-aliases file whose shape or contents are unusable (RFC 139): a
@@ -157,37 +86,6 @@ class CollegeScorecardLoader(
         "; nothing was written",
       cause,
     )
-
-  /**
-   * An ingest that failed AFTER one or more phases had already committed (RFC
-   * 139). Each phase is its own transaction, so the earlier ones cannot be
-   * rolled back; by the success-only rule there is also no
-   * `college_index_build` row. Names [committedPhases] so a partially applied
-   * snapshot is reported loudly instead of being inferred from a stack trace.
-   * The ingest is idempotent: re-running completes it.
-   */
-  class PartialIngestException(
-    val committedPhases: List<String>,
-    cause: Throwable,
-  ) : RuntimeException(
-      "ingest failed after committing $committedPhases; the database holds a partially applied snapshot, " +
-        "NO college_index_build row was written, and provenance was NOT recorded — re-run the ingest to complete it",
-      cause,
-    )
-
-  /** One resolved ingest input: the local [file] plus the caller's original argument (path or `s3://`). */
-  data class SourceFile(
-    val file: File,
-    val sourceArg: String,
-  )
-
-  /** Provenance for one source file: streamed sha256 + byte size (RFC 139). */
-  data class SourceDigest(
-    val fileName: String,
-    val sha256: String,
-    val bytes: Long,
-    val sourceArg: String,
-  )
 
   /**
    * The alias-application tally (RFC 139): entries seen, applied, unchanged,
@@ -250,63 +148,25 @@ class CollegeScorecardLoader(
     val permanentSkips: Int get() = skipsByReason.filterKeys { it != SkipReason.Transient }.values.sum()
   }
 
-  /**
-   * The outcome of mapping one CSV row to a domain value, returned by the pure
-   * mappers so the load loop — not the mapper — folds it into the [LoadCount]
-   * accumulator. A [Mapped] carries the value to upsert plus the optional cells
-   * that were coerced to NULL (by column name, count 1 each), so the loop records
-   * the coercions only when the value actually reaches the DB; a [Skipped] carries
-   * the precise [SkipReason] the loop tallies and the row is dropped.
-   */
-  private sealed interface MapResult<out T> {
-    data class Mapped<T>(
-      val value: T,
-      val coercions: Map<String, Int>,
-    ) : MapResult<T>
+  /** The one [LoadCount]→result mapping for the institution file. */
+  private fun LoadCount.toCollegesResult(): CollegeLoadResult =
+    CollegeLoadResult(
+      seen = seen,
+      inserted = inserted,
+      changed = changed,
+      unchanged = unchanged,
+      skipsByReason = skipsByReason.toMap(),
+      fieldsCoercedToNull = fieldsCoercedToNull.toMap(),
+    )
 
-    data class Skipped(
-      val reason: SkipReason,
-    ) : MapResult<Nothing>
-  }
-
-  /** Mutable per-file accumulator, folded into the per-file result types below. */
-  private class LoadCount {
-    var loaded: Int = 0
-    var seen: Int = 0
-    var inserted: Int = 0
-    var changed: Int = 0
-    var unchanged: Int = 0
-    val skipsByReason: MutableMap<SkipReason, Int> = mutableMapOf()
-    val fieldsCoercedToNull: MutableMap<String, Int> = mutableMapOf()
-
-    fun recordSkip(reason: SkipReason) {
-      skipsByReason.merge(reason, 1, Int::plus)
-    }
-
-    fun recordCoercions(coercions: Map<String, Int>) {
-      for ((column, n) in coercions) fieldsCoercedToNull.merge(column, n, Int::plus)
-    }
-
-    /** The one accumulator→result mapping for the institution file. */
-    fun toCollegesResult(): CollegeLoadResult =
-      CollegeLoadResult(
-        seen = seen,
-        inserted = inserted,
-        changed = changed,
-        unchanged = unchanged,
-        skipsByReason = skipsByReason.toMap(),
-        fieldsCoercedToNull = fieldsCoercedToNull.toMap(),
-      )
-
-    /** The one accumulator→result mapping for the field-of-study file. */
-    fun toProgramsResult(): ProgramLoadResult =
-      ProgramLoadResult(
-        seen = seen,
-        upserted = loaded,
-        skipsByReason = skipsByReason.toMap(),
-        fieldsCoercedToNull = fieldsCoercedToNull.toMap(),
-      )
-  }
+  /** The one [LoadCount]→result mapping for the field-of-study file. */
+  private fun LoadCount.toProgramsResult(): ProgramLoadResult =
+    ProgramLoadResult(
+      seen = seen,
+      upserted = loaded,
+      skipsByReason = skipsByReason.toMap(),
+      fieldsCoercedToNull = fieldsCoercedToNull.toMap(),
+    )
 
   /**
    * Loads [institutionCsv] then [fieldsCsv] — [loadScorecard] without the RFC
@@ -345,29 +205,6 @@ class CollegeScorecardLoader(
       colleges = phase("institutions", committedPhases) { loadInstitutions(institution.file) },
       programs = phase("fields", committedPhases) { loadFields(fields.file) },
     )
-  }
-
-  /**
-   * Runs one committing phase, recording it in [committedPhases] on success and
-   * — if anything has already committed — converting a failure into a
-   * [PartialIngestException] that names what landed (RFC 139). A failure with
-   * nothing committed yet propagates untouched: that is the clean
-   * nothing-was-written abort.
-   */
-  private suspend fun <T> phase(
-    name: String,
-    committedPhases: MutableList<String>,
-    body: suspend () -> T,
-  ): T {
-    val value =
-      try {
-        body()
-      } catch (e: Exception) {
-        if (committedPhases.isEmpty()) throw e
-        throw PartialIngestException(committedPhases.toList(), e)
-      }
-    committedPhases += name
-    return value
   }
 
   private suspend fun loadInstitutions(file: File): CollegeLoadResult =
@@ -467,7 +304,27 @@ class CollegeScorecardLoader(
   // testable; main() stays a thin argv/exit-code shell.
   // ---------------------------------------------------------------------------
 
-  /** The structured outcome of one successful [ingest] run. */
+  /**
+   * The IPEDS half of one [ingest] run (RFC 144), present only when the
+   * optional all-or-nothing IPEDS group was supplied. ONE grouped value rather
+   * than five nullable slots on [IngestReport]: "the group was omitted" is then
+   * a single fact, and no reader can hold an attributes result without its
+   * survey year, its census sibling, or its non-null snapshots.
+   */
+  data class IpedsReport(
+    val surveyYear: Int,
+    val attributes: IpedsLoadResult,
+    val census: CensusLoadResult,
+    val nonNullBefore: Map<String, Int>,
+    val nonNullAfter: Map<String, Int>,
+  )
+
+  /**
+   * The structured outcome of one successful [ingest] run. [ipeds] is nullable
+   * on purpose (RFC 144's omit-vs-zero discipline): `null` means the optional
+   * IPEDS group was not supplied, which is a different fact from "it was
+   * supplied and loaded nothing".
+   */
   data class IngestReport(
     val startedAt: Instant,
     val finishedAt: Instant,
@@ -478,8 +335,13 @@ class CollegeScorecardLoader(
     val nonNullBefore: Map<String, Int>,
     val nonNullAfter: Map<String, Int>,
     val buildId: java.util.UUID,
+    val ipeds: IpedsReport? = null,
   ) {
-    /** Version bumps this run caused: changed Scorecard rows plus applied alias entries. */
+    /**
+     * Version bumps this run caused: changed Scorecard rows plus applied alias
+     * entries. The IPEDS phases are NOT a third term — they write only the two
+     * unversioned RFC 144 reference tables, never `colleges`.
+     */
     val versionBumps: Int get() = colleges.changed + aliases.applied
 
     /**
@@ -519,6 +381,23 @@ class CollegeScorecardLoader(
             "$column ${nonNullBefore[column]}→${nonNullAfter[column]}"
           }
         appendLine("non-null deltas: $deltas")
+        // The IPEDS lines appear only when the optional group was supplied: a
+        // Scorecard-only run must not print a fabricated "0 ipeds rows".
+        ipeds?.let { report ->
+          val attributes = report.attributes
+          val census = report.census
+          appendLine(
+            "ipeds:    ${attributes.seen} seen — ${attributes.inserted} inserted, " +
+              "${attributes.changed} changed, ${attributes.unchanged} unchanged, " +
+              "${attributes.skipped} skipped (${attributes.unmatchedUnitIds} unmatched unit_id, " +
+              "survey year ${report.surveyYear})",
+          )
+          appendLine(
+            "programs-census: ${census.seen} seen — ${census.selected} bachelor's first majors, " +
+              "${census.inserted} inserted, ${census.changed} changed, ${census.unchanged} unchanged, " +
+              "${census.skipped} skipped (${census.unmatchedUnitIds} unmatched unit_id)",
+          )
+        }
         val sourceLine =
           sources.joinToString(", ") { s ->
             "${s.fileName} sha256=${s.sha256.take(SUMMARY_SHA_PREFIX_CHARS)}… (${s.bytes} bytes)"
@@ -533,22 +412,39 @@ class CollegeScorecardLoader(
 
   /**
    * One full ingest run: parse the curated aliases (fatal on a malformed shape
-   * or duplicate `unit_id`, before any write), digest each source (sha256 +
-   * bytes), snapshot per-column non-null counts on `colleges`, run the shared
-   * [loadScorecard] primitive (whose header assertions are likewise fatal
-   * before any write), apply the aliases, re-snapshot, and finish by inserting
-   * the one `college_index_build` provenance row (`method_version = 1`). A
-   * failure anywhere throws out of here — success paths only reach the build
-   * row. The file phase (parse, digests) runs on [ioDispatcher].
+   * or duplicate `unit_id`, before any write), assert every source header,
+   * digest each source (sha256 + bytes), snapshot per-column non-null counts,
+   * run the Scorecard phases, apply the aliases, run the optional IPEDS phases,
+   * re-snapshot, and finish by inserting the one `college_index_build`
+   * provenance row (`method_version = 2`). A failure anywhere throws out of
+   * here — success paths only reach the build row. The file phase (parse,
+   * digests) runs on [ioDispatcher].
+   *
+   * [ipeds] is the optional, all-or-nothing IPEDS group (gate-2 D19): given
+   * `null` the run behaves exactly as RFC 139's did, and the provenance row
+   * OMITS the IPEDS keys entirely rather than writing them as zeros. Its four
+   * headers are asserted here, BEFORE the first Scorecard phase, so a bad IPEDS
+   * header cannot corrupt a run that has already written Scorecard rows: all
+   * seven files are header-asserted up front.
    */
   suspend fun ingest(
     institution: SourceFile,
     fields: SourceFile,
     aliasesFile: SourceFile,
+    ipeds: IpedsSources? = null,
   ): IngestReport {
     val startedAt = Instant.now()
+    // The IPEDS half of the run is ONE nullable value: the source group and the
+    // loader that reads it exist together or not at all, so no call site has to
+    // reconcile two nullables that a single condition decided.
+    val ipedsRun = ipeds?.let { IpedsRun(it, IpedsLoader(database, ioDispatcher)) }
     val aliasEntries = withContext(ioDispatcher) { parseAliases(aliasesFile.file) }
-    val sources = withContext(ioDispatcher) { listOf(digest(institution), digest(fields), digest(aliasesFile)) }
+    ipedsRun?.assertHeaders()
+    val sources =
+      withContext(ioDispatcher) {
+        listOf(digest(institution), digest(fields), digest(aliasesFile)) +
+          (ipedsRun?.sources?.files?.map { digest(it) } ?: emptyList())
+      }
 
     // Each phase below is its own transaction, so a failure in a later one
     // cannot roll back an earlier one. The tracker turns that into a LOUD
@@ -556,8 +452,22 @@ class CollegeScorecardLoader(
     // of a bare stack trace over a partially applied snapshot.
     val committedPhases = mutableListOf<String>()
     val nonNullBefore = nonNullCounts()
+    // The IPEDS before-snapshot is bound to the run rather than kept as a sixth
+    // nullable: it exists exactly when the group does, so the report below is
+    // built from one non-null value and needs no `!!`.
+    val ipedsStart = ipedsRun?.let { run -> run to ipedsNonNullCounts() }
     val scorecard = loadScorecard(institution, fields, committedPhases)
     val aliasResult = phase("aliases", committedPhases) { applyAliases(aliasEntries) }
+    val ipedsReport =
+      ipedsStart?.let { (run, ipedsNonNullBefore) ->
+        IpedsReport(
+          surveyYear = run.sources.surveyYear,
+          attributes = phase("ipeds", committedPhases) { run.loadAttributes() },
+          census = phase("programs-census", committedPhases) { run.loadProgramsCensus() },
+          nonNullBefore = ipedsNonNullBefore,
+          nonNullAfter = ipedsNonNullCounts(),
+        )
+      }
     val nonNullAfter = nonNullCounts()
     val finishedAt = Instant.now()
 
@@ -571,13 +481,20 @@ class CollegeScorecardLoader(
                 startedAt = startedAt,
                 finishedAt = finishedAt,
                 sources = sourcesJson(sources),
-                rowsIngested = rowsIngestedJson(scorecard.colleges, scorecard.programs, aliasResult),
+                rowsIngested =
+                  rowsIngestedJson(
+                    scorecard.colleges,
+                    scorecard.programs,
+                    aliasResult,
+                    ipedsReport,
+                  ),
                 indexRows = null,
                 changeSummary =
                   changeSummaryJson(
                     nonNullBefore,
                     nonNullAfter,
                     scorecard.colleges.changed + aliasResult.applied,
+                    ipedsReport,
                   ),
                 methodVersion = METHOD_VERSION,
               ),
@@ -595,45 +512,24 @@ class CollegeScorecardLoader(
       nonNullBefore = nonNullBefore,
       nonNullAfter = nonNullAfter,
       buildId = buildId,
+      ipeds = ipedsReport,
     )
   }
 
   /**
-   * Asserts every column this loader reads is present in [file]'s CSV header,
-   * throwing [MissingSourceColumnsException] with the missing names. Runs
-   * before any write: a missing column would otherwise load as NULL across the
-   * whole table, indistinguishable from suppressed data.
+   * The IPEDS half of one run: the all-or-nothing source group and the loader
+   * that reads it, bound together so [ingest] holds ONE nullable value instead
+   * of a nullable group and a nullable loader it has to keep in step.
    */
-  internal fun assertRequiredColumns(
-    source: SourceFile,
-    required: List<String>,
+  private class IpedsRun(
+    val sources: IpedsSources,
+    private val loader: IpedsLoader,
   ) {
-    val header = parseCsv(source.file).use { it.headerMap.keys }
-    val missing = required.filterNot { it in header }
-    if (missing.isNotEmpty()) {
-      // The caller's ORIGINAL argument, not a scratch basename: bin/ingest-colleges
-      // downloads an s3:// source into a temp dir, so file.name alone would name a
-      // file the operator never typed (RFC 139).
-      throw MissingSourceColumnsException(source.file.path, source.sourceArg, missing)
-    }
-  }
+    suspend fun assertHeaders() = loader.assertHeaders(sources)
 
-  /** Streams [source]'s file once for its sha256 hex digest and byte count. */
-  private fun digest(source: SourceFile): SourceDigest {
-    val md = MessageDigest.getInstance(DIGEST_ALGORITHM)
-    var bytes = 0L
-    source.file.inputStream().use { input ->
-      val buffer = ByteArray(DIGEST_READ_BUFFER.bytes.toInt())
-      while (true) {
-        val read = input.read(buffer)
-        if (read < 0) break
-        md.update(buffer, 0, read)
-        bytes += read
-      }
-    }
-    // The JDK's own hex encoder (JDK 21) — no per-byte Formatter, no locale surface.
-    val sha256 = HexFormat.of().formatHex(md.digest())
-    return SourceDigest(fileName = source.file.name, sha256 = sha256, bytes = bytes, sourceArg = source.sourceArg)
+    suspend fun loadAttributes(): IpedsLoadResult = loader.loadAttributes(sources)
+
+    suspend fun loadProgramsCensus(): CensusLoadResult = loader.loadProgramsCensus(sources)
   }
 
   /** One curated alias entry from db/data/college-aliases.json. */
@@ -776,6 +672,12 @@ class CollegeScorecardLoader(
       CollegesDao.nonNullCounts(session, NON_NULL_SUMMARY_COLUMNS).getOrThrow()
     }
 
+  /** The same axis over `college_ipeds` (RFC 144); measured only when the IPEDS group was supplied. */
+  private suspend fun ipedsNonNullCounts(): Map<String, Int> =
+    database.withConnection { session ->
+      CollegeIpedsDao.nonNullCounts(session, IpedsLoader.NON_NULL_SUMMARY_COLUMNS).getOrThrow()
+    }
+
   // JSON payload builders for the build row (kotlinx JSON DSL). They return
   // structured JSON; the DAO serializes it at the JDBC edge (`?::jsonb`).
 
@@ -802,6 +704,7 @@ class CollegeScorecardLoader(
     colleges: CollegeLoadResult,
     programs: ProgramLoadResult,
     aliases: AliasResult,
+    ipeds: IpedsReport?,
   ): JsonObject =
     buildJsonObject {
       putJsonObject("colleges") {
@@ -834,12 +737,50 @@ class CollegeScorecardLoader(
         // question this row is read to answer.
         putJsonArray("unknown_unit_id") { aliases.unknownUnitIds.forEach { add(it) } }
       }
+      // Omit-vs-zero (RFC 144), the same discipline as skips_by_reason above:
+      // an ABSENT key means the IPEDS group was not supplied, a PRESENT key
+      // with zeros means it was supplied and changed nothing. Writing zeros for
+      // a run that never read an IPEDS file would report a measurement nobody
+      // took.
+      ipeds?.let { report ->
+        val attributes = report.attributes
+        val census = report.census
+        putJsonObject("ipeds") {
+          put("survey_year", report.surveyYear)
+          put("seen", attributes.seen)
+          put("inserted", attributes.inserted)
+          put("changed", attributes.changed)
+          put("unchanged", attributes.unchanged)
+          put("skipped", attributes.skipped)
+          put("unmatched_unit_ids", attributes.unmatchedUnitIds)
+          putJsonObject("skips_by_reason") {
+            for ((kind, count) in skipsByKind(attributes.skipsByReason)) put(kind, count)
+          }
+        }
+        putJsonObject("programs_census") {
+          put("survey_year", report.surveyYear)
+          put("seen", census.seen)
+          // Rows the documented bachelor's-first-major filter kept. seen minus
+          // selected is a deliberate exclusion, not a loss, so it is reported
+          // as its own number rather than as a skip.
+          put("selected", census.selected)
+          put("inserted", census.inserted)
+          put("changed", census.changed)
+          put("unchanged", census.unchanged)
+          put("skipped", census.skipped)
+          put("unmatched_unit_ids", census.unmatchedUnitIds)
+          putJsonObject("skips_by_reason") {
+            for ((kind, count) in skipsByKind(census.skipsByReason)) put(kind, count)
+          }
+        }
+      }
     }
 
   private fun changeSummaryJson(
     before: Map<String, Int>,
     after: Map<String, Int>,
     versionBumps: Int,
+    ipeds: IpedsReport?,
   ): JsonObject =
     buildJsonObject {
       putJsonObject("non_null") {
@@ -851,6 +792,19 @@ class CollegeScorecardLoader(
             // omission means the snapshot itself was short.
             before[column]?.let { put("before", it) }
             after[column]?.let { put("after", it) }
+          }
+        }
+        // The `colleges` columns sit at the top of `non_null` for RFC 139
+        // compatibility; the IPEDS axis is nested under its own table name (RFC
+        // 144) and is absent entirely when the group was not supplied.
+        ipeds?.let { report ->
+          putJsonObject("college_ipeds") {
+            for (column in IpedsLoader.NON_NULL_SUMMARY_COLUMNS) {
+              putJsonObject(column) {
+                report.nonNullBefore[column]?.let { put("before", it) }
+                report.nonNullAfter[column]?.let { put("after", it) }
+              }
+            }
           }
         }
       }
@@ -890,71 +844,6 @@ class CollegeScorecardLoader(
     return college
   }
 
-  /**
-   * Buckets a post-DB upsert failure (mechanism C): a [TransientError] is a
-   * retryable [SkipReason.Transient] kept at WARN (rare); a
-   * [ConstraintViolationException] is bucketed by its constraint name; any other
-   * [PermanentError] is an unkeyed [SkipReason.ConstraintViolation]; a null or
-   * otherwise-unclassifiable failure is [SkipReason.UnknownFailure] — never
-   * silently fused into an unnamed constraint violation. The per-row line is
-   * demoted to DEBUG (transient stays WARN) and carries the row's natural key,
-   * line number, and the exception's constraint/detail so a drill-down shows
-   * which value failed without dumping every row at WARN.
-   */
-  private fun recordUpsertFailure(
-    count: LoadCount,
-    error: Throwable?,
-    kind: String,
-    keyName: String,
-    keyValue: Any?,
-    line: Long,
-  ) {
-    val reason = classifyUpsertFailure(error)
-    count.recordSkip(reason)
-    logUpsertSkip(reason, kind, keyName, keyValue, line, error)
-  }
-
-  /**
-   * Emits the per-row skip line for an upsert failure: the row's natural key and
-   * line number plus the constraint/detail pulled from a
-   * [ConstraintViolationException] (null otherwise) and the categorized cause. A
-   * [SkipReason.Transient] stays WARN (rare, retryable); every other reason is
-   * demoted to DEBUG so a drill-down shows which value failed without dumping
-   * every row at WARN.
-   */
-  private fun logUpsertSkip(
-    reason: SkipReason,
-    kind: String,
-    keyName: String,
-    keyValue: Any?,
-    line: Long,
-    error: Throwable?,
-  ) {
-    val violation = error as? ConstraintViolationException
-    val constraintName = violation?.constraint
-    val detail = violation?.detail
-    val message = "Skipping [$kind] row [$keyName={}] [line={}] [constraint={}] [detail={}]: [{}]"
-    if (reason == SkipReason.Transient) {
-      logger.warn(message, keyValue, line, constraintName, detail, describe(error))
-    } else {
-      logger.debug(message, keyValue, line, constraintName, detail, describe(error))
-    }
-  }
-
-  /**
-   * Pure classifier (no logging, no mutation) mapping an upsert failure to its
-   * [SkipReason] bucket. Null-guarded first so a missing exception is an explicit
-   * [SkipReason.UnknownFailure], never an unnamed constraint violation.
-   */
-  internal fun classifyUpsertFailure(error: Throwable?): SkipReason =
-    when (error) {
-      null -> SkipReason.UnknownFailure
-      is TransientError -> SkipReason.Transient
-      is ConstraintViolationException -> SkipReason.ConstraintViolation(error.constraint)
-      is PermanentError -> SkipReason.ConstraintViolation(null)
-      else -> SkipReason.UnknownFailure
-    }
-
   private fun logSummary(
     file: String,
     count: LoadCount,
@@ -966,29 +855,6 @@ class CollegeScorecardLoader(
       count.skipsByReason,
       count.fieldsCoercedToNull,
     )
-  }
-
-  /**
-   * Runs one row's [upsert] inside a SQL `SAVEPOINT` so a CHECK/unique violation
-   * (or any [DaoException]) rolls back only that row, not the whole file: without
-   * a savepoint, PostgreSQL aborts the enclosing transaction on the first failed
-   * statement (SQLSTATE `25P02`) and every subsequent row would falsely "skip"
-   * and the terminal commit would discard the good rows. On success the savepoint
-   * is released; on a failed [Result] it is rolled back to, leaving the
-   * transaction usable for the next row.
-   */
-  private fun <T> upsertWithSavepoint(
-    session: SqlSession,
-    upsert: () -> Result<T>,
-  ): Result<T> {
-    session.prepareStatement("SAVEPOINT $ROW_SAVEPOINT").use { it.execute() }
-    val result = upsert()
-    if (result.isFailure) {
-      session.prepareStatement("ROLLBACK TO SAVEPOINT $ROW_SAVEPOINT").use { it.execute() }
-    } else {
-      session.prepareStatement("RELEASE SAVEPOINT $ROW_SAVEPOINT").use { it.execute() }
-    }
-    return result
   }
 
   // ---------------------------------------------------------------------------
@@ -1165,142 +1031,16 @@ class CollegeScorecardLoader(
     )
   }
 
-  // ---------------------------------------------------------------------------
-  // CSV parsing + cell coercion
-  // ---------------------------------------------------------------------------
-
-  /** A trimmed cell, or null when absent or blank (the Scorecard blank-cell idiom). */
-  private fun stringOrNull(
-    record: CSVRecord,
-    column: String,
-  ): String? {
-    // Every cell read flows through here, and [assertRequiredColumns] has
-    // already proven every REQUIRED_* column is mapped — so an unmapped column
-    // can only be a read site missing from the REQUIRED_* list (RFC 139).
-    // That is a programming error, failed loudly rather than silently loading
-    // a whole column as NULL.
-    check(record.isMapped(column)) {
-      "column [$column] is read by a mapper but missing from the REQUIRED_* assertion list"
-    }
-    val value = record.get(column)?.trim()
-    return value?.takeIf { it.isNotEmpty() }
-  }
-
-  private fun intOrNull(
-    record: CSVRecord,
-    column: String,
-  ): Int? = stringOrNull(record, column)?.toIntOrNull()
-
-  private fun doubleOrNull(
-    record: CSVRecord,
-    column: String,
-  ): Double? = stringOrNull(record, column)?.toDoubleOrNull()
-
-  /**
-   * Mechanism A for a bounded **optional** integer metric: parses the cell, and
-   * if it is absent/non-int it is simply null (the blank-cell idiom); if it is a
-   * valid int outside `[min, max]` it is coerced to NULL and the coercion is
-   * tallied by [columnName]. A junk optional cell thus never drops the row — the
-   * DB CHECK remains the backstop for anything this misses.
-   */
-  private fun intInDomainOrNull(
-    record: CSVRecord,
-    column: String,
-    min: Int,
-    max: Int,
-    columnName: String,
-    coercions: MutableMap<String, Int>,
-  ): Int? {
-    val value = intOrNull(record, column) ?: return null
-    if (value < min || value > max) {
-      logCoercion(columnName, record.recordNumber, value, min, max, coercions)
-      return null
-    }
-    return value
-  }
-
-  /** Mechanism A for a bounded **optional** double metric; see [intInDomainOrNull]. */
-  private fun doubleInDomainOrNull(
-    record: CSVRecord,
-    column: String,
-    min: Double,
-    max: Double,
-    columnName: String,
-    coercions: MutableMap<String, Int>,
-  ): Double? {
-    val value = doubleOrNull(record, column) ?: return null
-    if (value < min || value > max) {
-      logCoercion(columnName, record.recordNumber, value, min, max, coercions)
-      return null
-    }
-    return value
-  }
-
-  /**
-   * Tallies an out-of-domain optional-metric coercion by [columnName] and emits
-   * the per-cell DEBUG line. Shared by [intInDomainOrNull] and
-   * [doubleInDomainOrNull] so the tally and log template live in one place.
-   */
-  private fun logCoercion(
-    columnName: String,
-    line: Long,
-    value: Any,
-    min: Any,
-    max: Any,
-    coercions: MutableMap<String, Int>,
-  ) {
-    coercions.merge(columnName, 1, Int::plus)
-    logger.debug(
-      "Coercing out-of-domain optional metric to null [column={}] [line={}] [value={}] [domain=[{}, {}]]",
-      columnName,
-      line,
-      value,
-      min,
-      max,
-    )
-  }
-
-  /**
-   * A bracketed cause description for a skip warning, tagged with the failure
-   * category (transient vs permanent) so a human scanning the log can tell a
-   * retryable blip from permanently-corrupt source data. The wrapping
-   * [DaoException] carries only a generic message (e.g. "Database constraint
-   * violation"), so the actionable detail — which constraint failed, on what
-   * value — is pulled from the root cause it wraps (and its SQLSTATE when that
-   * cause is a [SQLException]).
-   */
-  private fun describe(error: Throwable?): String {
-    if (error == null) return "[unknown error]"
-    val root = rootCause(error)
-    val detail =
-      if (root is SQLException) {
-        "[${root::class.simpleName}] [sqlstate=${root.sqlState}]: [${root.message?.trim()}]"
-      } else {
-        "[${root::class.simpleName}]: [${root.message}]"
-      }
-    return "[${error.errorCategory()}] [${error::class.simpleName}]: $detail"
-  }
-
-  private fun rootCause(error: Throwable): Throwable {
-    var cause = error
-    while (cause.cause != null && cause.cause !== cause) cause = cause.cause!!
-    return cause
-  }
-
   companion object {
-    private const val ROW_SAVEPOINT = "scorecard_row"
-
-    /** `college_index_build.method_version` for this derivation logic (1 = RFC 139). */
-    const val METHOD_VERSION = 1
+    /**
+     * `college_index_build.method_version` for this derivation logic
+     * (1 = RFC 139, 2 = RFC 144's IPEDS source family). Bumped whenever the
+     * derivation logic changes, so a build row says which one produced it.
+     */
+    const val METHOD_VERSION = 2
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("unit_id", "aliases")
-
-    /** The provenance digest algorithm: `college_index_build.sources.sha256` is this hash. */
-    private const val DIGEST_ALGORITHM = "SHA-256"
-
-    /** Streaming read-buffer for [digest]: one 64 KiB block per read, named through the repo's own byte type. */
-    private val DIGEST_READ_BUFFER = DataSize.ofKibibytes(64)
 
     /** Hex characters of each source sha256 shown in the human summary; the full digest is in the build row. */
     private const val SUMMARY_SHA_PREFIX_CHARS = 12

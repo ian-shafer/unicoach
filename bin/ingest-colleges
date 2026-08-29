@@ -4,7 +4,8 @@ source "$(dirname "$0")/common"
 help() {
   cat << 'EOF'
 ingest-colleges [-m <merit-aid.csv> -a <admission-factors.csv> -d <deadlines.csv>]
-                <institution.csv> <fields.csv> [aliases.json]
+                <institution.csv> <fields.csv> [aliases.json] \
+    [--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --survey-year=YYYY]
 
 Loads a version-pinned College Scorecard CSV pair into the `colleges` and
 `college_programs` reference tables via the :college ingester (RFC 67). Upserts
@@ -31,6 +32,26 @@ Run inside the nix dev shell (the JVM lives there):
     -a db/seed/cds/admission-factors.csv \
     -d db/seed/cds/deadlines.csv \
     <institution.csv> <fields.csv>
+IPEDS (RFC 144, optional, ALL-OR-NOTHING). The five long options above load the
+IPEDS institutional-characteristics survey into `college_ipeds` and
+`college_programs_census` in the SAME run. Give none of them and the run is
+exactly as before; give any one and all five are required. --survey-year is
+explicit (e.g. 2023) and is stamped on every IPEDS row: it is never guessed from
+a filename.
+
+  Getting the files: unzip HD2023.zip, IC2023.zip, ADM2023.zip and C2023_A.zip
+  from https://nces.ed.gov/ipeds/datacenter/data/ and pass the CSV paths.
+  WATCH OUT — the member names are inconsistently cased (HD2023.csv, IC2023.csv,
+  but adm2023.csv and C2023_a.csv), and IC/C_A also ship revised `_RV` members.
+  Pass the NON-_RV member: IC2023_RV.csv is a reordered 141-column superset that
+  a naive column check would accept and mis-map. The header assertion is the
+  backstop, not the plan.
+
+Run inside the nix dev shell (the JVM lives there):
+  nix develop -c bin/ingest-colleges <institution.csv> <fields.csv>
+  nix develop -c bin/ingest-colleges inst.csv fields.csv aliases.json \
+      --hd=HD2023.csv --ic=IC2023.csv --adm=adm2023.csv \
+      --completions=C2023_a.csv --survey-year=2023
 
 Options:
   -m FILE: CDS merit-aid seed CSV
@@ -57,6 +78,48 @@ while getopts ":m:a:d:h" opt; do
 done
 shift $((OPTIND-1))
 
+# Split argv into the positional Scorecard args and the optional IPEDS long
+# options. The five IPEDS options are parsed here (not just forwarded) because
+# each file path must be run through resolve_file_arg before the JVM sees it,
+# exactly as the three positionals are.
+IPEDS_HD=""
+IPEDS_IC=""
+IPEDS_ADM=""
+IPEDS_COMPLETIONS=""
+IPEDS_SURVEY_YEAR=""
+POSITIONAL=()
+IPEDS_GIVEN=()
+
+# Presence is judged on the FLAG, not on its value, and each flag may appear
+# once — the two rules IngestApplication's own grammar states. Judging presence
+# on the value would make five EMPTY flags look like an omitted group and
+# silently downgrade the run to Scorecard-only with a green exit; keeping only
+# the last of a repeated flag would silently discard a file the JVM calls a
+# usage error. Both are refused here, before any download.
+set_ipeds_flag() {
+  local name="$1" value="$2" seen
+  for seen in ${IPEDS_GIVEN[@]+"${IPEDS_GIVEN[@]}"}; do
+    [ "$seen" = "--$name" ] &&
+      fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [--$name] was given more than once"
+  done
+  [ -n "$value" ] ||
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [--$name] must have a non-empty value"
+  IPEDS_GIVEN+=("--$name")
+}
+
+for arg in "$@"; do
+  case "$arg" in
+  --hd=*)          IPEDS_HD="${arg#--hd=}";                   set_ipeds_flag hd "$IPEDS_HD" ;;
+  --ic=*)          IPEDS_IC="${arg#--ic=}";                   set_ipeds_flag ic "$IPEDS_IC" ;;
+  --adm=*)         IPEDS_ADM="${arg#--adm=}";                 set_ipeds_flag adm "$IPEDS_ADM" ;;
+  --completions=*) IPEDS_COMPLETIONS="${arg#--completions=}"; set_ipeds_flag completions "$IPEDS_COMPLETIONS" ;;
+  --survey-year=*) IPEDS_SURVEY_YEAR="${arg#--survey-year=}"; set_ipeds_flag survey-year "$IPEDS_SURVEY_YEAR" ;;
+  --*) fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: unknown option [$arg]" ;;
+  *) POSITIONAL+=("$arg") ;;
+  esac
+done
+set -- ${POSITIONAL[@]+"${POSITIONAL[@]}"}
+
 if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
   fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges requires two or three arguments: <institution.csv> <fields.csv> [aliases.json]"
 fi
@@ -78,6 +141,21 @@ for cds_arg in "$CDS_MERIT_AID" "$CDS_ADMISSION_FACTORS" "$CDS_DEADLINES"; do
 done
 if [ "$CDS_OPTION_COUNT" -ne 0 ] && [ "$CDS_OPTION_COUNT" -ne 3 ]; then
   fatal -s "$EXIT_MISSING_REQUIRED_ARG" "the CDS options are all-or-nothing: pass -m, -a and -d together, or none"
+fi
+
+# The IPEDS group is ALL-OR-NOTHING (RFC 144, gate-2 D19): a partial group is a
+# usage error, never a silent partial load. Refused here as well as in the JVM
+# so the failure costs no download and no JVM start. The JVM keeps its own copy
+# of this rule because it is reachable without this script.
+IPEDS_MISSING=()
+for name in hd ic adm completions survey-year; do
+  case " ${IPEDS_GIVEN[@]+${IPEDS_GIVEN[*]}} " in
+  *" --$name "*) ;;
+  *) IPEDS_MISSING+=("--$name") ;;
+  esac
+done
+if [ "${#IPEDS_GIVEN[@]}" -gt 0 ] && [ "${#IPEDS_MISSING[@]}" -gt 0 ]; then
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges: the IPEDS options are all-or-nothing; given [${IPEDS_GIVEN[*]}], also required: [${IPEDS_MISSING[*]}]"
 fi
 
 # Own the scratch dir resolve_file_arg downloads s3:// args into: the file
@@ -106,6 +184,23 @@ if [ "$CDS_OPTION_COUNT" -eq 3 ]; then
   CDS_ARGS+=(--cds-deadlines "$(resolve_file_arg "$CDS_DEADLINES" "$INGEST_SCRATCH")")
 fi
 
+# The IPEDS files get the same treatment, and the ORIGINAL argument of each is
+# forwarded as its --*-source partner so the provenance row records what the
+# caller actually named (RFC 144).
+IPEDS_ARGV=()
+if [ "${#IPEDS_GIVEN[@]}" -gt 0 ]; then
+  HD_CSV="$(resolve_file_arg "$IPEDS_HD" "$INGEST_SCRATCH")"
+  IC_CSV="$(resolve_file_arg "$IPEDS_IC" "$INGEST_SCRATCH")"
+  ADM_CSV="$(resolve_file_arg "$IPEDS_ADM" "$INGEST_SCRATCH")"
+  COMPLETIONS_CSV="$(resolve_file_arg "$IPEDS_COMPLETIONS" "$INGEST_SCRATCH")"
+  IPEDS_ARGV=(
+    --hd="$HD_CSV" --ic="$IC_CSV" --adm="$ADM_CSV" --completions="$COMPLETIONS_CSV"
+    --survey-year="$IPEDS_SURVEY_YEAR"
+    --hd-source="$IPEDS_HD" --ic-source="$IPEDS_IC" --adm-source="$IPEDS_ADM"
+    --completions-source="$IPEDS_COMPLETIONS"
+  )
+fi
+
 # Run the prebuilt installDist launcher directly (never Gradle), fataling if the
 # build artifact is absent (bin/INVARIANTS.md pre-built-launcher rule). The path is
 # a single $PROJECT_ROOT-relative path that resolves identically in the local dev
@@ -127,4 +222,5 @@ LAUNCHER="$PROJECT_ROOT/$COLLEGE_DIST/bin/college"
 # `set -u` (see split_argv_at_dashdash in bin/functions).
 "$LAUNCHER" "$INSTITUTION_CSV" "$FIELDS_CSV" "$ALIASES_JSON" \
   --institution-source="$1" --fields-source="$2" --aliases-source="$ALIASES_ARG" \
-  ${CDS_ARGS[@]+"${CDS_ARGS[@]}"}
+  ${CDS_ARGS[@]+"${CDS_ARGS[@]}"} \
+  ${IPEDS_ARGV[@]+"${IPEDS_ARGV[@]}"}

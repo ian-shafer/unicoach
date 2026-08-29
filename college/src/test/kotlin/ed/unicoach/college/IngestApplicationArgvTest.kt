@@ -2,6 +2,8 @@ package ed.unicoach.college
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -69,4 +71,121 @@ class IngestApplicationArgvTest {
     assertTrue(usage("institution.csv", "fields.csv").isNotEmpty())
     assertTrue(usage(*positional, "extra.json").isNotEmpty())
   }
+
+  // ---------------------------------------------------------------------------
+  // The optional IPEDS group (RFC 144): all-or-nothing, never a partial load
+  // ---------------------------------------------------------------------------
+
+  private val ipedsGroup =
+    arrayOf(
+      "--hd=HD2023.csv",
+      "--ic=IC2023.csv",
+      "--adm=adm2023.csv",
+      "--completions=C2023_a.csv",
+      "--survey-year=2023",
+    )
+
+  @Test
+  fun `a run with no IPEDS flags parses exactly as before, with no IPEDS group`() {
+    assertNull(ok().ipeds, "absent must stay absent, never an empty-but-present group")
+  }
+
+  @Test
+  fun `the full IPEDS group parses into the four files and the explicit survey year`() {
+    val ipeds = assertNotNull(ok(*ipedsGroup).ipeds)
+    assertEquals(
+      listOf("HD2023.csv", "IC2023.csv", "adm2023.csv", "C2023_a.csv"),
+      ipeds.files.map { it.file.path },
+    )
+    assertEquals(2023, ipeds.surveyYear)
+    // With no --*-source partners, each positional path IS the original argument.
+    assertEquals(
+      listOf("HD2023.csv", "IC2023.csv", "adm2023.csv", "C2023_a.csv"),
+      ipeds.files.map { it.sourceArg },
+    )
+  }
+
+  @Test
+  fun `each IPEDS file carries its own original argument when a source flag is given`() {
+    val ipeds =
+      assertNotNull(
+        ok(*ipedsGroup, "--hd-source=s3://snap/HD2023.csv", "--completions-source=s3://snap/C2023_a.csv").ipeds,
+      )
+    assertEquals(
+      listOf("s3://snap/HD2023.csv", "IC2023.csv", "adm2023.csv", "s3://snap/C2023_a.csv"),
+      ipeds.files.map { it.sourceArg },
+    )
+  }
+
+  @Test
+  fun `a partial IPEDS group is refused, naming what is missing`() {
+    val message = usage(*positional, "--hd=HD2023.csv")
+    assertTrue(message.contains("all-or-nothing"), message)
+    assertTrue(message.contains("--ic"), message)
+    assertTrue(message.contains("--survey-year"), message)
+  }
+
+  @Test
+  fun `omitting only the survey year is refused, never derived from a filename`() {
+    val message = usage(*positional, "--hd=HD2023.csv", "--ic=IC2023.csv", "--adm=adm.csv", "--completions=CA.csv")
+    assertTrue(message.contains("--survey-year"), message)
+  }
+
+  @Test
+  fun `a non-numeric or implausible survey year is refused`() {
+    assertTrue(usage(*positional, *ipedsGroupWithYear("twenty-23")).contains("--survey-year"))
+    assertTrue(usage(*positional, *ipedsGroupWithYear("23")).contains("--survey-year"))
+  }
+
+  @Test
+  fun `a repeated or blank IPEDS flag is refused like any other`() {
+    assertTrue(usage(*positional, *ipedsGroup, "--hd=other.csv").contains("more than once"))
+    assertTrue(usage(*positional, "--hd=").contains("non-empty"))
+  }
+
+  @Test
+  fun `an IPEDS source flag without its file is refused, never silently ignored`() {
+    val message = usage(*positional, "--hd-source=s3://snap/HD2023.csv")
+    assertTrue(message.contains("--hd-source"), message)
+    assertTrue(message.contains("was not supplied"), message)
+  }
+
+  // ---------------------------------------------------------------------------
+  // The existence probe's payload: role + the caller's ORIGINAL argument
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `every source is paired with its role and the caller's original argument, not just a scratch path`() {
+    // bin/ingest-colleges downloads an s3:// source into a mktemp dir, so a
+    // "not found" naming only the resolved path names a file the operator never
+    // typed — and with seven candidates it does not say which option failed.
+    val parsed =
+      ok(
+        *ipedsGroup,
+        "--hd-source=s3://snap/HD2023.csv",
+        "--institution-source=s3://snap/institution.csv",
+      )
+    val named = namedSources(parsed)
+    assertEquals(
+      listOf("institution", "fields", "aliases", "hd", "ic", "adm", "completions"),
+      named.map { it.first },
+      "every file the run reads is named by the flag the operator typed",
+    )
+    assertEquals("s3://snap/institution.csv", named.first { it.first == "institution" }.second.sourceArg)
+    assertEquals("s3://snap/HD2023.csv", named.first { it.first == "hd" }.second.sourceArg)
+    assertEquals(
+      "HD2023.csv",
+      named
+        .first { it.first == "hd" }
+        .second.file.path,
+    )
+  }
+
+  @Test
+  fun `a run with no IPEDS group names only the three Scorecard sources`() {
+    assertEquals(listOf("institution", "fields", "aliases"), namedSources(ok()).map { it.first })
+  }
+
+  private fun ipedsGroupWithYear(year: String): Array<String> =
+    arrayOf("--hd=HD.csv", "--ic=IC.csv", "--adm=adm.csv", "--completions=CA.csv", "--survey-year=$year")
 }

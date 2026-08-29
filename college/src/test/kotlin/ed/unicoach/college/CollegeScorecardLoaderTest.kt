@@ -215,7 +215,7 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // is carried in the structured reason.
       assertEquals(
         1,
-        result.skipsByReason[CollegeScorecardLoader.SkipReason.MissingRequiredField(listOf("unit_id"))],
+        result.skipsByReason[SkipReason.MissingRequiredField(listOf("unit_id"))],
       )
     }
 
@@ -240,7 +240,7 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       assertEquals(
         1,
         result.skipsByReason[
-          CollegeScorecardLoader.SkipReason.ConstraintViolation("colleges_control_valid_check"),
+          SkipReason.ConstraintViolation("colleges_control_valid_check"),
         ],
       )
 
@@ -301,28 +301,28 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
   fun `classifyUpsertFailure buckets each failure shape distinctly`() {
     // Null and an unmappable Throwable both fall to UnknownFailure — never fused
     // into an unnamed ConstraintViolation.
-    assertEquals(CollegeScorecardLoader.SkipReason.UnknownFailure, loader.classifyUpsertFailure(null))
+    assertEquals(SkipReason.UnknownFailure, CsvIngestSupport.classifyUpsertFailure(null))
     assertEquals(
-      CollegeScorecardLoader.SkipReason.UnknownFailure,
-      loader.classifyUpsertFailure(IllegalStateException("not a DaoException")),
+      SkipReason.UnknownFailure,
+      CsvIngestSupport.classifyUpsertFailure(IllegalStateException("not a DaoException")),
     )
     // A retryable fault is Transient.
     assertEquals(
-      CollegeScorecardLoader.SkipReason.Transient,
-      loader.classifyUpsertFailure(LockAcquisitionFailureException()),
+      SkipReason.Transient,
+      CsvIngestSupport.classifyUpsertFailure(LockAcquisitionFailureException()),
     )
     // A named constraint violation keeps its name; an unnamed one carries null.
     assertEquals(
-      CollegeScorecardLoader.SkipReason.ConstraintViolation("colleges_control_valid_check"),
-      loader.classifyUpsertFailure(
+      SkipReason.ConstraintViolation("colleges_control_valid_check"),
+      CsvIngestSupport.classifyUpsertFailure(
         ConstraintViolationException(SQLException("boom"), "colleges_control_valid_check"),
       ),
     )
     // A generic permanent DB error is an unkeyed ConstraintViolation, distinct
     // from UnknownFailure.
     assertEquals(
-      CollegeScorecardLoader.SkipReason.ConstraintViolation(null),
-      loader.classifyUpsertFailure(DatabaseException(SQLException("boom"))),
+      SkipReason.ConstraintViolation(null),
+      CsvIngestSupport.classifyUpsertFailure(DatabaseException(SQLException("boom"))),
     )
   }
 }

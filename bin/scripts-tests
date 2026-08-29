@@ -1620,6 +1620,99 @@ assert_success "the committed CDS seed matches PROVENANCE.json (sha256 + row cou
   test_cds_provenance_matches_seed
 rm -rf "$CDS_FIXTURES" "$CDS_OUT"
 
+# IPEDS group (RFC 144): all-or-nothing, refused BEFORE any download or JVM
+# start, and each file's original argument forwarded as its --*-source partner.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only --hd)" \
+  bin/ingest-colleges a.csv b.csv --hd=HD2023.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects an IPEDS group missing --survey-year" \
+  bin/ingest-colleges a.csv b.csv --hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=CA.csv
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an unknown long option" \
+  bin/ingest-colleges a.csv b.csv --hd2=HD.csv
+# A flag given with an EMPTY value is a wrong value, not an omitted flag: five
+# empty flags would otherwise look like "no IPEDS group" and silently downgrade
+# the run to Scorecard-only with a green exit.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty IPEDS flag value" \
+  bin/ingest-colleges a.csv b.csv --hd= --ic=IC.csv --adm=adm.csv --completions=CA.csv --survey-year=2023
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an all-empty IPEDS group, never a silent Scorecard-only run" \
+  bin/ingest-colleges a.csv b.csv --hd= --ic= --adm= --completions= --survey-year=
+# A repeated flag is the usage error the JVM names; last-wins here would forward
+# only the survivor and the JVM's refusal would be unreachable.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects a repeated IPEDS flag" \
+  bin/ingest-colleges a.csv b.csv --hd=A.csv --hd=B.csv --ic=IC.csv --adm=adm.csv --completions=CA.csv --survey-year=2023
+test_ingest_colleges_ipeds_source_flags() {
+  local root parent stub argv inst fields hd ic adm ca entry rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-ipedsflags"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  hd="$parent/HD2023.csv"; ic="$parent/IC2023.csv"
+  adm="$parent/adm2023.csv"; ca="$parent/C2023_a.csv"
+  : > "$inst"; : > "$fields"; : > "$hd"; : > "$ic"; : > "$adm"; : > "$ca"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" \
+    --hd="$hd" --ic="$ic" --adm="$adm" --completions="$ca" --survey-year=2023 \
+    > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]:"
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  grep -qxF -- "--hd-source=$hd" "$argv" &&
+    grep -qxF -- "--ic-source=$ic" "$argv" &&
+    grep -qxF -- "--adm-source=$adm" "$argv" &&
+    grep -qxF -- "--completions-source=$ca" "$argv" &&
+    grep -qxF -- "--survey-year=2023" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges forwards each IPEDS file's original arg as its --*-source flag" \
+  test_ingest_colleges_ipeds_source_flags
+# A Scorecard-only run must not grow IPEDS argv: the optional group is genuinely
+# absent, not present-and-empty.
+test_ingest_colleges_no_ipeds_argv() {
+  local root parent stub argv inst fields entry rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-noipeds"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]:"
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  ! grep -qE -- "^--(hd|ic|adm|completions|survey-year)" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "a Scorecard-only ingest-colleges run passes no IPEDS argv at all" test_ingest_colleges_no_ipeds_argv
+
 # ── bin/common layering (RFC 95): ENV_FILES string, both-set, empty base ───────
 echo "==== Testing bin/common dotenv layering ===="
 

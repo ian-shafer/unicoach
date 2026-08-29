@@ -20,7 +20,9 @@ private const val USAGE =
   "Usage: ingest-colleges <institution.csv> <fields.csv> <aliases.json> " +
     "[--institution-source=ARG] [--fields-source=ARG] [--aliases-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
-    "$CDS_DEADLINES_FLAG <deadlines.csv>]"
+    "$CDS_DEADLINES_FLAG <deadlines.csv>] " +
+    "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --survey-year=YYYY] " +
+    "[--hd-source=ARG] [--ic-source=ARG] [--adm-source=ARG] [--completions-source=ARG]"
 
 /** The recognized `--<name>=<value>` provenance flags, keyed by positional index. */
 private val SOURCE_FLAGS = listOf("institution-source", "fields-source", "aliases-source")
@@ -37,17 +39,48 @@ internal data class CdsArgs(
 )
 
 /**
- * The argv grammar's outcome (RFC 139, extended for the CDS group in RFC 140):
- * either the resolved sources (plus the optional CDS trio) or a usage refusal.
- * Split out of [main] so the refusals — a repeated flag, an empty flag value, a
- * wrong positional count, a partial CDS group — are directly testable rather
- * than reachable only through `exitProcess`.
+ * The optional IPEDS file flags (RFC 144, gate-2 D19). All four — plus
+ * [SURVEY_YEAR_FLAG] — are required together or not at all: a partial group is a
+ * usage error, never a silent partial load.
+ */
+private val IPEDS_FILE_FLAGS = listOf("hd", "ic", "adm", "completions")
+
+/** Each IPEDS file's optional provenance partner, exactly as the Scorecard trio has. */
+private val IPEDS_SOURCE_FLAGS = IPEDS_FILE_FLAGS.map { "$it-source" }
+
+/**
+ * The survey year is EXPLICIT, never derived from a filename: a derived year is
+ * a silent coercion, and this value is stamped on every row the IPEDS phases
+ * write.
+ */
+private const val SURVEY_YEAR_FLAG = "survey-year"
+
+/**
+ * The survey-year domain, owned by [IpedsLoader] with the rest of the 0055
+ * mirrors: one declaration, so a CHECK change cannot leave the argv refusal
+ * disagreeing with the loader.
+ */
+private val SURVEY_YEAR_RANGE = IpedsLoader.YEAR_RANGE
+
+private val KNOWN_FLAGS = SOURCE_FLAGS + IPEDS_FILE_FLAGS + IPEDS_SOURCE_FLAGS + SURVEY_YEAR_FLAG
+
+/**
+ * The argv grammar's outcome (RFC 139, extended for the CDS group in RFC 140
+ * and the IPEDS group in RFC 144): either the resolved sources or a usage
+ * refusal. Split out of [main] so the refusals — a repeated flag, an empty
+ * flag value, a wrong positional count, a partial CDS or IPEDS group — are
+ * directly testable rather than reachable only through `exitProcess`.
  */
 internal sealed interface ArgvResult {
-  /** The three sources, in `SOURCE_FLAGS` order, each paired with the caller's original argument. */
+  /**
+   * The three Scorecard sources, in `SOURCE_FLAGS` order, each paired with the
+   * caller's original argument, plus the optional IPEDS group ([ipeds] is null
+   * when none of its flags were given).
+   */
   data class Ok(
-    val sources: List<CollegeScorecardLoader.SourceFile>,
-    val cds: CdsArgs?,
+    val sources: List<SourceFile>,
+    val cds: CdsArgs? = null,
+    val ipeds: IpedsSources? = null,
   ) : ArgvResult
 
   /** A grammar violation: [message] is logged and the process exits 2. */
@@ -58,64 +91,60 @@ internal sealed interface ArgvResult {
 
 /**
  * Parses `<institution.csv> <fields.csv> <aliases.json>` plus the optional
- * `--<name>=<value>` provenance flags (RFC 139) and the optional
- * `--cds-* <path>` seed group (RFC 140). Every deviation is a refusal, never a
- * silent coercion: an unknown or valueless flag, a REPEATED flag (last-wins
- * would write provenance the caller never asked for), a flag whose value is
- * blank (present-but-empty is a wrong value, not an absent flag), a positional
- * count other than [SOURCE_FLAGS]`.size`, or a PARTIAL CDS group (one table's
- * cycle without its siblings would skew the coverage report). File existence is
+ * `--<name>=<value>` provenance flags (RFC 139), the optional `--cds-* <path>`
+ * seed group (RFC 140), and the optional IPEDS group (RFC 144). Every deviation
+ * is a refusal, never a silent coercion: an unknown or valueless flag, a
+ * REPEATED flag (last-wins would write provenance the caller never asked for), a
+ * flag whose value is blank (present-but-empty is a wrong value, not an absent
+ * flag), a positional count other than [SOURCE_FLAGS]`.size`, a PARTIAL CDS
+ * group (one table's cycle without its siblings would skew the coverage report),
+ * a PARTIAL IPEDS group, an IPEDS `--*-source` naming a file that was not
+ * supplied, or a `--survey-year` that is not a plausible year. File existence is
  * checked by the caller; this function touches no disk.
  *
- * The two flag spellings differ because their sources do: the provenance flags
- * carry a caller argument that may contain anything (`--name=value` keeps it
- * one argv token), while the CDS flags name files the shell already split.
+ * Two flag spellings coexist because their sources differ: the `=`-joined flags
+ * carry a caller argument that may contain anything, while the CDS flags name
+ * files the shell already split into their own argv slots.
  */
 internal fun parseArgv(args: Array<String>): ArgvResult {
   val positional = mutableListOf<String>()
-  val sourceArgs = mutableMapOf<String, String>()
+  val flags = mutableMapOf<String, String>()
   val cdsArgs = mutableMapOf<String, String>()
   var i = 0
   while (i < args.size) {
     val arg = args[i]
-    when {
-      arg in CDS_FLAGS -> {
-        val value = args.getOrNull(i + 1) ?: return ArgvResult.Usage("Option [$arg] requires a value. $USAGE")
-        if (value.isBlank()) {
-          return ArgvResult.Usage("Option [$arg] must have a non-empty value. $USAGE")
-        }
-        if (cdsArgs.put(arg, value) != null) {
-          return ArgvResult.Usage("Option [$arg] was given more than once. $USAGE")
-        }
-        i += 2
+    if (arg in CDS_FLAGS) {
+      val value = args.getOrNull(i + 1) ?: return ArgvResult.Usage("Option [$arg] requires a value. $USAGE")
+      if (value.isBlank()) {
+        return ArgvResult.Usage("Option [$arg] must have a non-empty value. $USAGE")
       }
-
-      // Anything option-SHAPED is rejected, not just the `--` spelling: every
-      // positional here is a file path and a path never begins with `-`, so a
-      // single-dash typo must fail as an unknown option rather than slipping
-      // through to die later as "Source file not found [-m]".
-      arg.startsWith("-") -> {
-        val eq = arg.indexOf('=')
-        val name = if (arg.startsWith("--")) (if (eq >= 0) arg.substring(2, eq) else arg.substring(2)) else ""
-        if (eq < 0 || name !in SOURCE_FLAGS) {
-          return ArgvResult.Usage("Unknown or malformed option [$arg]. $USAGE")
-        }
-        if (name in sourceArgs) {
-          return ArgvResult.Usage("Option [--$name] was given more than once. $USAGE")
-        }
-        val value = arg.substring(eq + 1)
-        if (value.isBlank()) {
-          return ArgvResult.Usage("Option [--$name] must have a non-empty value. $USAGE")
-        }
-        sourceArgs[name] = value
-        i += 1
+      if (cdsArgs.put(arg, value) != null) {
+        return ArgvResult.Usage("Option [$arg] was given more than once. $USAGE")
       }
-
-      else -> {
-        positional += arg
-        i += 1
-      }
+      i += 2
+      continue
     }
+    i += 1
+    // Only `--` spellings are options here: the CDS group's single-dash flags
+    // are consumed by bin/ingest-colleges' getopts and never reach the JVM, so
+    // a leading `-` at this layer can only be part of a file path.
+    if (!arg.startsWith("--")) {
+      positional += arg
+      continue
+    }
+    val eq = arg.indexOf('=')
+    val name = if (eq >= 0) arg.substring(2, eq) else arg.substring(2)
+    if (eq < 0 || name !in KNOWN_FLAGS) {
+      return ArgvResult.Usage("Unknown or malformed option [$arg]. $USAGE")
+    }
+    if (name in flags) {
+      return ArgvResult.Usage("Option [--$name] was given more than once. $USAGE")
+    }
+    val value = arg.substring(eq + 1)
+    if (value.isBlank()) {
+      return ArgvResult.Usage("Option [--$name] must have a non-empty value. $USAGE")
+    }
+    flags[name] = value
   }
   if (positional.size != SOURCE_FLAGS.size) {
     return ArgvResult.Usage(USAGE)
@@ -125,32 +154,124 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       "The CDS options are all-or-nothing: pass [${CDS_FLAGS.joinToString("] [")}] together, or none. $USAGE",
     )
   }
+  val ipeds =
+    when (val group = parseIpedsGroup(flags)) {
+      is IpedsGroup.Invalid -> return ArgvResult.Usage(group.message)
+      is IpedsGroup.Absent -> null
+      is IpedsGroup.Present -> group.sources
+    }
   return ArgvResult.Ok(
     sources =
       positional.mapIndexed { i, path ->
         val file = File(path)
-        CollegeScorecardLoader.SourceFile(file = file, sourceArg = sourceArgs[SOURCE_FLAGS[i]] ?: file.path)
+        SourceFile(file = file, sourceArg = flags[SOURCE_FLAGS[i]] ?: file.path)
       },
     cds =
-      cdsArgs.takeIf { it.isNotEmpty() }?.let { flags ->
+      cdsArgs.takeIf { it.isNotEmpty() }?.let { group ->
         CdsArgs(
-          meritAidCsv = File(flags.getValue(CDS_MERIT_FLAG)),
-          admissionFactorsCsv = File(flags.getValue(CDS_FACTORS_FLAG)),
-          deadlinesCsv = File(flags.getValue(CDS_DEADLINES_FLAG)),
+          meritAidCsv = File(group.getValue(CDS_MERIT_FLAG)),
+          admissionFactorsCsv = File(group.getValue(CDS_FACTORS_FLAG)),
+          deadlinesCsv = File(group.getValue(CDS_DEADLINES_FLAG)),
         )
       },
+    ipeds = ipeds,
   )
+}
+
+/** The three outcomes of reading the optional IPEDS flag group out of [parseArgv]'s flag map. */
+private sealed interface IpedsGroup {
+  data object Absent : IpedsGroup
+
+  data class Present(
+    val sources: IpedsSources,
+  ) : IpedsGroup
+
+  data class Invalid(
+    val message: String,
+  ) : IpedsGroup
+}
+
+/**
+ * Reads the IPEDS group all-or-nothing. Presence is judged on the four file
+ * flags AND `--survey-year` together, so omitting any one of the five is a
+ * refusal that names exactly which are missing rather than a run that quietly
+ * loads four files with a fabricated year.
+ */
+private fun parseIpedsGroup(flags: Map<String, String>): IpedsGroup {
+  val groupFlags = IPEDS_FILE_FLAGS + SURVEY_YEAR_FLAG
+  val given = groupFlags.filter { it in flags }
+  val danglingSources = IPEDS_SOURCE_FLAGS.filter { it in flags }
+  if (given.isEmpty()) {
+    if (danglingSources.isNotEmpty()) {
+      return IpedsGroup.Invalid(
+        "Option(s) ${danglingSources.map { "--$it" }} name a provenance source for an IPEDS file " +
+          "that was not supplied. $USAGE",
+      )
+    }
+    return IpedsGroup.Absent
+  }
+  val missing = groupFlags.filterNot { it in flags }
+  if (missing.isNotEmpty()) {
+    return IpedsGroup.Invalid(
+      "The IPEDS options are all-or-nothing: given ${given.map { "--$it" }}, " +
+        "option(s) ${missing.map { "--$it" }} are also required. $USAGE",
+    )
+  }
+  val surveyYear = flags.getValue(SURVEY_YEAR_FLAG).toIntOrNull()
+  if (surveyYear == null || surveyYear !in SURVEY_YEAR_RANGE) {
+    return IpedsGroup.Invalid(
+      "Option [--$SURVEY_YEAR_FLAG] must be a year in [$SURVEY_YEAR_RANGE], " +
+        "got [${flags.getValue(SURVEY_YEAR_FLAG)}]. $USAGE",
+    )
+  }
+  val files =
+    IPEDS_FILE_FLAGS.map { flag ->
+      val file = File(flags.getValue(flag))
+      SourceFile(file = file, sourceArg = flags["$flag-source"] ?: file.path)
+    }
+  return IpedsGroup.Present(
+    IpedsSources(
+      hd = files[0],
+      ic = files[1],
+      adm = files[2],
+      completions = files[3],
+      surveyYear = surveyYear,
+    ),
+  )
+}
+
+/**
+ * Every file the run will read, each paired with the ROLE it fills — the flag
+ * the operator typed, minus its punctuation. Pure (it touches no disk) so the
+ * pairing is directly testable, unlike [requireExistingFiles], which exits the
+ * process.
+ */
+internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>> {
+  val scorecard = SOURCE_FLAGS.map { it.removeSuffix("-source") }.zip(parsed.sources)
+  val ipeds = parsed.ipeds?.let { IPEDS_FILE_FLAGS.zip(it.files) } ?: emptyList()
+  // The CDS flags name files the shell already split into their own argv slots,
+  // so the path the caller typed IS the file's path.
+  val cds =
+    listOfNotNull(parsed.cds?.meritAidCsv, parsed.cds?.admissionFactorsCsv, parsed.cds?.deadlinesCsv)
+      .mapIndexed { i, file -> CDS_FLAGS[i].removePrefix("--") to SourceFile(file = file, sourceArg = file.path) }
+  return scorecard + ipeds + cds
 }
 
 /** The filesystem probe, kept out of [parseArgv]: it exits the process, so it
  * is called where that effect is visible. */
 private fun requireExistingFiles(parsed: ArgvResult.Ok) {
-  val files =
-    parsed.sources.map { it.file } +
-      listOfNotNull(parsed.cds?.meritAidCsv, parsed.cds?.admissionFactorsCsv, parsed.cds?.deadlinesCsv)
-  for (file in files) {
-    if (!file.isFile) {
-      logger.error("Source file not found [{}]", file.path)
+  for ((role, source) in namedSources(parsed)) {
+    if (!source.file.isFile) {
+      // The role and the caller's ORIGINAL argument, not just the resolved
+      // path: bin/ingest-colleges downloads an s3:// source into a mktemp dir,
+      // so the path alone names a file the operator never typed and — with
+      // seven candidates — does not say which option failed.
+      logger.error(
+        "Source file not found [role={}] [path={}] [from={}]",
+        role,
+        source.file.path,
+        source.sourceArg,
+      )
       kotlin.system.exitProcess(2)
     }
   }
@@ -188,6 +309,13 @@ private fun requireExistingFiles(parsed: ArgvResult.Ok) {
  * the per-table numbers and the coverage report, and they are rendered here
  * once — including the identities of the seed UNITIDs that matched no college,
  * at INFO, so recovering them never needs a second ingest.
+ *
+ * The optional IPEDS group (`--hd/--ic/--adm/--completions/--survey-year`, RFC
+ * 144) extends the same run rather than adding a second command (gate-2 D19):
+ * given none of the five the run is exactly the RFC 139 one, and given any of
+ * them all five are required. Each IPEDS file has the same `--*-source` partner
+ * carrying its original argument, and `--survey-year` is explicit because a
+ * year derived from a filename is a silent coercion.
  */
 fun main(args: Array<String>) {
   val parsed =
@@ -212,13 +340,17 @@ fun main(args: Array<String>) {
           institution = institution,
           fields = fields,
           aliasesFile = aliases,
+          ipeds = parsed.ipeds,
         )
       }
     println(report.humanSummary())
-    if (report.colleges.transientSkips + report.programs.transientSkips > 0) {
+    val transientSkips =
+      report.colleges.transientSkips + report.programs.transientSkips +
+        (report.ipeds?.let { it.attributes.transientSkips + it.census.transientSkips } ?: 0)
+    if (transientSkips > 0) {
       logger.warn(
         "[{}] row(s) skipped on transient faults; re-running the ingest may recover them",
-        report.colleges.transientSkips + report.programs.transientSkips,
+        transientSkips,
       )
     }
     parsed.cds?.let { cds ->
@@ -226,7 +358,7 @@ fun main(args: Array<String>) {
         runBlocking { CdsSeedLoader(database).load(cds.meritAidCsv, cds.admissionFactorsCsv, cds.deadlinesCsv) },
       )
     }
-  } catch (e: CollegeScorecardLoader.MissingSourceColumnsException) {
+  } catch (e: MissingSourceColumnsException) {
     logger.error(
       "Ingest aborted before any write: source [{}] (from [{}]) is missing required column(s) [{}]",
       e.fileName,
@@ -243,7 +375,7 @@ fun main(args: Array<String>) {
       e,
     )
     kotlin.system.exitProcess(1)
-  } catch (e: CollegeScorecardLoader.PartialIngestException) {
+  } catch (e: PartialIngestException) {
     logger.error(
       "PARTIAL INGEST — phases {} COMMITTED, no college_index_build row was written, " +
         "provenance was NOT recorded; re-run the ingest to complete it",

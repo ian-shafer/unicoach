@@ -8,6 +8,7 @@ import java.sql.ResultSet
 import java.sql.SQLException
 import java.sql.Types
 import java.time.Instant
+import java.time.LocalDate
 
 /*
  * Shared query/mutate execution scaffolding. These `SqlSession` extensions own
@@ -375,6 +376,22 @@ internal fun PreparedStatement.setLongOrNull(
   value: Long?,
 ) {
   if (value != null) setLong(index, value) else setNull(index, Types.BIGINT)
+}
+
+/** Binds a nullable Double, NULL as `Types.DOUBLE`. */
+internal fun PreparedStatement.setDoubleOrNull(
+  index: Int,
+  value: Double?,
+) {
+  if (value != null) setDouble(index, value) else setNull(index, Types.DOUBLE)
+}
+
+/** Binds a nullable [LocalDate], NULL as `Types.DATE`. */
+internal fun PreparedStatement.setDateOrNull(
+  index: Int,
+  value: LocalDate?,
+) {
+  if (value != null) setObject(index, value) else setNull(index, Types.DATE)
 }
 
 /** Binds a nullable Boolean, NULL as `Types.BOOLEAN`. */

@@ -11,9 +11,9 @@ import org.junit.jupiter.api.BeforeEach
 import java.io.File
 
 /**
- * Shared DB-test scaffolding for the College Scorecard loader suites: opens one
- * pooled [Database] for the class, truncates the two scorecard tables before each
- * test, and offers the fixture/session/count helpers both suites need. Concrete
+ * Shared DB-test scaffolding for the college ingest suites: opens one pooled
+ * [Database] for the class, truncates the two Scorecard tables and the two RFC
+ * 144 IPEDS tables before each test, and offers the fixture/session/count helpers both suites need. Concrete
  * suites supply only their fixtures and assertions.
  */
 abstract class CollegeScorecardTestBase {
@@ -46,7 +46,10 @@ abstract class CollegeScorecardTestBase {
   fun resetDatabase() =
     runBlocking {
       database.withConnection { session ->
-        session.prepareStatement("TRUNCATE TABLE colleges, college_programs CASCADE").use { it.execute() }
+        session
+          .prepareStatement(
+            "TRUNCATE TABLE colleges, college_programs, college_ipeds, college_programs_census CASCADE",
+          ).use { it.execute() }
       }
       Unit
     }

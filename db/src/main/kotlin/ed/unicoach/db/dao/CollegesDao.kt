@@ -14,7 +14,6 @@ import ed.unicoach.db.models.NewCollegeProgram
 import ed.unicoach.db.models.Version
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
-import org.postgresql.util.PSQLException
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -65,14 +64,6 @@ object CollegesDao :
     } finally {
       arr.free()
     }
-  }
-
-  /** Binds a nullable Double, NULL as `Types.DOUBLE` (the Double sibling of [setIntOrNull]). */
-  private fun PreparedStatement.setDoubleOrNull(
-    index: Int,
-    value: Double?,
-  ) {
-    if (value != null) setDouble(index, value) else setNull(index, Types.DOUBLE)
   }
 
   private fun mapCollege(rs: ResultSet): College =
@@ -290,7 +281,7 @@ object CollegesDao :
         stmt.setInt(28, input.unitId)
       },
       map = ::mapCollege,
-      mapError = ::mapCollegeError,
+      mapError = ::mapCollegeWriteError,
     )
   }
 
@@ -320,7 +311,7 @@ object CollegesDao :
         stmt.setInt(4, input.credentialLevel)
       },
       map = ::mapProgram,
-      mapError = ::mapCollegeError,
+      mapError = ::mapCollegeWriteError,
     )
   }
 
@@ -754,7 +745,7 @@ object CollegesDao :
         }
       }
     } catch (e: SQLException) {
-      Result.failure(mapCollegeError(e))
+      Result.failure(mapCollegeWriteError(e))
     } catch (e: Exception) {
       Result.failure(mapDatabaseError(e))
     }
@@ -858,35 +849,7 @@ object CollegesDao :
         stmt.setInt(7, input.methodVersion)
       },
       map = { rs -> UUID.fromString(rs.getString("id")) },
-      mapError = ::mapCollegeError,
+      mapError = ::mapCollegeWriteError,
     )
   }
-
-  // ---------------------------------------------------------------------------
-  // Error mapping
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Maps write-path SQLSTATEs: `23503` (FK — a program referencing an absent
-   * college) to [NotFoundException]; `23505`/`23514` (unique/check) to
-   * [ConstraintViolationException], populated with the violated constraint name
-   * and the server DETAIL line so a caller can bucket by constraint and surface
-   * the failing key without parsing log text. Everything else routes through the
-   * shared [mapDatabaseError], which classifies transient SQLSTATEs.
-   */
-  private fun mapCollegeError(e: SQLException): Exception =
-    when (e.sqlState) {
-      "23503" -> {
-        NotFoundException("Referenced college not found")
-      }
-
-      "23505", "23514" -> {
-        val serverError = (e as? PSQLException)?.serverErrorMessage
-        ConstraintViolationException(e, serverError?.constraint, serverError?.detail)
-      }
-
-      else -> {
-        mapDatabaseError(e)
-      }
-    }
 }

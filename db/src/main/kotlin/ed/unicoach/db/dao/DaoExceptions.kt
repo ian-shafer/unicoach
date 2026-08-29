@@ -145,6 +145,47 @@ fun mapReferenceWriteError(
   }
 }
 
+/**
+ * The write-path SQLSTATE mapping both college DAOs share: `23503` (FK -- a row
+ * referencing an absent college) to [NotFoundException]; `23505`/`23514`
+ * (unique/check) to [ConstraintViolationException] carrying the violated
+ * constraint name and the server DETAIL line, so a loader can bucket a skip by
+ * constraint. Everything else routes through [mapDatabaseError], which
+ * classifies transient SQLSTATEs.
+ *
+ * Declared once here rather than per-DAO: [CollegesDao] and [CollegeIpedsDao]
+ * write the same reference tables under the same constraints, and a new
+ * SQLSTATE mapping must not have to be remembered twice.
+ */
+internal fun mapCollegeWriteError(e: java.sql.SQLException): Exception {
+  // Read ONCE, above the `when`: both violation arms keep the same evidence --
+  // the driver SQLException as the cause plus the server's constraint name and
+  // DETAIL line -- exactly as [mapReferenceWriteError] does. A `23503` that
+  // arrived with none of it left an ingest skip reading
+  // [constraint=null] [detail=null], which names neither the offending
+  // college_id nor the violated FK.
+  val serverError = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
+  return when (e.sqlState) {
+    "23503" -> {
+      NotFoundException(
+        message =
+          "Referenced college not found [constraint=${serverError?.constraint}] [detail=${serverError?.detail}]",
+        cause = e,
+        constraint = serverError?.constraint,
+        detail = serverError?.detail,
+      )
+    }
+
+    "23505", "23514" -> {
+      ConstraintViolationException(e, serverError?.constraint, serverError?.detail)
+    }
+
+    else -> {
+      mapDatabaseError(e)
+    }
+  }
+}
+
 fun mapDatabaseError(e: Exception): Exception {
   if (e is DaoException) return e
   val sqlState = (e as? java.sql.SQLException)?.sqlState

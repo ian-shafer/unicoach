@@ -117,7 +117,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       // The CIPCODE=2601 / CREDLEV=99 program is absent.
       assertTrue("2601" !in cips, "expected the CREDLEV=99 program absent, got $cips")
       assertTrue(
-        (result.skipsByReason[CollegeScorecardLoader.SkipReason.CredentialLevelOutOfDomain] ?: 0) >= 1,
+        (result.skipsByReason[SkipReason.CredentialLevelOutOfDomain] ?: 0) >= 1,
       )
       // The other Auburn programs still load.
       assertTrue("0301" in cips && "0901" in cips && "1101" in cips)
@@ -128,7 +128,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
     runBlocking {
       val result = loader.load(institutionCsv, fieldsCsv)
       assertTrue(
-        (result.skipsByReason[CollegeScorecardLoader.SkipReason.UnitIdNa] ?: 0) >= 1,
+        (result.skipsByReason[SkipReason.UnitIdNa] ?: 0) >= 1,
       )
       // No college or program was synthesized for the OPEID6-keyed NA rows.
       val judson = withSession { CollegesDao.findByUnitId(it, 1023).getOrThrow() }
@@ -149,7 +149,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   fun `summary has no transient skips against clean real data`() =
     runBlocking {
       val result = loader.load(institutionCsv, fieldsCsv)
-      assertEquals(0, result.skipsByReason[CollegeScorecardLoader.SkipReason.Transient] ?: 0)
+      assertEquals(0, result.skipsByReason[SkipReason.Transient] ?: 0)
     }
 
   @Test
