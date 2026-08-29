@@ -2,6 +2,7 @@ package ed.unicoach.coaching
 
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.CollegeCostChatTool
+import ed.unicoach.coaching.costs.PrecisionOffer
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.fitlens.FitLensConfig
 import ed.unicoach.coaching.synthesis.SynthesisConfig
@@ -262,6 +263,84 @@ class SystemPromptCatalogTest {
       "the example range must be the live IncomeBand.bracket, not a hand-typed copy of it",
     )
   }
+
+  /**
+   * The 0053 seed's structural contract (RFC 145). Like v5 over v4, v7
+   * REPLACES the money paragraph — v6's precision_offer rule is income-only and
+   * would misfire on a residency offer — so the contract is the same one: a
+   * byte-identical v6 prefix, a byte-identical v6 college-list suffix, and the
+   * rewritten paragraph between them, through the same guarded extractor.
+   *
+   * The markers say the replacement is the RIGHT paragraph: it raises
+   * residency, asks the single state question, says what that unlocks, and
+   * raises it BEFORE income.
+   */
+  @Test
+  fun `coach v7 is v6 with the money paragraph replaced`() {
+    val moneyParagraph = v7MoneyParagraph()
+
+    assertTrue(
+      moneyParagraph.startsWith(COST_PARAGRAPH_OPENER),
+      "the money paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(moneyParagraph.contains(CollegeCostChatTool.TOOL_NAME), "the paragraph must still name the cost tool")
+    assertTrue(
+      moneyParagraph.contains(CollegeCostChatTool.PRECISION_OFFER_KEY),
+      "the paragraph must key the in-answer invitations off the result",
+    )
+    assertTrue(
+      moneyParagraph.contains(PrecisionOffer.RESIDENCY.field),
+      "the paragraph must name the residency offer by the field the result carries",
+    )
+    assertTrue(
+      moneyParagraph.contains("ask what state the family lives in"),
+      "v7's whole point is that the coach finally asks where they live",
+    )
+    assertTrue(
+      moneyParagraph.contains("in-state") && moneyParagraph.contains("out-of-state"),
+      "the paragraph must say what the answer unlocks, not merely ask for it",
+    )
+    // Positionally on the SENTENCE that states the order, not on the bare
+    // field names: `income_band` is a prefix of income_band_label and
+    // income_band_status, so a bare indexOf would silently measure whichever
+    // longer token came first (the sibling assertion in CollegeCostChatToolTest
+    // refuses indexOf for the same hazard).
+    assertTrue(
+      moneyParagraph.contains("A ${PrecisionOffer.RESIDENCY.field} offer comes first"),
+      "the paragraph must state the order it wants: residency before household income",
+    )
+    assertTrue(
+      moneyParagraph.contains("ask what state the family lives in before you raise household income"),
+      "residency must be raised before household income - the ordering is the product decision",
+    )
+    assertTrue(
+      moneyParagraph.contains("U.S. Department of Education College Scorecard"),
+      "the attribution rule must survive the rewrite",
+    )
+    assertTrue(moneyParagraph.contains("never raise that field again yourself"), "a decline of either field stays permanent")
+  }
+
+  /**
+   * RFC 142's source-jargon rule must survive RFC 145's rewrite of the
+   * paragraph it lives inside. The sentence is extracted from v6 at runtime and
+   * asserted to be present verbatim in v7's money paragraph — never retyped
+   * here, or the test would only prove that two hand-typed copies agree.
+   */
+  @Test
+  fun `coach v7 preserves the v6 source-jargon sentence verbatim`() {
+    val sentence = sourceJargonSentence()
+
+    assertTrue(
+      v7MoneyParagraph().contains(sentence),
+      "v7's money paragraph must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
+    )
+  }
+
+  /**
+   * The v7 money paragraph: the paragraph v7 puts where v6's money paragraph
+   * was, extracted through the guarded [revisedMiddle].
+   */
+  private fun v7MoneyParagraph(): String = revisedMiddle(base = "v6", revised = "v7", prefixOpener = COST_PARAGRAPH_OPENER)
 
   /**
    * The v6 source-jargon sentence: the sentence v6 inserts at the end of v5's

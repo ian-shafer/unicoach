@@ -1,5 +1,8 @@
 package ed.unicoach.coaching.costs
 
+import ed.unicoach.coaching.moneyprofile.FieldUpdate
+import ed.unicoach.coaching.moneyprofile.MoneyProfileService
+import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CollegeListEntriesDao
@@ -7,9 +10,11 @@ import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.StudentId
+import kotlinx.coroutines.runBlocking
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
@@ -33,6 +38,13 @@ object CostsTestDb {
       ).getOrThrow()
 
   val database: Database by lazy { Database(dbConfig) }
+
+  /**
+   * The one writer both costs test classes seed money-profile answers through
+   * — the real service, so a fixture can never record a state or a band the
+   * production write path would have normalised or rejected.
+   */
+  val moneyProfiles: MoneyProfileService by lazy { MoneyProfileService(database) }
 
   val connection: Connection by lazy {
     DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
@@ -125,6 +137,36 @@ object CostsTestDb {
       ).getOrThrow()
       .id
   }
+
+  /**
+   * The money-profile seeders, here rather than per test class: the cost read
+   * is a fold of a college row and a money profile, so both halves of the
+   * fixture belong in the same home ([CollegeCostServiceTest] and
+   * [CollegeCostChatToolTest] otherwise keep byte-identical copies that drift).
+   */
+  fun answerBand(
+    student: StudentId,
+    band: IncomeBand,
+  ) = runBlocking {
+    moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(band))).getOrThrow()
+  }
+
+  fun declineBand(student: StudentId) =
+    runBlocking {
+      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Decline)).getOrThrow()
+    }
+
+  fun answerResidency(
+    student: StudentId,
+    state: String,
+  ) = runBlocking {
+    moneyProfiles.upsert(student, MoneyProfileUpdate(residency = FieldUpdate.Set(state))).getOrThrow()
+  }
+
+  fun declineResidency(student: StudentId) =
+    runBlocking {
+      moneyProfiles.upsert(student, MoneyProfileUpdate(residency = FieldUpdate.Decline)).getOrThrow()
+    }
 
   fun addToCollegeList(
     student: StudentId,

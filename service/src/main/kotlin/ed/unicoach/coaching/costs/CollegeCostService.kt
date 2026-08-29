@@ -126,6 +126,12 @@ data class CollegeCost(
   val medianEarnings: Int?,
   /** True when the college reports at least one `net_price_qN` bracket column. */
   val reportsBandPricing: Boolean,
+  /**
+   * True when the college publishes at least one tuition figure — the residency
+   * twin of [reportsBandPricing]: an answered residency selects between them,
+   * so a college that publishes neither has no upgrade to promise.
+   */
+  val reportsPublishedTuition: Boolean,
   /** The cost fields this college does not report, so the coach says so instead of improvising. */
   val notReported: List<CostField>,
 )
@@ -150,15 +156,115 @@ data class CollegeCostProfile(
   val ingestYear: Int?,
 ) {
   /**
-   * The in-answer upgrade invitation (RFC 135) for one returned [college] —
-   * derived, never stored: true exactly when the income band is
-   * [AnswerStatus.UNANSWERED] (never after a decline, so the coach is never
-   * cued to reopen a closed topic — the ethos assertion) AND the college
-   * reports at least one bracket column (a college with no band data makes no
-   * upgrade promise).
+   * The in-answer upgrade invitations (RFC 135, RFC 145) for one returned
+   * [college] — derived, never stored, and in [PrecisionOffer]'s declaration
+   * order, which is the order the coach should raise them: residency first,
+   * because it is the cheaper question and the bigger correction (a median
+   * $6,300/yr at a public college against ~$1,376 for a middle-band income
+   * correction). Empty when this college has no upgrade to promise.
+   *
+   * The order is the enum's rather than this function's on purpose: filtering
+   * [PrecisionOffer.entries] means adding a member in its intended slot is the
+   * whole of adding an offer's position, and each member owns the rule for when
+   * it applies ([PrecisionOffer.appliesTo]).
    */
-  fun precisionOfferFor(college: CollegeCost): Boolean =
-    moneyProfile.incomeBandStatus == AnswerStatus.UNANSWERED && college.reportsBandPricing
+  fun precisionOffersFor(college: CollegeCost): List<PrecisionOffer> = PrecisionOffer.entries.filter { it.appliesTo(moneyProfile, college) }
+}
+
+/**
+ * The upgrade invitations a cost result can carry (RFC 145), declared in the
+ * order the coach should raise them — residency first, and that IS the wire
+ * order, because [CollegeCostProfile.precisionOffersFor] filters [entries].
+ * Each case names the `money_profiles` [field] it would fill and owns the rule
+ * for when it is on offer; the sentence the coach may say lives with the
+ * rendering, in [ed.unicoach.coaching.costs.CollegeCostChatTool]. So a third
+ * upgrade (M4's living arrangement) is a member here plus a copy string there:
+ * it cannot compile without deciding its own [appliesTo], and it cannot ship
+ * without words.
+ *
+ * Every rule is keyed off [AnswerStatus.UNANSWERED] rather than off the absence
+ * of a value, and that is the whole point: an offer derived from a missing
+ * value would re-raise a closed topic on every cost answer, because a decline
+ * leaves the value missing too. Keying off the status makes a decline permanent
+ * for residency exactly as it already is for the income band. Each rule also
+ * requires that this college reports the figure the upgrade would sharpen, so
+ * an offer never rests on a college that reports nothing for it — but residency
+ * is admitted on EITHER published tuition figure
+ * ([CollegeCost.reportsPublishedTuition]), so it is the copy, not the rule, that
+ * keeps that offer's promise no wider than the data.
+ */
+enum class PrecisionOffer(
+  /**
+   * The wire `field` name — the `update_money_profile` parameter this offer
+   * would fill. `CollegeCostChatToolTest` binds these to that tool's own input
+   * schema, so a rename there fails here rather than shipping an invitation
+   * naming a parameter nothing accepts.
+   */
+  val field: String,
+) {
+  /**
+   * Residency is on offer only at a public college (a private college has one
+   * price, so the question buys nothing there), with residency
+   * [AnswerStatus.UNANSWERED], and only when the college publishes tuition for
+   * the answer to select.
+   *
+   * The [TuitionApplicable.UNKNOWN] term is deliberate redundancy, not logic
+   * the status leaves undecided: it binds the offer to the `tuition_applicable`
+   * label the SAME payload renders, so the coach's cue and its stated
+   * justification can never diverge. [AnswerStatus.UNANSWERED] is the authority
+   * — UNKNOWN covers unanswered AND declined alike, so keying off it would
+   * reopen a declined topic on every cost answer.
+   */
+  RESIDENCY("residency_state") {
+    /**
+     * Exhaustive with no `else`, exactly as [CollegeCostService]'s `controlOf`
+     * is: a safe cast would fold three sealed cases into one unstated default,
+     * so a control added to the vocabulary would silently lose the offer. Here
+     * it must fail to compile until it says whether residency selects a
+     * tuition figure for it.
+     */
+    override fun appliesTo(
+      moneyProfile: MoneyProfileStatuses,
+      college: CollegeCost,
+    ): Boolean =
+      when (val control = college.control) {
+        // The only case with two published prices for residency to choose between.
+        is CollegeControl.Public -> {
+          control.tuitionApplicable == TuitionApplicable.UNKNOWN &&
+            moneyProfile.residencyStatus == AnswerStatus.UNANSWERED &&
+            college.reportsPublishedTuition
+        }
+
+        // One price each, so the question buys the family nothing.
+        CollegeControl.PrivateNonprofit -> {
+          false
+        }
+
+        CollegeControl.PrivateForProfit -> {
+          false
+        }
+
+        // Outside the Scorecard vocabulary: we cannot promise which price applies.
+        is CollegeControl.Unrecognized -> {
+          false
+        }
+      }
+  },
+
+  /** Unchanged from RFC 135: an unanswered band, and a college that reports at least one bracket column. */
+  INCOME_BAND("income_band") {
+    override fun appliesTo(
+      moneyProfile: MoneyProfileStatuses,
+      college: CollegeCost,
+    ): Boolean = moneyProfile.incomeBandStatus == AnswerStatus.UNANSWERED && college.reportsBandPricing
+  },
+  ;
+
+  /** True when this upgrade is on offer for [college], given the student's [moneyProfile]. */
+  abstract fun appliesTo(
+    moneyProfile: MoneyProfileStatuses,
+    college: CollegeCost,
+  ): Boolean
 }
 
 /**
@@ -246,7 +352,7 @@ class CollegeCostService(
     return when {
       result.isSuccess -> {
         val p = result.getOrThrow()
-        requireIntactIncomeBand(p)
+        requireIntactAnswers(p)
         MoneyProfileStatuses(p.incomeBandStatus, p.incomeBand, p.residencyStatus, p.residencyState)
       }
 
@@ -261,18 +367,35 @@ class CollegeCostService(
   }
 
   /**
-   * Guards the schema's `money_profiles_income_band_value_iff_answered_check`
-   * in code: an answered status with no stored value is row corruption,
-   * surfaced as [CorruptPersistedValueException] naming the column and row
-   * (the DAO convention, [ed.unicoach.coaching.CoachingService]'s
-   * `renderMoneyField` precedent) — never folded into the overall average.
+   * Guards `db/schema/0046`'s two `*_value_iff_answered_check` constraints in
+   * code, for BOTH money-profile fields: an answered status with no stored
+   * value is row corruption, surfaced as [CorruptPersistedValueException]
+   * naming the column and row (the DAO convention,
+   * [ed.unicoach.coaching.CoachingService]'s `renderMoneyField` precedent).
+   *
+   * Residency is audited alongside the band because RFC 145 made its status
+   * decision-bearing: a corrupt answered-with-no-state row would otherwise
+   * render `tuition_applicable: "unknown"` AND withhold the residency offer
+   * that exists to resolve it — the one state the coach cannot talk its way
+   * out of. Never folded into an unknown label or a silently missing offer.
    */
-  private fun requireIntactIncomeBand(profile: MoneyProfile) {
-    if (profile.incomeBandStatus == AnswerStatus.ANSWERED && profile.incomeBand == null) {
+  private fun requireIntactAnswers(profile: MoneyProfile) {
+    requireStoredValueWhenAnswered(profile.incomeBandStatus, profile.incomeBand, "income_band", profile)
+    requireStoredValueWhenAnswered(profile.residencyStatus, profile.residencyState, "residency_state", profile)
+  }
+
+  /** One status/value pair, in the shared message shape: the column that is corrupt, and the row it is in. */
+  private fun requireStoredValueWhenAnswered(
+    status: AnswerStatus,
+    storedValue: Any?,
+    column: String,
+    profile: MoneyProfile,
+  ) {
+    if (status == AnswerStatus.ANSWERED && storedValue == null) {
       throw CorruptPersistedValueException(
         "null",
         ValidationError.InvalidFormat(expected = "a value present when status is 'answered'"),
-        location = "money_profiles.income_band (row [${profile.id.value}])",
+        location = "money_profiles.[$column] (row [${profile.id.value}])",
       )
     }
   }
@@ -298,6 +421,7 @@ class CollegeCostService(
       medianDebt = college.medianDebt,
       medianEarnings = college.medianEarnings,
       reportsBandPricing = reportsBandPricing(college),
+      reportsPublishedTuition = reportsPublishedTuition(college),
       notReported = notReportedOf(college, netPrice),
     )
   }
@@ -360,6 +484,19 @@ class CollegeCostService(
 
   /** True when the college reports any bracket column, via the band -> column home ([IncomeBand.netPriceFor]). */
   private fun reportsBandPricing(college: College): Boolean = IncomeBand.entries.any { it.netPriceFor(college) != null }
+
+  /**
+   * True when the college publishes at least one tuition figure — the residency
+   * upgrade has something to select. EITHER figure admits the offer, not both,
+   * and that is deliberate: residency decides WHICH price applies, so the
+   * answer is worth having even at a half-reporting college, and a family
+   * sorted onto the side this school does not report gets the ordinary
+   * `data_availability` answer said plainly — which
+   * [ed.unicoach.coaching.costs.CollegeCostChatTool.RESIDENCY_OFFER] promises in
+   * words rather than promising a number. Tightening this to `&&` would drop
+   * the offer for the majority of families it can still answer.
+   */
+  private fun reportsPublishedTuition(college: College): Boolean = college.tuitionInState != null || college.tuitionOutState != null
 
   /** The unreported cost fields, in the shared field vocabulary ([CostField]). */
   private fun notReportedOf(

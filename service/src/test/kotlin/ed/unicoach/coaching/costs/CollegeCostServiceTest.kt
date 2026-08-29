@@ -1,11 +1,12 @@
 package ed.unicoach.coaching.costs
 
 import ed.unicoach.coaching.costs.CostsTestDb.addToCollegeList
+import ed.unicoach.coaching.costs.CostsTestDb.answerBand
+import ed.unicoach.coaching.costs.CostsTestDb.answerResidency
 import ed.unicoach.coaching.costs.CostsTestDb.createStudent
+import ed.unicoach.coaching.costs.CostsTestDb.declineBand
+import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.CostsTestDb.seedCollege
-import ed.unicoach.coaching.moneyprofile.FieldUpdate
-import ed.unicoach.coaching.moneyprofile.MoneyProfileService
-import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.CollegeId
@@ -28,26 +29,6 @@ class CollegeCostServiceTest {
   }
 
   private val service = CollegeCostService(CostsTestDb.database)
-  private val moneyProfiles = MoneyProfileService(CostsTestDb.database)
-
-  private fun answerBand(
-    student: StudentId,
-    band: IncomeBand,
-  ) = runBlocking {
-    moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(band))).getOrThrow()
-  }
-
-  private fun declineBand(student: StudentId) =
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Decline)).getOrThrow()
-    }
-
-  private fun answerResidency(
-    student: StudentId,
-    state: String,
-  ) = runBlocking {
-    moneyProfiles.upsert(student, MoneyProfileUpdate(residency = FieldUpdate.Set(state))).getOrThrow()
-  }
 
   private fun profileOf(
     student: StudentId,
@@ -79,7 +60,11 @@ class CollegeCostServiceTest {
     val cost = profile.colleges.single()
     val netPrice = assertIs<NetPrice.OverallAverage>(cost.netPrice, "an overall average can carry no band")
     assertEquals(20000, netPrice.amount)
-    assertTrue(profile.precisionOfferFor(cost), "an unanswered band must carry the in-answer invitation")
+    assertEquals(
+      listOf(PrecisionOffer.INCOME_BAND),
+      profile.precisionOffersFor(cost),
+      "an unanswered band must carry the in-answer invitation, and answered residency offers nothing more",
+    )
   }
 
   @Test
@@ -92,7 +77,10 @@ class CollegeCostServiceTest {
     val cost = profile.colleges.single()
     assertIs<NetPrice.OverallAverage>(cost.netPrice)
     assertEquals(AnswerStatus.DECLINED, profile.moneyProfile.incomeBandStatus)
-    assertTrue(!profile.precisionOfferFor(cost), "the coach must never be cued to reopen a declined band")
+    assertTrue(
+      PrecisionOffer.INCOME_BAND !in profile.precisionOffersFor(cost),
+      "the coach must never be cued to reopen a declined band",
+    )
   }
 
   @Test
@@ -101,7 +89,7 @@ class CollegeCostServiceTest {
     addToCollegeList(student, seedCollege("Answered U"))
     answerBand(student, IncomeBand.UNDER_30K)
     val profile = profileOf(student)
-    assertTrue(!profile.precisionOfferFor(profile.colleges.single()))
+    assertTrue(PrecisionOffer.INCOME_BAND !in profile.precisionOffersFor(profile.colleges.single()))
   }
 
   @Test
@@ -123,7 +111,10 @@ class CollegeCostServiceTest {
     val cost = profile.colleges.single()
     assertEquals(AnswerStatus.UNANSWERED, profile.moneyProfile.incomeBandStatus)
     assertTrue(!cost.reportsBandPricing)
-    assertTrue(!profile.precisionOfferFor(cost), "a college with no band data makes no upgrade promise")
+    assertTrue(
+      PrecisionOffer.INCOME_BAND !in profile.precisionOffersFor(cost),
+      "a college with no band data makes no upgrade promise",
+    )
   }
 
   @Test
@@ -156,7 +147,11 @@ class CollegeCostServiceTest {
     assertEquals(AnswerStatus.UNANSWERED, profile.moneyProfile.residencyStatus)
     val cost = profile.colleges.single()
     assertIs<NetPrice.OverallAverage>(cost.netPrice)
-    assertTrue(profile.precisionOfferFor(cost))
+    assertEquals(
+      listOf(PrecisionOffer.RESIDENCY, PrecisionOffer.INCOME_BAND),
+      profile.precisionOffersFor(cost),
+      "all-unanswered at a public college with published tuition offers both upgrades, residency first",
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -193,9 +188,7 @@ class CollegeCostServiceTest {
       assertIs<CollegeControl.Public>(profileOf(student).colleges.single().control).tuitionApplicable,
     )
 
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(residency = FieldUpdate.Decline)).getOrThrow()
-    }
+    declineResidency(student)
     assertEquals(
       TuitionApplicable.UNKNOWN,
       assertIs<CollegeControl.Public>(profileOf(student).colleges.single().control).tuitionApplicable,
@@ -243,7 +236,7 @@ class CollegeCostServiceTest {
       val error = result.exceptionOrNull()
       assertIs<CorruptPersistedValueException>(error, "got [$result]")
       assertTrue(
-        error.message!!.contains("money_profiles.income_band"),
+        error.message!!.contains("money_profiles.[income_band]"),
         "the error must name the corrupt column, got: [${error.message}]",
       )
       assertTrue(error.message!!.contains("(row ["), "the error must name the row, got: [${error.message}]")
@@ -253,6 +246,44 @@ class CollegeCostServiceTest {
         stmt.execute(
           "ALTER TABLE money_profiles ADD CONSTRAINT money_profiles_income_band_value_iff_answered_check " +
             "CHECK ((income_band IS NOT NULL) = (income_band_status = 'answered'))",
+        )
+      }
+    }
+  }
+
+  @Test
+  fun `an answered residency with a corrupt null stored state fails the read, never a silent withheld offer`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Corrupt Residency U"))
+    answerResidency(student, "CA")
+
+    // Same shape as the band's twin above: the iff-answered CHECK makes this
+    // state unreachable through any write path, so it is forced by dropping the
+    // constraint and restored in the finally.
+    CostsTestDb.connection.createStatement().use { stmt ->
+      stmt.execute("ALTER TABLE money_profiles DROP CONSTRAINT money_profiles_residency_value_iff_answered_check")
+      stmt.execute(
+        "UPDATE money_profiles SET residency_state = NULL, version = version + 1 WHERE student_id = '${student.value}'",
+      )
+    }
+    try {
+      // Unaudited, this row reads as answered-but-unusable: tuition_applicable
+      // folds to unknown AND the residency offer is withheld, because the
+      // status is not UNANSWERED -- the one state no coach reply can recover.
+      val result = runBlocking { service.getForStudent(student) }
+      val error = result.exceptionOrNull()
+      assertIs<CorruptPersistedValueException>(error, "got [$result]")
+      assertTrue(
+        error.message!!.contains("money_profiles.[residency_state]"),
+        "the error must name the corrupt column, got: [${error.message}]",
+      )
+      assertTrue(error.message!!.contains("(row ["), "the error must name the row, got: [${error.message}]")
+    } finally {
+      CostsTestDb.connection.createStatement().use { stmt ->
+        stmt.execute("UPDATE money_profiles SET residency_state = 'CA', version = version + 1 WHERE student_id = '${student.value}'")
+        stmt.execute(
+          "ALTER TABLE money_profiles ADD CONSTRAINT money_profiles_residency_value_iff_answered_check " +
+            "CHECK ((residency_state IS NOT NULL) = (residency_status = 'answered'))",
         )
       }
     }

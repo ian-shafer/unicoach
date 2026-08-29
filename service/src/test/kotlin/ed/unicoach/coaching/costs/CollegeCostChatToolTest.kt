@@ -1,10 +1,11 @@
 package ed.unicoach.coaching.costs
 
 import ed.unicoach.coaching.MoneyProfileChatTool
+import ed.unicoach.coaching.costs.CostsTestDb.answerBand
+import ed.unicoach.coaching.costs.CostsTestDb.answerResidency
 import ed.unicoach.coaching.costs.CostsTestDb.createStudent
-import ed.unicoach.coaching.moneyprofile.FieldUpdate
-import ed.unicoach.coaching.moneyprofile.MoneyProfileService
-import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
+import ed.unicoach.coaching.costs.CostsTestDb.declineBand
+import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.IncomeBand
@@ -33,7 +34,6 @@ class CollegeCostChatToolTest {
   }
 
   private val tool = CollegeCostChatTool(CollegeCostService(CostsTestDb.database))
-  private val moneyProfiles = MoneyProfileService(CostsTestDb.database)
 
   private fun seedListedCollege(
     student: StudentId,
@@ -78,13 +78,42 @@ class CollegeCostChatToolTest {
     raw: String = "{}",
   ): JsonObject = runBlocking { tool.execute(student, input(raw)) }
 
+  /**
+   * One college's precision_offer entries, in wire order -- the one place this
+   * file writes the array's shape down, keyed off the emitter's own
+   * [CollegeCostChatTool.PRECISION_OFFER_KEY] rather than a retyped literal.
+   * An absent key reads as no offers, which is why the absent-vs-empty contract
+   * is asserted on the raw key instead (see
+   * `a college with nothing to offer carries no precision_offer key`).
+   */
+  private fun offersOf(college: JsonObject): List<JsonObject> =
+    college[CollegeCostChatTool.PRECISION_OFFER_KEY]
+      ?.jsonArray
+      ?.map { it.jsonObject }
+      ?: emptyList()
+
+  /**
+   * The `field` names of one college's offers, in wire order -- the ordering IS
+   * the product decision (RFC 145), so it is asserted as a list, never a set.
+   */
+  private fun offerFieldsOf(college: JsonObject): List<String> = offersOf(college).map { it.getValue("field").jsonPrimitive.content }
+
+  /** The offer sentence for one field, or null when that upgrade is not on offer here. */
+  private fun offerCopyOf(
+    college: JsonObject,
+    field: String,
+  ): String? =
+    offersOf(college)
+      .firstOrNull { it.getValue("field").jsonPrimitive.content == field }
+      ?.getValue("offer")
+      ?.jsonPrimitive
+      ?.content
+
   @Test
   fun `income_band_label is emitted with every band-specific net price`() {
     val student = createStudent()
     seedListedCollege(student, "Label U")
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.OVER_110K))).getOrThrow()
-    }
+    answerBand(student, IncomeBand.OVER_110K)
 
     val netPrice =
       collegesOf(execute(student)).single().getValue("net_price").jsonObject
@@ -121,16 +150,12 @@ class CollegeCostChatToolTest {
     assertEquals("unanswered", unanswered["income_band_status"]!!.jsonPrimitive.content)
     assertNull(unanswered["income_band_label"], "an unanswered band has no label")
 
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.K48_TO_75K))).getOrThrow()
-    }
+    answerBand(student, IncomeBand.K48_TO_75K)
     val answered = execute(student).getValue("money_profile").jsonObject
     assertEquals("48k_to_75k", answered["income_band"]!!.jsonPrimitive.content)
     assertEquals(IncomeBand.K48_TO_75K.bracket, answered["income_band_label"]!!.jsonPrimitive.content)
 
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Decline)).getOrThrow()
-    }
+    declineBand(student)
     val declined = execute(student).getValue("money_profile").jsonObject
     assertEquals("declined", declined["income_band_status"]!!.jsonPrimitive.content)
     assertNull(declined["income_band"], "a decline clears the value")
@@ -152,9 +177,7 @@ class CollegeCostChatToolTest {
       tuitionOutState = 30000,
       medianDebt = 23000,
     )
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.OVER_110K))).getOrThrow()
-    }
+    answerBand(student, IncomeBand.OVER_110K)
 
     // The whole rendered payload, not one field: the leak this guards against
     // (RFC 142) is a FUTURE field quietly carrying the source's own codes into
@@ -217,6 +240,17 @@ class CollegeCostChatToolTest {
     assertTrue(description.contains("never re-raise"), "the decline etiquette must ride the description")
     assertTrue(description.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
     assertTrue(
+      description.contains("money_profile.residency_status is the authority on whether to raise residency"),
+      "residency's decline authority must ride the description exactly as income's does (RFC 145)",
+    )
+    // Positionally, not by indexOf: `income_band` also occurs inside
+    // `income_band_label` earlier in the description, so the order has to be
+    // read off the sentence that states it.
+    assertTrue(
+      description.contains("${PrecisionOffer.RESIDENCY.field} sorts first"),
+      "the description must state the offer order it renders: residency first",
+    )
+    assertTrue(
       description.contains("income_band_label"),
       "the model must be told the band's dollar range rides the result (RFC 142)",
     )
@@ -227,6 +261,172 @@ class CollegeCostChatToolTest {
         .jsonObject["properties"]!!
         .jsonObject
     assertEquals("array", properties["college_ids"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+  }
+
+  // ---------------------------------------------------------------------------
+  // The residency offer (RFC 145)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a public college with residency unanswered offers residency first`() {
+    val student = createStudent()
+    seedListedCollege(student, "Public U", control = 1)
+
+    val college = collegesOf(execute(student)).single()
+    assertEquals(
+      listOf(PrecisionOffer.RESIDENCY.field, PrecisionOffer.INCOME_BAND.field),
+      offerFieldsOf(college),
+      "both upgrades are on offer, and residency is index 0 - the cheaper question, the bigger correction",
+    )
+    val residency = offerCopyOf(college, PrecisionOffer.RESIDENCY.field)!!
+    assertTrue(residency.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
+    assertTrue(
+      residency.contains("in-state") && residency.contains("out-of-state"),
+      "the offer must say what the answer unlocks: which published price this family would pay",
+    )
+  }
+
+  @Test
+  fun `an all-private list makes no residency offer`() {
+    val student = createStudent()
+    seedListedCollege(student, "Nonprofit U", control = 2)
+    seedListedCollege(student, "ForProfit U", control = 3)
+
+    collegesOf(execute(student)).forEach { college ->
+      assertEquals(
+        listOf(PrecisionOffer.INCOME_BAND.field),
+        offerFieldsOf(college),
+        "a private school has one price, so residency buys nothing: [${college["name"]}]",
+      )
+    }
+  }
+
+  @Test
+  fun `a declined residency is never re-offered`() {
+    val student = createStudent()
+    seedListedCollege(student, "Declined Residency U", control = 1)
+    declineResidency(student)
+
+    val result = execute(student)
+    val college = collegesOf(result).single()
+    assertEquals(
+      listOf(PrecisionOffer.INCOME_BAND.field),
+      offerFieldsOf(college),
+      "a declined residency is accepted permanently - the coach is never cued to reopen it",
+    )
+    assertEquals(
+      "declined",
+      result
+        .getValue("money_profile")
+        .jsonObject["residency_status"]!!
+        .jsonPrimitive.content,
+    )
+    assertEquals(
+      "unknown",
+      college["tuition_applicable"]!!.jsonPrimitive.content,
+      "a decline still leaves applicability unknown: the offer is keyed off the STATUS, never off unknown",
+    )
+  }
+
+  @Test
+  fun `an answered residency makes no residency offer`() {
+    val student = createStudent()
+    seedListedCollege(student, "Home State U", state = "CA", control = 1)
+    seedListedCollege(student, "Away State U", state = "NY", control = 1)
+    answerResidency(student, "CA")
+
+    val byName = collegesOf(execute(student)).associateBy { it["name"]!!.jsonPrimitive.content }
+    byName.values.forEach { college ->
+      assertEquals(
+        listOf(PrecisionOffer.INCOME_BAND.field),
+        offerFieldsOf(college),
+        "residency is on file: [${college["name"]}]",
+      )
+    }
+    assertEquals("in_state", byName.getValue("Home State U")["tuition_applicable"]!!.jsonPrimitive.content)
+    assertEquals("out_of_state", byName.getValue("Away State U")["tuition_applicable"]!!.jsonPrimitive.content)
+  }
+
+  @Test
+  fun `every offer field is a parameter update_money_profile accepts`() {
+    // Read from the recording tool's OWN schema, never retyped here: the offer's
+    // whole promise is that the coach can hand this field to that tool, so a
+    // rename there must fail here rather than ship an invitation naming a
+    // parameter nothing accepts (the two tools are otherwise unbound).
+    val recordable =
+      MoneyProfileChatTool(CostsTestDb.moneyProfiles)
+        .definition
+        .getValue("input_schema")
+        .jsonObject
+        .getValue("properties")
+        .jsonObject
+        .keys
+
+    PrecisionOffer.entries.forEach { offer ->
+      assertTrue(
+        offer.field in recordable,
+        "the coach is told to record [${offer.field}] with [${MoneyProfileChatTool.TOOL_NAME}], " +
+          "which accepts only [$recordable]",
+      )
+    }
+  }
+
+  @Test
+  fun `a college with nothing to offer carries no precision_offer key`() {
+    val student = createStudent()
+    // Private, so residency buys nothing; band declined, so the income
+    // invitation is closed for good. Nothing is left to offer.
+    seedListedCollege(student, "Nothing To Offer U", control = 2)
+    declineBand(student)
+
+    // Asserted on the RAW key, deliberately not through offerFieldsOf: that
+    // helper folds an absent key and an empty array into the same empty list,
+    // so it cannot see the difference this test exists to pin. The contract is
+    // an ABSENT key, never `"precision_offer": []` -- the key's mere presence
+    // is what tells the model this result has an upgrade to offer, and an
+    // empty array is an invitation with nothing in it.
+    val college = collegesOf(execute(student)).single()
+    assertNull(
+      college[CollegeCostChatTool.PRECISION_OFFER_KEY],
+      "no offers means no key at all, not an empty array: [$college]",
+    )
+  }
+
+  @Test
+  fun `a public college reporting no tuition figure makes no residency offer`() {
+    val student = createStudent()
+    seedListedCollege(student, "No Tuition U", control = 1, tuitionInState = null, tuitionOutState = null)
+    seedListedCollege(student, "In State Only U", control = 1, tuitionOutState = null)
+
+    val byName = collegesOf(execute(student)).associateBy { it["name"]!!.jsonPrimitive.content }
+    assertEquals(
+      listOf(PrecisionOffer.INCOME_BAND.field),
+      offerFieldsOf(byName.getValue("No Tuition U")),
+      "a college that publishes neither tuition figure has no upgrade to promise",
+    )
+    // One published figure still makes residency worth asking -- it decides
+    // WHICH price applies -- and the offer copy promises no more than that,
+    // saying plainly when the applicable one is the figure this school does
+    // not report. That is the ordinary data_availability answer, not an
+    // invented number.
+    val inStateOnly = byName.getValue("In State Only U")
+    assertEquals(
+      listOf(PrecisionOffer.RESIDENCY.field, PrecisionOffer.INCOME_BAND.field),
+      offerFieldsOf(inStateOnly),
+      "one published figure is still a price residency selects",
+    )
+    assertTrue(
+      offerCopyOf(inStateOnly, PrecisionOffer.RESIDENCY.field)!!.contains("does not report the one that applies"),
+      "the copy must promise only what the data supports: no figure is guaranteed for either side",
+    )
+    assertTrue(
+      "tuition_out_state" in
+        inStateOnly
+          .getValue("data_availability")
+          .jsonArray
+          .map { it.jsonPrimitive.content },
+      "and the missing side is already reported as unavailable, which is what the coach then says",
+    )
   }
 
   @Test
@@ -299,9 +499,7 @@ class CollegeCostChatToolTest {
   fun `an answered band renders the family-specific net price without a precision offer`() {
     val student = createStudent()
     seedListedCollege(student, "Band U")
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.K30_TO_48K))).getOrThrow()
-    }
+    answerBand(student, IncomeBand.K30_TO_48K)
 
     val result = execute(student)
     val college = collegesOf(result).single()
@@ -309,7 +507,11 @@ class CollegeCostChatToolTest {
     assertEquals("your_income_band", netPrice["basis"]!!.jsonPrimitive.content)
     assertEquals(11000, netPrice["amount"]!!.jsonPrimitive.content.toInt(), "30k_to_48k must select net_price_q2")
     assertEquals("30k_to_48k", netPrice["income_band"]!!.jsonPrimitive.content)
-    assertNull(college["precision_offer"], "an answered band needs no invitation")
+    assertEquals(
+      listOf(PrecisionOffer.RESIDENCY.field),
+      offerFieldsOf(college),
+      "an answered band needs no invitation; residency is still unanswered at this public school",
+    )
 
     val profile = result.getValue("money_profile").jsonObject
     assertEquals("answered", profile["income_band_status"]!!.jsonPrimitive.content)
@@ -326,7 +528,7 @@ class CollegeCostChatToolTest {
     assertEquals("overall_average", netPrice["basis"]!!.jsonPrimitive.content)
     assertEquals(20000, netPrice["amount"]!!.jsonPrimitive.content.toInt())
     assertNull(netPrice["income_band"])
-    val offer = college["precision_offer"]!!.jsonPrimitive.content
+    val offer = offerCopyOf(college, PrecisionOffer.INCOME_BAND.field)!!
     assertTrue(offer.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
   }
 
@@ -338,11 +540,11 @@ class CollegeCostChatToolTest {
 
     val byName = collegesOf(execute(student)).associateBy { it["name"]!!.jsonPrimitive.content }
     assertTrue(
-      byName.getValue("Full U")["precision_offer"] != null,
+      PrecisionOffer.INCOME_BAND.field in offerFieldsOf(byName.getValue("Full U")),
       "a college with band data still carries the invitation",
     )
-    assertNull(
-      byName.getValue("NoBands U")["precision_offer"],
+    assertTrue(
+      PrecisionOffer.INCOME_BAND.field !in offerFieldsOf(byName.getValue("NoBands U")),
       "a college with no band data makes no upgrade promise",
     )
   }
@@ -351,9 +553,7 @@ class CollegeCostChatToolTest {
   fun `a declined band renders the overall average WITHOUT the precision offer`() {
     val student = createStudent()
     seedListedCollege(student, "Declined U")
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Decline)).getOrThrow()
-    }
+    declineBand(student)
 
     val result = execute(student)
     val college = collegesOf(result).single()
@@ -364,7 +564,10 @@ class CollegeCostChatToolTest {
         .jsonObject["basis"]!!
         .jsonPrimitive.content,
     )
-    assertNull(college["precision_offer"], "the coach must never be cued to reopen a declined band")
+    assertTrue(
+      PrecisionOffer.INCOME_BAND.field !in offerFieldsOf(college),
+      "the coach must never be cued to reopen a declined band",
+    )
     assertEquals(
       "declined",
       result
@@ -378,9 +581,7 @@ class CollegeCostChatToolTest {
   fun `a band re-answered after a decline is family-specific on the next call`() {
     val student = createStudent()
     seedListedCollege(student, "Reopen U")
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Decline)).getOrThrow()
-    }
+    declineBand(student)
     assertEquals(
       "overall_average",
       collegesOf(execute(student))
@@ -390,9 +591,7 @@ class CollegeCostChatToolTest {
         .jsonPrimitive.content,
     )
 
-    runBlocking {
-      moneyProfiles.upsert(student, MoneyProfileUpdate(income = FieldUpdate.Set(IncomeBand.UNDER_30K))).getOrThrow()
-    }
+    answerBand(student, IncomeBand.UNDER_30K)
     val netPrice =
       collegesOf(execute(student)).single().getValue("net_price").jsonObject
     assertEquals("your_income_band", netPrice["basis"]!!.jsonPrimitive.content)

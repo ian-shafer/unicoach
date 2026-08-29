@@ -172,12 +172,35 @@ class CollegeCostChatTool(
       // uncarryable by a private college, so it cannot be misread onto one.
       (cost.control as? CollegeControl.Public)?.let { put("tuition_applicable", it.tuitionApplicable.value) }
       put(CostField.NET_PRICE.wireName, netPriceObject(cost.netPrice))
-      if (profile.precisionOfferFor(cost)) put("precision_offer", PRECISION_OFFER)
+      // Emitted only when there is something to offer: an absent key, never an
+      // empty array, so its mere presence stays meaningful to the model.
+      val offers = profile.precisionOffersFor(cost)
+      if (offers.isNotEmpty()) {
+        putJsonArray(PRECISION_OFFER_KEY) { offers.forEach { add(precisionOfferObject(it)) } }
+      }
       cost.medianDebt?.let { put(CostField.MEDIAN_DEBT.wireName, it) }
       cost.medianEarnings?.let { put(CostField.MEDIAN_EARNINGS.wireName, it) }
       putJsonArray("data_availability") {
         cost.notReported.forEach { add(JsonPrimitive(it.wireName)) }
       }
+    }
+
+  /** One invitation: the money-profile field it would fill, and the sentence the coach may say for it. */
+  private fun precisionOfferObject(offer: PrecisionOffer): JsonObject =
+    buildJsonObject {
+      put("field", offer.field)
+      put("offer", offerCopy(offer))
+    }
+
+  /**
+   * The sentence the coach may say for one offer. Exhaustive on purpose: a new
+   * [PrecisionOffer] member must fail to compile here — the one site that owes
+   * it copy — rather than ship an invitation with no words in it.
+   */
+  private fun offerCopy(offer: PrecisionOffer): String =
+    when (offer) {
+      PrecisionOffer.RESIDENCY -> RESIDENCY_OFFER
+      PrecisionOffer.INCOME_BAND -> INCOME_BAND_OFFER
     }
 
   /**
@@ -230,14 +253,37 @@ class CollegeCostChatTool(
     fun sourceAttribution(ingestYear: Int?): String =
       "U.S. Department of Education College Scorecard" + (ingestYear?.let { " (data ingested $it)" } ?: "")
 
+    /** The wire key carrying the upgrade invitations — one home for the emit site and the description. */
+    const val PRECISION_OFFER_KEY = "precision_offer"
+
+    /**
+     * The residency invitation (RFC 145): present on a public college's result
+     * exactly when residency is unanswered and the college publishes a tuition
+     * figure the answer would select — and absent after a decline, so the
+     * coach is never cued to reopen a closed topic
+     * ([CollegeCostProfile.precisionOffersFor]). It says what the answer
+     * unlocks: which of this school's published prices applies to this family.
+     *
+     * The promise is deliberately no wider than the data: the offer is admitted
+     * when EITHER figure is published (residency still decides which one
+     * applies), so the copy cannot promise a number — a family sorted onto the
+     * side this school does not report gets the ordinary `data_availability`
+     * answer, said plainly, instead of an invented one.
+     */
+    const val RESIDENCY_OFFER =
+      "This is a public school, so its published tuition and fees depend on where the family lives. " +
+        "If the student shares the state they live in (record it with ${MoneyProfileChatTool.TOOL_NAME}), " +
+        "you can say which of this school's published prices applies to them - the in-state one or the " +
+        "out-of-state one - and say plainly when this school does not report the one that applies."
+
     /**
      * The in-answer invitation (RFC 135): present on a college result exactly
      * when the income band is unanswered and that college reports band
      * pricing, so the coach can offer the upgrade right in the conversation —
      * and absent after a decline, so the coach is never cued to reopen a
-     * closed topic ([CollegeCostProfile.precisionOfferFor]).
+     * closed topic ([CollegeCostProfile.precisionOffersFor]).
      */
-    const val PRECISION_OFFER =
+    const val INCOME_BAND_OFFER =
       "This net price is the overall average. If the student shares their household income band " +
         "(record it with ${MoneyProfileChatTool.TOOL_NAME}), it becomes the family-specific price for their bracket."
 
@@ -257,9 +303,14 @@ class CollegeCostChatTool(
         "also carries income_band_label, the band's dollar range in plain words (e.g. \"${IncomeBand.OVER_110K.bracket}\") - say that " +
         "range when you name the band aloud, never the income_band code and never a data-source bucket name. " +
         "When a college's result carries " +
-        "precision_offer, you may offer to record the income band (${MoneyProfileChatTool.TOOL_NAME}) so the numbers " +
-        "become family-specific. money_profile.income_band_status is the authority on whether to raise income: " +
-        "declined means the student said no - never re-raise it yourself; answered means the band is already on file. " +
+        "$PRECISION_OFFER_KEY, it is a list of upgrade invitations for that result, each naming the money-profile field " +
+        "it would fill (${MoneyProfileChatTool.TOOL_NAME} records them) and carrying the sentence you may say. Raise them " +
+        "in the order given: ${PrecisionOffer.RESIDENCY.field} sorts first because it is the cheaper question and the " +
+        "bigger correction - it selects which of the school's published prices applies - while " +
+        "${PrecisionOffer.INCOME_BAND.field} makes " +
+        "the net price family-specific. money_profile.residency_status is the authority on whether to raise residency, " +
+        "and money_profile.income_band_status the authority on whether to raise income: " +
+        "declined means the student said no - never re-raise it yourself; answered means the field is already on file. " +
         "Read-only: this tool changes nothing."
   }
 }
