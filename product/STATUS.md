@@ -7,23 +7,27 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-29 (RFC 140 / brief 0001 S4a landed). Live-run discovery from
+Updated: 2026-08-29 (RFC 144 / brief 0004 S2 landed). Live-run discovery from
 any checkout: `.prime/agent/skills/ship/scripts/ship-status`
 
 ## TL;DR — next steps, most important first
 
-1. **Brief 0004 — college search index — EXECUTING; S1 LANDED (RFC 139,
-   2026-08-28).** Fuzzy names, honest match counts, and ingest provenance are
-   live; the ingest-observability item is absorbed and closed. Next /ship run:
-   **0004 S2** (IPEDS `HD`+`IC`+`ADM`+`C_A` loader → `college_ipeds` +
-   `college_programs_census`: religion, ROTC, study abroad, disability, housing,
-   athletics, test policy, closure status, 6-digit program census). Then S3 (the
-   derived index + subject taxonomy — the aha), S4 (query-time
-   `similar_colleges`), S5 (consumer sweep). 0004 D13 (S1–S3 before 0001's S4)
-   was consciously narrowed at RFC 140's gate and is now moot for S4a: only S1's
-   conventions were a real dependency, and S4a landed after RFC 139 with its
-   ingest CLI merged into 139's (aliases + `--*-source` provenance + the CDS
-   group in one launcher).
+1. **Brief 0004 — college search index — EXECUTING; S1 and S2 LANDED (RFCs 139
+   and 144, 2026-08-28/29).** Fuzzy names, honest match counts and ingest
+   provenance are live, and the IPEDS attribute layer is now source data:
+   `college_ipeds` (religion, ROTC, study abroad, the disability band, housing,
+   application fee, athletics, test policy, closure) and
+   `college_programs_census` (bachelor's 6-digit CIP), loaded by
+   `bin/ingest-colleges`'s optional all-or-nothing
+   `--hd/--ic/--adm/--completions/--survey-year` group — 5,688 attribute rows
+   and 80,632 census rows from the real 2023 files, unmatched `unit_id`s counted
+   and skipped. Nothing user-visible changed yet: **that is S3**, the next /ship
+   run (the derived `college_search_index` + subject taxonomy — the aha). Then
+   S4 (query-time `similar_colleges`), S5 (consumer sweep). 0004 D13 (S1–S3
+   before 0001's S4) was consciously narrowed at RFC 140's gate and is now moot
+   for S4a: only S1's conventions were a real dependency, and S4a landed after
+   RFC 139 with its ingest CLI merged into 139's (aliases + `--*-source`
+   provenance + the CDS group in one launcher).
 2. **S4a LANDED (RFC 140, 2026-08-28); S4b is the next 0001 run.** The CDS
    reference layer is live: `college_merit_aid` (H2A no-need merit practice),
    `college_admission_factors` (the C7 grid), and `college_deadlines` (rounds),
@@ -49,8 +53,8 @@ any checkout: `.prime/agent/skills/ship/scripts/ship-status`
    of upgrade invitations (residency first, offered only where a public college
    makes it worth something), and prompt **v7** teaches the ordering. **M2**
    (component split, DDL approved as D18/D19) is the next slice of this brief
-   but still waits on 0004 S1/S2, and precedes 0001's S5. Migrations:
-   `0049`/`0050` (RFCs 141/142), `0053` (RFC 145).
+   but still waits on 0004 S3 (S1/S2 landed as RFCs 139/144), and precedes
+   0001's S5. Migrations: `0049`/`0050` (RFCs 141/142), `0053` (RFC 145).
 4. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
    S6 is the wedge and its token becomes Beat 2's parent-account claim path. S5
    waits on 0003 M2+M3 so the parent-facing artifact speaks the language.
@@ -210,12 +214,12 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                              | State                                                                                                                                                                                         | Where                                    |
-| --- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                          | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003) | **M1 + M1.1 + RFC 143 + M1.2 LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: M2 (waits on 0004 S1/S2, precedes 0001 S5), then M3, M4.          | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent. | `product/0001-v1-differentiator/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                   | `bin/state-apply`                        |
+| Pri | Work                              | State                                                                                                                                                                                           | Where                                    |
+| --- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                            | `product/0004-college-search-index`      |
+| P1  | Clear money language (brief 0003) | **M1 + M1.1 + RFC 143 + M1.2 LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: M2 (waits on 0004 S3; S1/S2 landed, precedes 0001 S5), then M3, M4. | `product/0003-clear-money-language`      |
+| P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent.   | `product/0001-v1-differentiator/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                     | `bin/state-apply`                        |
 
 ## Backlog
 
@@ -267,6 +271,17 @@ transactional index rebuild at the end), raw source codes in schema with word
 enums at the tool boundary, tri-state unknowns with excluded counts, outcome
 measures never ranked. I approve every new table with visible DDL at the /ship
 gate; the spec's DDL is the approved shape.
+
+S3 is next. S1 landed as RFC 139 (migrations 0051/0052) and S2 as RFC 144
+(migration 0055: `college_ipeds` + `college_programs_census`, loaded by
+`bin/ingest-colleges --hd/--ic/--adm/--completions/--survey-year`); S3 builds
+phase 2 — the derived `college_search_index`, the subject taxonomy, and the
+switch of both search paths onto the index. Extend that ingest rather than
+inventing a parallel path, and read RFC 144's open items first: `sector` matched
+no administrative units in the real corpus, `athletic_assoc` cannot express
+"unreported", `college_programs_census_cip_idx` still has no reader, and
+whole-run orchestration still sits inside `CollegeScorecardLoader.ingest` — S3
+is the run that should decide each of those.
 
 ### Account deletion (brief 0002) — parked in Backlog, kept ready
 

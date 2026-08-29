@@ -12,6 +12,20 @@ Ledger (updated as slices land):
        credential_level, and ingest provenance (college_index_build, fatal
        header assertion, loud change summary). Migrations 0051/0052.
 
+    S2 LANDED as RFC 144 (main@b0467717 + e303f8d3, 2026-08-29) — the IPEDS
+       attribute ingest: college_ipeds (religion, ROTC, study abroad, the
+       disability band, housing, application fee, athletics, test policy,
+       closure) + college_programs_census (bachelor's 6-digit CIP), loaded by
+       bin/ingest-colleges's optional all-or-nothing --hd/--ic/--adm/
+       --completions/--survey-year group (D19). Migration 0055; method_version
+       2. Two new decisions approved at the /ship gate: D23 sector (the only
+       discriminator for an administrative unit) and D24 disability_band
+       replacing has_disability_svc (IC.DISAB is a band for the SHARE of
+       undergraduates registered with a disability, not a services flag).
+       Real-file acceptance: 5,688 attribute rows + 80,632 census rows, every
+       per-column count equal to the raw 2023 files over the same unit set;
+       475 + 777 unmatched unit_ids counted and skipped, never invented.
+
 ## The question
 
 Ian: "I want to build a search index for colleges. We will need this for many
