@@ -10,9 +10,19 @@ sealed class DaoException(
   cause: Throwable? = null,
 ) : RuntimeException(message, cause)
 
+/**
+ * A row that had to exist did not. On the write path (a `23503` foreign-key
+ * violation) it also carries the PostgreSQL diagnostics its `23505`/`23514`
+ * sibling [ConstraintViolationException] carries -- the violated [constraint]
+ * name and the server [detail] line naming the offending key -- plus the
+ * originating `SQLException` as the cause. Both default to null so read-path
+ * construction sites are unchanged.
+ */
 class NotFoundException(
   message: String = "Record not found",
   cause: Throwable? = null,
+  val constraint: String? = null,
+  val detail: String? = null,
 ) : DaoException(message, cause),
   PermanentError
 
@@ -96,6 +106,44 @@ class ConcurrentModificationException(
   message: String = "Concurrent modification",
 ) : DaoException(message),
   TransientError
+
+/**
+ * The reference-table write-path SQLSTATE mapping: `23503` (a fact row
+ * referencing an absent parent) to [NotFoundException]; `23505`/`23514`
+ * (unique/check, including a domain CHECK) to [ConstraintViolationException];
+ * everything else through [mapDatabaseError].
+ *
+ * BOTH violation arms keep the same evidence: the driver `SQLException` as the
+ * cause, and the server's violated-constraint name and DETAIL line as typed
+ * fields. [missingReferenceMessage] is the caller's description of the write
+ * that failed -- it should name the absent parent's id, the target table and
+ * the key, not a constant sentence, because a `23503` here means something
+ * genuinely surprising happened and a context-free message starts a table scan.
+ */
+fun mapReferenceWriteError(
+  e: java.sql.SQLException,
+  missingReferenceMessage: String,
+): Exception {
+  val serverError = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
+  return when (e.sqlState) {
+    "23503" -> {
+      NotFoundException(
+        message = missingReferenceMessage,
+        cause = e,
+        constraint = serverError?.constraint,
+        detail = serverError?.detail,
+      )
+    }
+
+    "23505", "23514" -> {
+      ConstraintViolationException(e, serverError?.constraint, serverError?.detail)
+    }
+
+    else -> {
+      mapDatabaseError(e)
+    }
+  }
+}
 
 fun mapDatabaseError(e: Exception): Exception {
   if (e is DaoException) return e

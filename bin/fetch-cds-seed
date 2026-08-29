@@ -1,0 +1,1108 @@
+#!/usr/bin/env python3
+"""fetch-cds-seed: build the CDS admissions seed from the collegedata.fyi corpus.
+
+RFC 140. Pulls the open collegedata.fyi Common Data Set corpus over its public
+PostgREST API, selects per school and per fact group the newest document that
+actually reports that group, normalises the three fact groups the coach cites
+(H2A merit aid, the C7 admissions factor grid, application deadlines), and
+writes the reviewable, diffable seed:
+
+    db/seed/cds/merit-aid.csv
+    db/seed/cds/admission-factors.csv
+    db/seed/cds/deadlines.csv
+    db/seed/cds/PROVENANCE.json   (fetched_at, corpus row counts, sha256 per csv)
+
+ALL interpretation lives here (the Kotlin loader is a dumb typed CSV reader
+with a header assertion): the C7 rating whitelist, the per-schema_version
+deadline field mapping (the 2024-25 and 2025-26 CDS templates NUMBER the
+C21/C22 date fields differently, and a template this script has not been taught
+is refused rather than guessed), free-text date parsing, and the per-fact-group
+document selection. Junk that fails normalisation is dropped as "unreported",
+never guessed; every drop is counted in PROVENANCE.json, with a bounded sample
+of the offending documents so a count is traceable without re-fetching.
+
+Stdlib-only (dev-shell python3), no dependencies. Usage:
+
+    fetch-cds-seed [-o <outdir>] [-F <fixtures-dir>] [--anon-key <jwt>]
+
+    -o DIR         output directory (default: db/seed/cds under the repo root)
+    -F DIR         offline mode for tests: read <dir>/manifest.json and
+                   <dir>/fields.json (recorded API responses), no network
+    --anon-key JWT the corpus's public read-only Supabase anon key to use.
+                   Falls back to $COLLEGEDATA_ANON_KEY, then to scraping the
+                   corpus's own API page. PROVENANCE.json records which route
+                   a run used, so the credential is auditable.
+    -h             help
+
+The run REFUSES to write a seed that is empty or that collapsed against the
+committed PROVENANCE.json row counts: this tool overwrites a reviewed seed, and
+a successful-looking read that produced nothing is a broken read, never a
+corpus that suddenly reports nothing.
+
+Etiquette per the corpus's docs/api-usage-attribution.md: every request sends
+`X-CollegeData-Client: unicoach`.
+"""
+
+import csv
+import enum
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import Counter, defaultdict
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import NamedTuple
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTDIR = REPO_ROOT / "db" / "seed" / "cds"
+
+API_PAGE_URL = "https://www.collegedata.fyi/api"
+REST_BASE = "https://api.collegedata.fyi/rest/v1"
+CLIENT_HEADER = {"X-CollegeData-Client": "unicoach"}
+PAGE_SIZE = 1000
+ANON_KEY_ENV = "COLLEGEDATA_ANON_KEY"
+
+# The network bounds, named once each: the attempt count is derived from
+# HTTP_MAX_ATTEMPTS everywhere it is needed rather than written a second time.
+HTTP_MAX_ATTEMPTS = 3
+HTTP_TIMEOUT_SECONDS = 60
+HTTP_RETRY_BACKOFF_SECONDS = 2
+# Transient statuses: throttling and server-side faults are worth another
+# attempt. Every other 4xx is the REQUEST being wrong (rotated anon key,
+# renamed table) and retrying it only delays the diagnosis.
+RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+# How many offending subjects to keep per drop reason. A count alone forces a
+# re-fetch to find the rows behind it; an unbounded list would make
+# PROVENANCE.json a second copy of the corpus.
+DROP_SAMPLE_LIMIT = 20
+
+# A regenerated fact group smaller than this fraction of the committed one is
+# treated as a failed read rather than a real corpus change.
+SEED_SHRINK_FLOOR = 0.5
+
+# CDS dates are cycle-relative and carry no year, so month/day pairs are
+# validated against a LEAP year: Feb 29 is a real reported deadline, Feb 30 is
+# extraction junk.
+CALENDAR_VALIDATION_YEAR = 2024
+
+# Every cds_fields field_id we interpret. The 2024-25-schema-only ED count
+# fields (C.2106/C.2107 there) are fetched by these same ids but ignored by the
+# free-text mapping below.
+FIELD_IDS = (
+    ["H.201", "H.2A01", "H.2A02"]
+    + [f"C.7{i:02d}" for i in range(1, 19)]
+    + ["C.1401", "C.1402", "C.1403", "C.1404", "C.1405"]
+    + ["C.1601", "C.1604", "C.1605", "C.1606"]
+    + [f"C.21{i:02d}" for i in range(1, 10)]
+    + [f"C.22{i:02d}" for i in range(1, 6)]
+)
+
+# CDS C7: the published rating vocabulary, whitelisted case-insensitively.
+# Anything else ('x', 'VI', stray numbers -- ~5% of the corpus) is extraction
+# junk: dropped, not guessed.
+RATING_WHITELIST = {
+    "very important": "very_important",
+    "important": "important",
+    "considered": "considered",
+    "not considered": "not_considered",
+}
+
+FACTOR_COLUMNS = [
+    ("rigor", "C.701"),
+    ("class_rank", "C.702"),
+    ("gpa", "C.703"),
+    ("test_scores", "C.704"),
+    ("essay", "C.705"),
+    ("recommendations", "C.706"),
+    ("interview", "C.707"),
+    ("extracurriculars", "C.708"),
+    ("talent", "C.709"),
+    ("character_qualities", "C.710"),
+    ("first_generation", "C.711"),
+    ("alumni_relation", "C.712"),
+    ("geography", "C.713"),
+    ("state_residency", "C.714"),
+    ("religious_affiliation", "C.715"),
+    ("volunteer_work", "C.716"),
+    ("work_experience", "C.717"),
+    ("applicant_interest", "C.718"),
+]
+
+MERIT_HEADER = [
+    "unit_id", "source_year", "freshmen_ft_total", "no_need_merit_count",
+    "no_need_merit_avg", "source_url", "archive_url",
+]
+FACTORS_HEADER = (
+    ["unit_id", "source_year"] + [c for c, _ in FACTOR_COLUMNS] + ["source_url", "archive_url"]
+)
+DEADLINES_HEADER = [
+    "unit_id", "source_year", "round", "offered", "closing_month", "closing_day",
+    "notification_month", "notification_day", "source_url", "archive_url",
+]
+
+MONTH_NAMES = {
+    name: i
+    for i, names in enumerate(
+        [
+            ("jan", "january"), ("feb", "february"), ("mar", "march"),
+            ("apr", "april"), ("may",), ("jun", "june"), ("jul", "july"),
+            ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"),
+            ("nov", "november"), ("dec", "december"),
+        ],
+        start=1,
+    )
+    for name in names
+}
+
+
+# The CDS template -> C21/C22 date numbering, declared explicitly. "split"
+# numbers every date as a month cell + a day cell (the 2025-26 template);
+# "free" uses one free-text date cell per date (the 2024-25 template). The two
+# numberings are INCOMPATIBLE -- 2025-26's C.2104/05 is the ED1 notification
+# month/day, 2024-25's C.2104/05 is the ED2 closing/notification date -- so a
+# schema_version this table does not name is a template whose numbering is
+# unknown: its deadlines are refused and counted, never guessed under whichever
+# mapping happens to be first. PROVENANCE.json shows the day a new one appears.
+DEADLINE_SCHEMA_STYLES = {
+    "2025-26": "split",
+    "2024-25": "free",
+}
+
+# Drop reasons that describe the DOCUMENT rather than the row finally chosen,
+# so they are reported even for a document the per-group fallback skipped over.
+# An unmapped template must be visible whether or not an older document
+# happened to cover for it.
+STICKY_DROPS = frozenset(
+    {"deadline_schema_unmapped", "deadline_schema_inconsistent", "merit_h2a_contradictory"}
+)
+
+
+# The usage-error exit codes bin/functions reserves (10-29), kept in step here
+# so a caller that invoked this script wrongly is distinguishable from a corpus
+# fetch that faulted -- bin/ingest-colleges exits these same two for these same
+# two conditions.
+EXIT_UNKNOWN_OPTION = 10
+EXIT_OPTION_REQUIRES_VALUE = 11
+
+
+def log_warning(message):
+    """A non-fatal fault, on the channel and with the prefix bin/functions'
+    log-warning uses, so one grep finds them across shell and python."""
+    print(f"[WARNING] {message}", file=sys.stderr)
+
+
+def fatal(message, status=1):
+    print(f"[FATAL] {message}", file=sys.stderr)
+    sys.exit(status)
+
+
+# ---------------------------------------------------------------------------
+# The drop ledger
+# ---------------------------------------------------------------------------
+
+
+class Drops:
+    """Every value the seed refused: a count per reason, a BOUNDED sample of the
+    subjects behind each reason (unit_id/document_id, plus the offending value
+    where that is the actionable datum), and the per-fact-group counters kept as
+    their own dimension rather than welded into the reason string.
+
+    `subject` is the document context a nested ledger was opened with, so a
+    low-level normaliser can record a reason without threading identity through
+    every call."""
+
+    def __init__(self, subject=""):
+        self.subject = subject
+        self.counts = Counter()
+        self.samples = defaultdict(list)
+        self.group_counts = defaultdict(Counter)
+        self.group_samples = defaultdict(lambda: defaultdict(list))
+
+    def record(self, reason, detail=None, count=1):
+        self.counts[reason] += count
+        self._sample(self.samples[reason], detail)
+
+    def record_group(self, group, reason, detail=None, count=1):
+        self.group_counts[group][reason] += count
+        self._sample(self.group_samples[group][reason], detail)
+
+    def merge(self, other, reasons=None):
+        """Folds a per-document ledger in, optionally restricted to `reasons`
+        (the sticky, document-level ones)."""
+        for reason, count in other.counts.items():
+            if reasons is not None and reason not in reasons:
+                continue
+            self.counts[reason] += count
+            bucket = self.samples[reason]
+            room = DROP_SAMPLE_LIMIT - len(bucket)
+            if room > 0:
+                bucket.extend(other.samples[reason][:room])
+
+    def reasons(self):
+        return sorted(self.counts)
+
+    def _sample(self, bucket, detail):
+        if len(bucket) >= DROP_SAMPLE_LIMIT:
+            return
+        entry = " ".join(part for part in (self.subject, detail) if part)
+        if entry:
+            bucket.append(entry)
+
+    def as_json(self):
+        """The provenance shape: counts, samples, and the per-group counters
+        nested under their group."""
+        return {
+            "by_reason": dict(sorted(self.counts.items())),
+            "samples": {
+                reason: values for reason, values in sorted(self.samples.items()) if values
+            },
+            "by_group": {
+                group: {
+                    "by_reason": dict(sorted(counts.items())),
+                    "samples": {
+                        reason: values
+                        for reason, values in sorted(self.group_samples[group].items())
+                        if values
+                    },
+                }
+                for group, counts in sorted(self.group_counts.items())
+            },
+        }
+
+    def summary(self):
+        """The one-line run summary: counts only."""
+        return dict(sorted(self.counts.items()))
+
+
+# ---------------------------------------------------------------------------
+# Fetching
+# ---------------------------------------------------------------------------
+
+
+def http_get(url, headers):
+    """The response body, retrying only TRANSIENT faults. A permanent fault
+    (401/403/404 and every other non-retryable status) is reported immediately
+    through this script's own fatal channel -- retrying a rotated key or a
+    renamed table only delays the diagnosis -- and the swallowed causes of the
+    earlier attempts are logged rather than discarded."""
+    request = urllib.request.Request(url, headers=headers)
+    for attempt in range(HTTP_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            body = error.read()[:200].decode("utf-8", errors="replace")
+            cause = f"HTTP [{error.code}] [{error.reason}] body [{body}]"
+            if error.code not in RETRYABLE_STATUS:
+                fatal(f"GET [{url}] failed permanently on attempt [{attempt + 1}]: {cause}")
+        except (urllib.error.URLError, TimeoutError) as error:
+            cause = f"[{type(error).__name__}] [{error}]"
+        if attempt == HTTP_MAX_ATTEMPTS - 1:
+            fatal(f"GET [{url}] failed after [{HTTP_MAX_ATTEMPTS}] attempts: {cause}")
+        log_warning(
+            f"GET [{url}] attempt [{attempt + 1}]/[{HTTP_MAX_ATTEMPTS}] failed: {cause}; retrying"
+        )
+        time.sleep(HTTP_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
+def resolve_anon_key(argument):
+    """(key, source) for the corpus's public read-only Supabase anon key, from
+    the most explicit route available: the --anon-key argument, then
+    $COLLEGEDATA_ANON_KEY, then a scrape of the corpus's own API page (where
+    the key is published for exactly this use). The source is recorded in
+    PROVENANCE.json so an operator can see which credential a run used, and can
+    pin it when the published one rotates."""
+    if argument:
+        return argument, "argument"
+    from_env = os.environ.get(ANON_KEY_ENV, "").strip()
+    if from_env:
+        return from_env, "environment"
+    page = http_get(API_PAGE_URL, CLIENT_HEADER).decode("utf-8", errors="replace")
+    match = re.search(r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", page)
+    if not match:
+        fatal(
+            f"no Supabase anon key (JWT) found on [{API_PAGE_URL}]; "
+            f"pass --anon-key or set [${ANON_KEY_ENV}]"
+        )
+    return match.group(0), "scraped"
+
+
+def rest_get_all(path, params, anon_key):
+    """Full-table read via limit/offset pages in a stable order (PostgREST caps
+    unbounded reads at its default page size). Only the two page shapes a
+    bounded read can legitimately return are accepted: exactly PAGE_SIZE rows
+    (read on) or fewer (done). A LARGER page would desynchronise the fixed
+    offset cursor and re-read rows already taken, and a JSON object is
+    PostgREST's error envelope, not a page -- both are fatal here, where the
+    URL can still be named."""
+    headers = {
+        **CLIENT_HEADER,
+        "apikey": anon_key,
+        "Authorization": f"Bearer {anon_key}",
+    }
+    rows = []
+    offset = 0
+    while True:
+        page_params = dict(params)
+        page_params["limit"] = str(PAGE_SIZE)
+        page_params["offset"] = str(offset)
+        url = f"{REST_BASE}/{path}?{urllib.parse.urlencode(page_params)}"
+        page = json.loads(http_get(url, headers))
+        if not isinstance(page, list):
+            fatal(
+                f"GET [{url}] returned a JSON [{type(page).__name__}], expected an array: "
+                f"[{str(page)[:200]}]"
+            )
+        if len(page) > PAGE_SIZE:
+            fatal(f"GET [{url}] returned [{len(page)}] rows for a limit of [{PAGE_SIZE}]")
+        rows.extend(page)
+        if len(page) != PAGE_SIZE:
+            return rows
+        offset += PAGE_SIZE
+
+
+def fetch_corpus(anon_key):
+    """The (manifest, fields) corpus rows for a caller-supplied anon key."""
+    manifest = rest_get_all(
+        "cds_manifest",
+        {
+            "extraction_status": "eq.extracted",
+            "removed_at": "is.null",
+            "order": "document_id.asc",
+        },
+        anon_key,
+    )
+    field_list = ",".join(f'"{f}"' for f in FIELD_IDS)
+    fields = rest_get_all(
+        "cds_fields",
+        {
+            "field_id": f"in.({field_list})",
+            "order": "document_id.asc,field_id.asc",
+        },
+        anon_key,
+    )
+    return manifest, fields
+
+
+def load_corpus(fixtures, anon_key_argument):
+    """(manifest, fields, anon_key_source) from recorded fixtures or the live
+    API."""
+    if fixtures is not None:
+        manifest = json.loads((fixtures / "manifest.json").read_text())
+        fields = json.loads((fixtures / "fields.json").read_text())
+        return manifest, fields, "fixtures"
+    anon_key, source = resolve_anon_key(anon_key_argument)
+    manifest, fields = fetch_corpus(anon_key)
+    return manifest, fields, source
+
+
+# ---------------------------------------------------------------------------
+# Document selection
+# ---------------------------------------------------------------------------
+
+
+def document_unusable_reason(doc):
+    """Why this manifest document cannot seed a row, or None when it can. Every
+    field the downstream code depends on is checked HERE, in the one place
+    unusable documents are dropped: `school_id` and `document_id` are
+    subscripted by doc_archive_url and the per-document field lookup, so an
+    absent one is an unusable document rather than a KeyError three functions
+    later -- or, worse, a ".../schools/None/..." citation shipped in the seed."""
+    if doc.get("sub_institutional"):
+        return "manifest_docs_unusable_sub_institutional"
+    if not str(doc.get("ipeds_id") or "").strip().isdigit():
+        return "manifest_docs_unusable_no_ipeds_id"
+    if not re.fullmatch(r"\d{4}-\d{2}", str(doc.get("canonical_year") or "")):
+        return "manifest_docs_unusable_no_canonical_year"
+    if not doc.get("source_url"):
+        return "manifest_docs_unusable_no_source_url"
+    if not doc.get("school_id"):
+        return "manifest_docs_unusable_no_school_id"
+    if not doc.get("document_id"):
+        return "manifest_docs_unusable_no_document_id"
+    return None
+
+
+def select_documents(manifest, drops):
+    """Every usable extracted, non-removed, whole-institution document per
+    school, newest first (canonical_year -- the 'YYYY-YY' strings order
+    correctly -- then document_id as the deterministic tiebreak). Fact groups
+    are chosen from this list PER GROUP, so a school whose newest CDS omits H2A
+    still seeds merit aid from the newest document that does report it."""
+    by_school = {}
+    for doc in manifest:
+        reason = document_unusable_reason(doc)
+        if reason is not None:
+            drops.record(reason, f"document_id=[{doc.get('document_id')}]")
+            continue
+        by_school.setdefault(int(str(doc["ipeds_id"]).strip()), []).append(doc)
+    for docs in by_school.values():
+        docs.sort(key=lambda d: (d["canonical_year"], d["document_id"]), reverse=True)
+    return by_school
+
+
+def doc_source_year(doc):
+    return int(doc["canonical_year"].split("-")[0])
+
+
+def doc_archive_url(doc):
+    return f"https://www.collegedata.fyi/schools/{doc['school_id']}/{doc['canonical_year']}"
+
+
+def doc_subject(unit_id, doc):
+    """The identity carried on every drop a document causes."""
+    return f"unit_id=[{unit_id}] document_id=[{doc['document_id']}]"
+
+
+def group_fields(fields, drops):
+    """cds_fields rows by document_id -> field_id -> row, 'reported' rows only
+    (not_applicable / parse_error are unreported by definition, and are counted
+    PER STATUS: parse_error is extraction failure, which an operator judging
+    corpus health needs a number for). The first row wins on the rare
+    duplicate, matching the stable fetch order; the loser is counted, because a
+    corpus disagreeing with itself must not look clean."""
+    by_doc = {}
+    for row in fields:
+        status = row.get("value_status")
+        if status != "reported":
+            drops.record(
+                f"field_status_{status or 'unknown'}",
+                f"document_id=[{row.get('document_id')}] field_id=[{row.get('field_id')}]",
+            )
+            continue
+        doc_fields = by_doc.setdefault(row["document_id"], {})
+        if row["field_id"] in doc_fields:
+            drops.record(
+                "field_duplicate_ignored",
+                f"document_id=[{row['document_id']}] field_id=[{row['field_id']}]",
+            )
+            continue
+        doc_fields[row["field_id"]] = row
+    return by_doc
+
+
+# ---------------------------------------------------------------------------
+# Cell normalisation
+# ---------------------------------------------------------------------------
+
+
+def get_cell_text(row):
+    """The row's reported text with whitespace collapsed, or None when the cell
+    carries no value at all. None is ABSENCE; a value that merely looks falsy (a
+    numeric 0) is a reported value and stays one."""
+    if row is None:
+        return None
+    value = row.get("value_text")
+    return None if value is None else " ".join(str(value).split())
+
+
+def get_int(row):
+    """A non-negative integer from a numeric cds_fields row: value_num when
+    typed, else value_text with currency/grouping stripped. Anything else
+    (including negatives -- counts and dollar averages cannot be negative) is
+    junk -> None."""
+    if row is None:
+        return None
+    value = row.get("value_num")
+    if value is None:
+        text = get_cell_text(row)
+        if text is None:
+            return None
+        raw = re.sub(r"[$,\s]", "", text)
+        if not re.fullmatch(r"\d+(\.0+)?", raw):
+            return None
+        value = float(raw)
+    # `bool` is a subclass of `int` in Python, so a JSON `true` left in value_num
+    # would survive every check below and seed the integer 1 -- a fabricated
+    # freshman count, or a "$1 average award". Reject it before the numeric tests.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value != int(value) or value < 0:
+        return None
+    return int(value)
+
+
+def get_bool(row):
+    """A yes/no or checkbox cds_fields row -> bool, else None. Only a real JSON
+    boolean is taken from value_bool ("false"/"f"/[] are not booleans and must
+    not coerce to True); checkbox marks otherwise arrive as literal 'X'/check
+    glyphs in the allowlisted text vocabulary below."""
+    if row is None:
+        return None
+    value_bool = row.get("value_bool")
+    if isinstance(value_bool, bool):
+        return value_bool
+    raw = (get_cell_text(row) or "").lower()
+    if raw in ("yes", "y", "true", "x", "\u2713", "\u2714"):
+        return True
+    if raw in ("no", "n", "false"):
+        return False
+    return None
+
+
+def get_rating(row):
+    if row is None:
+        return None
+    return RATING_WHITELIST.get((get_cell_text(row) or "").lower())
+
+
+def get_int_field(doc_fields, field_id, drops, reason):
+    """get_int for one field, counting a REPORTED-but-unparseable cell so the
+    ledger names every value the seed lost, not only the ones the C7 grid
+    happens to check."""
+    field = doc_fields.get(field_id)
+    value = get_int(field)
+    if field is not None and value is None:
+        drops.record(reason, f"field_id=[{field_id}] value=[{get_cell_text(field)}]")
+    return value
+
+
+def get_bool_field(doc_fields, field_id, drops):
+    """get_bool for one field, counting a reported-but-unrecognised flag.
+    Uncounted, such a cell is indistinguishable from an unasked question -- and
+    is then defaulted to offered=True."""
+    field = doc_fields.get(field_id)
+    value = get_bool(field)
+    if field is not None and value is None:
+        drops.record("deadline_flag_junk", f"field_id=[{field_id}] value=[{get_cell_text(field)}]")
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Dates
+# ---------------------------------------------------------------------------
+
+
+class MonthDay(NamedTuple):
+    """A cycle-relative CDS month/day, the fetcher-side `CdsMonthDay`: the month
+    is always present and `day` is the sparse best-effort part ("closes in
+    March"). "Not reported" is a null MonthDay, never a pair of nulls, so a day
+    without a month is unconstructible here exactly as it is in Kotlin and in
+    `college_deadlines_day_requires_month_check`."""
+
+    month: int
+    day: int | None
+
+
+class DateComponent(enum.Enum):
+    """Which half of a date a split cell is meant to carry; the MonthDay field
+    it selects is named once, here, instead of a tuple position at each call."""
+
+    MONTH = "month"
+    DAY = "day"
+
+
+def month_day(month, day):
+    """A MonthDay when the pair names a REAL calendar date, else None. The
+    calendar is the stdlib's, not a 1-12/1-31 range check: Feb 30, Apr 31 and
+    Sep 31 are extraction junk and must never be seeded and then cited. The CDS
+    cycle carries no year, so validation is against a leap year -- Feb 29 is a
+    real reported deadline."""
+    if month is None:
+        return None
+    try:
+        date(CALENDAR_VALIDATION_YEAR, month, 1 if day is None else day)
+    except (ValueError, TypeError):
+        return None
+    return MonthDay(month, day)
+
+
+def parse_free_date(raw):
+    """A MonthDay from the 2024-25 template's free-text date cells, which the
+    extractors emit in several shapes: ISO timestamps ('2025-11-15 00:00:00'),
+    'M/D' or 'M/D/YYYY', Excel-mangled 'D-Mon' ('1-Jan'), and 'Month D'
+    ('January 6'). The month-name forms are attempted BEFORE giving up, per the
+    corpus's known '1-Jan' mangling; anything else ('Mid-December', or a pair
+    that is not a real date) is unparseable -> None, never interpolated."""
+    text = " ".join(str(raw or "").split())
+    if not text:
+        return None
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?", text)
+    if match:
+        return month_day(int(match.group(2)), int(match.group(3)))
+    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})(?:/\d{2,4})?", text)
+    if match:
+        return month_day(int(match.group(1)), int(match.group(2)))
+    match = re.fullmatch(r"(\d{1,2})[-. ]([A-Za-z]+)\.?", text)
+    if match and match.group(2).lower() in MONTH_NAMES:
+        return month_day(MONTH_NAMES[match.group(2).lower()], int(match.group(1)))
+    match = re.fullmatch(r"([A-Za-z]+)\.?,? (\d{1,2})(?:,? \d{4})?", text)
+    if match and match.group(1).lower() in MONTH_NAMES:
+        return month_day(MONTH_NAMES[match.group(1).lower()], int(match.group(2)))
+    return None
+
+
+def month_day_cells(month_row, day_row, drops):
+    """A MonthDay from the split month/day cell pair, or None when no usable
+    month was reported. Each cell should be a bare number, but legacy
+    extractions sometimes leave a full date string in one -- in that case the
+    respective component of the parsed date is used.
+
+    A month with no day is real CDS reporting ("applications close in March")
+    and is kept; a DAY with no month is not a date at all, and neither is a day
+    that does not exist in its month, so the orphan component is dropped as
+    unreported. Every discard is counted under the same keys the free-text path
+    uses -- a drop total that depends on which template a school filed is not a
+    drop total."""
+    month = date_cell(month_row, DateComponent.MONTH, drops)
+    day = date_cell(day_row, DateComponent.DAY, drops)
+    if month is not None and month_day(month, None) is None:
+        drops.record("deadline_date_out_of_range", f"month=[{month}]")
+        month = None
+    if month is None:
+        if day is not None:
+            drops.record("deadline_day_without_month", f"day=[{day}]")
+        return None
+    if day is not None and month_day(month, day) is None:
+        drops.record("deadline_impossible_month_day", f"month=[{month}] day=[{day}]")
+        day = None
+    return MonthDay(month, day)
+
+
+def date_cell(row, component, drops):
+    """The month or the day a split cell carries: a bare number, or that
+    component of a full date a legacy extraction left in it. A present cell that
+    parses as neither is counted, not silently blank."""
+    text = get_cell_text(row)
+    if not text:
+        return None
+    if re.fullmatch(r"\d{1,2}", text):
+        return int(text)
+    parsed = parse_free_date(text)
+    if parsed is None:
+        drops.record("deadline_date_unparseable", f"value=[{text}]")
+        return None
+    return getattr(parsed, component.value)
+
+
+# ---------------------------------------------------------------------------
+# Fact groups
+# ---------------------------------------------------------------------------
+
+
+def map_merit_rows(unit_id, doc, doc_fields, drops):
+    """The H2A merit-aid row for one document, as a 0-or-1 element list."""
+    total = get_int_field(doc_fields, "H.201", drops, "merit_int_junk")
+    count = get_int_field(doc_fields, "H.2A01", drops, "merit_int_junk")
+    avg = get_int_field(doc_fields, "H.2A02", drops, "merit_int_junk")
+    if total is not None and count is not None and count > total:
+        # Contradictory extraction (more no-need merit awards than freshmen):
+        # the whole H2A block is untrustworthy, INCLUDING the average award it
+        # reports -- a citable "average merit award $X" with no recipients and
+        # no denominator is worse than no row -- so the document is unreported
+        # for this group and an older one may cover for it.
+        drops.record("merit_h2a_contradictory", f"freshmen=[{total}] merit_count=[{count}]")
+        return []
+    if total is None and count is None and avg is None:
+        return []
+    return [
+        {
+            "unit_id": unit_id,
+            "source_year": doc_source_year(doc),
+            "freshmen_ft_total": total,
+            "no_need_merit_count": count,
+            "no_need_merit_avg": avg,
+            "source_url": doc["source_url"],
+            "archive_url": doc_archive_url(doc),
+        }
+    ]
+
+
+def map_factors_rows(unit_id, doc, doc_fields, drops):
+    """The C7 factor-grid row for one document, as a 0-or-1 element list."""
+    row = {
+        "unit_id": unit_id,
+        "source_year": doc_source_year(doc),
+        "source_url": doc["source_url"],
+        "archive_url": doc_archive_url(doc),
+    }
+    any_rating = False
+    for column, field_id in FACTOR_COLUMNS:
+        field = doc_fields.get(field_id)
+        rating = get_rating(field)
+        if field is not None and rating is None:
+            # The offending string, not just a total: this counter exists to
+            # grow RATING_WHITELIST, and a bare count names nothing to add.
+            drops.record(
+                "factor_rating_junk",
+                f"column=[{column}] value=[{get_cell_text(field) or ''}]",
+            )
+        row[column] = rating
+        any_rating = any_rating or rating is not None
+    return [row] if any_rating else []
+
+
+def get_schema_style(doc_fields, drops):
+    """The document's C21/C22 numbering per DEADLINE_SCHEMA_STYLES, or None when
+    its schema_version is inconsistent across rows or names a template this
+    script has not been taught. Either way the document's deadlines are refused
+    rather than read under a guessed numbering -- and the OFFENDING VERSION is
+    recorded, because it is the one datum needed to extend the table."""
+    versions = {row.get("schema_version") for row in doc_fields.values()}
+    if len(versions) != 1:
+        seen = ",".join(sorted(str(version) for version in versions))
+        drops.record("deadline_schema_inconsistent", f"schema_versions=[{seen}]")
+        return None
+    version = versions.pop()
+    style = DEADLINE_SCHEMA_STYLES.get(version)
+    if style is None:
+        drops.record("deadline_schema_unmapped", f"schema_version=[{version}]")
+    return style
+
+
+def get_free_date(doc_fields, field_id, drops):
+    """A MonthDay from one free-text date cell (the 2024-25 numbering)."""
+    row = doc_fields.get(field_id)
+    if row is None:
+        return None
+    parsed = parse_free_date(get_cell_text(row))
+    if parsed is None:
+        drops.record(
+            "deadline_date_unparseable", f"field_id=[{field_id}] value=[{get_cell_text(row)}]"
+        )
+    return parsed
+
+
+def get_split_date(doc_fields, month_id, day_id, drops):
+    """A MonthDay from a month cell + day cell pair (the 2025-26 numbering, and
+    C14/C16 under both templates)."""
+    if month_id not in doc_fields and day_id not in doc_fields:
+        return None
+    return month_day_cells(doc_fields.get(month_id), doc_fields.get(day_id), drops)
+
+
+# The C21/C22 (ED1, ED2, EA) closing/notification date fields per numbering.
+# "split" names a (month, day) cell pair per date; "free" names one free-text
+# date cell. Note C.2104/05: ED1 NOTIFICATION under the split template, the ED2
+# dates under the free-text one -- the reason get_schema_style refuses a template
+# it does not know. Under the free-text template C.2106/07 are the ED
+# application/admit COUNTS and C.2204 is the restrictive-EA flag, so neither is
+# read there.
+SPLIT_ROUND_DATE_FIELDS = {
+    "early_decision_1": (("C.2102", "C.2103"), ("C.2104", "C.2105")),
+    "early_decision_2": (("C.2106", "C.2107"), ("C.2108", "C.2109")),
+    "early_action": (("C.2202", "C.2203"), ("C.2204", "C.2205")),
+}
+FREE_ROUND_DATE_FIELDS = {
+    "early_decision_1": ("C.2102", "C.2103"),
+    "early_decision_2": ("C.2104", "C.2105"),
+    "early_action": ("C.2202", "C.2203"),
+}
+
+
+def map_round_dates(doc_fields, style, drops):
+    """{round -> (closing, notification)} for the ED/EA rounds, extracted under
+    the document's own numbering. The dispatch is closed: a style mapped to
+    neither numbering is a programming error here, never the free-text
+    numbering by default."""
+    if style == "split":
+        return {
+            round_name: (
+                get_split_date(doc_fields, *closing, drops=drops),
+                get_split_date(doc_fields, *notify, drops=drops),
+            )
+            for round_name, (closing, notify) in SPLIT_ROUND_DATE_FIELDS.items()
+        }
+    if style == "free":
+        return {
+            round_name: (
+                get_free_date(doc_fields, closing, drops),
+                get_free_date(doc_fields, notify, drops),
+            )
+            for round_name, (closing, notify) in FREE_ROUND_DATE_FIELDS.items()
+        }
+    raise AssertionError(f"no date extraction for deadline style [{style}]")
+
+
+def round_if_evidenced(name, offered, closing, notification):
+    """The shared emit rule: a round exists when its flag was reported or a date
+    for it parsed, and `offered` defaults True for a round that is described but
+    never asked about."""
+    if offered is None and closing is None and notification is None:
+        return None
+    return (name, True if offered is None else offered, closing, notification)
+
+
+def map_regular_round(doc_fields, drops):
+    """C14 regular: closing month/day, plus the C16 notify-by date.
+
+    The C.1604 notify-by checkbox is a TRI-STATE like every other flag, and only
+    an explicit "no" suppresses the date: an UNREPORTED checkbox beside a
+    reported C.1605/06 date is common in the corpus, and the date is the fact a
+    coach cites. Hence `is not False`, not `is True` -- tightening it would
+    silently drop real reporting from every document that gave the date but not
+    the tickbox."""
+    offered = get_bool_field(doc_fields, "C.1401", drops)
+    closing = get_split_date(doc_fields, "C.1402", "C.1403", drops)
+    notify_by = get_bool_field(doc_fields, "C.1604", drops)
+    notification = (
+        get_split_date(doc_fields, "C.1605", "C.1606", drops) if notify_by is not False else None
+    )
+    return round_if_evidenced("regular", offered, closing, notification)
+
+
+def map_priority_round(doc_fields, drops):
+    """C14 priority: a flagless round, evidenced only by its closing date."""
+    return round_if_evidenced(
+        "priority", None, get_split_date(doc_fields, "C.1404", "C.1405", drops), None
+    )
+
+
+def map_rolling_round(doc_fields, drops):
+    """C16 rolling: a checkbox, never a date -- and a TRI-STATE like every other
+    round's flag. A school that explicitly reports "no rolling admission" lands
+    as offered=false; only an unreported C.1601 emits no row at all."""
+    offered = get_bool_field(doc_fields, "C.1601", drops)
+    if offered is None:
+        return None
+    return ("rolling", offered, None, None)
+
+
+def map_early_round(name, flag_id, dates, doc_fields, drops):
+    """One C21/C22 early round. ED2 has no flag question in either template, so
+    flag_id is None there and the round rests on its dates alone."""
+    offered = get_bool_field(doc_fields, flag_id, drops) if flag_id else None
+    closing, notification = dates
+    return round_if_evidenced(name, offered, closing, notification)
+
+
+def list_rounds(doc_fields, dates, drops):
+    """[(round, offered, closing, notification)] -- every round the document
+    gives evidence for, in output order. C14 (regular closing month/day
+    C.1402/03, priority C.1404/05) and C16 (rolling checkbox C.1601; notify-by
+    checkbox C.1604 + month/day C.1605/06) are numbered the same in both
+    templates (verified live against 2024-25 and 2025-26 rows)."""
+    candidates = [
+        map_regular_round(doc_fields, drops),
+        map_priority_round(doc_fields, drops),
+        map_rolling_round(doc_fields, drops),
+        map_early_round("early_decision_1", "C.2101", dates["early_decision_1"], doc_fields, drops),
+        map_early_round("early_decision_2", None, dates["early_decision_2"], doc_fields, drops),
+        map_early_round("early_action", "C.2201", dates["early_action"], doc_fields, drops),
+    ]
+    return [candidate for candidate in candidates if candidate is not None]
+
+
+def render_deadline_row(unit_id, doc, round_name, offered, closing, notification):
+    return {
+        "unit_id": unit_id,
+        "source_year": doc_source_year(doc),
+        "round": round_name,
+        "offered": "true" if offered else "false",
+        "closing_month": closing.month if closing else None,
+        "closing_day": closing.day if closing else None,
+        "notification_month": notification.month if notification else None,
+        "notification_day": notification.day if notification else None,
+        "source_url": doc["source_url"],
+        "archive_url": doc_archive_url(doc),
+    }
+
+
+def map_deadline_rows(unit_id, doc, doc_fields, drops):
+    """The per-round rows for one document: schema -> extraction -> per-round
+    policy -> rendering."""
+    style = get_schema_style(doc_fields, drops)
+    if style is None:
+        return []
+    dates = map_round_dates(doc_fields, style, drops)
+    return [
+        render_deadline_row(unit_id, doc, *round_tuple)
+        for round_tuple in list_rounds(doc_fields, dates, drops)
+    ]
+
+
+# The three fact groups, in output order: (name, seed filename, CSV header, row
+# builder). One table drives selection, the CSV writes and PROVENANCE.
+FACT_GROUPS = [
+    ("merit_aid", "merit-aid.csv", MERIT_HEADER, map_merit_rows),
+    ("admission_factors", "admission-factors.csv", FACTORS_HEADER, map_factors_rows),
+    ("deadlines", "deadlines.csv", DEADLINES_HEADER, map_deadline_rows),
+]
+
+
+def find_newest_reporting(group, build, unit_id, candidates, drops):
+    """The rows from the newest of `candidates` (newest first) that actually
+    reports this fact group, and empty when none does. Only the winning
+    document's drop counters are folded into `drops` -- a document the fallback
+    skipped over says nothing about the row that was kept -- except for the
+    STICKY_DROPS, which describe the document itself. Each passed-over document
+    is recorded under the group with the reasons it yielded nothing, so "why did
+    we fall back?" is answerable from PROVENANCE.json alone."""
+    for skipped, (doc, doc_fields) in enumerate(candidates):
+        attempt = Drops(doc_subject(unit_id, doc))
+        rows = build(unit_id, doc, doc_fields, attempt)
+        if rows:
+            drops.merge(attempt)
+            if skipped:
+                drops.record_group(group, "fell_back_to_older_doc", doc_subject(unit_id, doc))
+                drops.record_group(group, "documents_skipped", count=skipped)
+            return rows
+        drops.merge(attempt, STICKY_DROPS)
+        reasons = ",".join(attempt.reasons()) or "nothing_reported"
+        drops.record_group(group, "passed_over", f"{doc_subject(unit_id, doc)} reasons=[{reasons}]")
+    if candidates:
+        drops.record_group(group, "unreported_in_every_doc", f"unit_id=[{unit_id}]")
+    return []
+
+
+def build_seed(manifest, fields):
+    """The three seed tables (keyed by group name) + the drop ledger from raw
+    corpus rows. Each group is taken from the newest document that reports it,
+    independently of the other two: each table's natural key carries its own
+    source_year, so a 2024 merit row beside a 2025 factors row is a first-class
+    outcome rather than a compromise."""
+    drops = Drops()
+    documents = select_documents(manifest, drops)
+    fields_by_doc = group_fields(fields, drops)
+
+    seed = {group: [] for group, _, _, _ in FACT_GROUPS}
+    for unit_id in sorted(documents):
+        candidates = [
+            (doc, fields_by_doc[doc["document_id"]])
+            for doc in documents[unit_id]
+            if fields_by_doc.get(doc["document_id"])
+        ]
+        for group, _, _, build in FACT_GROUPS:
+            seed[group].extend(find_newest_reporting(group, build, unit_id, candidates, drops))
+    seed["deadlines"].sort(key=lambda r: (r["unit_id"], r["source_year"], r["round"]))
+    return seed, drops
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+
+def write_csv(path, header, rows):
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: ("" if v is None else v) for k, v in row.items()})
+
+
+def sha256_of(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def require_plausible_seed(outdir, seed, manifest, fields):
+    """Refuses to overwrite the committed seed with a failed read. The corpus
+    reports all three fact groups for hundreds of schools, so an EMPTY group is
+    a renamed table, a filter that matched nothing or a rotated key -- never a
+    real result -- and a group that collapsed against the row counts the
+    committed PROVENANCE.json recorded is the same failure arriving quietly. A
+    successful-looking load is not evidence; this is where that is enforced."""
+    empty = [name for group, name, _, _ in FACT_GROUPS if not seed[group]]
+    if empty:
+        fatal(
+            f"corpus produced no rows for [{', '.join(empty)}]; "
+            f"refusing to overwrite the seed in [{outdir}] "
+            f"(manifest_rows=[{len(manifest)}] cds_fields_rows=[{len(fields)}])"
+        )
+    previous_path = outdir / "PROVENANCE.json"
+    if not previous_path.exists():
+        return
+    try:
+        previous = json.loads(previous_path.read_text()).get("rows", {})
+    except (OSError, ValueError) as error:
+        fatal(f"[{previous_path}] is unreadable [{error}]; move it aside to regenerate from scratch")
+    shrunk = [
+        f"[{name}]: [{len(seed[group])}] now, [{previous[name]}] committed"
+        for group, name, _, _ in FACT_GROUPS
+        if isinstance(previous.get(name), int)
+        and len(seed[group]) < SEED_SHRINK_FLOOR * previous[name]
+    ]
+    if shrunk:
+        fatal(
+            f"row counts collapsed against [{previous_path}] ({'; '.join(shrunk)}); "
+            f"refusing to overwrite the seed in [{outdir}]"
+        )
+
+
+def write_seed(outdir, seed):
+    """Writes one CSV per fact group; returns {filename -> path}."""
+    paths = {}
+    for group, name, header, _ in FACT_GROUPS:
+        paths[name] = outdir / name
+        write_csv(paths[name], header, seed[group])
+    return paths
+
+
+def write_provenance(outdir, paths, seed, drops, manifest, fields, source, anon_key_source):
+    """The regenerable-seed manifest: when and from where the seed was built,
+    the corpus it was built from, every value dropped as unreported (with a
+    bounded sample of the offending documents, and the per-fact-group counters
+    nested under their group), and each CSV's row count and digest."""
+    provenance = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": source,
+        "anon_key_source": anon_key_source,
+        "corpus": {
+            "manifest_rows": len(manifest),
+            "cds_fields_rows": len(fields),
+            "documents_selected": len(
+                {(r["unit_id"], r["source_year"]) for rows in seed.values() for r in rows}
+            ),
+            "dropped": drops.as_json(),
+        },
+        "rows": {name: len(seed[group]) for group, name, _, _ in FACT_GROUPS},
+        "sha256": {name: sha256_of(path) for name, path in paths.items()},
+    }
+    (outdir / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n")
+
+
+def parse_args(argv):
+    """(outdir, fixtures, anon_key) from argv, fataling on a malformed
+    option."""
+    outdir = None
+    fixtures = None
+    anon_key = None
+    args = list(argv[1:])
+    while args:
+        arg = args.pop(0)
+        if arg == "-h":
+            print(__doc__)
+            sys.exit(0)
+        if arg in ("-o", "-F", "--anon-key"):
+            if not args:
+                fatal(f"option [{arg}] requires a value", status=EXIT_OPTION_REQUIRES_VALUE)
+            value = args.pop(0)
+            if arg == "-o":
+                outdir = Path(value)
+            elif arg == "-F":
+                fixtures = Path(value)
+            else:
+                anon_key = value
+        else:
+            fatal(f"unknown argument [{arg}]", status=EXIT_UNKNOWN_OPTION)
+    if outdir is None:
+        outdir = DEFAULT_OUTDIR
+    return outdir, fixtures, anon_key
+
+
+def main(argv):
+    outdir, fixtures, anon_key = parse_args(argv)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    manifest, fields, anon_key_source = load_corpus(fixtures, anon_key)
+    seed, drops = build_seed(manifest, fields)
+    require_plausible_seed(outdir, seed, manifest, fields)
+    paths = write_seed(outdir, seed)
+    source = "fixtures" if fixtures is not None else "network"
+    write_provenance(outdir, paths, seed, drops, manifest, fields, source, anon_key_source)
+
+    counts = " ".join(f"{name}={len(seed[group])}" for group, name, _, _ in FACT_GROUPS)
+    print(f"seed written to [{outdir}]: {counts} dropped={drops.summary()}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

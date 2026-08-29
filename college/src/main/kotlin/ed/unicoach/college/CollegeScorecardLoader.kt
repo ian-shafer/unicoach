@@ -29,7 +29,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import org.apache.commons.csv.CSVFormat
 import org.apache.commons.csv.CSVRecord
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -378,7 +377,7 @@ class CollegeScorecardLoader(
       // into inserted (absent before) / changed (version advanced) / unchanged
       // (version held) for the provenance build row (RFC 139). ~6k rows.
       val preVersions = CollegesDao.currentVersionsByUnitId(session).getOrThrow()
-      parse(file).use { records ->
+      parseCsv(file).use { records ->
         for (record in records) {
           count.seen++
           val mapped =
@@ -419,7 +418,7 @@ class CollegeScorecardLoader(
   private suspend fun loadFields(file: File): ProgramLoadResult =
     database.withConnection { session ->
       val count = LoadCount()
-      parse(file).use { records ->
+      parseCsv(file).use { records ->
         for (record in records) {
           count.seen++
           // mapField is pure CSV validation (sentinels, missing/key fields, the
@@ -609,7 +608,7 @@ class CollegeScorecardLoader(
     source: SourceFile,
     required: List<String>,
   ) {
-    val header = parse(source.file).use { it.headerMap.keys }
+    val header = parseCsv(source.file).use { it.headerMap.keys }
     val missing = required.filterNot { it in header }
     if (missing.isNotEmpty()) {
       // The caller's ORIGINAL argument, not a scratch basename: bin/ingest-colleges
@@ -1170,15 +1169,7 @@ class CollegeScorecardLoader(
   // CSV parsing + cell coercion
   // ---------------------------------------------------------------------------
 
-  private fun parse(file: File): org.apache.commons.csv.CSVParser =
-    CSVFormat.DEFAULT
-      .builder()
-      .setHeader()
-      .setSkipHeaderRecord(true)
-      .get()
-      .parse(file.bufferedReader())
-
-  /** A trimmed cell, or null when blank (the Scorecard blank-cell idiom). */
+  /** A trimmed cell, or null when absent or blank (the Scorecard blank-cell idiom). */
   private fun stringOrNull(
     record: CSVRecord,
     column: String,

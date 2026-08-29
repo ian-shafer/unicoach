@@ -1,0 +1,2 @@
+unit_id,source_year,round,offered,closing_month,closing_day,notification_month,notification_day,source_url,archive_url
+110100,2024,regular,true,3,,,,https://coastal.example.edu/cds-2024-25.pdf,

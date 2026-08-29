@@ -180,6 +180,19 @@ The dev shell (`flake.nix`) provides:
 - **ktlint** — Kotlin lint/format
 - **git** — self-consistent git on PATH
 
+## Schema conventions
+
+- **Own enumerations** are `TEXT` + `CHECK IN (...)` in the schema plus exactly
+  one Kotlin `enum class Foo(val value: String)` with a `fromValue` companion in
+  `db/src/main/kotlin/ed/unicoach/db/models`
+  (`CollegeListEntryStatus`/`IncomeBand` precedent) — never invented integer
+  codes.
+- **Source-defined codes** (federal/IPEDS/CDS values) are stored raw as the
+  source publishes them; human-readable labels appear only at the tool/API
+  boundary.
+- **Derived figures** (shares, percentages, anything computable from stored
+  columns) are computed at read time and labeled as derived — never stored.
+
 ## Product
 
 The canonical product positioning is in [`PRODUCT.md`](PRODUCT.md). All

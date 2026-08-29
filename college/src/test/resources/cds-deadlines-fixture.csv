@@ -1,0 +1,5 @@
+unit_id,source_year,round,offered,closing_month,closing_day,notification_month,notification_day,source_url,archive_url
+110100,2024,regular,true,1,1,4,1,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+110100,2024,early_decision_1,true,11,1,12,15,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+220200,2025,rolling,true,,,,,https://lakeside.example.edu/cds-2025-26.pdf,
+999999,2024,regular,true,1,15,,,https://ghost.example.edu/cds.pdf,

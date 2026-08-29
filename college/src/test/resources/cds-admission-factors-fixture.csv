@@ -1,0 +1,3 @@
+unit_id,source_year,rigor,class_rank,gpa,test_scores,essay,recommendations,interview,extracurriculars,talent,character_qualities,first_generation,alumni_relation,geography,state_residency,religious_affiliation,volunteer_work,work_experience,applicant_interest,source_url,archive_url
+110100,2024,very_important,considered,very_important,very_important,considered,very_important,not_considered,important,considered,important,considered,not_considered,considered,not_considered,not_considered,considered,considered,considered,https://coastal.example.edu/cds-2024-25.pdf,https://www.collegedata.fyi/schools/coastal/2024-25
+220200,2025,very_important,,very_important,important,important,important,,very_important,,,,,,,,,,,https://lakeside.example.edu/cds-2025-26.pdf,

@@ -180,6 +180,74 @@ internal fun <T> SqlSession.insertReturning(
 }
 
 /**
+ * Per-row disposition of a change-detecting upsert ([upsertDetectingChange]).
+ */
+enum class UpsertOutcome {
+  /** No row existed for the natural key; a new one was inserted. */
+  INSERTED,
+
+  /** A row existed and at least one column value changed. */
+  CHANGED,
+
+  /** A row existed and every column matched; nothing was written. */
+  UNCHANGED,
+}
+
+/**
+ * Generates `INSERT INTO $table (<keys>, <cols>) VALUES (?, …) ON CONFLICT
+ * (<keys>) DO UPDATE SET <col> = EXCLUDED.<col>, … WHERE (<cols>) IS DISTINCT
+ * FROM (EXCLUDED.<cols>)` and reports the per-row [UpsertOutcome], so a
+ * re-ingest of an unchanged row writes nothing and does not advance
+ * `updated_at`.
+ *
+ * The disposition rides back as a raw tri-state rather than a name: `xmax = 0`
+ * is a fresh INSERT, a returned row with `xmax <> 0` is a real UPDATE, and zero
+ * returned rows (the `IS DISTINCT FROM` guard suppressed the write) comes back
+ * as the NULL row and is [UpsertOutcome.UNCHANGED]. The enum is derived here,
+ * in Kotlin, so renaming a member cannot desynchronise it from a SQL literal.
+ *
+ * Column names are fixed DAO identifiers, never caller data; only the bound
+ * values vary.
+ */
+internal fun SqlSession.upsertDetectingChange(
+  table: String,
+  keyColumns: Map<String, Bind>,
+  columns: Map<String, Bind>,
+  mapError: (SQLException) -> Exception = ::mapDatabaseError,
+): Result<UpsertOutcome> {
+  val all = keyColumns + columns
+  val sql =
+    """
+    WITH up AS (
+      INSERT INTO $table (${all.keys.joinToString(", ")})
+      VALUES (${all.keys.joinToString(", ") { "?" }})
+      ON CONFLICT (${keyColumns.keys.joinToString(", ")}) DO UPDATE SET
+        ${columns.keys.joinToString(", ") { "$it = EXCLUDED.$it" }}
+      WHERE (${columns.keys.joinToString(", ") { "$table.$it" }})
+        IS DISTINCT FROM (${columns.keys.joinToString(", ") { "EXCLUDED.$it" }})
+      RETURNING (xmax = 0) AS inserted
+    )
+    SELECT inserted FROM up
+    UNION ALL
+    SELECT NULL::boolean WHERE NOT EXISTS (SELECT 1 FROM up)
+    """.trimIndent()
+  val binds = all.values.toList()
+  return mutateReturning(
+    sql,
+    bind = { stmt -> binds.forEachIndexed { i, b -> b(stmt, i + 1) } },
+    map = { rs ->
+      val inserted = rs.getBoolean("inserted")
+      when {
+        rs.wasNull() -> UpsertOutcome.UNCHANGED
+        inserted -> UpsertOutcome.INSERTED
+        else -> UpsertOutcome.CHANGED
+      }
+    },
+    mapError = mapError,
+  )
+}
+
+/**
  * Generates `UPDATE $table SET <col>=?, … WHERE id=? [AND version=?] RETURNING *`.
  *
  * - [currentVersion] `null` → delegates to [mutateReturning] (NotFound on 0 rows).
@@ -325,11 +393,40 @@ internal fun PreparedStatement.setJsonbOrNull(
   if (value != null) setString(index, value.toString()) else setNull(index, Types.OTHER)
 }
 
+/** Reads a nullable INTEGER column (the `getInt` + `wasNull` JDBC idiom). */
+internal fun ResultSet.getIntOrNull(column: String): Int? = getInt(column).takeUnless { wasNull() }
+
+/**
+ * Reads a SQL `text[]` column into a Kotlin list, freeing the JDBC
+ * [java.sql.Array] handle afterward (it holds driver-side resources). A NULL
+ * array collapses to an empty list.
+ */
+internal fun ResultSet.getStringList(column: String): List<String> {
+  val arr = getArray(column) ?: return emptyList()
+  try {
+    @Suppress("UNCHECKED_CAST")
+    return (arr.array as Array<String?>).filterNotNull()
+  } finally {
+    arr.free()
+  }
+}
+
 internal fun ResultSet.getInstant(column: String): Instant = getTimestamp(column).toInstant()
 
 internal fun ResultSet.getInstantOrNull(column: String): Instant? = getTimestamp(column)?.toInstant()
 
 internal fun ResultSet.getJsonbOrNull(column: String): JsonElement? = getString(column)?.let { Json.parseToJsonElement(it) }
+
+/**
+ * The read-path convention for a find-or-null query: a [NotFoundException] from
+ * [queryOne] is the absence of a row, not a fault, and becomes `success(null)`.
+ * Every other failure propagates untouched.
+ */
+internal fun <T> Result<T>.orNullOnNotFound(): Result<T?> =
+  fold(
+    onSuccess = { Result.success(it) },
+    onFailure = { if (it is NotFoundException) Result.success(null) else Result.failure(it) },
+  )
 
 // Read-time soft-delete predicate (fixed SQL fragment, no caller data)
 
