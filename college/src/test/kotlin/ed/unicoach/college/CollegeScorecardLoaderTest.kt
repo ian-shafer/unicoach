@@ -77,7 +77,7 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       assertEquals(9, result.programsLoaded)
 
       // Public row: net_price coalesced from NPT4_PUB.
-      val public = withSession { CollegesDao.findByUnitId(it, 110100).getOrThrow() }
+      val public = withSession { CollegesDao.findByIpedsUnitId(it, 110100).getOrThrow() }
       assertNotNull(public)
       assertEquals(18000, public.netPrice)
       assertEquals(0.68, public.graduationRate)
@@ -95,7 +95,7 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       assertEquals(21000, public.medianDebt)
 
       // Private row: net_price coalesced from NPT4_PRIV (NPT4_PUB blank).
-      val private = withSession { CollegesDao.findByUnitId(it, 220200).getOrThrow() }
+      val private = withSession { CollegesDao.findByIpedsUnitId(it, 220200).getOrThrow() }
       assertNotNull(private)
       assertEquals(2, private.control)
       assertEquals(41000, private.netPrice)
@@ -136,18 +136,18 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
   fun `re-ingesting a changed institution bumps version and logs history`() =
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
-      // The changed file renames institution 110100; every other unit_id is byte-identical.
+      // The changed file renames institution 110100; every other ipeds_unit_id is byte-identical.
       val changedCsv = fixture("scorecard-institutions-changed-fixture.csv")
       loader.load(changedCsv, fieldsCsv)
 
-      val changed = withSession { CollegesDao.findByUnitId(it, 110100).getOrThrow() }
+      val changed = withSession { CollegesDao.findByIpedsUnitId(it, 110100).getOrThrow() }
       assertNotNull(changed)
       assertEquals(2, changed.version)
       assertEquals("Coastal State University (Renamed)", changed.name)
       assertEquals(2, withSession { countHistory(it, changed.id) })
 
       // An untouched institution stays at version 1 with a single history row.
-      val untouched = withSession { CollegesDao.findByUnitId(it, 220200).getOrThrow() }
+      val untouched = withSession { CollegesDao.findByIpedsUnitId(it, 220200).getOrThrow() }
       assertNotNull(untouched)
       assertEquals(1, untouched.version)
       assertEquals(1, withSession { countHistory(it, untouched.id) })
@@ -183,7 +183,7 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
 
       // 330300: NPT43_PUB=PrivacySuppressed loads as null via the intOrNull
       // path -- never a skip, never a coercion tally; neighbors load intact.
-      val mountain = withSession { CollegesDao.findByUnitId(it, 330300).getOrThrow() }
+      val mountain = withSession { CollegesDao.findByIpedsUnitId(it, 330300).getOrThrow() }
       assertNotNull(mountain)
       assertNull(mountain.netPriceQ3)
       assertEquals(12000, mountain.netPriceQ1)
@@ -192,14 +192,14 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // 550500: a negative NPT41_PUB loads un-coerced (the band columns are
       // excluded from mechanism A, matching net_price/0022); the blank
       // NPT42_PUB cell is null.
-      val bayfront = withSession { CollegesDao.findByUnitId(it, 550500).getOrThrow() }
+      val bayfront = withSession { CollegesDao.findByIpedsUnitId(it, 550500).getOrThrow() }
       assertNotNull(bayfront)
       assertEquals(-1500, bayfront.netPriceQ1)
       assertNull(bayfront.netPriceQ2)
       assertEquals(10000, bayfront.medianDebt)
 
       // 440400: GRAD_DEBT_MDN=PrivacySuppressed loads as null.
-      val plains = withSession { CollegesDao.findByUnitId(it, 440400).getOrThrow() }
+      val plains = withSession { CollegesDao.findByIpedsUnitId(it, 440400).getOrThrow() }
       assertNotNull(plains)
       assertNull(plains.medianDebt)
     }
@@ -215,7 +215,7 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // is carried in the structured reason.
       assertEquals(
         1,
-        result.skipsByReason[SkipReason.MissingRequiredField(listOf("unit_id"))],
+        result.skipsByReason[SkipReason.MissingRequiredField(listOf("ipeds_unit_id"))],
       )
     }
 
@@ -245,15 +245,15 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       )
 
       // Both good rows survived and are queryable (the bad row did not poison them).
-      val leading = withSession { CollegesDao.findByUnitId(it, 700700).getOrThrow() }
+      val leading = withSession { CollegesDao.findByIpedsUnitId(it, 700700).getOrThrow() }
       assertNotNull(leading)
       assertEquals("Good Lead University", leading.name)
-      val trailing = withSession { CollegesDao.findByUnitId(it, 900900).getOrThrow() }
+      val trailing = withSession { CollegesDao.findByIpedsUnitId(it, 900900).getOrThrow() }
       assertNotNull(trailing)
       assertEquals("Good Tail University", trailing.name)
 
       // The bad row was skipped — not persisted.
-      val bad = withSession { CollegesDao.findByUnitId(it, 800800).getOrThrow() }
+      val bad = withSession { CollegesDao.findByIpedsUnitId(it, 800800).getOrThrow() }
       assertNull(bad)
 
       // The whole file did not roll back: exactly the two good rows are present.
@@ -277,7 +277,7 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // nonneg money field, RFC 133): nulled and counted, row kept.
       assertEquals(1, result.fieldsCoercedToNull["median_debt"])
 
-      val college = withSession { CollegesDao.findByUnitId(it, 600600).getOrThrow() }
+      val college = withSession { CollegesDao.findByIpedsUnitId(it, 600600).getOrThrow() }
       assertNotNull(college)
       assertNull(college.admissionRate)
       assertNull(college.medianDebt)
@@ -288,11 +288,11 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
       // Row 330300 has an empty ADM_RATE cell.
-      val college = withSession { CollegesDao.findByUnitId(it, 330300).getOrThrow() }
+      val college = withSession { CollegesDao.findByIpedsUnitId(it, 330300).getOrThrow() }
       assertNotNull(college)
       assertNull(college.admissionRate)
       // Row 550500 has an empty SAT_AVG cell.
-      val cc = withSession { CollegesDao.findByUnitId(it, 550500).getOrThrow() }
+      val cc = withSession { CollegesDao.findByIpedsUnitId(it, 550500).getOrThrow() }
       assertNotNull(cc)
       assertNull(cc.satAvg)
     }

@@ -70,8 +70,8 @@ class CollegesDaoTest {
   // ---------------------------------------------------------------------------
 
   private fun newCollege(
-    unitId: Int,
-    name: String = "Test U $unitId",
+    ipedsUnitId: Int,
+    name: String = "Test U $ipedsUnitId",
     city: String = "Townsville",
     state: String = "CA",
     control: Int = 1,
@@ -90,8 +90,8 @@ class CollegesDaoTest {
     locale: Int? = 13,
     region: Int? = 8,
   ) = NewCollege(
-    unitId = unitId,
-    opeid = "0012$unitId",
+    ipedsUnitId = ipedsUnitId,
+    opeid = "0012$ipedsUnitId",
     name = name,
     city = city,
     state = state,
@@ -116,7 +116,7 @@ class CollegesDaoTest {
     medianEarnings = medianEarnings,
     medianDebt = medianDebt,
     pctPell = pctPell,
-    website = "https://test$unitId.edu",
+    website = "https://test$ipedsUnitId.edu",
   )
 
   /**
@@ -137,10 +137,10 @@ class CollegesDaoTest {
 
   /** Applies curated aliases and re-derives the words, since aliases feed the search text. */
   private fun setAliases(
-    unitId: Int,
+    ipedsUnitId: Int,
     aliases: List<String>,
   ) {
-    CollegesDao.updateAliases(session, unitId, aliases).getOrThrow()
+    CollegesDao.updateAliases(session, ipedsUnitId, aliases).getOrThrow()
     rebuildNameWords()
   }
 
@@ -154,7 +154,7 @@ class CollegesDaoTest {
   fun `upsert inserts a new college and returns it with a generated id`() {
     val college = CollegesDao.upsert(session, newCollege(100100)).getOrThrow()
     assertNotNull(college.id)
-    assertEquals(100100, college.unitId)
+    assertEquals(100100, college.ipedsUnitId)
     assertEquals(1, college.control)
     assertEquals(20000, college.netPrice)
     assertEquals(9000, college.netPriceQ1)
@@ -166,7 +166,7 @@ class CollegesDaoTest {
   }
 
   @Test
-  fun `upsert on existing unit_id updates in place and advances updated_at`() {
+  fun `upsert on existing ipeds_unit_id updates in place and advances updated_at`() {
     val first = CollegesDao.upsert(session, newCollege(100200, name = "Old Name")).getOrThrow()
     Thread.sleep(5)
     val second = CollegesDao.upsert(session, newCollege(100200, name = "New Name")).getOrThrow()
@@ -176,7 +176,7 @@ class CollegesDaoTest {
     assertTrue(!second.updatedAt.isBefore(first.updatedAt))
 
     val count =
-      connection.prepareStatement("SELECT count(*) FROM colleges WHERE unit_id = 100200").use { stmt ->
+      connection.prepareStatement("SELECT count(*) FROM colleges WHERE ipeds_unit_id = 100200").use { stmt ->
         stmt.executeQuery().use { rs ->
           rs.next()
           rs.getInt(1)
@@ -308,14 +308,14 @@ class CollegesDaoTest {
   }
 
   // ---------------------------------------------------------------------------
-  // findByUnitId
+  // findByIpedsUnitId
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `findByUnitId returns the row or null`() {
+  fun `findByIpedsUnitId returns the row or null`() {
     seed(newCollege(100900))
-    assertNotNull(CollegesDao.findByUnitId(session, 100900).getOrThrow())
-    assertNull(CollegesDao.findByUnitId(session, 999999).getOrThrow())
+    assertNotNull(CollegesDao.findByIpedsUnitId(session, 100900).getOrThrow())
+    assertNull(CollegesDao.findByIpedsUnitId(session, 999999).getOrThrow())
   }
 
   // ---------------------------------------------------------------------------
@@ -323,13 +323,13 @@ class CollegesDaoTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `search with no filters returns all rows ordered by enrollment desc, unit_id asc`() {
+  fun `search with no filters returns all rows ordered by enrollment desc, ipeds_unit_id asc`() {
     seed(newCollege(201, undergradEnrollment = 1000))
     seed(newCollege(202, undergradEnrollment = 9000))
     seed(newCollege(203, undergradEnrollment = 9000))
 
     val matches = CollegesDao.search(session, CollegeQuery(limit = 25)).getOrThrow().matches
-    assertEquals(listOf(202, 203, 201), matches.map { it.unitId })
+    assertEquals(listOf(202, 203, 201), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -352,7 +352,7 @@ class CollegesDaoTest {
     seed(newCollege(401, netPrice = 10000))
     seed(newCollege(402, netPrice = 40000))
     val matches = CollegesDao.search(session, CollegeQuery(maxNetPrice = 20000, limit = 25)).getOrThrow().matches
-    assertEquals(listOf(401), matches.map { it.unitId })
+    assertEquals(listOf(401), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -365,7 +365,7 @@ class CollegesDaoTest {
         .search(session, CollegeQuery(minUndergradEnrollment = 1000, maxUndergradEnrollment = 10000, limit = 25))
         .getOrThrow()
         .matches
-    assertEquals(listOf(412), matches.map { it.unitId })
+    assertEquals(listOf(412), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -374,7 +374,7 @@ class CollegesDaoTest {
     seed(newCollege(422, state = "OR"))
     seed(newCollege(423, state = "TX"))
     val matches = CollegesDao.search(session, CollegeQuery(states = listOf("CA", "OR"), limit = 25)).getOrThrow().matches
-    assertEquals(setOf(421, 422), matches.map { it.unitId }.toSet())
+    assertEquals(setOf(421, 422), matches.map { it.ipedsUnitId }.toSet())
   }
 
   @Test
@@ -383,7 +383,7 @@ class CollegesDaoTest {
     seed(newCollege(432, control = 2))
     seed(newCollege(433, control = 3))
     val matches = CollegesDao.search(session, CollegeQuery(control = listOf(2, 3), limit = 25)).getOrThrow().matches
-    assertEquals(setOf(432, 433), matches.map { it.unitId }.toSet())
+    assertEquals(setOf(432, 433), matches.map { it.ipedsUnitId }.toSet())
   }
 
   @Test
@@ -396,7 +396,7 @@ class CollegesDaoTest {
         .search(session, CollegeQuery(minAdmissionRate = 0.2, maxAdmissionRate = 0.6, limit = 25))
         .getOrThrow()
         .matches
-    assertEquals(listOf(442), matches.map { it.unitId })
+    assertEquals(listOf(442), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -404,7 +404,7 @@ class CollegesDaoTest {
     seed(newCollege(451, graduationRate = 0.4))
     seed(newCollege(452, graduationRate = 0.8))
     val matches = CollegesDao.search(session, CollegeQuery(minGraduationRate = 0.6, limit = 25)).getOrThrow().matches
-    assertEquals(listOf(452), matches.map { it.unitId })
+    assertEquals(listOf(452), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -457,7 +457,7 @@ class CollegesDaoTest {
           ),
         ).getOrThrow()
         .matches
-    assertEquals(listOf(601), matches.map { it.unitId })
+    assertEquals(listOf(601), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -480,7 +480,7 @@ class CollegesDaoTest {
     assertEquals(1, history.size)
     assertEquals(1, history.single().version)
     assertEquals("Original", history.single().entity.name)
-    assertEquals(college.unitId, history.single().entity.unitId)
+    assertEquals(college.ipedsUnitId, history.single().entity.ipedsUnitId)
   }
 
   @Test
@@ -1001,13 +1001,13 @@ class CollegesDaoTest {
   }
 
   /** The stored words of one college, alphabetical, read straight from the derived table. */
-  private fun nameWordsFor(unitId: Int): List<String> =
+  private fun nameWordsFor(ipedsUnitId: Int): List<String> =
     connection
       .prepareStatement(
         "SELECT nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
-          "WHERE c.unit_id = ? ORDER BY nw.word",
+          "WHERE c.ipeds_unit_id = ? ORDER BY nw.word",
       ).use { stmt ->
-        stmt.setInt(1, unitId)
+        stmt.setInt(1, ipedsUnitId)
         stmt.executeQuery().use { rs ->
           val words = mutableListOf<String>()
           while (rs.next()) words += rs.getString("word")
@@ -1071,9 +1071,9 @@ class CollegesDaoTest {
   }
 
   @Test
-  fun `updateAliases on an unknown unit_id reports it, never throws`() {
+  fun `updateAliases on an unknown ipeds_unit_id reports it, never throws`() {
     val outcome = CollegesDao.updateAliases(session, 999999, listOf("Ghost U")).getOrThrow()
-    assertEquals(CollegesDao.AliasUpdateOutcome.UNKNOWN_UNIT_ID, outcome)
+    assertEquals(CollegesDao.AliasUpdateOutcome.UNKNOWN_IPEDS_UNIT_ID, outcome)
   }
 
   @Test
@@ -1097,7 +1097,7 @@ class CollegesDaoTest {
 
     val query = CollegeQuery(sortBy = CollegeQuery.SortBy.ADMISSION_RATE_ASC, limit = 25)
     val matches = CollegesDao.search(session, query).getOrThrow().matches
-    assertEquals(listOf(840101, 840100, 840102), matches.map { it.unitId })
+    assertEquals(listOf(840101, 840100, 840102), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -1108,7 +1108,7 @@ class CollegesDaoTest {
 
     val query = CollegeQuery(sortBy = CollegeQuery.SortBy.NET_PRICE_ASC, limit = 25)
     val matches = CollegesDao.search(session, query).getOrThrow().matches
-    assertEquals(listOf(840202, 840200, 840201), matches.map { it.unitId })
+    assertEquals(listOf(840202, 840200, 840201), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -1119,11 +1119,11 @@ class CollegesDaoTest {
 
     val query = CollegeQuery(sortBy = CollegeQuery.SortBy.GRADUATION_RATE_DESC, limit = 25)
     val matches = CollegesDao.search(session, query).getOrThrow().matches
-    assertEquals(listOf(840302, 840300, 840301), matches.map { it.unitId })
+    assertEquals(listOf(840302, 840300, 840301), matches.map { it.ipedsUnitId })
   }
 
   @Test
-  fun `search sortBy name ascends with unit_id tiebreak`() {
+  fun `search sortBy name ascends with ipeds_unit_id tiebreak`() {
     seed(newCollege(840401, name = "Bravo College"))
     seed(newCollege(840400, name = "Alpha College"))
     seed(newCollege(840403, name = "Same Name College"))
@@ -1131,7 +1131,7 @@ class CollegesDaoTest {
 
     val query = CollegeQuery(sortBy = CollegeQuery.SortBy.NAME_ASC, limit = 25)
     val matches = CollegesDao.search(session, query).getOrThrow().matches
-    assertEquals(listOf(840400, 840401, 840402, 840403), matches.map { it.unitId })
+    assertEquals(listOf(840400, 840401, 840402, 840403), matches.map { it.ipedsUnitId })
   }
 
   @Test
@@ -1139,7 +1139,7 @@ class CollegesDaoTest {
     seed(newCollege(840500, netPrice = null))
     val query = CollegeQuery(sortBy = CollegeQuery.SortBy.NET_PRICE_ASC, limit = 25)
     val page = CollegesDao.search(session, query).getOrThrow()
-    assertEquals(listOf(840500), page.matches.map { it.unitId })
+    assertEquals(listOf(840500), page.matches.map { it.ipedsUnitId })
     assertEquals(1, page.totalMatches)
   }
 
@@ -1154,14 +1154,14 @@ class CollegesDaoTest {
       CollegesDao
         .search(session, CollegeQuery(cipPrefix = "23", credentialLevel = CredentialLevel.BACHELORS, limit = 25))
         .getOrThrow()
-    assertEquals(listOf(850100), bachelors.matches.map { it.unitId })
+    assertEquals(listOf(850100), bachelors.matches.map { it.ipedsUnitId })
     assertEquals(1, bachelors.totalMatches)
 
     val unfiltered =
       CollegesDao
         .search(session, CollegeQuery(cipPrefix = "23", limit = 25))
         .getOrThrow()
-    assertEquals(setOf(850100, 850101), unfiltered.matches.map { it.unitId }.toSet())
+    assertEquals(setOf(850100, 850101), unfiltered.matches.map { it.ipedsUnitId }.toSet())
   }
 
   @Test

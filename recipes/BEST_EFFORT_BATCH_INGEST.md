@@ -27,7 +27,7 @@ independent mechanisms keep a single bad row from poisoning that transaction:
 1. **A pure mapper partitions each row's fields.** `mapRow` validates one record
    and returns either `Skipped(reason)` or `Mapped(value, coercedCells)` — it
    never touches the DB or the accumulator. The partition is the crux:
-   - **Required / key fields** (e.g. `unit_id`, `name`): missing or
+   - **Required / key fields** (e.g. `ipeds_unit_id`, `name`): missing or
      out-of-domain → **skip the whole row** (`MapResult.Skipped`). A key field
      anchors dependents, so a bad key must drop the row, not persist a dangling
      one.

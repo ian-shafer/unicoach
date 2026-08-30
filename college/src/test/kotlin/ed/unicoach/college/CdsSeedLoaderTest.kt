@@ -52,7 +52,10 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
       .map { File(it, "db/seed/cds") }
       .first { it.isDirectory }
 
-  private fun collegeId(unitId: Int): CollegeId = withSession { requireNotNull(CollegesDao.findByUnitId(it, unitId).getOrThrow()).id }
+  private fun collegeId(ipedsUnitId: Int): CollegeId =
+    withSession {
+      requireNotNull(CollegesDao.findByIpedsUnitId(it, ipedsUnitId).getOrThrow()).id
+    }
 
   @Test
   fun `loads the three seed files, skipping and counting unknown UNITIDs`() =
@@ -259,7 +262,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // "Database constraint violation".
     assertEquals(CdsSeedLoader.Table.MERIT_AID, error.table)
     assertEquals(1L, error.line)
-    assertEquals(110100, error.unitId)
+    assertEquals(110100, error.ipedsUnitId)
     assertTrue(error.cause is ed.unicoach.db.dao.ConstraintViolationException, "${error.cause}")
   }
 

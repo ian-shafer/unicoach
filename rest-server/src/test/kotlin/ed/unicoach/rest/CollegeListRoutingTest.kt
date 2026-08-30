@@ -110,18 +110,18 @@ class CollegeListRoutingTest {
     val id = UUID.randomUUID()
     // Each test class instance is fresh per @Test (JUnit default), so an
     // instance counter would restart at the same value across tests sharing
-    // the un-truncated dev DB; a masked random int keeps unit_id unique
+    // the un-truncated dev DB; a masked random int keeps ipeds_unit_id unique
     // across the whole suite without a shared counter.
-    val uniqueUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
+    val uniqueIpedsUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
     dbConnection
       .prepareStatement(
         """
-        INSERT INTO colleges (id, unit_id, name, city, state, control)
+        INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control)
         VALUES (?, ?, 'Test College', 'Townsville', 'CA', 1)
         """.trimIndent(),
       ).use { stmt ->
         stmt.setObject(1, id)
-        stmt.setInt(2, uniqueUnitId)
+        stmt.setInt(2, uniqueIpedsUnitId)
         stmt.executeUpdate()
       }
     return id

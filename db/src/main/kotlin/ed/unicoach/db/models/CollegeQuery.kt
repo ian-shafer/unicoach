@@ -8,7 +8,7 @@ package ed.unicoach.db.models
  *
  * [sortBy] (RFC 139) selects the result ordering; it never filters — rows NULL
  * on the sort key sink to the end (`NULLS LAST`), they do not vanish (brief
- * 0004 D11). Every ordering ends with the `unit_id ASC` tiebreak, so the order
+ * 0004 D11). Every ordering ends with the `ipeds_unit_id ASC` tiebreak, so the order
  * is total and deterministic. [credentialLevel] narrows the program join (which
  * program credential must exist), so it is only meaningful alongside
  * [cipPrefix]; the service boundary rejects it without one. It is a named

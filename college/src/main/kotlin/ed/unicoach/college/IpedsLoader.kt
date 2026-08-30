@@ -63,11 +63,11 @@ data class IpedsLoadResult(
   val skipped: Int get() = skipsByReason.values.sum()
 
   /**
-   * HD records naming a `unit_id` no `colleges` row carries. Counted and
+   * HD records naming a `ipeds_unit_id` no `colleges` row carries. Counted and
    * skipped, never invented — and read off the skip taxonomy rather than
    * tallied twice, so the two numbers cannot disagree.
    */
-  val unmatchedUnitIds: Int get() = skipsByReason[SkipReason.NoCollegeForUnitId] ?: 0
+  val unmatchedIpedsUnitIds: Int get() = skipsByReason[SkipReason.NoCollegeForIpedsUnitId] ?: 0
   val transientSkips: Int get() = skipsByReason[SkipReason.Transient] ?: 0
 }
 
@@ -89,7 +89,7 @@ data class CensusLoadResult(
 ) {
   val loaded: Int get() = inserted + changed + unchanged
   val skipped: Int get() = skipsByReason.values.sum()
-  val unmatchedUnitIds: Int get() = skipsByReason[SkipReason.NoCollegeForUnitId] ?: 0
+  val unmatchedIpedsUnitIds: Int get() = skipsByReason[SkipReason.NoCollegeForIpedsUnitId] ?: 0
   val transientSkips: Int get() = skipsByReason[SkipReason.Transient] ?: 0
 }
 
@@ -137,10 +137,10 @@ internal class IpedsLoader(
 
   /**
    * Loads one `college_ipeds` row per HD record whose `UNITID` matches an
-   * existing `colleges.unit_id`. IC and ADM are read into memory first and
+   * existing `colleges.ipeds_unit_id`. IC and ADM are read into memory first and
    * LEFT-joined: 114 HD institutions have no IC row and 749 of the 2,488
    * four-year universe institutions have no ADM row, so an inner join would
-   * silently drop ~30% of the universe. An unmatched `unit_id` is counted and
+   * silently drop ~30% of the universe. An unmatched `ipeds_unit_id` is counted and
    * skipped, never invented.
    */
   suspend fun loadAttributes(sources: IpedsSources): IpedsLoadResult {
@@ -155,8 +155,8 @@ internal class IpedsLoader(
     return database.withConnection { session ->
       // The match set, read once (~6k rows): a per-row lookup would be 6k
       // round-trips to answer a question one SELECT answers.
-      val collegeUnitIds = CollegeIpedsDao.collegeIdsByUnitId(session).getOrThrow().keys
-      // The unit_ids this pass has already written: HD is the driving file and
+      val collegeIpedsUnitIds = CollegeIpedsDao.collegeIdsByIpedsUnitId(session).getOrThrow().keys
+      // The ipeds_unit_ids this pass has already written: HD is the driving file and
       // its key is unique in the real source, but a repeated UNITID would
       // otherwise overwrite the earlier row and be reported as an ordinary
       // `changed`. First row wins, and the loser is COUNTED.
@@ -186,31 +186,31 @@ internal class IpedsLoader(
               }
             }
           val hd = mapped.value
-          if (hd.unitId !in collegeUnitIds) {
-            count.recordSkip(SkipReason.NoCollegeForUnitId)
+          if (hd.ipedsUnitId !in collegeIpedsUnitIds) {
+            count.recordSkip(SkipReason.NoCollegeForIpedsUnitId)
             logger.debug(
-              "Skipping IPEDS attribute row [line={}]: no college for [unit_id={}]",
+              "Skipping IPEDS attribute row [line={}]: no college for [ipeds_unit_id={}]",
               record.recordNumber,
-              hd.unitId,
+              hd.ipedsUnitId,
             )
             continue
           }
-          if (!written.add(hd.unitId)) {
+          if (!written.add(hd.ipedsUnitId)) {
             count.recordSkip(SkipReason.DuplicateKeyInFile)
             logger.warn(
-              "IPEDS HD file repeats [unit_id={}] at [line={}]; keeping the first row",
-              hd.unitId,
+              "IPEDS HD file repeats [ipeds_unit_id={}] at [line={}]; keeping the first row",
+              hd.ipedsUnitId,
               record.recordNumber,
             )
             continue
           }
-          val row = hd.toRow(sources.surveyYear, icRows[hd.unitId], admRows[hd.unitId])
+          val row = hd.toRow(sources.surveyYear, icRows[hd.ipedsUnitId], admRows[hd.ipedsUnitId])
           // Recorded only now that the row actually reaches the DB — a skipped
           // row's coercions are not coercions that happened to the table.
           count.recordCoercions(mapped.coercions)
           val result = upsertWithSavepoint(session) { CollegeIpedsDao.upsert(session, row) }
           if (result.isFailure) {
-            recordUpsertFailure(count, result.exceptionOrNull(), "ipeds", "unit_id", hd.unitId, record.recordNumber)
+            recordUpsertFailure(count, result.exceptionOrNull(), "ipeds", "ipeds_unit_id", hd.ipedsUnitId, record.recordNumber)
           } else {
             count.loaded++
             when (result.getOrThrow()) {
@@ -255,7 +255,7 @@ internal class IpedsLoader(
     database.withConnection { session ->
       val count = LoadCount()
       var selected = 0
-      val collegeIds = CollegeIpedsDao.collegeIdsByUnitId(session).getOrThrow()
+      val collegeIds = CollegeIpedsDao.collegeIdsByIpedsUnitId(session).getOrThrow()
       // The census keys already written by this pass; see the HD loop's note.
       // Two raw CIPCODEs can also collide only AFTER the dot is stripped, so
       // the check is on the stored key, not the source cell.
@@ -298,13 +298,13 @@ internal class IpedsLoader(
                 mapped.value
               }
             }
-          val collegeId = collegeIds[fields.unitId]
+          val collegeId = collegeIds[fields.ipedsUnitId]
           if (collegeId == null) {
-            count.recordSkip(SkipReason.NoCollegeForUnitId)
+            count.recordSkip(SkipReason.NoCollegeForIpedsUnitId)
             logger.debug(
-              "Skipping census row [line={}]: no college for [unit_id={}]",
+              "Skipping census row [line={}]: no college for [ipeds_unit_id={}]",
               record.recordNumber,
-              fields.unitId,
+              fields.ipedsUnitId,
             )
             continue
           }
@@ -356,11 +356,11 @@ internal class IpedsLoader(
 
   /** The HD half of one institution: everything the driving file contributes. */
   internal data class HdAttributes(
-    val unitId: Int,
+    val ipedsUnitId: Int,
     val cyActive: Boolean,
     val deathYear: Int?,
     val closedAt: LocalDate?,
-    val newUnitId: Int?,
+    val newIpedsUnitId: Int?,
     val instLevel: Int?,
     val ugOffer: Boolean?,
     val sector: Int?,
@@ -375,12 +375,12 @@ internal class IpedsLoader(
       adm: AdmAttributes?,
     ): NewCollegeIpeds =
       NewCollegeIpeds(
-        unitId = unitId,
+        ipedsUnitId = ipedsUnitId,
         surveyYear = surveyYear,
         cyActive = cyActive,
         deathYear = deathYear,
         closedAt = closedAt,
-        newUnitId = newUnitId,
+        newIpedsUnitId = newIpedsUnitId,
         instLevel = instLevel,
         ugOffer = ugOffer,
         sector = sector,
@@ -404,17 +404,17 @@ internal class IpedsLoader(
   }
 
   /**
-   * One side file's row, keyed by `unit_id` for the in-memory left join onto
+   * One side file's row, keyed by `ipeds_unit_id` for the in-memory left join onto
    * HD. The key is a type-checked property rather than a passed-in selector, so
    * a side file without one cannot compile.
    */
   internal sealed interface UnitKeyed {
-    val unitId: Int
+    val ipedsUnitId: Int
   }
 
   /** The IC half of one institution, or absent when IC has no row for it. */
   internal data class IcAttributes(
-    override val unitId: Int,
+    override val ipedsUnitId: Int,
     val relAffil: Int?,
     val hasRotc: Boolean?,
     val hasStudyAbroad: Boolean?,
@@ -429,13 +429,13 @@ internal class IpedsLoader(
 
   /** The ADM half of one institution, or absent when ADM has no row for it. */
   internal data class AdmAttributes(
-    override val unitId: Int,
+    override val ipedsUnitId: Int,
     val testPolicy: Int?,
   ) : UnitKeyed
 
   /** The validated key/required columns of one completions row. */
   internal data class CompletionFields(
-    val unitId: Int,
+    val ipedsUnitId: Int,
     val cipCode: String,
     val awardLevel: Int,
     val awardsTotal: Int,
@@ -459,7 +459,7 @@ internal class IpedsLoader(
     // would make this mapper an accumulator too, and the section contract above
     // false at its first function.
     val coercions = mutableMapOf<String, Int>()
-    val unitId = intOrNull(record, COL_UNITID)
+    val ipedsUnitId = intOrNull(record, COL_UNITID)
     // CYACTIVE takes only 1 and 3 in the real file and has no sentinel, and the
     // column is NOT NULL — so an unmappable value is a skipped row with a named
     // missing field, never a fabricated "active".
@@ -469,28 +469,28 @@ internal class IpedsLoader(
         CYACTIVE_NO -> false
         else -> null
       }
-    if (unitId == null || unitId < UNIT_ID_MIN || cyActive == null) {
+    if (ipedsUnitId == null || ipedsUnitId < IPEDS_UNIT_ID_MIN || cyActive == null) {
       val missing =
         buildList {
-          if (unitId == null || unitId < UNIT_ID_MIN) add("unit_id")
+          if (ipedsUnitId == null || ipedsUnitId < IPEDS_UNIT_ID_MIN) add("ipeds_unit_id")
           if (cyActive == null) add("cy_active")
         }
       logger.debug(
-        "Skipping IPEDS HD row [line={}]: missing required field {} [unit_id={}]",
+        "Skipping IPEDS HD row [line={}]: missing required field {} [ipeds_unit_id={}]",
         record.recordNumber,
         missing,
-        unitId,
+        ipedsUnitId,
       )
       return MapResult.Skipped(SkipReason.MissingRequiredField(missing))
     }
     return MapResult.Mapped(
       HdAttributes(
-        unitId = unitId,
+        ipedsUnitId = ipedsUnitId,
         cyActive = cyActive,
         // DEATHYR's -2 means "still alive", not a missing year.
         deathYear = codeInDomainOrNull(record, COL_DEATHYR, YEAR_MIN, YEAR_MAX, "death_year", coercions),
         closedAt = closedAt(record, coercions),
-        newUnitId = codeInDomainOrNull(record, COL_NEWID, UNIT_ID_MIN, Int.MAX_VALUE, "new_unit_id", coercions),
+        newIpedsUnitId = codeInDomainOrNull(record, COL_NEWID, IPEDS_UNIT_ID_MIN, Int.MAX_VALUE, "new_ipeds_unit_id", coercions),
         instLevel = codeInDomainOrNull(record, COL_ICLEVEL, INST_LEVEL_MIN, INST_LEVEL_MAX, "inst_level", coercions),
         ugOffer = boolFromCode(record, COL_UGOFFER, "ug_offer", coercions),
         sector = codeInSetOrNull(record, COL_SECTOR, SECTOR_CODES, "sector", coercions),
@@ -506,14 +506,14 @@ internal class IpedsLoader(
   }
 
   internal fun mapIc(record: CSVRecord): MapResult<IcAttributes> {
-    val unitId = intOrNull(record, COL_UNITID) ?: return MapResult.Skipped(mapMissingUnitId(record, "IC"))
+    val ipedsUnitId = intOrNull(record, COL_UNITID) ?: return MapResult.Skipped(mapMissingIpedsUnitId(record, "IC"))
     // Tallied and RETURNED, like every other mapper's: the caller folds them
     // into the phase accumulator at file granularity, so an IC coercion is
     // never attributed to whichever HD row happened to follow it.
     val coercions = mutableMapOf<String, Int>()
     return MapResult.Mapped(
       IcAttributes(
-        unitId = unitId,
+        ipedsUnitId = ipedsUnitId,
         // -2 = explicitly NOT religiously affiliated (5,164 institutions). Kept.
         relAffil = rawCode(record, COL_RELAFFIL),
         hasRotc = boolFromCheckbox(record, COL_SLO5, "has_rotc", coercions),
@@ -539,7 +539,7 @@ internal class IpedsLoader(
   }
 
   internal fun mapAdm(record: CSVRecord): MapResult<AdmAttributes> {
-    val unitId = intOrNull(record, COL_UNITID) ?: return MapResult.Skipped(mapMissingUnitId(record, "ADM"))
+    val ipedsUnitId = intOrNull(record, COL_UNITID) ?: return MapResult.Skipped(mapMissingIpedsUnitId(record, "ADM"))
     val coercions = mutableMapOf<String, Int>()
     val raw = intOrNull(record, COL_ADMCON7)
     val testPolicy =
@@ -557,7 +557,7 @@ internal class IpedsLoader(
           null
         }
       }
-    return MapResult.Mapped(AdmAttributes(unitId = unitId, testPolicy = testPolicy), coercions)
+    return MapResult.Mapped(AdmAttributes(ipedsUnitId = ipedsUnitId, testPolicy = testPolicy), coercions)
   }
 
   /**
@@ -601,23 +601,23 @@ internal class IpedsLoader(
   }
 
   internal fun mapCompletion(record: CSVRecord): MapResult<CompletionFields> {
-    val unitId = intOrNull(record, COL_UNITID)
+    val ipedsUnitId = intOrNull(record, COL_UNITID)
     val rawCip = stringOrNull(record, COL_CIPCODE)
     val awardLevel = intOrNull(record, COL_AWLEVEL)
     val awardsTotal = intOrNull(record, COL_CTOTALT)
-    if (unitId == null || rawCip == null || awardLevel == null || awardsTotal == null) {
+    if (ipedsUnitId == null || rawCip == null || awardLevel == null || awardsTotal == null) {
       val missing =
         buildList {
-          if (unitId == null) add("unit_id")
+          if (ipedsUnitId == null) add("ipeds_unit_id")
           if (rawCip == null) add("cip_code")
           if (awardLevel == null) add("award_level")
           if (awardsTotal == null) add("awards_total")
         }
       logger.debug(
-        "Skipping census row [line={}]: missing required field {} [unit_id={}]",
+        "Skipping census row [line={}]: missing required field {} [ipeds_unit_id={}]",
         record.recordNumber,
         missing,
-        unitId,
+        ipedsUnitId,
       )
       return MapResult.Skipped(SkipReason.MissingRequiredField(missing))
     }
@@ -628,15 +628,15 @@ internal class IpedsLoader(
     val cipCode = rawCip.replace(".", "")
     if (!CIP_CODE_PATTERN.matches(cipCode)) {
       logger.debug(
-        "Skipping census row [line={}]: CIPCODE [{}] is not a 6-digit code [unit_id={}]",
+        "Skipping census row [line={}]: CIPCODE [{}] is not a 6-digit code [ipeds_unit_id={}]",
         record.recordNumber,
         rawCip,
-        unitId,
+        ipedsUnitId,
       )
       return MapResult.Skipped(SkipReason.CipCodeMalformed)
     }
     return MapResult.Mapped(
-      CompletionFields(unitId = unitId, cipCode = cipCode, awardLevel = awardLevel, awardsTotal = awardsTotal),
+      CompletionFields(ipedsUnitId = ipedsUnitId, cipCode = cipCode, awardLevel = awardLevel, awardsTotal = awardsTotal),
       emptyMap(),
     )
   }
@@ -831,17 +831,17 @@ internal class IpedsLoader(
   private fun athleticAssoc(record: CSVRecord): List<Int> =
     ATHLETIC_ASSOC_ORDINALS.filter { intOrNull(record, "$COL_ASSOC_PREFIX$it") == YES }
 
-  private fun mapMissingUnitId(
+  private fun mapMissingIpedsUnitId(
     record: CSVRecord,
     file: String,
   ): SkipReason {
     logger.debug("Skipping IPEDS [{}] row [line={}]: missing UNITID", file, record.recordNumber)
-    return SkipReason.MissingRequiredField(listOf("unit_id"))
+    return SkipReason.MissingRequiredField(listOf("ipeds_unit_id"))
   }
 
   /**
-   * Reads a whole side file into a `unit_id`-keyed index for the in-memory left
-   * join. A repeated `unit_id` keeps the FIRST row and is counted like any other
+   * Reads a whole side file into a `ipeds_unit_id`-keyed index for the in-memory left
+   * join. A repeated `ipeds_unit_id` keeps the FIRST row and is counted like any other
    * dropped row: silent last-wins would let file order decide an institution's
    * attributes, and a WARN line nobody tallies would leave the run reporting
    * `0 skipped` while half an institution was thrown away.
@@ -874,11 +874,11 @@ internal class IpedsLoader(
           }
 
           is MapResult.Mapped -> {
-            if (rows.putIfAbsent(mapped.value.unitId, mapped.value) != null) {
+            if (rows.putIfAbsent(mapped.value.ipedsUnitId, mapped.value) != null) {
               // The discarded twin: counted like any other dropped row, and its
               // coercions belong to the row that lost, not to the table.
               count.recordSkip(SkipReason.DuplicateKeyInFile)
-              logger.warn("IPEDS [{}] file repeats [unit_id={}]; keeping the first row", label, mapped.value.unitId)
+              logger.warn("IPEDS [{}] file repeats [ipeds_unit_id={}]; keeping the first row", label, mapped.value.ipedsUnitId)
             } else {
               count.recordCoercions(mapped.coercions)
             }
@@ -940,8 +940,8 @@ internal class IpedsLoader(
     private val YEAR_MIN = YEAR_RANGE.first
     private val YEAR_MAX = YEAR_RANGE.last
 
-    /** `college_ipeds_unit_id_positive_check` / `..._new_unit_id_positive_check`: an IPEDS id is 1-based. */
-    private const val UNIT_ID_MIN = 1
+    /** `college_ipeds_ipeds_unit_id_positive_check` / `..._new_ipeds_unit_id_positive_check`: an IPEDS id is 1-based. */
+    private const val IPEDS_UNIT_ID_MIN = 1
     private const val INST_LEVEL_MIN = 1
     private const val INST_LEVEL_MAX = 3
 

@@ -66,11 +66,11 @@ class CdsAdmissionsDaoTest {
       override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
     }
 
-  private var unitIdCounter = 910000
+  private var ipedsUnitIdCounter = 910000
 
   private fun createCollege(name: String = "CDS Test College"): CollegeId =
     CollegesDao
-      .upsert(session, newCollegeFixture(unitIdCounter++, name))
+      .upsert(session, newCollegeFixture(ipedsUnitIdCounter++, name))
       .getOrThrow()
       .id
 

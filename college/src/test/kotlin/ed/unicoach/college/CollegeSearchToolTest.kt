@@ -60,11 +60,11 @@ class CollegeSearchToolTest {
 
   private val tool = CollegeSearchTool(CollegeSearchService(database))
 
-  private fun newCollege(unitId: Int) =
+  private fun newCollege(ipedsUnitId: Int) =
     NewCollege(
-      unitId = unitId,
+      ipedsUnitId = ipedsUnitId,
       opeid = null,
-      name = "Coastal College $unitId",
+      name = "Coastal College $ipedsUnitId",
       city = "Seaside",
       state = "CA",
       region = 8,
@@ -91,15 +91,15 @@ class CollegeSearchToolTest {
       website = null,
     )
 
-  private fun seedWithMarineBiology(unitId: Int) = seedWithProgram(unitId, "260702", "Marine Biology")
+  private fun seedWithMarineBiology(ipedsUnitId: Int) = seedWithProgram(ipedsUnitId, "260702", "Marine Biology")
 
   private fun seedWithProgram(
-    unitId: Int,
+    ipedsUnitId: Int,
     cipCode: String,
     title: String,
   ) = runBlocking {
     database.withConnection { session ->
-      val college = CollegesDao.upsert(session, newCollege(unitId)).getOrThrow()
+      val college = CollegesDao.upsert(session, newCollege(ipedsUnitId)).getOrThrow()
       CollegesDao
         .upsertProgram(session, NewCollegeProgram(college.id, cipCode, title, 3))
         .getOrThrow()
@@ -676,11 +676,11 @@ class CollegeSearchToolTest {
     }
 
   private fun seedNamed(
-    unitId: Int,
+    ipedsUnitId: Int,
     name: String,
   ) = runBlocking {
     database.withConnection { session ->
-      CollegesDao.upsert(session, newCollege(unitId).copy(name = name)).getOrThrow()
+      CollegesDao.upsert(session, newCollege(ipedsUnitId).copy(name = name)).getOrThrow()
     }
   }
 }

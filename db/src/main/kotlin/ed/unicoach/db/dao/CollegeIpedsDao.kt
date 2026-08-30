@@ -33,7 +33,7 @@ object CollegeIpedsDao {
   // ---------------------------------------------------------------------------
 
   /**
-   * Upserts one IPEDS attribute row on its natural key `unit_id`, reporting the
+   * Upserts one IPEDS attribute row on its natural key `ipeds_unit_id`, reporting the
    * three-way [UpsertOutcome]. `id` and `created_at` are preserved on conflict
    * and the `_03` trigger advances `updated_at` — but only when the `WHERE`
    * tuple compare finds a real difference, so an unchanged re-ingest leaves the
@@ -62,10 +62,10 @@ object CollegeIpedsDao {
     val sql =
       """
       WITH before AS (
-        SELECT 1 FROM college_ipeds WHERE unit_id = ?
+        SELECT 1 FROM college_ipeds WHERE ipeds_unit_id = ?
       ), up AS (
         INSERT INTO college_ipeds (
-          unit_id, survey_year, cy_active, death_year, closed_at, new_unit_id,
+          ipeds_unit_id, survey_year, cy_active, death_year, closed_at, new_ipeds_unit_id,
           inst_level, ug_offer, sector, carnegie_basic, carnegie_size, cbsa,
           rel_affil, has_rotc, has_study_abroad, disability_band, disability_pct,
           has_housing, housing_capacity, application_fee, athletic_assoc,
@@ -75,12 +75,12 @@ object CollegeIpedsDao {
           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           ARRAY(SELECT jsonb_array_elements_text(?::jsonb))::smallint[], ?, ?
         )
-        ON CONFLICT (unit_id) DO UPDATE SET
+        ON CONFLICT (ipeds_unit_id) DO UPDATE SET
           survey_year = EXCLUDED.survey_year,
           cy_active = EXCLUDED.cy_active,
           death_year = EXCLUDED.death_year,
           closed_at = EXCLUDED.closed_at,
-          new_unit_id = EXCLUDED.new_unit_id,
+          new_ipeds_unit_id = EXCLUDED.new_ipeds_unit_id,
           inst_level = EXCLUDED.inst_level,
           ug_offer = EXCLUDED.ug_offer,
           sector = EXCLUDED.sector,
@@ -100,24 +100,24 @@ object CollegeIpedsDao {
           test_policy = EXCLUDED.test_policy
         WHERE (
           college_ipeds.survey_year, college_ipeds.cy_active, college_ipeds.death_year,
-          college_ipeds.closed_at, college_ipeds.new_unit_id, college_ipeds.inst_level,
+          college_ipeds.closed_at, college_ipeds.new_ipeds_unit_id, college_ipeds.inst_level,
           college_ipeds.ug_offer, college_ipeds.sector, college_ipeds.carnegie_basic,
           college_ipeds.carnegie_size, college_ipeds.cbsa, college_ipeds.rel_affil,
           college_ipeds.has_rotc, college_ipeds.has_study_abroad,
           college_ipeds.disability_band, college_ipeds.disability_pct,
           college_ipeds.has_housing, college_ipeds.housing_capacity,
           college_ipeds.application_fee, college_ipeds.athletic_assoc,
-          college_ipeds.football_conf, college_ipeds.test_policy, college_ipeds.unit_id
+          college_ipeds.football_conf, college_ipeds.test_policy, college_ipeds.ipeds_unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.survey_year, EXCLUDED.cy_active, EXCLUDED.death_year,
-          EXCLUDED.closed_at, EXCLUDED.new_unit_id, EXCLUDED.inst_level,
+          EXCLUDED.closed_at, EXCLUDED.new_ipeds_unit_id, EXCLUDED.inst_level,
           EXCLUDED.ug_offer, EXCLUDED.sector, EXCLUDED.carnegie_basic,
           EXCLUDED.carnegie_size, EXCLUDED.cbsa, EXCLUDED.rel_affil,
           EXCLUDED.has_rotc, EXCLUDED.has_study_abroad,
           EXCLUDED.disability_band, EXCLUDED.disability_pct,
           EXCLUDED.has_housing, EXCLUDED.housing_capacity,
           EXCLUDED.application_fee, EXCLUDED.athletic_assoc,
-          EXCLUDED.football_conf, EXCLUDED.test_policy, EXCLUDED.unit_id
+          EXCLUDED.football_conf, EXCLUDED.test_policy, EXCLUDED.ipeds_unit_id
         )
         RETURNING 1
       )
@@ -128,14 +128,14 @@ object CollegeIpedsDao {
       bind = { stmt ->
         // Two statements, one key: parameter 1 is the `before` CTE's lookup
         // (the pre-statement existence probe) and parameter 2 the INSERT's own
-        // unit_id. They are the same value on purpose, not a duplicate.
-        stmt.setInt(1, input.unitId)
-        stmt.setInt(2, input.unitId)
+        // ipeds_unit_id. They are the same value on purpose, not a duplicate.
+        stmt.setInt(1, input.ipedsUnitId)
+        stmt.setInt(2, input.ipedsUnitId)
         stmt.setInt(3, input.surveyYear)
         stmt.setBoolean(4, input.cyActive)
         stmt.setIntOrNull(5, input.deathYear)
         stmt.setDateOrNull(6, input.closedAt)
-        stmt.setIntOrNull(7, input.newUnitId)
+        stmt.setIntOrNull(7, input.newIpedsUnitId)
         stmt.setIntOrNull(8, input.instLevel)
         stmt.setBooleanOrNull(9, input.ugOffer)
         stmt.setIntOrNull(10, input.sector)
@@ -194,17 +194,17 @@ object CollegeIpedsDao {
   // ---------------------------------------------------------------------------
 
   /**
-   * Every college's surface id keyed by `unit_id` (RFC 144): the IPEDS phases'
+   * Every college's surface id keyed by `ipeds_unit_id` (RFC 144): the IPEDS phases'
    * pre-load match set, read once (~6k rows) so a per-row lookup never hits the
    * DB and an IPEDS record with no owning college is counted and skipped rather
    * than inventing one.
    */
-  fun collegeIdsByUnitId(session: SqlSession): Result<Map<Int, CollegeId>> =
+  fun collegeIdsByIpedsUnitId(session: SqlSession): Result<Map<Int, CollegeId>> =
     session
       .queryList(
-        "SELECT unit_id, id FROM colleges",
+        "SELECT ipeds_unit_id, id FROM colleges",
         bind = {},
-        map = { rs -> rs.getInt("unit_id") to CollegeId(UUID.fromString(rs.getString("id"))) },
+        map = { rs -> rs.getInt("ipeds_unit_id") to CollegeId(UUID.fromString(rs.getString("id"))) },
       ).map { it.toMap() }
 
   /**
@@ -219,7 +219,7 @@ object CollegeIpedsDao {
     setOf(
       "death_year",
       "closed_at",
-      "new_unit_id",
+      "new_ipeds_unit_id",
       "inst_level",
       "ug_offer",
       "sector",

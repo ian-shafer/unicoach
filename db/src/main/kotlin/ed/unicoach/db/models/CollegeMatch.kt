@@ -17,7 +17,7 @@ package ed.unicoach.db.models
  */
 data class CollegeMatch(
   val id: CollegeId,
-  val unitId: Int,
+  val ipedsUnitId: Int,
   val name: String,
   val city: String,
   val state: String,

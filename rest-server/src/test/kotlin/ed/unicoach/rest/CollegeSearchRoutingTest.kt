@@ -102,17 +102,17 @@ class CollegeSearchRoutingTest {
   /** A uniquely-named college this test alone matches, on the shared un-truncated dev DB. */
   private fun seedCollege(name: String): UUID {
     val id = UUID.randomUUID()
-    val uniqueUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
+    val uniqueIpedsUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
     withTransaction {
       dbConnection
         .prepareStatement(
           """
-          INSERT INTO colleges (id, unit_id, name, city, state, control, undergrad_enrollment)
+          INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control, undergrad_enrollment)
           VALUES (?, ?, ?, 'Townsville', 'CA', 1, 5000)
           """.trimIndent(),
         ).use { stmt ->
           stmt.setObject(1, id)
-          stmt.setInt(2, uniqueUnitId)
+          stmt.setInt(2, uniqueIpedsUnitId)
           stmt.setString(3, name)
           stmt.executeUpdate()
         }

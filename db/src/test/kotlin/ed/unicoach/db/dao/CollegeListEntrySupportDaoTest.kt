@@ -68,7 +68,7 @@ class CollegeListEntrySupportDaoTest {
       override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
     }
 
-  private var unitIdCounter = 910000
+  private var ipedsUnitIdCounter = 910000
 
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
@@ -87,7 +87,7 @@ class CollegeListEntrySupportDaoTest {
       .upsert(
         session,
         NewCollege(
-          unitId = unitIdCounter++,
+          ipedsUnitId = ipedsUnitIdCounter++,
           opeid = null,
           name = "Test College",
           city = "Townsville",

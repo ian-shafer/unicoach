@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 /**
  * The IPEDS half of one ingest run, end to end (RFC 144): the four extra header
  * assertions up front, the HD-driven load with IC/ADM left-joined, the census's
- * bachelor's-first-major filter, the unmatched-`unit_id` count, and the two new
+ * bachelor's-first-major filter, the unmatched-`ipeds_unit_id` count, and the two new
  * provenance blocks — which are ABSENT, not zero, when the group was not passed.
  */
 class IpedsIngestTest : CollegeScorecardTestBase() {
@@ -27,7 +27,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   private val aliasesJson = fixture("college-aliases-fixture.json")
 
   /** Every UNITID in the joined HD fixture, so a test can choose which ones exist as colleges. */
-  private val hdUnitIds =
+  private val hdIpedsUnitIds =
     listOf(161280, 115728, 498979, 447971, 128577, 186131, 102234, 219338, 100690, 100663, 166027, 168342)
 
   private fun source(file: File): SourceFile = SourceFile(file, file.path)
@@ -40,16 +40,16 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     surveyYear: Int = 2023,
   ) = IpedsSources(source(hd), source(ic), source(adm), source(completions), surveyYear)
 
-  private fun seedColleges(unitIds: List<Int>) =
+  private fun seedColleges(ipedsUnitIds: List<Int>) =
     withSession { session ->
-      for (unitId in unitIds) {
+      for (ipedsUnitId in ipedsUnitIds) {
         CollegesDao
           .upsert(
             session,
             NewCollege(
-              unitId = unitId,
+              ipedsUnitId = ipedsUnitId,
               opeid = null,
-              name = "IPEDS U $unitId",
+              name = "IPEDS U $ipedsUnitId",
               city = "Townsville",
               state = "ME",
               region = null,
@@ -89,7 +89,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   @Test
   fun `every HD row with a matching college is loaded, and the rest are counted as unmatched`() {
     // 11 of the 12 HD institutions exist as colleges; 168342 deliberately does not.
-    seedColleges(hdUnitIds - 168342)
+    seedColleges(hdIpedsUnitIds - 168342)
     val report = ingest()
     val ipeds = assertNotNull(report.ipeds).attributes
 
@@ -97,14 +97,14 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     assertEquals(11, ipeds.inserted)
     assertEquals(0, ipeds.changed)
     assertEquals(0, ipeds.unchanged)
-    assertEquals(1, ipeds.unmatchedUnitIds, "an unmatched unit_id is counted and skipped, never invented")
-    assertEquals(1, ipeds.skipsByReason[SkipReason.NoCollegeForUnitId])
+    assertEquals(1, ipeds.unmatchedIpedsUnitIds, "an unmatched ipeds_unit_id is counted and skipped, never invented")
+    assertEquals(1, ipeds.skipsByReason[SkipReason.NoCollegeForIpedsUnitId])
     assertEquals(11, withSession { count(it, "college_ipeds") })
   }
 
   @Test
   fun `the IC and ADM halves are left-joined, and an ADM-less college keeps a NULL test policy`() {
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     ingest()
 
     // 161280 (UMaine System Central Office): in HD and IC, absent from ADM.
@@ -137,17 +137,17 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     // A side file's losses are the phase's losses: an IC row with no UNITID
     // removes one institution's IC half, so it must land in the skip taxonomy
     // rather than in a DEBUG line nobody tallies.
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val icLines = fixture("ipeds-ic-fixture.csv").readLines()
-    val blankUnitId = icLines[1].split(",").drop(1).joinToString(",", prefix = ",")
+    val blankIpedsUnitId = icLines[1].split(",").drop(1).joinToString(",", prefix = ",")
     val ic = File.createTempFile("ipeds-ic-blank-unitid", ".csv")
     ic.deleteOnExit()
-    ic.writeText((icLines + blankUnitId).joinToString("\n") + "\n")
+    ic.writeText((icLines + blankIpedsUnitId).joinToString("\n") + "\n")
 
     val ipeds = assertNotNull(ingest(ipedsSources(ic = ic)).ipeds).attributes
     assertEquals(
       1,
-      ipeds.skipsByReason[SkipReason.MissingRequiredField(listOf("unit_id"))],
+      ipeds.skipsByReason[SkipReason.MissingRequiredField(listOf("ipeds_unit_id"))],
       "the IC row without a UNITID is counted: ${ipeds.skipsByReason}",
     )
     // The HD rows themselves are unaffected: 12 seen, 12 loaded.
@@ -157,18 +157,18 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
 
   @Test
   fun `HD rows with no college at all leave the table empty rather than inventing institutions`() {
-    // Not one HD unit_id is seeded: the Scorecard fixture's colleges are other
+    // Not one HD ipeds_unit_id is seeded: the Scorecard fixture's colleges are other
     // institutions entirely.
     val report = ingest()
     val ipeds = assertNotNull(report.ipeds).attributes
-    assertEquals(12, ipeds.unmatchedUnitIds)
+    assertEquals(12, ipeds.unmatchedIpedsUnitIds)
     assertEquals(0, ipeds.inserted)
     assertEquals(0, withSession { count(it, "college_ipeds") })
   }
 
   @Test
   fun `re-ingesting the same files is a loudly visible no-op`() {
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     ingest()
     // The other half of the no-op: an IPEDS-bearing run must not touch
     // `colleges`, so no new version row may appear across the second run.
@@ -196,7 +196,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
 
   @Test
   fun `a changed source value is reported as changed, not silently rewritten`() {
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     ingest()
     // The same run against a survey year one later: every row's survey_year
     // differs, so all 12 must report CHANGED.
@@ -211,7 +211,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
 
   @Test
   fun `the census keeps bachelor's first majors only, so the natural key never collides`() {
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val report = ingest()
     val census = assertNotNull(report.ipeds).census
 
@@ -230,7 +230,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
           .prepareStatement(
             "SELECT awards_total FROM college_programs_census c " +
               "JOIN colleges g ON g.id = c.college_id " +
-              "WHERE g.unit_id = 166027 AND c.cip_code = '050104'",
+              "WHERE g.ipeds_unit_id = 166027 AND c.cip_code = '050104'",
           ).use { stmt ->
             stmt.executeQuery().use { rs ->
               val values = mutableListOf<Int>()
@@ -265,7 +265,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     val census = assertNotNull(ingest().ipeds).census
     assertEquals(5, census.selected)
     assertEquals(3, census.inserted)
-    assertEquals(2, census.unmatchedUnitIds)
+    assertEquals(2, census.unmatchedIpedsUnitIds)
   }
 
   // ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     // mapper reads first, which would abort the phase and turn the run into
     // PARTIAL INGEST; a long row's surplus cells are read by nobody. Both are
     // malformed rows, so both are counted like every other malformed row.
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val short = "910010,1"
     val long = fixture("ipeds-hd-joined-fixture.csv").readLines()[1] + ",surplus,cells"
     val hd = withExtraRows("ipeds-hd-joined-fixture.csv", short, long)
@@ -302,11 +302,11 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `a repeated unit_id keeps the first row and counts the loser, in HD and in a side file`() {
+  fun `a repeated ipeds_unit_id keeps the first row and counts the loser, in HD and in a side file`() {
     // Silent last-wins would let file order decide an institution's attributes,
     // and a WARN nobody tallies leaves the run reporting 0 skipped while half
     // an institution was thrown away.
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val hdLines = fixture("ipeds-hd-joined-fixture.csv").readLines()
     val hd = withExtraRows("ipeds-hd-joined-fixture.csv", hdLines[1])
     val icLines = fixture("ipeds-ic-fixture.csv").readLines()
@@ -324,7 +324,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     // "Not a bachelor's first major" and "we could not tell" are different
     // answers: the second is a malformed row and belongs in the skip taxonomy,
     // not in the deliberate seen - selected exclusion.
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val caLines = fixture("ipeds-ca-fixture.csv").readLines()
     val header = caLines[0].removePrefix("\uFEFF").split(",")
     val blankAwLevel =
@@ -353,7 +353,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
 
   @Test
   fun `a repeated census key keeps the first row and counts the loser`() {
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val caLines = fixture("ipeds-ca-fixture.csv").readLines()
     // Princeton's 04.0201 bachelor's first-major row, repeated verbatim.
     val selectedRow = caLines.first { it.startsWith("186131,\"04.0201\"") }
@@ -381,7 +381,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
 
   @Test
   fun `a missing required column in any IPEDS file is fatal, writing nothing at all`() {
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val cases =
       listOf(
         "CYACTIVE" to
@@ -399,15 +399,15 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
       assertEquals(listOf(column), thrown.missing)
       // Fatal BEFORE phase 1: the Scorecard institutions are not written
       // either — only the 12 colleges this test seeded exist.
-      assertEquals(hdUnitIds.size, withSession { count(it, "colleges") }, "[$column] must abort before any write")
+      assertEquals(hdIpedsUnitIds.size, withSession { count(it, "colleges") }, "[$column] must abort before any write")
       assertNull(
-        withSession { CollegesDao.findByUnitId(it, 110100).getOrThrow() },
+        withSession { CollegesDao.findByIpedsUnitId(it, 110100).getOrThrow() },
         "[$column] must abort before the Scorecard institutions phase",
       )
       assertEquals(0, withSession { count(it, "college_ipeds") })
       assertEquals(0, withSession { count(it, "college_programs_census") })
       assertEquals(buildRowsBefore, withSession { count(it, "college_index_build") })
-      seedColleges(hdUnitIds)
+      seedColleges(hdIpedsUnitIds)
     }
   }
 
@@ -417,7 +417,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
 
   @Test
   fun `the build row gains the IPEDS blocks, the four digests, and method_version 3`() {
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val report = ingest()
     assertEquals(7, report.sources.size, "three Scorecard sources plus the four IPEDS files")
 
@@ -429,7 +429,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     assertTrue(row.rowsIngested.contains("\"ipeds\""), "rows_ingested carries the ipeds block: ${row.rowsIngested}")
     assertTrue(row.rowsIngested.contains("\"programs_census\""), row.rowsIngested)
     assertTrue(row.rowsIngested.contains("\"survey_year\": 2023"), row.rowsIngested)
-    assertTrue(row.rowsIngested.contains("\"unmatched_unit_ids\": 0"), row.rowsIngested)
+    assertTrue(row.rowsIngested.contains("\"unmatched_ipeds_unit_ids\": 0"), row.rowsIngested)
     assertTrue(row.rowsIngested.contains("\"selected\": 5"), row.rowsIngested)
     assertTrue(
       row.changeSummary.contains("\"college_ipeds\"") && row.changeSummary.contains("\"test_policy\""),
@@ -453,7 +453,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
 
   @Test
   fun `the non-null change summary measures college_ipeds before and after`() {
-    seedColleges(hdUnitIds)
+    seedColleges(hdIpedsUnitIds)
     val report = ingest()
     assertEquals(0, assertNotNull(report.ipeds).nonNullBefore["test_policy"])
     // Only 3 of the 8 ADM fixture rows name an institution in the HD fixture
@@ -477,14 +477,14 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     val athleticAssoc: String,
   )
 
-  private fun row(unitId: Int): IpedsRow? =
+  private fun row(ipedsUnitId: Int): IpedsRow? =
     withSession { session ->
       session
         .prepareStatement(
           "SELECT sector, ug_offer, rel_affil, has_rotc, has_housing, application_fee, test_policy, " +
-            "athletic_assoc::text FROM college_ipeds WHERE unit_id = ?",
+            "athletic_assoc::text FROM college_ipeds WHERE ipeds_unit_id = ?",
         ).use { stmt ->
-          stmt.setInt(1, unitId)
+          stmt.setInt(1, ipedsUnitId)
           stmt.executeQuery().use { rs ->
             if (!rs.next()) {
               null

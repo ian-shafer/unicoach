@@ -105,7 +105,7 @@ class FitLensHandlerTest {
       generousBudget,
     )
 
-  private var unitIdCounter = 500000
+  private var ipedsUnitIdCounter = 500000
 
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
@@ -145,7 +145,7 @@ class FitLensHandlerTest {
       .upsert(
         sqlSession,
         NewCollege(
-          unitId = unitIdCounter++,
+          ipedsUnitId = ipedsUnitIdCounter++,
           opeid = null,
           name = "Test College",
           city = "Townsville",

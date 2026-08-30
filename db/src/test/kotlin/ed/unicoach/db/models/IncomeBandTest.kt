@@ -16,7 +16,7 @@ class IncomeBandTest {
     College(
       id = CollegeId(UUID.randomUUID()),
       version = 1,
-      unitId = 1,
+      ipedsUnitId = 1,
       opeid = null,
       name = "C",
       city = "X",

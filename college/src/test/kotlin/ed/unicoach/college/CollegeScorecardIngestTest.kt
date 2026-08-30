@@ -60,14 +60,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `a duplicate unit_id in the aliases file is fatal and writes nothing`() {
+  fun `a duplicate ipeds_unit_id in the aliases file is fatal and writes nothing`() {
     val duplicated = File.createTempFile("college-aliases-duplicate", ".json")
     duplicated.deleteOnExit()
     duplicated.writeText(
       """
       [
-        { "unit_id": 110100, "aliases": ["Coastal"] },
-        { "unit_id": 110100, "aliases": ["CSU Seaside"] }
+        { "ipeds_unit_id": 110100, "aliases": ["Coastal"] },
+        { "ipeds_unit_id": 110100, "aliases": ["CSU Seaside"] }
       ]
       """.trimIndent(),
     )
@@ -76,8 +76,8 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
       assertThrows<CollegeScorecardLoader.InvalidAliasFileException> {
         runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(duplicated)) }
       }
-    assertEquals(listOf(110100), thrown.duplicateUnitIds)
-    assertTrue(thrown.message!!.contains("110100"), "the fatal message must name the duplicate unit_id: ${thrown.message}")
+    assertEquals(listOf(110100), thrown.duplicateIpedsUnitIds)
+    assertTrue(thrown.message!!.contains("110100"), "the fatal message must name the duplicate ipeds_unit_id: ${thrown.message}")
     assertTrue(thrown.message!!.contains(duplicated.path), "the fatal message must name the file: ${thrown.message}")
 
     // Fatal at parse, before any write: no colleges, no programs, no build row.
@@ -137,7 +137,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   fun `an unknown key in an alias entry is fatal, naming the entry and the key`() {
     val thrown =
       assertAliasFileRejected(
-        """[{ "unit_id": 110100, "aliases": ["Coastal"], "alises": ["typo"] }]""",
+        """[{ "ipeds_unit_id": 110100, "aliases": ["Coastal"], "alises": ["typo"] }]""",
         "alises",
         "entry [0]",
       )
@@ -146,31 +146,31 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
 
   @Test
   fun `a missing key in an alias entry is fatal, naming which key`() {
-    assertAliasFileRejected("""[{ "unit_id": 110100 }]""", "missing key(s) [aliases]", "entry [0]")
+    assertAliasFileRejected("""[{ "ipeds_unit_id": 110100 }]""", "missing key(s) [aliases]", "entry [0]")
   }
 
   @Test
-  fun `a non-integer unit_id is fatal rather than a bare kotlinx cast failure`() {
+  fun `a non-integer ipeds_unit_id is fatal rather than a bare kotlinx cast failure`() {
     assertAliasFileRejected(
-      """[{ "unit_id": 110100, "aliases": ["ok"] }, { "unit_id": "110200", "aliases": ["bad"] }]""",
-      "unit_id must be a JSON integer",
+      """[{ "ipeds_unit_id": 110100, "aliases": ["ok"] }, { "ipeds_unit_id": "110200", "aliases": ["bad"] }]""",
+      "ipeds_unit_id must be a JSON integer",
       "entry [1]",
     )
   }
 
   @Test
   fun `a non-string alias is fatal rather than silently coerced`() {
-    assertAliasFileRejected("""[{ "unit_id": 110100, "aliases": [42] }]""", "every alias must be a JSON string", "42")
+    assertAliasFileRejected("""[{ "ipeds_unit_id": 110100, "aliases": [42] }]""", "every alias must be a JSON string", "42")
   }
 
   @Test
   fun `a non-array aliases file is fatal, naming the file`() {
-    assertAliasFileRejected("""{ "unit_id": 110100, "aliases": ["Coastal"] }""", "top level must be a JSON array")
+    assertAliasFileRejected("""{ "ipeds_unit_id": 110100, "aliases": ["Coastal"] }""", "top level must be a JSON array")
   }
 
   @Test
   fun `malformed JSON in the aliases file is fatal, naming the file`() {
-    assertAliasFileRejected("""[{ "unit_id": ]""", "not valid JSON")
+    assertAliasFileRejected("""[{ "ipeds_unit_id": ]""", "not valid JSON")
   }
 
   // ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   fun `a failure after a phase committed reports the committed phases and no provenance`() {
     // A NUL byte is valid JSON but cannot be stored as Postgres text, so the
     // alias phase fails at the DB — after institutions and fields committed.
-    val hostile = aliasesFile("""[{ "unit_id": 110100, "aliases": ["\u0000bad"] }]""")
+    val hostile = aliasesFile("""[{ "ipeds_unit_id": 110100, "aliases": ["\u0000bad"] }]""")
     val buildRowsBefore = withSession { count(it, "college_index_build") }
 
     val thrown =
@@ -193,7 +193,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     assertTrue(thrown.message!!.contains("in phase [aliases]"), "the operator-facing message names it too: ${thrown.message}")
     assertTrue(thrown.message!!.contains("provenance was NOT recorded"), "the report is explicit: ${thrown.message}")
     assertTrue(
-      thrown.cause!!.message!!.contains("unit_id=110100"),
+      thrown.cause!!.message!!.contains("ipeds_unit_id=110100"),
       "the cause names the failing entry: ${thrown.cause?.message}",
     )
 
@@ -273,9 +273,9 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     assertEquals(3, report.aliases.entries)
     assertEquals(2, report.aliases.applied)
     assertEquals(0, report.aliases.unchanged)
-    assertEquals(listOf(999999), report.aliases.unknownUnitIds, "the unmatched entry is named, not just counted")
+    assertEquals(listOf(999999), report.aliases.unknownIpedsUnitIds, "the unmatched entry is named, not just counted")
 
-    val coastal = withSession { CollegesDao.findByUnitId(it, 110100).getOrThrow() }
+    val coastal = withSession { CollegesDao.findByIpedsUnitId(it, 110100).getOrThrow() }
     assertNotNull(coastal)
     assertEquals(listOf("Coastal", "CSU Seaside"), coastal.aliases)
     assertEquals(2, coastal.version, "the alias application bumps the version once")
@@ -346,18 +346,18 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   }
 
   @Test
-  fun `the unknown alias unit_ids are named in the build row and the summary`() {
+  fun `the unknown alias ipeds_unit_ids are named in the build row and the summary`() {
     val report = ingest()
 
     val row = withSession { buildRow(it, report.buildId) }
     assertNotNull(row)
     assertTrue(
-      row.rowsIngested.contains("\"unknown_unit_id\": [") && row.rowsIngested.contains("999999"),
+      row.rowsIngested.contains("\"unknown_ipeds_unit_id\": [") && row.rowsIngested.contains("999999"),
       "the build row carries the unmatched ids, not just a count: ${row.rowsIngested}",
     )
 
     val summary = report.humanSummary()
-    assertTrue(summary.contains("1 unknown unit_id [999999]"), "the summary names the unmatched id: $summary")
+    assertTrue(summary.contains("1 unknown ipeds_unit_id [999999]"), "the summary names the unmatched id: $summary")
   }
 
   @Test
@@ -412,13 +412,13 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     assertEquals(after, storedNameWords(), "a wholesale rebuild of unchanged rows is the same table")
   }
 
-  /** The (unit_id, word) pairs actually stored, alphabetical. */
+  /** The (ipeds_unit_id, word) pairs actually stored, alphabetical. */
   private fun storedNameWords(): List<Pair<Int, String>> =
     withSession { session ->
       session
         .prepareStatement(
-          "SELECT c.unit_id, nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
-            "ORDER BY c.unit_id, nw.word",
+          "SELECT c.ipeds_unit_id, nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
+            "ORDER BY c.ipeds_unit_id, nw.word",
         ).use { stmt ->
           stmt.executeQuery().use { rs ->
             val rows = mutableListOf<Pair<Int, String>>()
@@ -435,11 +435,11 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
    */
   private fun expectedNameWords(): List<Pair<Int, String>> =
     withSession { session ->
-      session.prepareStatement("SELECT unit_id, name, aliases FROM colleges").use { stmt ->
+      session.prepareStatement("SELECT ipeds_unit_id, name, aliases FROM colleges").use { stmt ->
         stmt.executeQuery().use { rs ->
           val rows = mutableListOf<Pair<Int, String>>()
           while (rs.next()) {
-            val unitId = rs.getInt("unit_id")
+            val ipedsUnitId = rs.getInt("ipeds_unit_id")
             val aliases =
               rs.getArray("aliases").let { arr ->
                 try {
@@ -455,7 +455,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
               .split(Regex("[^a-z0-9]+"))
               .filter { it.isNotEmpty() }
               .distinct()
-              .forEach { rows += unitId to it }
+              .forEach { rows += ipedsUnitId to it }
           }
           rows.sortedWith(compareBy({ it.first }, { it.second }))
         }

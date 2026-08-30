@@ -36,7 +36,7 @@ object CollegesResource : AdminResource<College, CollegeId> {
     listOf(
       AdminField("id", "ID", FieldType.TEXT, editable = false, sensitive = false, inList = false, refSlug = "college"),
       AdminField("version", "Version", FieldType.INT, editable = false, sensitive = false, inList = false),
-      AdminField("unitId", "Unit ID", FieldType.INT, editable = false, sensitive = false, inList = false),
+      AdminField("ipedsUnitId", "IPEDS Unit ID", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("opeid", "OPEID", FieldType.TEXT, editable = false, sensitive = false, inList = false),
       AdminField("name", "Name", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("city", "City", FieldType.TEXT, editable = false, sensitive = false),
@@ -85,7 +85,7 @@ object CollegesResource : AdminResource<College, CollegeId> {
     mapOf(
       "id" to row.id.value.toString(),
       "version" to row.version.toString(),
-      "unitId" to row.unitId.toString(),
+      "ipedsUnitId" to row.ipedsUnitId.toString(),
       "opeid" to (row.opeid ?: ""),
       "name" to row.name,
       "city" to row.city,

@@ -47,13 +47,13 @@ class CollegeSearchServiceTest {
   private val service = CollegeSearchService(database)
 
   private fun newCollege(
-    unitId: Int,
+    ipedsUnitId: Int,
     state: String = "CA",
     netPrice: Int? = 20000,
   ) = NewCollege(
-    unitId = unitId,
+    ipedsUnitId = ipedsUnitId,
     opeid = null,
-    name = "Test U $unitId",
+    name = "Test U $ipedsUnitId",
     city = "Townsville",
     state = state,
     region = 8,
@@ -61,7 +61,7 @@ class CollegeSearchServiceTest {
     latitude = null,
     longitude = null,
     control = 1,
-    undergradEnrollment = unitId,
+    undergradEnrollment = ipedsUnitId,
     admissionRate = 0.5,
     satAvg = null,
     costAttendance = null,
@@ -115,7 +115,7 @@ class CollegeSearchServiceTest {
       seed(newCollege(12, state = "TX"))
 
       val matches = service.search(CollegeQuery(states = listOf("CA"), limit = 25)).getOrThrow().matches
-      assertEquals(listOf(11), matches.map { it.unitId })
+      assertEquals(listOf(11), matches.map { it.ipedsUnitId })
     }
 
   @Test

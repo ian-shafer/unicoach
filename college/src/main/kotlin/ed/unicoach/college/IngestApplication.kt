@@ -417,12 +417,12 @@ private fun logCdsTable(
     summary.unchanged,
     summary.skipped,
   )
-  if (summary.unmatchedUnitIds.isEmpty()) return
+  if (summary.unmatchedIpedsUnitIds.isEmpty()) return
   logger.info(
-    "CDS ingest [{}]: [skipped={}] seed rows have no college [unit_ids={}]",
+    "CDS ingest [{}]: [skipped={}] seed rows have no college [ipeds_unit_ids={}]",
     table,
     summary.skipped,
-    summary.unmatchedUnitIds,
+    summary.unmatchedIpedsUnitIds,
   )
 }
 

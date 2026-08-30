@@ -32,7 +32,7 @@ class CollegeListEntriesResourceTest {
     return AdminTestSupport.cookieHeader(AdminTestSupport.login(email, "Password123!"))
   }
 
-  private var unitIdCounter = 960000
+  private var ipedsUnitIdCounter = 960000
 
   private data class SeededEntry(
     val entryId: String,
@@ -44,7 +44,7 @@ class CollegeListEntriesResourceTest {
     runBlocking {
       val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
       val student = AdminTestSupport.seedStudent(user.id)
-      val college = AdminTestSupport.seedCollege(unitIdCounter++)
+      val college = AdminTestSupport.seedCollege(ipedsUnitIdCounter++)
       val entry =
         AdminTestSupport.database
           .withConnection { session ->

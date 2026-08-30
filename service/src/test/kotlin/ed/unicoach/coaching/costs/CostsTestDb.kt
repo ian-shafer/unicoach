@@ -55,7 +55,7 @@ object CostsTestDb {
       override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
     }
 
-  private var nextUnitId = 500000
+  private var nextIpedsUnitId = 500000
 
   /** The shared bracket dollar figures (`net_price_q1..q5`) [seedCollege] seeds by default — the one home both test classes read. */
   const val NET_PRICE_Q1 = 9000
@@ -101,13 +101,13 @@ object CostsTestDb {
     medianDebt: Int? = 23000,
     medianEarnings: Int? = 55000,
   ): CollegeId {
-    val unitId = nextUnitId++
+    val ipedsUnitId = nextIpedsUnitId++
     return CollegesDao
       .upsert(
         sqlSession,
         NewCollege(
-          unitId = unitId,
-          opeid = "00$unitId",
+          ipedsUnitId = ipedsUnitId,
+          opeid = "00$ipedsUnitId",
           name = name,
           city = "Townsville",
           state = state,
@@ -132,7 +132,7 @@ object CostsTestDb {
           medianEarnings = medianEarnings,
           medianDebt = medianDebt,
           pctPell = 0.4,
-          website = "https://test$unitId.edu",
+          website = "https://test$ipedsUnitId.edu",
         ),
       ).getOrThrow()
       .id

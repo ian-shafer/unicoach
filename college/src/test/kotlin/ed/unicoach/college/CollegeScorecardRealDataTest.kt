@@ -26,7 +26,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   fun `negative net_price loads (guards 0022)`() =
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
-      val ventura = withSession { CollegesDao.findByUnitId(it, 125028).getOrThrow() }
+      val ventura = withSession { CollegesDao.findByIpedsUnitId(it, 125028).getOrThrow() }
       assertNotNull(ventura)
       assertEquals(-982, ventura.netPrice)
     }
@@ -38,7 +38,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
 
       // Ventura (public): the low-income bands are genuinely negative in the
       // published data and must load un-coerced.
-      val ventura = withSession { CollegesDao.findByUnitId(it, 125028).getOrThrow() }
+      val ventura = withSession { CollegesDao.findByIpedsUnitId(it, 125028).getOrThrow() }
       assertNotNull(ventura)
       assertEquals(-1913, ventura.netPriceQ1)
       assertEquals(-2393, ventura.netPriceQ2)
@@ -48,14 +48,14 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       assertEquals(13876, ventura.medianDebt)
 
       // Auburn Montgomery (public): plain positive bands from the _PUB columns.
-      val auburn = withSession { CollegesDao.findByUnitId(it, 100830).getOrThrow() }
+      val auburn = withSession { CollegesDao.findByIpedsUnitId(it, 100830).getOrThrow() }
       assertNotNull(auburn)
       assertEquals(11706, auburn.netPriceQ1)
       assertEquals(16117, auburn.netPriceQ5)
       assertEquals(25000, auburn.medianDebt)
 
       // Pensacola Christian (private): every band cell is the NA sentinel.
-      val pensacola = withSession { CollegesDao.findByUnitId(it, 136455).getOrThrow() }
+      val pensacola = withSession { CollegesDao.findByIpedsUnitId(it, 136455).getOrThrow() }
       assertNotNull(pensacola)
       assertNull(pensacola.netPriceQ1)
       assertNull(pensacola.netPriceQ5)
@@ -67,7 +67,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
     runBlocking {
       val result = loader.load(institutionCsv, fieldsCsv)
       // Pensacola Christian (136455) has LOCALE=2, outside the 11..43 domain.
-      val pensacola = withSession { CollegesDao.findByUnitId(it, 136455).getOrThrow() }
+      val pensacola = withSession { CollegesDao.findByIpedsUnitId(it, 136455).getOrThrow() }
       assertNotNull(pensacola)
       assertNull(pensacola.locale)
       // A valid required field is retained — the row was kept, not dropped.
@@ -79,7 +79,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   fun `opeid loaded from real OPEID column (item 3)`() =
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
-      val auburn = withSession { CollegesDao.findByUnitId(it, 100830).getOrThrow() }
+      val auburn = withSession { CollegesDao.findByIpedsUnitId(it, 100830).getOrThrow() }
       assertNotNull(auburn)
       assertEquals("00831000", auburn.opeid)
     }
@@ -88,7 +88,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   fun `4-digit and 6-digit CIP programs load (guards 0021)`() =
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
-      val auburn = withSession { CollegesDao.findByUnitId(it, 100830).getOrThrow() }
+      val auburn = withSession { CollegesDao.findByIpedsUnitId(it, 100830).getOrThrow() }
       assertNotNull(auburn)
       val cips = withSession { programCipCodes(it, auburn.id.asString) }
       // 4-digit family codes the old six-only CHECK would have rejected.
@@ -100,7 +100,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   fun `quoted embedded comma in CIPDESC parses intact`() =
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
-      val auburn = withSession { CollegesDao.findByUnitId(it, 100830).getOrThrow() }
+      val auburn = withSession { CollegesDao.findByIpedsUnitId(it, 100830).getOrThrow() }
       assertNotNull(auburn)
       val title =
         withSession { programTitle(it, auburn.id.asString, "1101", 3) }
@@ -111,7 +111,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   fun `credlev 99 row is skipped and counted, neighbors survive (mechanism B)`() =
     runBlocking {
       val result = loader.load(institutionCsv, fieldsCsv)
-      val auburn = withSession { CollegesDao.findByUnitId(it, 100830).getOrThrow() }
+      val auburn = withSession { CollegesDao.findByIpedsUnitId(it, 100830).getOrThrow() }
       assertNotNull(auburn)
       val cips = withSession { programCipCodes(it, auburn.id.asString) }
       // The CIPCODE=2601 / CREDLEV=99 program is absent.
@@ -128,10 +128,10 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
     runBlocking {
       val result = loader.load(institutionCsv, fieldsCsv)
       assertTrue(
-        (result.skipsByReason[SkipReason.UnitIdNa] ?: 0) >= 1,
+        (result.skipsByReason[SkipReason.IpedsUnitIdNa] ?: 0) >= 1,
       )
       // No college or program was synthesized for the OPEID6-keyed NA rows.
-      val judson = withSession { CollegesDao.findByUnitId(it, 1023).getOrThrow() }
+      val judson = withSession { CollegesDao.findByIpedsUnitId(it, 1023).getOrThrow() }
       assertNull(judson)
     }
 
@@ -139,7 +139,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   fun `Ventura program links to its negative-net-price college`() =
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
-      val ventura = withSession { CollegesDao.findByUnitId(it, 125028).getOrThrow() }
+      val ventura = withSession { CollegesDao.findByIpedsUnitId(it, 125028).getOrThrow() }
       assertNotNull(ventura)
       val owner = withSession { programCollegeId(it, "0101", 2) }
       assertEquals(ventura.id.asString, owner)

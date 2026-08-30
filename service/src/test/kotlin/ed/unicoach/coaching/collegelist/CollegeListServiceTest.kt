@@ -86,7 +86,7 @@ class CollegeListServiceTest {
 
   private val service by lazy { CollegeListService(database) }
 
-  private var unitIdCounter = 920000
+  private var ipedsUnitIdCounter = 920000
 
   private fun createUser(emailSuffix: String = UUID.randomUUID().toString()): User {
     val email = (EmailAddress.create("cls-svc-$emailSuffix@example.com") as ValidationResult.Valid).value
@@ -108,7 +108,7 @@ class CollegeListServiceTest {
       .upsert(
         sqlSession,
         NewCollege(
-          unitId = unitIdCounter++,
+          ipedsUnitId = ipedsUnitIdCounter++,
           opeid = null,
           name = "Test College",
           city = "Townsville",

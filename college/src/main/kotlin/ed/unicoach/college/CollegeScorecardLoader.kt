@@ -44,7 +44,7 @@ import java.time.Instant
 /**
  * Re-runnable ingester for a version-pinned College Scorecard CSV pair (RFC 67):
  * the institution-level file and the field-of-study file. It upserts on the
- * natural keys (`unit_id`; `(college_id, cip_code, credential_level)`) so a
+ * natural keys (`ipeds_unit_id`; `(college_id, cip_code, credential_level)`) so a
  * re-run re-applies the same snapshot with no duplicates.
  *
  * The load is best-effort over the dataset, not all-or-nothing: a row missing a
@@ -65,18 +65,18 @@ class CollegeScorecardLoader(
   /**
    * A curated-aliases file whose shape or contents are unusable (RFC 139): a
    * malformed/unknown-key entry, a wrong primitive type, or a duplicate
-   * `unit_id`. The typed sibling of [MissingSourceColumnsException], and the
+   * `ipeds_unit_id`. The typed sibling of [MissingSourceColumnsException], and the
    * same contract: thrown before any write, mapped to a non-zero exit by
    * [IngestApplication]. [entryIndex] and [entry] name the offending element
-   * when the failure is per-entry; [duplicateUnitIds] carries every repeated
-   * `unit_id` when it is the duplicate check.
+   * when the failure is per-entry; [duplicateIpedsUnitIds] carries every repeated
+   * `ipeds_unit_id` when it is the duplicate check.
    */
   class InvalidAliasFileException(
     val fileName: String,
     val detail: String,
     val entryIndex: Int? = null,
     val entry: String? = null,
-    val duplicateUnitIds: List<Int> = emptyList(),
+    val duplicateIpedsUnitIds: List<Int> = emptyList(),
     cause: Throwable? = null,
   ) : RuntimeException(
       "curated aliases file [$fileName] is invalid" +
@@ -89,7 +89,7 @@ class CollegeScorecardLoader(
 
   /**
    * The alias-application tally (RFC 139): entries seen, applied, unchanged,
-   * and the `unit_id`s that matched no college. The unmatched ids are carried
+   * and the `ipeds_unit_id`s that matched no college. The unmatched ids are carried
    * by VALUE, not counted: "3 entries were dead" is unactionable, "entries
    * 100654, 166027, 240444 were dead" is the answer, and it survives into the
    * provenance row rather than only into an ephemeral log line.
@@ -98,7 +98,7 @@ class CollegeScorecardLoader(
     val entries: Int,
     val applied: Int,
     val unchanged: Int,
-    val unknownUnitIds: List<Int>,
+    val unknownIpedsUnitIds: List<Int>,
   )
 
   /**
@@ -210,10 +210,10 @@ class CollegeScorecardLoader(
   private suspend fun loadInstitutions(file: File): CollegeLoadResult =
     database.withConnection { session ->
       val count = LoadCount()
-      // Pre-load versions keyed by unit_id so each upsert outcome can be split
+      // Pre-load versions keyed by ipeds_unit_id so each upsert outcome can be split
       // into inserted (absent before) / changed (version advanced) / unchanged
       // (version held) for the provenance build row (RFC 139). ~6k rows.
-      val preVersions = CollegesDao.currentVersionsByUnitId(session).getOrThrow()
+      val preVersions = CollegesDao.currentVersionsByIpedsUnitId(session).getOrThrow()
       parseCsv(file).use { records ->
         for (record in records) {
           count.seen++
@@ -235,10 +235,10 @@ class CollegeScorecardLoader(
           val result = upsertWithSavepoint(session) { CollegesDao.upsert(session, newCollege) }
           if (result.isFailure) {
             val error = result.exceptionOrNull()
-            recordUpsertFailure(count, error, "institution", "unit_id", newCollege.unitId, record.recordNumber)
+            recordUpsertFailure(count, error, "institution", "ipeds_unit_id", newCollege.ipedsUnitId, record.recordNumber)
           } else {
             count.loaded++
-            val preVersion = preVersions[newCollege.unitId]
+            val preVersion = preVersions[newCollege.ipedsUnitId]
             val postVersion = result.getOrThrow().version
             when {
               preVersion == null -> count.inserted++
@@ -373,10 +373,10 @@ class CollegeScorecardLoader(
             "$programsSkipped skipped (${summarizeSkips(programs.skipsByReason)})",
         )
         val unknownIds =
-          if (aliases.unknownUnitIds.isEmpty()) "" else " ${aliases.unknownUnitIds}"
+          if (aliases.unknownIpedsUnitIds.isEmpty()) "" else " ${aliases.unknownIpedsUnitIds}"
         appendLine(
           "aliases:  ${aliases.entries} entries — ${aliases.applied} applied, " +
-            "${aliases.unchanged} unchanged, ${aliases.unknownUnitIds.size} unknown unit_id$unknownIds",
+            "${aliases.unchanged} unchanged, ${aliases.unknownIpedsUnitIds.size} unknown ipeds_unit_id$unknownIds",
         )
         appendLine("name words: $nameWords rows")
         val deltas =
@@ -392,13 +392,13 @@ class CollegeScorecardLoader(
           appendLine(
             "ipeds:    ${attributes.seen} seen — ${attributes.inserted} inserted, " +
               "${attributes.changed} changed, ${attributes.unchanged} unchanged, " +
-              "${attributes.skipped} skipped (${attributes.unmatchedUnitIds} unmatched unit_id, " +
+              "${attributes.skipped} skipped (${attributes.unmatchedIpedsUnitIds} unmatched ipeds_unit_id, " +
               "survey year ${report.surveyYear})",
           )
           appendLine(
             "programs-census: ${census.seen} seen — ${census.selected} bachelor's first majors, " +
               "${census.inserted} inserted, ${census.changed} changed, ${census.unchanged} unchanged, " +
-              "${census.skipped} skipped (${census.unmatchedUnitIds} unmatched unit_id)",
+              "${census.skipped} skipped (${census.unmatchedIpedsUnitIds} unmatched ipeds_unit_id)",
           )
         }
         val sourceLine =
@@ -415,7 +415,7 @@ class CollegeScorecardLoader(
 
   /**
    * One full ingest run: parse the curated aliases (fatal on a malformed shape
-   * or duplicate `unit_id`, before any write), assert every source header,
+   * or duplicate `ipeds_unit_id`, before any write), assert every source header,
    * digest each source (sha256 + bytes), snapshot per-column non-null counts,
    * run the Scorecard phases, apply the aliases, run the optional IPEDS phases,
    * rebuild the derived `college_name_words` table (RFC 146), re-snapshot, and
@@ -544,19 +544,19 @@ class CollegeScorecardLoader(
 
   /** One curated alias entry from db/data/college-aliases.json. */
   internal data class AliasEntry(
-    val unitId: Int,
+    val ipedsUnitId: Int,
     val aliases: List<String>,
   )
 
   /**
-   * Parses the curated aliases JSON (`[{ "unit_id": N, "aliases": [...] }]`).
+   * Parses the curated aliases JSON (`[{ "ipeds_unit_id": N, "aliases": [...] }]`).
    * The file is repo data, not external source data — a malformed shape is a
    * programming/review error and fails the run loudly (unlike an unknown
-   * `unit_id`, which is counted and reported, never fatal).
+   * `ipeds_unit_id`, which is counted and reported, never fatal).
    *
    * Every layer is verified rather than cast through: the root must be an
    * array, each element an object carrying EXACTLY [ALIAS_ENTRY_KEYS] (a
-   * mistyped `"alises"` is rejected, never silently dropped), `unit_id` an
+   * mistyped `"alises"` is rejected, never silently dropped), `ipeds_unit_id` an
    * integer, and every alias a JSON string. Each failure — including a
    * kotlinx parse error on the file itself — is raised as an
    * [InvalidAliasFileException] naming the file and, where the fault is
@@ -571,12 +571,12 @@ class CollegeScorecardLoader(
       }
     val array = root as? JsonArray ?: throw InvalidAliasFileException(file.path, "the top level must be a JSON array")
     val entries = array.mapIndexed { index, element -> parseAliasEntry(file, index, element) }
-    // A duplicate unit_id is FATAL like the header assertion: applying both
+    // A duplicate ipeds_unit_id is FATAL like the header assertion: applying both
     // entries would mean last-writer-wins by file order — a silent editing
     // mistake in curated repo data, aborted before anything is written.
     val duplicates =
       entries
-        .groupingBy { it.unitId }
+        .groupingBy { it.ipedsUnitId }
         .eachCount()
         .filterValues { it > 1 }
         .keys
@@ -584,8 +584,8 @@ class CollegeScorecardLoader(
     if (duplicates.isNotEmpty()) {
       throw InvalidAliasFileException(
         file.path,
-        "duplicate unit_id entr" + (if (duplicates.size == 1) "y" else "ies") + " $duplicates",
-        duplicateUnitIds = duplicates,
+        "duplicate ipeds_unit_id entr" + (if (duplicates.size == 1) "y" else "ies") + " $duplicates",
+        duplicateIpedsUnitIds = duplicates,
       )
     }
     return entries
@@ -610,17 +610,17 @@ class CollegeScorecardLoader(
           (if (missing.isEmpty()) "" else "; missing key(s) ${missing.sorted()}"),
       )
     }
-    val unitId =
-      (obj.getValue("unit_id") as? JsonPrimitive)
+    val ipedsUnitId =
+      (obj.getValue("ipeds_unit_id") as? JsonPrimitive)
         // kotlinx models `1` and `"1"` as the same JsonPrimitive class, differing
         // only in isString. Rejecting the quoted form keeps the curated file
-        // honestly typed: `"unit_id": "110100"` is a mistake we refuse loudly
+        // honestly typed: `"ipeds_unit_id": "110100"` is a mistake we refuse loudly
         // rather than coerce, since a typo'd quote would otherwise sail through
         // toIntOrNull and silently alias the wrong school.
         ?.takeIf { !it.isString }
         ?.content
         ?.toIntOrNull()
-        ?: invalid("unit_id must be a JSON integer")
+        ?: invalid("ipeds_unit_id must be a JSON integer")
     val aliasArray = obj.getValue("aliases") as? JsonArray ?: invalid("aliases must be a JSON array")
     val aliases =
       aliasArray.map { alias ->
@@ -628,13 +628,13 @@ class CollegeScorecardLoader(
         if (primitive == null || !primitive.isString) invalid("every alias must be a JSON string; got [$alias]")
         primitive.content
       }
-    return AliasEntry(unitId = unitId, aliases = aliases)
+    return AliasEntry(ipedsUnitId = ipedsUnitId, aliases = aliases)
   }
 
   /**
    * Applies the curated alias entries after the Scorecard upsert phase, change-
    * suppressed per row ([CollegesDao.updateAliases]): an unchanged alias set
-   * writes nothing and bumps nothing. Unknown `unit_id`s are counted and
+   * writes nothing and bumps nothing. Unknown `ipeds_unit_id`s are counted and
    * reported, never fatal; a real DB failure aborts the run (no build row).
    */
   private suspend fun applyAliases(entries: List<AliasEntry>): AliasResult =
@@ -644,11 +644,11 @@ class CollegeScorecardLoader(
       val unknown = mutableListOf<Int>()
       for (entry in entries) {
         val outcome =
-          CollegesDao.updateAliases(session, entry.unitId, entry.aliases).getOrElse { error ->
+          CollegesDao.updateAliases(session, entry.ipedsUnitId, entry.aliases).getOrElse { error ->
             // The DAO's message is generic by design; the entry that was being
             // applied is the context a fixer needs, so it travels with the throw.
             throw IllegalStateException(
-              "applying curated aliases failed for [unit_id=${entry.unitId}] " +
+              "applying curated aliases failed for [ipeds_unit_id=${entry.ipedsUnitId}] " +
                 "[aliases=${entry.aliases}] ${describe(error)}",
               error,
             )
@@ -662,9 +662,9 @@ class CollegeScorecardLoader(
             unchanged++
           }
 
-          CollegesDao.AliasUpdateOutcome.UNKNOWN_UNIT_ID -> {
-            unknown += entry.unitId
-            logger.warn("alias entry references an unknown [unit_id={}]; skipped", entry.unitId)
+          CollegesDao.AliasUpdateOutcome.UNKNOWN_IPEDS_UNIT_ID -> {
+            unknown += entry.ipedsUnitId
+            logger.warn("alias entry references an unknown [ipeds_unit_id={}]; skipped", entry.ipedsUnitId)
           }
         }
       }
@@ -672,7 +672,7 @@ class CollegeScorecardLoader(
         entries = entries.size,
         applied = applied,
         unchanged = unchanged,
-        unknownUnitIds = unknown.toList(),
+        unknownIpedsUnitIds = unknown.toList(),
       )
     }
 
@@ -756,7 +756,7 @@ class CollegeScorecardLoader(
         put("unchanged", aliases.unchanged)
         // The ids themselves, not a count: which entries were dead is the
         // question this row is read to answer.
-        putJsonArray("unknown_unit_id") { aliases.unknownUnitIds.forEach { add(it) } }
+        putJsonArray("unknown_ipeds_unit_id") { aliases.unknownIpedsUnitIds.forEach { add(it) } }
       }
       // Omit-vs-zero (RFC 144), the same discipline as skips_by_reason above:
       // an ABSENT key means the IPEDS group was not supplied, a PRESENT key
@@ -773,7 +773,7 @@ class CollegeScorecardLoader(
           put("changed", attributes.changed)
           put("unchanged", attributes.unchanged)
           put("skipped", attributes.skipped)
-          put("unmatched_unit_ids", attributes.unmatchedUnitIds)
+          put("unmatched_ipeds_unit_ids", attributes.unmatchedIpedsUnitIds)
           putJsonObject("skips_by_reason") {
             for ((kind, count) in skipsByKind(attributes.skipsByReason)) put(kind, count)
           }
@@ -789,7 +789,7 @@ class CollegeScorecardLoader(
           put("changed", census.changed)
           put("unchanged", census.unchanged)
           put("skipped", census.skipped)
-          put("unmatched_unit_ids", census.unmatchedUnitIds)
+          put("unmatched_ipeds_unit_ids", census.unmatchedIpedsUnitIds)
           putJsonObject("skips_by_reason") {
             for ((kind, count) in skipsByKind(census.skipsByReason)) put(kind, count)
           }
@@ -833,12 +833,12 @@ class CollegeScorecardLoader(
     }
 
   /**
-   * Resolves the owning college for a field-of-study row. [CollegesDao.findByUnitId]
+   * Resolves the owning college for a field-of-study row. [CollegesDao.findByIpedsUnitId]
    * returns success(null) for the genuine "no owning college" case and failure(e)
    * only for a real DB fault — both are absorbed here, returning null to signal
    * "skip this row": a DB fault is classified + logged like any upsert failure
-   * (never mislabeled NoCollegeForUnitId), a missing college is the counted
-   * [SkipReason.NoCollegeForUnitId]. The read runs before the savepoint, so the
+   * (never mislabeled NoCollegeForIpedsUnitId), a missing college is the counted
+   * [SkipReason.NoCollegeForIpedsUnitId]. The read runs before the savepoint, so the
    * transaction is unaborted and the read is always valid.
    */
   private fun resolveCollege(
@@ -847,18 +847,18 @@ class CollegeScorecardLoader(
     fields: ProgramFields,
     record: CSVRecord,
   ): College? {
-    val lookup = CollegesDao.findByUnitId(session, fields.unitId)
+    val lookup = CollegesDao.findByIpedsUnitId(session, fields.ipedsUnitId)
     if (lookup.isFailure) {
-      recordUpsertFailure(count, lookup.exceptionOrNull(), "program", "unit_id", fields.unitId, record.recordNumber)
+      recordUpsertFailure(count, lookup.exceptionOrNull(), "program", "ipeds_unit_id", fields.ipedsUnitId, record.recordNumber)
       return null
     }
     val college = lookup.getOrThrow()
     if (college == null) {
-      count.recordSkip(SkipReason.NoCollegeForUnitId)
+      count.recordSkip(SkipReason.NoCollegeForIpedsUnitId)
       logger.debug(
-        "Skipping program row [line={}]: no college for [unit_id={}]",
+        "Skipping program row [line={}]: no college for [ipeds_unit_id={}]",
         record.recordNumber,
-        fields.unitId,
+        fields.ipedsUnitId,
       )
       return null
     }
@@ -887,16 +887,16 @@ class CollegeScorecardLoader(
   // ---------------------------------------------------------------------------
 
   private fun mapInstitution(record: CSVRecord): MapResult<NewCollege> {
-    val unitId = intOrNull(record, COL_UNITID)
+    val ipedsUnitId = intOrNull(record, COL_UNITID)
     val name = stringOrNull(record, COL_INSTNM)
     val city = stringOrNull(record, COL_CITY)
     val state = stringOrNull(record, COL_STABBR)
     val control = intOrNull(record, COL_CONTROL)
 
-    if (unitId == null || name == null || city == null || state == null || control == null) {
+    if (ipedsUnitId == null || name == null || city == null || state == null || control == null) {
       val missing =
         buildList {
-          if (unitId == null) add("unit_id")
+          if (ipedsUnitId == null) add("ipeds_unit_id")
           if (name == null) add("name")
           if (city == null) add("city")
           if (state == null) add("state")
@@ -904,10 +904,10 @@ class CollegeScorecardLoader(
         }
       logger.debug(
         "Skipping institution row [line={}]: missing required field {} " +
-          "[unit_id={}] [name={}] [city={}] [state={}] [control={}]",
+          "[ipeds_unit_id={}] [name={}] [city={}] [state={}] [control={}]",
         record.recordNumber,
         missing,
-        unitId,
+        ipedsUnitId,
         name,
         city,
         state,
@@ -946,7 +946,7 @@ class CollegeScorecardLoader(
     val coercions = mutableMapOf<String, Int>()
     val college =
       NewCollege(
-        unitId = unitId,
+        ipedsUnitId = ipedsUnitId,
         // OPEID is the 8-digit OPE ID (column 2). The loader historically read the
         // nonexistent OPEID8, so opeid always loaded null.
         opeid = stringOrNull(record, COL_OPEID),
@@ -987,7 +987,7 @@ class CollegeScorecardLoader(
   /** The validated key/required columns of a field-of-study row, resolved to a
    * [NewCollegeProgram] by the load loop once its owning college is found. */
   private data class ProgramFields(
-    val unitId: Int,
+    val ipedsUnitId: Int,
     val cipCode: String,
     val cipTitle: String,
     val credentialLevel: Int,
@@ -998,28 +998,28 @@ class CollegeScorecardLoader(
     // under their own precise bucket before any DB work, never silently.
     if (stringOrNull(record, COL_UNITID) == "NA") {
       logger.debug("Skipping program row [line={}]: UNITID=NA sentinel", record.recordNumber)
-      return MapResult.Skipped(SkipReason.UnitIdNa)
+      return MapResult.Skipped(SkipReason.IpedsUnitIdNa)
     }
 
-    val unitId = intOrNull(record, COL_UNITID)
+    val ipedsUnitId = intOrNull(record, COL_UNITID)
     val cipCode = stringOrNull(record, COL_CIPCODE)
     val cipTitle = stringOrNull(record, COL_CIPDESC)
     val credentialLevel = intOrNull(record, COL_CREDLEV)
 
-    if (unitId == null || cipCode == null || cipTitle == null || credentialLevel == null) {
+    if (ipedsUnitId == null || cipCode == null || cipTitle == null || credentialLevel == null) {
       val missing =
         buildList {
-          if (unitId == null) add("unit_id")
+          if (ipedsUnitId == null) add("ipeds_unit_id")
           if (cipCode == null) add("cip_code")
           if (cipTitle == null) add("cip_title")
           if (credentialLevel == null) add("credential_level")
         }
       logger.debug(
         "Skipping program row [line={}]: missing required field {} " +
-          "[unit_id={}] [cip_code={}] [cip_title={}] [credential_level={}]",
+          "[ipeds_unit_id={}] [cip_code={}] [cip_title={}] [credential_level={}]",
         record.recordNumber,
         missing,
-        unitId,
+        ipedsUnitId,
         cipCode,
         cipTitle,
         credentialLevel,
@@ -1033,17 +1033,17 @@ class CollegeScorecardLoader(
     // instead of a generic constraint reject + savepoint round-trip.
     if (credentialLevel !in CREDENTIAL_LEVEL_MIN..CREDENTIAL_LEVEL_MAX) {
       logger.debug(
-        "Skipping program row [line={}]: credential_level [{}] out of domain [unit_id={}]",
+        "Skipping program row [line={}]: credential_level [{}] out of domain [ipeds_unit_id={}]",
         record.recordNumber,
         credentialLevel,
-        unitId,
+        ipedsUnitId,
       )
       return MapResult.Skipped(SkipReason.CredentialLevelOutOfDomain)
     }
 
     return MapResult.Mapped(
       ProgramFields(
-        unitId = unitId,
+        ipedsUnitId = ipedsUnitId,
         cipCode = cipCode,
         cipTitle = cipTitle,
         credentialLevel = credentialLevel,
@@ -1062,7 +1062,7 @@ class CollegeScorecardLoader(
     const val METHOD_VERSION = 3
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
-    private val ALIAS_ENTRY_KEYS = setOf("unit_id", "aliases")
+    private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")
 
     /** Hex characters of each source sha256 shown in the human summary; the full digest is in the build row. */
     private const val SUMMARY_SHA_PREFIX_CHARS = 12

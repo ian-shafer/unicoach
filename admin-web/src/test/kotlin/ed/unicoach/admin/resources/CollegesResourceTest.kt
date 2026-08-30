@@ -34,7 +34,7 @@ class CollegesResourceTest {
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
-      AdminTestSupport.seedCollege(unitId = 910100, name = "Coastal State University", city = "Seaside", state = "CA")
+      AdminTestSupport.seedCollege(ipedsUnitId = 910100, name = "Coastal State University", city = "Seaside", state = "CA")
 
       val list = client().get("/college") { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.OK, list.status)
@@ -55,8 +55,8 @@ class CollegesResourceTest {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
       // Two upserts → version 2 → two history rows.
-      AdminTestSupport.seedCollege(unitId = 910200, name = "Original Name")
-      val college = AdminTestSupport.seedCollege(unitId = 910200, name = "Renamed College")
+      AdminTestSupport.seedCollege(ipedsUnitId = 910200, name = "Original Name")
+      val college = AdminTestSupport.seedCollege(ipedsUnitId = 910200, name = "Renamed College")
       val id = college.id.value.toString()
 
       val detail = client().get("/college/$id") { header(HttpHeaders.Cookie, cookie) }
@@ -74,7 +74,7 @@ class CollegesResourceTest {
     testApplication {
       application { with(AdminTestSupport) { installTestAdminModule() } }
       val cookie = adminCookie()
-      val college = AdminTestSupport.seedCollege(unitId = 910300)
+      val college = AdminTestSupport.seedCollege(ipedsUnitId = 910300)
       val id = college.id.value.toString()
 
       // The create form (`/new`) and edit form re-check nullability and serve the

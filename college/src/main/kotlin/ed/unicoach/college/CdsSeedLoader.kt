@@ -138,10 +138,10 @@ class CdsSeedLoader(
   class LoadException(
     val table: Table,
     val line: Long,
-    val unitId: Int,
+    val ipedsUnitId: Int,
     cause: Throwable,
   ) : RuntimeException(
-      "[${table.label}] line [$line]: unit_id [$unitId] failed: [${cause.message}]",
+      "[${table.label}] line [$line]: unit_id [$ipedsUnitId] failed: [${cause.message}]",
       cause,
     )
 
@@ -154,9 +154,9 @@ class CdsSeedLoader(
     val upserted: Int,
     val changed: Int,
     val unchanged: Int,
-    val unmatchedUnitIds: List<Int>,
+    val unmatchedIpedsUnitIds: List<Int>,
   ) {
-    val skipped: Int get() = unmatchedUnitIds.size
+    val skipped: Int get() = unmatchedIpedsUnitIds.size
   }
 
   data class LoadResult(
@@ -170,7 +170,7 @@ class CdsSeedLoader(
     var upserted = 0
     var changed = 0
     var unchanged = 0
-    val unmatchedUnitIds = mutableListOf<Int>()
+    val unmatchedIpedsUnitIds = mutableListOf<Int>()
 
     fun record(outcome: UpsertOutcome) {
       when (outcome) {
@@ -180,7 +180,7 @@ class CdsSeedLoader(
       }
     }
 
-    fun summary() = TableSummary(upserted, changed, unchanged, unmatchedUnitIds.toList())
+    fun summary() = TableSummary(upserted, changed, unchanged, unmatchedIpedsUnitIds.toList())
   }
 
   /** Loads the three seed files (header-asserted first) and computes the
@@ -239,17 +239,17 @@ class CdsSeedLoader(
         if (!record.isConsistent || record.size() != columns.size) {
           throw FormatException(Defect.RowArity(table, record.recordNumber, record.size(), columns.size))
         }
-        val rawUnitId = record.get("unit_id")
-        val unitId =
-          rawUnitId.trim().toIntOrNull() ?: throw FormatException(
-            Defect.NotAnInteger(table, record.recordNumber, "unit_id", rawUnitId),
+        val rawIpedsUnitId = record.get("unit_id")
+        val ipedsUnitId =
+          rawIpedsUnitId.trim().toIntOrNull() ?: throw FormatException(
+            Defect.NotAnInteger(table, record.recordNumber, "unit_id", rawIpedsUnitId),
           )
-        val college = withRowLocation(table, record, unitId) { CollegesDao.findByUnitId(session, unitId) }
+        val college = withRowLocation(table, record, ipedsUnitId) { CollegesDao.findByIpedsUnitId(session, ipedsUnitId) }
         if (college == null) {
-          tally.unmatchedUnitIds += unitId
+          tally.unmatchedIpedsUnitIds += ipedsUnitId
           continue
         }
-        tally.record(withRowLocation(table, record, unitId) { upsert(college.id, record) })
+        tally.record(withRowLocation(table, record, ipedsUnitId) { upsert(college.id, record) })
       }
     }
     return tally.summary()
@@ -260,11 +260,11 @@ class CdsSeedLoader(
   private fun <T> withRowLocation(
     table: Table,
     record: CSVRecord,
-    unitId: Int,
+    ipedsUnitId: Int,
     call: () -> Result<T>,
   ): T =
     call().getOrElse { cause ->
-      throw LoadException(table, record.recordNumber, unitId, cause)
+      throw LoadException(table, record.recordNumber, ipedsUnitId, cause)
     }
 
   // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import java.time.LocalDate
 
 /**
  * Input for upserting one `college_ipeds` row (RFC 144) on its natural key
- * `unitId`. Carries no `id` (DB-generated) and no timestamps (DB-managed).
+ * `ipedsUnitId`. Carries no `id` (DB-generated) and no timestamps (DB-managed).
  *
  * Every field is a RAW IPEDS code or a value derived from one by the documented
  * sentinel rule (brief 0004): `null` means UNKNOWN — the `-1`/`-3` sentinels,
@@ -19,12 +19,12 @@ import java.time.LocalDate
  * belongs to nothing — a known, documented gap affecting 6 rows in 2023.
  */
 data class NewCollegeIpeds(
-  val unitId: Int,
+  val ipedsUnitId: Int,
   val surveyYear: Int,
   val cyActive: Boolean,
   val deathYear: Int?,
   val closedAt: LocalDate?,
-  val newUnitId: Int?,
+  val newIpedsUnitId: Int?,
   val instLevel: Int?,
   val ugOffer: Boolean?,
   val sector: Int?,

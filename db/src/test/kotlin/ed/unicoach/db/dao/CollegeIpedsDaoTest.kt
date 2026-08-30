@@ -67,14 +67,14 @@ class CollegeIpedsDaoTest {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private fun seedCollege(unitId: Int): CollegeId =
+  private fun seedCollege(ipedsUnitId: Int): CollegeId =
     CollegesDao
       .upsert(
         session,
         NewCollege(
-          unitId = unitId,
+          ipedsUnitId = ipedsUnitId,
           opeid = null,
-          name = "Test U $unitId",
+          name = "Test U $ipedsUnitId",
           city = "Townsville",
           state = "CA",
           region = null,
@@ -104,12 +104,12 @@ class CollegeIpedsDaoTest {
       .id
 
   private fun ipeds(
-    unitId: Int,
+    ipedsUnitId: Int,
     surveyYear: Int = 2023,
     cyActive: Boolean = true,
     deathYear: Int? = null,
     closedAt: LocalDate? = null,
-    newUnitId: Int? = null,
+    newIpedsUnitId: Int? = null,
     instLevel: Int? = 1,
     ugOffer: Boolean? = true,
     sector: Int? = 4,
@@ -128,12 +128,12 @@ class CollegeIpedsDaoTest {
     footballConf: Int? = -2,
     testPolicy: Int? = 5,
   ) = NewCollegeIpeds(
-    unitId = unitId,
+    ipedsUnitId = ipedsUnitId,
     surveyYear = surveyYear,
     cyActive = cyActive,
     deathYear = deathYear,
     closedAt = closedAt,
-    newUnitId = newUnitId,
+    newIpedsUnitId = newIpedsUnitId,
     instLevel = instLevel,
     ugOffer = ugOffer,
     sector = sector,
@@ -177,26 +177,26 @@ class CollegeIpedsDaoTest {
       CollegeIpedsDao.upsert(session, ipeds(161280, testPolicy = 3)).getOrThrow(),
     )
     assertEquals(1, scalar("SELECT count(*) FROM college_ipeds") { it.getInt(1) })
-    assertEquals(3, scalar("SELECT test_policy FROM college_ipeds WHERE unit_id = 161280") { it.getInt(1) })
+    assertEquals(3, scalar("SELECT test_policy FROM college_ipeds WHERE ipeds_unit_id = 161280") { it.getInt(1) })
   }
 
   @Test
   fun `an unchanged re-upsert writes nothing at all, updated_at included`() {
     CollegeIpedsDao.upsert(session, ipeds(161280)).getOrThrow()
-    val before = scalar("SELECT updated_at FROM college_ipeds WHERE unit_id = 161280") { it.getTimestamp(1) }
+    val before = scalar("SELECT updated_at FROM college_ipeds WHERE ipeds_unit_id = 161280") { it.getTimestamp(1) }
     Thread.sleep(5)
     assertEquals(UpsertOutcome.UNCHANGED, CollegeIpedsDao.upsert(session, ipeds(161280)).getOrThrow())
-    val after = scalar("SELECT updated_at FROM college_ipeds WHERE unit_id = 161280") { it.getTimestamp(1) }
+    val after = scalar("SELECT updated_at FROM college_ipeds WHERE ipeds_unit_id = 161280") { it.getTimestamp(1) }
     assertEquals(before, after, "a suppressed no-op upsert must not fire the updated_at trigger")
   }
 
   @Test
   fun `a real change advances updated_at through the _03 trigger`() {
     CollegeIpedsDao.upsert(session, ipeds(161280)).getOrThrow()
-    val before = scalar("SELECT updated_at FROM college_ipeds WHERE unit_id = 161280") { it.getTimestamp(1) }
+    val before = scalar("SELECT updated_at FROM college_ipeds WHERE ipeds_unit_id = 161280") { it.getTimestamp(1) }
     Thread.sleep(5)
     CollegeIpedsDao.upsert(session, ipeds(161280, hasRotc = false)).getOrThrow()
-    val after = scalar("SELECT updated_at FROM college_ipeds WHERE unit_id = 161280") { it.getTimestamp(1) }
+    val after = scalar("SELECT updated_at FROM college_ipeds WHERE ipeds_unit_id = 161280") { it.getTimestamp(1) }
     assertTrue(after.after(before), "updated_at must advance on a real change: $before -> $after")
   }
 
@@ -241,11 +241,11 @@ class CollegeIpedsDaoTest {
     CollegeIpedsDao.upsert(session, ipeds(100690, athleticAssoc = emptyList())).getOrThrow()
     assertEquals(
       "{1,3,6}",
-      scalar("SELECT athletic_assoc::text FROM college_ipeds WHERE unit_id = 161280") { it.getString(1) },
+      scalar("SELECT athletic_assoc::text FROM college_ipeds WHERE ipeds_unit_id = 161280") { it.getString(1) },
     )
     assertEquals(
       "{}",
-      scalar("SELECT athletic_assoc::text FROM college_ipeds WHERE unit_id = 100690") { it.getString(1) },
+      scalar("SELECT athletic_assoc::text FROM college_ipeds WHERE ipeds_unit_id = 100690") { it.getString(1) },
     )
   }
 
@@ -254,10 +254,10 @@ class CollegeIpedsDaoTest {
     CollegeIpedsDao.upsert(session, ipeds(115728, closedAt = LocalDate.of(2023, 5, 15), deathYear = 2023)).getOrThrow()
     assertEquals(
       LocalDate.of(2023, 5, 15),
-      scalar("SELECT closed_at FROM college_ipeds WHERE unit_id = 115728") { it.getDate(1).toLocalDate() },
+      scalar("SELECT closed_at FROM college_ipeds WHERE ipeds_unit_id = 115728") { it.getDate(1).toLocalDate() },
     )
     CollegeIpedsDao.upsert(session, ipeds(161280)).getOrThrow()
-    assertNull(scalar("SELECT closed_at FROM college_ipeds WHERE unit_id = 161280") { it.getDate(1) })
+    assertNull(scalar("SELECT closed_at FROM college_ipeds WHERE ipeds_unit_id = 161280") { it.getDate(1) })
   }
 
   @Test
@@ -278,7 +278,7 @@ class CollegeIpedsDaoTest {
       CollegeIpedsDao.upsert(session, ipeds(161280 + code, sector = code)).getOrThrow()
       assertEquals(
         code,
-        scalar("SELECT sector FROM college_ipeds WHERE unit_id = ${161280 + code}") { it.getInt(1) },
+        scalar("SELECT sector FROM college_ipeds WHERE ipeds_unit_id = ${161280 + code}") { it.getInt(1) },
       )
     }
     for (code in listOf(10, 50, 98)) {
@@ -353,11 +353,11 @@ class CollegeIpedsDaoTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `collegeIdsByUnitId returns the whole match set keyed by unit_id`() {
+  fun `collegeIdsByIpedsUnitId returns the whole match set keyed by ipeds_unit_id`() {
     val first = seedCollege(186131)
     val second = seedCollege(166027)
-    val byUnitId = CollegeIpedsDao.collegeIdsByUnitId(session).getOrThrow()
-    assertEquals(mapOf(186131 to first, 166027 to second), byUnitId)
+    val byIpedsUnitId = CollegeIpedsDao.collegeIdsByIpedsUnitId(session).getOrThrow()
+    assertEquals(mapOf(186131 to first, 166027 to second), byIpedsUnitId)
   }
 
   @Test
@@ -371,7 +371,7 @@ class CollegeIpedsDaoTest {
   @Test
   fun `nonNullCounts refuses a column outside the closed allowlist`() {
     assertFailsWith<IllegalArgumentException> {
-      CollegeIpedsDao.nonNullCounts(session, listOf("test_policy", "unit_id; DROP TABLE colleges"))
+      CollegeIpedsDao.nonNullCounts(session, listOf("test_policy", "ipeds_unit_id; DROP TABLE colleges"))
     }
   }
 

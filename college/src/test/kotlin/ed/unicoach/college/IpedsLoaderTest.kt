@@ -46,21 +46,21 @@ class IpedsLoaderTest {
     rows("ipeds-hd-fixture.csv").associate { record ->
       val mapped = loader.mapHd(record)
       assertTrue(mapped is MapResult.Mapped, "HD row [${record.recordNumber}] should map: $mapped")
-      mapped.value.unitId to mapped.value.toRow(2023, null, null)
+      mapped.value.ipedsUnitId to mapped.value.toRow(2023, null, null)
     }
 
   private fun icRows(): Map<Int, IpedsLoader.IcAttributes> =
     rows("ipeds-ic-fixture.csv").associate { record ->
       val mapped = loader.mapIc(record)
       assertTrue(mapped is MapResult.Mapped, "IC row [${record.recordNumber}] should map: $mapped")
-      mapped.value.unitId to mapped.value
+      mapped.value.ipedsUnitId to mapped.value
     }
 
   private fun admRows(): Map<Int, IpedsLoader.AdmAttributes> =
     rows("ipeds-adm-fixture.csv").associate { record ->
       val mapped = loader.mapAdm(record)
       assertTrue(mapped is MapResult.Mapped, "ADM row [${record.recordNumber}] should map: $mapped")
-      mapped.value.unitId to mapped.value
+      mapped.value.ipedsUnitId to mapped.value
     }
 
   // ---------------------------------------------------------------------------
@@ -124,10 +124,10 @@ class IpedsLoaderTest {
   fun `DEATHYR and NEWID treat -2 as still-alive and not-merged, never as year -2`() {
     val hd = hdRows()
     assertNull(hd.getValue(161280).deathYear)
-    assertNull(hd.getValue(161280).newUnitId)
+    assertNull(hd.getValue(161280).newIpedsUnitId)
     assertEquals(2023, hd.getValue(115728).deathYear)
     // 128577 (Asnuntuck CC) merged into 129367.
-    assertEquals(129367, hd.getValue(128577).newUnitId)
+    assertEquals(129367, hd.getValue(128577).newIpedsUnitId)
   }
 
   @Test
@@ -283,11 +283,11 @@ class IpedsLoaderTest {
     val joined =
       IpedsLoader
         .HdAttributes(
-          unitId = row.unitId,
+          ipedsUnitId = row.ipedsUnitId,
           cyActive = row.cyActive,
           deathYear = row.deathYear,
           closedAt = row.closedAt,
-          newUnitId = row.newUnitId,
+          newIpedsUnitId = row.newIpedsUnitId,
           instLevel = row.instLevel,
           ugOffer = row.ugOffer,
           sector = row.sector,
@@ -366,7 +366,7 @@ class IpedsLoaderTest {
     val record = parseCsv(file).use { it.toList() }.single()
     val mapped = loader.mapHd(record)
     assertTrue(mapped is MapResult.Skipped, "$mapped")
-    assertEquals(SkipReason.MissingRequiredField(listOf("unit_id")), mapped.reason)
+    assertEquals(SkipReason.MissingRequiredField(listOf("ipeds_unit_id")), mapped.reason)
   }
 
   @Test

@@ -1,5 +1,5 @@
 [
-  { "unit_id": 110100, "aliases": ["Coastal", "CSU Seaside"] },
-  { "unit_id": 220200, "aliases": ["Private Hills"] },
-  { "unit_id": 999999, "aliases": ["Ghost U"] }
+  { "ipeds_unit_id": 110100, "aliases": ["Coastal", "CSU Seaside"] },
+  { "ipeds_unit_id": 220200, "aliases": ["Private Hills"] },
+  { "ipeds_unit_id": 999999, "aliases": ["Ghost U"] }
 ]

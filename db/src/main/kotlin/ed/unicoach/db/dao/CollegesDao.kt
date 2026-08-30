@@ -70,7 +70,7 @@ object CollegesDao :
     College(
       id = CollegeId(UUID.fromString(rs.getString("id"))),
       version = rs.getInt("version"),
-      unitId = rs.getInt("unit_id"),
+      ipedsUnitId = rs.getInt("ipeds_unit_id"),
       opeid = rs.getString("opeid"),
       name = rs.getString("name"),
       city = rs.getString("city"),
@@ -132,7 +132,7 @@ object CollegesDao :
     val titles = rs.getStringList("program_titles")
     return CollegeMatch(
       id = CollegeId(UUID.fromString(rs.getString("id"))),
-      unitId = rs.getInt("unit_id"),
+      ipedsUnitId = rs.getInt("ipeds_unit_id"),
       name = rs.getString("name"),
       city = rs.getString("city"),
       state = rs.getString("state"),
@@ -160,7 +160,7 @@ object CollegesDao :
   // ---------------------------------------------------------------------------
 
   /**
-   * Upserts a college on its natural key `unit_id` (RFC 82). On conflict every
+   * Upserts a college on its natural key `ipeds_unit_id` (RFC 82). On conflict every
    * curated column is overwritten from [input]; `id` and `created_at` are
    * preserved and the `_03` trigger advances `updated_at`.
    *
@@ -175,7 +175,7 @@ object CollegesDao :
    * When the `WHERE` is unsatisfied the `DO UPDATE` performs no write and
    * `RETURNING` yields zero rows; the `UNION ALL` arm then returns the existing
    * row. The conflict guarantees the row exists, so exactly one row is always
-   * returned, preserving the one-row contract. The bound `unit_id` parameter
+   * returned, preserving the one-row contract. The bound `ipeds_unit_id` parameter
    * appears twice (INSERT VALUES and the UNION arm).
    */
   fun upsert(
@@ -186,14 +186,14 @@ object CollegesDao :
       """
       WITH up AS (
         INSERT INTO colleges (
-          unit_id, opeid, name, city, state, region, locale, latitude, longitude,
+          ipeds_unit_id, opeid, name, city, state, region, locale, latitude, longitude,
           control, undergrad_enrollment, admission_rate, sat_avg, cost_attendance,
           net_price, tuition_in_state, tuition_out_state, graduation_rate,
           median_earnings, pct_pell, website, net_price_q1, net_price_q2,
           net_price_q3, net_price_q4, net_price_q5, median_debt
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (unit_id) DO UPDATE SET
+        ON CONFLICT (ipeds_unit_id) DO UPDATE SET
           opeid = EXCLUDED.opeid,
           name = EXCLUDED.name,
           city = EXCLUDED.city,
@@ -230,7 +230,7 @@ object CollegesDao :
           colleges.graduation_rate, colleges.median_earnings, colleges.pct_pell,
           colleges.website, colleges.net_price_q1, colleges.net_price_q2,
           colleges.net_price_q3, colleges.net_price_q4, colleges.net_price_q5,
-          colleges.median_debt, colleges.unit_id
+          colleges.median_debt, colleges.ipeds_unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.opeid, EXCLUDED.name, EXCLUDED.city, EXCLUDED.state,
           EXCLUDED.region, EXCLUDED.locale, EXCLUDED.latitude, EXCLUDED.longitude,
@@ -240,18 +240,18 @@ object CollegesDao :
           EXCLUDED.graduation_rate, EXCLUDED.median_earnings, EXCLUDED.pct_pell,
           EXCLUDED.website, EXCLUDED.net_price_q1, EXCLUDED.net_price_q2,
           EXCLUDED.net_price_q3, EXCLUDED.net_price_q4, EXCLUDED.net_price_q5,
-          EXCLUDED.median_debt, EXCLUDED.unit_id
+          EXCLUDED.median_debt, EXCLUDED.ipeds_unit_id
         )
         RETURNING *
       )
       SELECT * FROM up
       UNION ALL
-      SELECT * FROM colleges WHERE unit_id = ? AND NOT EXISTS (SELECT 1 FROM up)
+      SELECT * FROM colleges WHERE ipeds_unit_id = ? AND NOT EXISTS (SELECT 1 FROM up)
       """.trimIndent()
     return session.mutateReturning(
       sql,
       bind = { stmt ->
-        stmt.setInt(1, input.unitId)
+        stmt.setInt(1, input.ipedsUnitId)
         stmt.setStringOrNull(2, input.opeid)
         stmt.setString(3, input.name)
         stmt.setString(4, input.city)
@@ -278,7 +278,7 @@ object CollegesDao :
         stmt.setIntOrNull(25, input.netPriceQ4)
         stmt.setIntOrNull(26, input.netPriceQ5)
         stmt.setIntOrNull(27, input.medianDebt)
-        stmt.setInt(28, input.unitId)
+        stmt.setInt(28, input.ipedsUnitId)
       },
       map = ::mapCollege,
       mapError = ::mapCollegeWriteError,
@@ -364,8 +364,8 @@ object CollegesDao :
   }
 
   /**
-   * Admin read surface (RFC 82): a page of colleges ordered by `name, unit_id`.
-   * `unit_id` is unique, so the order is total/deterministic for count-free paging.
+   * Admin read surface (RFC 82): a page of colleges ordered by `name, ipeds_unit_id`.
+   * `ipeds_unit_id` is unique, so the order is total/deterministic for count-free paging.
    */
   override fun list(
     session: SqlSession,
@@ -373,7 +373,7 @@ object CollegesDao :
     offset: Int,
   ): Result<List<College>> =
     session.queryList(
-      "SELECT * FROM colleges ORDER BY name, unit_id LIMIT ? OFFSET ?",
+      "SELECT * FROM colleges ORDER BY name, ipeds_unit_id LIMIT ? OFFSET ?",
       bind = {
         it.setInt(1, limit)
         it.setInt(2, offset)
@@ -396,14 +396,14 @@ object CollegesDao :
       map = { Version(mapCollege(it)) },
     )
 
-  fun findByUnitId(
+  fun findByIpedsUnitId(
     session: SqlSession,
-    unitId: Int,
+    ipedsUnitId: Int,
   ): Result<College?> =
     session
       .queryOne(
-        "SELECT * FROM colleges WHERE unit_id = ?",
-        bind = { it.setInt(1, unitId) },
+        "SELECT * FROM colleges WHERE ipeds_unit_id = ?",
+        bind = { it.setInt(1, ipedsUnitId) },
         map = ::mapCollege,
       ).fold(
         onSuccess = { Result.success(it) },
@@ -498,7 +498,7 @@ object CollegesDao :
     val sql =
       """
       SELECT
-        c.id, c.unit_id, c.name, c.city, c.state, c.control, c.locale,
+        c.id, c.ipeds_unit_id, c.name, c.city, c.state, c.control, c.locale,
         c.undergrad_enrollment, c.admission_rate, c.net_price, c.net_price_q1,
         c.net_price_q2, c.net_price_q3, c.net_price_q4, c.net_price_q5,
         c.graduation_rate, c.median_earnings, c.median_debt, c.pct_pell, c.website,
@@ -542,7 +542,7 @@ object CollegesDao :
    * The ORDER BY clause for a [CollegeQuery.SortBy] — a closed enum-to-constant
    * mapping (no caller text reaches SQL). A sort never filters: rows NULL on the
    * sort key sink (`NULLS LAST`), they do not vanish (brief 0004 D11); every
-   * ordering ends with the `unit_id ASC` tiebreak for a total, deterministic
+   * ordering ends with the `ipeds_unit_id ASC` tiebreak for a total, deterministic
    * order (`name` is not unique, so NAME_ASC needs the tiebreak too).
    */
   private fun orderBy(sortBy: CollegeQuery.SortBy): String =
@@ -552,7 +552,7 @@ object CollegesDao :
       CollegeQuery.SortBy.NET_PRICE_ASC -> "c.net_price ASC NULLS LAST"
       CollegeQuery.SortBy.GRADUATION_RATE_DESC -> "c.graduation_rate DESC NULLS LAST"
       CollegeQuery.SortBy.NAME_ASC -> "c.name ASC NULLS LAST"
-    } + ", c.unit_id ASC"
+    } + ", c.ipeds_unit_id ASC"
 
   /**
    * Student-facing name search (RFC 137 boundary, RFC 146 matching). Three
@@ -608,7 +608,7 @@ object CollegesDao :
    * can, so the separation holds at every query-word count rather than only at
    * one. The second is the summed per-word distance: an exact word contributes
    * 0 and a one-keystroke word 1, NULL when nothing matched (sorted last). Then
-   * `undergrad_enrollment DESC NULLS LAST, name, unit_id` as the deterministic
+   * `undergrad_enrollment DESC NULLS LAST, name, ipeds_unit_id` as the deterministic
    * tail. The same definition as the predicate, summed; no weights, no magic
    * literal, nothing fitted. [limit] is clamped by the service boundary before
    * reaching here (the [search] convention).
@@ -669,7 +669,7 @@ object CollegesDao :
         -- 1 per one-keystroke word. NULL for a substring-only row that matched
         -- no query word, which sorts last — it is the least-explained match.
         s.distance ASC NULLS LAST,
-        c.undergrad_enrollment DESC NULLS LAST, c.name, c.unit_id
+        c.undergrad_enrollment DESC NULLS LAST, c.name, c.ipeds_unit_id
       LIMIT ?
       """.trimIndent()
     return session.queryList(
@@ -763,8 +763,8 @@ object CollegesDao :
     /** The row existed with this exact alias set: nothing written, no bump. */
     UNCHANGED,
 
-    /** No college carries this `unit_id`: counted by the caller, never fatal. */
-    UNKNOWN_UNIT_ID,
+    /** No college carries this `ipeds_unit_id`: counted by the caller, never fatal. */
+    UNKNOWN_IPEDS_UNIT_ID,
   }
 
   /**
@@ -773,12 +773,12 @@ object CollegesDao :
    * unchanged alias set writes nothing and bumps nothing (the suppressed no-op
    * UPDATE also never fires the history trigger). When zero rows update, a
    * companion existence probe splits [AliasUpdateOutcome.UNCHANGED] from
-   * [AliasUpdateOutcome.UNKNOWN_UNIT_ID] so the ingest summary can count
-   * unknown `unit_id`s precisely.
+   * [AliasUpdateOutcome.UNKNOWN_IPEDS_UNIT_ID] so the ingest summary can count
+   * unknown `ipeds_unit_id`s precisely.
    */
   fun updateAliases(
     session: SqlSession,
-    unitId: Int,
+    ipedsUnitId: Int,
     aliases: List<String>,
   ): Result<AliasUpdateOutcome> =
     try {
@@ -793,24 +793,24 @@ object CollegesDao :
         """
         UPDATE colleges
         SET aliases = ARRAY(SELECT jsonb_array_elements_text(?::jsonb)), version = version + 1
-        WHERE unit_id = ?
+        WHERE ipeds_unit_id = ?
           AND aliases IS DISTINCT FROM ARRAY(SELECT jsonb_array_elements_text(?::jsonb))
         """.trimIndent()
       val aliasesJson = JsonArray(aliases.map { JsonPrimitive(it) }).toString()
       val updated =
         session.prepareStatement(sql).use { stmt ->
           stmt.setString(1, aliasesJson)
-          stmt.setInt(2, unitId)
+          stmt.setInt(2, ipedsUnitId)
           stmt.setString(3, aliasesJson)
           stmt.executeUpdate()
         }
       if (updated > 0) {
         Result.success(AliasUpdateOutcome.APPLIED)
       } else {
-        session.prepareStatement("SELECT 1 FROM colleges WHERE unit_id = ?").use { stmt ->
-          stmt.setInt(1, unitId)
+        session.prepareStatement("SELECT 1 FROM colleges WHERE ipeds_unit_id = ?").use { stmt ->
+          stmt.setInt(1, ipedsUnitId)
           stmt.executeQuery().use { rs ->
-            Result.success(if (rs.next()) AliasUpdateOutcome.UNCHANGED else AliasUpdateOutcome.UNKNOWN_UNIT_ID)
+            Result.success(if (rs.next()) AliasUpdateOutcome.UNCHANGED else AliasUpdateOutcome.UNKNOWN_IPEDS_UNIT_ID)
           }
         }
       }
@@ -821,16 +821,16 @@ object CollegesDao :
     }
 
   /**
-   * Every college's current `version` keyed by `unit_id` (RFC 139): the
+   * Every college's current `version` keyed by `ipeds_unit_id` (RFC 139): the
    * ingest's pre-load snapshot, so each Scorecard upsert outcome can be split
    * into inserted / changed / unchanged for the provenance build row. ~6k rows.
    */
-  fun currentVersionsByUnitId(session: SqlSession): Result<Map<Int, Int>> =
+  fun currentVersionsByIpedsUnitId(session: SqlSession): Result<Map<Int, Int>> =
     session
       .queryList(
-        "SELECT unit_id, version FROM colleges",
+        "SELECT ipeds_unit_id, version FROM colleges",
         bind = {},
-        map = { rs -> rs.getInt("unit_id") to rs.getInt("version") },
+        map = { rs -> rs.getInt("ipeds_unit_id") to rs.getInt("version") },
       ).map { it.toMap() }
 
   /**

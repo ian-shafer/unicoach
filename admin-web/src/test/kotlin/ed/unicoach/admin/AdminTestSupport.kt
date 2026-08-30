@@ -176,12 +176,12 @@ object AdminTestSupport {
 
   /** Upserts a colleges row via the DAO (RFC 82); re-upsert with a changed field bumps the version. */
   fun seedCollege(
-    unitId: Int,
+    ipedsUnitId: Int,
     name: String = "Test University",
     city: String = "Townsville",
     state: String = "CA",
     control: Int = 1,
-    opeid: String? = "0012$unitId",
+    opeid: String? = "0012$ipedsUnitId",
     admissionRate: Double? = 0.5,
     netPrice: Int? = 20000,
   ): College =
@@ -191,7 +191,7 @@ object AdminTestSupport {
           CollegesDao.upsert(
             session,
             NewCollege(
-              unitId = unitId,
+              ipedsUnitId = ipedsUnitId,
               opeid = opeid,
               name = name,
               city = city,
@@ -217,7 +217,7 @@ object AdminTestSupport {
               medianEarnings = 55000,
               medianDebt = null,
               pctPell = 0.4,
-              website = "https://test$unitId.edu",
+              website = "https://test$ipedsUnitId.edu",
             ),
           )
         }.getOrThrow()

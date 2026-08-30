@@ -56,7 +56,7 @@ class FitSuggestionsDaoTest {
       override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
     }
 
-  private var unitIdCounter = 700000
+  private var ipedsUnitIdCounter = 700000
 
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
@@ -79,7 +79,7 @@ class FitSuggestionsDaoTest {
       .upsert(
         session,
         NewCollege(
-          unitId = unitIdCounter++,
+          ipedsUnitId = ipedsUnitIdCounter++,
           opeid = null,
           name = name,
           city = city,

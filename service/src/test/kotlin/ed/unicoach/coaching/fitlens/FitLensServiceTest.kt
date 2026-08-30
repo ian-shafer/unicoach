@@ -176,7 +176,7 @@ class FitLensServiceTest {
   // Fixtures
   // ---------------------------------------------------------------------------
 
-  private var unitIdCounter = 600000
+  private var ipedsUnitIdCounter = 600000
 
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
@@ -219,7 +219,7 @@ class FitLensServiceTest {
       .upsert(
         session,
         NewCollege(
-          unitId = unitIdCounter++,
+          ipedsUnitId = ipedsUnitIdCounter++,
           opeid = null,
           name = name,
           city = "Townsville",

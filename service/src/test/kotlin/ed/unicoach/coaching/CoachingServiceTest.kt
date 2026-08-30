@@ -173,7 +173,7 @@ class CoachingServiceTest {
   private fun noSurfaceFitService(provider: ChatProvider): CoachingService =
     CoachingService(database, LlmCallLog(provider, database), noSurfaceFitConfig, generousBudget)
 
-  private var unitIdCounter = 800000
+  private var ipedsUnitIdCounter = 800000
 
   /** Inserts a college and returns its id. */
   private fun createCollege(
@@ -185,7 +185,7 @@ class CoachingServiceTest {
       .upsert(
         sqlSession,
         NewCollege(
-          unitId = unitIdCounter++,
+          ipedsUnitId = ipedsUnitIdCounter++,
           opeid = null,
           name = name,
           city = city,

@@ -29,13 +29,13 @@ class FitSuggestionsResourceTest {
     return AdminTestSupport.cookieHeader(AdminTestSupport.login(email, "Password123!"))
   }
 
-  private var unitId = 400000
+  private var ipedsUnitId = 400000
 
   /** A user + student + college that owns one open fit suggestion; returns its id string. */
   private fun seedSuggestion(rationale: String): String {
     val user = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail())
     val student = AdminTestSupport.seedStudent(user.id)
-    val college = AdminTestSupport.seedCollege(unitId++)
+    val college = AdminTestSupport.seedCollege(ipedsUnitId++)
     return AdminTestSupport
       .seedFitSuggestion(student.id, college.id, rationale)
       .id.value

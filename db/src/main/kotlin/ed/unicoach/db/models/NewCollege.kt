@@ -1,12 +1,12 @@
 package ed.unicoach.db.models
 
 /**
- * Input for upserting a [College] on the natural key `unitId`. Carries no `id`
+ * Input for upserting a [College] on the natural key `ipedsUnitId`. Carries no `id`
  * (DB-generated) and no timestamps (DB-managed); every Scorecard-derived
  * optional column is nullable so a blank source cell maps to `null`.
  */
 data class NewCollege(
-  val unitId: Int,
+  val ipedsUnitId: Int,
   val opeid: String?,
   val name: String,
   val city: String,

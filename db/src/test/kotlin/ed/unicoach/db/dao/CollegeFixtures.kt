@@ -9,11 +9,11 @@ import ed.unicoach.db.models.NewCollege
  * they assert on.
  */
 internal fun newCollegeFixture(
-  unitId: Int,
+  ipedsUnitId: Int,
   name: String = "Test College",
 ): NewCollege =
   NewCollege(
-    unitId = unitId,
+    ipedsUnitId = ipedsUnitId,
     opeid = null,
     name = name,
     city = "Townsville",

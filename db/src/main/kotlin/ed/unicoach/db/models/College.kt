@@ -4,7 +4,7 @@ import java.time.Instant
 
 /**
  * An institution-level row from the `colleges` reference table (RFC 67): a
- * curated subset of College Scorecard data. `unitId` is the federal natural key
+ * curated subset of College Scorecard data. `ipedsUnitId` is the federal natural key
  * (UNITID); `id` is the project-convention DB-generated surface UUID. Mutable
  * only via re-ingestion upsert, so it carries logical `createdAt`/`updatedAt`.
  * The row is versioned via a trigger-managed `version` and a `colleges_versions`
@@ -14,7 +14,7 @@ import java.time.Instant
 data class College(
   override val id: CollegeId,
   override val version: Int,
-  val unitId: Int,
+  val ipedsUnitId: Int,
   val opeid: String?,
   val name: String,
   val city: String,

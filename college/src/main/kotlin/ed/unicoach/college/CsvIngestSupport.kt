@@ -80,11 +80,11 @@ sealed interface SkipReason {
     val missingFields: List<String>,
   ) : SkipReason
 
-  data object NoCollegeForUnitId : SkipReason
+  data object NoCollegeForIpedsUnitId : SkipReason
 
   /** `UNITID=NA` field-of-study rows: non-IPEDS institutions absent from the
    * institution file (RFC 78). Detected and counted, not linked. */
-  data object UnitIdNa : SkipReason
+  data object IpedsUnitIdNa : SkipReason
 
   /** `CREDLEV` outside `1..8`: the `99` "Non-Credential Program" sentinel and
    * any other out-of-domain credential level. */
@@ -133,8 +133,8 @@ sealed interface SkipReason {
     get() =
       when (this) {
         is MissingRequiredField -> "missing_required_field"
-        NoCollegeForUnitId -> "no_college_for_unit_id"
-        UnitIdNa -> "unit_id_na"
+        NoCollegeForIpedsUnitId -> "no_college_for_ipeds_unit_id"
+        IpedsUnitIdNa -> "ipeds_unit_id_na"
         CredentialLevelOutOfDomain -> "credential_level_out_of_domain"
         CipCodeMalformed -> "cip_code_malformed"
         RowArityMismatch -> "row_arity_mismatch"
