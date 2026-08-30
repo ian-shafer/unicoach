@@ -90,8 +90,10 @@ data class MeritPractice(
    * share's denominator and says nothing about merit aid, so a row carrying
    * only it is a citation with no fact under it.
    *
-   * A total of `0` is in domain (`freshmen_ft_total >= 0`) and the
-   * `no_need_merit_count <= freshmen_ft_total` check then forces `0`
+   * A total of `0` is in domain
+   * (`first_time_full_time_freshmen_headcount >= 0`) and the
+   * `no_need_merit_recipients_headcount <= first_time_full_time_freshmen_headcount`
+   * check then forces `0`
    * recipients, so such a row renders two bare zeroes with no share and no
    * sentence -- a school with no freshmen at all is an extraction fault, not a
    * merit report. It is ruled on exactly like the denominator-only row: the
@@ -117,9 +119,9 @@ data class MeritPractice(
       row: CollegeMeritAid,
     ): MeritPractice? =
       MeritPractice(
-        fullTimeFreshmen = row.freshmenFtTotal,
-        nonNeedMeritRecipients = row.noNeedMeritCount,
-        averageNonNeedAid = row.noNeedMeritAvg,
+        fullTimeFreshmen = row.firstTimeFullTimeFreshmenHeadcount,
+        nonNeedMeritRecipients = row.noNeedMeritRecipientsHeadcount,
+        averageNonNeedAid = row.noNeedMeritAverageUsd,
         source = CdsCitation(collegeName, row.sourceYear, row.sourceUrl, row.archiveUrl),
       ).takeIf { !it.isEmpty }
   }
@@ -407,10 +409,10 @@ class CollegeAdmissionsService(
       if (it == null) {
         logger.info(
           "cds merit row reports no merit measure -- section suppressed: " +
-            "college=[{}] cycle=[{}] freshmen_ft_total=[{}] source=[{}]",
+            "college=[{}] cycle=[{}] first_time_full_time_freshmen_headcount=[{}] source=[{}]",
           college.id.value,
           row.sourceYear,
-          row.freshmenFtTotal,
+          row.firstTimeFullTimeFreshmenHeadcount,
           row.sourceUrl,
         )
       }

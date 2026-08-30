@@ -20,7 +20,7 @@ value class CollegeMeritAidId(
  * `college_merit_aid` reference table (RFC 140). [sourceYear] is the CDS cycle
  * as the `cds_source_year` domain defines it (db/schema/0054 -- the one home of
  * that convention). The merit share is DERIVED at read time
- * as [noNeedMeritCount] / [freshmenFtTotal] and labeled "share of ALL FT
+ * as [noNeedMeritRecipientsHeadcount] / [firstTimeFullTimeFreshmenHeadcount] and labeled "share of ALL FT
  * freshmen" -- never stored.
  */
 data class CollegeMeritAid(
@@ -28,11 +28,11 @@ data class CollegeMeritAid(
   val collegeId: CollegeId,
   val sourceYear: Int,
   /** H.201: TOTAL degree-seeking first-time full-time freshmen enrolled. */
-  val freshmenFtTotal: Int?,
+  val firstTimeFullTimeFreshmenHeadcount: Int?,
   /** H.2A01: freshmen with NO financial need awarded institutional merit aid. */
-  val noNeedMeritCount: Int?,
+  val noNeedMeritRecipientsHeadcount: Int?,
   /** H.2A02: school-reported average award, whole US dollars. */
-  val noNeedMeritAvg: Int?,
+  val noNeedMeritAverageUsd: Int?,
   /** The school's own published CDS document. */
   val sourceUrl: String,
   /** The corpus's archived copy. */

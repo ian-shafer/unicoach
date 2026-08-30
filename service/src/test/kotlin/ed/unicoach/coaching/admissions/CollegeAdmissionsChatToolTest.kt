@@ -79,7 +79,12 @@ class CollegeAdmissionsChatToolTest {
     name: String = "Wire University",
   ): CollegeId {
     val id = AdmissionsTestDb.seedListedCollege(student, name)
-    AdmissionsTestDb.seedMeritAid(id, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+    AdmissionsTestDb.seedMeritAid(
+      id,
+      firstTimeFullTimeFreshmenHeadcount = 2000,
+      noNeedMeritRecipientsHeadcount = 500,
+      noNeedMeritAverageUsd = 12500,
+    )
     AdmissionsTestDb.seedFactors(id, interview = FactorRating.CONSIDERED)
     AdmissionsTestDb.seedDeadline(id, round = ApplicationRound.EARLY_DECISION_1)
     AdmissionsTestDb.seedDeadline(id, round = ApplicationRound.REGULAR, closing = CdsMonthDay(1, 15), notification = null)
@@ -199,7 +204,12 @@ class CollegeAdmissionsChatToolTest {
   fun `the share label names all full-time freshmen and never the students without need`() {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Share University")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 2000,
+      noNeedMeritRecipientsHeadcount = 500,
+      noNeedMeritAverageUsd = 12500,
+    )
 
     val merit = meritOf(collegesOf(execute(student)).single())
     assertNotNull(merit)
@@ -225,7 +235,12 @@ class CollegeAdmissionsChatToolTest {
   fun `the share is emitted only when both counts are present`() {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "No Total University")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = null, noNeedMeritCount = 358, noNeedMeritAvg = 16112)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = null,
+      noNeedMeritRecipientsHeadcount = 358,
+      noNeedMeritAverageUsd = 16112,
+    )
 
     val merit = meritOf(collegesOf(execute(student)).single())
     assertNotNull(merit)
@@ -250,7 +265,12 @@ class CollegeAdmissionsChatToolTest {
   fun `zero merit aid is a reported fact`() {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Amherst-shaped College")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = 480, noNeedMeritCount = 0, noNeedMeritAvg = 0)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 480,
+      noNeedMeritRecipientsHeadcount = 0,
+      noNeedMeritAverageUsd = 0,
+    )
 
     val merit = meritOf(collegesOf(execute(student)).single())
     assertNotNull(merit)
@@ -306,7 +326,12 @@ class CollegeAdmissionsChatToolTest {
     // merit silence out of data_availability, where the coach reads it.
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Denominator Only College")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = 2760, noNeedMeritCount = null, noNeedMeritAvg = null)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 2760,
+      noNeedMeritRecipientsHeadcount = null,
+      noNeedMeritAverageUsd = null,
+    )
 
     val rendered = collegesOf(execute(student)).single()
     assertNull(meritOf(rendered), "a denominator with no merit measure is not a merit section")
@@ -323,7 +348,12 @@ class CollegeAdmissionsChatToolTest {
     // alone is a fact worth saying, and the freshman total may be absent.
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Average Only College")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = null, noNeedMeritCount = null, noNeedMeritAvg = 12500)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = null,
+      noNeedMeritRecipientsHeadcount = null,
+      noNeedMeritAverageUsd = 12500,
+    )
 
     val merit = assertNotNull(meritOf(collegesOf(execute(student)).single()))
     assertEquals(

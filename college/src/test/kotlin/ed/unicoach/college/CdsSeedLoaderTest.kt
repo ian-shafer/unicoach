@@ -78,14 +78,14 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
       // Spot values: the H2A row lands typed, incl. the null average.
       val coastal = withSession { CdsAdmissionsDao.findMeritAid(it, collegeId(110100), 2024).getOrThrow() }
       assertNotNull(coastal)
-      assertEquals(2760, coastal.freshmenFtTotal)
-      assertEquals(358, coastal.noNeedMeritCount)
-      assertEquals(16112, coastal.noNeedMeritAvg)
+      assertEquals(2760, coastal.firstTimeFullTimeFreshmenHeadcount)
+      assertEquals(358, coastal.noNeedMeritRecipientsHeadcount)
+      assertEquals(16112, coastal.noNeedMeritAverageUsd)
       assertEquals("https://coastal.example.edu/cds-2024-25.pdf", coastal.sourceUrl)
       assertEquals("https://www.collegedata.fyi/schools/coastal/2024-25", coastal.archiveUrl)
       val lakeside = withSession { CdsAdmissionsDao.findMeritAid(it, collegeId(220200), 2025).getOrThrow() }
       assertNotNull(lakeside)
-      assertNull(lakeside.noNeedMeritAvg)
+      assertNull(lakeside.noNeedMeritAverageUsd)
 
       // Factor grid: rated cells land as enum codes, empty cells as NULL.
       val factors = withSession { CdsAdmissionsDao.findAdmissionFactors(it, collegeId(220200), 2025).getOrThrow() }
@@ -148,7 +148,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
       val after = withSession { CdsAdmissionsDao.findMeritAid(it, collegeId(110100), 2024).getOrThrow() }
       assertNotNull(after)
       assertEquals(before.id, after.id)
-      assertEquals(17000, after.noNeedMeritAvg)
+      assertEquals(17000, after.noNeedMeritAverageUsd)
       assertTrue(after.updatedAt.isAfter(before.updatedAt))
     }
 

@@ -67,8 +67,8 @@ object CollegeIpedsDao {
         INSERT INTO college_ipeds (
           ipeds_unit_id, survey_year, cy_active, death_year, closed_at, new_ipeds_unit_id,
           inst_level, ug_offer, sector, carnegie_basic, carnegie_size, cbsa,
-          rel_affil, has_rotc, has_study_abroad, disability_band, disability_pct,
-          has_housing, housing_capacity, application_fee, athletic_assoc,
+          rel_affil, has_rotc, has_study_abroad, disability_band, registered_disability_percent,
+          offers_housing, housing_capacity_headcount, application_fee_usd, athletic_assoc,
           football_conf, test_policy
         )
         VALUES (
@@ -91,10 +91,10 @@ object CollegeIpedsDao {
           has_rotc = EXCLUDED.has_rotc,
           has_study_abroad = EXCLUDED.has_study_abroad,
           disability_band = EXCLUDED.disability_band,
-          disability_pct = EXCLUDED.disability_pct,
-          has_housing = EXCLUDED.has_housing,
-          housing_capacity = EXCLUDED.housing_capacity,
-          application_fee = EXCLUDED.application_fee,
+          registered_disability_percent = EXCLUDED.registered_disability_percent,
+          offers_housing = EXCLUDED.offers_housing,
+          housing_capacity_headcount = EXCLUDED.housing_capacity_headcount,
+          application_fee_usd = EXCLUDED.application_fee_usd,
           athletic_assoc = EXCLUDED.athletic_assoc,
           football_conf = EXCLUDED.football_conf,
           test_policy = EXCLUDED.test_policy
@@ -104,9 +104,9 @@ object CollegeIpedsDao {
           college_ipeds.ug_offer, college_ipeds.sector, college_ipeds.carnegie_basic,
           college_ipeds.carnegie_size, college_ipeds.cbsa, college_ipeds.rel_affil,
           college_ipeds.has_rotc, college_ipeds.has_study_abroad,
-          college_ipeds.disability_band, college_ipeds.disability_pct,
-          college_ipeds.has_housing, college_ipeds.housing_capacity,
-          college_ipeds.application_fee, college_ipeds.athletic_assoc,
+          college_ipeds.disability_band, college_ipeds.registered_disability_percent,
+          college_ipeds.offers_housing, college_ipeds.housing_capacity_headcount,
+          college_ipeds.application_fee_usd, college_ipeds.athletic_assoc,
           college_ipeds.football_conf, college_ipeds.test_policy, college_ipeds.ipeds_unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.survey_year, EXCLUDED.cy_active, EXCLUDED.death_year,
@@ -114,9 +114,9 @@ object CollegeIpedsDao {
           EXCLUDED.ug_offer, EXCLUDED.sector, EXCLUDED.carnegie_basic,
           EXCLUDED.carnegie_size, EXCLUDED.cbsa, EXCLUDED.rel_affil,
           EXCLUDED.has_rotc, EXCLUDED.has_study_abroad,
-          EXCLUDED.disability_band, EXCLUDED.disability_pct,
-          EXCLUDED.has_housing, EXCLUDED.housing_capacity,
-          EXCLUDED.application_fee, EXCLUDED.athletic_assoc,
+          EXCLUDED.disability_band, EXCLUDED.registered_disability_percent,
+          EXCLUDED.offers_housing, EXCLUDED.housing_capacity_headcount,
+          EXCLUDED.application_fee_usd, EXCLUDED.athletic_assoc,
           EXCLUDED.football_conf, EXCLUDED.test_policy, EXCLUDED.ipeds_unit_id
         )
         RETURNING 1
@@ -146,10 +146,10 @@ object CollegeIpedsDao {
         stmt.setBooleanOrNull(15, input.hasRotc)
         stmt.setBooleanOrNull(16, input.hasStudyAbroad)
         stmt.setIntOrNull(17, input.disabilityBand)
-        stmt.setDoubleOrNull(18, input.disabilityPct)
-        stmt.setBooleanOrNull(19, input.hasHousing)
-        stmt.setIntOrNull(20, input.housingCapacity)
-        stmt.setIntOrNull(21, input.applicationFee)
+        stmt.setDoubleOrNull(18, input.registeredDisabilityPercent)
+        stmt.setBooleanOrNull(19, input.offersHousing)
+        stmt.setIntOrNull(20, input.housingCapacityHeadcount)
+        stmt.setIntOrNull(21, input.applicationFeeUsd)
         stmt.setString(22, JsonArray(input.athleticAssoc.map { JsonPrimitive(it) }).toString())
         stmt.setIntOrNull(23, input.footballConf)
         stmt.setIntOrNull(24, input.testPolicy)
@@ -162,7 +162,7 @@ object CollegeIpedsDao {
   /**
    * Upserts one program-census row on its natural key
    * `(college_id, cip_code, award_level)`, reporting the same three-way
-   * [UpsertOutcome]. Only `awards_total` and `survey_year` are re-writable; the
+   * [UpsertOutcome]. Only `awards_count` and `survey_year` are re-writable; the
    * key columns are the conflict target.
    *
    * Expressed through the shared [upsertDetectingChange] primitive (the
@@ -183,7 +183,7 @@ object CollegeIpedsDao {
         ),
       columns =
         linkedMapOf<String, Bind>(
-          "awards_total" to { stmt, i -> stmt.setInt(i, input.awardsTotal) },
+          "awards_count" to { stmt, i -> stmt.setInt(i, input.awardsCount) },
           "survey_year" to { stmt, i -> stmt.setInt(i, input.surveyYear) },
         ),
       mapError = ::mapCollegeWriteError,
@@ -230,10 +230,10 @@ object CollegeIpedsDao {
       "has_rotc",
       "has_study_abroad",
       "disability_band",
-      "disability_pct",
-      "has_housing",
-      "housing_capacity",
-      "application_fee",
+      "registered_disability_percent",
+      "offers_housing",
+      "housing_capacity_headcount",
+      "application_fee_usd",
       "football_conf",
       "test_policy",
     )

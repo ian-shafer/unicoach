@@ -8,9 +8,9 @@ package ed.unicoach.db.models
 data class NewCollegeMeritAid(
   val collegeId: CollegeId,
   val sourceYear: Int,
-  val freshmenFtTotal: Int?,
-  val noNeedMeritCount: Int?,
-  val noNeedMeritAvg: Int?,
+  val firstTimeFullTimeFreshmenHeadcount: Int?,
+  val noNeedMeritRecipientsHeadcount: Int?,
+  val noNeedMeritAverageUsd: Int?,
   val sourceUrl: String,
   val archiveUrl: String?,
 )

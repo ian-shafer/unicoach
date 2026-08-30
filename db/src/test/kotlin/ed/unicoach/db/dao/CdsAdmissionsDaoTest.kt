@@ -101,15 +101,15 @@ class CdsAdmissionsDaoTest {
   private fun newMeritAid(
     collegeId: CollegeId,
     sourceYear: Int = 2024,
-    freshmenFtTotal: Int? = 2760,
-    noNeedMeritCount: Int? = 358,
-    noNeedMeritAvg: Int? = 16112,
+    firstTimeFullTimeFreshmenHeadcount: Int? = 2760,
+    noNeedMeritRecipientsHeadcount: Int? = 358,
+    noNeedMeritAverageUsd: Int? = 16112,
   ) = NewCollegeMeritAid(
     collegeId = collegeId,
     sourceYear = sourceYear,
-    freshmenFtTotal = freshmenFtTotal,
-    noNeedMeritCount = noNeedMeritCount,
-    noNeedMeritAvg = noNeedMeritAvg,
+    firstTimeFullTimeFreshmenHeadcount = firstTimeFullTimeFreshmenHeadcount,
+    noNeedMeritRecipientsHeadcount = noNeedMeritRecipientsHeadcount,
+    noNeedMeritAverageUsd = noNeedMeritAverageUsd,
     sourceUrl = "https://example.edu/cds-2024-25.pdf",
     archiveUrl = "https://www.collegedata.fyi/schools/example/2024-25",
   )
@@ -185,9 +185,9 @@ class CdsAdmissionsDaoTest {
     assertEquals(UpsertOutcome.INSERTED, CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(collegeId)).getOrThrow())
     val first = CdsAdmissionsDao.findMeritAid(session, collegeId, 2024).getOrThrow()
     assertNotNull(first)
-    assertEquals(2760, first.freshmenFtTotal)
-    assertEquals(358, first.noNeedMeritCount)
-    assertEquals(16112, first.noNeedMeritAvg)
+    assertEquals(2760, first.firstTimeFullTimeFreshmenHeadcount)
+    assertEquals(358, first.noNeedMeritRecipientsHeadcount)
+    assertEquals(16112, first.noNeedMeritAverageUsd)
 
     // Identical re-upsert: no write, updated_at untouched.
     assertEquals(UpsertOutcome.UNCHANGED, CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(collegeId)).getOrThrow())
@@ -197,12 +197,12 @@ class CdsAdmissionsDaoTest {
     Thread.sleep(5)
     assertEquals(
       UpsertOutcome.CHANGED,
-      CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(collegeId, noNeedMeritAvg = 17000)).getOrThrow(),
+      CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(collegeId, noNeedMeritAverageUsd = 17000)).getOrThrow(),
     )
     val changed = CdsAdmissionsDao.findMeritAid(session, collegeId, 2024).getOrThrow()
     assertNotNull(changed)
     assertEquals(first.id, changed.id)
-    assertEquals(17000, changed.noNeedMeritAvg)
+    assertEquals(17000, changed.noNeedMeritAverageUsd)
     assertTrue(changed.updatedAt.isAfter(first.updatedAt))
   }
 
@@ -223,9 +223,9 @@ class CdsAdmissionsDaoTest {
     val negativeRows =
       listOf(
         // count nulled so the count<=total CHECK cannot fire before the nonneg one
-        newMeritAid(collegeId, freshmenFtTotal = -1, noNeedMeritCount = null),
-        newMeritAid(collegeId, noNeedMeritCount = -1),
-        newMeritAid(collegeId, noNeedMeritAvg = -1),
+        newMeritAid(collegeId, firstTimeFullTimeFreshmenHeadcount = -1, noNeedMeritRecipientsHeadcount = null),
+        newMeritAid(collegeId, noNeedMeritRecipientsHeadcount = -1),
+        newMeritAid(collegeId, noNeedMeritAverageUsd = -1),
       )
     for (row in negativeRows) {
       val negative = CdsAdmissionsDao.upsertMeritAid(session, row).exceptionOrNull()
@@ -235,10 +235,10 @@ class CdsAdmissionsDaoTest {
 
     val overCount =
       CdsAdmissionsDao
-        .upsertMeritAid(session, newMeritAid(collegeId, freshmenFtTotal = 100, noNeedMeritCount = 101))
+        .upsertMeritAid(session, newMeritAid(collegeId, firstTimeFullTimeFreshmenHeadcount = 100, noNeedMeritRecipientsHeadcount = 101))
         .exceptionOrNull()
     assertTrue(overCount is ConstraintViolationException)
-    assertEquals("college_merit_aid_count_le_total_check", overCount.constraint)
+    assertEquals("college_merit_aid_recipients_le_freshmen_check", overCount.constraint)
 
     val badYear =
       CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(collegeId, sourceYear = 1999)).exceptionOrNull()
@@ -575,16 +575,16 @@ class CdsAdmissionsDaoTest {
 
     // The corpus shape S4a produces: the newest document that reports each fact
     // group, so one college holds a 2024 grid beside a 2025 merit row.
-    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(mixed, sourceYear = 2024, noNeedMeritAvg = 1000)).getOrThrow()
-    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(mixed, sourceYear = 2025, noNeedMeritAvg = 2000)).getOrThrow()
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(mixed, sourceYear = 2024, noNeedMeritAverageUsd = 1000)).getOrThrow()
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(mixed, sourceYear = 2025, noNeedMeritAverageUsd = 2000)).getOrThrow()
     CdsAdmissionsDao.upsertAdmissionFactors(session, newFactors(mixed, sourceYear = 2024)).getOrThrow()
-    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(other, sourceYear = 2024, noNeedMeritAvg = 3000)).getOrThrow()
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(other, sourceYear = 2024, noNeedMeritAverageUsd = 3000)).getOrThrow()
 
     val merit = CdsAdmissionsDao.listLatestMeritAid(session, listOf(mixed, other)).getOrThrow()
     assertEquals(2, merit.size)
     val mixedMerit = merit.single { it.collegeId == mixed }
     assertEquals(2025, mixedMerit.sourceYear)
-    assertEquals(2000, mixedMerit.noNeedMeritAvg)
+    assertEquals(2000, mixedMerit.noNeedMeritAverageUsd)
     assertEquals(2024, merit.single { it.collegeId == other }.sourceYear)
 
     // The factor grid resolves independently: still 2024 for the same college.

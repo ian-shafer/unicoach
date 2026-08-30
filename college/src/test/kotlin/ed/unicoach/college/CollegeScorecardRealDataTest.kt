@@ -23,12 +23,12 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
   private val fieldsCsv = fixture("scorecard-fields-real-fixture.csv")
 
   @Test
-  fun `negative net_price loads (guards 0022)`() =
+  fun `negative net_price_per_year_usd loads (guards 0022)`() =
     runBlocking {
       loader.load(institutionCsv, fieldsCsv)
       val ventura = withSession { CollegesDao.findByIpedsUnitId(it, 125028).getOrThrow() }
       assertNotNull(ventura)
-      assertEquals(-982, ventura.netPrice)
+      assertEquals(-982, ventura.netPricePerYearUsd)
     }
 
   @Test
@@ -40,26 +40,26 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       // published data and must load un-coerced.
       val ventura = withSession { CollegesDao.findByIpedsUnitId(it, 125028).getOrThrow() }
       assertNotNull(ventura)
-      assertEquals(-1913, ventura.netPriceQ1)
-      assertEquals(-2393, ventura.netPriceQ2)
-      assertEquals(524, ventura.netPriceQ3)
-      assertEquals(4165, ventura.netPriceQ4)
-      assertEquals(6577, ventura.netPriceQ5)
-      assertEquals(13876, ventura.medianDebt)
+      assertEquals(-1913, ventura.netPricePerYearIncomeQ1Usd)
+      assertEquals(-2393, ventura.netPricePerYearIncomeQ2Usd)
+      assertEquals(524, ventura.netPricePerYearIncomeQ3Usd)
+      assertEquals(4165, ventura.netPricePerYearIncomeQ4Usd)
+      assertEquals(6577, ventura.netPricePerYearIncomeQ5Usd)
+      assertEquals(13876, ventura.medianDebtAtCompletionUsd)
 
       // Auburn Montgomery (public): plain positive bands from the _PUB columns.
       val auburn = withSession { CollegesDao.findByIpedsUnitId(it, 100830).getOrThrow() }
       assertNotNull(auburn)
-      assertEquals(11706, auburn.netPriceQ1)
-      assertEquals(16117, auburn.netPriceQ5)
-      assertEquals(25000, auburn.medianDebt)
+      assertEquals(11706, auburn.netPricePerYearIncomeQ1Usd)
+      assertEquals(16117, auburn.netPricePerYearIncomeQ5Usd)
+      assertEquals(25000, auburn.medianDebtAtCompletionUsd)
 
       // Pensacola Christian (private): every band cell is the NA sentinel.
       val pensacola = withSession { CollegesDao.findByIpedsUnitId(it, 136455).getOrThrow() }
       assertNotNull(pensacola)
-      assertNull(pensacola.netPriceQ1)
-      assertNull(pensacola.netPriceQ5)
-      assertNull(pensacola.medianDebt)
+      assertNull(pensacola.netPricePerYearIncomeQ1Usd)
+      assertNull(pensacola.netPricePerYearIncomeQ5Usd)
+      assertNull(pensacola.medianDebtAtCompletionUsd)
     }
 
   @Test

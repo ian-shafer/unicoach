@@ -24,10 +24,14 @@ import kotlinx.serialization.json.doubleOrNull
  */
 object BareSourceCodeGuard {
   /**
-   * No leading `\b`, deliberately: `_` is a word character, so `\bq[1-5]\b`
-   * does NOT match `net_price_q5` -- the very key this guard has to catch.
+   * Neither a leading nor a trailing `\b`, deliberately: `_` is a word
+   * character, so `\bq[1-5]\b` matches nothing inside
+   * `net_price_per_year_income_q5_usd` -- the very key this guard has to catch.
+   * The lookahead rejects only a LONGER token (`q12`, `q5a`), so a bucket code
+   * stays visible wherever it sits in an identifier, whatever units the column
+   * name grew around it.
    */
-  val QUINTILE_CODE: Regex = Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE)
+  val QUINTILE_CODE: Regex = Regex("""q[1-5](?![0-9a-z])""", RegexOption.IGNORE_CASE)
 
   /** The Scorecard net-price column family, a raw source name no coach ever says. */
   const val NPT4: String = "NPT4"

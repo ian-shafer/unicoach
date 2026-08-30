@@ -73,22 +73,22 @@ class CollegeSearchToolTest {
       latitude = null,
       longitude = null,
       control = 1,
-      undergradEnrollment = 2000,
-      admissionRate = 0.4,
-      satAvg = null,
-      costAttendance = null,
-      netPrice = 18000,
-      netPriceQ1 = null,
-      netPriceQ2 = null,
-      netPriceQ3 = null,
-      netPriceQ4 = null,
-      netPriceQ5 = null,
-      tuitionInState = null,
-      tuitionOutState = null,
-      graduationRate = 0.7,
-      medianEarnings = 55000,
-      medianDebt = null,
-      pctPell = 0.4,
+      undergradEnrollmentHeadcount = 2000,
+      admissionRateShare = 0.4,
+      satAverageEquivalentScore = null,
+      costOfAttendancePerYearUsd = null,
+      netPricePerYearUsd = 18000,
+      netPricePerYearIncomeQ1Usd = null,
+      netPricePerYearIncomeQ2Usd = null,
+      netPricePerYearIncomeQ3Usd = null,
+      netPricePerYearIncomeQ4Usd = null,
+      netPricePerYearIncomeQ5Usd = null,
+      tuitionAndFeesInStatePerYearUsd = null,
+      tuitionAndFeesOutOfStatePerYearUsd = null,
+      completionRate150pct4yrShare = 0.7,
+      medianEarnings10yAfterEntryUsd = 55000,
+      medianDebtAtCompletionUsd = null,
+      pellShare = 0.4,
       website = null,
     )
 
@@ -127,12 +127,12 @@ class CollegeSearchToolTest {
         "region",
         "locales",
         "control",
-        "minUndergradEnrollment",
-        "maxUndergradEnrollment",
-        "minAdmissionRate",
-        "maxAdmissionRate",
-        "maxNetPrice",
-        "minGraduationRate",
+        "minUndergradEnrollmentHeadcount",
+        "maxUndergradEnrollmentHeadcount",
+        "minAdmissionRateShare",
+        "maxAdmissionRateShare",
+        "maxNetPricePerYearUsd",
+        "minCompletionRate150pct4yrShare",
         "sort_by",
         "credential_level",
         "limit",
@@ -178,7 +178,7 @@ class CollegeSearchToolTest {
       val input =
         buildJsonObject {
           put("cipPrefix", "2607")
-          put("maxNetPrice", 25000)
+          put("maxNetPricePerYearUsd", 25000)
         }
       val result = tool.execute(input)
 
@@ -220,7 +220,7 @@ class CollegeSearchToolTest {
       val nonDigitPrefix = tool.execute(buildJsonObject { put("cipPrefix", "bio") })
       assertTrue(nonDigitPrefix.containsKey("error"))
 
-      val wrongTypedNetPrice = tool.execute(buildJsonObject { put("maxNetPrice", "cheap") })
+      val wrongTypedNetPrice = tool.execute(buildJsonObject { put("maxNetPricePerYearUsd", "cheap") })
       assertTrue(wrongTypedNetPrice.containsKey("error"))
 
       val unknownField = tool.execute(buildJsonObject { put("nearOcean", true) })
@@ -309,25 +309,25 @@ class CollegeSearchToolTest {
       assertTrue(badLocaleHigh.containsKey("error"))
       assertNull(badLocaleHigh["count"])
 
-      // minAdmissionRate / maxAdmissionRate / minGraduationRate: must be in 0.0..1.0
-      val badMinAdmission = tool.execute(buildJsonObject { put("minAdmissionRate", 1.5) })
+      // minAdmissionRateShare / maxAdmissionRateShare / minCompletionRate150pct4yrShare: must be in 0.0..1.0
+      val badMinAdmission = tool.execute(buildJsonObject { put("minAdmissionRateShare", 1.5) })
       assertTrue(badMinAdmission.containsKey("error"))
       assertNull(badMinAdmission["count"])
-      val badMaxAdmission = tool.execute(buildJsonObject { put("maxAdmissionRate", -0.1) })
+      val badMaxAdmission = tool.execute(buildJsonObject { put("maxAdmissionRateShare", -0.1) })
       assertTrue(badMaxAdmission.containsKey("error"))
       assertNull(badMaxAdmission["count"])
-      val badGraduation = tool.execute(buildJsonObject { put("minGraduationRate", 2.0) })
+      val badGraduation = tool.execute(buildJsonObject { put("minCompletionRate150pct4yrShare", 2.0) })
       assertTrue(badGraduation.containsKey("error"))
       assertNull(badGraduation["count"])
 
-      // maxNetPrice / enrollment bounds: must be >= 0
-      val badNetPrice = tool.execute(buildJsonObject { put("maxNetPrice", -1) })
+      // maxNetPricePerYearUsd / enrollment bounds: must be >= 0
+      val badNetPrice = tool.execute(buildJsonObject { put("maxNetPricePerYearUsd", -1) })
       assertTrue(badNetPrice.containsKey("error"))
       assertNull(badNetPrice["count"])
-      val badMinEnrollment = tool.execute(buildJsonObject { put("minUndergradEnrollment", -1) })
+      val badMinEnrollment = tool.execute(buildJsonObject { put("minUndergradEnrollmentHeadcount", -1) })
       assertTrue(badMinEnrollment.containsKey("error"))
       assertNull(badMinEnrollment["count"])
-      val badMaxEnrollment = tool.execute(buildJsonObject { put("maxUndergradEnrollment", -5) })
+      val badMaxEnrollment = tool.execute(buildJsonObject { put("maxUndergradEnrollmentHeadcount", -5) })
       assertTrue(badMaxEnrollment.containsKey("error"))
       assertNull(badMaxEnrollment["count"])
 
@@ -369,21 +369,21 @@ class CollegeSearchToolTest {
   fun `result objects carry the reported income bands, each labeled, and median debt`() =
     runBlocking {
       // RFC 133: seed a college with a negative low band (valid, 0022 precedent)
-      // and some bands absent. RFC 142: the five opaque net_price_qN keys are
+      // and some bands absent. RFC 142: the five opaque net_price_per_year_income_qN_usd keys are
       // gone -- what serializes is one entry per REPORTED band, each carrying
       // the band code, the dollar range a coach says aloud, and the amount.
       database.withConnection { session ->
         CollegesDao
           .upsert(
             session,
-            newCollege(820).copy(netPriceQ1 = -1200, netPriceQ3 = 14500, medianDebt = 21000),
+            newCollege(820).copy(netPricePerYearIncomeQ1Usd = -1200, netPricePerYearIncomeQ3Usd = 14500, medianDebtAtCompletionUsd = 21000),
           ).getOrThrow()
       }
 
       val result = tool.execute(buildJsonObject {})
       assertNull(result["error"])
       val first = (result["colleges"] as JsonArray).single().jsonObject
-      assertEquals(21000, first["median_debt"]!!.jsonPrimitive.intOrNull)
+      assertEquals(21000, first["median_debt_at_completion_usd"]!!.jsonPrimitive.intOrNull)
 
       val bands = (first["net_price_by_income_band"] as JsonArray).map { it.jsonObject }
       // Only the two reported bands: an unreported bracket is absent, never a
@@ -392,15 +392,15 @@ class CollegeSearchToolTest {
         listOf(IncomeBand.UNDER_30K.value, IncomeBand.K48_TO_75K.value),
         bands.map { it["income_band"]!!.jsonPrimitive.content },
       )
-      assertEquals(listOf(-1200, 14500), bands.map { it["net_price"]!!.jsonPrimitive.intOrNull })
+      assertEquals(listOf(-1200, 14500), bands.map { it["net_price_per_year_usd"]!!.jsonPrimitive.intOrNull })
       // The label is the band's own bracket, from the one home for that copy --
       // so a wire label can never drift from what the prompt teaches.
       assertEquals(
         listOf(IncomeBand.UNDER_30K.bracket, IncomeBand.K48_TO_75K.bracket),
         bands.map { it["income_band_label"]!!.jsonPrimitive.content },
       )
-      assertNull(first["net_price_q1"], "the opaque quintile keys are gone (RFC 142)")
-      assertNull(first["net_price_q5"], "including the one a real user was read back as \"Q5\"")
+      assertNull(first["net_price_per_year_income_q1_usd"], "the opaque quintile keys are gone (RFC 142)")
+      assertNull(first["net_price_per_year_income_q5_usd"], "including the one a real user was read back as \"Q5\"")
     }
 
   @Test
@@ -436,13 +436,13 @@ class CollegeSearchToolTest {
           .upsert(
             session,
             newCollege(821).copy(
-              netPriceQ5 = 31000,
+              netPricePerYearIncomeQ5Usd = 31000,
               control = 3,
-              medianDebt = 21000,
-              satAvg = 1200,
-              costAttendance = 40000,
-              tuitionInState = 12000,
-              tuitionOutState = 30000,
+              medianDebtAtCompletionUsd = 21000,
+              satAverageEquivalentScore = 1200,
+              costOfAttendancePerYearUsd = 40000,
+              tuitionAndFeesInStatePerYearUsd = 12000,
+              tuitionAndFeesOutOfStatePerYearUsd = 30000,
             ),
           ).getOrThrow()
       }
@@ -473,7 +473,7 @@ class CollegeSearchToolTest {
           result +
             mapOf(
               "control" to JsonPrimitive(2),
-              "net_price_q5" to JsonPrimitive(31000),
+              "net_price_per_year_income_q5_usd" to JsonPrimitive(31000),
               "source_column" to JsonPrimitive("NPT41"),
             ),
         )
@@ -482,7 +482,7 @@ class CollegeSearchToolTest {
           BareSourceCode.QuintileToken("q5"),
           BareSourceCode.Npt4ColumnFamily,
           BareSourceCode.BareNumberField("control"),
-          BareSourceCode.BareNumberField("net_price_q5"),
+          BareSourceCode.BareNumberField("net_price_per_year_income_q5_usd"),
         ),
         listViolations(doctored),
       )
@@ -495,7 +495,7 @@ class CollegeSearchToolTest {
     // one home for that copy, never hand-typed here or there.
     val description = tool.definition["description"]!!.jsonPrimitive.content
     assertTrue(description.contains("net_price_by_income_band"))
-    assertTrue(description.contains("median_debt"))
+    assertTrue(description.contains("median_debt_at_completion_usd"))
     IncomeBand.entries.forEach { band ->
       assertTrue(description.contains(band.bracket), "the description must name [${band.bracket}]")
     }
@@ -519,7 +519,7 @@ class CollegeSearchToolTest {
       // structured error must preserve that category rather than flattening it to a
       // bare string, then we restore the column so the rest of the suite is unaffected.
       database.createRawConnection().use { conn ->
-        conn.createStatement().use { it.execute("ALTER TABLE colleges DROP COLUMN pct_pell") }
+        conn.createStatement().use { it.execute("ALTER TABLE colleges DROP COLUMN pell_share") }
       }
       try {
         val result = tool.execute(buildJsonObject {})
@@ -540,8 +540,8 @@ class CollegeSearchToolTest {
         database.createRawConnection().use { conn ->
           conn.createStatement().use {
             it.execute(
-              "ALTER TABLE colleges ADD COLUMN pct_pell DOUBLE PRECISION " +
-                "CONSTRAINT colleges_pct_pell_range_check CHECK (pct_pell IS NULL OR pct_pell BETWEEN 0 AND 1)",
+              "ALTER TABLE colleges ADD COLUMN pell_share DOUBLE PRECISION " +
+                "CONSTRAINT colleges_pell_share_range_check CHECK (pell_share IS NULL OR pell_share BETWEEN 0 AND 1)",
             )
           }
         }
@@ -560,7 +560,10 @@ class CollegeSearchToolTest {
         .jsonObject
 
     val sortWords = (properties["sort_by"]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content }
-    assertEquals(listOf("enrollment", "admission_rate", "net_price", "graduation_rate", "name"), sortWords)
+    assertEquals(
+      listOf("enrollment", "admission_rate_share", "net_price_per_year_usd", "completion_rate_150pct_4yr_share", "name"),
+      sortWords,
+    )
 
     val credentialWords =
       (properties["credential_level"]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content }
@@ -709,13 +712,13 @@ private val NUMBERS_BY_CONTRACT =
     // slice. A count of colleges is a number by contract in exactly the way
     // `count` is -- it is not, and can never become, a Scorecard code.
     "total_matches",
-    "undergrad_enrollment",
-    "admission_rate",
-    "net_price",
-    "graduation_rate",
-    "median_earnings",
-    "median_debt",
-    "pct_pell",
+    "undergrad_enrollment_headcount",
+    "admission_rate_share",
+    "net_price_per_year_usd",
+    "completion_rate_150pct_4yr_share",
+    "median_earnings_10y_after_entry_usd",
+    "median_debt_at_completion_usd",
+    "pell_share",
   )
 
 private val QUINTILE_CODE = BareSourceCodeGuard.QUINTILE_CODE

@@ -365,9 +365,9 @@ class CdsSeedLoader(
   ) = NewCollegeMeritAid(
     collegeId = collegeId,
     sourceYear = getInt(record, "source_year", Table.MERIT_AID),
-    freshmenFtTotal = getIntOrNull(record, "freshmen_ft_total", Table.MERIT_AID),
-    noNeedMeritCount = getIntOrNull(record, "no_need_merit_count", Table.MERIT_AID),
-    noNeedMeritAvg = getIntOrNull(record, "no_need_merit_avg", Table.MERIT_AID),
+    firstTimeFullTimeFreshmenHeadcount = getIntOrNull(record, "freshmen_ft_total", Table.MERIT_AID),
+    noNeedMeritRecipientsHeadcount = getIntOrNull(record, "no_need_merit_count", Table.MERIT_AID),
+    noNeedMeritAverageUsd = getIntOrNull(record, "no_need_merit_avg", Table.MERIT_AID),
     sourceUrl = getString(record, "source_url", Table.MERIT_AID),
     archiveUrl = getStringOrNull(record, "archive_url"),
   )

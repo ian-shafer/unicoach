@@ -107,12 +107,12 @@ class FitLensService(
             "region" to ToolSchema.integer(),
             "locales" to ToolSchema.arrayOf(ToolSchema.integer()),
             "control" to ToolSchema.arrayOf(ToolSchema.integer()),
-            "minUndergradEnrollment" to ToolSchema.integer(),
-            "maxUndergradEnrollment" to ToolSchema.integer(),
-            "minAdmissionRate" to ToolSchema.number(),
-            "maxAdmissionRate" to ToolSchema.number(),
-            "maxNetPrice" to ToolSchema.integer(),
-            "minGraduationRate" to ToolSchema.number(),
+            "minUndergradEnrollmentHeadcount" to ToolSchema.integer(),
+            "maxUndergradEnrollmentHeadcount" to ToolSchema.integer(),
+            "minAdmissionRateShare" to ToolSchema.number(),
+            "maxAdmissionRateShare" to ToolSchema.number(),
+            "maxNetPricePerYearUsd" to ToolSchema.integer(),
+            "minCompletionRate150pct4yrShare" to ToolSchema.number(),
           ),
       )
 
@@ -654,8 +654,12 @@ class FitLensService(
       for (match in matches) {
         appendLine(
           "- collegeId=${match.id.asString} name=${match.name} city=${match.city} state=${match.state} " +
-            "control=${match.control} undergradEnrollment=${match.undergradEnrollment} admissionRate=${match.admissionRate} " +
-            "netPrice=${match.netPrice} graduationRate=${match.graduationRate} medianEarnings=${match.medianEarnings} " +
+            "control=${match.control} " +
+            "undergradEnrollmentHeadcount=${match.undergradEnrollmentHeadcount} " +
+            "admissionRateShare=${match.admissionRateShare} " +
+            "netPricePerYearUsd=${match.netPricePerYearUsd} " +
+            "completionRate150pct4yrShare=${match.completionRate150pct4yrShare} " +
+            "medianEarnings10yAfterEntryUsd=${match.medianEarnings10yAfterEntryUsd} " +
             "programs=${match.programTitles.joinToString("; ")}",
         )
       }
@@ -741,12 +745,12 @@ class FitLensService(
           region = intField("region").getOrThrow(),
           locales = intList("locales").getOrThrow(),
           control = intList("control").getOrThrow(),
-          minUndergradEnrollment = intField("minUndergradEnrollment").getOrThrow(),
-          maxUndergradEnrollment = intField("maxUndergradEnrollment").getOrThrow(),
-          minAdmissionRate = doubleField("minAdmissionRate").getOrThrow(),
-          maxAdmissionRate = doubleField("maxAdmissionRate").getOrThrow(),
-          maxNetPrice = intField("maxNetPrice").getOrThrow(),
-          minGraduationRate = doubleField("minGraduationRate").getOrThrow(),
+          minUndergradEnrollmentHeadcount = intField("minUndergradEnrollmentHeadcount").getOrThrow(),
+          maxUndergradEnrollmentHeadcount = intField("maxUndergradEnrollmentHeadcount").getOrThrow(),
+          minAdmissionRateShare = doubleField("minAdmissionRateShare").getOrThrow(),
+          maxAdmissionRateShare = doubleField("maxAdmissionRateShare").getOrThrow(),
+          maxNetPricePerYearUsd = intField("maxNetPricePerYearUsd").getOrThrow(),
+          minCompletionRate150pct4yrShare = doubleField("minCompletionRate150pct4yrShare").getOrThrow(),
           // Overwritten by the service before retrieval; a placeholder here.
           limit = config.searchLimit,
         ),

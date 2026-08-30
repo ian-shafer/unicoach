@@ -112,9 +112,9 @@ object CoachingTestDb {
   fun seedMeritAid(
     collegeId: CollegeId,
     sourceYear: Int = 2024,
-    freshmenFtTotal: Int? = 2000,
-    noNeedMeritCount: Int? = 500,
-    noNeedMeritAvg: Int? = 12500,
+    firstTimeFullTimeFreshmenHeadcount: Int? = 2000,
+    noNeedMeritRecipientsHeadcount: Int? = 500,
+    noNeedMeritAverageUsd: Int? = 12500,
     sourceUrl: String,
     archiveUrl: String?,
   ) {
@@ -124,9 +124,9 @@ object CoachingTestDb {
         NewCollegeMeritAid(
           collegeId = collegeId,
           sourceYear = sourceYear,
-          freshmenFtTotal = freshmenFtTotal,
-          noNeedMeritCount = noNeedMeritCount,
-          noNeedMeritAvg = noNeedMeritAvg,
+          firstTimeFullTimeFreshmenHeadcount = firstTimeFullTimeFreshmenHeadcount,
+          noNeedMeritRecipientsHeadcount = noNeedMeritRecipientsHeadcount,
+          noNeedMeritAverageUsd = noNeedMeritAverageUsd,
           sourceUrl = sourceUrl,
           archiveUrl = archiveUrl,
         ),

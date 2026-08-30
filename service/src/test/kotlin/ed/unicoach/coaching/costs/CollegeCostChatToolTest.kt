@@ -44,11 +44,11 @@ class CollegeCostChatToolTest {
     name: String,
     state: String = "CA",
     control: Int = 1,
-    medianEarnings: Int? = 55000,
-    stickerCostAttendance: Int? = 40000,
-    tuitionInState: Int? = 12000,
-    tuitionOutState: Int? = 30000,
-    medianDebt: Int? = 23000,
+    medianEarnings10yAfterEntryUsd: Int? = 55000,
+    stickerCostOfAttendancePerYearUsd: Int? = 40000,
+    tuitionAndFeesInStatePerYearUsd: Int? = 12000,
+    tuitionAndFeesOutOfStatePerYearUsd: Int? = 30000,
+    medianDebtAtCompletionUsd: Int? = 23000,
     bandPricing: Boolean = true,
   ): CollegeId {
     val id =
@@ -56,16 +56,16 @@ class CollegeCostChatToolTest {
         name,
         state = state,
         control = control,
-        costAttendance = stickerCostAttendance,
-        tuitionInState = tuitionInState,
-        tuitionOutState = tuitionOutState,
-        medianDebt = medianDebt,
-        medianEarnings = medianEarnings,
-        netPriceQ1 = if (bandPricing) CostsTestDb.NET_PRICE_Q1 else null,
-        netPriceQ2 = if (bandPricing) CostsTestDb.NET_PRICE_Q2 else null,
-        netPriceQ3 = if (bandPricing) CostsTestDb.NET_PRICE_Q3 else null,
-        netPriceQ4 = if (bandPricing) CostsTestDb.NET_PRICE_Q4 else null,
-        netPriceQ5 = if (bandPricing) CostsTestDb.NET_PRICE_Q5 else null,
+        costOfAttendancePerYearUsd = stickerCostOfAttendancePerYearUsd,
+        tuitionAndFeesInStatePerYearUsd = tuitionAndFeesInStatePerYearUsd,
+        tuitionAndFeesOutOfStatePerYearUsd = tuitionAndFeesOutOfStatePerYearUsd,
+        medianDebtAtCompletionUsd = medianDebtAtCompletionUsd,
+        medianEarnings10yAfterEntryUsd = medianEarnings10yAfterEntryUsd,
+        netPricePerYearIncomeQ1Usd = if (bandPricing) CostsTestDb.NET_PRICE_PER_YEAR_INCOME_Q1_USD else null,
+        netPricePerYearIncomeQ2Usd = if (bandPricing) CostsTestDb.NET_PRICE_PER_YEAR_INCOME_Q2_USD else null,
+        netPricePerYearIncomeQ3Usd = if (bandPricing) CostsTestDb.NET_PRICE_PER_YEAR_INCOME_Q3_USD else null,
+        netPricePerYearIncomeQ4Usd = if (bandPricing) CostsTestDb.NET_PRICE_PER_YEAR_INCOME_Q4_USD else null,
+        netPricePerYearIncomeQ5Usd = if (bandPricing) CostsTestDb.NET_PRICE_PER_YEAR_INCOME_Q5_USD else null,
       )
     CostsTestDb.addToCollegeList(student, id)
     return id
@@ -176,10 +176,10 @@ class CollegeCostChatToolTest {
     seedListedCollege(
       student,
       "Wire U",
-      stickerCostAttendance = 40000,
-      tuitionInState = 12000,
-      tuitionOutState = 30000,
-      medianDebt = 23000,
+      stickerCostOfAttendancePerYearUsd = 40000,
+      tuitionAndFeesInStatePerYearUsd = 12000,
+      tuitionAndFeesOutOfStatePerYearUsd = 30000,
+      medianDebtAtCompletionUsd = 23000,
     )
     answerBand(student, IncomeBand.OVER_110K)
 
@@ -211,7 +211,7 @@ class CollegeCostChatToolTest {
         payload +
           mapOf(
             "control" to JsonPrimitive(2),
-            "net_price_q5" to JsonPrimitive(31000),
+            "net_price_per_year_income_q5_usd" to JsonPrimitive(31000),
             "source_column" to JsonPrimitive("NPT41"),
           ),
       )
@@ -220,7 +220,7 @@ class CollegeCostChatToolTest {
         BareSourceCode.QuintileToken("q5"),
         BareSourceCode.Npt4ColumnFamily,
         BareSourceCode.BareNumberField("control"),
-        BareSourceCode.BareNumberField("net_price_q5"),
+        BareSourceCode.BareNumberField("net_price_per_year_income_q5_usd"),
       ),
       listViolations(doctored),
     )
@@ -399,8 +399,14 @@ class CollegeCostChatToolTest {
   @Test
   fun `a public college reporting no tuition figure makes no residency offer`() {
     val student = createStudent()
-    seedListedCollege(student, "No Tuition U", control = 1, tuitionInState = null, tuitionOutState = null)
-    seedListedCollege(student, "In State Only U", control = 1, tuitionOutState = null)
+    seedListedCollege(
+      student,
+      "No Tuition U",
+      control = 1,
+      tuitionAndFeesInStatePerYearUsd = null,
+      tuitionAndFeesOutOfStatePerYearUsd = null,
+    )
+    seedListedCollege(student, "In State Only U", control = 1, tuitionAndFeesOutOfStatePerYearUsd = null)
 
     val byName = collegesOf(execute(student)).associateBy { it["name"]!!.jsonPrimitive.content }
     assertEquals(
@@ -424,7 +430,7 @@ class CollegeCostChatToolTest {
       "the copy must promise only what the data supports: no figure is guaranteed for either side",
     )
     assertTrue(
-      "tuition_out_state" in
+      "tuition_and_fees_out_of_state_per_year_usd" in
         inStateOnly
           .getValue("data_availability")
           .jsonArray
@@ -509,7 +515,11 @@ class CollegeCostChatToolTest {
     val college = collegesOf(result).single()
     val netPrice = college.getValue("net_price").jsonObject
     assertEquals("your_income_band", netPrice["basis"]!!.jsonPrimitive.content)
-    assertEquals(11000, netPrice["amount"]!!.jsonPrimitive.content.toInt(), "30k_to_48k must select net_price_q2")
+    assertEquals(
+      11000,
+      netPrice["amount_usd"]!!.jsonPrimitive.content.toInt(),
+      "30k_to_48k must select net_price_per_year_income_q2_usd",
+    )
     assertEquals("30k_to_48k", netPrice["income_band"]!!.jsonPrimitive.content)
     assertEquals(
       listOf(PrecisionOffer.RESIDENCY.field),
@@ -530,7 +540,7 @@ class CollegeCostChatToolTest {
     val college = collegesOf(execute(student)).single()
     val netPrice = college.getValue("net_price").jsonObject
     assertEquals("overall_average", netPrice["basis"]!!.jsonPrimitive.content)
-    assertEquals(20000, netPrice["amount"]!!.jsonPrimitive.content.toInt())
+    assertEquals(20000, netPrice["amount_usd"]!!.jsonPrimitive.content.toInt())
     assertNull(netPrice["income_band"])
     val offer = offerCopyOf(college, PrecisionOffer.INCOME_BAND.field)!!
     assertTrue(offer.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
@@ -599,7 +609,7 @@ class CollegeCostChatToolTest {
     val netPrice =
       collegesOf(execute(student)).single().getValue("net_price").jsonObject
     assertEquals("your_income_band", netPrice["basis"]!!.jsonPrimitive.content)
-    assertEquals(9000, netPrice["amount"]!!.jsonPrimitive.content.toInt())
+    assertEquals(9000, netPrice["amount_usd"]!!.jsonPrimitive.content.toInt())
   }
 
   @Test
@@ -620,14 +630,14 @@ class CollegeCostChatToolTest {
   @Test
   fun `data availability lists the fields a college does not report`() {
     val student = createStudent()
-    seedListedCollege(student, "Sparse U", medianEarnings = null)
+    seedListedCollege(student, "Sparse U", medianEarnings10yAfterEntryUsd = null)
 
     val college = collegesOf(execute(student)).single()
     assertEquals(
-      listOf("median_earnings"),
+      listOf("median_earnings_10y_after_entry_usd"),
       college.getValue("data_availability").jsonArray.map { it.jsonPrimitive.content },
     )
-    assertNull(college["median_earnings"], "an unreported figure is absent, never invented")
+    assertNull(college["median_earnings_10y_after_entry_usd"], "an unreported figure is absent, never invented")
   }
 
   @Test
@@ -736,11 +746,17 @@ class CollegeCostChatToolTest {
   fun `a merit row carrying only the freshman total leaves the cost answer unchanged`() {
     // The 28-of-368 corpus shape (RFC 148 D4): a freshman total and neither
     // merit measure. Both tools read the same MeritPractice, so both must call
-    // it silence -- a cost answer showing full_time_freshmen under a Common
-    // Data Set citation with no merit fact beneath it is the same defect here.
+    // it silence -- a cost answer showing full_time_freshmen_headcount under a
+    // Common Data Set citation with no merit fact beneath it is the same defect
+    // here.
     val student = createStudent()
     val college = seedListedCollege(student, "Denominator Only U")
-    CostsTestDb.seedMeritAid(college, freshmenFtTotal = 2760, noNeedMeritCount = null, noNeedMeritAvg = null)
+    CostsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 2760,
+      noNeedMeritRecipientsHeadcount = null,
+      noNeedMeritAverageUsd = null,
+    )
 
     val rendered = collegesOf(execute(student)).single()
     assertNull(rendered[MeritAidWire.KEY], "a denominator with no merit measure is not a merit section")
@@ -755,7 +771,12 @@ class CollegeCostChatToolTest {
   fun `a merit sentence never requires the money profile`() {
     val student = createStudent()
     val college = seedListedCollege(student, "Merit U")
-    CostsTestDb.seedMeritAid(college, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+    CostsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 2000,
+      noNeedMeritRecipientsHeadcount = 500,
+      noNeedMeritAverageUsd = 12500,
+    )
 
     // No income band, no residency -- the whole money profile unanswered.
     val merit = collegesOf(execute(student)).single()[MeritAidWire.KEY]!!.jsonObject
@@ -797,8 +818,8 @@ class CollegeCostChatToolTest {
     val first = seedListedCollege(student, "Merit One")
     val second = seedListedCollege(student, "Merit Two")
     seedListedCollege(student, "Merit None")
-    CostsTestDb.seedMeritAid(first, noNeedMeritAvg = 1000)
-    CostsTestDb.seedMeritAid(second, noNeedMeritAvg = 2000)
+    CostsTestDb.seedMeritAid(first, noNeedMeritAverageUsd = 1000)
+    CostsTestDb.seedMeritAid(second, noNeedMeritAverageUsd = 2000)
 
     val byName = collegesOf(execute(student)).associateBy { it.getValue("name").jsonPrimitive.content }
     assertEquals(3, byName.size)
@@ -827,7 +848,12 @@ class CollegeCostChatToolTest {
   fun `the merit feed carries no bare source code into the cost result`() {
     val student = createStudent()
     val college = seedListedCollege(student, "Guarded Merit U")
-    CostsTestDb.seedMeritAid(college, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+    CostsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 2000,
+      noNeedMeritRecipientsHeadcount = 500,
+      noNeedMeritAverageUsd = 12500,
+    )
     answerBand(student, IncomeBand.OVER_110K)
 
     val payload = execute(student)
@@ -864,7 +890,7 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
 /**
  * The field names whose value is a NUMBER by contract -- the cost measures this
  * tool renders (read from [CostField], their one home), the result count, the
- * net-price `amount`, and the merit measures the RFC 148 feed adds (read from
+ * net-price `amount_usd`, and the merit measures the RFC 148 feed adds (read from
  * [MeritAidWire], their one home) -- so a number under them is a fact, not a
  * code. Every other numeric field is a coded dimension until sanctioned here;
  * `control` was exactly that, and this list is the one place to admit the next
@@ -875,6 +901,6 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
  * never reach this check.
  */
 private val NUMBERS_BY_CONTRACT =
-  CostField.entries.map { it.wireName }.toSet() + setOf("count", "amount") + MeritAidWire.NUMERIC_KEYS
+  CostField.entries.map { it.wireName }.toSet() + setOf("count", "amount_usd") + MeritAidWire.NUMERIC_KEYS
 
 private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSourceCodeGuard.listViolations(payload, NUMBERS_BY_CONTRACT)

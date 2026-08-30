@@ -86,9 +86,9 @@ class CollegeCostChatTool(
       put("state", cost.state)
       put("control", cost.control.label)
       put("list_status", cost.listStatus.value)
-      cost.stickerCostAttendance?.let { put(CostField.STICKER_COST_ATTENDANCE.wireName, it) }
-      cost.tuitionInState?.let { put(CostField.TUITION_IN_STATE.wireName, it) }
-      cost.tuitionOutState?.let { put(CostField.TUITION_OUT_STATE.wireName, it) }
+      cost.stickerCostOfAttendancePerYearUsd?.let { put(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName, it) }
+      cost.tuitionAndFeesInStatePerYearUsd?.let { put(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName, it) }
+      cost.tuitionAndFeesOutOfStatePerYearUsd?.let { put(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD.wireName, it) }
       // Present only on the public case; the model makes the distinction
       // uncarryable by a private college, so it cannot be misread onto one.
       (cost.control as? CollegeControl.Public)?.let { put("tuition_applicable", it.tuitionApplicable.value) }
@@ -99,8 +99,8 @@ class CollegeCostChatTool(
       if (offers.isNotEmpty()) {
         putJsonArray(PRECISION_OFFER_KEY) { offers.forEach { add(precisionOfferObject(it)) } }
       }
-      cost.medianDebt?.let { put(CostField.MEDIAN_DEBT.wireName, it) }
-      cost.medianEarnings?.let { put(CostField.MEDIAN_EARNINGS.wireName, it) }
+      cost.medianDebtAtCompletionUsd?.let { put(CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName, it) }
+      cost.medianEarnings10yAfterEntryUsd?.let { put(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName, it) }
       // Purely additive (RFC 148 D7): present only when the school reports it,
       // and carrying its OWN citation, because merit aid is not a Scorecard
       // fact and must never fold into the payload's Scorecard `source` string.
@@ -129,14 +129,14 @@ class CollegeCostChatTool(
     }
 
   /**
-   * The `net_price` sub-object: amount when reported, the basis label, and —
+   * The `net_price` sub-object: `amount_usd` when reported, the basis label, and —
    * only on the band-specific case — the band's code and its spoken dollar
    * range (`IncomeBand.bracket`, RFC 142). The label rides beside the code so
    * the model never has to invent a phrase for the bucket it is naming aloud.
    */
   private fun netPriceObject(netPrice: NetPrice): JsonObject =
     buildJsonObject {
-      netPrice.amount?.let { put("amount", it) }
+      netPrice.amount?.let { put("amount_usd", it) }
       put("basis", netPrice.basis)
       // Exhaustive on purpose: an overall average deliberately emits no
       // qualifier, and a future NetPrice case must fail to compile here rather
@@ -217,7 +217,8 @@ class CollegeCostChatTool(
         "the net price their family would actually pay, median debt and median earnings. " +
         "Data comes from the U.S. Department of Education College Scorecard - always attribute figures " +
         "to it, and when a field appears in data_availability the college does not report it: say so " +
-        "plainly, never estimate. Each net_price is labeled with its basis: your_income_band means it is " +
+        "plainly, never estimate. Each net_price is an object carrying amount_usd (whole US dollars per " +
+        "academic year) and a basis: your_income_band means it is " +
         "specific to the student's answered household income band; overall_average means the band is not " +
         "on file and the figure is the all-family average - say which it is. When a net price is band-specific it " +
         "also carries income_band_label, the band's dollar range in plain words (e.g. \"${IncomeBand.OVER_110K.bracket}\") - say that " +

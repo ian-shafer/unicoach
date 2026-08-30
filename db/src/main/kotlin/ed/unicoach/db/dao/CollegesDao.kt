@@ -80,22 +80,22 @@ object CollegesDao :
       latitude = rs.doubleOrNull("latitude"),
       longitude = rs.doubleOrNull("longitude"),
       control = rs.getInt("control"),
-      undergradEnrollment = rs.intOrNull("undergrad_enrollment"),
-      admissionRate = rs.doubleOrNull("admission_rate"),
-      satAvg = rs.intOrNull("sat_avg"),
-      costAttendance = rs.intOrNull("cost_attendance"),
-      netPrice = rs.intOrNull("net_price"),
-      netPriceQ1 = rs.intOrNull("net_price_q1"),
-      netPriceQ2 = rs.intOrNull("net_price_q2"),
-      netPriceQ3 = rs.intOrNull("net_price_q3"),
-      netPriceQ4 = rs.intOrNull("net_price_q4"),
-      netPriceQ5 = rs.intOrNull("net_price_q5"),
-      tuitionInState = rs.intOrNull("tuition_in_state"),
-      tuitionOutState = rs.intOrNull("tuition_out_state"),
-      graduationRate = rs.doubleOrNull("graduation_rate"),
-      medianEarnings = rs.intOrNull("median_earnings"),
-      medianDebt = rs.intOrNull("median_debt"),
-      pctPell = rs.doubleOrNull("pct_pell"),
+      undergradEnrollmentHeadcount = rs.intOrNull("undergrad_enrollment_headcount"),
+      admissionRateShare = rs.doubleOrNull("admission_rate_share"),
+      satAverageEquivalentScore = rs.intOrNull("sat_average_equivalent_score"),
+      costOfAttendancePerYearUsd = rs.intOrNull("cost_of_attendance_per_year_usd"),
+      netPricePerYearUsd = rs.intOrNull("net_price_per_year_usd"),
+      netPricePerYearIncomeQ1Usd = rs.intOrNull("net_price_per_year_income_q1_usd"),
+      netPricePerYearIncomeQ2Usd = rs.intOrNull("net_price_per_year_income_q2_usd"),
+      netPricePerYearIncomeQ3Usd = rs.intOrNull("net_price_per_year_income_q3_usd"),
+      netPricePerYearIncomeQ4Usd = rs.intOrNull("net_price_per_year_income_q4_usd"),
+      netPricePerYearIncomeQ5Usd = rs.intOrNull("net_price_per_year_income_q5_usd"),
+      tuitionAndFeesInStatePerYearUsd = rs.intOrNull("tuition_and_fees_in_state_per_year_usd"),
+      tuitionAndFeesOutOfStatePerYearUsd = rs.intOrNull("tuition_and_fees_out_of_state_per_year_usd"),
+      completionRate150pct4yrShare = rs.doubleOrNull("completion_rate_150pct_4yr_share"),
+      medianEarnings10yAfterEntryUsd = rs.intOrNull("median_earnings_10y_after_entry_usd"),
+      medianDebtAtCompletionUsd = rs.intOrNull("median_debt_at_completion_usd"),
+      pellShare = rs.doubleOrNull("pell_share"),
       website = rs.getString("website"),
       aliases = rs.getStringList("aliases"),
       createdAt = rs.getInstant("created_at"),
@@ -138,18 +138,18 @@ object CollegesDao :
       state = rs.getString("state"),
       control = rs.getInt("control"),
       locale = rs.intOrNull("locale"),
-      undergradEnrollment = rs.intOrNull("undergrad_enrollment"),
-      admissionRate = rs.doubleOrNull("admission_rate"),
-      netPrice = rs.intOrNull("net_price"),
-      netPriceQ1 = rs.intOrNull("net_price_q1"),
-      netPriceQ2 = rs.intOrNull("net_price_q2"),
-      netPriceQ3 = rs.intOrNull("net_price_q3"),
-      netPriceQ4 = rs.intOrNull("net_price_q4"),
-      netPriceQ5 = rs.intOrNull("net_price_q5"),
-      graduationRate = rs.doubleOrNull("graduation_rate"),
-      medianEarnings = rs.intOrNull("median_earnings"),
-      medianDebt = rs.intOrNull("median_debt"),
-      pctPell = rs.doubleOrNull("pct_pell"),
+      undergradEnrollmentHeadcount = rs.intOrNull("undergrad_enrollment_headcount"),
+      admissionRateShare = rs.doubleOrNull("admission_rate_share"),
+      netPricePerYearUsd = rs.intOrNull("net_price_per_year_usd"),
+      netPricePerYearIncomeQ1Usd = rs.intOrNull("net_price_per_year_income_q1_usd"),
+      netPricePerYearIncomeQ2Usd = rs.intOrNull("net_price_per_year_income_q2_usd"),
+      netPricePerYearIncomeQ3Usd = rs.intOrNull("net_price_per_year_income_q3_usd"),
+      netPricePerYearIncomeQ4Usd = rs.intOrNull("net_price_per_year_income_q4_usd"),
+      netPricePerYearIncomeQ5Usd = rs.intOrNull("net_price_per_year_income_q5_usd"),
+      completionRate150pct4yrShare = rs.doubleOrNull("completion_rate_150pct_4yr_share"),
+      medianEarnings10yAfterEntryUsd = rs.intOrNull("median_earnings_10y_after_entry_usd"),
+      medianDebtAtCompletionUsd = rs.intOrNull("median_debt_at_completion_usd"),
+      pellShare = rs.doubleOrNull("pell_share"),
       website = rs.getString("website"),
       programTitles = titles,
     )
@@ -187,10 +187,10 @@ object CollegesDao :
       WITH up AS (
         INSERT INTO colleges (
           ipeds_unit_id, opeid, name, city, state, region, locale, latitude, longitude,
-          control, undergrad_enrollment, admission_rate, sat_avg, cost_attendance,
-          net_price, tuition_in_state, tuition_out_state, graduation_rate,
-          median_earnings, pct_pell, website, net_price_q1, net_price_q2,
-          net_price_q3, net_price_q4, net_price_q5, median_debt
+          control, undergrad_enrollment_headcount, admission_rate_share, sat_average_equivalent_score, cost_of_attendance_per_year_usd,
+          net_price_per_year_usd, tuition_and_fees_in_state_per_year_usd, tuition_and_fees_out_of_state_per_year_usd, completion_rate_150pct_4yr_share,
+          median_earnings_10y_after_entry_usd, pell_share, website, net_price_per_year_income_q1_usd, net_price_per_year_income_q2_usd,
+          net_price_per_year_income_q3_usd, net_price_per_year_income_q4_usd, net_price_per_year_income_q5_usd, median_debt_at_completion_usd
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (ipeds_unit_id) DO UPDATE SET
@@ -203,44 +203,44 @@ object CollegesDao :
           latitude = EXCLUDED.latitude,
           longitude = EXCLUDED.longitude,
           control = EXCLUDED.control,
-          undergrad_enrollment = EXCLUDED.undergrad_enrollment,
-          admission_rate = EXCLUDED.admission_rate,
-          sat_avg = EXCLUDED.sat_avg,
-          cost_attendance = EXCLUDED.cost_attendance,
-          net_price = EXCLUDED.net_price,
-          tuition_in_state = EXCLUDED.tuition_in_state,
-          tuition_out_state = EXCLUDED.tuition_out_state,
-          graduation_rate = EXCLUDED.graduation_rate,
-          median_earnings = EXCLUDED.median_earnings,
-          pct_pell = EXCLUDED.pct_pell,
+          undergrad_enrollment_headcount = EXCLUDED.undergrad_enrollment_headcount,
+          admission_rate_share = EXCLUDED.admission_rate_share,
+          sat_average_equivalent_score = EXCLUDED.sat_average_equivalent_score,
+          cost_of_attendance_per_year_usd = EXCLUDED.cost_of_attendance_per_year_usd,
+          net_price_per_year_usd = EXCLUDED.net_price_per_year_usd,
+          tuition_and_fees_in_state_per_year_usd = EXCLUDED.tuition_and_fees_in_state_per_year_usd,
+          tuition_and_fees_out_of_state_per_year_usd = EXCLUDED.tuition_and_fees_out_of_state_per_year_usd,
+          completion_rate_150pct_4yr_share = EXCLUDED.completion_rate_150pct_4yr_share,
+          median_earnings_10y_after_entry_usd = EXCLUDED.median_earnings_10y_after_entry_usd,
+          pell_share = EXCLUDED.pell_share,
           website = EXCLUDED.website,
-          net_price_q1 = EXCLUDED.net_price_q1,
-          net_price_q2 = EXCLUDED.net_price_q2,
-          net_price_q3 = EXCLUDED.net_price_q3,
-          net_price_q4 = EXCLUDED.net_price_q4,
-          net_price_q5 = EXCLUDED.net_price_q5,
-          median_debt = EXCLUDED.median_debt,
+          net_price_per_year_income_q1_usd = EXCLUDED.net_price_per_year_income_q1_usd,
+          net_price_per_year_income_q2_usd = EXCLUDED.net_price_per_year_income_q2_usd,
+          net_price_per_year_income_q3_usd = EXCLUDED.net_price_per_year_income_q3_usd,
+          net_price_per_year_income_q4_usd = EXCLUDED.net_price_per_year_income_q4_usd,
+          net_price_per_year_income_q5_usd = EXCLUDED.net_price_per_year_income_q5_usd,
+          median_debt_at_completion_usd = EXCLUDED.median_debt_at_completion_usd,
           version = colleges.version + 1
         WHERE (
           colleges.opeid, colleges.name, colleges.city, colleges.state,
           colleges.region, colleges.locale, colleges.latitude, colleges.longitude,
-          colleges.control, colleges.undergrad_enrollment, colleges.admission_rate,
-          colleges.sat_avg, colleges.cost_attendance, colleges.net_price,
-          colleges.tuition_in_state, colleges.tuition_out_state,
-          colleges.graduation_rate, colleges.median_earnings, colleges.pct_pell,
-          colleges.website, colleges.net_price_q1, colleges.net_price_q2,
-          colleges.net_price_q3, colleges.net_price_q4, colleges.net_price_q5,
-          colleges.median_debt, colleges.ipeds_unit_id
+          colleges.control, colleges.undergrad_enrollment_headcount, colleges.admission_rate_share,
+          colleges.sat_average_equivalent_score, colleges.cost_of_attendance_per_year_usd, colleges.net_price_per_year_usd,
+          colleges.tuition_and_fees_in_state_per_year_usd, colleges.tuition_and_fees_out_of_state_per_year_usd,
+          colleges.completion_rate_150pct_4yr_share, colleges.median_earnings_10y_after_entry_usd, colleges.pell_share,
+          colleges.website, colleges.net_price_per_year_income_q1_usd, colleges.net_price_per_year_income_q2_usd,
+          colleges.net_price_per_year_income_q3_usd, colleges.net_price_per_year_income_q4_usd, colleges.net_price_per_year_income_q5_usd,
+          colleges.median_debt_at_completion_usd, colleges.ipeds_unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.opeid, EXCLUDED.name, EXCLUDED.city, EXCLUDED.state,
           EXCLUDED.region, EXCLUDED.locale, EXCLUDED.latitude, EXCLUDED.longitude,
-          EXCLUDED.control, EXCLUDED.undergrad_enrollment, EXCLUDED.admission_rate,
-          EXCLUDED.sat_avg, EXCLUDED.cost_attendance, EXCLUDED.net_price,
-          EXCLUDED.tuition_in_state, EXCLUDED.tuition_out_state,
-          EXCLUDED.graduation_rate, EXCLUDED.median_earnings, EXCLUDED.pct_pell,
-          EXCLUDED.website, EXCLUDED.net_price_q1, EXCLUDED.net_price_q2,
-          EXCLUDED.net_price_q3, EXCLUDED.net_price_q4, EXCLUDED.net_price_q5,
-          EXCLUDED.median_debt, EXCLUDED.ipeds_unit_id
+          EXCLUDED.control, EXCLUDED.undergrad_enrollment_headcount, EXCLUDED.admission_rate_share,
+          EXCLUDED.sat_average_equivalent_score, EXCLUDED.cost_of_attendance_per_year_usd, EXCLUDED.net_price_per_year_usd,
+          EXCLUDED.tuition_and_fees_in_state_per_year_usd, EXCLUDED.tuition_and_fees_out_of_state_per_year_usd,
+          EXCLUDED.completion_rate_150pct_4yr_share, EXCLUDED.median_earnings_10y_after_entry_usd, EXCLUDED.pell_share,
+          EXCLUDED.website, EXCLUDED.net_price_per_year_income_q1_usd, EXCLUDED.net_price_per_year_income_q2_usd,
+          EXCLUDED.net_price_per_year_income_q3_usd, EXCLUDED.net_price_per_year_income_q4_usd, EXCLUDED.net_price_per_year_income_q5_usd,
+          EXCLUDED.median_debt_at_completion_usd, EXCLUDED.ipeds_unit_id
         )
         RETURNING *
       )
@@ -261,23 +261,23 @@ object CollegesDao :
         stmt.setDoubleOrNull(8, input.latitude)
         stmt.setDoubleOrNull(9, input.longitude)
         stmt.setInt(10, input.control)
-        stmt.setIntOrNull(11, input.undergradEnrollment)
-        stmt.setDoubleOrNull(12, input.admissionRate)
-        stmt.setIntOrNull(13, input.satAvg)
-        stmt.setIntOrNull(14, input.costAttendance)
-        stmt.setIntOrNull(15, input.netPrice)
-        stmt.setIntOrNull(16, input.tuitionInState)
-        stmt.setIntOrNull(17, input.tuitionOutState)
-        stmt.setDoubleOrNull(18, input.graduationRate)
-        stmt.setIntOrNull(19, input.medianEarnings)
-        stmt.setDoubleOrNull(20, input.pctPell)
+        stmt.setIntOrNull(11, input.undergradEnrollmentHeadcount)
+        stmt.setDoubleOrNull(12, input.admissionRateShare)
+        stmt.setIntOrNull(13, input.satAverageEquivalentScore)
+        stmt.setIntOrNull(14, input.costOfAttendancePerYearUsd)
+        stmt.setIntOrNull(15, input.netPricePerYearUsd)
+        stmt.setIntOrNull(16, input.tuitionAndFeesInStatePerYearUsd)
+        stmt.setIntOrNull(17, input.tuitionAndFeesOutOfStatePerYearUsd)
+        stmt.setDoubleOrNull(18, input.completionRate150pct4yrShare)
+        stmt.setIntOrNull(19, input.medianEarnings10yAfterEntryUsd)
+        stmt.setDoubleOrNull(20, input.pellShare)
         stmt.setStringOrNull(21, input.website)
-        stmt.setIntOrNull(22, input.netPriceQ1)
-        stmt.setIntOrNull(23, input.netPriceQ2)
-        stmt.setIntOrNull(24, input.netPriceQ3)
-        stmt.setIntOrNull(25, input.netPriceQ4)
-        stmt.setIntOrNull(26, input.netPriceQ5)
-        stmt.setIntOrNull(27, input.medianDebt)
+        stmt.setIntOrNull(22, input.netPricePerYearIncomeQ1Usd)
+        stmt.setIntOrNull(23, input.netPricePerYearIncomeQ2Usd)
+        stmt.setIntOrNull(24, input.netPricePerYearIncomeQ3Usd)
+        stmt.setIntOrNull(25, input.netPricePerYearIncomeQ4Usd)
+        stmt.setIntOrNull(26, input.netPricePerYearIncomeQ5Usd)
+        stmt.setIntOrNull(27, input.medianDebtAtCompletionUsd)
         stmt.setInt(28, input.ipedsUnitId)
       },
       map = ::mapCollege,
@@ -460,28 +460,28 @@ object CollegesDao :
         control.forEach { ctrl -> binders += { stmt, i -> stmt.setInt(i, ctrl) } }
       }
     }
-    query.minUndergradEnrollment?.let { min ->
-      wheres += "c.undergrad_enrollment >= ?"
+    query.minUndergradEnrollmentHeadcount?.let { min ->
+      wheres += "c.undergrad_enrollment_headcount >= ?"
       binders += { stmt, i -> stmt.setInt(i, min) }
     }
-    query.maxUndergradEnrollment?.let { max ->
-      wheres += "c.undergrad_enrollment <= ?"
+    query.maxUndergradEnrollmentHeadcount?.let { max ->
+      wheres += "c.undergrad_enrollment_headcount <= ?"
       binders += { stmt, i -> stmt.setInt(i, max) }
     }
-    query.minAdmissionRate?.let { min ->
-      wheres += "c.admission_rate >= ?"
+    query.minAdmissionRateShare?.let { min ->
+      wheres += "c.admission_rate_share >= ?"
       binders += { stmt, i -> stmt.setDouble(i, min) }
     }
-    query.maxAdmissionRate?.let { max ->
-      wheres += "c.admission_rate <= ?"
+    query.maxAdmissionRateShare?.let { max ->
+      wheres += "c.admission_rate_share <= ?"
       binders += { stmt, i -> stmt.setDouble(i, max) }
     }
-    query.maxNetPrice?.let { max ->
-      wheres += "c.net_price <= ?"
+    query.maxNetPricePerYearUsd?.let { max ->
+      wheres += "c.net_price_per_year_usd <= ?"
       binders += { stmt, i -> stmt.setInt(i, max) }
     }
-    query.minGraduationRate?.let { min ->
-      wheres += "c.graduation_rate >= ?"
+    query.minCompletionRate150pct4yrShare?.let { min ->
+      wheres += "c.completion_rate_150pct_4yr_share >= ?"
       binders += { stmt, i -> stmt.setDouble(i, min) }
     }
 
@@ -499,9 +499,9 @@ object CollegesDao :
       """
       SELECT
         c.id, c.ipeds_unit_id, c.name, c.city, c.state, c.control, c.locale,
-        c.undergrad_enrollment, c.admission_rate, c.net_price, c.net_price_q1,
-        c.net_price_q2, c.net_price_q3, c.net_price_q4, c.net_price_q5,
-        c.graduation_rate, c.median_earnings, c.median_debt, c.pct_pell, c.website,
+        c.undergrad_enrollment_headcount, c.admission_rate_share, c.net_price_per_year_usd, c.net_price_per_year_income_q1_usd,
+        c.net_price_per_year_income_q2_usd, c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd, c.net_price_per_year_income_q5_usd,
+        c.completion_rate_150pct_4yr_share, c.median_earnings_10y_after_entry_usd, c.median_debt_at_completion_usd, c.pell_share, c.website,
         $selectTitles
       FROM colleges c
       $join
@@ -547,10 +547,10 @@ object CollegesDao :
    */
   private fun orderBy(sortBy: CollegeQuery.SortBy): String =
     when (sortBy) {
-      CollegeQuery.SortBy.ENROLLMENT_DESC -> "c.undergrad_enrollment DESC NULLS LAST"
-      CollegeQuery.SortBy.ADMISSION_RATE_ASC -> "c.admission_rate ASC NULLS LAST"
-      CollegeQuery.SortBy.NET_PRICE_ASC -> "c.net_price ASC NULLS LAST"
-      CollegeQuery.SortBy.GRADUATION_RATE_DESC -> "c.graduation_rate DESC NULLS LAST"
+      CollegeQuery.SortBy.ENROLLMENT_DESC -> "c.undergrad_enrollment_headcount DESC NULLS LAST"
+      CollegeQuery.SortBy.ADMISSION_RATE_SHARE_ASC -> "c.admission_rate_share ASC NULLS LAST"
+      CollegeQuery.SortBy.NET_PRICE_PER_YEAR_USD_ASC -> "c.net_price_per_year_usd ASC NULLS LAST"
+      CollegeQuery.SortBy.COMPLETION_RATE_150PCT_4YR_SHARE_DESC -> "c.completion_rate_150pct_4yr_share DESC NULLS LAST"
       CollegeQuery.SortBy.NAME_ASC -> "c.name ASC NULLS LAST"
     } + ", c.ipeds_unit_id ASC"
 
@@ -608,7 +608,7 @@ object CollegesDao :
    * can, so the separation holds at every query-word count rather than only at
    * one. The second is the summed per-word distance: an exact word contributes
    * 0 and a one-keystroke word 1, NULL when nothing matched (sorted last). Then
-   * `undergrad_enrollment DESC NULLS LAST, name, ipeds_unit_id` as the deterministic
+   * `undergrad_enrollment_headcount DESC NULLS LAST, name, ipeds_unit_id` as the deterministic
    * tail. The same definition as the predicate, summed; no weights, no magic
    * literal, nothing fitted. [limit] is clamped by the service boundary before
    * reaching here (the [search] convention).
@@ -669,7 +669,7 @@ object CollegesDao :
         -- 1 per one-keystroke word. NULL for a substring-only row that matched
         -- no query word, which sorts last — it is the least-explained match.
         s.distance ASC NULLS LAST,
-        c.undergrad_enrollment DESC NULLS LAST, c.name, c.ipeds_unit_id
+        c.undergrad_enrollment_headcount DESC NULLS LAST, c.name, c.ipeds_unit_id
       LIMIT ?
       """.trimIndent()
     return session.queryList(
@@ -845,22 +845,22 @@ object CollegesDao :
       "locale",
       "latitude",
       "longitude",
-      "undergrad_enrollment",
-      "admission_rate",
-      "sat_avg",
-      "cost_attendance",
-      "net_price",
-      "net_price_q1",
-      "net_price_q2",
-      "net_price_q3",
-      "net_price_q4",
-      "net_price_q5",
-      "tuition_in_state",
-      "tuition_out_state",
-      "graduation_rate",
-      "median_earnings",
-      "median_debt",
-      "pct_pell",
+      "undergrad_enrollment_headcount",
+      "admission_rate_share",
+      "sat_average_equivalent_score",
+      "cost_of_attendance_per_year_usd",
+      "net_price_per_year_usd",
+      "net_price_per_year_income_q1_usd",
+      "net_price_per_year_income_q2_usd",
+      "net_price_per_year_income_q3_usd",
+      "net_price_per_year_income_q4_usd",
+      "net_price_per_year_income_q5_usd",
+      "tuition_and_fees_in_state_per_year_usd",
+      "tuition_and_fees_out_of_state_per_year_usd",
+      "completion_rate_150pct_4yr_share",
+      "median_earnings_10y_after_entry_usd",
+      "median_debt_at_completion_usd",
+      "pell_share",
       "website",
     )
 

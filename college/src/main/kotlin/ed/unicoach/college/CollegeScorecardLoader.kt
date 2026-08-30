@@ -1009,7 +1009,7 @@ class CollegeScorecardLoader(
         intOrNull(record, "$base$SUFFIX_PRIVATE")
       }
 
-    val netPrice = readControlKeyed(COL_NET_PRICE_BASE)
+    val netPricePerYearUsd = readControlKeyed(COL_NET_PRICE_BASE)
 
     // Income-band net prices (RFC 133): the five household income brackets,
     // read from NPT41_PUB, NPT42_PUB, NPT43_PUB, NPT44_PUB, NPT45_PUB or
@@ -1038,27 +1038,59 @@ class CollegeScorecardLoader(
         latitude = doubleOrNull(record, COL_LATITUDE),
         longitude = doubleOrNull(record, COL_LONGITUDE),
         control = control,
-        undergradEnrollment =
-          intInDomainOrNull(record, COL_UGDS, 0, Int.MAX_VALUE, "undergrad_enrollment", coercions),
-        admissionRate = doubleInDomainOrNull(record, COL_ADM_RATE, RATE_MIN, RATE_MAX, "admission_rate", coercions),
-        satAvg = intInDomainOrNull(record, COL_SAT_AVG, 0, Int.MAX_VALUE, "sat_avg", coercions),
-        costAttendance = intInDomainOrNull(record, COL_COSTT4_A, 0, Int.MAX_VALUE, "cost_attendance", coercions),
-        netPrice = netPrice,
-        netPriceQ1 = readBandPrice(1),
-        netPriceQ2 = readBandPrice(2),
-        netPriceQ3 = readBandPrice(3),
-        netPriceQ4 = readBandPrice(4),
-        netPriceQ5 = readBandPrice(5),
-        tuitionInState = intInDomainOrNull(record, COL_TUITIONFEE_IN, 0, Int.MAX_VALUE, "tuition_in_state", coercions),
-        tuitionOutState =
-          intInDomainOrNull(record, COL_TUITIONFEE_OUT, 0, Int.MAX_VALUE, "tuition_out_state", coercions),
-        graduationRate = doubleInDomainOrNull(record, COL_C150_4, RATE_MIN, RATE_MAX, "graduation_rate", coercions),
-        medianEarnings =
-          intInDomainOrNull(record, COL_MD_EARN_WNE_P10, 0, Int.MAX_VALUE, "median_earnings", coercions),
-        // median_debt is a loan amount: genuinely nonneg, so mechanism A applies
+        undergradEnrollmentHeadcount =
+          intInDomainOrNull(record, COL_UGDS, 0, Int.MAX_VALUE, "undergrad_enrollment_headcount", coercions),
+        admissionRateShare = doubleInDomainOrNull(record, COL_ADM_RATE, RATE_MIN, RATE_MAX, "admission_rate_share", coercions),
+        satAverageEquivalentScore = intInDomainOrNull(record, COL_SAT_AVG, 0, Int.MAX_VALUE, "sat_average_equivalent_score", coercions),
+        costOfAttendancePerYearUsd =
+          intInDomainOrNull(
+            record,
+            COL_COSTT4_A,
+            0,
+            Int.MAX_VALUE,
+            "cost_of_attendance_per_year_usd",
+            coercions,
+          ),
+        netPricePerYearUsd = netPricePerYearUsd,
+        netPricePerYearIncomeQ1Usd = readBandPrice(1),
+        netPricePerYearIncomeQ2Usd = readBandPrice(2),
+        netPricePerYearIncomeQ3Usd = readBandPrice(3),
+        netPricePerYearIncomeQ4Usd = readBandPrice(4),
+        netPricePerYearIncomeQ5Usd = readBandPrice(5),
+        tuitionAndFeesInStatePerYearUsd =
+          intInDomainOrNull(
+            record,
+            COL_TUITIONFEE_IN,
+            0,
+            Int.MAX_VALUE,
+            "tuition_and_fees_in_state_per_year_usd",
+            coercions,
+          ),
+        tuitionAndFeesOutOfStatePerYearUsd =
+          intInDomainOrNull(record, COL_TUITIONFEE_OUT, 0, Int.MAX_VALUE, "tuition_and_fees_out_of_state_per_year_usd", coercions),
+        completionRate150pct4yrShare =
+          doubleInDomainOrNull(
+            record,
+            COL_C150_4,
+            RATE_MIN,
+            RATE_MAX,
+            "completion_rate_150pct_4yr_share",
+            coercions,
+          ),
+        medianEarnings10yAfterEntryUsd =
+          intInDomainOrNull(record, COL_MD_EARN_WNE_P10, 0, Int.MAX_VALUE, "median_earnings_10y_after_entry_usd", coercions),
+        // median_debt_at_completion_usd is a loan amount: genuinely nonneg, so mechanism A applies
         // like the sibling money fields.
-        medianDebt = intInDomainOrNull(record, COL_GRAD_DEBT_MDN, 0, Int.MAX_VALUE, "median_debt", coercions),
-        pctPell = doubleInDomainOrNull(record, COL_PCTPELL, RATE_MIN, RATE_MAX, "pct_pell", coercions),
+        medianDebtAtCompletionUsd =
+          intInDomainOrNull(
+            record,
+            COL_GRAD_DEBT_MDN,
+            0,
+            Int.MAX_VALUE,
+            "median_debt_at_completion_usd",
+            coercions,
+          ),
+        pellShare = doubleInDomainOrNull(record, COL_PCTPELL, RATE_MIN, RATE_MAX, "pell_share", coercions),
         website = stringOrNull(record, COL_INSTURL),
       )
     return MapResult.Mapped(college, coercions)
@@ -1255,22 +1287,22 @@ class CollegeScorecardLoader(
         "locale",
         "latitude",
         "longitude",
-        "undergrad_enrollment",
-        "admission_rate",
-        "sat_avg",
-        "cost_attendance",
-        "net_price",
-        "net_price_q1",
-        "net_price_q2",
-        "net_price_q3",
-        "net_price_q4",
-        "net_price_q5",
-        "tuition_in_state",
-        "tuition_out_state",
-        "graduation_rate",
-        "median_earnings",
-        "median_debt",
-        "pct_pell",
+        "undergrad_enrollment_headcount",
+        "admission_rate_share",
+        "sat_average_equivalent_score",
+        "cost_of_attendance_per_year_usd",
+        "net_price_per_year_usd",
+        "net_price_per_year_income_q1_usd",
+        "net_price_per_year_income_q2_usd",
+        "net_price_per_year_income_q3_usd",
+        "net_price_per_year_income_q4_usd",
+        "net_price_per_year_income_q5_usd",
+        "tuition_and_fees_in_state_per_year_usd",
+        "tuition_and_fees_out_of_state_per_year_usd",
+        "completion_rate_150pct_4yr_share",
+        "median_earnings_10y_after_entry_usd",
+        "median_debt_at_completion_usd",
+        "pell_share",
         "website",
       )
 

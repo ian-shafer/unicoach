@@ -82,22 +82,22 @@ class CollegeIpedsDaoTest {
           latitude = null,
           longitude = null,
           control = 1,
-          undergradEnrollment = null,
-          admissionRate = null,
-          satAvg = null,
-          costAttendance = null,
-          netPrice = null,
-          netPriceQ1 = null,
-          netPriceQ2 = null,
-          netPriceQ3 = null,
-          netPriceQ4 = null,
-          netPriceQ5 = null,
-          tuitionInState = null,
-          tuitionOutState = null,
-          graduationRate = null,
-          medianEarnings = null,
-          medianDebt = null,
-          pctPell = null,
+          undergradEnrollmentHeadcount = null,
+          admissionRateShare = null,
+          satAverageEquivalentScore = null,
+          costOfAttendancePerYearUsd = null,
+          netPricePerYearUsd = null,
+          netPricePerYearIncomeQ1Usd = null,
+          netPricePerYearIncomeQ2Usd = null,
+          netPricePerYearIncomeQ3Usd = null,
+          netPricePerYearIncomeQ4Usd = null,
+          netPricePerYearIncomeQ5Usd = null,
+          tuitionAndFeesInStatePerYearUsd = null,
+          tuitionAndFeesOutOfStatePerYearUsd = null,
+          completionRate150pct4yrShare = null,
+          medianEarnings10yAfterEntryUsd = null,
+          medianDebtAtCompletionUsd = null,
+          pellShare = null,
           website = null,
         ),
       ).getOrThrow()
@@ -120,10 +120,10 @@ class CollegeIpedsDaoTest {
     hasRotc: Boolean? = true,
     hasStudyAbroad: Boolean? = false,
     disabilityBand: Int? = 2,
-    disabilityPct: Double? = 6.94,
-    hasHousing: Boolean? = true,
-    housingCapacity: Int? = 3480,
-    applicationFee: Int? = 0,
+    registeredDisabilityPercent: Double? = 6.94,
+    offersHousing: Boolean? = true,
+    housingCapacityHeadcount: Int? = 3480,
+    applicationFeeUsd: Int? = 0,
     athleticAssoc: List<Int> = listOf(1, 3),
     footballConf: Int? = -2,
     testPolicy: Int? = 5,
@@ -144,10 +144,10 @@ class CollegeIpedsDaoTest {
     hasRotc = hasRotc,
     hasStudyAbroad = hasStudyAbroad,
     disabilityBand = disabilityBand,
-    disabilityPct = disabilityPct,
-    hasHousing = hasHousing,
-    housingCapacity = housingCapacity,
-    applicationFee = applicationFee,
+    registeredDisabilityPercent = registeredDisabilityPercent,
+    offersHousing = offersHousing,
+    housingCapacityHeadcount = housingCapacityHeadcount,
+    applicationFeeUsd = applicationFeeUsd,
     athleticAssoc = athleticAssoc,
     footballConf = footballConf,
     testPolicy = testPolicy,
@@ -203,12 +203,12 @@ class CollegeIpedsDaoTest {
   @Test
   fun `the raw -2 codes and a real zero application fee survive the round trip`() {
     CollegeIpedsDao
-      .upsert(session, ipeds(161280, relAffil = -2, carnegieBasic = -2, footballConf = -2, applicationFee = 0))
+      .upsert(session, ipeds(161280, relAffil = -2, carnegieBasic = -2, footballConf = -2, applicationFeeUsd = 0))
       .getOrThrow()
     assertEquals(-2, scalar("SELECT rel_affil FROM college_ipeds") { it.getInt(1) })
     assertEquals(-2, scalar("SELECT carnegie_basic FROM college_ipeds") { it.getInt(1) })
     assertEquals(-2, scalar("SELECT football_conf FROM college_ipeds") { it.getInt(1) })
-    assertEquals(0, scalar("SELECT application_fee FROM college_ipeds") { it.getInt(1) })
+    assertEquals(0, scalar("SELECT application_fee_usd FROM college_ipeds") { it.getInt(1) })
   }
 
   @Test
@@ -220,16 +220,16 @@ class CollegeIpedsDaoTest {
           161280,
           hasRotc = null,
           disabilityBand = null,
-          disabilityPct = null,
-          housingCapacity = null,
-          applicationFee = null,
+          registeredDisabilityPercent = null,
+          housingCapacityHeadcount = null,
+          applicationFeeUsd = null,
           testPolicy = null,
           ugOffer = null,
         ),
       ).getOrThrow()
     val nulls =
       scalar(
-        "SELECT has_rotc, disability_band, disability_pct, housing_capacity, application_fee, " +
+        "SELECT has_rotc, disability_band, registered_disability_percent, housing_capacity_headcount, application_fee_usd, " +
           "test_policy, ug_offer FROM college_ipeds",
       ) { rs -> (1..7).map { rs.getObject(it) } }
     assertTrue(nulls.all { it == null }, "every unknown must be SQL NULL: $nulls")
@@ -306,10 +306,10 @@ class CollegeIpedsDaoTest {
     )
     assertEquals(
       UpsertOutcome.CHANGED,
-      CollegeIpedsDao.upsertProgramsCensus(session, row.copy(awardsTotal = 9)).getOrThrow(),
+      CollegeIpedsDao.upsertProgramsCensus(session, row.copy(awardsCount = 9)).getOrThrow(),
     )
     assertEquals(1, scalar("SELECT count(*) FROM college_programs_census") { it.getInt(1) })
-    assertEquals(9, scalar("SELECT awards_total FROM college_programs_census") { it.getInt(1) })
+    assertEquals(9, scalar("SELECT awards_count FROM college_programs_census") { it.getInt(1) })
   }
 
   @Test

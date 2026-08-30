@@ -6,7 +6,7 @@ import kotlinx.serialization.json.put
 /**
  * Household income band backing `money_profiles.income_band` (RFC 134), with
  * self-describing labels naming the Scorecard NPT4 brackets (RFC 133). This
- * enum owns the band -> `net_price_qN` selection ([netPriceFor]) so the mapping
+ * enum owns the band -> `net_price_per_year_income_qN_usd` selection ([netPriceFor]) so the mapping
  * has exactly one home.
  */
 enum class IncomeBand(
@@ -38,30 +38,30 @@ enum class IncomeBand(
 
   /**
    * The average annual net price, in whole US dollars (USD), a family in this
-   * band pays at [college]: the matching `net_price_qN` column (RFC 133). Null
+   * band pays at [college]: the matching `net_price_per_year_income_qN_usd` column (RFC 133). Null
    * when the college did not report that bracket.
    */
   fun netPriceFor(college: College): Int? =
     netPriceOf(
-      college.netPriceQ1,
-      college.netPriceQ2,
-      college.netPriceQ3,
-      college.netPriceQ4,
-      college.netPriceQ5,
+      college.netPricePerYearIncomeQ1Usd,
+      college.netPricePerYearIncomeQ2Usd,
+      college.netPricePerYearIncomeQ3Usd,
+      college.netPricePerYearIncomeQ4Usd,
+      college.netPricePerYearIncomeQ5Usd,
     )
 
   /**
    * The same band -> column selection for a search result row ([match]), so
    * search and the cost tools read the mapping from this one home rather than
-   * each hand-indexing the five `net_price_qN` fields.
+   * each hand-indexing the five `net_price_per_year_income_qN_usd` fields.
    */
   fun netPriceFor(match: CollegeMatch): Int? =
     netPriceOf(
-      match.netPriceQ1,
-      match.netPriceQ2,
-      match.netPriceQ3,
-      match.netPriceQ4,
-      match.netPriceQ5,
+      match.netPricePerYearIncomeQ1Usd,
+      match.netPricePerYearIncomeQ2Usd,
+      match.netPricePerYearIncomeQ3Usd,
+      match.netPricePerYearIncomeQ4Usd,
+      match.netPricePerYearIncomeQ5Usd,
     )
 
   /**

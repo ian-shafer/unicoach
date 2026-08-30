@@ -22,10 +22,14 @@ object MeritAidWire {
   /** The section key, shared by both tools. */
   const val KEY: String = "merit_aid"
 
-  const val FULL_TIME_FRESHMEN_KEY: String = "full_time_freshmen"
-  const val RECIPIENTS_KEY: String = "non_need_merit_recipients"
-  const val SHARE_KEY: String = "share_of_all_full_time_freshmen_pct"
-  const val AVERAGE_KEY: String = "average_non_need_aid"
+  // Every numeric key names its unit, and the unit comes LAST: the two counts
+  // are people, the share rides on the CDS's own 0-100 scale (`Share.percent`),
+  // and the average is whole US dollars. The section key itself carries no
+  // unit -- it keys an OBJECT, and a container has no unit to name.
+  const val FULL_TIME_FRESHMEN_KEY: String = "full_time_freshmen_headcount"
+  const val RECIPIENTS_KEY: String = "non_need_merit_recipients_headcount"
+  const val SHARE_KEY: String = "share_of_all_full_time_freshmen_percent"
+  const val AVERAGE_KEY: String = "average_non_need_aid_usd"
 
   /**
    * The two spoken-sentence keys. Named because BOTH tool descriptions point a

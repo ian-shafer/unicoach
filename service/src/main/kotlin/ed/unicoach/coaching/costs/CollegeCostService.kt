@@ -120,13 +120,13 @@ data class CollegeCost(
   val state: String,
   val control: CollegeControl,
   val listStatus: CollegeListEntryStatus,
-  val stickerCostAttendance: Int?,
-  val tuitionInState: Int?,
-  val tuitionOutState: Int?,
+  val stickerCostOfAttendancePerYearUsd: Int?,
+  val tuitionAndFeesInStatePerYearUsd: Int?,
+  val tuitionAndFeesOutOfStatePerYearUsd: Int?,
   val netPrice: NetPrice,
-  val medianDebt: Int?,
-  val medianEarnings: Int?,
-  /** True when the college reports at least one `net_price_qN` bracket column. */
+  val medianDebtAtCompletionUsd: Int?,
+  val medianEarnings10yAfterEntryUsd: Int?,
+  /** True when the college reports at least one `net_price_per_year_income_qN_usd` bracket column. */
   val reportsBandPricing: Boolean,
   /**
    * True when the college publishes at least one tuition figure — the residency
@@ -289,7 +289,7 @@ enum class PrecisionOffer(
  *
  * - An absent money-profile row is simply all-unanswered (RFC 134's
  *   NotFoundException-as-absence convention), not an error.
- * - The band -> `net_price_qN` selection stays in its one home,
+ * - The band -> `net_price_per_year_income_qN_usd` selection stays in its one home,
  *   [IncomeBand.netPriceFor].
  * - [collegeIds] filters to a subset of the active list; ids not on the list
  *   (unknown or another student's) are reported in
@@ -424,12 +424,12 @@ class CollegeCostService(
       state = college.state,
       control = controlOf(college, moneyProfile),
       listStatus = listStatus,
-      stickerCostAttendance = college.costAttendance,
-      tuitionInState = college.tuitionInState,
-      tuitionOutState = college.tuitionOutState,
+      stickerCostOfAttendancePerYearUsd = college.costOfAttendancePerYearUsd,
+      tuitionAndFeesInStatePerYearUsd = college.tuitionAndFeesInStatePerYearUsd,
+      tuitionAndFeesOutOfStatePerYearUsd = college.tuitionAndFeesOutOfStatePerYearUsd,
       netPrice = netPrice,
-      medianDebt = college.medianDebt,
-      medianEarnings = college.medianEarnings,
+      medianDebtAtCompletionUsd = college.medianDebtAtCompletionUsd,
+      medianEarnings10yAfterEntryUsd = college.medianEarnings10yAfterEntryUsd,
       reportsBandPricing = reportsBandPricing(college),
       reportsPublishedTuition = reportsPublishedTuition(college),
       notReported = notReportedOf(college, netPrice),
@@ -450,7 +450,7 @@ class CollegeCostService(
     return if (band != null) {
       NetPrice.BandSpecific(band, band.netPriceFor(college))
     } else {
-      NetPrice.OverallAverage(college.netPrice)
+      NetPrice.OverallAverage(college.netPricePerYearUsd)
     }
   }
 
@@ -511,7 +511,8 @@ class CollegeCostService(
    * words rather than promising a number. Tightening this to `&&` would drop
    * the offer for the majority of families it can still answer.
    */
-  private fun reportsPublishedTuition(college: College): Boolean = college.tuitionInState != null || college.tuitionOutState != null
+  private fun reportsPublishedTuition(college: College): Boolean =
+    college.tuitionAndFeesInStatePerYearUsd != null || college.tuitionAndFeesOutOfStatePerYearUsd != null
 
   /** The unreported cost fields, in the shared field vocabulary ([CostField]). */
   private fun notReportedOf(
@@ -519,12 +520,12 @@ class CollegeCostService(
     netPrice: NetPrice,
   ): List<CostField> =
     buildList {
-      if (college.costAttendance == null) add(CostField.STICKER_COST_ATTENDANCE)
-      if (college.tuitionInState == null) add(CostField.TUITION_IN_STATE)
-      if (college.tuitionOutState == null) add(CostField.TUITION_OUT_STATE)
+      if (college.costOfAttendancePerYearUsd == null) add(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD)
+      if (college.tuitionAndFeesInStatePerYearUsd == null) add(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD)
+      if (college.tuitionAndFeesOutOfStatePerYearUsd == null) add(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD)
       if (netPrice.amount == null) add(CostField.NET_PRICE)
-      if (college.medianDebt == null) add(CostField.MEDIAN_DEBT)
-      if (college.medianEarnings == null) add(CostField.MEDIAN_EARNINGS)
+      if (college.medianDebtAtCompletionUsd == null) add(CostField.MEDIAN_DEBT_AT_COMPLETION_USD)
+      if (college.medianEarnings10yAfterEntryUsd == null) add(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD)
     }
 
   /**

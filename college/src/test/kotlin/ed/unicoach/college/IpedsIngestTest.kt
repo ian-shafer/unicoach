@@ -57,22 +57,22 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
               latitude = null,
               longitude = null,
               control = 1,
-              undergradEnrollment = null,
-              admissionRate = null,
-              satAvg = null,
-              costAttendance = null,
-              netPrice = null,
-              netPriceQ1 = null,
-              netPriceQ2 = null,
-              netPriceQ3 = null,
-              netPriceQ4 = null,
-              netPriceQ5 = null,
-              tuitionInState = null,
-              tuitionOutState = null,
-              graduationRate = null,
-              medianEarnings = null,
-              medianDebt = null,
-              pctPell = null,
+              undergradEnrollmentHeadcount = null,
+              admissionRateShare = null,
+              satAverageEquivalentScore = null,
+              costOfAttendancePerYearUsd = null,
+              netPricePerYearUsd = null,
+              netPricePerYearIncomeQ1Usd = null,
+              netPricePerYearIncomeQ2Usd = null,
+              netPricePerYearIncomeQ3Usd = null,
+              netPricePerYearIncomeQ4Usd = null,
+              netPricePerYearIncomeQ5Usd = null,
+              tuitionAndFeesInStatePerYearUsd = null,
+              tuitionAndFeesOutOfStatePerYearUsd = null,
+              completionRate150pct4yrShare = null,
+              medianEarnings10yAfterEntryUsd = null,
+              medianDebtAtCompletionUsd = null,
+              pellShare = null,
               website = null,
             ),
           ).getOrThrow()
@@ -119,14 +119,14 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     assertEquals(5, assertNotNull(row(168342)).testPolicy)
     // 102234 (Spring Hill) has a free application and a denomination.
     val springHill = assertNotNull(row(102234))
-    assertEquals(0, springHill.applicationFee, "0 is a REAL free application")
+    assertEquals(0, springHill.applicationFeeUsd, "0 is a REAL free application")
     assertEquals(30, springHill.relAffil)
     // 100690 (Amridge) reports no housing with ROOM=2.
-    assertEquals(false, assertNotNull(row(100690)).hasHousing)
+    assertEquals(false, assertNotNull(row(100690)).offersHousing)
     // 219338 (Avera Sacred Heart) reported none of it: -1 is unknown.
     val avera = assertNotNull(row(219338))
     assertNull(avera.hasRotc)
-    assertNull(avera.hasHousing)
+    assertNull(avera.offersHousing)
     assertEquals("{}", avera.athleticAssoc)
     // 186131 (Princeton) is NCAA.
     assertEquals("{1}", assertNotNull(row(186131)).athleticAssoc)
@@ -228,7 +228,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
       withSession { session ->
         session
           .prepareStatement(
-            "SELECT awards_total FROM college_programs_census c " +
+            "SELECT awards_count FROM college_programs_census c " +
               "JOIN colleges g ON g.id = c.college_id " +
               "WHERE g.ipeds_unit_id = 166027 AND c.cip_code = '050104'",
           ).use { stmt ->
@@ -247,7 +247,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
       0,
       withSession { session ->
         session
-          .prepareStatement("SELECT count(*) FROM college_programs_census WHERE awards_total = 1284")
+          .prepareStatement("SELECT count(*) FROM college_programs_census WHERE awards_count = 1284")
           .use { stmt ->
             stmt.executeQuery().use { rs ->
               rs.next()
@@ -471,8 +471,8 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     val ugOffer: Boolean?,
     val relAffil: Int?,
     val hasRotc: Boolean?,
-    val hasHousing: Boolean?,
-    val applicationFee: Int?,
+    val offersHousing: Boolean?,
+    val applicationFeeUsd: Int?,
     val testPolicy: Int?,
     val athleticAssoc: String,
   )
@@ -481,7 +481,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     withSession { session ->
       session
         .prepareStatement(
-          "SELECT sector, ug_offer, rel_affil, has_rotc, has_housing, application_fee, test_policy, " +
+          "SELECT sector, ug_offer, rel_affil, has_rotc, offers_housing, application_fee_usd, test_policy, " +
             "athletic_assoc::text FROM college_ipeds WHERE ipeds_unit_id = ?",
         ).use { stmt ->
           stmt.setInt(1, ipedsUnitId)
@@ -494,8 +494,8 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
                 ugOffer = rs.getBoolean(2).takeUnless { rs.wasNull() },
                 relAffil = rs.getInt(3).takeUnless { rs.wasNull() },
                 hasRotc = rs.getBoolean(4).takeUnless { rs.wasNull() },
-                hasHousing = rs.getBoolean(5).takeUnless { rs.wasNull() },
-                applicationFee = rs.getInt(6).takeUnless { rs.wasNull() },
+                offersHousing = rs.getBoolean(5).takeUnless { rs.wasNull() },
+                applicationFeeUsd = rs.getInt(6).takeUnless { rs.wasNull() },
                 testPolicy = rs.getInt(7).takeUnless { rs.wasNull() },
                 athleticAssoc = rs.getString(8),
               )

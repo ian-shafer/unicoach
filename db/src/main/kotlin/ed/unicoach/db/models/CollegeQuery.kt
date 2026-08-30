@@ -22,12 +22,12 @@ data class CollegeQuery(
   val region: Int? = null,
   val locales: List<Int>? = null,
   val control: List<Int>? = null,
-  val minUndergradEnrollment: Int? = null,
-  val maxUndergradEnrollment: Int? = null,
-  val minAdmissionRate: Double? = null,
-  val maxAdmissionRate: Double? = null,
-  val maxNetPrice: Int? = null,
-  val minGraduationRate: Double? = null,
+  val minUndergradEnrollmentHeadcount: Int? = null,
+  val maxUndergradEnrollmentHeadcount: Int? = null,
+  val minAdmissionRateShare: Double? = null,
+  val maxAdmissionRateShare: Double? = null,
+  val maxNetPricePerYearUsd: Int? = null,
+  val minCompletionRate150pct4yrShare: Double? = null,
   val sortBy: SortBy = SortBy.ENROLLMENT_DESC,
   val credentialLevel: CredentialLevel? = null,
   val limit: Int,
@@ -38,13 +38,13 @@ data class CollegeQuery(
     ENROLLMENT_DESC,
 
     /** Most selective first (lowest admission rate). */
-    ADMISSION_RATE_ASC,
+    ADMISSION_RATE_SHARE_ASC,
 
     /** Cheapest first (lowest average annual net price). */
-    NET_PRICE_ASC,
+    NET_PRICE_PER_YEAR_USD_ASC,
 
     /** Best completion first (highest 6-year graduation rate). */
-    GRADUATION_RATE_DESC,
+    COMPLETION_RATE_150PCT_4YR_SHARE_DESC,
 
     /** Alphabetical by institution name. */
     NAME_ASC,

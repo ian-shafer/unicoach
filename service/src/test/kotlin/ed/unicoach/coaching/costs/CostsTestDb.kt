@@ -36,12 +36,12 @@ object CostsTestDb {
 
   private var nextIpedsUnitId = 500000
 
-  /** The shared bracket dollar figures (`net_price_q1..q5`) [seedCollege] seeds by default — the one home both test classes read. */
-  const val NET_PRICE_Q1 = 9000
-  const val NET_PRICE_Q2 = 11000
-  const val NET_PRICE_Q3 = 14000
-  const val NET_PRICE_Q4 = 17000
-  const val NET_PRICE_Q5 = 21000
+  /** The shared bracket dollar figures (`net_price_per_year_income_q1_usd..q5`) [seedCollege] seeds by default — the one home both test classes read. */
+  const val NET_PRICE_PER_YEAR_INCOME_Q1_USD = 9000
+  const val NET_PRICE_PER_YEAR_INCOME_Q2_USD = 11000
+  const val NET_PRICE_PER_YEAR_INCOME_Q3_USD = 14000
+  const val NET_PRICE_PER_YEAR_INCOME_Q4_USD = 17000
+  const val NET_PRICE_PER_YEAR_INCOME_Q5_USD = 21000
 
   const val SOURCE_URL: String = "https://example.edu/cds-2024-25.pdf"
   const val ARCHIVE_URL: String = "https://www.collegedata.fyi/schools/example/2024-25"
@@ -55,12 +55,20 @@ object CostsTestDb {
   fun seedMeritAid(
     collegeId: CollegeId,
     sourceYear: Int = 2024,
-    freshmenFtTotal: Int? = 2000,
-    noNeedMeritCount: Int? = 500,
-    noNeedMeritAvg: Int? = 12500,
+    firstTimeFullTimeFreshmenHeadcount: Int? = 2000,
+    noNeedMeritRecipientsHeadcount: Int? = 500,
+    noNeedMeritAverageUsd: Int? = 12500,
     sourceUrl: String = SOURCE_URL,
     archiveUrl: String? = ARCHIVE_URL,
-  ) = CoachingTestDb.seedMeritAid(collegeId, sourceYear, freshmenFtTotal, noNeedMeritCount, noNeedMeritAvg, sourceUrl, archiveUrl)
+  ) = CoachingTestDb.seedMeritAid(
+    collegeId,
+    sourceYear,
+    firstTimeFullTimeFreshmenHeadcount,
+    noNeedMeritRecipientsHeadcount,
+    noNeedMeritAverageUsd,
+    sourceUrl,
+    archiveUrl,
+  )
 
   fun createStudent(): StudentId = CoachingTestDb.createStudent("costs")
 
@@ -68,17 +76,17 @@ object CostsTestDb {
     name: String,
     state: String = "CA",
     control: Int = 1,
-    costAttendance: Int? = 40000,
-    netPrice: Int? = 20000,
-    netPriceQ1: Int? = NET_PRICE_Q1,
-    netPriceQ2: Int? = NET_PRICE_Q2,
-    netPriceQ3: Int? = NET_PRICE_Q3,
-    netPriceQ4: Int? = NET_PRICE_Q4,
-    netPriceQ5: Int? = NET_PRICE_Q5,
-    tuitionInState: Int? = 12000,
-    tuitionOutState: Int? = 30000,
-    medianDebt: Int? = 23000,
-    medianEarnings: Int? = 55000,
+    costOfAttendancePerYearUsd: Int? = 40000,
+    netPricePerYearUsd: Int? = 20000,
+    netPricePerYearIncomeQ1Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q1_USD,
+    netPricePerYearIncomeQ2Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q2_USD,
+    netPricePerYearIncomeQ3Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q3_USD,
+    netPricePerYearIncomeQ4Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q4_USD,
+    netPricePerYearIncomeQ5Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q5_USD,
+    tuitionAndFeesInStatePerYearUsd: Int? = 12000,
+    tuitionAndFeesOutOfStatePerYearUsd: Int? = 30000,
+    medianDebtAtCompletionUsd: Int? = 23000,
+    medianEarnings10yAfterEntryUsd: Int? = 55000,
   ): CollegeId {
     val ipedsUnitId = nextIpedsUnitId++
     return CollegesDao
@@ -95,22 +103,22 @@ object CostsTestDb {
           latitude = 34.0,
           longitude = -118.0,
           control = control,
-          undergradEnrollment = 5000,
-          admissionRate = 0.5,
-          satAvg = 1200,
-          costAttendance = costAttendance,
-          netPrice = netPrice,
-          netPriceQ1 = netPriceQ1,
-          netPriceQ2 = netPriceQ2,
-          netPriceQ3 = netPriceQ3,
-          netPriceQ4 = netPriceQ4,
-          netPriceQ5 = netPriceQ5,
-          tuitionInState = tuitionInState,
-          tuitionOutState = tuitionOutState,
-          graduationRate = 0.7,
-          medianEarnings = medianEarnings,
-          medianDebt = medianDebt,
-          pctPell = 0.4,
+          undergradEnrollmentHeadcount = 5000,
+          admissionRateShare = 0.5,
+          satAverageEquivalentScore = 1200,
+          costOfAttendancePerYearUsd = costOfAttendancePerYearUsd,
+          netPricePerYearUsd = netPricePerYearUsd,
+          netPricePerYearIncomeQ1Usd = netPricePerYearIncomeQ1Usd,
+          netPricePerYearIncomeQ2Usd = netPricePerYearIncomeQ2Usd,
+          netPricePerYearIncomeQ3Usd = netPricePerYearIncomeQ3Usd,
+          netPricePerYearIncomeQ4Usd = netPricePerYearIncomeQ4Usd,
+          netPricePerYearIncomeQ5Usd = netPricePerYearIncomeQ5Usd,
+          tuitionAndFeesInStatePerYearUsd = tuitionAndFeesInStatePerYearUsd,
+          tuitionAndFeesOutOfStatePerYearUsd = tuitionAndFeesOutOfStatePerYearUsd,
+          completionRate150pct4yrShare = 0.7,
+          medianEarnings10yAfterEntryUsd = medianEarnings10yAfterEntryUsd,
+          medianDebtAtCompletionUsd = medianDebtAtCompletionUsd,
+          pellShare = 0.4,
           website = "https://test$ipedsUnitId.edu",
         ),
       ).getOrThrow()

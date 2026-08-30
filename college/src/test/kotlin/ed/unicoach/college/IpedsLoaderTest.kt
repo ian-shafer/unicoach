@@ -203,10 +203,10 @@ class IpedsLoaderTest {
   @Test
   fun `the dot sentinel nulls DISABPCT and ROOMCAP without touching a real value`() {
     val ic = icRows()
-    assertNull(ic.getValue(161280).disabilityPct, "'.' is not a number")
-    assertNull(ic.getValue(161280).housingCapacity)
-    assertEquals(17.0, ic.getValue(166027).disabilityPct)
-    assertEquals(14344, ic.getValue(166027).housingCapacity)
+    assertNull(ic.getValue(161280).registeredDisabilityPercent, "'.' is not a number")
+    assertNull(ic.getValue(161280).housingCapacityHeadcount)
+    assertEquals(17.0, ic.getValue(166027).registeredDisabilityPercent)
+    assertEquals(14344, ic.getValue(166027).housingCapacityHeadcount)
   }
 
   @Test
@@ -221,18 +221,18 @@ class IpedsLoaderTest {
   @Test
   fun `APPLFEEU zero is a real free application, distinct from the dot sentinel`() {
     val ic = icRows()
-    assertEquals(0, ic.getValue(102234).applicationFee, "0 is a FREE application, not a missing one")
-    assertNull(ic.getValue(161280).applicationFee, "'.' is not reported")
-    assertEquals(70, ic.getValue(186131).applicationFee)
+    assertEquals(0, ic.getValue(102234).applicationFeeUsd, "0 is a FREE application, not a missing one")
+    assertNull(ic.getValue(161280).applicationFeeUsd, "'.' is not reported")
+    assertEquals(70, ic.getValue(186131).applicationFeeUsd)
   }
 
   @Test
   fun `ROOM 2 means no housing, not a zero-valued yes`() {
     val ic = icRows()
-    assertEquals(false, ic.getValue(100690).hasHousing, "ROOM=2 is No")
-    assertEquals(true, ic.getValue(166027).hasHousing)
-    assertNull(ic.getValue(161280).hasHousing)
-    assertNull(ic.getValue(219338).hasHousing)
+    assertEquals(false, ic.getValue(100690).offersHousing, "ROOM=2 is No")
+    assertEquals(true, ic.getValue(166027).offersHousing)
+    assertNull(ic.getValue(161280).offersHousing)
+    assertNull(ic.getValue(219338).offersHousing)
   }
 
   @Test
@@ -336,7 +336,7 @@ class IpedsLoaderTest {
     assertTrue(mapped is MapResult.Mapped, "$mapped")
     assertEquals("040201", mapped.value.cipCode)
     assertEquals(5, mapped.value.awardLevel)
-    assertEquals(6, mapped.value.awardsTotal)
+    assertEquals(6, mapped.value.awardsCount)
   }
 
   @Test

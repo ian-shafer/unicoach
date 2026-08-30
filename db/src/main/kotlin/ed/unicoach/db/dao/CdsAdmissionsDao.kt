@@ -105,9 +105,9 @@ object CdsAdmissionsDao {
       id = CollegeMeritAidId(UUID.fromString(rs.getString("id"))),
       collegeId = CollegeId(UUID.fromString(rs.getString("college_id"))),
       sourceYear = rs.getInt("source_year"),
-      freshmenFtTotal = rs.getIntOrNull("freshmen_ft_total"),
-      noNeedMeritCount = rs.getIntOrNull("no_need_merit_count"),
-      noNeedMeritAvg = rs.getIntOrNull("no_need_merit_avg"),
+      firstTimeFullTimeFreshmenHeadcount = rs.getIntOrNull("first_time_full_time_freshmen_headcount"),
+      noNeedMeritRecipientsHeadcount = rs.getIntOrNull("no_need_merit_recipients_headcount"),
+      noNeedMeritAverageUsd = rs.getIntOrNull("no_need_merit_average_usd"),
       sourceUrl = rs.getString("source_url"),
       archiveUrl = rs.getString("archive_url"),
       createdAt = rs.getInstant("created_at"),
@@ -205,9 +205,9 @@ object CdsAdmissionsDao {
       keyColumns = mapCycleKey(input.collegeId, input.sourceYear),
       columns =
         linkedMapOf<String, Bind>(
-          "freshmen_ft_total" to { stmt, i -> stmt.setIntOrNull(i, input.freshmenFtTotal) },
-          "no_need_merit_count" to { stmt, i -> stmt.setIntOrNull(i, input.noNeedMeritCount) },
-          "no_need_merit_avg" to { stmt, i -> stmt.setIntOrNull(i, input.noNeedMeritAvg) },
+          "first_time_full_time_freshmen_headcount" to { stmt, i -> stmt.setIntOrNull(i, input.firstTimeFullTimeFreshmenHeadcount) },
+          "no_need_merit_recipients_headcount" to { stmt, i -> stmt.setIntOrNull(i, input.noNeedMeritRecipientsHeadcount) },
+          "no_need_merit_average_usd" to { stmt, i -> stmt.setIntOrNull(i, input.noNeedMeritAverageUsd) },
         ) + mapProvenance(input.sourceUrl, input.archiveUrl),
       mapError = writeError("college_merit_aid", input.collegeId, input.sourceYear),
     )

@@ -66,18 +66,29 @@ class CollegeSearchTool(
           }
           putIntArrayProperty("locales", "IPEDS urbanization locale codes (11-43); matches any (OR-set).")
           putIntArrayProperty("control", "Control codes: 1 public, 2 private nonprofit, 3 private for-profit; matches any.")
-          putIntProperty("minUndergradEnrollment", "Minimum degree-seeking undergraduate enrollment.")
-          putIntProperty("maxUndergradEnrollment", "Maximum degree-seeking undergraduate enrollment.")
-          putNumberProperty("minAdmissionRate", "Minimum admission rate (0-1).")
-          putNumberProperty("maxAdmissionRate", "Maximum admission rate (0-1).")
-          putIntProperty("maxNetPrice", "Maximum average annual net price, USD.")
-          putNumberProperty("minGraduationRate", "Minimum 6-year graduation rate (0-1).")
+          putIntProperty(
+            "minUndergradEnrollmentHeadcount",
+            "Minimum undergraduate enrollment headcount (degree- and certificate-seeking).",
+          )
+          putIntProperty(
+            "maxUndergradEnrollmentHeadcount",
+            "Maximum undergraduate enrollment headcount (degree- and certificate-seeking).",
+          )
+          putNumberProperty("minAdmissionRateShare", "Minimum admission rate (0-1).")
+          putNumberProperty("maxAdmissionRateShare", "Maximum admission rate (0-1).")
+          putIntProperty("maxNetPricePerYearUsd", "Maximum average annual net price, in whole US dollars.")
+          putNumberProperty(
+            "minCompletionRate150pct4yrShare",
+            "Minimum completion rate (0-1): the share of first-time full-time students at a " +
+              "four-year institution who finish within 150% of normal time (6 years). " +
+              "Two-year colleges do not report it and are filtered out by this bound.",
+          )
           putWordEnumProperty(
             "sort_by",
             SORT_BY_WORDS.keys,
             "Result ordering. \"enrollment\" (default): largest undergraduate " +
-              "enrollment first; \"admission_rate\": most selective first; " +
-              "\"net_price\": cheapest first; \"graduation_rate\": best completion " +
+              "enrollment first; \"admission_rate_share\": most selective first; " +
+              "\"net_price_per_year_usd\": cheapest first; \"completion_rate_150pct_4yr_share\": best completion " +
               "first; \"name\": alphabetical. Sorting never filters: colleges " +
               "missing the sort field are listed last, not dropped.",
           )
@@ -191,52 +202,52 @@ class CollegeSearchTool(
       return ParseResult.Err("control must be 1, 2, or 3")
     }
     val minUndergrad =
-      when (val r = optInt(input, "minUndergradEnrollment")) {
+      when (val r = optInt(input, "minUndergradEnrollmentHeadcount")) {
         is Parsed.Err -> return ParseResult.Err(r.reason)
         is Parsed.Ok -> r.value
       }
     if (minUndergrad != null && minUndergrad < 0) {
-      return ParseResult.Err("minUndergradEnrollment must be >= 0")
+      return ParseResult.Err("minUndergradEnrollmentHeadcount must be >= 0")
     }
     val maxUndergrad =
-      when (val r = optInt(input, "maxUndergradEnrollment")) {
+      when (val r = optInt(input, "maxUndergradEnrollmentHeadcount")) {
         is Parsed.Err -> return ParseResult.Err(r.reason)
         is Parsed.Ok -> r.value
       }
     if (maxUndergrad != null && maxUndergrad < 0) {
-      return ParseResult.Err("maxUndergradEnrollment must be >= 0")
+      return ParseResult.Err("maxUndergradEnrollmentHeadcount must be >= 0")
     }
     val minAdmission =
-      when (val r = optDouble(input, "minAdmissionRate")) {
+      when (val r = optDouble(input, "minAdmissionRateShare")) {
         is Parsed.Err -> return ParseResult.Err(r.reason)
         is Parsed.Ok -> r.value
       }
     if (minAdmission != null && minAdmission !in 0.0..1.0) {
-      return ParseResult.Err("minAdmissionRate must be 0.0-1.0")
+      return ParseResult.Err("minAdmissionRateShare must be 0.0-1.0")
     }
     val maxAdmission =
-      when (val r = optDouble(input, "maxAdmissionRate")) {
+      when (val r = optDouble(input, "maxAdmissionRateShare")) {
         is Parsed.Err -> return ParseResult.Err(r.reason)
         is Parsed.Ok -> r.value
       }
     if (maxAdmission != null && maxAdmission !in 0.0..1.0) {
-      return ParseResult.Err("maxAdmissionRate must be 0.0-1.0")
+      return ParseResult.Err("maxAdmissionRateShare must be 0.0-1.0")
     }
-    val maxNetPrice =
-      when (val r = optInt(input, "maxNetPrice")) {
+    val maxNetPricePerYearUsd =
+      when (val r = optInt(input, "maxNetPricePerYearUsd")) {
         is Parsed.Err -> return ParseResult.Err(r.reason)
         is Parsed.Ok -> r.value
       }
-    if (maxNetPrice != null && maxNetPrice < 0) {
-      return ParseResult.Err("maxNetPrice must be >= 0")
+    if (maxNetPricePerYearUsd != null && maxNetPricePerYearUsd < 0) {
+      return ParseResult.Err("maxNetPricePerYearUsd must be >= 0")
     }
-    val minGraduation =
-      when (val r = optDouble(input, "minGraduationRate")) {
+    val minCompletion =
+      when (val r = optDouble(input, "minCompletionRate150pct4yrShare")) {
         is Parsed.Err -> return ParseResult.Err(r.reason)
         is Parsed.Ok -> r.value
       }
-    if (minGraduation != null && minGraduation !in 0.0..1.0) {
-      return ParseResult.Err("minGraduationRate must be 0.0-1.0")
+    if (minCompletion != null && minCompletion !in 0.0..1.0) {
+      return ParseResult.Err("minCompletionRate150pct4yrShare must be 0.0-1.0")
     }
     val sortBy =
       when (val r = optWordEnum(input, "sort_by", SORT_BY_WORDS)) {
@@ -266,12 +277,12 @@ class CollegeSearchTool(
         region = region,
         locales = locales,
         control = control,
-        minUndergradEnrollment = minUndergrad,
-        maxUndergradEnrollment = maxUndergrad,
-        minAdmissionRate = minAdmission,
-        maxAdmissionRate = maxAdmission,
-        maxNetPrice = maxNetPrice,
-        minGraduationRate = minGraduation,
+        minUndergradEnrollmentHeadcount = minUndergrad,
+        maxUndergradEnrollmentHeadcount = maxUndergrad,
+        minAdmissionRateShare = minAdmission,
+        maxAdmissionRateShare = maxAdmission,
+        maxNetPricePerYearUsd = maxNetPricePerYearUsd,
+        minCompletionRate150pct4yrShare = minCompletion,
         sortBy = sortBy,
         credentialLevel = credentialLevel,
         limit = limit,
@@ -420,10 +431,10 @@ class CollegeSearchTool(
       // filter stays coded -- there the code is the contract, and its schema
       // description documents it.
       put("control", InstitutionControl.labelFor(match.control))
-      putOrNull("undergrad_enrollment", match.undergradEnrollment)
-      putOrNull("admission_rate", match.admissionRate)
-      putOrNull("net_price", match.netPrice)
-      // One self-describing array rather than five opaque `net_price_qN` keys
+      putOrNull("undergrad_enrollment_headcount", match.undergradEnrollmentHeadcount)
+      putOrNull("admission_rate_share", match.admissionRateShare)
+      putOrNull("net_price_per_year_usd", match.netPricePerYearUsd)
+      // One self-describing array rather than five opaque `net_price_per_year_income_qN_usd` keys
       // (RFC 142): every amount arrives beside the band code AND the dollar
       // range a coach says aloud, so the model never has to translate a source
       // bucket name into English -- and cannot say "Q5" because it never saw it.
@@ -436,16 +447,16 @@ class CollegeSearchTool(
             add(
               buildJsonObject {
                 putIncomeBand(band)
-                put("net_price", amount)
+                put("net_price_per_year_usd", amount)
               },
             )
           }
         }
       }
-      putOrNull("graduation_rate", match.graduationRate)
-      putOrNull("median_earnings", match.medianEarnings)
-      putOrNull("median_debt", match.medianDebt)
-      putOrNull("pct_pell", match.pctPell)
+      putOrNull("completion_rate_150pct_4yr_share", match.completionRate150pct4yrShare)
+      putOrNull("median_earnings_10y_after_entry_usd", match.medianEarnings10yAfterEntryUsd)
+      putOrNull("median_debt_at_completion_usd", match.medianDebtAtCompletionUsd)
+      putOrNull("pell_share", match.pellShare)
       putJsonArray("programs") {
         match.programTitles.forEach { add(it) }
       }
@@ -491,12 +502,12 @@ class CollegeSearchTool(
         "region",
         "locales",
         "control",
-        "minUndergradEnrollment",
-        "maxUndergradEnrollment",
-        "minAdmissionRate",
-        "maxAdmissionRate",
-        "maxNetPrice",
-        "minGraduationRate",
+        "minUndergradEnrollmentHeadcount",
+        "maxUndergradEnrollmentHeadcount",
+        "minAdmissionRateShare",
+        "maxAdmissionRateShare",
+        "maxNetPricePerYearUsd",
+        "minCompletionRate150pct4yrShare",
         "sort_by",
         "credential_level",
         "limit",
@@ -512,9 +523,9 @@ class CollegeSearchTool(
         // fails THIS compile rather than silently going unofferable to the LLM.
         when (sortBy) {
           CollegeQuery.SortBy.ENROLLMENT_DESC -> "enrollment"
-          CollegeQuery.SortBy.ADMISSION_RATE_ASC -> "admission_rate"
-          CollegeQuery.SortBy.NET_PRICE_ASC -> "net_price"
-          CollegeQuery.SortBy.GRADUATION_RATE_DESC -> "graduation_rate"
+          CollegeQuery.SortBy.ADMISSION_RATE_SHARE_ASC -> "admission_rate_share"
+          CollegeQuery.SortBy.NET_PRICE_PER_YEAR_USD_ASC -> "net_price_per_year_usd"
+          CollegeQuery.SortBy.COMPLETION_RATE_150PCT_4YR_SHARE_DESC -> "completion_rate_150pct_4yr_share"
           CollegeQuery.SortBy.NAME_ASC -> "name"
         }
       }
@@ -543,13 +554,13 @@ class CollegeSearchTool(
         "filters: program of study (CIP code prefix), location (US states, IPEDS " +
         "region, urbanization locale), institutional control (public/private), " +
         "undergraduate enrollment size, admission rate (selectivity), maximum net " +
-        "price (affordability), and minimum graduation rate — plus an optional " +
+        "price (affordability), and minimum completion rate — plus an optional " +
         "`sort_by` ordering and a `credential_level` word for the program filter. " +
         "The response carries `count` (returned rows, capped at $MAX_LIMIT) and " +
         "`total_matches` (every college matching the filters, uncapped) — cite " +
         "`total_matches` when stating how many schools match. Returns matching real " +
         "institutions with size, selectivity, net price, and outcome context " +
-        "(graduation rate, median earnings, Pell share). Each result carries " +
+        "(completion rate within 150% of normal time, median earnings, Pell share). Each result carries " +
         "`college_id`, the college's stable identifier — exactly what the " +
         "`update_college_list` tool's `college_id` parameter takes, so copy it " +
         "verbatim from a result and never construct or guess one. Each result also carries " +
@@ -557,9 +568,9 @@ class CollegeSearchTool(
         "the college reports: one entry per band carrying income_band_label, the band's income " +
         "range in plain words -- " +
         IncomeBand.entries.joinToString(" / ") { it.bracket } +
-        " -- alongside the net_price a family in that band pays. Name a band by that dollar " +
+        " -- alongside the net_price_per_year_usd a family in that band pays. Name a band by that dollar " +
         "range when you say it aloud, never by a data source's own bucket name. Each result also " +
-        "carries median_debt, the median cumulative federal loan debt of graduates, so " +
+        "carries median_debt_at_completion_usd, the median cumulative federal loan debt of graduates, so " +
         "cost answers can cite the band matching the family's income. This tool filters on " +
         "structured fields only; it CANNOT reason about geographic distance, " +
         "proximity to the coastline, or how close two places are — to approximate " +

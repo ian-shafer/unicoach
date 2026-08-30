@@ -10,10 +10,15 @@ package ed.unicoach.coaching.costs
 enum class CostField(
   val wireName: String,
 ) {
-  STICKER_COST_ATTENDANCE("sticker_cost_attendance"),
-  TUITION_IN_STATE("tuition_in_state"),
-  TUITION_OUT_STATE("tuition_out_state"),
+  STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD("sticker_cost_of_attendance_per_year_usd"),
+  TUITION_AND_FEES_IN_STATE_PER_YEAR_USD("tuition_and_fees_in_state_per_year_usd"),
+  TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD("tuition_and_fees_out_of_state_per_year_usd"),
+
+  // The one entry that is NOT a bare dollar figure: it keys an OBJECT
+  // (amount_usd + basis + optional band), and a container carries no unit --
+  // the same rule that leaves `net_price_by_income_band` unsuffixed. The
+  // scalar inside it says its own unit.
   NET_PRICE("net_price"),
-  MEDIAN_DEBT("median_debt"),
-  MEDIAN_EARNINGS("median_earnings"),
+  MEDIAN_DEBT_AT_COMPLETION_USD("median_debt_at_completion_usd"),
+  MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD("median_earnings_10y_after_entry_usd"),
 }

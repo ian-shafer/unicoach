@@ -107,7 +107,7 @@ class CollegeSearchRoutingTest {
       dbConnection
         .prepareStatement(
           """
-          INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control, undergrad_enrollment)
+          INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control, undergrad_enrollment_headcount)
           VALUES (?, ?, ?, 'Townsville', 'CA', 1, 5000)
           """.trimIndent(),
         ).use { stmt ->

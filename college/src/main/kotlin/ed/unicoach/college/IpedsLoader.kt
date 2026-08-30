@@ -391,10 +391,10 @@ internal class IpedsLoader(
         hasRotc = ic?.hasRotc,
         hasStudyAbroad = ic?.hasStudyAbroad,
         disabilityBand = ic?.disabilityBand,
-        disabilityPct = ic?.disabilityPct,
-        hasHousing = ic?.hasHousing,
-        housingCapacity = ic?.housingCapacity,
-        applicationFee = ic?.applicationFee,
+        registeredDisabilityPercent = ic?.registeredDisabilityPercent,
+        offersHousing = ic?.offersHousing,
+        housingCapacityHeadcount = ic?.housingCapacityHeadcount,
+        applicationFeeUsd = ic?.applicationFeeUsd,
         athleticAssoc = ic?.athleticAssoc ?: emptyList(),
         footballConf = ic?.footballConf,
         // No ADM row at all is the common case (749 of the 2,488 universe
@@ -419,10 +419,10 @@ internal class IpedsLoader(
     val hasRotc: Boolean?,
     val hasStudyAbroad: Boolean?,
     val disabilityBand: Int?,
-    val disabilityPct: Double?,
-    val hasHousing: Boolean?,
-    val housingCapacity: Int?,
-    val applicationFee: Int?,
+    val registeredDisabilityPercent: Double?,
+    val offersHousing: Boolean?,
+    val housingCapacityHeadcount: Int?,
+    val applicationFeeUsd: Int?,
     val athleticAssoc: List<Int>,
     val footballConf: Int?,
   ) : UnitKeyed
@@ -438,7 +438,7 @@ internal class IpedsLoader(
     val ipedsUnitId: Int,
     val cipCode: String,
     val awardLevel: Int,
-    val awardsTotal: Int,
+    val awardsCount: Int,
   ) {
     fun toRow(
       collegeId: CollegeId,
@@ -448,7 +448,7 @@ internal class IpedsLoader(
         collegeId = collegeId,
         cipCode = cipCode,
         awardLevel = awardLevel,
-        awardsTotal = awardsTotal,
+        awardsCount = awardsCount,
         surveyYear = surveyYear,
       )
   }
@@ -525,12 +525,20 @@ internal class IpedsLoader(
           codeInDomainOrNull(record, COL_DISAB, DISABILITY_BAND_MIN, DISABILITY_BAND_MAX, "disability_band", coercions),
         // '.' fails toDoubleOrNull and is therefore already NULL; the domain
         // bound is the CHECK's mirror.
-        disabilityPct = doubleInDomainOrNull(record, COL_DISABPCT, PCT_MIN, PCT_MAX, "disability_pct", coercions),
-        hasHousing = boolFromRoom(record, "has_housing", coercions),
-        housingCapacity = intInDomainOrNull(record, COL_ROOMCAP, 0, Int.MAX_VALUE, "housing_capacity", coercions),
+        registeredDisabilityPercent =
+          doubleInDomainOrNull(
+            record,
+            COL_DISABPCT,
+            PCT_MIN,
+            PCT_MAX,
+            "registered_disability_percent",
+            coercions,
+          ),
+        offersHousing = boolFromRoom(record, "offers_housing", coercions),
+        housingCapacityHeadcount = intInDomainOrNull(record, COL_ROOMCAP, 0, Int.MAX_VALUE, "housing_capacity_headcount", coercions),
         // APPLFEEU = 0 is a REAL free application, distinct from '.' (not
         // reported). intInDomainOrNull keeps the 0 and nulls the dot.
-        applicationFee = intInDomainOrNull(record, COL_APPLFEEU, 0, Int.MAX_VALUE, "application_fee", coercions),
+        applicationFeeUsd = intInDomainOrNull(record, COL_APPLFEEU, 0, Int.MAX_VALUE, "application_fee_usd", coercions),
         athleticAssoc = athleticAssoc(record),
         footballConf = rawCode(record, COL_CONFNO1),
       ),
@@ -604,14 +612,14 @@ internal class IpedsLoader(
     val ipedsUnitId = intOrNull(record, COL_UNITID)
     val rawCip = stringOrNull(record, COL_CIPCODE)
     val awardLevel = intOrNull(record, COL_AWLEVEL)
-    val awardsTotal = intOrNull(record, COL_CTOTALT)
-    if (ipedsUnitId == null || rawCip == null || awardLevel == null || awardsTotal == null) {
+    val awardsCount = intOrNull(record, COL_CTOTALT)
+    if (ipedsUnitId == null || rawCip == null || awardLevel == null || awardsCount == null) {
       val missing =
         buildList {
           if (ipedsUnitId == null) add("ipeds_unit_id")
           if (rawCip == null) add("cip_code")
           if (awardLevel == null) add("award_level")
-          if (awardsTotal == null) add("awards_total")
+          if (awardsCount == null) add("awards_count")
         }
       logger.debug(
         "Skipping census row [line={}]: missing required fields [{}] [ipeds_unit_id={}]",
@@ -636,7 +644,7 @@ internal class IpedsLoader(
       return MapResult.Skipped(SkipReason.CipCodeMalformed)
     }
     return MapResult.Mapped(
-      CompletionFields(ipedsUnitId = ipedsUnitId, cipCode = cipCode, awardLevel = awardLevel, awardsTotal = awardsTotal),
+      CompletionFields(ipedsUnitId = ipedsUnitId, cipCode = cipCode, awardLevel = awardLevel, awardsCount = awardsCount),
       emptyMap(),
     )
   }

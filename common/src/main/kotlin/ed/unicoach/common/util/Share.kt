@@ -8,7 +8,7 @@ import java.util.Locale
  * form live here, on the [DataSize] precedent, so no caller writes `* 100` at
  * its own site and no reader has to learn from a field name whether a bare
  * `Double` holds a 0-1 fraction or a 0-100 percent. The repo runs both scales
- * today (`College.pctPell` is 0-1, the IPEDS disability figure is 0-100), and
+ * today (`College.pellShare` is 0-1, the IPEDS disability figure is 0-100), and
  * a comment is the only thing that has kept them apart.
  *
  * The number and the sentence a coach reads aloud come from this one type, so

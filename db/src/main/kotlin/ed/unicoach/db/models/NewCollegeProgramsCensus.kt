@@ -14,6 +14,6 @@ data class NewCollegeProgramsCensus(
   val collegeId: CollegeId,
   val cipCode: String,
   val awardLevel: Int,
-  val awardsTotal: Int,
+  val awardsCount: Int,
   val surveyYear: Int,
 )

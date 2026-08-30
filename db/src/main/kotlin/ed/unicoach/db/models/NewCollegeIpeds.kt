@@ -35,11 +35,11 @@ data class NewCollegeIpeds(
   val hasRotc: Boolean?,
   val hasStudyAbroad: Boolean?,
   val disabilityBand: Int?,
-  /** Raw IC `DISABPCT`, a 0–100 PERCENT — not a 0–1 fraction like `College.pctPell`. */
-  val disabilityPct: Double?,
-  val hasHousing: Boolean?,
-  val housingCapacity: Int?,
-  val applicationFee: Int?,
+  /** Raw IC `DISABPCT`, a 0–100 PERCENT — not a 0–1 fraction like `College.pellShare`. */
+  val registeredDisabilityPercent: Double?,
+  val offersHousing: Boolean?,
+  val housingCapacityHeadcount: Int?,
+  val applicationFeeUsd: Int?,
   val athleticAssoc: List<Int>,
   val footballConf: Int?,
   val testPolicy: Int?,

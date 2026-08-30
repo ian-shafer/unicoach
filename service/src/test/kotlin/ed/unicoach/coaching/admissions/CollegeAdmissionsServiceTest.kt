@@ -80,7 +80,12 @@ class CollegeAdmissionsServiceTest {
     val college = AdmissionsTestDb.seedListedCollege(student, "No Total College")
     // A quarter of the corpus reports no freshman total. The average is an
     // independent fact and still answers; the share is simply missing.
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = null, noNeedMeritCount = 358, noNeedMeritAvg = 16112)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = null,
+      noNeedMeritRecipientsHeadcount = 358,
+      noNeedMeritAverageUsd = 16112,
+    )
 
     val merit = read(student).colleges.single().meritAid
     assertNotNull(merit)
@@ -92,7 +97,12 @@ class CollegeAdmissionsServiceTest {
   fun `a missing recipient count also withholds the share`() {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "No Count College")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = 2000, noNeedMeritCount = null, noNeedMeritAvg = 16112)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 2000,
+      noNeedMeritRecipientsHeadcount = null,
+      noNeedMeritAverageUsd = 16112,
+    )
 
     assertNull(
       read(student)
@@ -109,7 +119,12 @@ class CollegeAdmissionsServiceTest {
     val college = AdmissionsTestDb.seedListedCollege(student, "Amherst-shaped College")
     // The real shape: 480 freshmen, 0 given non-need aid, $0 average. Every one
     // of those zeros is the school's own statement.
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = 480, noNeedMeritCount = 0, noNeedMeritAvg = 0)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 480,
+      noNeedMeritRecipientsHeadcount = 0,
+      noNeedMeritAverageUsd = 0,
+    )
 
     val merit = read(student).colleges.single().meritAid
     assertNotNull(merit)
@@ -128,13 +143,19 @@ class CollegeAdmissionsServiceTest {
   fun `a zero freshman total is silence, not a section of bare zeroes`() {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Zero Total College")
-    // `freshmen_ft_total >= 0` is in domain and the corpus CHECK then forces 0
+    // `first_time_full_time_freshmen_headcount >= 0` is in domain and the corpus
+    // CHECK then forces 0
     // recipients, so a mangled extraction can report a school with no freshman
     // class at all. Rendering it would put two bare zeroes and a citation with
     // no computable share in front of the coach, and -- worse -- keep the
     // school's merit silence OUT of data_availability, where the coach reads
     // it. It is ruled on exactly like the denominator-only row.
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = 0, noNeedMeritCount = 0, noNeedMeritAvg = null)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 0,
+      noNeedMeritRecipientsHeadcount = 0,
+      noNeedMeritAverageUsd = null,
+    )
 
     val admissions = read(student).colleges.single()
     assertNull(admissions.meritAid, "a school with no freshman class reported no merit fact")
@@ -180,7 +201,12 @@ class CollegeAdmissionsServiceTest {
   fun `the share is over all full-time freshmen`() {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Share College")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 2000,
+      noNeedMeritRecipientsHeadcount = 500,
+      noNeedMeritAverageUsd = 12500,
+    )
 
     val merit = read(student).colleges.single().meritAid
     assertNotNull(merit)
@@ -203,7 +229,12 @@ class CollegeAdmissionsServiceTest {
   fun `a merit row with no measures at all reads as unreported`() {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Empty Row College")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = null, noNeedMeritCount = null, noNeedMeritAvg = null)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = null,
+      noNeedMeritRecipientsHeadcount = null,
+      noNeedMeritAverageUsd = null,
+    )
 
     val admissions = read(student).colleges.single()
     assertNull(admissions.meritAid, "a citation with no facts under it is not data")
@@ -218,7 +249,12 @@ class CollegeAdmissionsServiceTest {
     // notReported, or the school's "we do not report this" becomes unsayable.
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Denominator Only College")
-    AdmissionsTestDb.seedMeritAid(college, freshmenFtTotal = 2760, noNeedMeritCount = null, noNeedMeritAvg = null)
+    AdmissionsTestDb.seedMeritAid(
+      college,
+      firstTimeFullTimeFreshmenHeadcount = 2760,
+      noNeedMeritRecipientsHeadcount = null,
+      noNeedMeritAverageUsd = null,
+    )
 
     val admissions = read(student).colleges.single()
     assertNull(admissions.meritAid, "a denominator alone is not a merit fact")
@@ -229,9 +265,19 @@ class CollegeAdmissionsServiceTest {
   fun `either merit measure alone is still a reported section`() {
     val student = AdmissionsTestDb.createStudent()
     val countOnly = AdmissionsTestDb.seedListedCollege(student, "Count Only College")
-    AdmissionsTestDb.seedMeritAid(countOnly, freshmenFtTotal = null, noNeedMeritCount = 358, noNeedMeritAvg = null)
+    AdmissionsTestDb.seedMeritAid(
+      countOnly,
+      firstTimeFullTimeFreshmenHeadcount = null,
+      noNeedMeritRecipientsHeadcount = 358,
+      noNeedMeritAverageUsd = null,
+    )
     val averageOnly = AdmissionsTestDb.seedListedCollege(student, "Average Only College")
-    AdmissionsTestDb.seedMeritAid(averageOnly, freshmenFtTotal = null, noNeedMeritCount = null, noNeedMeritAvg = 16112)
+    AdmissionsTestDb.seedMeritAid(
+      averageOnly,
+      firstTimeFullTimeFreshmenHeadcount = null,
+      noNeedMeritRecipientsHeadcount = null,
+      noNeedMeritAverageUsd = 16112,
+    )
 
     val byId = read(student).colleges.associateBy { it.collegeId }
     assertEquals(358, assertNotNull(byId.getValue(countOnly).meritAid).nonNeedMeritRecipients)
@@ -324,8 +370,8 @@ class CollegeAdmissionsServiceTest {
     val student = AdmissionsTestDb.createStudent()
     val college = AdmissionsTestDb.seedListedCollege(student, "Mixed Cycle University")
     AdmissionsTestDb.seedFactors(college, sourceYear = 2024)
-    AdmissionsTestDb.seedMeritAid(college, sourceYear = 2024, noNeedMeritAvg = 1000)
-    AdmissionsTestDb.seedMeritAid(college, sourceYear = 2025, noNeedMeritAvg = 2000)
+    AdmissionsTestDb.seedMeritAid(college, sourceYear = 2024, noNeedMeritAverageUsd = 1000)
+    AdmissionsTestDb.seedMeritAid(college, sourceYear = 2025, noNeedMeritAverageUsd = 2000)
 
     val admissions = read(student).colleges.single()
     assertEquals("Mixed Cycle University's 2025-26 Common Data Set", admissions.meritAid?.source?.citedAs)

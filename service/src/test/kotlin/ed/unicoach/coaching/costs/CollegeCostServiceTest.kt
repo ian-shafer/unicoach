@@ -50,7 +50,7 @@ class CollegeCostServiceTest {
     answerBand(student, IncomeBand.K48_TO_75K)
 
     val netPrice = assertIs<NetPrice.BandSpecific>(profileOf(student).colleges.single().netPrice)
-    assertEquals(14000, netPrice.amount, "48k_to_75k must select net_price_q3")
+    assertEquals(14000, netPrice.amount, "48k_to_75k must select net_price_per_year_income_q3_usd")
     assertEquals(IncomeBand.K48_TO_75K, netPrice.band)
   }
 
@@ -103,11 +103,11 @@ class CollegeCostServiceTest {
       student,
       seedCollege(
         "NoBands U",
-        netPriceQ1 = null,
-        netPriceQ2 = null,
-        netPriceQ3 = null,
-        netPriceQ4 = null,
-        netPriceQ5 = null,
+        netPricePerYearIncomeQ1Usd = null,
+        netPricePerYearIncomeQ2Usd = null,
+        netPricePerYearIncomeQ3Usd = null,
+        netPricePerYearIncomeQ4Usd = null,
+        netPricePerYearIncomeQ5Usd = null,
       ),
     )
 
@@ -138,7 +138,7 @@ class CollegeCostServiceTest {
     // declined at any time (RFC 134); the very next read is family-specific.
     answerBand(student, IncomeBand.OVER_110K)
     val netPrice = assertIs<NetPrice.BandSpecific>(profileOf(student).colleges.single().netPrice)
-    assertEquals(21000, netPrice.amount, "over_110k must select net_price_q5")
+    assertEquals(21000, netPrice.amount, "over_110k must select net_price_per_year_income_q5_usd")
   }
 
   @Test
@@ -302,16 +302,22 @@ class CollegeCostServiceTest {
     val student = createStudent()
     addToCollegeList(
       student,
-      seedCollege("Sparse U", costAttendance = null, netPrice = null, medianDebt = null, tuitionOutState = null),
+      seedCollege(
+        "Sparse U",
+        costOfAttendancePerYearUsd = null,
+        netPricePerYearUsd = null,
+        medianDebtAtCompletionUsd = null,
+        tuitionAndFeesOutOfStatePerYearUsd = null,
+      ),
     )
 
     val cost = profileOf(student).colleges.single()
     assertEquals(
       listOf(
-        CostField.STICKER_COST_ATTENDANCE,
-        CostField.TUITION_OUT_STATE,
+        CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD,
+        CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
         CostField.NET_PRICE,
-        CostField.MEDIAN_DEBT,
+        CostField.MEDIAN_DEBT_AT_COMPLETION_USD,
       ),
       cost.notReported,
     )
@@ -321,7 +327,7 @@ class CollegeCostServiceTest {
   @Test
   fun `an answered band whose bracket the college does not report keeps the basis and lists net_price`() {
     val student = createStudent()
-    addToCollegeList(student, seedCollege("NoBracket U", netPriceQ1 = null))
+    addToCollegeList(student, seedCollege("NoBracket U", netPricePerYearIncomeQ1Usd = null))
     answerBand(student, IncomeBand.UNDER_30K)
 
     val cost = profileOf(student).colleges.single()
@@ -432,8 +438,8 @@ class CollegeCostServiceTest {
     val first = seedCollege("Merit One").also { addToCollegeList(student, it) }
     val second = seedCollege("Merit Two").also { addToCollegeList(student, it) }
     seedCollege("Merit None").also { addToCollegeList(student, it) }
-    CostsTestDb.seedMeritAid(first, noNeedMeritAvg = 1000)
-    CostsTestDb.seedMeritAid(second, noNeedMeritAvg = 2000)
+    CostsTestDb.seedMeritAid(first, noNeedMeritAverageUsd = 1000)
+    CostsTestDb.seedMeritAid(second, noNeedMeritAverageUsd = 2000)
 
     val byName = profileOf(student).colleges.associateBy { it.name }
     assertEquals(1000, byName.getValue("Merit One").meritAid?.averageNonNeedAid)
@@ -448,7 +454,7 @@ class CollegeCostServiceTest {
       (1..5).map { n ->
         seedCollege("Merit Batch $n").also {
           addToCollegeList(student, it)
-          CostsTestDb.seedMeritAid(it, noNeedMeritAvg = 1000 * n)
+          CostsTestDb.seedMeritAid(it, noNeedMeritAverageUsd = 1000 * n)
         }
       }
 
@@ -497,8 +503,18 @@ class CollegeCostServiceTest {
     val student = createStudent()
     val shared = seedCollege("Share U").also { addToCollegeList(student, it) }
     val partial = seedCollege("Partial U").also { addToCollegeList(student, it) }
-    CostsTestDb.seedMeritAid(shared, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
-    CostsTestDb.seedMeritAid(partial, freshmenFtTotal = null, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+    CostsTestDb.seedMeritAid(
+      shared,
+      firstTimeFullTimeFreshmenHeadcount = 2000,
+      noNeedMeritRecipientsHeadcount = 500,
+      noNeedMeritAverageUsd = 12500,
+    )
+    CostsTestDb.seedMeritAid(
+      partial,
+      firstTimeFullTimeFreshmenHeadcount = null,
+      noNeedMeritRecipientsHeadcount = 500,
+      noNeedMeritAverageUsd = 12500,
+    )
 
     val byName = profileOf(student).colleges.associateBy { it.name }
     assertEquals(
@@ -523,8 +539,8 @@ class CollegeCostServiceTest {
   fun `the latest merit cycle answers the cost read too`() {
     val student = createStudent()
     val college = seedCollege("Two Cycle U").also { addToCollegeList(student, it) }
-    CostsTestDb.seedMeritAid(college, sourceYear = 2024, noNeedMeritAvg = 1000)
-    CostsTestDb.seedMeritAid(college, sourceYear = 2025, noNeedMeritAvg = 2000)
+    CostsTestDb.seedMeritAid(college, sourceYear = 2024, noNeedMeritAverageUsd = 1000)
+    CostsTestDb.seedMeritAid(college, sourceYear = 2025, noNeedMeritAverageUsd = 2000)
 
     val merit = profileOf(student).colleges.single().meritAid
     assertEquals(2000, merit?.averageNonNeedAid)

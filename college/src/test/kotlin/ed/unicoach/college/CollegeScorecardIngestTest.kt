@@ -339,10 +339,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     val report = ingest()
     // The fixture has 4 non-blank ADM_RATE cells among the 5 loaded rows
     // (330300's is blank), starting from an empty table.
-    assertEquals(0, report.nonNullBefore["admission_rate"])
-    assertEquals(4, report.nonNullAfter["admission_rate"])
+    assertEquals(0, report.nonNullBefore["admission_rate_share"])
+    assertEquals(4, report.nonNullAfter["admission_rate_share"])
     val summary = report.humanSummary()
-    assertTrue(summary.contains("admission_rate 0→4"), "summary carries the delta: $summary")
+    assertTrue(summary.contains("admission_rate_share 0→4"), "summary carries the delta: $summary")
   }
 
   @Test

@@ -76,39 +76,39 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // 4-digit CIP ('0901') the old six-digit-only CHECK would have rejected.
       assertEquals(9, result.programsLoaded)
 
-      // Public row: net_price coalesced from NPT4_PUB.
+      // Public row: net_price_per_year_usd coalesced from NPT4_PUB.
       val public = withSession { CollegesDao.findByIpedsUnitId(it, 110100).getOrThrow() }
       assertNotNull(public)
-      assertEquals(18000, public.netPrice)
-      assertEquals(0.68, public.graduationRate)
-      assertEquals(52000, public.medianEarnings)
-      assertEquals(0.42, public.pctPell)
+      assertEquals(18000, public.netPricePerYearUsd)
+      assertEquals(0.68, public.completionRate150pct4yrShare)
+      assertEquals(52000, public.medianEarnings10yAfterEntryUsd)
+      assertEquals(0.42, public.pellShare)
 
       // Public row: band prices read from NPT4n_PUB (RFC 133). The fixture row
       // carries decoy NPT4n_PRIV values (99001..99005), so these assertions fail
       // under a blind PRIV-first coalesce — the read must be keyed on control.
-      assertEquals(9000, public.netPriceQ1)
-      assertEquals(11000, public.netPriceQ2)
-      assertEquals(14000, public.netPriceQ3)
-      assertEquals(17000, public.netPriceQ4)
-      assertEquals(21000, public.netPriceQ5)
-      assertEquals(21000, public.medianDebt)
+      assertEquals(9000, public.netPricePerYearIncomeQ1Usd)
+      assertEquals(11000, public.netPricePerYearIncomeQ2Usd)
+      assertEquals(14000, public.netPricePerYearIncomeQ3Usd)
+      assertEquals(17000, public.netPricePerYearIncomeQ4Usd)
+      assertEquals(21000, public.netPricePerYearIncomeQ5Usd)
+      assertEquals(21000, public.medianDebtAtCompletionUsd)
 
-      // Private row: net_price coalesced from NPT4_PRIV (NPT4_PUB blank).
+      // Private row: net_price_per_year_usd coalesced from NPT4_PRIV (NPT4_PUB blank).
       val private = withSession { CollegesDao.findByIpedsUnitId(it, 220200).getOrThrow() }
       assertNotNull(private)
       assertEquals(2, private.control)
-      assertEquals(41000, private.netPrice)
+      assertEquals(41000, private.netPricePerYearUsd)
 
       // Private row: band prices read from NPT4n_PRIV (RFC 133). The fixture row
       // carries decoy NPT4n_PUB values (88001..88005), so these assertions fail
       // under a blind PUB-first coalesce — the read must be keyed on control.
-      assertEquals(24000, private.netPriceQ1)
-      assertEquals(27000, private.netPriceQ2)
-      assertEquals(31000, private.netPriceQ3)
-      assertEquals(36000, private.netPriceQ4)
-      assertEquals(41000, private.netPriceQ5)
-      assertEquals(27000, private.medianDebt)
+      assertEquals(24000, private.netPricePerYearIncomeQ1Usd)
+      assertEquals(27000, private.netPricePerYearIncomeQ2Usd)
+      assertEquals(31000, private.netPricePerYearIncomeQ3Usd)
+      assertEquals(36000, private.netPricePerYearIncomeQ4Usd)
+      assertEquals(41000, private.netPricePerYearIncomeQ5Usd)
+      assertEquals(27000, private.medianDebtAtCompletionUsd)
     }
 
   @Test
@@ -185,23 +185,23 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // path -- never a skip, never a coercion tally; neighbors load intact.
       val mountain = withSession { CollegesDao.findByIpedsUnitId(it, 330300).getOrThrow() }
       assertNotNull(mountain)
-      assertNull(mountain.netPriceQ3)
-      assertEquals(12000, mountain.netPriceQ1)
-      assertEquals(19000, mountain.netPriceQ5)
+      assertNull(mountain.netPricePerYearIncomeQ3Usd)
+      assertEquals(12000, mountain.netPricePerYearIncomeQ1Usd)
+      assertEquals(19000, mountain.netPricePerYearIncomeQ5Usd)
 
       // 550500: a negative NPT41_PUB loads un-coerced (the band columns are
-      // excluded from mechanism A, matching net_price/0022); the blank
+      // excluded from mechanism A, matching net_price_per_year_usd/0022); the blank
       // NPT42_PUB cell is null.
       val bayfront = withSession { CollegesDao.findByIpedsUnitId(it, 550500).getOrThrow() }
       assertNotNull(bayfront)
-      assertEquals(-1500, bayfront.netPriceQ1)
-      assertNull(bayfront.netPriceQ2)
-      assertEquals(10000, bayfront.medianDebt)
+      assertEquals(-1500, bayfront.netPricePerYearIncomeQ1Usd)
+      assertNull(bayfront.netPricePerYearIncomeQ2Usd)
+      assertEquals(10000, bayfront.medianDebtAtCompletionUsd)
 
       // 440400: GRAD_DEBT_MDN=PrivacySuppressed loads as null.
       val plains = withSession { CollegesDao.findByIpedsUnitId(it, 440400).getOrThrow() }
       assertNotNull(plains)
-      assertNull(plains.medianDebt)
+      assertNull(plains.medianDebtAtCompletionUsd)
     }
 
   @Test
@@ -271,16 +271,16 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       val result = loader.load(coercion, emptyFields)
 
       assertEquals(1, result.collegesLoaded)
-      assertEquals(1, result.fieldsCoercedToNull["admission_rate"])
+      assertEquals(1, result.fieldsCoercedToNull["admission_rate_share"])
 
-      // GRAD_DEBT_MDN=-100 is likewise out-of-domain (median_debt is a genuine
+      // GRAD_DEBT_MDN=-100 is likewise out-of-domain (median_debt_at_completion_usd is a genuine
       // nonneg money field, RFC 133): nulled and counted, row kept.
-      assertEquals(1, result.fieldsCoercedToNull["median_debt"])
+      assertEquals(1, result.fieldsCoercedToNull["median_debt_at_completion_usd"])
 
       val college = withSession { CollegesDao.findByIpedsUnitId(it, 600600).getOrThrow() }
       assertNotNull(college)
-      assertNull(college.admissionRate)
-      assertNull(college.medianDebt)
+      assertNull(college.admissionRateShare)
+      assertNull(college.medianDebtAtCompletionUsd)
     }
 
   @Test
@@ -290,11 +290,11 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // Row 330300 has an empty ADM_RATE cell.
       val college = withSession { CollegesDao.findByIpedsUnitId(it, 330300).getOrThrow() }
       assertNotNull(college)
-      assertNull(college.admissionRate)
+      assertNull(college.admissionRateShare)
       // Row 550500 has an empty SAT_AVG cell.
       val cc = withSession { CollegesDao.findByIpedsUnitId(it, 550500).getOrThrow() }
       assertNotNull(cc)
-      assertNull(cc.satAvg)
+      assertNull(cc.satAverageEquivalentScore)
     }
 
   @Test
