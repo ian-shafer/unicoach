@@ -61,7 +61,11 @@ answers in chat.
     answers + the coach-prompt update. S4a LANDED as RFC 140 (main@81354dbf,
     2026-08-28) with 415 launch-set colleges (merit 366 / factors 374 /
     deadline flags 314, 234 with a concrete date, 0 student-listed missing).
-    S4b is NEXT and carries the second half of the AC.
+    S4b LANDED as RFC 148 (main@c94570ef, 2026-08-30), carrying the second half
+    of the AC: cited merit answers in chat. NOTE the wording above ("% of
+    no-need freshmen", "X% of freshmen without need") is SUPERSEDED and was
+    never implemented — the CDS publishes no count of no-need freshmen, so the
+    only computable share is over ALL full-time freshmen. S4 IS COMPLETE.
 
 S5. Family Cost Report (lane A) Student-initiated shareable artifact: tokenized
 public-web page rendering the per-school cost table (sticker, likely net, merit

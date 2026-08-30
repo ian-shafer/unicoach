@@ -22,10 +22,24 @@ list). S4 SPLIT IN DESIGN into S4a (schema + seed + ingest) and S4b (cited tool
   flags 314 (234 with a concrete date), 0 student-listed schools missing**. Ian
   approved the DDL at the gate (D10) plus three tightening deltas
   (day_requires_month CHECK, CREATE DOMAIN for the rating vocabulary and the
-  year bound). Next: **S4b** (the `college_admissions_profile` tool + merit into
-  S3's cost answers + prompt), which carries S4's remaining AC ("cited merit
-  answers in chat"), then S5 (Family Cost Report) — S5 also waits on brief 0003
-  M2+M3.
+  year bound). **S4b LANDED as RFC 148 (main@0657dda7 + c94570ef, 2026-08-30)**
+  — the cited `college_admissions_profile` tool (merit aid, the C7 admission
+  factors and the application calendar, each section citing the school's own
+  Common Data Set by cycle + archive_url), merit aid fed into S3's cost answers
+  as an additive `merit_aid` block read in the same connection, and coach prompt
+  v8 (migration 0058, rollback COACHING_SYSTEM_PROMPT_VERSION=v7). It also
+  closed RFC 140's open item: the CDS load now runs as a tracked phase
+  **before** RFC 139's `college_index_build` row is written, and that row
+  carries the three seed digests and per-table counts, so PROVENANCE.json is no
+  longer the provenance of record (verified against the committed seed at
+  method_version 4: 366/374/1022 rows, every remaining seed row explicitly
+  skipped with its IPEDS unit id recorded). **S4's AC is met: cited merit
+  answers in chat.** The binding honesty constraint is enforced in three places
+  — the data (a share only when both counts exist; a freshman total alone is a
+  denominator, not a fact, so the 28 of 368 rows carrying only that read as
+  silence), the wire (the key is `share_of_all_full_time_freshmen_pct`, and
+  tests assert the payload never contains "without need"), and the prompt. Next:
+  S5 (Family Cost Report) — S5 also waits on brief 0003 M2+M3.
 
 ## The question
 

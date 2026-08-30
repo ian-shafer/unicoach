@@ -7,9 +7,9 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-30 (RFC 146 landed — S1's matching replaced; next free RFC 147,
-migration 0057). Live-run discovery from any checkout:
-`.prime/agent/skills/ship/scripts/ship-status`
+Updated: 2026-08-30 (RFC 148 landed — brief 0001 S4b, the admissions layer is
+now user-visible; next free RFC 149, migration 0059). Live-run discovery from
+any checkout: `.prime/agent/skills/ship/scripts/ship-status`
 
 ## TL;DR — next steps, most important first
 
@@ -29,23 +29,24 @@ migration 0057). Live-run discovery from any checkout:
    for S4a: only S1's conventions were a real dependency, and S4a landed after
    RFC 139 with its ingest CLI merged into 139's (aliases + `--*-source`
    provenance + the CDS group in one launcher).
-2. **S4a LANDED (RFC 140, 2026-08-28); S4b is the next 0001 run.** The CDS
-   reference layer is live: `college_merit_aid` (H2A no-need merit practice),
-   `college_admission_factors` (the C7 grid), and `college_deadlines` (rounds),
-   migration 0054, every row cited to the school's own document (`source_url` +
-   `archive_url`). `bin/fetch-cds-seed` pulls the MIT-licensed collegedata.fyi
-   corpus and writes a committed, reviewable seed under `db/seed/cds/` with
-   `PROVENANCE.json`; `bin/ingest-colleges -m/-a/-d` loads it and prints the
-   launch-set coverage report — **415 launch-set colleges: merit 366, factors
-   374, deadline flags 314 (234 with a concrete date), 0 student-listed schools
-   missing** (D8 satisfied). Ian approved the DDL at the gate plus three
-   tightening deltas. **Next: S4b** — the cited `college_admissions_profile`
-   chat tool, the merit feed into S3's cost answers ("X% of freshmen got merit
-   here, avg $Y"), and the coach-prompt update. It carries S4's remaining AC
-   (cited merit answers in chat). Kickoff prompt below. NOTE the honest
-   denominator: CDS reports no count of no-need freshmen, so the computable
-   figure is "X% of ALL full-time freshmen received no-need merit" — S4b's copy
-   must say that, never "% of freshmen without need".
+2. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
+   admissions layer is now user-visible. The coach can answer, with citations,
+   what a school weighs in admissions, when its rounds close, and how it
+   actually behaves on merit aid — and merit now rides along inside cost
+   answers. Every fact names the school's own Common Data Set, its cycle, and an
+   archive link. Coach prompt v8 (migration 0058, rollback
+   `COACHING_SYSTEM_PROMPT_VERSION=v7`). RFC 148 also closed RFC 140's open
+   item: the CDS load runs as a tracked phase **before** RFC 139's
+   `college_index_build` row is written, so that row — not `PROVENANCE.json` —
+   is now the provenance of record for the CDS seed. **THE HONEST DENOMINATOR IS
+   LOAD-BEARING AND IMPLEMENTED:** the CDS publishes no count of no-need
+   freshmen, so the only computable share is "X% of ALL full-time freshmen
+   received non-need (merit) aid, average $Y". The wire key is
+   `share_of_all_full_time_freshmen_pct` and tests assert the payload never
+   contains "without need". A school that reports only a freshman total (28 of
+   368) is a silence, not a zero; "not reported" is always the honest answer.
+   **Next for 0001: S5 (Family Cost Report)**, which also waits on brief 0003
+   M2+M3.
 
 3. **Brief 0003 — clear money language — M1, M1.1, RFC 143 and M1.2 LANDED (RFCs
    141–143, 145).** The coach speaks one money vocabulary, no bare source code
@@ -177,18 +178,35 @@ Typing a school's name finds it even when the typing is imperfect.
   its source headers before writing a single row, and prints a change summary —
   a no-op load can no longer masquerade as a real one.
 
-### Admissions data — CDS layer (brief 0001 S4a, RFC 140)
+### Know how a school admits and what it pays (brief 0001 S4, RFCs 140 + 148)
 
-**Landed, deliberately NOT user-visible yet.** The database now holds
-school-authored Common Data Set facts for the launch set: real merit-aid
-practice (H2A: how many freshmen with no financial need got merit, and the
-average award), the C7 admissions-factor grid (what each school says it weighs),
-and application rounds with their deadlines. 415 launch-set colleges — merit
-366, factors 374, deadline flags 314. Every row is cited to the school's own CDS
-document, so the coach can attribute each fact. Nothing surfaces this in chat
-until **S4b** builds the tool; until then it is groundwork, not a feature.
-Refresh with `nix develop -c bin/fetch-cds-seed` (review the diff, commit), load
-with `bin/ingest-colleges -m/-a/-d`.
+School-authored Common Data Set facts for the launch set, now answerable in chat
+with citations.
+
+- **How a user reaches it:** conversationally. Ask what a school weighs, when it
+  closes, or whether it gives merit aid, and the coach calls the
+  `college_admissions_profile` tool over the schools on the student's active
+  list. Merit also appears inside cost answers without a second question.
+- **What it does:** three cited sections per school — **merit aid** ("X% of all
+  full-time freshmen received non-need (merit) aid; the average was $Y"), the
+  **C7 admissions-factor grid** in the school's own words ("very important",
+  "considered"), and the **application calendar** (which rounds a school runs,
+  which it does not, and the dates it published). Each section names the
+  school's own CDS document, its cycle, and an archive link.
+- **The denominator is honest by construction:** the CDS publishes no count of
+  no-need freshmen, so we never claim one. A share is emitted only when both
+  counts exist — a freshman total alone is a denominator, not a fact.
+- **Degrades gracefully:** a school with no row is named as "not reported",
+  never interpolated and never a zero. `0` recipients is a real reported value.
+  A month with no day reads "January, day not reported". A round the school says
+  it does not offer is said plainly, because that is a fact too.
+- **Coverage:** 415 launch-set colleges — merit 366, factors 374, deadline flags
+  314 (234 with a concrete date), 0 student-listed schools missing.
+- **Live in prod:** yes, behind coach prompt v8.
+
+Refresh the seed with `nix develop -c bin/fetch-cds-seed` (review the diff,
+commit), load with `bin/ingest-colleges -m/-a/-d`. The ingest records the seed's
+digests and per-table counts into the `college_index_build` provenance row.
 
 ### College list (RFC 91 schema/REST; RFC 136 chat door)
 
@@ -225,7 +243,7 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | --- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. **S1 LANDED (RFC 139, matching later replaced by RFC 146) and S2 LANDED (RFC 144). S3 — the derived index + subject taxonomy — is the next run and blocks 0003 M2.** | `product/0004-college-search-index`      |
 | P1  | Clear money language (brief 0003) | **M1 + M1.1 + RFC 143 + M1.2 LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: M2 (waits on 0004 S3; S1/S2 landed, precedes 0001 S5), then M3, M4.                                                | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent.                                                  | `product/0001-v1-differentiator/spec.md` |
+| P1  | Beat 1 remainder: S5 → S6         | **S4 COMPLETE** — split into S4a (RFC 140) and S4b (RFC 148), both landed; cited merit answers are live in chat. Next: S5 Family Cost Report (also waits on brief 0003 M2+M3), then S6 invite-parent.                                          | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                    | `bin/state-apply`                        |
 
 ## Backlog
@@ -300,36 +318,6 @@ repeatable clean-slate testing. The schema actively refuses deletion today — a
 mapped in the brief. I approve every new table personally, with visible DDL at
 the gate. Note RFC 138 (bin/state-apply) deliberately deferred its delete/reset
 semantics to this brief's engine.
-
-### S4b — the cited admissions tool (next up for brief 0001)
-
-PASTE: Ship S4b from product brief 0001 — the second half of the Admissions
-Intelligence Layer, whose schema half landed as RFC 140. S4a built three cited
-CDS reference tables (college_merit_aid, college_admission_factors,
-college_deadlines; migration 0054), the collegedata.fyi seed under db/seed/cds/,
-bin/ingest-colleges -m/-a/-d, and the launch-set coverage report (415 colleges:
-merit 366, factors 374, deadline flags 314). Build: (1) a cited
-`college_admissions_profile` chat tool over those tables, mirroring
-college_cost_profile's shape, every fact carrying its source and source-year
-from source_url/archive_url; (2) the merit-aid feed into S3's cost answers; and
-(3) the coach-prompt update. Standing context: gate-2 D7–D12, plus brief 0003's
-money-language rules (RFCs 141–143, 145) — the tool's output is a money surface
-and must speak that vocabulary, never bare source jargon.
-
-BINDING HONESTY CONSTRAINT: CDS publishes no count of no-need freshmen, so the
-computable share is "X% of ALL full-time freshmen received non-need (merit) aid,
-average $Y". Do NOT phrase it as "% of freshmen without need" — that denominator
-does not exist in the data. "Not reported" is an honest answer for any school
-without a row; never interpolate. Deadlines are flags + best-effort dates: a
-month with no day renders as "January, day not reported", and only a complete
-month+day is a concrete date.
-
-AC (the remainder of S4's): cited merit answers in chat. Update the brief's
-ledger and product/STATUS.md when the slice lands.
-
-Open item inherited from RFC 140: wire the CDS sources into RFC 139's
-college_index_build provenance row (S4a left PROVENANCE.json as its provenance
-because RFC 139 landed only at rebase time).
 
 ### Clear money language — M2 (brief 0003; the component cost split)
 
