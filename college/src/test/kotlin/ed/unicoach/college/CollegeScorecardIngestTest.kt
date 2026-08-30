@@ -283,10 +283,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // The build row exists and says what the report says.
     val row = withSession { buildRow(it, report.buildId) }
     assertNotNull(row)
-    // Deliberately 3, not 1: RFC 144 added a second source family and RFC 146
-    // added the derived name-word rebuild — each is exactly the derivation
-    // change method_version exists to record.
-    assertEquals(3, row.methodVersion)
+    // Deliberately 4, not 1: RFC 144 added a second source family, RFC 146 the
+    // derived name-word rebuild, and RFC 148 the CDS seed load — each is
+    // exactly the derivation change method_version exists to record.
+    assertEquals(4, row.methodVersion)
     assertTrue(row.rowsIngested.contains("\"inserted\": 5"), "rows_ingested carries the insert count: ${row.rowsIngested}")
     assertTrue(row.sources.contains(institutionCsv.name), "sources carries the file name")
     assertTrue(row.changeSummary.contains("version_bumps"), "change_summary carries version bumps")

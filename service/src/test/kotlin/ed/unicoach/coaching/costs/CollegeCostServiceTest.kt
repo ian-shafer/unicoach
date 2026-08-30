@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.costs
 
+import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.costs.CostsTestDb.addToCollegeList
 import ed.unicoach.coaching.costs.CostsTestDb.answerBand
 import ed.unicoach.coaching.costs.CostsTestDb.answerResidency
@@ -13,6 +14,9 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.StudentId
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -227,7 +231,7 @@ class CollegeCostServiceTest {
 
     // The schema's iff-answered CHECK makes this state unreachable through any
     // write path; force it by dropping the constraint, then restore it.
-    CostsTestDb.connection.createStatement().use { stmt ->
+    CoachingTestDb.connection.createStatement().use { stmt ->
       stmt.execute("ALTER TABLE money_profiles DROP CONSTRAINT money_profiles_income_band_value_iff_answered_check")
       stmt.execute("UPDATE money_profiles SET income_band = NULL, version = version + 1 WHERE student_id = '${student.value}'")
     }
@@ -241,7 +245,7 @@ class CollegeCostServiceTest {
       )
       assertTrue(error.message!!.contains("(row ["), "the error must name the row, got: [${error.message}]")
     } finally {
-      CostsTestDb.connection.createStatement().use { stmt ->
+      CoachingTestDb.connection.createStatement().use { stmt ->
         stmt.execute("UPDATE money_profiles SET income_band = 'under_30k', version = version + 1 WHERE student_id = '${student.value}'")
         stmt.execute(
           "ALTER TABLE money_profiles ADD CONSTRAINT money_profiles_income_band_value_iff_answered_check " +
@@ -260,7 +264,7 @@ class CollegeCostServiceTest {
     // Same shape as the band's twin above: the iff-answered CHECK makes this
     // state unreachable through any write path, so it is forced by dropping the
     // constraint and restored in the finally.
-    CostsTestDb.connection.createStatement().use { stmt ->
+    CoachingTestDb.connection.createStatement().use { stmt ->
       stmt.execute("ALTER TABLE money_profiles DROP CONSTRAINT money_profiles_residency_value_iff_answered_check")
       stmt.execute(
         "UPDATE money_profiles SET residency_state = NULL, version = version + 1 WHERE student_id = '${student.value}'",
@@ -279,7 +283,7 @@ class CollegeCostServiceTest {
       )
       assertTrue(error.message!!.contains("(row ["), "the error must name the row, got: [${error.message}]")
     } finally {
-      CostsTestDb.connection.createStatement().use { stmt ->
+      CoachingTestDb.connection.createStatement().use { stmt ->
         stmt.execute("UPDATE money_profiles SET residency_state = 'CA', version = version + 1 WHERE student_id = '${student.value}'")
         stmt.execute(
           "ALTER TABLE money_profiles ADD CONSTRAINT money_profiles_residency_value_iff_answered_check " +
@@ -404,5 +408,126 @@ class CollegeCostServiceTest {
         .value,
       profile.ingestYear,
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // The merit-aid read (RFC 148 D7) -- additive, batched, never gating
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a college with no merit row degrades to exactly the cost answer it had before`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("No Merit U"))
+
+    val cost = profileOf(student).colleges.single()
+    assertNull(cost.meritAid, "a missing row is never a zero")
+    // The Scorecard availability list is untouched by a second source's silence.
+    assertTrue(CostField.entries.none { it.wireName == "merit_aid" })
+    assertEquals(emptyList(), cost.notReported)
+  }
+
+  @Test
+  fun `the merit read rides the same connection and answers every college at once`() {
+    val student = createStudent()
+    val first = seedCollege("Merit One").also { addToCollegeList(student, it) }
+    val second = seedCollege("Merit Two").also { addToCollegeList(student, it) }
+    seedCollege("Merit None").also { addToCollegeList(student, it) }
+    CostsTestDb.seedMeritAid(first, noNeedMeritAvg = 1000)
+    CostsTestDb.seedMeritAid(second, noNeedMeritAvg = 2000)
+
+    val byName = profileOf(student).colleges.associateBy { it.name }
+    assertEquals(1000, byName.getValue("Merit One").meritAid?.averageNonNeedAid)
+    assertEquals(2000, byName.getValue("Merit Two").meritAid?.averageNonNeedAid)
+    assertNull(byName.getValue("Merit None").meritAid)
+  }
+
+  @Test
+  fun `the merit read adds no query per college`() {
+    val student = createStudent()
+    val ids =
+      (1..5).map { n ->
+        seedCollege("Merit Batch $n").also {
+          addToCollegeList(student, it)
+          CostsTestDb.seedMeritAid(it, noNeedMeritAvg = 1000 * n)
+        }
+      }
+
+    val one = CoachingTestDb.CountingSession()
+    val five = CoachingTestDb.CountingSession()
+    assertEquals(1, service.readInSession(one, student, ids.take(1)).colleges.size)
+    assertEquals(5, service.readInSession(five, student, ids).colleges.size)
+
+    assertEquals(
+      one.prepared.size,
+      five.prepared.size,
+      "the read must cost the same statements for five colleges as for one, " +
+        "never one per college: one=[${one.prepared}] five=[${five.prepared}]",
+    )
+  }
+
+  @Test
+  fun `a cancelled read is rethrown, never reported as a read failure`() {
+    val student = createStudent()
+    seedCollege("Cancelled U").also { addToCollegeList(student, it) }
+
+    // Same rule as the admissions read: a chat turn the caller abandoned is not
+    // a database fault, and cancellation must keep propagating.
+    val outcome =
+      runBlocking {
+        var thrown: Throwable? = null
+        var completed: Result<CollegeCostProfile>? = null
+        val job =
+          launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+              completed = service.getForStudent(student)
+            } catch (e: Throwable) {
+              thrown = e
+            }
+          }
+        job.cancel()
+        job.join()
+        thrown to completed
+      }
+    assertTrue(outcome.first is CancellationException, "cancellation must propagate, got [${outcome.first}]")
+    assertNull(outcome.second, "a cancelled read must not answer with a Result at all")
+  }
+
+  @Test
+  fun `the merit share is over all full-time freshmen, and is withheld without both counts`() {
+    val student = createStudent()
+    val shared = seedCollege("Share U").also { addToCollegeList(student, it) }
+    val partial = seedCollege("Partial U").also { addToCollegeList(student, it) }
+    CostsTestDb.seedMeritAid(shared, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+    CostsTestDb.seedMeritAid(partial, freshmenFtTotal = null, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+
+    val byName = profileOf(student).colleges.associateBy { it.name }
+    assertEquals(
+      25.0,
+      byName
+        .getValue("Share U")
+        .meritAid
+        ?.shareOfAllFullTimeFreshmen
+        ?.percent,
+    )
+    assertNull(
+      byName
+        .getValue("Partial U")
+        .meritAid
+        ?.shareOfAllFullTimeFreshmen
+        ?.percent,
+    )
+    assertEquals(12500, byName.getValue("Partial U").meritAid?.averageNonNeedAid, "the average stands alone")
+  }
+
+  @Test
+  fun `the latest merit cycle answers the cost read too`() {
+    val student = createStudent()
+    val college = seedCollege("Two Cycle U").also { addToCollegeList(student, it) }
+    CostsTestDb.seedMeritAid(college, sourceYear = 2024, noNeedMeritAvg = 1000)
+    CostsTestDb.seedMeritAid(college, sourceYear = 2025, noNeedMeritAvg = 2000)
+
+    val merit = profileOf(student).colleges.single().meritAid
+    assertEquals(2000, merit?.averageNonNeedAid)
+    assertEquals("Two Cycle U's 2025-26 Common Data Set", merit?.source?.citedAs)
   }
 }

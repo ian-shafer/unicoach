@@ -1,5 +1,6 @@
 package ed.unicoach.coaching
 
+import ed.unicoach.coaching.admissions.CollegeAdmissionsChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.costs.PrecisionOffer
@@ -43,6 +44,16 @@ class SystemPromptCatalogTest {
 
     /** The first words of v4's college-list paragraph — the boundary v5 preserves and v6 inserts before. */
     private const val LIST_PARAGRAPH_OPENER = " The student's college list is theirs"
+
+    /**
+     * The admissions tool the v8 paragraph names (RFC 148), read from the tool
+     * itself on this file's own v3/v4/v5/v7 precedent. The pairing under test is
+     * SEEDED COPY versus SHIPPING TOOL: a literal here would keep passing after
+     * the tool was renamed, leaving the seeded prompt telling the model to call
+     * a tool that no longer exists -- prompt-vs-code drift, which is the one
+     * failure this class exists to make loud.
+     */
+    private val ADMISSIONS_TOOL_NAME = CollegeAdmissionsChatTool.TOOL_NAME
 
     private lateinit var connection: Connection
 
@@ -334,6 +345,106 @@ class SystemPromptCatalogTest {
       v7MoneyParagraph().contains(sentence),
       "v7's money paragraph must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
     )
+  }
+
+  /**
+   * The 0058 seed's structural contract (RFC 148). v8 is ADDITIVE like v3 over
+   * v2 and v4 over v3: the whole v7 body byte-identical as a prefix, joined by
+   * a single space to exactly one appended paragraph — the admissions
+   * instruction. The paragraph's markers are asserted, not its full copy: the
+   * seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v8 is v7 plus one appended admissions paragraph`() {
+    val appended = admissionsParagraph()
+
+    assertTrue(
+      appended.startsWith(" A school also publishes what it looks for"),
+      "the admissions paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(appended.contains(ADMISSIONS_TOOL_NAME), "the paragraph must name the admissions tool")
+    assertTrue(appended.contains("Common Data Set"), "the paragraph must say whose data the tool reports")
+    assertTrue(
+      appended.contains("what an admission office weighs") && appended.contains("application deadlines"),
+      "the paragraph must say when to reach for the tool, not merely that it exists",
+    )
+    assertTrue(
+      appended.contains("data_availability"),
+      "the first silence: a named field is a school that does not report it",
+    )
+    assertTrue(
+      appended.contains("say so plainly rather than estimating it"),
+      "an unreported field is stated, never estimated",
+    )
+    assertTrue(
+      appended.contains("not missing data"),
+      "the second silence: a round flagged not offered is a reported fact",
+    )
+    // RFCs 141/142 money language, carried into the new paragraph.
+    assertTrue(appended.contains("a financial aid offer"), "the glossary term survives: an offer, never an award")
+    assertFalse(appended.contains("award"), "'award' is retired copy (RFC 141) and this paragraph never states it contrastively")
+    assertTrue(
+      appended.contains("never subtract merit money from a published price"),
+      "a share and an average are not an offer to this student; they never net out of a price",
+    )
+  }
+
+  /**
+   * RFC 148's D4, the binding honesty rule: the merit share's denominator is
+   * ALL full-time freshmen. The Common Data Set has no count of students
+   * without financial need, so a prompt that said or implied that denominator
+   * would teach the coach a statistic no source reports.
+   *
+   * Absence is assertable here — unlike v5's contrastive glossary, this rule is
+   * stated positively, so the banned phrasing appears nowhere in the paragraph.
+   * "non-need" is the approved term and does not contain the banned substring,
+   * so no exception is needed for it.
+   */
+  @Test
+  fun `coach v8 carries the honest denominator`() {
+    val appended = admissionsParagraph()
+
+    assertTrue(
+      appended.contains("of all full-time freshmen"),
+      "the share's denominator must be stated in full: all full-time freshmen",
+    )
+    assertTrue(appended.contains("non-need (merit) aid"), "the approved term for the money itself")
+    assertFalse(appended.contains("without need"), "the banned denominator: no source reports a count of students without need")
+    assertFalse(appended.contains("without financial need"), "the same banned denominator, spelled out")
+    assertFalse(appended.contains("freshmen without"), "no phrasing may narrow the denominator away from all freshmen")
+  }
+
+  /**
+   * RFC 142's source-jargon sentence must survive RFC 148's append. It does so
+   * by construction — v8 keeps the whole v7 body as a prefix — but the sentence
+   * is the one piece of copy two prior versions have already had to preserve
+   * across a rewrite, so it is asserted rather than assumed. It is extracted
+   * from v6 at runtime, never retyped here.
+   */
+  @Test
+  fun `coach v8 preserves the v7 source-jargon sentence verbatim`() {
+    val sentence = sourceJargonSentence()
+    val v8 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v8").getOrThrow().body
+
+    assertTrue(
+      v8.contains(sentence),
+      "v8 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
+    )
+  }
+
+  /**
+   * The v8 admissions paragraph: everything v8 appends to the v7 body. Guarded
+   * the way [revisedMiddle] is — `removePrefix` is a silent no-op when the
+   * affix does not match, so the prefix is asserted before it is removed, and
+   * an empty remainder would let every `contains` below pass vacuously.
+   */
+  private fun admissionsParagraph(): String {
+    val v7 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v7").getOrThrow().body
+    val v8 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v8").getOrThrow().body
+    assertTrue(v8.startsWith(v7), "the v7 prefix must be byte-identical, so the admissions paragraph is the only change")
+    val appended = v8.removePrefix(v7)
+    assertTrue(appended.isNotEmpty(), "v8 must actually append something; an empty remainder means it equals v7")
+    return appended
   }
 
   /**

@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.models.ValidationError
+import ed.unicoach.db.models.AdmissionFactor
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsCoverage
 import ed.unicoach.db.models.CdsMonthDay
@@ -40,32 +41,22 @@ object CdsAdmissionsDao {
   // ---------------------------------------------------------------------------
 
   /**
-   * The CDS C7 rating columns in schema order, each paired with its accessor.
-   * The insert list, the `DO UPDATE SET`, both sides of the change guard and
-   * the bind order are all derived from this one table, so adding a factor is
-   * one line here plus the migration and the model.
+   * The CDS C7 rating columns in schema order, each paired with the accessor
+   * that reads it off a row being written. The insert list, the
+   * `DO UPDATE SET`, both sides of the change guard and the bind order are all
+   * derived from this one table.
+   *
+   * DERIVED from [AdmissionFactor], never re-listed: that enum already owns the
+   * eighteen column names (its `value` IS the column) plus the words the coach
+   * says for each. A nineteenth factor typed here and nowhere else would be
+   * ingested and then never rendered, silently; deriving means the member and
+   * its migration are the whole change.
+   *
+   * Internal rather than private so `CdsAdmissionsDaoTest` can pin it against
+   * the enum AND against the columns the migration really created.
    */
-  private val FACTOR_COLUMNS: List<Pair<String, (NewCollegeAdmissionFactors) -> FactorRating?>> =
-    listOf(
-      "rigor" to { it: NewCollegeAdmissionFactors -> it.rigor },
-      "class_rank" to { it: NewCollegeAdmissionFactors -> it.classRank },
-      "gpa" to { it: NewCollegeAdmissionFactors -> it.gpa },
-      "test_scores" to { it: NewCollegeAdmissionFactors -> it.testScores },
-      "essay" to { it: NewCollegeAdmissionFactors -> it.essay },
-      "recommendations" to { it: NewCollegeAdmissionFactors -> it.recommendations },
-      "interview" to { it: NewCollegeAdmissionFactors -> it.interview },
-      "extracurriculars" to { it: NewCollegeAdmissionFactors -> it.extracurriculars },
-      "talent" to { it: NewCollegeAdmissionFactors -> it.talent },
-      "character_qualities" to { it: NewCollegeAdmissionFactors -> it.characterQualities },
-      "first_generation" to { it: NewCollegeAdmissionFactors -> it.firstGeneration },
-      "alumni_relation" to { it: NewCollegeAdmissionFactors -> it.alumniRelation },
-      "geography" to { it: NewCollegeAdmissionFactors -> it.geography },
-      "state_residency" to { it: NewCollegeAdmissionFactors -> it.stateResidency },
-      "religious_affiliation" to { it: NewCollegeAdmissionFactors -> it.religiousAffiliation },
-      "volunteer_work" to { it: NewCollegeAdmissionFactors -> it.volunteerWork },
-      "work_experience" to { it: NewCollegeAdmissionFactors -> it.workExperience },
-      "applicant_interest" to { it: NewCollegeAdmissionFactors -> it.applicantInterest },
-    )
+  internal val FACTOR_COLUMNS: List<Pair<String, (NewCollegeAdmissionFactors) -> FactorRating?>> =
+    AdmissionFactor.entries.map { factor -> factor.value to { row: NewCollegeAdmissionFactors -> factor.ratingOf(row) } }
 
   // ---------------------------------------------------------------------------
   // Row mappers
@@ -313,6 +304,108 @@ object CdsAdmissionsDao {
         it.setObject(1, collegeId.value)
         it.setInt(2, sourceYear)
       },
+      map = ::mapDeadline,
+    )
+
+  // ---------------------------------------------------------------------------
+  // Latest-cycle batch reads (RFC 148)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The chat read path (RFC 148) needs the newest cycle a college actually
+   * reported, and the corpus resolves that **per table**: S4a keeps the newest
+   * document that reports each fact group, so one college can hold a 2024
+   * factor grid beside a 2025 merit row. `DISTINCT ON (college_id)` over
+   * `source_year DESC` therefore runs per table, and no year is ever written
+   * down by a caller -- a hardcoded cycle would silently drop the half of the
+   * corpus published in the other one.
+   *
+   * Batch by construction: one query per table for the whole answer, never one
+   * per college. An empty [collegeIds] short-circuits without a query; a
+   * college with no row is simply absent from the result, which the caller
+   * reports as "this school does not report it" rather than as a zero.
+   */
+  private fun <T> listLatestPerCollege(
+    session: SqlSession,
+    source: LatestSource,
+    collegeIds: Collection<CollegeId>,
+    map: (ResultSet) -> T,
+  ): Result<List<T>> {
+    val ids = collegeIds.distinct()
+    if (ids.isEmpty()) return Result.success(emptyList())
+    val placeholders = ids.joinToString(", ") { "?" }
+    // Both clauses are written from the ONE key list on the enum member:
+    // Postgres requires the DISTINCT ON keys to be the leftmost ORDER BY terms,
+    // and two separately spelled strings are two things a caller has to keep in
+    // agreement.
+    val keys = source.distinctOn.joinToString(", ")
+    return session.queryList(
+      "SELECT DISTINCT ON ($keys) * FROM ${source.table} " +
+        "WHERE college_id IN ($placeholders) " +
+        "ORDER BY $keys, source_year DESC",
+      bind = { stmt -> ids.forEachIndexed { i, id -> stmt.setObject(i + 1, id.value) } },
+      map = map,
+    )
+  }
+
+  /**
+   * The three CDS reference tables this DAO reads latest-cycle rows from, each
+   * with the key columns its newest row is resolved per. A CLOSED set, because
+   * both the table name and the keys reach SQL as text: a value outside this
+   * set is not a different read, it is a defect, and it cannot be written.
+   *
+   * The keys are a LIST, not a flattened `"college_id, round"` fragment: they
+   * are spliced into `DISTINCT ON` and into the leftmost `ORDER BY` terms, so
+   * the helper -- not the caller -- owns that spelling and that Postgres rule.
+   */
+  private enum class LatestSource(
+    val table: String,
+    val distinctOn: List<String>,
+  ) {
+    MERIT_AID("college_merit_aid", listOf("college_id")),
+    ADMISSION_FACTORS("college_admission_factors", listOf("college_id")),
+
+    /** Keyed `(college_id, round)`: a deadline row is per round, so each round resolves to its own newest cycle. */
+    DEADLINES("college_deadlines", listOf("college_id", "round")),
+  }
+
+  /** Each college's merit-aid row from its own latest CDS cycle; colleges with no row are absent. */
+  fun listLatestMeritAid(
+    session: SqlSession,
+    collegeIds: Collection<CollegeId>,
+  ): Result<List<CollegeMeritAid>> =
+    listLatestPerCollege(
+      session,
+      source = LatestSource.MERIT_AID,
+      collegeIds = collegeIds,
+      map = ::mapMeritAid,
+    )
+
+  /** Each college's C7 factor grid from its own latest CDS cycle; colleges with no grid are absent. */
+  fun listLatestAdmissionFactors(
+    session: SqlSession,
+    collegeIds: Collection<CollegeId>,
+  ): Result<List<CollegeAdmissionFactors>> =
+    listLatestPerCollege(
+      session,
+      source = LatestSource.ADMISSION_FACTORS,
+      collegeIds = collegeIds,
+      map = ::mapFactors,
+    )
+
+  /**
+   * Each college's application rounds, keyed `(college_id, round)` so a round
+   * resolves to its own newest cycle -- the extra key the two wide tables do
+   * not need, because a deadline row is per round.
+   */
+  fun listLatestDeadlines(
+    session: SqlSession,
+    collegeIds: Collection<CollegeId>,
+  ): Result<List<CollegeDeadline>> =
+    listLatestPerCollege(
+      session,
+      source = LatestSource.DEADLINES,
+      collegeIds = collegeIds,
       map = ::mapDeadline,
     )
 

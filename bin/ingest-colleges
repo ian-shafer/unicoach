@@ -23,7 +23,10 @@ college_merit_aid, college_admission_factors, and college_deadlines, and prints
 the launch-set coverage report. The three CDS options are all-or-nothing: pass
 all three or none (the RFC 140 / brief 0004 D19 per-source-group shape). The
 CDS loader asserts each file's header before writing and fatals on any
-missing or renamed column.
+missing or renamed column. The CDS load is one phase of the same run and
+commits BEFORE the provenance phase (RFC 148), so the college_index_build row
+records the three seed digests and their row counts; a failed CDS load writes
+no build row at all.
 
 Run inside the nix dev shell (the JVM lives there):
   nix develop -c bin/ingest-colleges <institution.csv> <fields.csv>

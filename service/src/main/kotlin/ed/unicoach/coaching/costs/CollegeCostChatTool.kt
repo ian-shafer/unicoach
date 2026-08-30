@@ -2,12 +2,11 @@ package ed.unicoach.coaching.costs
 
 import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
-import ed.unicoach.db.models.CollegeId
+import ed.unicoach.coaching.admissions.MeritAidWire
+import ed.unicoach.coaching.putCollegeIdsSchema
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.putIncomeBand
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -16,7 +15,6 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
-import java.util.UUID
 
 /**
  * The `college_cost_profile` chat tool (RFC 135): the coach's read path into
@@ -39,22 +37,7 @@ class CollegeCostChatTool(
     buildJsonObject {
       put("name", TOOL_NAME)
       put("description", DESCRIPTION)
-      putJsonObject("input_schema") {
-        put("type", "object")
-        putJsonObject("properties") {
-          putJsonObject("college_ids") {
-            put("type", "array")
-            putJsonObject("items") { put("type", "string") }
-            put(
-              "description",
-              "Optional subset of college ids (from the student's list) to read; " +
-                "omit the field entirely to read the whole active list. " +
-                "At most $MAX_COLLEGE_IDS entries; duplicate ids are read once.",
-            )
-          }
-        }
-        putJsonArray("required") {}
-      }
+      putJsonObject("input_schema") { putCollegeIdsSchema() }
     }
 
   override suspend fun execute(
@@ -62,9 +45,9 @@ class CollegeCostChatTool(
     input: JsonObject,
   ): JsonObject {
     val collegeIds =
-      when (val parsed = parseInput(input)) {
-        is ParsedInput.Ok -> parsed.collegeIds
-        is ParsedInput.Invalid -> return errorObject(parsed.reason)
+      when (val parsed = readCollegeIds(input)) {
+        is CollegeIdsInput.Ok -> parsed.collegeIds
+        is CollegeIdsInput.Invalid -> return errorObject(parsed.reason)
       }
 
     val profile =
@@ -76,68 +59,6 @@ class CollegeCostChatTool(
         }
 
     return profileObject(profile)
-  }
-
-  /** The parse outcome for one tool call: the optional subset filter or the reason the call is malformed. */
-  private sealed interface ParsedInput {
-    data class Ok(
-      val collegeIds: List<CollegeId>?,
-    ) : ParsedInput
-
-    data class Invalid(
-      val reason: String,
-    ) : ParsedInput
-  }
-
-  private fun parseInput(input: JsonObject): ParsedInput {
-    unknownFieldsReason(input, KNOWN_FIELDS)?.let { return ParsedInput.Invalid(it) }
-
-    // Absence and emptiness are different reads: an omitted field is a null
-    // filter meaning the whole active list, while `[]` is a literal empty
-    // subset and must stay one. Never normalise the empty list back to null --
-    // that silently turns "these zero schools" into "all of them".
-    val element = input["college_ids"] ?: return ParsedInput.Ok(null)
-    val array =
-      element as? JsonArray
-        ?: return ParsedInput.Invalid("college_ids must be an array of uuid strings, got: [$element]")
-    if (array.size > MAX_COLLEGE_IDS) {
-      return ParsedInput.Invalid("college_ids must contain at most [$MAX_COLLEGE_IDS] entries, got [${array.size}]")
-    }
-    val ids =
-      array.mapIndexed { index, item ->
-        when (val parsed = parseCollegeId(item, index)) {
-          is IdParse.Ok -> parsed.id
-          is IdParse.Invalid -> return ParsedInput.Invalid(parsed.reason)
-        }
-      }
-    return ParsedInput.Ok(ids)
-  }
-
-  /** The per-element parse outcome: one array entry as a [CollegeId], or the reason it is malformed. */
-  private sealed interface IdParse {
-    data class Ok(
-      val id: CollegeId,
-    ) : IdParse
-
-    data class Invalid(
-      val reason: String,
-    ) : IdParse
-  }
-
-  /** Parses one `college_ids` entry; a rejection names the offending element and its index. */
-  private fun parseCollegeId(
-    item: JsonElement,
-    index: Int,
-  ): IdParse {
-    val primitive = item as? JsonPrimitive
-    if (primitive == null || !primitive.isString) {
-      return IdParse.Invalid("college_ids entry is not a uuid string: [$item] at index [$index]")
-    }
-    return try {
-      IdParse.Ok(CollegeId(UUID.fromString(primitive.content)))
-    } catch (_: IllegalArgumentException) {
-      IdParse.Invalid("college_ids entry is not a uuid: [${primitive.content}] at index [$index]")
-    }
   }
 
   /** The full structured result: one cost object per college, the money-profile echo, and the attribution. */
@@ -180,6 +101,10 @@ class CollegeCostChatTool(
       }
       cost.medianDebt?.let { put(CostField.MEDIAN_DEBT.wireName, it) }
       cost.medianEarnings?.let { put(CostField.MEDIAN_EARNINGS.wireName, it) }
+      // Purely additive (RFC 148 D7): present only when the school reports it,
+      // and carrying its OWN citation, because merit aid is not a Scorecard
+      // fact and must never fold into the payload's Scorecard `source` string.
+      cost.meritAid?.let { put(MeritAidWire.KEY, MeritAidWire.objectOf(it)) }
       putJsonArray("data_availability") {
         cost.notReported.forEach { add(JsonPrimitive(it.wireName)) }
       }
@@ -244,11 +169,6 @@ class CollegeCostChatTool(
 
     const val TOOL_NAME = "college_cost_profile"
 
-    private val KNOWN_FIELDS = setOf("college_ids")
-
-    /** The subset filter reads from the student's own list; anything larger is malformed, not a bigger read. */
-    const val MAX_COLLEGE_IDS = 50
-
     /** The attribution the coach must quote when using these numbers. */
     fun sourceAttribution(ingestYear: Int?): String =
       "U.S. Department of Education College Scorecard" + (ingestYear?.let { " (data ingested $it)" } ?: "")
@@ -311,6 +231,11 @@ class CollegeCostChatTool(
         "the net price family-specific. money_profile.residency_status is the authority on whether to raise residency, " +
         "and money_profile.income_band_status the authority on whether to raise income: " +
         "declined means the student said no - never re-raise it yourself; answered means the field is already on file. " +
+        "A college result may also carry ${MeritAidWire.KEY}, from that school's own Common Data Set and cited " +
+        "separately from the Scorecard figures: ${MeritAidWire.SHARE_KEY} is a share of ALL full-time freshmen " +
+        "at that school - never a share of the students with no financial need, which no school reports - and " +
+        "${MeritAidWire.AVERAGE_KEY} is what last year's recipients averaged, not an offer to this student, so " +
+        "never subtract it from any price here. Its absence means only that this school does not report it. " +
         "Read-only: this tool changes nothing."
   }
 }

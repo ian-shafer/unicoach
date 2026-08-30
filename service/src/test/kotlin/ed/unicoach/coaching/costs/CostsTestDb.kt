@@ -1,59 +1,38 @@
 package ed.unicoach.coaching.costs
 
+import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
 import ed.unicoach.db.Database
-import ed.unicoach.db.DatabaseConfig
-import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.NewCollege
-import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
-import java.sql.Connection
-import java.sql.DriverManager
-import java.sql.PreparedStatement
-import java.util.UUID
 
 /**
- * The one DB fixture for the costs tests, shared by [CollegeCostServiceTest]
- * and [CollegeCostChatToolTest]: connection/session plumbing, the per-test
- * truncation, and the student/college seeders — including the shared dollar
- * figures (40000/20000/9000...) both classes assert against. Resources are
- * JVM-lifetime (lazy, never closed); `bin/test` recreates the test database
- * per run.
+ * The costs tests' own fixture, shared by [CollegeCostServiceTest] and
+ * [CollegeCostChatToolTest]: the cost-domain seeders (a college with its
+ * published figures, the money-profile answers) and the truncation list this
+ * suite needs. The connection, session, statement counter, student and
+ * college-list plumbing it shares with the admissions suite live in
+ * [CoachingTestDb].
  */
 object CostsTestDb {
-  private val dbConfig =
-    DatabaseConfig
-      .from(
-        ed.unicoach.common.config.AppConfig
-          .load("common.conf", "db.conf")
-          .getOrThrow(),
-      ).getOrThrow()
+  val database: Database get() = CoachingTestDb.database
 
-  val database: Database by lazy { Database(dbConfig) }
+  val sqlSession: SqlSession get() = CoachingTestDb.sqlSession
 
   /**
    * The one writer both costs test classes seed money-profile answers through
-   * — the real service, so a fixture can never record a state or a band the
+   * -- the real service, so a fixture can never record a state or a band the
    * production write path would have normalised or rejected.
    */
   val moneyProfiles: MoneyProfileService by lazy { MoneyProfileService(database) }
-
-  val connection: Connection by lazy {
-    DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
-  }
-
-  val sqlSession: SqlSession =
-    object : SqlSession {
-      override fun prepareStatement(sql: String): PreparedStatement = connection.prepareStatement(sql)
-    }
 
   private var nextIpedsUnitId = 500000
 
@@ -64,26 +43,26 @@ object CostsTestDb {
   const val NET_PRICE_Q4 = 17000
   const val NET_PRICE_Q5 = 21000
 
+  const val SOURCE_URL: String = "https://example.edu/cds-2024-25.pdf"
+  const val ARCHIVE_URL: String = "https://www.collegedata.fyi/schools/example/2024-25"
+
   /** Truncates every table the cost read touches; each test class calls this from `@BeforeEach`. */
   fun reset() {
-    connection.createStatement().use { stmt ->
-      stmt.execute("TRUNCATE TABLE money_profiles, college_list_entries, colleges, students, users CASCADE")
-    }
+    CoachingTestDb.truncate("money_profiles", "college_list_entries", "college_merit_aid", "colleges", "students", "users")
   }
 
-  fun createStudent(): StudentId {
-    val userId = UUID.randomUUID()
-    val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'costs-$userId@test.com', 'Costs User', 'ahash')",
-      )
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_year) VALUES ('$studentId', '$userId', 2028)",
-      )
-    }
-    return StudentId(studentId)
-  }
+  /** One CDS merit-aid row for [collegeId] (RFC 148 D7), through the shared seeder. */
+  fun seedMeritAid(
+    collegeId: CollegeId,
+    sourceYear: Int = 2024,
+    freshmenFtTotal: Int? = 2000,
+    noNeedMeritCount: Int? = 500,
+    noNeedMeritAvg: Int? = 12500,
+    sourceUrl: String = SOURCE_URL,
+    archiveUrl: String? = ARCHIVE_URL,
+  ) = CoachingTestDb.seedMeritAid(collegeId, sourceYear, freshmenFtTotal, noNeedMeritCount, noNeedMeritAvg, sourceUrl, archiveUrl)
+
+  fun createStudent(): StudentId = CoachingTestDb.createStudent("costs")
 
   fun seedCollege(
     name: String,
@@ -172,9 +151,5 @@ object CostsTestDb {
     student: StudentId,
     collegeId: CollegeId,
     status: CollegeListEntryStatus = CollegeListEntryStatus.CONSIDERING,
-  ) {
-    CollegeListEntriesDao
-      .create(sqlSession, NewCollegeListEntry(student, collegeId, status, null))
-      .getOrThrow()
-  }
+  ) = CoachingTestDb.addToCollegeList(student, collegeId, status)
 }

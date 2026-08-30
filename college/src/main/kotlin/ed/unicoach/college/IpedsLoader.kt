@@ -476,7 +476,7 @@ internal class IpedsLoader(
           if (cyActive == null) add("cy_active")
         }
       logger.debug(
-        "Skipping IPEDS HD row [line={}]: missing required field {} [ipeds_unit_id={}]",
+        "Skipping IPEDS HD row [line={}]: missing required fields [{}] [ipeds_unit_id={}]",
         record.recordNumber,
         missing,
         ipedsUnitId,
@@ -614,7 +614,7 @@ internal class IpedsLoader(
           if (awardsTotal == null) add("awards_total")
         }
       logger.debug(
-        "Skipping census row [line={}]: missing required field {} [ipeds_unit_id={}]",
+        "Skipping census row [line={}]: missing required fields [{}] [ipeds_unit_id={}]",
         record.recordNumber,
         missing,
         ipedsUnitId,

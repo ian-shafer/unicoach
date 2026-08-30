@@ -1,9 +1,10 @@
 package ed.unicoach.coaching.costs
 
+import ed.unicoach.coaching.StudentCollegeSelection
+import ed.unicoach.coaching.admissions.MeritPractice
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.CollegeListEntriesDao
-import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
@@ -11,12 +12,13 @@ import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeId
-import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.CollegeMeritAid
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.StudentId
+import kotlinx.coroutines.CancellationException
 import java.time.ZoneOffset
 
 /**
@@ -134,6 +136,18 @@ data class CollegeCost(
   val reportsPublishedTuition: Boolean,
   /** The cost fields this college does not report, so the coach says so instead of improvising. */
   val notReported: List<CostField>,
+  /**
+   * What this school reported about the non-need (merit) money it gives, or
+   * null when it reports none (RFC 148 D7). Purely additive: a college without
+   * it produces exactly the cost answer it produced before this field existed,
+   * and nothing in the cost answer depends on it.
+   *
+   * Deliberately NOT folded into [notReported], whose [CostField] vocabulary
+   * means "this college does not report this SCORECARD cost field". Merit aid
+   * is a second source with its own silences, and mixing them would misattribute
+   * which source is quiet; `college_admissions_profile` owns that report.
+   */
+  val meritAid: MeritPractice?,
 )
 
 /** The money-profile field statuses echoed with every result, so the coach knows the history. */
@@ -290,58 +304,53 @@ class CollegeCostService(
     collegeIds: List<CollegeId>? = null,
   ): Result<CollegeCostProfile> =
     try {
-      database.withConnection { session ->
-        val entries = CollegeListEntriesDao.listActiveByStudent(session, studentId).getOrThrow()
-        val moneyProfile = moneyProfileOf(session, studentId)
-
-        val entryByCollegeId = entries.associateBy { it.collegeId }
-        val (selected, unknown) = splitSelection(entries, entryByCollegeId, collegeIds)
-
-        val collegeById =
-          CollegesDao
-            .listByIds(session, selected)
-            .getOrThrow()
-            .associateBy { it.id }
-
-        val costs =
-          selected.map { id ->
-            val college =
-              collegeById[id] ?: error(
-                "invariant broken: active list entry references a college listByIds did not return " +
-                  "(the list-entry FK guarantees the colleges row exists): " +
-                  "student=[${studentId.value}] collegeId=[${id.value}]",
-              )
-            costOf(college, entryByCollegeId.getValue(id).status, moneyProfile)
-          }
-
-        Result.success(
-          CollegeCostProfile(
-            colleges = costs,
-            unknownCollegeIds = unknown,
-            moneyProfile = moneyProfile,
-            ingestYear = ingestYearOf(collegeById.values),
-          ),
-        )
-      }
+      Result.success(database.withConnection { session -> readInSession(session, studentId, collegeIds) })
+    } catch (e: CancellationException) {
+      // Cancellation is the caller unwinding, not a read that failed: a
+      // cancelled chat turn must not be logged as a database fault, reported to
+      // the model as a read error, or stop propagating (the same rule as
+      // [ed.unicoach.coaching.admissions.CollegeAdmissionsService]).
+      throw e
     } catch (e: Exception) {
       Result.failure(e)
     }
 
   /**
-   * One split, one membership predicate: known ids answer, the rest are
-   * reported. A null [collegeIds] selects the whole active list; duplicates
-   * are read once.
+   * The whole read on ONE session, extracted so the batching contract above is
+   * assertable: a test can hand this a session that counts the statements it
+   * prepares and prove that a five-college list costs the same statements as a
+   * one-college list. [getForStudent] is this function plus the connection and
+   * the `Result` wrapper, and nothing else.
    */
-  private fun splitSelection(
-    entries: List<CollegeListEntry>,
-    entryByCollegeId: Map<CollegeId, CollegeListEntry>,
+  internal fun readInSession(
+    session: SqlSession,
+    studentId: StudentId,
     collegeIds: List<CollegeId>?,
-  ): Pair<List<CollegeId>, List<CollegeId>> =
-    if (collegeIds == null) {
-      entries.map { it.collegeId } to emptyList()
-    } else {
-      collegeIds.distinct().partition { it in entryByCollegeId }
-    }
+  ): CollegeCostProfile {
+    val selection = StudentCollegeSelection.read(session, studentId, collegeIds)
+    val moneyProfile = moneyProfileOf(session, studentId)
+
+    // One extra query for the whole answer, inside the SAME connection as
+    // the cost read (RFC 148 D7): batched over the ids already selected,
+    // so a fifty-school list still costs one merit read and not fifty.
+    val meritById =
+      CdsAdmissionsDao
+        .listLatestMeritAid(session, selection.selected)
+        .getOrThrow()
+        .associateBy { it.collegeId }
+
+    val costs =
+      selection.map { college, listStatus ->
+        costOf(college, listStatus, moneyProfile, meritById[college.id])
+      }
+
+    return CollegeCostProfile(
+      colleges = costs,
+      unknownCollegeIds = selection.unknown,
+      moneyProfile = moneyProfile,
+      ingestYear = ingestYearOf(selection.colleges),
+    )
+  }
 
   /** RFC 134's fallback convention: an absent money-profile row reads as all-unanswered, not an error. */
   private fun moneyProfileOf(
@@ -405,6 +414,7 @@ class CollegeCostService(
     college: College,
     listStatus: CollegeListEntryStatus,
     moneyProfile: MoneyProfileStatuses,
+    merit: CollegeMeritAid?,
   ): CollegeCost {
     val netPrice = netPriceOf(college, moneyProfile)
     return CollegeCost(
@@ -423,6 +433,11 @@ class CollegeCostService(
       reportsBandPricing = reportsBandPricing(college),
       reportsPublishedTuition = reportsPublishedTuition(college),
       notReported = notReportedOf(college, netPrice),
+      // A row with no merit measure under it is a citation with no facts, which
+      // is not data: [MeritPractice.from] returns null and the result degrades
+      // to no merit sub-object at all, exactly like a school with no row. The
+      // rule lives there, so both tools cannot disagree about a school's silence.
+      meritAid = merit?.let { MeritPractice.from(college.name, it) },
     )
   }
 

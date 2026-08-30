@@ -36,7 +36,21 @@ internal data class CdsArgs(
   val meritAidCsv: File,
   val admissionFactorsCsv: File,
   val deadlinesCsv: File,
-)
+) {
+  /**
+   * The provenance spelling of the same three files (RFC 148). The CDS flags
+   * name files the shell already split into their own argv slots, so the path
+   * the caller typed IS the file's path — there is no `--*-source` partner to
+   * carry a different original argument.
+   */
+  val sources: CdsSources
+    get() =
+      CdsSources(
+        meritAid = SourceFile(meritAidCsv, meritAidCsv.path),
+        admissionFactors = SourceFile(admissionFactorsCsv, admissionFactorsCsv.path),
+        deadlines = SourceFile(deadlinesCsv, deadlinesCsv.path),
+      )
+}
 
 /**
  * The optional IPEDS file flags (RFC 144, gate-2 D19). All four — plus
@@ -249,11 +263,13 @@ private fun parseIpedsGroup(flags: Map<String, String>): IpedsGroup {
 internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>> {
   val scorecard = SOURCE_FLAGS.map { it.removeSuffix("-source") }.zip(parsed.sources)
   val ipeds = parsed.ipeds?.let { IPEDS_FILE_FLAGS.zip(it.files) } ?: emptyList()
-  // The CDS flags name files the shell already split into their own argv slots,
-  // so the path the caller typed IS the file's path.
-  val cds =
-    listOfNotNull(parsed.cds?.meritAidCsv, parsed.cds?.admissionFactorsCsv, parsed.cds?.deadlinesCsv)
-      .mapIndexed { i, file -> CDS_FLAGS[i].removePrefix("--") to SourceFile(file = file, sourceArg = file.path) }
+  // One spelling of the CDS file list ([CdsArgs.sources]), so the files this
+  // checks for existence are exactly the ones the run digests.
+  // Pairing by NAME, on [CdsSources] itself: the previous positional
+  // `CDS_FLAGS.zip(sources.files)` had no size check, so a fourth CDS file
+  // would have been dropped from the existence check with nothing failing --
+  // the same silent-drop this commit removed from `logCdsRun`.
+  val cds = parsed.cds?.sources?.namedFiles ?: emptyList()
   return scorecard + ipeds + cds
 }
 
@@ -285,8 +301,9 @@ private fun requireExistingFiles(parsed: ArgvResult.Ok) {
  * source paths from [args] (all three required — `bin/ingest-colleges` supplies
  * the repo default aliases path, so a missing aliases arg here is a loud usage
  * error, never a silently fabricated default), runs
- * [CollegeScorecardLoader.ingest], prints the human change summary, and then —
- * when the CDS group was passed — loads the seed and reports its numbers.
+ * [CollegeScorecardLoader.ingest] — which, when the CDS group was passed, loads
+ * the seed as one of its phases, before provenance (RFC 148 D10) — prints the
+ * human change summary, and reports the CDS numbers the run returned.
  *
  * Failure contract (RFC 139): a CSV missing a required column — or any other
  * failure — aborts with a non-zero exit and NO `college_index_build` row; the
@@ -306,9 +323,10 @@ private fun requireExistingFiles(parsed: ArgvResult.Ok) {
  * something the caller did not ask for.
  *
  * This is also the single owner of CDS run reporting: [CdsSeedLoader] returns
- * the per-table numbers and the coverage report, and they are rendered here
- * once — including the identities of the seed UNITIDs that matched no college,
- * at INFO, so recovering them never needs a second ingest.
+ * the per-table numbers and the coverage report through the ingest report, and
+ * they are rendered here once — including the identities of the seed UNITIDs
+ * that matched no college, at INFO, so recovering them never needs a second
+ * ingest.
  *
  * The optional IPEDS group (`--hd/--ic/--adm/--completions/--survey-year`, RFC
  * 144) extends the same run rather than adding a second command (gate-2 D19):
@@ -341,6 +359,7 @@ fun main(args: Array<String>) {
           fields = fields,
           aliasesFile = aliases,
           ipeds = parsed.ipeds,
+          cds = parsed.cds?.sources,
         )
       }
     println(report.humanSummary())
@@ -353,11 +372,10 @@ fun main(args: Array<String>) {
         transientSkips,
       )
     }
-    parsed.cds?.let { cds ->
-      logCdsRun(
-        runBlocking { CdsSeedLoader(database).load(cds.meritAidCsv, cds.admissionFactorsCsv, cds.deadlinesCsv) },
-      )
-    }
+    // The CDS load itself ran INSIDE the ingest, before the provenance phase
+    // (RFC 148 D10): this is the reporting half only, and it reads the result
+    // the run recorded rather than performing a second, unrecorded load.
+    report.cds?.let(::logCdsRun)
   } catch (e: MissingSourceColumnsException) {
     logger.error(
       "Ingest aborted before any write: source [{}] (from [{}]) is missing required column(s) [{}]",
@@ -366,6 +384,13 @@ fun main(args: Array<String>) {
       e.missing,
       e,
     )
+    kotlin.system.exitProcess(1)
+  } catch (e: CdsSeedLoader.FormatException) {
+    // Reached only from the up-front header assertion, which runs before the
+    // first phase commits: a defect found once a phase HAS committed arrives as
+    // the PartialIngestException below. So this abort can state the write
+    // state, exactly as its siblings do.
+    logger.error("Ingest aborted before any write: CDS seed defect [{}]", e.defect, e)
     kotlin.system.exitProcess(1)
   } catch (e: CollegeScorecardLoader.InvalidAliasFileException) {
     logger.error(
@@ -395,12 +420,11 @@ private fun openDatabase(): Database {
 }
 
 private fun logCdsRun(result: CdsSeedLoader.LoadResult) {
-  for ((table, summary) in listOf(
-    "merit aid" to result.meritAid,
-    "admission factors" to result.admissionFactors,
-    "deadlines" to result.deadlines,
-  )) {
-    logCdsTable(table, summary)
+  // Each summary carries its own table, so the name printed beside a count is
+  // that count's name by construction -- never a positional pairing that a
+  // reorder would quietly invert.
+  for ((table, summary) in result.tableSummaries) {
+    logCdsTable(table.logLabel, summary)
   }
   logCdsCoverage(result.coverage)
 }

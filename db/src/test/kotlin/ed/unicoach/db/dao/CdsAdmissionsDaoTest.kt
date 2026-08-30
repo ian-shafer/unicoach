@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.AdmissionFactor
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
 import ed.unicoach.db.models.CollegeId
@@ -337,6 +338,82 @@ class CdsAdmissionsDaoTest {
     }
   }
 
+  /**
+   * The C7 vocabulary has three parallel statements of itself -- the migration's
+   * columns, [AdmissionFactor], and the DAO's bind table -- and a nineteenth
+   * factor added to only some of them is silent: an unbound column ingests
+   * nothing, an unlisted enum member renders nothing, and both compile clean.
+   * They are pinned to each other here, against the columns the DB really has.
+   */
+  @Test
+  fun `the schema columns, AdmissionFactor and the DAO bind table are one vocabulary`() {
+    assertEquals(
+      AdmissionFactor.entries.map { it.value },
+      ratingColumns(),
+      "college_admission_factors' rating columns and AdmissionFactor have drifted",
+    )
+    assertEquals(
+      AdmissionFactor.entries.map { it.value },
+      CdsAdmissionsDao.FACTOR_COLUMNS.map { it.first },
+      "the DAO binds a different set of columns than AdmissionFactor declares",
+    )
+  }
+
+  @Test
+  fun `every factor accessor reads its own column, in both directions`() {
+    // Derivation pins the NAMES; this pins the WIRING. Each factor is written
+    // as the only VERY_IMPORTANT row in an otherwise CONSIDERED grid, so a
+    // swapped pair of accessors -- which no name check can see -- fails here.
+    val collegeId = createCollege("Accessor College")
+    for (factor in AdmissionFactor.entries) {
+      val row = allConsidered(collegeId, except = factor)
+      CdsAdmissionsDao.upsertAdmissionFactors(session, row).getOrThrow()
+      assertEquals(
+        FactorRating.VERY_IMPORTANT,
+        CdsAdmissionsDao.FACTOR_COLUMNS.single { it.first == factor.value }.second(row),
+        "the bind table reads the wrong column for [${factor.value}]",
+      )
+      val stored = assertNotNull(CdsAdmissionsDao.findAdmissionFactors(session, collegeId, 2024).getOrThrow())
+      assertEquals(
+        listOf(factor),
+        AdmissionFactor.entries.filter { it.ratingOf(stored) == FactorRating.VERY_IMPORTANT },
+        "[${factor.value}] did not round-trip to its own column",
+      )
+    }
+  }
+
+  /** A grid rating every factor CONSIDERED but [except], which is VERY_IMPORTANT. */
+  private fun allConsidered(
+    collegeId: CollegeId,
+    except: AdmissionFactor,
+  ): NewCollegeAdmissionFactors {
+    fun rating(factor: AdmissionFactor) = if (factor == except) FactorRating.VERY_IMPORTANT else FactorRating.CONSIDERED
+    return NewCollegeAdmissionFactors(
+      collegeId = collegeId,
+      sourceYear = 2024,
+      rigor = rating(AdmissionFactor.RIGOR),
+      classRank = rating(AdmissionFactor.CLASS_RANK),
+      gpa = rating(AdmissionFactor.GPA),
+      testScores = rating(AdmissionFactor.TEST_SCORES),
+      essay = rating(AdmissionFactor.ESSAY),
+      recommendations = rating(AdmissionFactor.RECOMMENDATIONS),
+      interview = rating(AdmissionFactor.INTERVIEW),
+      extracurriculars = rating(AdmissionFactor.EXTRACURRICULARS),
+      talent = rating(AdmissionFactor.TALENT),
+      characterQualities = rating(AdmissionFactor.CHARACTER_QUALITIES),
+      firstGeneration = rating(AdmissionFactor.FIRST_GENERATION),
+      alumniRelation = rating(AdmissionFactor.ALUMNI_RELATION),
+      geography = rating(AdmissionFactor.GEOGRAPHY),
+      stateResidency = rating(AdmissionFactor.STATE_RESIDENCY),
+      religiousAffiliation = rating(AdmissionFactor.RELIGIOUS_AFFILIATION),
+      volunteerWork = rating(AdmissionFactor.VOLUNTEER_WORK),
+      workExperience = rating(AdmissionFactor.WORK_EXPERIENCE),
+      applicantInterest = rating(AdmissionFactor.APPLICANT_INTEREST),
+      sourceUrl = "https://example.edu/cds-2024-25.pdf",
+      archiveUrl = null,
+    )
+  }
+
   @Test
   fun `every FactorRating and ApplicationRound member is admitted by the schema`() {
     // The Kotlin enums and the schema's value lists are parallel enumerations
@@ -485,6 +562,87 @@ class CdsAdmissionsDaoTest {
         "[$day] failed with the wrong constraint: ${e.message}",
       )
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Latest-cycle batch reads (RFC 148)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the latest cycle is resolved per table per college`() {
+    val mixed = createCollege("Mixed Cycle University")
+    val other = createCollege("Single Cycle College")
+
+    // The corpus shape S4a produces: the newest document that reports each fact
+    // group, so one college holds a 2024 grid beside a 2025 merit row.
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(mixed, sourceYear = 2024, noNeedMeritAvg = 1000)).getOrThrow()
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(mixed, sourceYear = 2025, noNeedMeritAvg = 2000)).getOrThrow()
+    CdsAdmissionsDao.upsertAdmissionFactors(session, newFactors(mixed, sourceYear = 2024)).getOrThrow()
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(other, sourceYear = 2024, noNeedMeritAvg = 3000)).getOrThrow()
+
+    val merit = CdsAdmissionsDao.listLatestMeritAid(session, listOf(mixed, other)).getOrThrow()
+    assertEquals(2, merit.size)
+    val mixedMerit = merit.single { it.collegeId == mixed }
+    assertEquals(2025, mixedMerit.sourceYear)
+    assertEquals(2000, mixedMerit.noNeedMeritAvg)
+    assertEquals(2024, merit.single { it.collegeId == other }.sourceYear)
+
+    // The factor grid resolves independently: still 2024 for the same college.
+    val factors = CdsAdmissionsDao.listLatestAdmissionFactors(session, listOf(mixed, other)).getOrThrow()
+    assertEquals(2024, factors.single().sourceYear)
+    assertEquals(mixed, factors.single().collegeId)
+  }
+
+  @Test
+  fun `deadlines resolve the latest cycle per round`() {
+    val collegeId = createCollege("Deadline University")
+
+    CdsAdmissionsDao
+      .upsertDeadline(session, newDeadline(collegeId, round = ApplicationRound.REGULAR, sourceYear = 2024))
+      .getOrThrow()
+    CdsAdmissionsDao
+      .upsertDeadline(
+        session,
+        newDeadline(collegeId, round = ApplicationRound.REGULAR, sourceYear = 2025, closing = CdsMonthDay(1, 5)),
+      ).getOrThrow()
+    CdsAdmissionsDao
+      .upsertDeadline(
+        session,
+        newDeadline(collegeId, round = ApplicationRound.EARLY_ACTION, sourceYear = 2024, offered = false),
+      ).getOrThrow()
+
+    val rounds = CdsAdmissionsDao.listLatestDeadlines(session, listOf(collegeId)).getOrThrow()
+    assertEquals(2, rounds.size)
+    val regular = rounds.single { it.round == ApplicationRound.REGULAR }
+    assertEquals(2025, regular.sourceYear)
+    assertEquals(CdsMonthDay(1, 5), regular.closing)
+    // A false flag is a reported fact and survives the read unchanged.
+    val early = rounds.single { it.round == ApplicationRound.EARLY_ACTION }
+    assertEquals(2024, early.sourceYear)
+    assertEquals(false, early.offered)
+  }
+
+  @Test
+  fun `a college with no row is absent, and an empty id list reads nothing`() {
+    val withRow = createCollege("Reports University")
+    val withoutRow = createCollege("Silent College")
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(withRow)).getOrThrow()
+
+    val merit = CdsAdmissionsDao.listLatestMeritAid(session, listOf(withRow, withoutRow)).getOrThrow()
+    assertEquals(listOf(withRow), merit.map { it.collegeId })
+
+    assertTrue(CdsAdmissionsDao.listLatestMeritAid(session, emptyList()).getOrThrow().isEmpty())
+    assertTrue(CdsAdmissionsDao.listLatestAdmissionFactors(session, emptyList()).getOrThrow().isEmpty())
+    assertTrue(CdsAdmissionsDao.listLatestDeadlines(session, emptyList()).getOrThrow().isEmpty())
+  }
+
+  @Test
+  fun `a duplicated id is read once`() {
+    val collegeId = createCollege("Duplicate Id College")
+    CdsAdmissionsDao.upsertMeritAid(session, newMeritAid(collegeId)).getOrThrow()
+
+    val merit = CdsAdmissionsDao.listLatestMeritAid(session, listOf(collegeId, collegeId)).getOrThrow()
+    assertEquals(1, merit.size)
   }
 
   // ---------------------------------------------------------------------------

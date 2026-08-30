@@ -15,7 +15,10 @@ dependencies {
   // the fake declares its own: it references Flow and JsonObject directly.
   testFixturesImplementation(testFixtures(project(":common")))
   testFixturesImplementation(libs.kotlinx.coroutines.core)
-  testFixturesImplementation(libs.kotlinx.serialization.json)
+  // `api`, not `implementation`: the shared RFC 143 guard's own signatures take
+  // and return JsonElement, so every consumer of these fixtures compiles
+  // against it (RFC 148 D9).
+  testFixturesApi(libs.kotlinx.serialization.json)
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)

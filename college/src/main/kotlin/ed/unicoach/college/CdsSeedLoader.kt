@@ -17,6 +17,38 @@ import org.apache.commons.csv.CSVRecord
 import java.io.File
 
 /**
+ * The three CDS seed files as one all-or-nothing provenance group (RFC 148),
+ * shaped exactly like [IpedsSources]: each file carries the caller's original
+ * argument, so the `college_index_build` row records what the operator named
+ * rather than a scratch path.
+ */
+data class CdsSources(
+  val meritAid: SourceFile,
+  val admissionFactors: SourceFile,
+  val deadlines: SourceFile,
+) {
+  /** The three files in provenance order, for digesting. */
+  val files: List<SourceFile> get() = listOf(meritAid, admissionFactors, deadlines)
+
+  /**
+   * Each file paired with the ROLE it fills -- the CDS flag the operator typed,
+   * without its punctuation. Named HERE, where the field and its role are both
+   * known, rather than zipped positionally against a flag list declared in
+   * another file: a reorder would then mislabel which option failed, and a
+   * fourth file would be dropped from the existence check by `zip` with nothing
+   * failing. This is the same rule [CdsSeedLoader.Table] applies to the
+   * provenance counts.
+   */
+  val namedFiles: List<Pair<String, SourceFile>>
+    get() =
+      listOf(
+        "cds-merit" to meritAid,
+        "cds-factors" to admissionFactors,
+        "cds-deadlines" to deadlines,
+      )
+}
+
+/**
  * Loader for the repo-committed CDS seed (RFC 140): `db/seed/cds/merit-aid.csv`,
  * `admission-factors.csv`, and `deadlines.csv` into the three CDS admissions
  * reference tables, upserting on each table's natural key via
@@ -45,13 +77,25 @@ import java.io.File
 class CdsSeedLoader(
   private val database: Database,
 ) {
-  /** Which seed file a defect came from; the label is display-only. */
+  /**
+   * One CDS seed file, and every name anything downstream calls it by: the
+   * defect [label], the `rows_ingested.cds` [wireKey] the provenance row
+   * carries, and the [logLabel] the run report prints.
+   *
+   * All three ride on the member because the alternative -- separate literal
+   * lists zipped against a positional list of summaries -- mislabels the whole
+   * provenance row if the order ever changes, and `zip` would silently DROP a
+   * fourth table rather than fail. Nothing about that failure is loud, and it
+   * would be the build row (the thing that exists to be trustworthy) that lied.
+   */
   enum class Table(
     val label: String,
+    val wireKey: String,
+    val logLabel: String,
   ) {
-    MERIT_AID("merit-aid"),
-    ADMISSION_FACTORS("admission-factors"),
-    DEADLINES("deadlines"),
+    MERIT_AID("merit-aid", "merit_aid", "merit aid"),
+    ADMISSION_FACTORS("admission-factors", "admission_factors", "admission factors"),
+    DEADLINES("deadlines", "deadlines", "deadlines"),
   }
 
   /**
@@ -64,6 +108,13 @@ class CdsSeedLoader(
   sealed interface Defect {
     data class HeaderMismatch(
       val file: String,
+      /**
+       * The caller's ORIGINAL argument beside [file]: `bin/ingest-colleges`
+       * downloads an `s3://` source into a temp dir, so the resolved path alone
+       * names a file the operator never typed (RFC 139's codified rule, which
+       * the other seven header-asserted files already follow).
+       */
+      val sourceArg: String,
       val expected: List<String>,
       val actual: List<String>,
     ) : Defect {
@@ -164,7 +215,21 @@ class CdsSeedLoader(
     val admissionFactors: TableSummary,
     val deadlines: TableSummary,
     val coverage: CdsCoverage,
-  )
+  ) {
+    /**
+     * Every summary KEYED BY its table, so a reporter (the run log, the
+     * provenance row) iterates rather than repeats them -- and cannot pair a
+     * summary with the wrong table's name, which a positional list zipped
+     * against a separate list of labels silently can.
+     */
+    val tableSummaries: List<Pair<Table, TableSummary>>
+      get() =
+        listOf(
+          Table.MERIT_AID to meritAid,
+          Table.ADMISSION_FACTORS to admissionFactors,
+          Table.DEADLINES to deadlines,
+        )
+  }
 
   private class Tally {
     var upserted = 0
@@ -180,7 +245,24 @@ class CdsSeedLoader(
       }
     }
 
-    fun summary() = TableSummary(upserted, changed, unchanged, unmatchedIpedsUnitIds.toList())
+    fun getSummary() = TableSummary(upserted, changed, unchanged, unmatchedIpedsUnitIds.toList())
+  }
+
+  /**
+   * Asserts all three seed headers, reading nothing else and writing nothing.
+   * Public and callable on its own so the ingest can validate the CDS files
+   * BESIDE the Scorecard and IPEDS ones, before its first phase commits: a
+   * renamed column in the third seed file must not be discovered only after
+   * five other phases have written rows (RFC 148 D10).
+   *
+   * Blocking file reads. The caller places it on its IO dispatcher, exactly as
+   * it does for its own digests, so this loader advertises no blocking-IO
+   * requirement of its own.
+   */
+  fun assertHeaders(sources: CdsSources) {
+    assertHeader(sources.meritAid, MERIT_AID_COLUMNS)
+    assertHeader(sources.admissionFactors, ADMISSION_FACTORS_COLUMNS)
+    assertHeader(sources.deadlines, DEADLINES_COLUMNS)
   }
 
   /** Loads the three seed files (header-asserted first) and computes the
@@ -192,13 +274,19 @@ class CdsSeedLoader(
   ): LoadResult =
     database.withConnection { session ->
       // Assert every header before any row of any file is written, so a renamed
-      // column in file three never leaves files one and two half-trusted. Read
-      // inside withConnection so every blocking read this loader performs sits
-      // on the same injected IO dispatcher -- `load` advertises no blocking-IO
+      // column in file three never leaves files one and two half-trusted. Kept
+      // here as well as at the ingest's up-front check because `load` is also
+      // called directly (bin/ingest-colleges' CDS-only path, the suite), and
+      // this is the loader's own contract, not the caller's. Read inside
+      // withConnection so every blocking read this loader performs sits on the
+      // same injected IO dispatcher -- `load` advertises no blocking-IO
       // requirement to its caller's dispatcher.
-      assertHeader(meritAidCsv, MERIT_AID_COLUMNS)
-      assertHeader(admissionFactorsCsv, ADMISSION_FACTORS_COLUMNS)
-      assertHeader(deadlinesCsv, DEADLINES_COLUMNS)
+      // Wrapped at this call site, where the path the caller passed IS the
+      // original argument; the ingest's up-front check passes the real
+      // [CdsSources] and so carries the operator's own spelling.
+      assertHeader(SourceFile(meritAidCsv, meritAidCsv.path), MERIT_AID_COLUMNS)
+      assertHeader(SourceFile(admissionFactorsCsv, admissionFactorsCsv.path), ADMISSION_FACTORS_COLUMNS)
+      assertHeader(SourceFile(deadlinesCsv, deadlinesCsv.path), DEADLINES_COLUMNS)
 
       val meritAid =
         loadTable(session, meritAidCsv, Table.MERIT_AID, MERIT_AID_COLUMNS) { collegeId, record ->
@@ -252,7 +340,7 @@ class CdsSeedLoader(
         tally.record(withRowLocation(table, record, ipedsUnitId) { upsert(college.id, record) })
       }
     }
-    return tally.summary()
+    return tally.getSummary()
   }
 
   /** Runs one row's DB call, naming the table, CSV line and UNITID on failure
@@ -411,21 +499,25 @@ class CdsSeedLoader(
   // ---------------------------------------------------------------------------
 
   /**
-   * Asserts [file]'s header row is EXACTLY [expected], in order, before
+   * Asserts [source]'s header row is EXACTLY [expected], in order, before
    * anything is loaded. Missing and unexpected columns are each named; order
    * drift reports both lists. Renames therefore fail loudly instead of loading
    * NULLs (the stale-seed failure this loader exists to prevent).
+   *
+   * Takes the [SourceFile], not the bare `File`, so the defect names the
+   * resolved path AND the argument the operator typed -- the same payload the
+   * other seven files of the up-front check already report.
    */
   private fun assertHeader(
-    file: File,
+    source: SourceFile,
     expected: List<String>,
   ) {
     val actual =
-      parseCsv(file).use { parser ->
+      parseCsv(source.file).use { parser ->
         parser.headerNames.toList()
       }
     if (actual == expected) return
-    throw FormatException(Defect.HeaderMismatch(file.name, expected, actual))
+    throw FormatException(Defect.HeaderMismatch(source.file.path, source.sourceArg, expected, actual))
   }
 
   private fun getInt(
@@ -548,7 +640,7 @@ class CdsSeedLoader(
 private fun renderDefect(defect: CdsSeedLoader.Defect): String =
   when (defect) {
     is CdsSeedLoader.Defect.HeaderMismatch -> {
-      "[${defect.file}] header mismatch: missing columns ${defect.missing}, " +
+      "[${defect.file}] (from [${defect.sourceArg}]) header mismatch: missing columns ${defect.missing}, " +
         "unexpected columns ${defect.unexpected} (expected ${defect.expected}, got ${defect.actual})"
     }
 

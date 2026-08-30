@@ -28,6 +28,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
@@ -59,6 +60,11 @@ class CollegeScorecardLoader(
   // on this dispatcher, never a caller's coroutine thread — the [Database]
   // constructor-injection pattern, overridable in tests.
   private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+  // The CDS seed half of the run, injected on the [ioDispatcher] precedent
+  // above rather than constructed mid-`ingest`: the phase ordering D10 promises
+  // is then observable from a test that hands in a loader, instead of only from
+  // three real CSVs and a hidden table.
+  private val cdsSeedLoader: CdsSeedLoader = CdsSeedLoader(database),
 ) {
   private val logger = LoggerFactory.getLogger(CollegeScorecardLoader::class.java)
 
@@ -338,6 +344,12 @@ class CollegeScorecardLoader(
     val nonNullAfter: Map<String, Int>,
     val buildId: java.util.UUID,
     val ipeds: IpedsReport? = null,
+    /**
+     * The CDS seed load's outcome (RFC 148), `null` when the group was not
+     * supplied — the same omit-vs-zero distinction [ipeds] draws. The caller
+     * renders it; this run only records it.
+     */
+    val cds: CdsSeedLoader.LoadResult? = null,
   ) {
     /**
      * Version bumps this run caused: changed Scorecard rows plus applied alias
@@ -418,10 +430,10 @@ class CollegeScorecardLoader(
    * or duplicate `ipeds_unit_id`, before any write), assert every source header,
    * digest each source (sha256 + bytes), snapshot per-column non-null counts,
    * run the Scorecard phases, apply the aliases, run the optional IPEDS phases,
-   * rebuild the derived `college_name_words` table (RFC 146), re-snapshot, and
-   * finish by inserting the one `college_index_build` provenance row
-   * (`method_version = 3`). A failure anywhere throws out of here — success
-   * paths only reach the build row. The file phase (parse, digests) runs on
+   * load the optional CDS seed (RFC 148), rebuild the derived
+   * `college_name_words` table (RFC 146), re-snapshot, and finish by inserting
+   * the one `college_index_build` provenance row ([METHOD_VERSION]). A failure
+   * anywhere throws out of here — success paths only reach the build row. The file phase (parse, digests) runs on
    * [ioDispatcher].
    *
    * [ipeds] is the optional, all-or-nothing IPEDS group (gate-2 D19): given
@@ -430,12 +442,23 @@ class CollegeScorecardLoader(
    * headers are asserted here, BEFORE the first Scorecard phase, so a bad IPEDS
    * header cannot corrupt a run that has already written Scorecard rows: all
    * seven files are header-asserted up front.
+   *
+   * [cds] is the optional CDS seed group (RFC 148, D10), and it runs INSIDE the
+   * run — before the provenance phase — rather than after it, which is the
+   * whole point: RFC 140's load committed after the build row was written, so
+   * by construction no build row could ever mention CDS. Its three files are
+   * digested beside the others and its counts join `rows_ingested`; omitted, it
+   * leaves both keys absent rather than zero, like the IPEDS group. The load
+   * keeps its own single transaction ([CdsSeedLoader.load]), so a fatal rolls
+   * all three CDS tables back as a unit, and — running before provenance — a
+   * failed load still writes no build row.
    */
   suspend fun ingest(
     institution: SourceFile,
     fields: SourceFile,
     aliasesFile: SourceFile,
     ipeds: IpedsSources? = null,
+    cds: CdsSources? = null,
   ): IngestReport {
     val startedAt = Instant.now()
     // The IPEDS half of the run is ONE nullable value: the source group and the
@@ -444,10 +467,16 @@ class CollegeScorecardLoader(
     val ipedsRun = ipeds?.let { IpedsRun(it, IpedsLoader(database, ioDispatcher)) }
     val aliasEntries = withContext(ioDispatcher) { parseAliases(aliasesFile.file) }
     ipedsRun?.assertHeaders()
+    // Beside the IPEDS assertion, not inside the cds phase: all TEN files are
+    // header-asserted before the first phase commits, so a renamed column in a
+    // seed file can never be discovered after institutions, fields, aliases and
+    // the two IPEDS phases have already written rows (RFC 148 D10).
+    cds?.let { sources -> withContext(ioDispatcher) { cdsSeedLoader.assertHeaders(sources) } }
     val sources =
       withContext(ioDispatcher) {
         listOf(digest(institution), digest(fields), digest(aliasesFile)) +
-          (ipedsRun?.sources?.files?.map { digest(it) } ?: emptyList())
+          (ipedsRun?.sources?.files?.map { digest(it) } ?: emptyList()) +
+          (cds?.files?.map { digest(it) } ?: emptyList())
       }
 
     // Each phase below is its own transaction, so a failure in a later one
@@ -472,6 +501,18 @@ class CollegeScorecardLoader(
           nonNullAfter = ipedsNonNullCounts(),
         )
       }
+    // The CDS seed is a row phase like the others, and it runs BEFORE
+    // `name-words` and `provenance` so its counts are provenance rather than a
+    // number written after the row that should have carried it (RFC 148 D10).
+    // It brings its own single transaction, so a fatal here rolls its three
+    // tables back as a unit and — like every other phase failure — reaches no
+    // build row at all.
+    val cdsResult =
+      cds?.let { sources ->
+        phase("cds", committedPhases) {
+          cdsSeedLoader.load(sources.meritAid.file, sources.admissionFactors.file, sources.deadlines.file)
+        }
+      }
     // Phase 2 of the two-phase ingest (RFC 146): rows first, derived state
     // second, never per-row triggers. It runs after EVERY row phase — the
     // aliases it splits words from, and the IPEDS phases beside them — and
@@ -482,33 +523,15 @@ class CollegeScorecardLoader(
 
     val buildId =
       phase("provenance", committedPhases) {
-        database
-          .withConnection { session ->
-            CollegesDao.insertIndexBuild(
-              session,
-              NewCollegeIndexBuild(
-                startedAt = startedAt,
-                finishedAt = finishedAt,
-                sources = sourcesJson(sources),
-                rowsIngested =
-                  rowsIngestedJson(
-                    scorecard.colleges,
-                    scorecard.programs,
-                    aliasResult,
-                    ipedsReport,
-                  ),
-                indexRows = nameWords,
-                changeSummary =
-                  changeSummaryJson(
-                    nonNullBefore,
-                    nonNullAfter,
-                    scorecard.colleges.changed + aliasResult.applied,
-                    ipedsReport,
-                  ),
-                methodVersion = METHOD_VERSION,
-              ),
-            )
-          }.getOrThrow()
+        insertBuildRow(
+          startedAt = startedAt,
+          finishedAt = finishedAt,
+          sources = sources,
+          rowsIngested = rowsIngestedJson(scorecard.colleges, scorecard.programs, aliasResult, ipedsReport, cdsResult),
+          changeSummary =
+            changeSummaryJson(nonNullBefore, nonNullAfter, scorecard.colleges.changed + aliasResult.applied, ipedsReport),
+          indexRows = nameWords,
+        )
       }
 
     return IngestReport(
@@ -523,8 +546,40 @@ class CollegeScorecardLoader(
       nonNullAfter = nonNullAfter,
       buildId = buildId,
       ipeds = ipedsReport,
+      cds = cdsResult,
     )
   }
+
+  /**
+   * The one `college_index_build` row of a run ([METHOD_VERSION]), written in
+   * its own transaction like every other phase. Extracted so the provenance
+   * step in [ingest] reads at the same altitude as `aliases`, `cds` and
+   * `name-words`: the payloads are built by their own named functions, and this
+   * only writes them.
+   */
+  private suspend fun insertBuildRow(
+    startedAt: Instant,
+    finishedAt: Instant,
+    sources: List<SourceDigest>,
+    rowsIngested: JsonObject,
+    changeSummary: JsonObject,
+    indexRows: Int,
+  ): java.util.UUID =
+    database
+      .withConnection { session ->
+        CollegesDao.insertIndexBuild(
+          session,
+          NewCollegeIndexBuild(
+            startedAt = startedAt,
+            finishedAt = finishedAt,
+            sources = sourcesJson(sources),
+            rowsIngested = rowsIngested,
+            indexRows = indexRows,
+            changeSummary = changeSummary,
+            methodVersion = METHOD_VERSION,
+          ),
+        )
+      }.getOrThrow()
 
   /**
    * The IPEDS half of one run: the all-or-nothing source group and the loader
@@ -726,6 +781,7 @@ class CollegeScorecardLoader(
     programs: ProgramLoadResult,
     aliases: AliasResult,
     ipeds: IpedsReport?,
+    cds: CdsSeedLoader.LoadResult?,
   ): JsonObject =
     buildJsonObject {
       putJsonObject("colleges") {
@@ -795,7 +851,31 @@ class CollegeScorecardLoader(
           }
         }
       }
+      // The CDS seed (RFC 148), under the same omit-vs-zero rule: no `cds` key
+      // at all means the seed was not part of this run, which is a different
+      // fact from a run that loaded it and changed nothing.
+      cds?.let { result ->
+        putJsonObject("cds") {
+          for ((table, summary) in result.tableSummaries) {
+            putJsonObject(table.wireKey) { putCdsTable(summary) }
+          }
+        }
+      }
     }
+
+  /**
+   * One CDS table's counts. The unmatched UNITIDs are written as their
+   * IDENTITIES, not a count: which seed schools our snapshot lacks is the
+   * question this row is read to answer, exactly as `unknown_ipeds_unit_id` is for
+   * aliases.
+   */
+  private fun JsonObjectBuilder.putCdsTable(summary: CdsSeedLoader.TableSummary) {
+    put("upserted", summary.upserted)
+    put("changed", summary.changed)
+    put("unchanged", summary.unchanged)
+    put("skipped", summary.skipped)
+    putJsonArray("unmatched_ipeds_unit_ids") { summary.unmatchedIpedsUnitIds.forEach { add(it) } }
+  }
 
   private fun changeSummaryJson(
     before: Map<String, Int>,
@@ -1056,10 +1136,15 @@ class CollegeScorecardLoader(
     /**
      * `college_index_build.method_version` for this derivation logic
      * (1 = RFC 139, 2 = RFC 144's IPEDS source family, 3 = RFC 146's derived
-     * `college_name_words` rebuild). Bumped whenever the derivation logic
-     * changes, so a build row says which one produced it.
+     * `college_name_words` rebuild, 4 = RFC 148's CDS seed inside the run).
+     * Bumped whenever the derivation logic changes, so a build row says which
+     * one produced it.
+     *
+     * RFC 148's prose says "3" because it was written against RFC 144's 2; RFC
+     * 146 took 3 first, so the CDS bump is 4 — the number is a sequence, not a
+     * literal from the RFC.
      */
-    const val METHOD_VERSION = 3
+    const val METHOD_VERSION = 4
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")

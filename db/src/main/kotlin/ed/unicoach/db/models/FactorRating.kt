@@ -9,11 +9,19 @@ package ed.unicoach.db.models
  */
 enum class FactorRating(
   val value: String,
+  /**
+   * The words a coach says out loud. The stored code is source shape; this is
+   * the advice surface's vocabulary, and it lives here so the copy has exactly
+   * one home and no renderer can put `very_important` in front of a family
+   * (RFC 143 / RFC 148 D6). Nothing accepts a [FactorRating] back as input, so
+   * the code itself is never the contract on the wire.
+   */
+  val label: String,
 ) {
-  VERY_IMPORTANT("very_important"),
-  IMPORTANT("important"),
-  CONSIDERED("considered"),
-  NOT_CONSIDERED("not_considered"),
+  VERY_IMPORTANT("very_important", "very important"),
+  IMPORTANT("important", "important"),
+  CONSIDERED("considered", "considered"),
+  NOT_CONSIDERED("not_considered", "not considered"),
   ;
 
   companion object {

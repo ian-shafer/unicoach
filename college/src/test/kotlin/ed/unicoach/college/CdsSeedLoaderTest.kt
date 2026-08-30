@@ -9,6 +9,7 @@ import ed.unicoach.db.models.FactorRating
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Test
@@ -16,6 +17,7 @@ import java.io.File
 import java.security.MessageDigest
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -160,7 +162,12 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     // Asserted on the structured defect, not the rendered sentence: the fields
     // are the payload, the message is one rendering of them.
     val defect = error.defect as CdsSeedLoader.Defect.HeaderMismatch
-    assertEquals("cds-merit-aid-bad-header-fixture.csv", defect.file)
+    // The RESOLVED path, not a basename: bin/ingest-colleges may hand the
+    // loader a temp copy, and a basename cannot be resolved back to it.
+    assertEquals(fixture("cds-merit-aid-bad-header-fixture.csv").path, defect.file)
+    // `load` is handed bare Files, so the path IS the caller's argument here;
+    // the ingest path below proves the operator's own spelling survives.
+    assertEquals(defect.file, defect.sourceArg)
     assertEquals(listOf("freshmen_ft_total"), defect.missing)
     assertEquals(listOf("freshmen_ft"), defect.unexpected)
     assertEquals(CdsSeedLoader.MERIT_AID_COLUMNS, defect.expected)
@@ -265,6 +272,197 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     assertEquals(110100, error.ipedsUnitId)
     assertTrue(error.cause is ed.unicoach.db.dao.ConstraintViolationException, "${error.cause}")
   }
+
+  // ---------------------------------------------------------------------------
+  // Provenance: the CDS load INSIDE the ingest run (RFC 148, D10)
+  // ---------------------------------------------------------------------------
+
+  private fun source(file: File) = SourceFile(file, file.path)
+
+  private val cdsSources = CdsSources(source(meritCsv), source(factorsCsv), source(deadlinesCsv))
+
+  /** One full ingest run over the Scorecard fixtures, with the CDS group
+   * supplied or omitted — the only two shapes `bin/ingest-colleges` can produce. */
+  private fun ingest(cds: CdsSources? = cdsSources): CollegeScorecardLoader.IngestReport =
+    runBlocking {
+      scorecardLoader.ingest(
+        institution = source(fixture("scorecard-institutions-fixture.csv")),
+        fields = source(fixture("scorecard-fields-empty-fixture.csv")),
+        aliasesFile = source(fixture("college-aliases-fixture.json")),
+        cds = cds,
+      )
+    }
+
+  @Test
+  fun `the build row records the CDS sources and row counts`() {
+    val report = ingest()
+    val load = assertNotNull(report.cds, "the run carries the CDS result it loaded")
+
+    assertEquals(6, report.sources.size, "three Scorecard sources plus the three CDS seed files")
+    // Digested the way every other source is: the recorded sha256 is the file's,
+    // recomputed here independently rather than read back from the loader.
+    val recorded = report.sources.first { it.fileName == meritCsv.name }
+    val expectedDigest =
+      MessageDigest
+        .getInstance("SHA-256")
+        .digest(meritCsv.readBytes())
+        .joinToString("") { "%02x".format(it) }
+    assertEquals(expectedDigest, recorded.sha256)
+    assertEquals(meritCsv.length(), recorded.bytes)
+
+    val row = assertNotNull(withSession { buildRow(it, report.buildId) })
+    // 4, not RFC 148's prose "3": RFC 146 took 3 for the derived name-word
+    // rebuild, so the CDS bump is the next number in the sequence.
+    assertEquals(4, row.methodVersion)
+    for (file in listOf(meritCsv, factorsCsv, deadlinesCsv)) {
+      assertTrue(row.sources.contains(file.name), "sources names ${file.name}: ${row.sources}")
+    }
+    assertTrue(row.sources.contains(expectedDigest), "sources carries the CDS digest, not just the name: ${row.sources}")
+
+    // The counts in the row ARE the counts the load reported.
+    val rowsIngested = Json.parseToJsonElement(row.rowsIngested).jsonObject
+    val cds = rowsIngested.getValue("cds").jsonObject
+
+    fun upserted(table: String): Int =
+      cds
+        .getValue(table)
+        .jsonObject
+        .getValue("upserted")
+        .jsonPrimitive.int
+    // A SET, not a list: `sources`/`rows_ingested` are `jsonb`, which stores
+    // object keys in its own normalised order, so key order is not a property
+    // this row can carry and asserting it would only pin Postgres's ordering.
+    assertEquals(
+      setOf("merit_aid", "admission_factors", "deadlines"),
+      cds.keys,
+      "one block per CDS table",
+    )
+    val meritAid = cds.getValue("merit_aid").jsonObject
+    assertEquals(load.meritAid.upserted, upserted("merit_aid"))
+    assertEquals(2, upserted("merit_aid"))
+    assertEquals(1, meritAid.getValue("skipped").jsonPrimitive.int)
+    assertEquals(
+      listOf(999999),
+      meritAid.getValue("unmatched_ipeds_unit_ids").jsonArray.map { it.jsonPrimitive.int },
+      "the seed schools our snapshot lacks are named, not merely counted",
+    )
+    assertEquals(2, upserted("admission_factors"))
+    assertEquals(3, upserted("deadlines"))
+    // The rows really landed: the build row describes a load that committed.
+    assertEquals(2, withSession { count(it, "college_merit_aid") })
+    assertEquals(3, withSession { count(it, "college_deadlines") })
+  }
+
+  @Test
+  fun `a Scorecard-only run still writes a build row`() {
+    val report = ingest(cds = null)
+    assertNull(report.cds, "the whole CDS half is one absent value")
+    assertEquals(3, report.sources.size)
+
+    val row = assertNotNull(withSession { buildRow(it, report.buildId) })
+    // Absent, never zero: a run that never read a seed file must not report
+    // counts nobody measured.
+    assertFalse(row.rowsIngested.contains("\"cds\""), "absent means absent: ${row.rowsIngested}")
+    assertFalse(row.rowsIngested.contains("merit_aid"), row.rowsIngested)
+    assertEquals(0, withSession { count(it, "college_merit_aid") })
+  }
+
+  @Test
+  fun `the CDS phase commits before name-words and provenance`() {
+    // The one way to observe phase ORDER from outside: hide the provenance
+    // table so the last phase fails, and read what had committed. Restored in
+    // the finally; the suite is sequential and bin/test recreates the test
+    // database per run.
+    renameBuildTable("college_index_build", "college_index_build_hidden")
+    try {
+      val thrown = assertFailsWith<PartialIngestException> { ingest() }
+      assertEquals(listOf("institutions", "fields", "aliases", "cds", "name-words"), thrown.committedPhases)
+      assertEquals("provenance", thrown.failedPhase)
+      assertEquals(2, withSession { count(it, "college_merit_aid") }, "the cds phase committed before provenance ran")
+    } finally {
+      renameBuildTable("college_index_build_hidden", "college_index_build")
+    }
+  }
+
+  /** The one DDL this suite issues, in one place: hiding `college_index_build`
+   * is how phase ORDER is observed from outside the run. */
+  private fun renameBuildTable(
+    from: String,
+    to: String,
+  ) = withSession { session ->
+    session.prepareStatement("ALTER TABLE $from RENAME TO $to").use { it.execute() }
+  }
+
+  @Test
+  fun `a failed CDS load writes no build row at all`() {
+    val buildRowsBefore = withSession { count(it, "college_index_build") }
+    // A defect inside a ROW, not in a header: headers are asserted up front (see
+    // below), so this is the failure that can only be found mid-load, and it is
+    // the one that has to roll all three tables back as a unit.
+    val thrown =
+      assertFailsWith<PartialIngestException> {
+        ingest(cdsSources.copy(admissionFactors = source(fixture("cds-admission-factors-junk-fixture.csv"))))
+      }
+    assertEquals("cds", thrown.failedPhase)
+    assertTrue(thrown.cause is CdsSeedLoader.FormatException, "${thrown.cause}")
+    // The CDS load is one transaction, so nothing from any of its three files
+    // survives -- and, running before provenance, it left no build row to
+    // describe a run that failed.
+    assertEquals(0, withSession { count(it, "college_merit_aid") })
+    assertEquals(0, withSession { count(it, "college_admission_factors") })
+    assertEquals(0, withSession { count(it, "college_deadlines") })
+    assertEquals(buildRowsBefore, withSession { count(it, "college_index_build") }, "no build row describes a failed run")
+  }
+
+  @Test
+  fun `a bad CDS header aborts the run before any phase commits`() {
+    // The point of an up-front assertion: the CDS files are the last three of
+    // ten, so if their headers were checked only when the cds phase ran, a
+    // renamed column would be found AFTER institutions, fields, aliases and the
+    // IPEDS phases had each committed their own transaction -- the half-written
+    // snapshot the check exists to prevent. It must fail before phase one.
+    val buildRowsBefore = withSession { count(it, "college_index_build") }
+    val error =
+      assertFailsWith<CdsSeedLoader.FormatException> {
+        ingest(
+          cdsSources.copy(
+            meritAid =
+              SourceFile(fixture("cds-merit-aid-bad-header-fixture.csv"), "s3://seed/merit-aid.csv"),
+          ),
+        )
+      }
+    val defect = error.defect as CdsSeedLoader.Defect.HeaderMismatch
+    // The defect carries (path, sourceArg, missing) like the other seven files
+    // of the same up-front check: an s3:// argument downloaded to a temp path
+    // is only nameable through `sourceArg`.
+    assertEquals(fixture("cds-merit-aid-bad-header-fixture.csv").path, defect.file)
+    assertEquals("s3://seed/merit-aid.csv", defect.sourceArg)
+    assertEquals(listOf("freshmen_ft_total"), defect.missing)
+    // Not a PartialIngestException at all: nothing had committed to report.
+    assertEquals(0, withSession { count(it, "colleges") }, "the institutions phase must not have run")
+    assertEquals(0, withSession { count(it, "college_merit_aid") })
+    assertEquals(buildRowsBefore, withSession { count(it, "college_index_build") })
+  }
+
+  private data class BuildRow(
+    val methodVersion: Int,
+    val sources: String,
+    val rowsIngested: String,
+  )
+
+  private fun buildRow(
+    session: ed.unicoach.db.dao.SqlSession,
+    id: java.util.UUID,
+  ): BuildRow? =
+    session
+      .prepareStatement("SELECT method_version, sources::text, rows_ingested::text FROM college_index_build WHERE id = ?")
+      .use { stmt ->
+        stmt.setObject(1, id)
+        stmt.executeQuery().use { rs ->
+          if (!rs.next()) return null
+          BuildRow(rs.getInt(1), rs.getString(2), rs.getString(3))
+        }
+      }
 
   @Test
   fun `the committed seed's headers are the headers this loader expects`() {

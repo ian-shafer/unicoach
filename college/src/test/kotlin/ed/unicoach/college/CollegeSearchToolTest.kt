@@ -1,5 +1,7 @@
 package ed.unicoach.college
 
+import ed.unicoach.chat.BareSourceCode
+import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -15,7 +17,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -228,7 +229,7 @@ class CollegeSearchToolTest {
       // An error envelope is a model-facing tool result too, and a malformed-arg
       // retry is an ordinary path -- so it owes the same no-bare-source-code
       // property as the success payload (RFC 143).
-      assertEquals(emptyList(), bareSourceCodes(unknownField), "the malformed-input error must carry no source code")
+      assertEquals(emptyList(), listViolations(unknownField), "the malformed-input error must carry no source code")
     }
 
   @Test
@@ -447,13 +448,13 @@ class CollegeSearchToolTest {
       }
 
       val result = tool.execute(buildJsonObject {})
-      assertEquals(emptyList(), bareSourceCodes(result), "the search result must carry no source code")
+      assertEquals(emptyList(), listViolations(result), "the search result must carry no source code")
       assertTrue(result.toString().contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
 
       // ...and the clean verdict above is over a payload that actually contains
       // every allowlisted field, so the allowlist is exercised rather than
       // vacuously satisfied by absent keys.
-      val rendered = numericFields(result).toSet()
+      val rendered = BareSourceCodeGuard.listNumericFields(result).toSet()
       assertEquals(emptySet(), NUMBERS_BY_CONTRACT - rendered, "every field the allowlist sanctions must be in the payload")
 
       // The description is prose the model reads before any result, so only the
@@ -478,12 +479,12 @@ class CollegeSearchToolTest {
         )
       assertEquals(
         listOf(
-          "quintile code [q5]",
-          "source column family [NPT4]",
-          "bare code in field [control]",
-          "bare code in field [net_price_q5]",
+          BareSourceCode.QuintileToken("q5"),
+          BareSourceCode.Npt4ColumnFamily,
+          BareSourceCode.BareNumberField("control"),
+          BareSourceCode.BareNumberField("net_price_q5"),
         ),
-        bareSourceCodes(doctored),
+        listViolations(doctored),
       )
     }
 
@@ -534,7 +535,7 @@ class CollegeSearchToolTest {
         // The failure envelope interpolates an UPSTREAM message, so it is the
         // error shape most able to leak a source column name to the model; it
         // goes through the same guard as the success payload (RFC 143).
-        assertEquals(emptyList(), bareSourceCodes(result), "the search-failure error must carry no source code")
+        assertEquals(emptyList(), listViolations(result), "the search-failure error must carry no source code")
       } finally {
         database.createRawConnection().use { conn ->
           conn.createStatement().use {
@@ -686,7 +687,8 @@ class CollegeSearchToolTest {
 }
 
 // ---------------------------------------------------------------------------
-// The generalised source-code guard (RFC 143)
+// The generalised source-code guard (RFC 143), hosted in :chat's test fixtures
+// since RFC 148 D9 -- the walker is shared, the allowlist stays this tool's own.
 // ---------------------------------------------------------------------------
 
 /**
@@ -716,39 +718,6 @@ private val NUMBERS_BY_CONTRACT =
     "pct_pell",
   )
 
-// No leading \b, deliberately: `_` is a word character, so `\bq[1-5]\b` does
-// NOT match `net_price_q5` -- the very key this guard has to catch.
-private val QUINTILE_CODE = Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE)
+private val QUINTILE_CODE = BareSourceCodeGuard.QUINTILE_CODE
 
-/**
- * Every way [payload] carries a bare source code, in the general form RFC 143
- * put in place of RFC 142's string-specific grep: a `qN` bucket token, the
- * `NPT4` column family, or any field carrying a bare number that is not a
- * number by contract. Read over the WHOLE payload, so a field added later is
- * covered without anyone remembering to extend the test.
- *
- * Returns the reasons rather than asserting them, so a test can also drive it
- * with a doctored payload and prove it still reacts.
- */
-private fun bareSourceCodes(payload: JsonElement): List<String> =
-  buildList {
-    val text = payload.toString()
-    QUINTILE_CODE.find(text)?.let { add("quintile code [${it.value}]") }
-    if (text.contains("NPT4")) add("source column family [NPT4]")
-    addAll(
-      numericFields(payload)
-        .filterNot { it in NUMBERS_BY_CONTRACT }
-        .map { "bare code in field [$it]" },
-    )
-  }
-
-/** Every field name in [element], at any depth, whose value is a bare number. */
-private fun numericFields(
-  element: JsonElement,
-  key: String? = null,
-): List<String> =
-  when (element) {
-    is JsonObject -> element.flatMap { (name, value) -> numericFields(value, name) }
-    is JsonArray -> element.flatMap { numericFields(it, key) }
-    is JsonPrimitive -> if (key != null && !element.isString && element.doubleOrNull != null) listOf(key) else emptyList()
-  }
+private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSourceCodeGuard.listViolations(payload, NUMBERS_BY_CONTRACT)

@@ -22,6 +22,9 @@ dependencies {
   // Transport-seam fake and signed App Store fixtures (RFC 110), so
   // SubscriptionServiceTest drives the real AppStoreServerApi.
   testImplementation(testFixtures(project(":appstore")))
+  // The shared RFC 143 source-code guard (RFC 148 D9), hosted in the one module
+  // :service and :college both already depend on.
+  testImplementation(testFixtures(project(":chat")))
   // The runtime logging backend, pulled into the test source set only so
   // LlmCallLogTest can capture the estimated-model WARN via a ListAppender
   // (web-common's precedent). RFC 108.

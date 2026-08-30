@@ -21,6 +21,9 @@ dependencies {
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)
+  // The shared RFC 143 source-code guard (RFC 148 D9). :chat is otherwise not a
+  // :college dependency; only the test fixture is pulled in, never main code.
+  testImplementation(testFixtures(project(":chat")))
 }
 
 tasks.withType<Test> {

@@ -1,6 +1,11 @@
 package ed.unicoach.coaching.costs
 
+import ed.unicoach.chat.BareSourceCode
+import ed.unicoach.chat.BareSourceCodeGuard
+import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.MoneyProfileChatTool
+import ed.unicoach.coaching.StudentScopedChatTool
+import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.costs.CostsTestDb.answerBand
 import ed.unicoach.coaching.costs.CostsTestDb.answerResidency
 import ed.unicoach.coaching.costs.CostsTestDb.createStudent
@@ -12,11 +17,9 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -24,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -185,7 +189,7 @@ class CollegeCostChatToolTest {
     // the assertion the general property rather than a grep for the two tokens
     // that leaked before -- `control` sat inside the old grep's own payload.
     val payload = execute(student)
-    assertEquals(emptyList(), bareSourceCodes(payload), "the cost result must carry no source code")
+    assertEquals(emptyList(), listViolations(payload), "the cost result must carry no source code")
     assertTrue(payload.toString().contains(IncomeBand.OVER_110K.bracket), "the dollar range is what goes instead")
 
     // ...and the clean verdict above is over a payload that actually renders
@@ -213,19 +217,19 @@ class CollegeCostChatToolTest {
       )
     assertEquals(
       listOf(
-        "quintile code [q5]",
-        "source column family [NPT4]",
-        "bare code in field [control]",
-        "bare code in field [net_price_q5]",
+        BareSourceCode.QuintileToken("q5"),
+        BareSourceCode.Npt4ColumnFamily,
+        BareSourceCode.BareNumberField("control"),
+        BareSourceCode.BareNumberField("net_price_q5"),
       ),
-      bareSourceCodes(doctored),
+      listViolations(doctored),
     )
 
     // An error envelope is a model-facing tool result too, and a malformed-arg
     // retry is an ordinary path -- so it owes the same property (RFC 143).
     assertEquals(
       emptyList(),
-      bareSourceCodes(execute(student, """{"college_ids":["not-a-uuid"]}""")),
+      listViolations(execute(student, """{"college_ids":["not-a-uuid"]}""")),
       "the malformed-input error must carry no source code",
     )
   }
@@ -487,7 +491,7 @@ class CollegeCostChatToolTest {
       MoneyProfilesDao.findActiveByStudent(CostsTestDb.sqlSession, student).isFailure,
       "a cost read must not create a money-profile row",
     )
-    CostsTestDb.connection.createStatement().use { stmt ->
+    CoachingTestDb.connection.createStatement().use { stmt ->
       stmt.executeQuery("SELECT count(*) FROM college_list_entries").use { rs ->
         rs.next()
         assertEquals(1, rs.getInt(1), "a cost read must not touch the list")
@@ -664,12 +668,12 @@ class CollegeCostChatToolTest {
   @Test
   fun `an oversized college_ids array is a structured error naming the cap and the given size`() {
     val student = createStudent()
-    val ids = (0..CollegeCostChatTool.MAX_COLLEGE_IDS).joinToString(",") { "\"${UUID.randomUUID()}\"" }
+    val ids = (0..StudentScopedChatTool.MAX_COLLEGE_IDS).joinToString(",") { "\"${UUID.randomUUID()}\"" }
 
     val result = execute(student, """{"college_ids":[$ids]}""")
     assertEquals(
-      "college_ids must contain at most [${CollegeCostChatTool.MAX_COLLEGE_IDS}] entries, " +
-        "got [${CollegeCostChatTool.MAX_COLLEGE_IDS + 1}]",
+      "college_ids must contain at most [${StudentScopedChatTool.MAX_COLLEGE_IDS}] entries, " +
+        "got [${StudentScopedChatTool.MAX_COLLEGE_IDS + 1}]",
       errorOf(result),
     )
   }
@@ -692,63 +696,185 @@ class CollegeCostChatToolTest {
         .jsonPrimitive.content
     assertTrue(description.contains("duplicate ids are read once"), "the dedup tolerance must be documented: [$description]")
     assertTrue(
-      description.contains("At most ${CollegeCostChatTool.MAX_COLLEGE_IDS}"),
+      description.contains("At most ${StudentScopedChatTool.MAX_COLLEGE_IDS}"),
       "the cap must be documented: [$description]",
     )
   }
+
+  // ---------------------------------------------------------------------------
+  // The merit-aid feed (RFC 148 D7) -- purely additive
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a cost answer with no merit row is unchanged`() {
+    val student = createStudent()
+    seedListedCollege(student, "No Merit U")
+
+    val college = collegesOf(execute(student)).single()
+    assertNull(college[MeritAidWire.KEY], "an absent key, never an empty object")
+    // "Unchanged" is the whole key vocabulary, not the one key the author had
+    // in mind: a key the merit feed adds ANYWHERE in the college object fails
+    // here. Derived from CostField, so a future cost field costs no test edit.
+    assertEquals(
+      emptySet(),
+      college.keys - PRE_FEED_COLLEGE_KEYS,
+      "a college with no merit row renders exactly the keys it rendered before the feed: [$college]",
+    )
+    // The silence belongs to the other source, so it must NOT join
+    // data_availability, whose vocabulary is the Scorecard's cost fields.
+    assertFalse(
+      college
+        .getValue("data_availability")
+        .jsonArray
+        .map { it.jsonPrimitive.content }
+        .contains(MeritAidWire.KEY),
+      "merit silence is not a Scorecard silence: [$college]",
+    )
+  }
+
+  @Test
+  fun `a merit row carrying only the freshman total leaves the cost answer unchanged`() {
+    // The 28-of-368 corpus shape (RFC 148 D4): a freshman total and neither
+    // merit measure. Both tools read the same MeritPractice, so both must call
+    // it silence -- a cost answer showing full_time_freshmen under a Common
+    // Data Set citation with no merit fact beneath it is the same defect here.
+    val student = createStudent()
+    val college = seedListedCollege(student, "Denominator Only U")
+    CostsTestDb.seedMeritAid(college, freshmenFtTotal = 2760, noNeedMeritCount = null, noNeedMeritAvg = null)
+
+    val rendered = collegesOf(execute(student)).single()
+    assertNull(rendered[MeritAidWire.KEY], "a denominator with no merit measure is not a merit section")
+    assertEquals(
+      emptySet(),
+      rendered.keys - PRE_FEED_COLLEGE_KEYS,
+      "the answer is exactly the one this college gave before the feed existed: [$rendered]",
+    )
+  }
+
+  @Test
+  fun `a merit sentence never requires the money profile`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Merit U")
+    CostsTestDb.seedMeritAid(college, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+
+    // No income band, no residency -- the whole money profile unanswered.
+    val merit = collegesOf(execute(student)).single()[MeritAidWire.KEY]!!.jsonObject
+    assertEquals(
+      25.0,
+      merit
+        .getValue(MeritAidWire.SHARE_KEY)
+        .jsonPrimitive.content
+        .toDouble(),
+    )
+    assertEquals(
+      "25% of all full-time freshmen received non-need (merit) aid",
+      merit.getValue("share_label").jsonPrimitive.content,
+    )
+  }
+
+  @Test
+  fun `merit_aid rides its own citation, not the Scorecard source string`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Cited Merit U")
+    CostsTestDb.seedMeritAid(college)
+
+    val payload = execute(student)
+    val source = payload.getValue("source").jsonPrimitive.content
+    assertTrue(source.contains("College Scorecard"), "the payload attribution stays the Scorecard's: [$source]")
+    assertFalse(source.contains("Common Data Set"), "and must not absorb a second source: [$source]")
+    val citation =
+      collegesOf(payload)
+        .single()[MeritAidWire.KEY]!!
+        .jsonObject
+        .getValue("source")
+        .jsonObject
+    assertEquals("Cited Merit U's 2024-25 Common Data Set", citation.getValue("cited_as").jsonPrimitive.content)
+  }
+
+  @Test
+  fun `every college on a multi-college list carries its own merit answer`() {
+    val student = createStudent()
+    val first = seedListedCollege(student, "Merit One")
+    val second = seedListedCollege(student, "Merit Two")
+    seedListedCollege(student, "Merit None")
+    CostsTestDb.seedMeritAid(first, noNeedMeritAvg = 1000)
+    CostsTestDb.seedMeritAid(second, noNeedMeritAvg = 2000)
+
+    val byName = collegesOf(execute(student)).associateBy { it.getValue("name").jsonPrimitive.content }
+    assertEquals(3, byName.size)
+    assertEquals(
+      1000,
+      byName
+        .getValue("Merit One")[MeritAidWire.KEY]!!
+        .jsonObject
+        .getValue(MeritAidWire.AVERAGE_KEY)
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertEquals(
+      2000,
+      byName
+        .getValue("Merit Two")[MeritAidWire.KEY]!!
+        .jsonObject
+        .getValue(MeritAidWire.AVERAGE_KEY)
+        .jsonPrimitive.content
+        .toInt(),
+    )
+    assertNull(byName.getValue("Merit None")[MeritAidWire.KEY])
+  }
+
+  @Test
+  fun `the merit feed carries no bare source code into the cost result`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Guarded Merit U")
+    CostsTestDb.seedMeritAid(college, freshmenFtTotal = 2000, noNeedMeritCount = 500, noNeedMeritAvg = 12500)
+    answerBand(student, IncomeBand.OVER_110K)
+
+    val payload = execute(student)
+    assertEquals(emptyList(), listViolations(payload), "the merit sub-object must carry no source code")
+    assertFalse(payload.toString().contains("without need"), "never a share of freshmen without need")
+  }
 }
 
+/**
+ * Every key `collegeObject` rendered BEFORE the RFC 148 merit feed -- the whole
+ * key vocabulary of a college, so `a cost answer with no merit row is
+ * unchanged` can assert the shape rather than one absent key. The cost measures
+ * are read from [CostField], their one home, so a future cost field costs no
+ * edit here; a key the merit feed adds anywhere else does.
+ */
+private val PRE_FEED_COLLEGE_KEYS: Set<String> =
+  setOf(
+    "college_id",
+    "name",
+    "city",
+    "state",
+    "control",
+    "list_status",
+    "tuition_applicable",
+    CollegeCostChatTool.PRECISION_OFFER_KEY,
+    "data_availability",
+  ) + CostField.entries.map { it.wireName }
+
 // ---------------------------------------------------------------------------
-// The generalised source-code guard (RFC 143)
+// The generalised source-code guard (RFC 143), hosted in :chat's test fixtures
+// since RFC 148 D9 -- the walker is shared, the allowlist stays this tool's own.
 // ---------------------------------------------------------------------------
 
 /**
  * The field names whose value is a NUMBER by contract -- the cost measures this
- * tool renders (read from [CostField], their one home), the result count, and
- * the net-price `amount` -- so a number under them is a fact, not a code. Every
- * other numeric field is a coded dimension until sanctioned here; `control` was
- * exactly that, and this list is the one place to admit the next one,
- * deliberately short enough to read in a review.
+ * tool renders (read from [CostField], their one home), the result count, the
+ * net-price `amount`, and the merit measures the RFC 148 feed adds (read from
+ * [MeritAidWire], their one home) -- so a number under them is a fact, not a
+ * code. Every other numeric field is a coded dimension until sanctioned here;
+ * `control` was exactly that, and this list is the one place to admit the next
+ * one, deliberately short enough to read in a review.
  *
  * The documented codes the model hands back (`income_band`, which
  * `update_money_profile` accepts, and `college_id`) ride as STRINGS and so
  * never reach this check.
  */
-private val NUMBERS_BY_CONTRACT = CostField.entries.map { it.wireName }.toSet() + setOf("count", "amount")
+private val NUMBERS_BY_CONTRACT =
+  CostField.entries.map { it.wireName }.toSet() + setOf("count", "amount") + MeritAidWire.NUMERIC_KEYS
 
-// No leading \b, deliberately: `_` is a word character, so `\bq[1-5]\b` does
-// NOT match `net_price_q5` -- the very key this guard has to catch.
-private val QUINTILE_CODE = Regex("""q[1-5]\b""", RegexOption.IGNORE_CASE)
-
-/**
- * Every way [payload] carries a bare source code, in the general form RFC 143
- * put in place of RFC 142's string-specific grep: a `qN` bucket token, the
- * `NPT4` column family, or any field carrying a bare number that is not a
- * number by contract. Read over the WHOLE payload, so a field added later is
- * covered without anyone remembering to extend the test.
- *
- * Returns the reasons rather than asserting them, so a test can also drive it
- * with a doctored payload and prove it still reacts.
- */
-private fun bareSourceCodes(payload: JsonElement): List<String> =
-  buildList {
-    val text = payload.toString()
-    QUINTILE_CODE.find(text)?.let { add("quintile code [${it.value}]") }
-    if (text.contains("NPT4")) add("source column family [NPT4]")
-    addAll(
-      numericFields(payload)
-        .filterNot { it in NUMBERS_BY_CONTRACT }
-        .map { "bare code in field [$it]" },
-    )
-  }
-
-/** Every field name in [element], at any depth, whose value is a bare number. */
-private fun numericFields(
-  element: JsonElement,
-  key: String? = null,
-): List<String> =
-  when (element) {
-    is JsonObject -> element.flatMap { (name, value) -> numericFields(value, name) }
-    is JsonArray -> element.flatMap { numericFields(it, key) }
-    is JsonPrimitive -> if (key != null && !element.isString && element.doubleOrNull != null) listOf(key) else emptyList()
-  }
+private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSourceCodeGuard.listViolations(payload, NUMBERS_BY_CONTRACT)
