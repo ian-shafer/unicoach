@@ -152,16 +152,22 @@ can be chosen.
 - Tri-state per field (unset / declined / value), atomic upsert, admin read-only
   view.
 
-### Finding a college by name (brief 0004 S1, RFC 139)
+### Finding a college by name (brief 0004 S1, RFC 139; matching replaced by RFC 146)
 
 Typing a school's name finds it even when the typing is imperfect.
 
 - **How a user reaches it:** the iOS college-list screen's name search
   (`GET /api/v1/colleges?q=…`), and the coach's `search_colleges` tool in chat —
   both inherited the upgrade with no API change.
-- **What it does:** trigram matching (`pg_trgm`) over the school's name plus a
-  curated alias list, so "Amhurst Colege" finds Amherst College and "Mizzou"
-  finds Missouri-Columbia. Exact and prefix matches still rank first.
+- **What it does:** a typo is **one keystroke wrong** — a substitution,
+  insertion, deletion, or adjacent transposition — so a school matches when
+  every word of the query is within one keystroke of some word of its name or
+  curated aliases, or the query is a literal substring of them. "Amhurst" finds
+  Amherst College, "Amhurst Colege" finds it too, and "Mizzou" finds
+  Missouri-Columbia. Exact and prefix matches still rank first. Trigram
+  similarity (`pg_trgm`) and its 0.6 threshold are gone: they ranked Elmhurst
+  University above an absent Amherst College for "Amhurst", and no threshold
+  repaired that (RFC 146).
 - **For the coach:** results now carry an unclamped `total_matches` ("312 match;
   showing 25" is finally sayable), a `sort_by` that never filters, and a
   `credential_level` word enum ("bachelors"), never raw Scorecard codes.

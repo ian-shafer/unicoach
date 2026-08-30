@@ -80,9 +80,20 @@ class CollegeSearchServiceTest {
     website = null,
   )
 
+  /**
+   * Seeds one college AND rebuilds the derived `college_name_words` table
+   * (RFC 146). In production only the ingest writes `colleges`, and it rebuilds
+   * the words as its own phase; a test seeding rows directly is the one caller
+   * that must do it by hand, so it lives in the helper where a later test
+   * cannot forget it.
+   */
   private fun seed(input: NewCollege) =
     runBlocking {
-      database.withConnection { session: SqlSession -> CollegesDao.upsert(session, input).getOrThrow() }
+      database.withConnection { session: SqlSession ->
+        val college = CollegesDao.upsert(session, input).getOrThrow()
+        CollegesDao.rebuildNameWords(session).getOrThrow()
+        college
+      }
     }
 
   @Test
@@ -151,8 +162,8 @@ class CollegeSearchServiceTest {
       seed(newCollege(142))
 
       val matches = service.searchByName("Test U 141", 25).getOrThrow()
-      // The trigram arms (RFC 139) legitimately surface the near-identical
-      // "Test U 142" as a fuzzy neighbour; the exact match must rank first.
+      // "Test U 142" is one keystroke away ("141"→"142") and so legitimately
+      // matches too (RFC 146); the exact match must rank first.
       assertEquals("Test U 141", matches.first().name)
     }
 

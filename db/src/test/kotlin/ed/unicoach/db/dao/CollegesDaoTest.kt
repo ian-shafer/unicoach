@@ -119,7 +119,32 @@ class CollegesDaoTest {
     website = "https://test$unitId.edu",
   )
 
-  private fun seed(input: NewCollege): CollegeId = CollegesDao.upsert(session, input).getOrThrow().id
+  /**
+   * Seeds one college AND rebuilds the derived `college_name_words` table.
+   *
+   * The rebuild belongs in the helper, not in the tests: `colleges` is written
+   * only by the ingest in production, which rebuilds the words as its own phase
+   * (RFC 146), so a test that seeds rows directly is the one caller that has to
+   * do it by hand — and a future test that forgot would not fail, it would
+   * silently lose the one-keystroke arm and pass on the substring arm alone.
+   * That is exactly the way RFC 139's fuzzy test passed for the wrong reason.
+   */
+  private fun seed(input: NewCollege): CollegeId {
+    val id = CollegesDao.upsert(session, input).getOrThrow().id
+    rebuildNameWords()
+    return id
+  }
+
+  /** Applies curated aliases and re-derives the words, since aliases feed the search text. */
+  private fun setAliases(
+    unitId: Int,
+    aliases: List<String>,
+  ) {
+    CollegesDao.updateAliases(session, unitId, aliases).getOrThrow()
+    rebuildNameWords()
+  }
+
+  private fun rebuildNameWords(): Int = CollegesDao.rebuildNameWords(session).getOrThrow()
 
   // ---------------------------------------------------------------------------
   // Upserts
@@ -629,18 +654,20 @@ class CollegesDaoTest {
     seed(newCollege(810303, name = "Underscore College"))
 
     // The ILIKE arm is escaped: '%' must not act as a wildcard, so the literal
-    // '%' name matches and "A plain College" is only reachable via the trigram
-    // arms (which ignore punctuation) — the literal match must rank first.
+    // '%' name matches. The one-keystroke arm sees the query as the single word
+    // "percent" (the '%' is not a word character), which "A plain College" has
+    // no word within one keystroke of — so the literal row comes first.
     val percent = CollegesDao.searchByName(session, "percent %", 25).getOrThrow()
     assertEquals("A percent % College", percent.first().name)
 
     // An unescaped underscore would ALSO match "Underscore" on the ILIKE arm.
-    // Since RFC 139 the trigram arms legitimately surface "Underscore College"
-    // as a fuzzy neighbour (trigrams ignore '_'), so the literal-match guarantee
-    // is ranking, not exclusivity: the exact row must come first.
+    // Under RFC 139 the trigram arms surfaced "Underscore College" regardless
+    // (trigrams ignore '_'), so the literal-match guarantee could only be
+    // ranking; with every arm now exact (RFC 146) it is EXCLUSIVITY again:
+    // "Under_score" splits into the words "under" and "score", and
+    // "underscore" is nowhere near one keystroke from either.
     val underscore = CollegesDao.searchByName(session, "Under_score", 25).getOrThrow()
-    assertEquals("Under_score College", underscore.first().name)
-    assertTrue("Underscore College" in underscore.map { it.name }, "the fuzzy arm should also surface the near-identical name")
+    assertEquals(listOf("Under_score College"), underscore.map { it.name })
 
     val backslash = CollegesDao.searchByName(session, "\\", 25).getOrThrow()
     assertEquals(emptyList(), backslash.map { it.name })
@@ -654,83 +681,339 @@ class CollegesDaoTest {
   }
 
   // ---------------------------------------------------------------------------
-  // searchByName — fuzzy arms (RFC 139)
+  // searchByName — the one-keystroke rule (RFC 146)
+  //
+  // The RFC 139 threshold-pinning test is deleted with the thresholds: pg_trgm
+  // is gone, so there is no GUC left for a hostile session to be hostile about.
   // ---------------------------------------------------------------------------
 
-  @Test
-  fun `searchByName finds a typo'd full name via trigram similarity`() {
-    seed(newCollege(820100, name = "Amherst College"))
-    seed(newCollege(820101, name = "Hampshire College"))
+  /**
+   * Every single-keystroke variant of [word]: all 25 other letters substituted
+   * at every position, all 26 letters inserted at every position (both ends
+   * included), every single deletion, and every adjacent transposition. Some
+   * variants coincide (inserting 'l' either side of an existing 'l'); they are
+   * kept rather than deduplicated so the count is an exact, checkable formula
+   * and a broken generator cannot silently test nothing.
+   */
+  private fun keystrokeVariants(word: String): List<String> {
+    val variants = mutableListOf<String>()
+    for (i in word.indices) {
+      for (ch in 'a'..'z') if (ch != word[i]) variants += word.substring(0, i) + ch + word.substring(i + 1)
+    }
+    for (i in 0..word.length) {
+      for (ch in 'a'..'z') variants += word.substring(0, i) + ch + word.substring(i)
+    }
+    for (i in word.indices) variants += word.substring(0, i) + word.substring(i + 1)
+    for (i in 0 until word.length - 1) {
+      variants += word.substring(0, i) + word[i + 1] + word[i] + word.substring(i + 2)
+    }
+    return variants
+  }
 
-    val matches = CollegesDao.searchByName(session, "Amhurst Colege", 25).getOrThrow()
-    assertEquals("Amherst College", matches.first().name)
+  /** 25n substitutions + 26(n+1) insertions + n deletions + (n-1) transpositions. */
+  private fun expectedVariantCount(word: String): Int = 25 * word.length + 26 * (word.length + 1) + word.length + (word.length - 1)
+
+  /**
+   * THE property test — the one that would have caught the RFC 139 defect.
+   *
+   * Recall is a theorem under RFC 146 ("a query one keystroke off some word of
+   * a name matches that name"), so this is its proof obligation, not a sample:
+   * every single-keystroke variant of a distinctive word of each fixture name
+   * must find that college. RFC 139's only fuzzy test used the two-word
+   * "Amhurst Colege" and passed for the wrong reason; no single-word typo was
+   * ever tested, and single-word typos were exactly what was broken.
+   */
+  @Test
+  fun `searchByName finds the college for EVERY single-keystroke variant of a distinctive name word`() {
+    val fixtures =
+      listOf(
+        "Amherst College" to "amherst",
+        "Stanford University" to "stanford",
+        "Harvard University" to "harvard",
+        "University of California-Berkeley" to "berkeley",
+        "Cornell University" to "cornell",
+        "University of Missouri-Columbia" to "missouri",
+      )
+    fixtures.forEachIndexed { i, (name, _) -> seed(newCollege(870100 + i, name = name)) }
+
+    var checked = 0
+    val failures = mutableListOf<String>()
+    for ((name, word) in fixtures) {
+      val variants = keystrokeVariants(word)
+      assertEquals(expectedVariantCount(word), variants.size, "the generator must produce every variant of [$word]")
+      for (variant in variants) {
+        checked++
+        val found = CollegesDao.searchByName(session, variant, 25).getOrThrow().map { it.name }
+        if (name !in found) failures += "[$variant] found $found, expected [$name]"
+      }
+    }
+
+    // 53n + 25 per word over lengths 7,8,7,8,7,8 — asserted so a generator that
+    // silently produced nothing could not pass this test vacuously.
+    assertEquals(2535, checked, "the property must be checked over every generated variant")
+    assertTrue(failures.isEmpty(), "${failures.size} of $checked variants did not find their college: ${failures.take(20)}")
+  }
+
+  /**
+   * Optimal string alignment distance — an independent reference for the
+   * differential test below, written from the definition (the classic
+   * Damerau-Levenshtein matrix with the adjacent-transposition arm) and sharing
+   * no code, and no Postgres, with `one_keystroke_off`.
+   */
+  private fun osaDistance(
+    a: String,
+    b: String,
+  ): Int {
+    val d = Array(a.length + 1) { IntArray(b.length + 1) }
+    for (i in 0..a.length) d[i][0] = i
+    for (j in 0..b.length) d[0][j] = j
+    for (i in 1..a.length) {
+      for (j in 1..b.length) {
+        val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+        d[i][j] = minOf(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+        if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) {
+          d[i][j] = minOf(d[i][j], d[i - 2][j - 2] + 1)
+        }
+      }
+    }
+    return d[a.length][b.length]
+  }
+
+  /**
+   * Differential test: the SQL predicate against the reference implementation
+   * over 2,490 pairs — 1,690 exhaustive single-keystroke mutations of real name
+   * words plus 800 random pairs from a fixed seed (which are overwhelmingly far
+   * apart, and are the half that would catch a predicate matching too much).
+   * Batched into ONE round trip as a bound VALUES list; the pair text is bound,
+   * never interpolated.
+   */
+  @Test
+  fun `one_keystroke_off agrees with an independent OSA reference over thousands of pairs`() {
+    val words = listOf("amherst", "stanford", "harvard", "berkeley")
+    val pairs = mutableListOf<Pair<String, String>>()
+    for (word in words) for (variant in keystrokeVariants(word)) pairs += word to variant
+
+    val random = java.util.Random(146)
+    val alphabet = ('a'..'z').toList()
+    repeat(800) {
+      fun randomString(): String = (0 until 1 + random.nextInt(10)).map { alphabet[random.nextInt(alphabet.size)] }.joinToString("")
+      pairs += randomString() to randomString()
+    }
+    assertEquals(2490, pairs.size, "the pair corpus must be the size this test claims")
+    // Composition, not just size: without genuine negatives a predicate that
+    // returned TRUE unconditionally would pass this test, and the negatives are
+    // exactly the half that catches a predicate matching too much.
+    // The seed is fixed and the generator deterministic, so this is a FACT
+    // about this corpus, not a floor chosen to be comfortably below whatever a
+    // run produced: 783 of the 800 random pairs are more than one keystroke
+    // apart (the other 17 landed within one by chance, and the 1,690 exhaustive
+    // variants are all positives by construction). A generator that drifted
+    // fails here instead of quietly testing less.
+    val negatives = pairs.count { (a, b) -> osaDistance(a, b) > 1 }
+    assertEquals(783, negatives, "the random half must really be negatives, or over-matching goes unnoticed")
+
+    val values = pairs.joinToString(", ") { "(?, ?)" }
+    // Query word first, stored word second — the orientation searchByName calls
+    // it in; the second column asserts the predicate is symmetric, which the
+    // definition says it is and only a test can hold it to.
+    val sql =
+      "SELECT a, b, one_keystroke_off(b, a) AS off, one_keystroke_off(a, b) AS reversed " +
+        "FROM (VALUES $values) AS t(a, b)"
+    val mismatches = mutableListOf<String>()
+    var compared = 0
+    connection.prepareStatement(sql).use { stmt ->
+      pairs.forEachIndexed { i, (a, b) ->
+        stmt.setString(2 * i + 1, a)
+        stmt.setString(2 * i + 2, b)
+      }
+      stmt.executeQuery().use { rs ->
+        while (rs.next()) {
+          compared++
+          val a = rs.getString("a")
+          val b = rs.getString("b")
+          val sqlSays = rs.getBoolean("off")
+          val reversedSays = rs.getBoolean("reversed")
+          val referenceSays = osaDistance(a, b) <= 1
+          if (sqlSays != referenceSays) mismatches += "[$a] vs [$b]: sql=$sqlSays reference=${osaDistance(a, b)}"
+          if (reversedSays != sqlSays) mismatches += "[$a] vs [$b]: asymmetric — $sqlSays one way, $reversedSays the other"
+        }
+      }
+    }
+
+    assertEquals(pairs.size, compared, "every pair must come back")
+    assertTrue(mismatches.isEmpty(), "${mismatches.size} pairs disagree with the reference: ${mismatches.take(20)}")
   }
 
   @Test
-  fun `searchByName finds a nickname via the aliases word-similarity arm`() {
+  fun `searchByName finds a one-keystroke typo and does not surface a two-keystroke neighbour`() {
+    // The RFC 146 defect, exactly: word_similarity scored El(mhurst) 0.625 and
+    // Amherst 0.455, so "Amhurst" returned Elmhurst University and missed
+    // Amherst College entirely. "amhurst" is one keystroke from "amherst" and
+    // two from "elmhurst", so the rule admits the first and excludes the second.
+    seed(newCollege(871100, name = "Amherst College"))
+    seed(newCollege(871101, name = "Elmhurst University", undergradEnrollment = 90000))
+    seed(newCollege(871102, name = "Hampshire College"))
+
+    val matches = CollegesDao.searchByName(session, "Amhurst", 25).getOrThrow().map { it.name }
+    assertEquals(listOf("Amherst College"), matches)
+  }
+
+  @Test
+  fun `searchByName matches a typo in every word of a multi-word query, and only then`() {
+    // The quantifier is `for all` query words: "amhurst"→"amherst" and
+    // "colege"→"college" are one keystroke each, while "amhurst"→"elmhurst" is
+    // two — so the shared "colege" cannot drag Elmhurst College in. (An
+    // any-word rule would return every college in the corpus for "colege".)
+    seed(newCollege(871200, name = "Amherst College"))
+    seed(newCollege(871201, name = "Elmhurst College"))
+
+    val matches = CollegesDao.searchByName(session, "Amhurst Colege", 25).getOrThrow().map { it.name }
+    assertEquals(listOf("Amherst College"), matches)
+
+    // …and the single word on its own legitimately matches both.
+    val bothColleges = CollegesDao.searchByName(session, "Colege", 25).getOrThrow().map { it.name }
+    assertEquals(setOf("Amherst College", "Elmhurst College"), bothColleges.toSet())
+  }
+
+  @Test
+  fun `searchByName finds a transposition and a deletion`() {
+    seed(newCollege(871300, name = "Stanford University"))
+    seed(newCollege(871301, name = "Harvard University"))
+
+    // Stanfrod: an adjacent transposition, which plain Levenshtein scores 2 —
+    // the second arm of one_keystroke_off is what covers it.
+    assertEquals(
+      "Stanford University",
+      CollegesDao
+        .searchByName(session, "Stanfrod", 25)
+        .getOrThrow()
+        .first()
+        .name,
+    )
+    // Harvad: a deletion.
+    assertEquals(
+      "Harvard University",
+      CollegesDao
+        .searchByName(session, "Harvad", 25)
+        .getOrThrow()
+        .first()
+        .name,
+    )
+  }
+
+  @Test
+  fun `searchByName finds a nickname through the curated aliases`() {
     seed(newCollege(820200, name = "University of Missouri-Columbia"))
     seed(newCollege(820201, name = "University of Central Missouri"))
-    CollegesDao.updateAliases(session, 820200, listOf("Mizzou", "University of Missouri")).getOrThrow()
+    setAliases(820200, listOf("Mizzou", "University of Missouri"))
 
+    // The alias is a word of the search text, so the exact-word arm finds it —
+    // the nickname mechanism needs no scoring of its own (RFC 139 + 146).
     val matches = CollegesDao.searchByName(session, "Mizzou", 25).getOrThrow()
     assertEquals("University of Missouri-Columbia", matches.first().name)
+
+    // And a nickname one keystroke off still finds it.
+    assertEquals(
+      "University of Missouri-Columbia",
+      CollegesDao
+        .searchByName(session, "Mizou", 25)
+        .getOrThrow()
+        .first()
+        .name,
+    )
   }
 
   @Test
   fun `searchByName substring arm ranges over alias text, not just the name`() {
     // "izzo" is an exact substring of the alias "Mizzou" but of no college
-    // name, and it is too dissimilar for either trigram arm's threshold — so
+    // name, and it is two keystrokes from every word of the search text — so
     // only the ILIKE arm over college_search_text(name, aliases) can find it.
     seed(newCollege(820400, name = "University of Missouri-Columbia"))
-    CollegesDao.updateAliases(session, 820400, listOf("Mizzou")).getOrThrow()
+    setAliases(820400, listOf("Mizzou"))
 
     val matches = CollegesDao.searchByName(session, "izzo", 25).getOrThrow()
     assertEquals(listOf("University of Missouri-Columbia"), matches.map { it.name })
   }
 
   @Test
+  fun `searchByName finds a short fragment through the substring arm`() {
+    seed(newCollege(871400, name = "Amherst College"))
+    seed(newCollege(871401, name = "Stanford University"))
+
+    val matches = CollegesDao.searchByName(session, "Amh", 25).getOrThrow()
+    assertEquals(listOf("Amherst College"), matches.map { it.name })
+  }
+
+  @Test
   fun `searchByName finds a multi-word alias fragment`() {
     seed(newCollege(820300, name = "University of Massachusetts-Amherst"))
-    CollegesDao.updateAliases(session, 820300, listOf("UMass Amherst", "UMass")).getOrThrow()
+    setAliases(820300, listOf("UMass Amherst", "UMass"))
 
     val matches = CollegesDao.searchByName(session, "UMass Amherst", 25).getOrThrow()
     assertEquals("University of Massachusetts-Amherst", matches.first().name)
   }
 
   @Test
-  fun `searchByName pins its own trigram thresholds, ignoring hostile session GUCs`() {
-    seed(newCollege(820500, name = "Amherst College"))
-    seed(newCollege(820501, name = "Hampshire College"))
+  fun `searchByName ranks a rule match above a substring-only match, whatever the enrollment`() {
+    // Neither name is a prefix of the query, so the tie is broken by the summed
+    // per-word distance alone: an exact word scores 0, a row reachable only
+    // through the substring arm scores 2 — below the rule, and below it even
+    // with 900x the enrollment.
+    seed(newCollege(871500, name = "Northamherstville Academy", undergradEnrollment = 90000))
+    seed(newCollege(871501, name = "The Amherst Institute", undergradEnrollment = 100))
 
-    // Hostile session defaults: at 1.0 neither trigram arm can ever fire, so a
-    // search that inherited its bounds from the server would find nothing. The
-    // DAO's SET LOCAL must win inside the transaction it runs in.
-    connection.autoCommit = false
-    try {
-      connection.createStatement().use { stmt ->
-        stmt.execute("SET pg_trgm.similarity_threshold = 1")
-        stmt.execute("SET pg_trgm.word_similarity_threshold = 1")
-      }
-
-      val matches = CollegesDao.searchByName(session, "Amhurst Colege", 25).getOrThrow()
-      assertEquals("Amherst College", matches.first().name)
-
-      connection.createStatement().use { stmt ->
-        stmt
-          .executeQuery(
-            "SELECT current_setting('pg_trgm.similarity_threshold') AS s, " +
-              "current_setting('pg_trgm.word_similarity_threshold') AS w",
-          ).use { rs ->
-            assertTrue(rs.next())
-            assertEquals(CollegesDao.SIMILARITY_THRESHOLD, rs.getString("s").toDouble())
-            assertEquals(CollegesDao.WORD_SIMILARITY_THRESHOLD, rs.getString("w").toDouble())
-          }
-      }
-    } finally {
-      connection.rollback()
-      connection.autoCommit = true
-    }
+    val matches = CollegesDao.searchByName(session, "amherst", 25).getOrThrow().map { it.name }
+    assertEquals(listOf("The Amherst Institute", "Northamherstville Academy"), matches)
   }
+
+  @Test
+  fun `searchByName with no word characters at all matches nothing, not everything`() {
+    // "%%%" splits into ZERO words, and "every query word matches" is vacuously
+    // true over an empty set — the guard is what keeps that from returning the
+    // whole corpus. The substring arm still applies, and matches nothing here.
+    seed(newCollege(871600, name = "Amherst College"))
+    seed(newCollege(871601, name = "Stanford University"))
+
+    assertEquals(emptyList(), CollegesDao.searchByName(session, "%%%", 25).getOrThrow().map { it.name })
+    assertEquals(emptyList(), CollegesDao.searchByName(session, "---", 25).getOrThrow().map { it.name })
+  }
+
+  @Test
+  fun `rebuildNameWords derives the word set wholesale and follows the current names`() {
+    seed(newCollege(871700, name = "Amherst College"))
+    setAliases(871700, listOf("Lord Jeffs"))
+
+    assertEquals(
+      listOf("amherst", "college", "jeffs", "lord"),
+      nameWordsFor(871700),
+      "words come from lower(college_search_text(name, aliases)) split on [^a-z0-9]+",
+    )
+
+    // A renamed college keeps no stale words: the rebuild is wholesale.
+    seed(newCollege(871700, name = "Hampshire College"))
+    assertEquals(listOf("college", "hampshire", "jeffs", "lord"), nameWordsFor(871700))
+
+    // Rebuilding again writes the same set: the derivation is a function of the
+    // rows, not an accumulation.
+    val rows = rebuildNameWords()
+    assertEquals(4, rows)
+    assertEquals(listOf("college", "hampshire", "jeffs", "lord"), nameWordsFor(871700))
+  }
+
+  /** The stored words of one college, alphabetical, read straight from the derived table. */
+  private fun nameWordsFor(unitId: Int): List<String> =
+    connection
+      .prepareStatement(
+        "SELECT nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
+          "WHERE c.unit_id = ? ORDER BY nw.word",
+      ).use { stmt ->
+        stmt.setInt(1, unitId)
+        stmt.executeQuery().use { rs ->
+          val words = mutableListOf<String>()
+          while (rs.next()) words += rs.getString("word")
+          words
+        }
+      }
 
   // ---------------------------------------------------------------------------
   // nonNullCounts (RFC 139)

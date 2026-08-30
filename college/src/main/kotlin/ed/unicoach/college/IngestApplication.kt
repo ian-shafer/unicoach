@@ -377,8 +377,9 @@ fun main(args: Array<String>) {
     kotlin.system.exitProcess(1)
   } catch (e: PartialIngestException) {
     logger.error(
-      "PARTIAL INGEST — phases {} COMMITTED, no college_index_build row was written, " +
+      "PARTIAL INGEST — phase [{}] FAILED, phases {} COMMITTED, no college_index_build row was written, " +
         "provenance was NOT recorded; re-run the ingest to complete it",
+      e.failedPhase,
       e.committedPhases,
       e,
     )

@@ -555,118 +555,139 @@ object CollegesDao :
     } + ", c.unit_id ASC"
 
   /**
-   * Student-facing fuzzy name search (RFC 137 boundary, RFC 139 matching): a
-   * three-arm OR over `search_text = college_search_text(name, aliases)` (the
-   * 0051 IMMUTABLE expression the trigram GIN index is built on):
+   * Student-facing name search (RFC 137 boundary, RFC 146 matching). Three
+   * mechanisms, each **exact** — there is no similarity score and no threshold
+   * anywhere in this query:
    *
-   * 1. `search_text % ?` — whole-string trigram similarity at
-   *    [SIMILARITY_THRESHOLD]: catches typos of full-ish names ("Amhurst
-   *    Colege").
-   * 2. `? <% search_text` — word similarity at [WORD_SIMILARITY_THRESHOLD]: catches
-   *    fragments and nicknames ("Mizzou", "UMass Amherst"), which score far too
-   *    low on whole-string similarity against a long search text. Verified
-   *    empirically against the real dataset: the `%` arm alone finds nothing
-   *    for "Mizzou"; this arm scores it 1.0.
-   * 3. `search_text ILIKE '%'||?||'%'` — the escaped-literal substring arm,
-   *    kept on merit for short fragments ("Amh") that trigram thresholds miss;
-   *    ranging over the search text (not bare `name`) means a short alias
-   *    fragment ("Miz") also matches.
+   * 1. **One keystroke** — the typo mechanism. The query is split into words by
+   *    `college_search_words()` — the SAME function `college_name_words` is
+   *    built from, so there is one word boundary in the system — and a college
+   *    matches when EVERY query word is within one keystroke of SOME word of
+   *    its search text: `one_keystroke_off()` (migration 0056) is optimal
+   *    string alignment distance <= 1, i.e. one substitution, insertion,
+   *    deletion, or adjacent transposition. Recall is then a theorem rather
+   *    than a corpus statistic — a query formed by mistyping one key in each
+   *    word of a name is by definition within one keystroke of each of those
+   *    words. The quantifier is `for all` on purpose: `there exists` would let
+   *    "colege" alone return every college in the corpus.
+   * 2. **Substring** — the fragment mechanism: `search_text ILIKE '%…%'` over
+   *    `college_search_text(name, aliases)` (the 0051 expression), so a short
+   *    fragment ("Amh") and an alias fragment ("izzo") both match literally.
+   * 3. **Aliases** — the nickname mechanism (RFC 139), which needs no code of
+   *    its own: "Mizzou" is a curated alias, therefore a word of the search
+   *    text, and so matches arm 1 exactly.
    *
-   * All three arms range over the indexed expression, so the whole OR is
-   * served by `colleges_search_text_trgm_idx` (`gin_trgm_ops` supports `%`,
-   * `<%`, and `ILIKE`) — no arm forces a seq scan. The trgm arms take the raw
-   * trimmed query (trigrams ignore LIKE metacharacters); only the ILIKE arms
-   * take the escaped one, so `%`/`_`/`\` still match literally there.
+   * This replaces RFC 139's two `pg_trgm` arms, whose `word_similarity` scored
+   * the best-matching contiguous extent and so ranked Elmhurst University above
+   * an absent Amherst College for the query "Amhurst". No threshold repairs
+   * that, so the metric — and the extension — are gone (RFC 146).
    *
-   * Ranking: exact-prefix-of-name first (RFC 137 behaviour preserved), then
-   * `word_similarity(?, search_text)` DESC (chosen over `similarity()` for the
-   * same fragment reason as arm 2), then `undergrad_enrollment DESC NULLS
-   * LAST, name, unit_id` as the deterministic tail. [limit] is clamped by the
-   * service boundary before reaching here (the [search] convention).
+   * `nw.len BETWEEN length(qw) - 1 AND length(qw) + 1` is a **lossless**
+   * prefilter by argument, not by measurement: one edit changes a string's
+   * length by at most 1, so a word outside that band cannot be one keystroke
+   * away. It exists to let `college_name_words_len_word_idx` prune.
    *
-   * The two trigram bounds are owned here, not inherited: every call first
-   * pins [SIMILARITY_THRESHOLD] and [WORD_SIMILARITY_THRESHOLD] with `SET
-   * LOCAL` in the caller's transaction, so what search returns cannot drift
-   * with a server- or role-level `pg_trgm.*` default between dev, CI and RDS.
-   * `SET LOCAL` reverts at commit, so no other query on the pooled connection
-   * sees them, and the operators stay index-backed (the thresholds are read by
-   * the same `gin_trgm_ops` operators, not written into the predicate).
+   * A query with no word at all (`"%%%"`, `"\\"`) yields an empty `words`
+   * array, and the `cardinality(...) > 0` guard is what keeps that from
+   * matching everything: "every query word matched" is vacuously true when
+   * there are no query words. Such a query is left to the substring arm alone,
+   * which is exactly the RFC 137 behaviour.
+   *
+   * The match is computed ONCE, in the `word_match` CTE: the minimum distance
+   * from each query word to that college's name words. Membership is "every
+   * query word has such a row" (`matched_words = cardinality(words)`) and the
+   * rank key is the sum of those distances, so the predicate and the ranking
+   * read the same numbers rather than each re-expanding the join — they cannot
+   * drift, and the work is done once.
+   *
+   * Ranking: exact-prefix-of-name first (RFC 137 behaviour preserved), then two
+   * explicit keys. The first is the CLASS — whether the row matched the
+   * one-keystroke rule at all, i.e. every query word matched — so rows the rule
+   * matched come before rows here only through the substring arm. It is a
+   * boolean, which cannot collide with a distance the way an in-band penalty
+   * can, so the separation holds at every query-word count rather than only at
+   * one. The second is the summed per-word distance: an exact word contributes
+   * 0 and a one-keystroke word 1, NULL when nothing matched (sorted last). Then
+   * `undergrad_enrollment DESC NULLS LAST, name, unit_id` as the deterministic
+   * tail. The same definition as the predicate, summed; no weights, no magic
+   * literal, nothing fitted. [limit] is clamped by the service boundary before
+   * reaching here (the [search] convention).
+   *
+   * The raw/escaped split is load-bearing and positional (as it was under RFC
+   * 139, for a different reason): the ILIKE arms take the ESCAPED query, so a
+   * literal `%` in a school's name cannot act as a wildcard, while the
+   * one-keystroke arm takes the RAW query and lets `college_search_words()`
+   * split and lowercase it — `%`/`_`/`\` are not word characters, so they are
+   * inert there rather than escaped. Swapping
+   * one for the other silently changes what matches, and no test of a
+   * metacharacter-free query would notice.
    */
   fun searchByName(
     session: SqlSession,
     query: String,
     limit: Int,
   ): Result<List<CollegeSummary>> {
-    pinTrigramThresholds(session).getOrElse { return Result.failure(it) }
     val escaped = escapeLikePattern(query)
     val sql =
       """
-      SELECT id, name, city, state
-      FROM colleges
-      WHERE college_search_text(name, aliases) % ?
-         OR ? <% college_search_text(name, aliases)
-         OR college_search_text(name, aliases) ILIKE '%' || ? || '%'
-      ORDER BY (name ILIKE ? || '%') DESC,
-        word_similarity(?, college_search_text(name, aliases)) DESC,
-        undergrad_enrollment DESC NULLS LAST, name, unit_id
+      WITH q(words) AS (SELECT college_search_words(?)),
+      -- The one-keystroke match, computed ONCE per (college, query word): the
+      -- minimum distance from that query word to any of that college's name
+      -- words — 0 exact, 1 one keystroke, and no row at all when nothing is
+      -- within one keystroke. Membership and ranking below both read THIS, so
+      -- the predicate and the rank key cannot drift into disagreeing about
+      -- what "matches" means. WITH ORDINALITY keeps a repeated query word
+      -- repeated, which is what the rank sum counts.
+      word_match AS (
+        SELECT nw.college_id, qw.ord, min(CASE WHEN nw.word = qw.word THEN 0 ELSE 1 END) AS distance
+        FROM q, unnest(q.words) WITH ORDINALITY AS qw(word, ord)
+        JOIN college_name_words nw
+          ON nw.len BETWEEN length(qw.word) - 1 AND length(qw.word) + 1
+         AND one_keystroke_off(qw.word, nw.word)
+        GROUP BY nw.college_id, qw.ord
+      ),
+      scored AS (
+        SELECT college_id, count(*) AS matched_words, sum(distance) AS distance
+        FROM word_match
+        GROUP BY college_id
+      )
+      SELECT c.id, c.name, c.city, c.state
+      FROM colleges c
+        CROSS JOIN q
+        LEFT JOIN scored s ON s.college_id = c.id
+      WHERE (cardinality(q.words) > 0 AND s.matched_words = cardinality(q.words))
+         OR college_search_text(c.name, c.aliases) ILIKE '%' || ? || '%'
+      ORDER BY (c.name ILIKE ? || '%') DESC,
+        -- Two explicit keys, not one number with a penalty folded into it.
+        -- First the CLASS: did the row match the one-keystroke rule at all
+        -- (every query word matched)? A boolean cannot collide with a distance,
+        -- so a substring-only row can never tie or outrank a rule match however
+        -- many words the query has. coalesce because a row with no word_match
+        -- rows has no `scored` row at all.
+        (coalesce(s.matched_words, 0) = cardinality(q.words)) DESC,
+        -- Then, within a class, the summed per-word distance: 0 per exact word,
+        -- 1 per one-keystroke word. NULL for a substring-only row that matched
+        -- no query word, which sorts last — it is the least-explained match.
+        s.distance ASC NULLS LAST,
+        c.undergrad_enrollment DESC NULLS LAST, c.name, c.unit_id
       LIMIT ?
       """.trimIndent()
     return session.queryList(
       sql,
       bind = { stmt ->
-        // The raw/escaped split is load-bearing and positional: the two trigram
-        // arms (1, 2) and the similarity ORDER BY (5) take the RAW query, because
-        // trigrams treat `%`/`_` as ordinary characters; only the ILIKE arms
-        // (3, 4) take the ESCAPED one, so a literal `%` in a school's name
-        // cannot act as a wildcard. Swapping a raw for an escaped binding here
-        // silently changes what matches, and no test of a metacharacter-free
-        // query would notice.
+        // Parameter 1 is the RAW query: Postgres splits it with
+        // `college_search_words`, the same function the stored words are built
+        // from, so there is exactly ONE word boundary in the system. Bound,
+        // never interpolated; `%`/`_`/`\\` are inert here because they are not
+        // word characters, while the ILIKE arms below take the ESCAPED form.
         stmt.setString(1, query)
-        stmt.setString(2, query)
+        stmt.setString(2, escaped)
         stmt.setString(3, escaped)
-        stmt.setString(4, escaped)
-        stmt.setString(5, query)
-        stmt.setInt(6, limit)
+        stmt.setInt(4, limit)
       },
       map = ::mapSummary,
     )
   }
-
-  /**
-   * The `%` arm's whole-string trigram bound (RFC 139). Postgres' own default
-   * value, but owned here rather than inherited: [searchByName] pins it per
-   * call so recall is a property of this code, not of cluster config.
-   */
-  const val SIMILARITY_THRESHOLD = 0.3
-
-  /**
-   * The `<%` arm's word-similarity bound (RFC 139), pinned per call for the
-   * same reason as [SIMILARITY_THRESHOLD]. This is the arm nicknames match on
-   * ("Mizzou"), so a drifted server default would silently change what
-   * students find.
-   */
-  const val WORD_SIMILARITY_THRESHOLD = 0.6
-
-  /**
-   * Pins the two `pg_trgm` thresholds for the remainder of the caller's
-   * transaction. `SET LOCAL` is transaction-scoped, so it neither leaks onto
-   * the pooled connection nor requires a cluster/database-level `ALTER`; the
-   * values are compile-time constants, never caller text.
-   */
-  private fun pinTrigramThresholds(session: SqlSession): Result<Unit> =
-    try {
-      session
-        .prepareStatement(
-          "SET LOCAL pg_trgm.similarity_threshold = $SIMILARITY_THRESHOLD",
-        ).use { it.execute() }
-      session
-        .prepareStatement(
-          "SET LOCAL pg_trgm.word_similarity_threshold = $WORD_SIMILARITY_THRESHOLD",
-        ).use { it.execute() }
-      Result.success(Unit)
-    } catch (e: SQLException) {
-      Result.failure(mapDatabaseError(e))
-    }
 
   /**
    * Escapes LIKE metacharacters so caller text matches literally (backslash
@@ -680,6 +701,55 @@ object CollegesDao :
       .replace("\\", "\\\\")
       .replace("%", "\\%")
       .replace("_", "\\_")
+
+  // ---------------------------------------------------------------------------
+  // Derived name words (RFC 146)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Rebuilds `college_name_words` wholesale and returns the number of rows
+   * written (RFC 146). This is the ingest's `name-words` phase and the ONLY
+   * writer of that derived table: it lives here, beside the other college
+   * derived writes, rather than in a DAO of its own.
+   *
+   * `DELETE` + `INSERT … SELECT` inside the caller's one transaction, not
+   * `TRUNCATE`: TRUNCATE takes ACCESS EXCLUSIVE and would block live search
+   * readers for the length of the rebuild, while the DELETE leaves them on the
+   * old snapshot until the commit flips them to the new one.
+   *
+   * The word set is `college_search_words(college_search_text(name, aliases))` —
+   * the SAME function [searchByName] splits the user's query with, which is the
+   * point: there is one splitter, so the stored words and the query words
+   * cannot be cut differently. It drops the empty strings a leading, trailing
+   * or doubled separator produces, and DISTINCT collapses a word repeated
+   * across the name and its aliases into the single (college, word) row the
+   * primary key allows. `len` is not written here: it is a generated column, so
+   * the database derives it from `word` and the length prefilter cannot be lied
+   * to.
+   *
+   * Wholesale is the complete story in production because `colleges` is written
+   * only by the ingest, so phase 2 sees the finished snapshot. A test that
+   * seeds `colleges` directly must call this itself; a per-row trigger stays
+   * rejected (RFC 139's rows-first, derived-state-second rule).
+   */
+  fun rebuildNameWords(session: SqlSession): Result<Int> {
+    session.execute("DELETE FROM college_name_words").getOrElse { return Result.failure(it) }
+    val sql =
+      """
+      INSERT INTO college_name_words (college_id, word)
+      SELECT DISTINCT c.id, w
+      FROM colleges c,
+        LATERAL unnest(college_search_words(college_search_text(c.name, c.aliases))) AS w
+      """.trimIndent()
+    val written = session.execute(sql).getOrElse { return Result.failure(it) }
+    // ANALYZE inside the same transaction (it is permitted in a transaction
+    // block; VACUUM is not): the table was just emptied and refilled, so the
+    // planner's stats describe the previous build — or, on the very first
+    // ingest into a new database, an empty table. That is the one case where
+    // the length prefilter's btree would look pointless to the planner.
+    session.execute("ANALYZE college_name_words").getOrElse { return Result.failure(it) }
+    return Result.success(written)
+  }
 
   // ---------------------------------------------------------------------------
   // Aliases + ingest provenance (RFC 139)

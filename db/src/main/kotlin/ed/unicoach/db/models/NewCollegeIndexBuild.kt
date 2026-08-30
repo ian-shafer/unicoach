@@ -13,7 +13,8 @@ import java.time.Instant
  * `[{file, sha256, bytes, source_arg}]` per source file, [rowsIngested] the
  * per-table inserted/changed/unchanged/skipped counts, and [changeSummary] the
  * per-column non-null before/after counts plus version bumps. [indexRows] is
- * NULL until the S3 derived table exists.
+ * the row count of the derived `college_name_words` rebuild (RFC 146); it was
+ * NULL for every RFC 139-era build row, before that table existed.
  */
 data class NewCollegeIndexBuild(
   val startedAt: Instant,

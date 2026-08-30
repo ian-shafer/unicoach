@@ -4,6 +4,8 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.rest.models.RegisterRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -101,19 +103,61 @@ class CollegeSearchRoutingTest {
   private fun seedCollege(name: String): UUID {
     val id = UUID.randomUUID()
     val uniqueUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
-    dbConnection
-      .prepareStatement(
-        """
-        INSERT INTO colleges (id, unit_id, name, city, state, control, undergrad_enrollment)
-        VALUES (?, ?, ?, 'Townsville', 'CA', 1, 5000)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setInt(2, uniqueUnitId)
-        stmt.setString(3, name)
-        stmt.executeUpdate()
-      }
+    withTransaction {
+      dbConnection
+        .prepareStatement(
+          """
+          INSERT INTO colleges (id, unit_id, name, city, state, control, undergrad_enrollment)
+          VALUES (?, ?, ?, 'Townsville', 'CA', 1, 5000)
+          """.trimIndent(),
+        ).use { stmt ->
+          stmt.setObject(1, id)
+          stmt.setInt(2, uniqueUnitId)
+          stmt.setString(3, name)
+          stmt.executeUpdate()
+        }
+      rebuildNameWords()
+    }
     return id
+  }
+
+  /**
+   * Runs [body] as ONE transaction on [dbConnection], restoring autocommit
+   * afterwards. The seed needs it because `CollegesDao.rebuildNameWords` is
+   * documented as a `DELETE` + `INSERT … SELECT` inside the caller's single
+   * transaction: under autocommit the DELETE commits on its own, and the
+   * embedded server this test drives is live on the SAME database, so a
+   * concurrent `GET /api/v1/colleges` could see an EMPTY `college_name_words`
+   * and silently lose its one-keystroke arm. Committing the college row in the
+   * same transaction also means the row and its words become visible together.
+   */
+  private fun <T> withTransaction(body: () -> T): T {
+    dbConnection.autoCommit = false
+    try {
+      val value = body()
+      dbConnection.commit()
+      return value
+    } catch (e: Throwable) {
+      dbConnection.rollback()
+      throw e
+    } finally {
+      dbConnection.autoCommit = true
+    }
+  }
+
+  /**
+   * Re-derives `college_name_words` after a direct seed (RFC 146). The table is
+   * derived state the ingest rebuilds wholesale in its own phase; a test that
+   * INSERTs into `colleges` behind the ingest's back must do the same, or its
+   * college is invisible to the one-keystroke arm. Called inside
+   * [withTransaction], which supplies the single transaction the DAO requires.
+   */
+  private fun rebuildNameWords() {
+    val session =
+      object : SqlSession {
+        override fun prepareStatement(sql: String): java.sql.PreparedStatement = dbConnection.prepareStatement(sql)
+      }
+    CollegesDao.rebuildNameWords(session).getOrThrow()
   }
 
   private fun encode(q: String): String = URLEncoder.encode(q, Charsets.UTF_8)
@@ -204,15 +248,15 @@ class CollegeSearchRoutingTest {
     }
 
   @Test
-  fun `search finds a typo'd name via the fuzzy arms (RFC 139)`() =
+  fun `search finds a typo'd name via the one-keystroke rule (RFC 146)`() =
     runBlocking {
       val cookie = registerAndGetCookie()
       val marker = UUID.randomUUID().toString().take(8)
       val id = seedCollege("Amherst $marker College")
 
-      // "Amhurst ... Colege": no substring arm can match this — only the
-      // trigram similarity arm added by RFC 139. Route contract is otherwise
-      // unchanged: same shape, same fields.
+      // "Amhurst ... Colege": no substring arm can match this — every word is
+      // one keystroke off, which is the RFC 146 rule. Route contract is
+      // otherwise unchanged: same shape, same fields.
       val response =
         client.get(buildUrl("/api/v1/colleges?q=${encode("Amhurst $marker Colege")}")) {
           header(HttpHeaders.Cookie, cookie)

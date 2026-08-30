@@ -332,6 +332,8 @@ class CollegeScorecardLoader(
     val colleges: CollegeLoadResult,
     val programs: ProgramLoadResult,
     val aliases: AliasResult,
+    /** Rows the `name-words` phase wrote to `college_name_words` (RFC 146). */
+    val nameWords: Int,
     val nonNullBefore: Map<String, Int>,
     val nonNullAfter: Map<String, Int>,
     val buildId: java.util.UUID,
@@ -376,6 +378,7 @@ class CollegeScorecardLoader(
           "aliases:  ${aliases.entries} entries — ${aliases.applied} applied, " +
             "${aliases.unchanged} unchanged, ${aliases.unknownUnitIds.size} unknown unit_id$unknownIds",
         )
+        appendLine("name words: $nameWords rows")
         val deltas =
           nonNullBefore.keys.joinToString(", ") { column ->
             "$column ${nonNullBefore[column]}→${nonNullAfter[column]}"
@@ -415,10 +418,11 @@ class CollegeScorecardLoader(
    * or duplicate `unit_id`, before any write), assert every source header,
    * digest each source (sha256 + bytes), snapshot per-column non-null counts,
    * run the Scorecard phases, apply the aliases, run the optional IPEDS phases,
-   * re-snapshot, and finish by inserting the one `college_index_build`
-   * provenance row (`method_version = 2`). A failure anywhere throws out of
-   * here — success paths only reach the build row. The file phase (parse,
-   * digests) runs on [ioDispatcher].
+   * rebuild the derived `college_name_words` table (RFC 146), re-snapshot, and
+   * finish by inserting the one `college_index_build` provenance row
+   * (`method_version = 3`). A failure anywhere throws out of here — success
+   * paths only reach the build row. The file phase (parse, digests) runs on
+   * [ioDispatcher].
    *
    * [ipeds] is the optional, all-or-nothing IPEDS group (gate-2 D19): given
    * `null` the run behaves exactly as RFC 139's did, and the provenance row
@@ -468,6 +472,11 @@ class CollegeScorecardLoader(
           nonNullAfter = ipedsNonNullCounts(),
         )
       }
+    // Phase 2 of the two-phase ingest (RFC 146): rows first, derived state
+    // second, never per-row triggers. It runs after EVERY row phase — the
+    // aliases it splits words from, and the IPEDS phases beside them — and
+    // before provenance, because its row count is provenance.
+    val nameWords = phase("name-words", committedPhases) { rebuildNameWords() }
     val nonNullAfter = nonNullCounts()
     val finishedAt = Instant.now()
 
@@ -488,7 +497,7 @@ class CollegeScorecardLoader(
                     aliasResult,
                     ipedsReport,
                   ),
-                indexRows = null,
+                indexRows = nameWords,
                 changeSummary =
                   changeSummaryJson(
                     nonNullBefore,
@@ -509,6 +518,7 @@ class CollegeScorecardLoader(
       colleges = scorecard.colleges,
       programs = scorecard.programs,
       aliases = aliasResult,
+      nameWords = nameWords,
       nonNullBefore = nonNullBefore,
       nonNullAfter = nonNullAfter,
       buildId = buildId,
@@ -664,6 +674,17 @@ class CollegeScorecardLoader(
         unchanged = unchanged,
         unknownUnitIds = unknown.toList(),
       )
+    }
+
+  /**
+   * Rebuilds the derived `college_name_words` table in its own transaction
+   * ([CollegesDao.rebuildNameWords]) and returns the rows written — the
+   * `name-words` phase (RFC 146). Wholesale, so a name or alias that changed
+   * this run and one that was deleted are both handled by construction.
+   */
+  private suspend fun rebuildNameWords(): Int =
+    database.withConnection { session ->
+      CollegesDao.rebuildNameWords(session).getOrThrow()
     }
 
   /** Non-null counts for every nullable curated column on `colleges` (the change-summary axis). */
@@ -1034,10 +1055,11 @@ class CollegeScorecardLoader(
   companion object {
     /**
      * `college_index_build.method_version` for this derivation logic
-     * (1 = RFC 139, 2 = RFC 144's IPEDS source family). Bumped whenever the
-     * derivation logic changes, so a build row says which one produced it.
+     * (1 = RFC 139, 2 = RFC 144's IPEDS source family, 3 = RFC 146's derived
+     * `college_name_words` rebuild). Bumped whenever the derivation logic
+     * changes, so a build row says which one produced it.
      */
-    const val METHOD_VERSION = 2
+    const val METHOD_VERSION = 3
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("unit_id", "aliases")

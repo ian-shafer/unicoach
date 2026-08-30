@@ -416,13 +416,15 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `the build row gains the IPEDS blocks, the four digests, and method_version 2`() {
+  fun `the build row gains the IPEDS blocks, the four digests, and method_version 3`() {
     seedColleges(hdUnitIds)
     val report = ingest()
     assertEquals(7, report.sources.size, "three Scorecard sources plus the four IPEDS files")
 
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
-    assertEquals(2, row.methodVersion)
+    // 3 since RFC 146 added the derived name-word rebuild to what a build row
+    // describes; 2 was RFC 144's own bump for this IPEDS source family.
+    assertEquals(3, row.methodVersion)
     assertTrue(row.sources.contains("ipeds-hd-joined-fixture.csv"), "sources names the HD file: ${row.sources}")
     assertTrue(row.rowsIngested.contains("\"ipeds\""), "rows_ingested carries the ipeds block: ${row.rowsIngested}")
     assertTrue(row.rowsIngested.contains("\"programs_census\""), row.rowsIngested)

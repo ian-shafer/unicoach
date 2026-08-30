@@ -33,15 +33,20 @@ class MissingSourceColumnsException(
  * 139). Each phase is its own transaction, so the earlier ones cannot be
  * rolled back; by the success-only rule there is also no
  * `college_index_build` row. Names [committedPhases] so a partially applied
- * snapshot is reported loudly instead of being inferred from a stack trace.
- * The ingest is idempotent: re-running completes it.
+ * snapshot is reported loudly instead of being inferred from a stack trace, and
+ * [failedPhase] so the operator is told which phase threw rather than having to
+ * deduce it from the phase order — ambiguous since RFC 146 put `name-words`
+ * between the row phases and `provenance`, and the two leave very different
+ * states behind. The ingest is idempotent: re-running completes it.
  */
 class PartialIngestException(
   val committedPhases: List<String>,
+  val failedPhase: String,
   cause: Throwable,
 ) : RuntimeException(
-    "ingest failed after committing $committedPhases; the database holds a partially applied snapshot, " +
-      "NO college_index_build row was written, and provenance was NOT recorded — re-run the ingest to complete it",
+    "ingest failed in phase [$failedPhase] after committing $committedPhases; the database holds a " +
+      "partially applied snapshot, NO college_index_build row was written, and provenance was NOT " +
+      "recorded — re-run the ingest to complete it",
     cause,
   )
 
@@ -453,7 +458,8 @@ internal object CsvIngestSupport {
   /**
    * Runs one committing phase, recording it in [committedPhases] on success and
    * — if anything has already committed — converting a failure into a
-   * [PartialIngestException] that names what landed (RFC 139). A failure with
+   * [PartialIngestException] that names what landed, and [name] as the phase
+   * that failed (RFC 139; the failing phase added by RFC 146). A failure with
    * nothing committed yet propagates untouched: that is the clean
    * nothing-was-written abort.
    */
@@ -467,7 +473,7 @@ internal object CsvIngestSupport {
         body()
       } catch (e: Exception) {
         if (committedPhases.isEmpty()) throw e
-        throw PartialIngestException(committedPhases.toList(), e)
+        throw PartialIngestException(committedPhases.toList(), name, e)
       }
     committedPhases += name
     return value

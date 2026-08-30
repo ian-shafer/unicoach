@@ -10,6 +10,7 @@ import java.security.MessageDigest
 import java.util.HexFormat
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -188,6 +189,8 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
         runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(hostile)) }
       }
     assertEquals(listOf("institutions", "fields"), thrown.committedPhases)
+    assertEquals("aliases", thrown.failedPhase, "the report names the phase that threw, not just what landed")
+    assertTrue(thrown.message!!.contains("in phase [aliases]"), "the operator-facing message names it too: ${thrown.message}")
     assertTrue(thrown.message!!.contains("provenance was NOT recorded"), "the report is explicit: ${thrown.message}")
     assertTrue(
       thrown.cause!!.message!!.contains("unit_id=110100"),
@@ -198,6 +201,43 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // success-only rule — no build row exists to describe them.
     assertEquals(5, withSession { count(it, "colleges") })
     assertEquals(buildRowsBefore, withSession { count(it, "college_index_build") }, "no build row describes a failed run")
+  }
+
+  @Test
+  fun `a failure in the provenance phase names the committed name-word rebuild`() {
+    // The one phase that runs after name-words is provenance, so hiding the
+    // table provenance writes fails there and nowhere earlier — the only way to
+    // observe that the derived rebuild registers itself as a committed phase.
+    // Restored in the finally; the suite is sequential and bin/test recreates
+    // the test database per run, so a hard kill cannot leak the rename.
+    withSession { it.prepareStatement("ALTER TABLE college_index_build RENAME TO college_index_build_hidden").use(::execute) }
+    try {
+      val thrown =
+        assertThrows<PartialIngestException> {
+          runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
+        }
+      assertEquals(listOf("institutions", "fields", "aliases", "name-words"), thrown.committedPhases)
+      assertEquals("provenance", thrown.failedPhase, "the report names the phase that threw, not just what landed")
+      // Exactly the expected table, not merely non-empty: the independent
+      // recomputation is in hand, so a rebuild that committed one college's
+      // words — or the names without the aliases — must fail here.
+      assertEquals(
+        expectedNameWords(),
+        storedNameWords(),
+        "the phase the report names committed its rows in full before the later phase failed",
+      )
+    } finally {
+      withSession { it.prepareStatement("ALTER TABLE college_index_build_hidden RENAME TO college_index_build").use(::execute) }
+    }
+  }
+
+  /**
+   * `execute()` as a function reference, so the DDL above reads
+   * `.use(::execute)` rather than repeating a `{ it.execute() }` lambda at every
+   * rename site. It exists for that call shape and nothing else.
+   */
+  private fun execute(statement: java.sql.PreparedStatement) {
+    statement.execute()
   }
 
   // ---------------------------------------------------------------------------
@@ -243,9 +283,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // The build row exists and says what the report says.
     val row = withSession { buildRow(it, report.buildId) }
     assertNotNull(row)
-    // Deliberately 2, not 1: RFC 144 added a second source family, which is
-    // exactly the derivation change method_version exists to record.
-    assertEquals(2, row.methodVersion)
+    // Deliberately 3, not 1: RFC 144 added a second source family and RFC 146
+    // added the derived name-word rebuild — each is exactly the derivation
+    // change method_version exists to record.
+    assertEquals(3, row.methodVersion)
     assertTrue(row.rowsIngested.contains("\"inserted\": 5"), "rows_ingested carries the insert count: ${row.rowsIngested}")
     assertTrue(row.sources.contains(institutionCsv.name), "sources carries the file name")
     assertTrue(row.changeSummary.contains("version_bumps"), "change_summary carries version bumps")
@@ -328,6 +369,120 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
       "elapsed must carry a decimal, so a fast run never reads as 0s: [$elapsed]",
     )
   }
+
+  // ---------------------------------------------------------------------------
+  // The derived name-words rebuild (RFC 146)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the ingest rebuilds the name-word table wholesale and records its row count`() {
+    val report = ingest()
+
+    // Every word of every college's search text, and nothing else: the table is
+    // a pure function of the loaded rows, so an independent recomputation of it
+    // must agree exactly.
+    assertEquals(expectedNameWords(), storedNameWords())
+    // The exact expected content is in hand, so the reported count is checked
+    // against it rather than against a floor a wrong-but-non-empty rebuild
+    // would clear.
+    assertEquals(expectedNameWords().size, report.nameWords, "the phase reports exactly the rows it wrote")
+    assertEquals(report.nameWords, withSession { count(it, "college_name_words") })
+
+    // Curated aliases are part of the search text, so they are part of the
+    // words: the phase runs AFTER the alias phase.
+    assertTrue("csu" in storedNameWords().map { it.second }.toSet(), "alias words are indexed: ${storedNameWords()}")
+
+    // The count reaches provenance (index_rows was NULL for every RFC 139 build
+    // row) and the printed summary.
+    assertEquals(report.nameWords, withSession { indexRows(it, report.buildId) })
+    assertTrue(
+      report.humanSummary().contains("name words: ${report.nameWords} rows"),
+      "the summary carries the derived row count: ${report.humanSummary()}",
+    )
+  }
+
+  @Test
+  fun `an unchanged re-ingest leaves the name-word table identical`() {
+    val first = ingest()
+    val after = storedNameWords()
+    val second = ingest()
+
+    assertEquals(0, second.colleges.changed, "the premise: nothing changed")
+    assertEquals(first.nameWords, second.nameWords)
+    assertEquals(after, storedNameWords(), "a wholesale rebuild of unchanged rows is the same table")
+  }
+
+  /** The (unit_id, word) pairs actually stored, alphabetical. */
+  private fun storedNameWords(): List<Pair<Int, String>> =
+    withSession { session ->
+      session
+        .prepareStatement(
+          "SELECT c.unit_id, nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
+            "ORDER BY c.unit_id, nw.word",
+        ).use { stmt ->
+          stmt.executeQuery().use { rs ->
+            val rows = mutableListOf<Pair<Int, String>>()
+            while (rs.next()) rows += rs.getInt(1) to rs.getString(2)
+            rows
+          }
+        }
+    }
+
+  /**
+   * The same pairs recomputed independently, in Kotlin, from `colleges.name`
+   * and `colleges.aliases` — the derived table's definition restated by a
+   * second implementation rather than the SQL that wrote it.
+   */
+  private fun expectedNameWords(): List<Pair<Int, String>> =
+    withSession { session ->
+      session.prepareStatement("SELECT unit_id, name, aliases FROM colleges").use { stmt ->
+        stmt.executeQuery().use { rs ->
+          val rows = mutableListOf<Pair<Int, String>>()
+          while (rs.next()) {
+            val unitId = rs.getInt("unit_id")
+            val aliases =
+              rs.getArray("aliases").let { arr ->
+                try {
+                  @Suppress("UNCHECKED_CAST")
+                  (arr.array as Array<String?>).filterNotNull()
+                } finally {
+                  arr.free()
+                }
+              }
+            val text = (listOf(rs.getString("name")) + aliases).joinToString(" ")
+            text
+              .lowercase()
+              .split(Regex("[^a-z0-9]+"))
+              .filter { it.isNotEmpty() }
+              .distinct()
+              .forEach { rows += unitId to it }
+          }
+          rows.sortedWith(compareBy({ it.first }, { it.second }))
+        }
+      }
+    }
+
+  /**
+   * `college_index_build.index_rows` for one build. Nullable in the schema — it
+   * was NULL for every RFC 139-era build row, which is exactly the regression
+   * this helper's callers assert against — so it is read as `Int?`: `getInt`
+   * alone would map SQL NULL onto the very same `0` a real zero count produces.
+   * The lookup is by primary key, so exactly one row is the contract and both
+   * ends of it are checked.
+   */
+  private fun indexRows(
+    session: SqlSession,
+    id: UUID,
+  ): Int? =
+    session.prepareStatement("SELECT index_rows FROM college_index_build WHERE id = ?").use { stmt ->
+      stmt.setObject(1, id)
+      stmt.executeQuery().use { rs ->
+        assertTrue(rs.next(), "no college_index_build row for build [$id]")
+        val rows = rs.getInt(1).takeUnless { rs.wasNull() }
+        assertFalse(rs.next(), "more than one college_index_build row for build [$id]")
+        rows
+      }
+    }
 
   // ---------------------------------------------------------------------------
   // Helpers

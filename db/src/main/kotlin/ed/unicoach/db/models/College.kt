@@ -48,7 +48,9 @@ data class College(
   val website: String?,
   // Curated nicknames ("Mizzou", "UMass Amherst") from db/data/college-aliases.json
   // (RFC 139): repo data, not Scorecard data, applied by ingest after the
-  // Scorecard upsert phase. Feeds the trigram search text; empty when uncurated.
+  // Scorecard upsert phase. Feeds the search text (name + aliases) both the
+  // one-keystroke word table and the substring arm range over (RFC 146); empty
+  // when uncurated.
   val aliases: List<String>,
   override val createdAt: Instant,
   override val updatedAt: Instant,
