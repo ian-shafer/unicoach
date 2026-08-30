@@ -26,6 +26,16 @@ Ledger (updated as slices land):
        per-column count equal to the raw 2023 files over the same unit set;
        475 + 777 unmatched unit_ids counted and skipped, never invented.
 
+    RFC 146 LANDED (main@042dc201 + 19b797e2, 2026-08-30) — not a slice; the
+       new-numbered RFC that supersedes S1's fuzzy-matching half. Trigram
+       word_similarity and its 0.6 threshold ranked Elmhurst University above
+       an absent Amherst College for "Amhurst"; matching is now one-keystroke
+       edit distance (substitution, insertion, deletion, adjacent
+       transposition) per query word, plus literal substring, with exact and
+       prefix still ranking first. Migration 0056. RFC 139's aliases,
+       total_matches, sort_by, credential_level and ingest provenance are
+       untouched. NEXT FREE: RFC 147, migration 0057.
+
 ## The question
 
 Ian: "I want to build a search index for colleges. We will need this for many

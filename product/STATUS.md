@@ -7,8 +7,9 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-29 (RFC 144 / brief 0004 S2 landed). Live-run discovery from
-any checkout: `.prime/agent/skills/ship/scripts/ship-status`
+Updated: 2026-08-30 (RFC 146 landed — S1's matching replaced; next free RFC 147,
+migration 0057). Live-run discovery from any checkout:
+`.prime/agent/skills/ship/scripts/ship-status`
 
 ## TL;DR — next steps, most important first
 
@@ -220,12 +221,12 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                              | State                                                                                                                                                                                           | Where                                    |
-| --- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. S1 (trigram names + honest counts + provenance) is the active /ship run; precedes 0001 S4.                            | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003) | **M1 + M1.1 + RFC 143 + M1.2 LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: M2 (waits on 0004 S3; S1/S2 landed, precedes 0001 S5), then M3, M4. | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent.   | `product/0001-v1-differentiator/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                     | `bin/state-apply`                        |
+| Pri | Work                              | State                                                                                                                                                                                                                                          | Where                                    |
+| --- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. **S1 LANDED (RFC 139, matching later replaced by RFC 146) and S2 LANDED (RFC 144). S3 — the derived index + subject taxonomy — is the next run and blocks 0003 M2.** | `product/0004-college-search-index`      |
+| P1  | Clear money language (brief 0003) | **M1 + M1.1 + RFC 143 + M1.2 LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: M2 (waits on 0004 S3; S1/S2 landed, precedes 0001 S5), then M3, M4.                                                | `product/0003-clear-money-language`      |
+| P1  | Beat 1 remainder: S4 → S5 → S6    | Not started; S1–S3.5 is LIVE IN PROD (2026-08-27), so the beat's remainder is the next build. S4 Admissions Intelligence Layer (largest, may split), S5 Family Cost Report, S6 invite-parent.                                                  | `product/0001-v1-differentiator/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                    | `bin/state-apply`                        |
 
 ## Backlog
 
@@ -396,8 +397,9 @@ the coach to lead with the split, name the living arrangement, and mark the
 estimate lines as estimates. Keep RFC 141's glossary and RFC 142's source-jargon
 sentence intact — say "housing and food", never "room and board" — and RFC 143's
 guard ("no bare source code reaches a tool result") must keep passing. Numbers
-move: claim the next free RFC and migration at run time (0054 and RFC 145 are
-taken).
+move: claim the next free RFC and migration at run time (migration 0056 and RFC
+146 are taken, so 0057/147 are the next free — re-check at run time, since 0004
+S3 may land first).
 
 I am the approval gate. Land it, then update the brief ledger and
 product/STATUS.md.
