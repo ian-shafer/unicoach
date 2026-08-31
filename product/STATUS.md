@@ -7,15 +7,21 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-30 (RFC 148 landed — `first-value/04b` (S4b), the admissions
-layer is now user-visible. Slices now carry permanent IDs and declared `Needs:`
-edges; sequencing below is the computed wave board. **Never copy a number out of
-this file:** as of this line the next free RFC is 149, and the next free
-migration is 0062 — because the in-flight `pipeline/rfc-147` has already claimed
-`0060` and `0061` in its own worktree, which a plain `ls db/schema` on `main`
-cannot see. Recompute at run time and re-check immediately before committing.)
-Live-run discovery from any checkout:
-`.prime/agent/skills/ship/scripts/ship-status`
+Updated: 2026-08-30 — slices carry permanent IDs and declared `Needs:` edges,
+and readiness is computed by `slice-board` rather than written down here.
+
+**No RFC or migration number is recorded in this file, on purpose.** They are
+claimed by live runs in other worktrees, so any number written here is wrong
+within the hour. Compute both at the start of a run and again immediately before
+committing, scanning **every** worktree — a claimed-but-unlanded number is
+invisible from `main`:
+
+    for w in $(git worktree list --porcelain | sed -n 's/^worktree //p'); do
+      ls "$w/db/schema" | grep -Eo '^[0-9]+' | sort -n | tail -1; done | sort -n | tail -1
+    ls rfc | grep -Eo '^[0-9]+' | sort -n | tail -1
+    git branch -a --format='%(refname:short)' | grep -Eo 'rfc-[0-9]+'
+
+Live runs, from any checkout: `.prime/agent/skills/ship/scripts/ship-status`
 
 **Slice IDs are `<brief>/<milestone>.<step>/<name>`** — `first-value` = brief
 0001, `deletion` = 0002, `money` = 0003, `search` = 0004. The old letter follows
@@ -23,7 +29,8 @@ in parentheses on first mention. IDs are permanent: a slice is never renumbered,
 and one inserted later takes a decimal step (`first-value/03.5`). **The number
 never grants or denies permission to start — only the `Needs:` line does.**
 Start a slice with the **`slice` skill**: "start work on
-`search/04/similar-colleges`".
+`search/04/similar-colleges`". Invoked with no ID, it prints the board — that is
+the answer to "what can I kick off?".
 
 ## TL;DR — next steps, most important first
 
@@ -277,70 +284,43 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, which PREFERs (does not require) `money/02` + `money/03`, then `first-value/06/invite-your-parent`.                                                                                                                                                                                                                                        | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                 | `bin/state-apply`                        |
 
-## Sequencing — the wave board
+## Sequencing — ask the board, do not read a list
 
-Computed from the `Needs:` edges declared on each slice in its `spec.md`, not
-from habit. **Same wave = safe to run in parallel** (separate /ship worktrees).
-Regenerate this board whenever a slice lands; never remember it.
+**What can I kick off right now?** One command answers it, from any checkout:
 
-Edge kinds: **BLOCKS** = technical, cannot proceed, not overridable. **PREFER**
-= product judgement, overridable by Ian, and marking it PREFER makes the
-override visible instead of hidden. **CONFLICTS** = both touch the same files —
-a rebase risk, **not** an order; schedule apart or absorb the rebase. A `Needs:`
-entry with no reason is not a dependency and is rejected. **Adjacency in an ID
-never grants or denies permission to start** — only the `Needs:` line does.
+    .prime/agent/skills/slice/scripts/slice-board
 
-### Wave 1 — startable today
+It prints every slice as READY / IN FLIGHT / BLOCKED / DEFERRED / LANDED,
+computed from the `Needs:` lines in each `spec.md`, the LANDED rows in the brief
+ledgers, and live runs from `ship-status`. Blocked slices name the unmet target
+**and its reason**. `-p` is porcelain; `-q` prints doc defects only. A non-zero
+exit means a doc defect — a `Needs:` entry with no reason, an unknown target, a
+slice with no `Needs:` line — and the fix is the doc, not the board.
 
-| Slice                            | State                                                                                                                                                                        |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search/03a/published-codebooks` | **IN FLIGHT** — RFC 147, `pipeline/rfc-147`, PHASE verifying, in `../unicoach-rfc-147`. Split out of `search/03` at its design gate: the codebook substrate the index reads. |
-| `search/03b/the-index`           | NOT STARTED. BLOCKS `search/03a` — it lands on top of the codebook reference tables.                                                                                         |
-| `money/02/component-split`       | **READY NOW.** Its stated preconditions (`search/01`, `search/02`) landed as RFCs 139 and 144.                                                                               |
-| `deletion/*`                     | Gate 1 not yet run (brief 0002 is parked in the Backlog, still launch-blocking).                                                                                             |
+**This file no longer lists what is startable, on purpose.** It used to, in
+three places, and all three drifted — including once within an hour of being
+written. Readiness is a fact about the repo at this second, so it is computed,
+never remembered. What stays here is what only a person can write: the bet, the
+user manual, priorities, and the backlog.
 
-`search/03a` and `money/02` both edit `bin/ingest-colleges`,
-`CollegeScorecardLoader.kt` and `CollegesDao.kt` — that is a **CONFLICTS** edge,
-verified live against `pipeline/rfc-147`. Expect a rebase, not a wait. Keep them
-in separate worktrees.
+**The rules the board applies**, for reading its output:
 
-**Verified from the repo, 2026-08-30, not from a summary.** RFC 147 is
-"Published codebooks as reference data", a substrate slice split out of S3 at
-Ian's direction during the S3 design gate — `college_search_index` exists
-nowhere yet, on `main` or in that worktree.
+- **BLOCKS** — technical, cannot proceed, not overridable.
+- **PREFER** — product judgement. Never blocks; it prints beside a READY slice
+  so an override is visible instead of hidden.
+- **CONFLICTS** — both slices edit the same files. A rebase risk, **not** an
+  order. A conflicting live run prints a warning and the slice stays READY.
+- **`Status: DEFERRED`** — parked by intent. Never READY. "We chose not to yet"
+  is not a dependency and must not be written as one.
+- **Adjacency in an ID grants nothing.** `03` after `02` is a plan. Only the
+  `Needs:` line is permission.
+- A run counts as IN FLIGHT only when its ship state carries `SLICE=<id>`. An
+  unstamped run is listed as unattributed and **never guessed at** — that guess
+  is what once recorded `pipeline/rfc-147` as `search/03/the-index` when it was
+  `search/03a/published-codebooks`.
 
-### Wave 2 — unlocked by wave 1
-
-| Slice                          | Edge                                                                         |
-| ------------------------------ | ---------------------------------------------------------------------------- |
-| `search/04/similar-colleges`   | BLOCKS `search/03b` — reads the percentile columns it creates.               |
-| `search/05/consumer-sweep`     | BLOCKS `search/03b` — every search-shaped workflow routes through the index. |
-| `money/03/comparison-contract` | BLOCKS `money/02` — the stable/variable blocks need the component columns.   |
-| `money/04/where-youll-live`    | BLOCKS `money/02` — personalises the variable half of the breakdown.         |
-
-### Wave 3
-
-`first-value/05/family-cost-report` — PREFER `money/02` + `money/03` (D17: "so
-the parent-facing artifact is born speaking this language"). This is a **quality
-argument, not a technical one** — Ian can override it. Recommendation: honour
-it, because re-languaging a parent-facing artifact after the fact is exactly the
-rework D17 exists to avoid.
-
-### Wave 4
-
-`first-value/06/invite-your-parent` — BLOCKS `first-value/05`: the share CTA
-lives on the report surface, and the report's token becomes Beat 2's
-parent-account claim path.
-
-Not scheduled: `search/06/unattended-refresh` (deferred; PREFERs `search/05`).
-
-**Standing correction (2026-08-30).** `money/02` was recorded for weeks as
-waiting on `search/03`. It never was. The binding text says something narrower —
-0003 D15 ("M2 lands after 0004 **S1/S2**, rebasing onto the two-phase
-`bin/ingest-colleges`") and D17 ("M2/M3 land after 0004 S1/S2 and **before**
-0001's S5") — and both landed. The true edge is CONFLICTS. Verify a dependency
-against the numbered decisions in a `spec.md`, never against a summary line in
-this file: summaries drift, decisions do not.
+Slices in the same state with no edge between them are safe to run in parallel,
+in separate worktrees. Live runs and their phases: `ship-status`.
 
 ## Backlog
 

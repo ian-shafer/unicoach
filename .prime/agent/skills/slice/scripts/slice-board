@@ -1,0 +1,522 @@
+#!/usr/bin/env bash
+# slice-board — which product slices may Ian start today, computed, not remembered.
+#
+# WHY THIS EXISTS. Readiness used to live as PROSE in three places in
+# product/STATUS.md — a TL;DR, a work table and a hand-maintained "wave board" —
+# while the truth lives in the `Needs:` lines of the specs, in the briefs'
+# ledgers, and in live ship-run state. Prose drifts the moment a slice lands and
+# nobody can tell which copy is stale: `money/02` sat recorded as blocked on
+# `search/03` for weeks and never was, and a session note asserted that the live
+# `pipeline/rfc-147` run was `search/03/the-index` when it is really
+# `search/03a/published-codebooks`. Both failures are the same failure — a human
+# remembering an edge instead of reading one.
+#
+# So this script reads. Slices are DISCOVERED from every product/*/spec.md
+# heading, edges from the `Needs:` block under each heading, landed state from
+# the briefs' ledger lines and Slice IDs tables, and in-flight state from
+# ship-status. Nothing is registered anywhere; adding a spec is all it takes.
+#
+# It never guesses. A live ship run counts as IN FLIGHT for a slice only when
+# its state file says `SLICE=<id>`; an unstamped run is listed apart as
+# UNATTRIBUTED rather than attributed by resemblance — guessing is the exact bug
+# this replaces. A `Needs:` entry without a reason, or naming an unknown slice,
+# is a DOC DEFECT printed to stderr and exits non-zero; the board is still
+# printed, because a defect in one spec must not hide the rest of the answer.
+#
+# Dependencies are not the only reason a slice is not startable: a slice can be
+# deliberately PARKED. That intent is a doc line, `**Status:** DEFERRED`, sitting
+# beside the slice's `Needs:` line; it moves the slice out of READY into its own
+# DEFERRED section instead of leaving it to look startable. LANDED wins over it
+# (a stale Status line on a landed slice is not worth honouring), and any Status
+# value other than DEFERRED is a doc defect, never a silent skip.
+set -euo pipefail
+
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+help() {
+  cat << 'EOF'
+slice-board [-p] [-q]
+
+Prints the product slice board — READY / IN FLIGHT / BLOCKED / DEFERRED /
+LANDED — computed from the `Needs:` edges in product/*/spec.md, the ledgers in
+product/*/brief.md, and the live ship runs found by ship-status. READY comes
+first: it is the question being asked.
+
+A slice may also carry an optional `**Status:** DEFERRED` line beside its
+`Needs:` line, meaning it is deliberately parked. Such a slice never appears
+under READY; it is listed under DEFERRED, noting any unmet BLOCKS as well. A
+landed slice stays LANDED whatever its Status line says. DEFERRED is the only
+accepted Status value.
+
+  -p   porcelain: <state><TAB><id><TAB><detail>, one slice per line.
+  -q   quiet: suppress the board, print only doc defects.
+
+Exits 0 when the board is clean, 1 when any doc defect was found (a `Needs:`
+entry with no reason, a target naming no known slice, a slice with no `Needs:`
+line at all, or a `Status:` line with an unknown value). Defects go to stderr.
+EOF
+  exit "${1:-0}"
+}
+
+PORCELAIN=0
+QUIET=0
+while getopts ":pqh" opt; do
+  case "$opt" in
+    p) PORCELAIN=1 ;;
+    q) QUIET=1 ;;
+    h) help 0 ;;
+    \?) fatal "unknown option [-$OPTARG]" ;;
+    :) fatal "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND - 1))
+[ "$#" -eq 0 ] || fatal "slice-board takes no positional arguments: $*"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Anchor on the script's own checkout, not the caller's cwd: this script is
+# invoked by absolute path from anywhere, and the product docs live in the repo
+# this script is committed to.
+git -C "$SCRIPT_DIR" rev-parse --git-dir > /dev/null 2>&1 ||
+  fatal "not inside a git repository [$SCRIPT_DIR]"
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+[ -d "$REPO_ROOT/product" ] || fatal "no product/ directory under [$REPO_ROOT]"
+
+SHIP_STATUS="$SCRIPT_DIR/../../ship/scripts/ship-status"
+
+# One tagged stream into one awk program: the whole computation is a single
+# pass, so there is no second source of truth to keep in sync.
+emit_stream() {
+  local f
+  local rs
+  local state
+  local rid
+  local sl
+  local br
+  local ph
+
+  for f in "$REPO_ROOT"/product/[0-9]*/spec.md; do
+    [ -f "$f" ] || continue
+    printf 'SPECFILE\t%s\n' "$f"
+    awk -v f="$f" '{ print "SPEC\t" f "\t" NR "\t" $0 }' "$f"
+  done
+
+  for f in "$REPO_ROOT"/product/[0-9]*/brief.md; do
+    [ -f "$f" ] || continue
+    awk -v f="$f" '{ print "LEDGER\t" f "\t" NR "\t" $0 }' "$f"
+  done
+
+  # ship-status exits 1 when there are no runs at all, which is not an error
+  # here — a repo with no live run still has a board.
+  local runs=""
+  if [ -x "$SHIP_STATUS" ]; then
+    runs="$("$SHIP_STATUS" -p 2> /dev/null || true)"
+  fi
+  while read -r rs; do
+    [ -n "$rs" ] || continue
+    state="$rs/state"
+    [ -f "$state" ] || continue
+    # Read the keys, never source them: a state file is another run's data.
+    rid="$(sed -n 's/^RUN_ID=//p' "$state" | head -1)"
+    sl="$(sed -n 's/^SLICE=//p' "$state" | head -1)"
+    br="$(sed -n 's/^BRANCH=//p' "$state" | head -1)"
+    ph="$(sed -n 's/^PHASE=//p' "$state" | head -1)"
+    printf 'RUN\t%s\t%s\t%s\n' "${rid:-?}" "$sl" "${br:-?} PHASE ${ph:-?}"
+  done <<< "$runs"
+}
+
+emit_stream | awk -F '\t' -v porcelain="$PORCELAIN" -v quiet="$QUIET" '
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+
+function allids(s, out,   n) {
+  n = 0
+  while (match(s, IDRE)) {
+    n++
+    out[n] = substr(s, RSTART, RLENGTH)
+    s = substr(s, RSTART + RLENGTH)
+  }
+  return n
+}
+
+function addslice(id, f, ln) {
+  if (id in idx) return idx[id]
+  ns++
+  sid[ns] = id
+  sfile[ns] = f
+  sline[ns] = ln
+  idx[id] = ns
+  return ns
+}
+
+function defect(f, ln, msg) {
+  nd++
+  d_text[nd] = f ":" ln ": " msg
+}
+
+function addedge(owner, kind, target, reason, f, ln) {
+  ne++
+  e_from[ne] = owner
+  e_kind[ne] = kind
+  e_tgt[ne] = target
+  e_rsn[ne] = reason
+  e_file[ne] = f
+  e_line[ne] = ln
+}
+
+# One `Needs:` entry: `KIND target[ and target] — reason`, or a bare em dash
+# meaning no edges at all. Anything else is a doc defect, never a silent skip.
+function parse_entry(owner, text, f, ln,   kind, rest, p, tgts, reason, n, a, i) {
+  text = trim(text)
+  if (text == "") return
+  if (index(text, EMD) == 1 || text == "-") return
+  if (!match(text, /^(BLOCKS|PREFER|CONFLICTS)( |$)/)) {
+    defect(f, ln, "Needs entry for " owner " is not `KIND target " EMD " reason`: " text)
+    return
+  }
+  kind = substr(text, RSTART, RLENGTH)
+  kind = trim(kind)
+  rest = trim(substr(text, RSTART + RLENGTH))
+  p = index(rest, SEP)
+  if (p == 0) {
+    defect(f, ln, "Needs entry for " owner " has no `" EMD " reason`: " kind " " rest)
+    return
+  }
+  tgts = substr(rest, 1, p - 1)
+  reason = trim(substr(rest, p + length(SEP)))
+  if (reason == "" || reason == ".") {
+    defect(f, ln, "Needs entry for " owner " has an empty reason: " kind " " tgts)
+    return
+  }
+  n = allids(tgts, a)
+  if (n == 0) {
+    defect(f, ln, "Needs entry for " owner " names no slice id: " text)
+    return
+  }
+  for (i = 1; i <= n; i++) addedge(owner, kind, a[i], reason, f, ln)
+}
+
+function flush_needs(   i) {
+  if (mode == "INLINE" || mode == "BULLET") {
+    if (trim(buf) != "")
+      for (i = 1; i <= nown; i++) parse_entry(own[i], buf, buf_f, buf_ln)
+  } else if (mode == "BULLETWAIT") {
+    defect(buf_f, buf_ln, "`Needs:` declared with no entries")
+  }
+  buf = ""
+  mode = ""
+}
+
+# A slice may be SPLIT IN DESIGN into child slices declared as bullets that
+# carry their own inline `Needs:`. The children are the real slices; the parent
+# is superseded but stays a resolvable target, because older specs cite it.
+function flush_child(   id, a, n, p, needs, i) {
+  if (cbuf == "") { cmode = 0; return }
+  p = index(cbuf, "Needs:")
+  n = allids(cbuf, a)
+  if (p > 0 && n > 0) {
+    id = a[1]
+    if (!(id in idx)) {
+      addslice(id, cbuf_f, cbuf_ln)
+      hasneeds[id] = 1
+      needs = trim(substr(cbuf, p + length("Needs:")))
+      sub(/[ .]+$/, "", needs)
+      parse_entry(id, needs, cbuf_f, cbuf_ln)
+      for (i = 1; i <= cur_n; i++) {
+        issplit[cur[i]] = 1
+        nkid[cur[i]]++
+        kid[cur[i] "/" nkid[cur[i]]] = id
+      }
+    }
+  }
+  cbuf = ""
+  cmode = 0
+}
+
+function landed_p(id,   i, k) {
+  if (id in landed) return 1
+  if (id in issplit && nkid[id] > 0) {
+    for (i = 1; i <= nkid[id]; i++) {
+      k = kid[id "/" i]
+      if (!landed_p(k)) return 0
+    }
+    return 1
+  }
+  return 0
+}
+
+# Resolve a target to the slices that actually carry it: a split parent stands
+# for its children, so a CONFLICTS on `search/03` is a conflict with whichever
+# of `03a`/`03b` is live.
+function resolve(id, out,   i, n) {
+  n = 0
+  if (id in issplit && nkid[id] > 0) {
+    for (i = 1; i <= nkid[id]; i++) { n++; out[n] = kid[id "/" i] }
+  } else { n = 1; out[1] = id }
+  return n
+}
+
+BEGIN {
+  IDRE = "[a-z][a-z-]*/[0-9]+(\\.[0-9]+)?[a-z]?/[a-z0-9-]+"
+  # The em dash is written literally, never built with %c: gawk in a UTF-8
+  # locale reads %c as a codepoint and BWK awk as a byte, so a constructed
+  # dash matches under one awk and silently fails under the other.
+  EMD = "—"
+  SEP = " " EMD " "
+  mode = ""; cmode = 0; cbuf = ""; ns = 0; ne = 0; nd = 0; nspecs = 0; nruns = 0
+}
+
+# A new spec file ends whatever block the previous one was in: a Needs block or
+# a split-child bullet that runs to EOF must still be parsed, never dropped.
+$1 == "SPECFILE" { flush_needs(); flush_child(); cur_n = 0; nspecs++; next }
+
+$1 == "SPEC" {
+  f = $2; ln = $3
+  text = $4
+  for (i = 5; i <= NF; i++) text = text "\t" $i
+
+  # A slice heading: `## <id> (<old letter>) — <title>`, and a heading may
+  # declare more than one id (the S4a + S4b case).
+  if (text ~ /^#{2,4} /) {
+    flush_needs(); flush_child()
+    cur_n = 0
+    n = allids(text, a)
+    for (i = 1; i <= n; i++) {
+      cur_n++
+      cur[cur_n] = a[i]
+      addslice(a[i], f, ln)
+      hline[a[i]] = ln
+    }
+    next
+  }
+
+  if (cmode) {
+    if (trim(text) == "" || text ~ /^- \*\*/) flush_child()
+    else { cbuf = cbuf " " trim(text); next }
+  }
+
+  # `**Needs:**` or `**Needs (<id>):**` — the latter targets one id of a
+  # multi-id heading.
+  if (match(text, /^\*\*Needs( \([^)]*\))?:\*\*/)) {
+    flush_needs()
+    head = substr(text, RSTART, RLENGTH)
+    rest = trim(substr(text, RSTART + RLENGTH))
+    nown = 0
+    if (allids(head, a) > 0) { nown = 1; own[1] = a[1] }
+    else { for (i = 1; i <= cur_n; i++) { nown++; own[nown] = cur[i] } }
+    if (nown == 0) { defect(f, ln, "`Needs:` outside any slice heading"); next }
+    for (i = 1; i <= nown; i++) hasneeds[own[i]] = 1
+    buf_f = f; buf_ln = ln
+    if (rest != "") { mode = "INLINE"; buf = rest } else { mode = "BULLETWAIT"; buf = "" }
+    next
+  }
+
+  # `**Status:** DEFERRED` — the parked-by-intent line. Asterisks are stripped
+  # before matching so the bold and bare spellings are one case, and the keyword
+  # is matched case-insensitively; the VALUE must be exactly DEFERRED, because a
+  # lowercase or unknown value is a doc that means something nobody implemented.
+  probe = text
+  gsub(/\*/, "", probe)
+  if (match(tolower(probe), /^status( \([^)]*\))?:/)) {
+    flush_needs()
+    head = substr(probe, RSTART, RLENGTH)
+    val = trim(substr(probe, RSTART + RLENGTH))
+    sub(/[ .]+$/, "", val)
+    nown = 0
+    if (allids(head, a) > 0) { nown = 1; own[1] = a[1] }
+    else { for (i = 1; i <= cur_n; i++) { nown++; own[nown] = cur[i] } }
+    # A `Status:` line outside any slice heading is the status header of the
+    # DOCUMENT (`Status: **GATE 2 APPROVED**` at the top of every spec). It is
+    # not the intent of a slice, so it is neither read nor policed here.
+    # (No apostrophes in this awk program: it is a single-quoted bash string.)
+    if (nown == 0) next
+    if (val == "DEFERRED") { for (i = 1; i <= nown; i++) deferred[own[i]] = 1 }
+    else defect(f, ln, "`Status:` of " own[1] " has unknown value (expected DEFERRED): " val)
+    next
+  }
+
+  if (mode == "INLINE") {
+    if (trim(text) == "") flush_needs()
+    else buf = buf " " trim(text)
+    next
+  }
+  if (mode == "BULLETWAIT") {
+    if (trim(text) == "") next
+    if (text ~ /^[ \t]*- /) { mode = "BULLET"; sub(/^[ \t]*- /, "", text); buf = trim(text); next }
+    flush_needs()
+    next
+  }
+  if (mode == "BULLET") {
+    if (trim(text) == "") { flush_needs(); next }
+    if (text ~ /^[ \t]*- /) {
+      for (i = 1; i <= nown; i++) parse_entry(own[i], buf, buf_f, buf_ln)
+      sub(/^[ \t]*- /, "", text)
+      buf = trim(text)
+      next
+    }
+    buf = buf " " trim(text)
+    next
+  }
+
+  # A split-in-design child declaration.
+  if (cur_n > 0 && text ~ /^- \*\*/ && allids(text, a) > 0) {
+    cmode = 1; cbuf = trim(text); cbuf_f = f; cbuf_ln = ln
+    next
+  }
+  next
+}
+
+$1 == "LEDGER" {
+  text = $4
+  for (i = 5; i <= NF; i++) text = text "\t" $i
+  if (text !~ /LANDED/) next
+  n = allids(text, a)
+  if (n == 0) next
+  for (i = 1; i <= n; i++) {
+    landed[a[i]] = 1
+    if (match(text, /RFC [0-9]+/)) landed_rfc[a[i]] = substr(text, RSTART, RLENGTH)
+  }
+  next
+}
+
+$1 == "RUN" {
+  nruns++
+  r_id[nruns] = $2; r_slice[nruns] = $3; r_detail[nruns] = $4
+  if ($3 != "") inflight[$3] = $2 " (" $4 ")"
+  next
+}
+
+function emitline(state, id, detail) {
+  if (porcelain) { printf "%s\t%s\t%s\n", state, id, detail; return }
+  printf "  %-*s  %s\n", idw, id, detail
+}
+
+END {
+  flush_needs(); flush_child()
+
+  # Validation first: an edge naming no known slice, and a slice with no
+  # `Needs:` line at all, are both doc defects.
+  for (k = 1; k <= ne; k++)
+    if (!(e_tgt[k] in idx))
+      defect(e_file[k], e_line[k], "`Needs:` of " e_from[k] " names unknown slice " e_tgt[k])
+  for (i = 1; i <= ns; i++)
+    if (!(sid[i] in hasneeds))
+      defect(sfile[i], sline[i], "slice " sid[i] " declares no `Needs:` line")
+
+  idw = 0
+  for (i = 1; i <= ns; i++) if (length(sid[i]) > idw) idw = length(sid[i])
+
+  for (i = 1; i <= ns; i++) {
+    id = sid[i]
+    nblock[i] = 0; npref[i] = 0; nconf[i] = 0
+    for (k = 1; k <= ne; k++) {
+      if (e_from[k] != id) continue
+      if (e_kind[k] == "BLOCKS") {
+        if (!landed_p(e_tgt[k])) { nblock[i]++; block[i "/" nblock[i]] = e_tgt[k] " " EMD " " e_rsn[k] }
+      } else if (e_kind[k] == "PREFER") {
+        if (!landed_p(e_tgt[k])) { npref[i]++; pref[i "/" npref[i]] = e_tgt[k] " " EMD " " e_rsn[k] }
+      } else if (e_kind[k] == "CONFLICTS") {
+        m = resolve(e_tgt[k], rr)
+        for (j = 1; j <= m; j++)
+          if (rr[j] in inflight) { nconf[i]++; conf[i "/" nconf[i]] = rr[j] " " EMD " " e_rsn[k] }
+      }
+    }
+    if (id in issplit) state[i] = "SPLIT"
+    else if (landed_p(id)) state[i] = "LANDED"
+    else if (id in inflight) state[i] = "IN-FLIGHT"
+    else if (id in deferred) state[i] = "DEFERRED"
+    else if (nblock[i] > 0) state[i] = "BLOCKED"
+    else state[i] = "READY"
+  }
+
+  if (!quiet) {
+    if (!porcelain) print "READY"
+    for (i = 1; i <= ns; i++) {
+      if (state[i] != "READY") continue
+      detail = ""
+      for (j = 1; j <= npref[i]; j++)
+        detail = detail (detail == "" ? "" : "; ") "prefer: " pref[i "/" j]
+      emitline("READY", sid[i], detail == "" ? "" : "(" detail ")")
+      for (j = 1; j <= nconf[i]; j++) {
+        if (porcelain) printf "%s\t%s\t%s\n", "CONFLICT-WARN", sid[i], conf[i "/" j]
+        else printf "  %-*s  ! conflicts with a live run: %s\n", idw, "", conf[i "/" j]
+      }
+    }
+
+    if (!porcelain) print "\nIN FLIGHT"
+    for (i = 1; i <= ns; i++)
+      if (state[i] == "IN-FLIGHT") emitline("IN-FLIGHT", sid[i], inflight[sid[i]])
+
+    if (!porcelain) print "\nBLOCKED"
+    for (i = 1; i <= ns; i++) {
+      if (state[i] != "BLOCKED") continue
+      emitline("BLOCKED", sid[i], nblock[i] " unmet")
+      for (j = 1; j <= nblock[i]; j++) {
+        if (porcelain) printf "%s\t%s\t%s\n", "BLOCKED-BY", sid[i], block[i "/" j]
+        else printf "  %-*s  needs %s\n", idw, "", block[i "/" j]
+      }
+    }
+
+    ndef = 0
+    for (i = 1; i <= ns; i++) if (state[i] == "DEFERRED") ndef++
+    if (ndef > 0) {
+      if (!porcelain) print "\nDEFERRED (parked by the spec, not by a dependency)"
+      for (i = 1; i <= ns; i++) {
+        if (state[i] != "DEFERRED") continue
+        detail = ""
+        for (j = 1; j <= nblock[i]; j++) {
+          # The stored entry is `<target> — <reason>`; only the target is wanted
+          # here. Cut it with index(), not split(): a split() separator is a
+          # regex, and the em dash is multibyte under one awk and not the other.
+          bt = block[i "/" j]
+          bp = index(bt, SEP)
+          if (bp > 0) bt = substr(bt, 1, bp - 1)
+          detail = detail (detail == "" ? "also blocked: " : ", ") bt
+        }
+        emitline("DEFERRED", sid[i], detail)
+      }
+    }
+
+    if (!porcelain) print "\nLANDED"
+    for (i = 1; i <= ns; i++)
+      if (state[i] == "LANDED") emitline("LANDED", sid[i], (sid[i] in landed_rfc) ? landed_rfc[sid[i]] : "")
+
+    nsplit = 0
+    for (i = 1; i <= ns; i++) if (state[i] == "SPLIT") nsplit++
+    if (nsplit > 0) {
+      if (!porcelain) print "\nSPLIT IN DESIGN (superseded by their children)"
+      for (i = 1; i <= ns; i++) {
+        if (state[i] != "SPLIT") continue
+        kids = ""
+        for (j = 1; j <= nkid[sid[i]]; j++) kids = kids (kids == "" ? "" : ", ") kid[sid[i] "/" j]
+        emitline("SPLIT", sid[i], "-> " kids)
+      }
+    }
+
+    nun = 0
+    for (i = 1; i <= nruns; i++) if (r_slice[i] == "") nun++
+    if (nun > 0) {
+      if (!porcelain) print "\nUNATTRIBUTED LIVE RUNS (no SLICE= in the state file; not guessed)"
+      for (i = 1; i <= nruns; i++) {
+        if (r_slice[i] != "") continue
+        if (porcelain) printf "%s\t%s\t%s\n", "UNATTRIBUTED", r_id[i], r_detail[i]
+        else printf "  %-*s  %s\n", idw, r_id[i], r_detail[i]
+      }
+    }
+
+    if (!porcelain) {
+      p1 = (nspecs == 1) ? "" : "s"
+      p2 = (ns == 1) ? "" : "s"
+      p3 = (nruns == 1) ? "" : "s"
+      printf "\nread %d spec%s, %d slice%s, %d live run%s\n", nspecs, p1, ns, p2, nruns, p3
+    }
+  }
+
+  if (nd > 0) {
+    for (i = 1; i <= nd; i++) print "[DEFECT] " d_text[i] > "/dev/stderr"
+    p4 = (nd == 1) ? "" : "s"
+    printf "[DEFECT] %d doc defect%s found\n", nd, p4 > "/dev/stderr"
+    exit 1
+  }
+  exit 0
+}
+'

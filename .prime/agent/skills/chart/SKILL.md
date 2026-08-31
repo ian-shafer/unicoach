@@ -143,13 +143,20 @@ instruction** with acceptance criteria. A good slice instruction contains:
   - **`Needs: —`** — genuinely nothing.
 
   **A `Needs:` entry with no reason is not a dependency and must be rejected.**
-  Verify every claimed edge against the binding decision text (the numbered Ds),
-  never against a summary line in `STATUS.md` — summaries drift, decisions do
-  not. And note that **adjacency in an ID never grants or denies permission to
-  start**: `03` following `02` is a plan, not a dependency. This rule exists
-  because a CONFLICTS edge on `bin/ingest-colleges` was written into a status
-  doc as "waits on", with no reason, and hardened over three restatements into a
-  blocker that held `money/02` for weeks;
+  A slice parked by intent — valuable but deliberately not scheduled — carries
+  `**Status:** DEFERRED` beside its `Needs:` line, because "we chose not to yet"
+  is not a dependency and must not be written as one. Remove the line when it is
+  scheduled.
+
+  These lines are read by `.prime/agent/skills/slice/scripts/slice-board`, which
+  computes what is startable. A malformed line is a hard error there, not a
+  guess, so keep the shape exact. Verify every claimed edge against the binding
+  decision text (the numbered Ds), never against a summary line in `STATUS.md` —
+  summaries drift, decisions do not. And note that **adjacency in an ID never
+  grants or denies permission to start**: `03` following `02` is a plan, not a
+  dependency. This rule exists because a CONFLICTS edge on `bin/ingest-colleges`
+  was written into a status doc as "waits on", with no reason, and hardened over
+  three restatements into a blocker that held `money/02` for weeks;
 - what to build and why it exists (one sentence of product intent);
 - the repo foundations to build on, by RFC/table/tool name;
 - what is decided here vs. **explicitly left to /ship's design phase** (0001 D6:

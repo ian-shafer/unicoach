@@ -348,6 +348,8 @@ design.
 **Needs:** PREFER search/05/consumer-sweep — refresh is worth automating once
 every consumer reads the index.
 
+**Status:** DEFERRED
+
 `periodic_jobs` quarterly cron enqueueing the ingest, seeded `enabled = FALSE`.
 Only if manual quarterly runs prove annoying. Not part of the core design
 (gate-1 amendment).

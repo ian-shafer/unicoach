@@ -76,6 +76,21 @@ admissions layer, brief 0004's S4 is similar colleges, and 0003 numbers with
 Do not guess from context. Guessing here spends a whole /ship run on the wrong
 thing.
 
+## No ID? Print the board.
+
+Invoked with no slice ID — "what can I work on?" — run the board and stop:
+
+    .prime/agent/skills/slice/scripts/slice-board
+
+It computes READY / IN FLIGHT / BLOCKED / DEFERRED / LANDED from the `Needs:`
+lines in every `spec.md`, the LANDED rows in the briefs, and live runs from
+`ship-status`. It is the answer to "what may I kick off", and it is **computed,
+never remembered** — do not summarise it from `STATUS.md` or from your own
+memory of an earlier turn. Exit 1 means it found a doc defect; report the defect
+rather than the board.
+
+`-p` is porcelain for scripting; `-q` prints defects only.
+
 ## Phases
 
 ```
@@ -84,8 +99,8 @@ RESOLVE -> GATE -> ASSEMBLE -> SHIP -> CLOSE OUT
 
 ### 1. RESOLVE
 
-Read `product/STATUS.md` first (it answers "where are we?"), then find the slice
-in its brief:
+Run `slice-board` first — it answers where the slice stands in one line, and
+whether the docs are clean. Then read the slice itself:
 
     grep -rn "search/04\|similar-colleges" product/0004-*/spec.md product/0004-*/brief.md
 
@@ -123,6 +138,12 @@ half-start, do not claim a worktree:
 > `search/04/similar-colleges` BLOCKS on `search/03/the-index` — weighted
 > distance runs over the index's percentile columns, and the index does not
 > exist yet. Run `search/03/the-index` first.
+
+**`Status: DEFERRED` → confirm once, like a PREFER.** A deferred slice is parked
+by intent, not blocked by anything. It never appears under READY on the board.
+Ask plainly — "`search/06/unattended-refresh` is marked DEFERRED. Start it
+anyway?" — and if Ian says yes, remove the `Status:` line as part of the run's
+close-out, because the board must match the decision.
 
 **PREFER → a one-line override question, with the reason, defaulting to defer.**
 It never refuses:
@@ -206,11 +227,24 @@ that was actually claimed.
 
 ### 4. SHIP
 
-Invoke `/skill:ship` with the assembled instruction. /ship owns the worktree,
-the RFC, its single approval gate, implementation, tiered review, the
-`bin/pre-commit` gate, and the fast-forward land. Do not duplicate any of it and
-do not answer product questions inside the run on your own authority — a product
-question surfacing mid-run is a spec defect and goes back to /chart (0001 D12).
+Invoke `/skill:ship` with the assembled instruction.
+
+**Stamp the run with the slice ID, as soon as /ship has a run scratch.** This is
+required, and it is one command:
+
+    .prime/agent/skills/ship/scripts/ship-state -s <run-scratch> set SLICE <slice-id>
+
+Without it the run is invisible to `slice-board` as a slice: the board lists it
+under "unattributed live runs" and **refuses to guess** which slice it belongs
+to, because guessing attribution is exactly how a wrong claim reached
+`STATUS.md` before (`pipeline/rfc-147` was recorded as `search/03/the-index`; it
+was the substrate slice `search/03a/published-codebooks`). The stamp is what
+makes the board say IN FLIGHT instead of READY, and what makes a CONFLICTS
+warning fire for anyone else. /ship owns the worktree, the RFC, its single
+approval gate, implementation, tiered review, the `bin/pre-commit` gate, and the
+fast-forward land. Do not duplicate any of it and do not answer product
+questions inside the run on your own authority — a product question surfacing
+mid-run is a spec defect and goes back to /chart (0001 D12).
 
 While the run is open, stay out of its worktree. Read its state with
 `ship-status` / `ship-state`, never from memory.
@@ -255,6 +289,8 @@ not a surprise at its kickoff.
 ## End-of-run checklist
 
 - [ ] Full slice ID resolved from `product/`, not guessed from a letter.
+- [ ] Run stamped: `ship-state -s <run-scratch> set SLICE <slice-id>`.
+- [ ] `slice-board` re-run at the end and it agrees with what landed (exit 0).
 - [ ] Every `Needs:` edge evaluated: BLOCKS met, PREFER asked and answered,
       CONFLICTS checked against live runs.
 - [ ] Instruction carried the slice text, acceptance criteria, the door, the
