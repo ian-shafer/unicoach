@@ -73,7 +73,137 @@ class CollegeCostChatTool(
         }
       }
       put("money_profile", moneyProfileObject(profile.moneyProfile))
+      // The comparison contract (RFC 151), present only when the answer carries
+      // two or more colleges -- an absent key, never an empty object, so its
+      // mere presence tells the model a side-by-side is being made.
+      profile.comparisonBasis?.let { put(COMPARISON_BASIS_KEY, comparisonBasisObject(it)) }
       put("source", SOURCE_ATTRIBUTION)
+    }
+
+  /**
+   * The five facts a side-by-side holds constant (RFC 151), each rendered as a
+   * stable code AND the sentence the coach may say for it.
+   *
+   * A renderer and nothing else: every code and every statement is read off the
+   * [ComparisonBasis] the service assembled, so this file cannot state a basis
+   * the domain did not decide.
+   */
+  private fun comparisonBasisObject(basis: ComparisonBasis): JsonObject =
+    buildJsonObject {
+      putJsonObject("population") {
+        put(BASIS_KEY, basis.population.code)
+        put(STATEMENT_KEY, basis.population.statement)
+      }
+      put("residency", residencyBasisObject(basis.residency))
+      put("living_arrangement", arrangementBasisObject(basis.livingArrangement))
+      // Absent, never empty -- the same convention `comparable` and
+      // `incomplete_by_college` follow below, and the one D-B gates the whole
+      // object on. A call whose schools report only undated figures (median
+      // debt, median earnings) dates nothing, and an empty array would read as
+      // a year list nobody could name.
+      if (basis.academicYears.isNotEmpty()) {
+        putJsonArray("academic_years") { basis.academicYears.forEach { add(datedFiguresObject(it)) } }
+      }
+      putJsonObject("aid") {
+        put(BASIS_KEY, basis.aid.code)
+        put(STATEMENT_KEY, basis.aid.statement)
+      }
+    }
+
+  /**
+   * The residency held constant, and the one per-school element inside the
+   * per-call object (RFC 151 D-A): the state rides only when it is answered,
+   * exactly as the money-profile echo renders it.
+   */
+  private fun residencyBasisObject(residency: ResidencyBasis): JsonObject =
+    buildJsonObject {
+      // WHICH schools here charge by residency: the decision the statement
+      // speaks, shipped as a code beside it (D-D), so no reader parses the
+      // sentence to learn whether this table is all-public, mixed, or none.
+      put(BASIS_KEY, residency.scope.value)
+      put("status", residency.answer.status.value)
+      // The state rides on the answered case and nowhere else, and EXHAUSTIVELY
+      // so: a case added to [ComparedResidency] must fail to compile here rather
+      // than silently ship without the state it carries.
+      when (val answer = residency.answer) {
+        is ComparedResidency.Answered -> put("residency_state", answer.state)
+        ComparedResidency.Unanswered, ComparedResidency.Declined -> Unit
+      }
+      put(STATEMENT_KEY, residency.statement)
+      putJsonArray("by_college") { residency.byCollege.forEach { add(collegeResidencyObject(it)) } }
+    }
+
+  /**
+   * One school's residency line inside the per-call object: WHICH published
+   * tuition figure this comparison holds constant there.
+   *
+   * [TUITION_BASIS_KEY] is its own key with its own five-code vocabulary, not
+   * the per-college `tuition_applicable`: that one is the public-only
+   * in-state/out-of-state/unknown fact, while this one also answers what kind of
+   * school it is.
+   */
+  private fun collegeResidencyObject(college: CollegeResidencyBasis): JsonObject =
+    buildJsonObject {
+      put("college_id", college.collegeId.value.toString())
+      put("name", college.name)
+      put(TUITION_BASIS_KEY, college.tuition.code)
+      // The raw control code that defeated the residency line, beside the
+      // failure it caused: an operator reading this entry never has to open the
+      // row to learn WHICH value we could not place.
+      when (val tuition = college.tuition) {
+        is ComparedTuition.PublishedPriceUnknown -> put(SOURCE_CONTROL_KEY, tuition.sourceControl.label)
+        is ComparedTuition.Public, ComparedTuition.SinglePublishedPrice -> Unit
+      }
+      put(STATEMENT_KEY, college.statement)
+    }
+
+  /**
+   * The living arrangement held constant (RFC 151 D-E): the arrangements every
+   * school in the call is priced for, and the schools that lack one another
+   * school has.
+   *
+   * Both lists are emitted only when they carry something -- the payload's
+   * absent-never-empty convention -- and the statement says which case it is in
+   * words, so an absent list is never read as a fact nobody stated.
+   */
+  private fun arrangementBasisObject(arrangement: ArrangementBasis): JsonObject =
+    buildJsonObject {
+      if (arrangement.comparable.isNotEmpty()) {
+        putJsonArray("comparable") { arrangement.comparable.forEach { add(JsonPrimitive(it.wireName)) } }
+      }
+      if (arrangement.incompleteByCollege.isNotEmpty()) {
+        putJsonArray("incomplete_by_college") {
+          arrangement.incompleteByCollege.forEach { add(incompleteArrangementObject(it)) }
+        }
+      }
+      put(STATEMENT_KEY, arrangement.statement)
+    }
+
+  /**
+   * One school's gap in the arrangements the other schools are priced for: the
+   * arrangements it lacks, and the one reason they are missing for (RFC 151
+   * D-E). A school with two kinds of gap is two entries, so one entry is always
+   * "these arrangements, for this reason".
+   */
+  private fun incompleteArrangementObject(entry: IncompleteArrangement): JsonObject =
+    buildJsonObject {
+      put("college_id", entry.collegeId.value.toString())
+      put("name", entry.name)
+      putJsonArray("missing") { entry.missing.forEach { add(JsonPrimitive(it.wireName)) } }
+      put("reason", entry.reason.value)
+    }
+
+  /**
+   * One academic year in the call and the figures it dates -- the same
+   * `{academic_year, figures}` shape the per-college vintage labels carry, so
+   * the model reads one convention rather than two.
+   */
+  private fun datedFiguresObject(dated: DatedFigures): JsonObject =
+    buildJsonObject {
+      put(BASIS_KEY, dated.basis)
+      put(ACADEMIC_YEAR_KEY, dated.academicYear)
+      putJsonArray(DATED_FIGURES_KEY) { dated.figures.forEach { add(JsonPrimitive(it.wireName)) } }
+      put(STATEMENT_KEY, dated.statement)
     }
 
   private fun collegeObject(
@@ -336,6 +466,47 @@ class CollegeCostChatTool(
     const val PRECISION_OFFER_KEY = "precision_offer"
 
     /**
+     * The wire key carrying the assumptions a side-by-side holds constant (RFC
+     * 151) — present only when the answer carries two or more colleges.
+     */
+    const val COMPARISON_BASIS_KEY = "comparison_basis"
+
+    /** The stable code one basis fact rides under; its spoken twin is [STATEMENT_KEY]. */
+    const val BASIS_KEY = "basis"
+
+    /**
+     * WHICH published tuition figure the comparison holds constant at ONE school
+     * (RFC 151), inside `comparison_basis.residency.by_college`.
+     *
+     * Its own key with its own five-code vocabulary — `in_state`,
+     * `out_of_state`, `unknown`, `single_published_price`,
+     * `published_price_unknown` — deliberately NOT the per-college
+     * `tuition_applicable`, which is the public-only in/out/unknown fact. The
+     * two answer different questions, so a reader never has to remember which
+     * object it is looking at to know which vocabulary it is reading.
+     */
+    const val TUITION_BASIS_KEY = "tuition_basis"
+
+    /**
+     * The `colleges.control` value we could not place, beside the
+     * `published_price_unknown` entry it produced — the one datum that says
+     * WHICH value defeated this school's residency line.
+     *
+     * Rendered as [CollegeControl.Unrecognized]'s label ("unknown (control
+     * [9])"), the same form the per-college `control` key carries: the code
+     * stays readable, and no bare source code goes on the wire (RFC 143).
+     */
+    const val SOURCE_CONTROL_KEY = "source_control"
+
+    /**
+     * The sentence the coach may say for one basis fact — the paired-label
+     * convention (`income_band` + `income_band_label`) applied to the comparison
+     * contract: whenever a code goes on the wire, the words go with it, from the
+     * same construct.
+     */
+    const val STATEMENT_KEY = "statement"
+
+    /**
      * The residency invitation (RFC 145): present on a public college's result
      * exactly when residency is unanswered and the college publishes a tuition
      * figure the answer would select — and absent after a decline, so the
@@ -426,6 +597,16 @@ class CollegeCostChatTool(
         "${CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName} and " +
         "${CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName} describe cohorts rather than one price year - " +
         "so say those numbers without a year rather than borrowing one from another figure. " +
+        "When the result carries two or more colleges it also carries $COMPARISON_BASIS_KEY, the assumptions a " +
+        "side-by-side holds constant: who the figures describe, the residency (stated per school under " +
+        "by_college), the way of living every school here is priced for, the academic years, and what aid means " +
+        "in a net price. Each one carries a $BASIS_KEY code and the $STATEMENT_KEY you may say: say those " +
+        "sentences as ordinary copy above the table, never as a footnote under it, and never build a column " +
+        "from two different bases - one residency and one way of living per column, or say it as two tables. " +
+        "Put the tuition and fees line above the estimated living costs and say which block is which. Rows are " +
+        "schools; keep the table to three columns and short cells, or say it as a list. When a school does not " +
+        "report a part, leave that cell blank and label it as not reported: never a zero, never a neighbour's " +
+        "figure, and never a total summed from what happens to be there. " +
         "Read-only: this tool changes nothing."
   }
 }

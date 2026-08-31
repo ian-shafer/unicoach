@@ -1294,6 +1294,314 @@ class CollegeCostChatToolTest {
       "the known-true housing answer must be readable as one too",
     )
   }
+
+  // ---------------------------------------------------------------------------
+  // The comparison contract (RFC 151)
+  // ---------------------------------------------------------------------------
+
+  /** The per-call comparison object, or null when the payload carries none. */
+  private fun comparisonBasisOf(result: JsonObject): JsonObject? = result[CollegeCostChatTool.COMPARISON_BASIS_KEY]?.jsonObject
+
+  private fun statementOf(basis: JsonObject): String =
+    basis
+      .getValue(CollegeCostChatTool.STATEMENT_KEY)
+      .jsonPrimitive.content
+
+  /**
+   * The strings under [key], or NULL when the key is absent -- the two are never
+   * the same fact in this payload, whose whole convention is absent-never-empty.
+   * Folding them together would let an assertion of `emptyList()` pass against a
+   * key the tool must never emit empty.
+   */
+  private fun stringsOf(
+    basis: JsonObject,
+    key: String,
+  ): List<String>? =
+    basis[key]
+      ?.jsonArray
+      ?.map { it.jsonPrimitive.content }
+
+  @Test
+  fun `comparison_basis is absent for one college and present for two`() {
+    val student = createStudent()
+    val alone = seedListedCollege(student, "Alone U")
+    val together = seedListedCollege(student, "Together U")
+    answerResidency(student, "CA")
+
+    assertNull(
+      comparisonBasisOf(execute(student, """{"college_ids":["${alone.value}"]}""")),
+      "an absent key, never an empty object: a one-school answer is not a comparison",
+    )
+    val basis = assertNotNull(comparisonBasisOf(execute(student, """{"college_ids":["${alone.value}","${together.value}"]}""")))
+    assertEquals(
+      setOf("population", "residency", "living_arrangement", "academic_years", "aid"),
+      basis.keys,
+      "the five facts that make a table honest, and nothing else: [$basis]",
+    )
+  }
+
+  @Test
+  fun `every basis fact carries both a code and a non-empty statement`() {
+    val student = createStudent()
+    seedListedCollege(student, "Basis One U", state = "CA", control = 1)
+    seedListedCollege(student, "Basis Two U", state = "NY", control = 2)
+    answerResidency(student, "CA")
+
+    val basis = assertNotNull(comparisonBasisOf(execute(student)))
+
+    val population = basis.getValue("population").jsonObject
+    assertEquals(PopulationBasis.CODE, population.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content)
+    assertTrue(statementOf(population).isNotEmpty())
+
+    val aid = basis.getValue("aid").jsonObject
+    assertEquals(AidBasis.CODE, aid.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content)
+    assertTrue(
+      statementOf(aid).contains("Loans and work-study are never subtracted"),
+      "the one fact the payload has never carried: aid here is grants and scholarships: [${statementOf(aid)}]",
+    )
+
+    val residency = basis.getValue("residency").jsonObject
+    assertEquals("answered", residency.getValue("status").jsonPrimitive.content)
+    assertEquals("CA", residency.getValue("residency_state").jsonPrimitive.content)
+    assertTrue(statementOf(residency).isNotEmpty())
+    val byCollege = residency.getValue("by_college").jsonArray.map { it.jsonObject }
+    assertEquals(listOf("Basis One U", "Basis Two U"), byCollege.map { it.getValue("name").jsonPrimitive.content })
+    assertEquals(
+      listOf(TuitionApplicable.IN_STATE.value, ComparedTuition.SinglePublishedPrice.code),
+      byCollege.map { it.getValue(CollegeCostChatTool.TUITION_BASIS_KEY).jsonPrimitive.content },
+      "residency is the one per-school element inside the per-call object (RFC 151 D-A)",
+    )
+    byCollege.forEach { entry ->
+      assertNull(
+        entry["tuition_applicable"],
+        "the per-college key's name is not reused for a different vocabulary here: [$entry]",
+      )
+    }
+    assertEquals(
+      ResidencyScope.MIXED.value,
+      residency.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content,
+      "the shape of the table rides as a code beside its sentence, like every other fact here",
+    )
+    byCollege.forEach { entry ->
+      assertTrue(statementOf(entry).isNotEmpty(), "a code on the wire rides with the sentence for it: [$entry]")
+      assertNotNull(entry["college_id"], "each entry names the school it is about: [$entry]")
+    }
+
+    val years = basis.getValue("academic_years").jsonArray.map { it.jsonObject }
+    assertTrue(years.isNotEmpty())
+    years.forEach { year ->
+      assertTrue(
+        year
+          .getValue(CollegeCostChatTool.BASIS_KEY)
+          .jsonPrimitive.content
+          .isNotEmpty(),
+      )
+      assertTrue(
+        year
+          .getValue(CollegeCostChatTool.ACADEMIC_YEAR_KEY)
+          .jsonPrimitive.content
+          .contains("-"),
+      )
+      assertTrue(
+        assertNotNull(stringsOf(year, CollegeCostChatTool.DATED_FIGURES_KEY)).isNotEmpty(),
+        "a year names the figures it dates",
+      )
+      assertTrue(statementOf(year).isNotEmpty())
+    }
+  }
+
+  @Test
+  fun `the living arrangement names what is comparable and who is missing one, with the reason`() {
+    val student = createStudent()
+    seedListedCollege(student, "Every Way U")
+    CostsTestDb
+      .seedCollege(
+        "No Dorms U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ).also { CostsTestDb.addToCollegeList(student, it) }
+    answerResidency(student, "CA")
+
+    val arrangement =
+      assertNotNull(comparisonBasisOf(execute(student)))
+        .getValue("living_arrangement")
+        .jsonObject
+    assertEquals(
+      listOf(LivingArrangement.OFF_CAMPUS.wireName, LivingArrangement.WITH_FAMILY.wireName),
+      stringsOf(arrangement, "comparable"),
+      "only a way of living every school is priced for may be held constant",
+    )
+    val gap =
+      arrangement
+        .getValue("incomplete_by_college")
+        .jsonArray
+        .single()
+        .jsonObject
+    assertEquals("No Dorms U", gap.getValue("name").jsonPrimitive.content)
+    assertEquals(listOf(LivingArrangement.ON_CAMPUS.wireName), stringsOf(gap, "missing"))
+    assertEquals(
+      ArrangementGap.NO_ON_CAMPUS_HOUSING.value,
+      gap.getValue("reason").jsonPrimitive.content,
+      "a school with no residence halls is stated as such, never as missing data",
+    )
+    assertTrue(statementOf(arrangement).isNotEmpty())
+  }
+
+  @Test
+  fun `a comparison with nothing missing carries no incomplete_by_college key`() {
+    val student = createStudent()
+    seedListedCollege(student, "Matched One U")
+    seedListedCollege(student, "Matched Two U")
+    answerResidency(student, "CA")
+
+    val arrangement =
+      assertNotNull(comparisonBasisOf(execute(student)))
+        .getValue("living_arrangement")
+        .jsonObject
+    assertNull(arrangement["incomplete_by_college"], "an absent key, never an empty array")
+    assertEquals(
+      LivingArrangement.entries.map { it.wireName },
+      stringsOf(arrangement, "comparable"),
+    )
+  }
+
+  /**
+   * Every figure this payload ACTUALLY dated, read off the per-college vintage
+   * keys rather than from the domain -- so the binding below compares the wire
+   * with the wire.
+   */
+  private fun datedFiguresOf(result: JsonObject): Set<String> =
+    collegesOf(result)
+      .flatMap { college ->
+        ScorecardVintage.entries.flatMap { vintage ->
+          college[vintage.wireName]?.jsonObject?.let { stringsOf(it, CollegeCostChatTool.DATED_FIGURES_KEY) }.orEmpty()
+        }
+      }.toSet()
+
+  @Test
+  fun `the academic years date exactly the figures the payload rendered`() {
+    // The one binding that keeps the two sides honest: a field the comparison
+    // dates but no college rendered is a year attached to nothing, and a
+    // rendered figure the comparison forgets is a number said with no year.
+    // Neither can be caught by reading either side alone.
+    val student = createStudent()
+    seedListedCollege(student, "Complete U")
+    seedListedCollege(
+      student,
+      "Sparser U",
+      stickerCostOfAttendancePerYearUsd = null,
+      tuitionAndFeesOutOfStatePerYearUsd = null,
+      medianDebtAtCompletionUsd = null,
+    )
+    answerResidency(student, "CA")
+
+    val payload = execute(student)
+    val basis = assertNotNull(comparisonBasisOf(payload))
+    val dated =
+      basis
+        .getValue("academic_years")
+        .jsonArray
+        .flatMap { assertNotNull(stringsOf(it.jsonObject, CollegeCostChatTool.DATED_FIGURES_KEY)) }
+        .toSet()
+
+    assertTrue(dated.isNotEmpty(), "these fixtures carry both vintages, so the guard must have something to compare")
+    assertEquals(
+      datedFiguresOf(payload),
+      dated,
+      "the comparison may date no figure the payload did not render, and may forget none that it did: [$basis]",
+    )
+  }
+
+  @Test
+  fun `a comparison that dates nothing carries no academic_years key`() {
+    // Reachable: two schools reporting only the undated cohort figures. An empty
+    // array would be a year list nobody could name, and the object's own
+    // convention is absent-never-empty.
+    val student = createStudent()
+    (1..2).forEach { n ->
+      CostsTestDb
+        .seedCollege(
+          "Undated $n U",
+          costOfAttendancePerYearUsd = null,
+          netPricePerYearUsd = null,
+          netPricePerYearIncomeQ1Usd = null,
+          netPricePerYearIncomeQ2Usd = null,
+          netPricePerYearIncomeQ3Usd = null,
+          netPricePerYearIncomeQ4Usd = null,
+          netPricePerYearIncomeQ5Usd = null,
+          tuitionAndFeesInStatePerYearUsd = null,
+          tuitionAndFeesOutOfStatePerYearUsd = null,
+          housingAndFoodOnCampusPerYearUsd = null,
+          housingAndFoodOffCampusPerYearUsd = null,
+          booksAndSuppliesPerYearUsd = null,
+          otherExpensesOnCampusPerYearUsd = null,
+          otherExpensesOffCampusPerYearUsd = null,
+          otherExpensesWithFamilyPerYearUsd = null,
+        ).also { CostsTestDb.addToCollegeList(student, it) }
+    }
+    answerResidency(student, "CA")
+
+    val basis = assertNotNull(comparisonBasisOf(execute(student)))
+    assertNull(basis["academic_years"], "an absent key, never an empty array: [$basis]")
+    assertEquals(emptySet(), datedFiguresOf(execute(student)), "and the payload really dates nothing")
+    assertNotNull(basis["population"], "the facts that are still true are still stated: [$basis]")
+    assertNotNull(basis["residency"], "[$basis]")
+  }
+
+  @Test
+  fun `the comparison object carries no bare source code`() {
+    val student = createStudent()
+    seedListedCollege(student, "Guarded One U", state = "CA", control = 1)
+    seedListedCollege(student, "Guarded Two U", state = "NY", control = 2)
+    answerBand(student, IncomeBand.OVER_110K)
+    answerResidency(student, "CA")
+
+    val payload = execute(student)
+    val basis = assertNotNull(comparisonBasisOf(payload), "the guard must run over a payload that actually carries it")
+    assertEquals(emptyList(), listViolations(payload), "the comparison object must carry no source code")
+    assertEquals(emptyList(), listViolations(basis), "and it must be clean read on its own too")
+    // Positive control on the nested walk: the guard reaches INSIDE the new
+    // object, so a coded number smuggled into it is caught rather than hidden
+    // one level down.
+    val doctored =
+      JsonObject(payload + mapOf(CollegeCostChatTool.COMPARISON_BASIS_KEY to JsonObject(basis + mapOf("control" to JsonPrimitive(2)))))
+    assertEquals(listOf(BareSourceCode.BareNumberField("control")), listViolations(doctored))
+  }
+
+  @Test
+  fun `the description states the comparison contract`() {
+    val description =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+
+    assertTrue(description.contains(CollegeCostChatTool.COMPARISON_BASIS_KEY), "the new key must be described")
+    assertTrue(
+      description.contains("two or more colleges"),
+      "the model must be told when the object rides: a comparison, never a one-school answer",
+    )
+    assertTrue(
+      description.contains("above the table"),
+      "the basis is said as ordinary copy above the table, never as a footnote under it",
+    )
+    assertTrue(
+      description.contains("never build a column from two different bases"),
+      "one residency and one way of living per column - the contract this slice exists for",
+    )
+    assertTrue(
+      description.contains("three columns"),
+      "RFC 124's cap, restated where the comparison is actually rendered",
+    )
+    assertTrue(
+      description.contains("leave that cell blank and label it as not reported"),
+      "a missing part is a labelled blank, never a zero and never a neighbour's figure",
+    )
+    assertTrue(
+      description.contains(CollegeCostChatTool.STATEMENT_KEY) && description.contains(CollegeCostChatTool.BASIS_KEY),
+      "each fact carries a code and the sentence to say, and the model must be told to say the sentence",
+    )
+  }
 }
 
 /**

@@ -16,11 +16,22 @@ import ed.unicoach.db.models.CollegeId
  */
 enum class LivingArrangement(
   val wireName: String,
+  /**
+   * The way of living in the words a student says it -- the spoken twin of
+   * [wireName], beside it in the one home for this vocabulary
+   * ([CollegeControl.label] / [ScorecardVintage.label] precedent).
+   *
+   * It lives here rather than in whichever construct happens to speak an
+   * arrangement aloud, so a wire key can never be read out to a family and two
+   * sentences can never call the same arrangement two different things.
+   */
+  val label: String,
   /** The component fields this arrangement is made of, in render order. */
   val components: List<CostField>,
 ) {
   ON_CAMPUS(
     "on_campus",
+    "living on campus",
     listOf(
       CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
       CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
@@ -29,6 +40,7 @@ enum class LivingArrangement(
   ),
   OFF_CAMPUS(
     "off_campus",
+    "renting off campus",
     listOf(
       CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD,
       CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
@@ -37,6 +49,7 @@ enum class LivingArrangement(
   ),
   WITH_FAMILY(
     "with_family",
+    "living at home",
     listOf(
       CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
       CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,

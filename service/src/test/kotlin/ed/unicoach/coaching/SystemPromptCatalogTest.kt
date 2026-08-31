@@ -569,6 +569,111 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The 0066 seed's structural contract (RFC 151). v11 is ADDITIVE like v3 over
+   * v2, v4 over v3, v8 over v7, v9 over v8 and v10 over v9: the whole v10 body
+   * byte-identical as a prefix, joined by a single space to exactly one appended
+   * paragraph — the comparison instruction. The paragraph's markers are
+   * asserted, not its full copy: the seed migration is the single home of the
+   * approved wording.
+   */
+  @Test
+  fun `coach v11 is v10 plus one appended comparison paragraph`() {
+    val appended = comparisonParagraph()
+
+    assertTrue(
+      appended.startsWith(" When two or more schools appear together"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(
+      appended.contains(CollegeCostChatTool.COMPARISON_BASIS_KEY),
+      "the paragraph must key the contract off the object the result carries",
+    )
+    assertTrue(
+      appended.contains("say those five lines first") && appended.contains("above the table"),
+      "v11's whole point: the assumptions are said as ordinary copy above the table, never as a note beneath it",
+    )
+    assertTrue(
+      appended.contains("above the estimated living costs"),
+      "the stable block is rendered above the estimate block, and the two are named",
+    )
+    assertTrue(
+      appended.contains("three columns"),
+      "RFC 124's cap, restated in the concrete comparison case",
+    )
+    assertTrue(
+      appended.contains("leave that cell blank and label it as not reported"),
+      "a missing part is a labelled blank; the payload's data_availability is never rendered as a number",
+    )
+    assertTrue(
+      appended.contains("never write a zero") && appended.contains("never carry a neighbour's number across"),
+      "a blank is never a zero and never a neighbour's figure",
+    )
+    assertTrue(
+      appended.contains("no residence halls has none"),
+      "the no-dorms case is an answer the coach states, not an unreported figure",
+    )
+    assertTrue(
+      appended.contains("Keep one residency and one way of living in a column"),
+      "two bases never mix into one column - the contract this slice exists for",
+    )
+    // RFCs 141/142 money language, carried into the new paragraph.
+    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    // The served-body guard below sweeps the WHOLE prompt; this says the rule
+    // holds inside the span v11 actually adds, so a relaxation here is reported
+    // as v11's own rather than as the catalog's.
+    assertEquals(
+      emptyList(),
+      Regex("""(.{0,6})subtract""")
+        .findAll(appended)
+        .map { it.groupValues[1] }
+        .toList()
+        .filterNot { it == "never " },
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+  }
+
+  /**
+   * RFC 142's source-jargon sentence and RFC 141's glossary pairs must survive
+   * RFC 151's append. They do so by construction — v11 keeps the whole v10 body
+   * as a prefix — but they are the copy five prior versions have already had to
+   * preserve, so they are asserted rather than assumed. Both are extracted at
+   * runtime, never retyped here.
+   */
+  @Test
+  fun `coach v11 preserves the source-jargon sentence and the money paragraph verbatim`() {
+    val sentence = sourceJargonSentence()
+    val v11 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v11").getOrThrow().body
+
+    assertTrue(
+      v11.contains(sentence),
+      "v11 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
+    )
+    assertTrue(v11.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+  }
+
+  /**
+   * The v11 comparison paragraph: everything v11 appends to the v10 body.
+   * Guarded exactly as [livingArrangementParagraph] is — `removePrefix` is a
+   * silent no-op when the affix does not match, so the prefix is asserted before
+   * it is removed, and an empty remainder would let every `contains` pass
+   * vacuously.
+   */
+  private fun comparisonParagraph(): String {
+    val v10 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v10").getOrThrow().body
+    val v11 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v11").getOrThrow().body
+    assertTrue(v11.startsWith(v10), "the v10 prefix must be byte-identical, so the new paragraph is the only change")
+    val appended = v11.removePrefix(v10)
+    assertTrue(appended.isNotEmpty(), "v11 must actually append something; an empty remainder means it equals v10")
+    return appended
+  }
+
+  /**
    * The v9 living-arrangement paragraph: everything v9 appends to the v8 body.
    * Guarded exactly as [admissionsParagraph] is -- `removePrefix` is a silent
    * no-op when the affix does not match, so the prefix is asserted before it is

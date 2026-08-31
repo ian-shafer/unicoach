@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -1115,6 +1116,331 @@ class CollegeCostServiceTest {
       5,
       service.readInSession(five, student, ids).colleges.count { it.offersOnCampusHousing == false },
       "and it must actually answer every one of them",
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // The comparison contract (RFC 151): per call, and only from two colleges up
+  // ---------------------------------------------------------------------------
+
+  /** One school's residency entry inside the comparison basis, by name. */
+  private fun residencyEntryOf(
+    basis: ComparisonBasis,
+    name: String,
+  ): CollegeResidencyBasis = basis.residency.byCollege.single { it.name == name }
+
+  @Test
+  fun `a one-college answer carries no comparison basis, and two colleges do`() {
+    val student = createStudent()
+    val first = seedCollege("Alone U").also { addToCollegeList(student, it) }
+    val second = seedCollege("Together U").also { addToCollegeList(student, it) }
+    answerResidency(student, "CA")
+
+    assertNull(
+      profileOf(student, listOf(first)).comparisonBasis,
+      "one school is already fully labelled by its own keys; a comparison object would invite a narrated comparison",
+    )
+    val basis = assertNotNull(profileOf(student, listOf(first, second)).comparisonBasis)
+    assertEquals(PopulationBasis.CODE, basis.population.code)
+    assertEquals(AidBasis.CODE, basis.aid.code)
+    assertTrue(basis.population.statement.isNotEmpty() && basis.aid.statement.isNotEmpty())
+  }
+
+  @Test
+  fun `an empty list carries no comparison basis either`() {
+    val student = createStudent()
+    assertNull(profileOf(student).comparisonBasis, "no colleges, nothing held constant")
+  }
+
+  @Test
+  fun `the residency entry states which published figure applies at each school`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Home State U", state = "CA", control = 1))
+    addToCollegeList(student, seedCollege("Away State U", state = "NY", control = 1))
+    addToCollegeList(student, seedCollege("Private U", state = "NY", control = 2))
+    answerResidency(student, "CA")
+
+    val basis = assertNotNull(profileOf(student).comparisonBasis)
+    assertEquals(ComparedResidency.Answered("CA"), basis.residency.answer)
+    assertEquals(
+      ComparedTuition.Public(TuitionApplicable.IN_STATE),
+      residencyEntryOf(basis, "Home State U").tuition,
+    )
+    assertEquals(
+      ComparedTuition.Public(TuitionApplicable.OUT_OF_STATE),
+      residencyEntryOf(basis, "Away State U").tuition,
+    )
+    assertEquals(
+      ComparedTuition.SinglePublishedPrice,
+      residencyEntryOf(basis, "Private U").tuition,
+      "a private school has one published price, so residency is not a distinction it can carry",
+    )
+    // Every entry says its code aloud, and says it about the school it names.
+    basis.residency.byCollege.forEach { entry ->
+      assertTrue(entry.statement.contains(entry.name), "the sentence must name its own school: [$entry]")
+    }
+  }
+
+  @Test
+  fun `an unanswered or declined residency leaves every public entry unknown, and says so`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Quiet Public U", state = "CA", control = 1))
+    addToCollegeList(student, seedCollege("Quiet Private U", state = "CA", control = 2))
+
+    val unanswered = assertNotNull(profileOf(student).comparisonBasis)
+    assertEquals(
+      ComparedResidency.Unanswered,
+      unanswered.residency.answer,
+      "no state is reachable on an unanswered residency: the case carries none",
+    )
+    assertEquals(AnswerStatus.UNANSWERED, unanswered.residency.answer.status, "and it echoes the money-profile status")
+    assertEquals(
+      ComparedTuition.Public(TuitionApplicable.UNKNOWN),
+      residencyEntryOf(unanswered, "Quiet Public U").tuition,
+    )
+    assertTrue(
+      unanswered.residency.statement.contains("not on file"),
+      "the missing answer is stated, never left for the coach to notice: [${unanswered.residency.statement}]",
+    )
+
+    declineResidency(student)
+    val declined = assertNotNull(profileOf(student).comparisonBasis)
+    assertEquals(ComparedResidency.Declined, declined.residency.answer)
+    assertEquals(
+      ComparedTuition.Public(TuitionApplicable.UNKNOWN),
+      residencyEntryOf(declined, "Quiet Public U").tuition,
+    )
+  }
+
+  @Test
+  fun `an all-private table gets no caveat about public tuition`() {
+    // The basis line must be true of THIS table. A residency caveat here would
+    // warn about a distinction no school in the comparison makes.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Private One U", state = "CA", control = 2))
+    addToCollegeList(student, seedCollege("Private Two U", state = "NY", control = 3))
+    answerResidency(student, "CA")
+
+    val statement = assertNotNull(profileOf(student).comparisonBasis).residency.statement
+    assertTrue(
+      statement.contains("each publishes one price for everyone"),
+      "the single-published-price case is stated as itself: [$statement]",
+    )
+    assertFalse(statement.contains("public"), "no school here is public, so nothing is said about public tuition: [$statement]")
+    assertFalse(statement.contains("CA"), "the answered state selects nothing here, so it is not claimed to: [$statement]")
+  }
+
+  @Test
+  fun `an all-public table states the residency it holds constant`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Public One U", state = "CA", control = 1))
+    addToCollegeList(student, seedCollege("Public Two U", state = "NY", control = 1))
+    answerResidency(student, "CA")
+
+    val answered = assertNotNull(profileOf(student).comparisonBasis).residency.statement
+    assertTrue(answered.contains("Every school here is public"), "[$answered]")
+    assertTrue(answered.contains("a family living in CA would be charged"), "[$answered]")
+
+    declineResidency(student)
+    val declined = assertNotNull(profileOf(student).comparisonBasis).residency.statement
+    assertTrue(
+      declined.contains("not on file") && declined.contains("neither figure can be shown as theirs"),
+      "a declined residency leaves both published figures unclaimed, and says so: [$declined]",
+    )
+  }
+
+  @Test
+  fun `a mixed table says which schools the residency is about, and what the others do`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Mixed Public U", state = "CA", control = 1))
+    addToCollegeList(student, seedCollege("Mixed Private U", state = "CA", control = 2))
+    answerResidency(student, "CA")
+
+    val statement = assertNotNull(profileOf(student).comparisonBasis).residency.statement
+    assertTrue(
+      statement.contains("The public schools here - Mixed Public U -"),
+      "the caveat names the schools it is about, never every column: [$statement]",
+    )
+    assertTrue(statement.contains("a family living in CA would be charged"), "[$statement]")
+    assertTrue(
+      statement.contains("the other schools here publish one price for everyone"),
+      "the private school is not claimed to hold a residency basis: [$statement]",
+    )
+    assertFalse(
+      statement.contains("Mixed Private U"),
+      "the single-price school needs no residency caveat of its own; its by_college line says it: [$statement]",
+    )
+  }
+
+  @Test
+  fun `comparable is the intersection, and the school that lacks an arrangement is named with its reason`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Full U", state = "CA", control = 1))
+    addToCollegeList(
+      student,
+      seedCollege(
+        "No Dorms U",
+        state = "CA",
+        control = 1,
+        housingAndFoodOnCampusPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ),
+    )
+    answerResidency(student, "CA")
+
+    val arrangement = assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+    assertEquals(
+      listOf(LivingArrangement.OFF_CAMPUS, LivingArrangement.WITH_FAMILY),
+      arrangement.comparable,
+      "on_campus is priced at one school only, so a column cannot hold it constant",
+    )
+    val gap = arrangement.incompleteByCollege.single()
+    assertEquals("No Dorms U", gap.name)
+    assertEquals(listOf(LivingArrangement.ON_CAMPUS), gap.missing)
+    assertEquals(
+      ArrangementGap.NO_ON_CAMPUS_HOUSING,
+      gap.reason,
+      "a school with no residence halls ANSWERED; it did not stay silent",
+    )
+    assertTrue(
+      arrangement.statement.contains("renting off campus") && arrangement.statement.contains("living at home"),
+      "the comparable arrangements are said in the words a student says: [${arrangement.statement}]",
+    )
+  }
+
+  @Test
+  fun `an unreported arrangement is a silence, never the no-dorms answer`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Reports Everything U", state = "CA", control = 1))
+    addToCollegeList(
+      student,
+      seedCollege(
+        // No IPEDS row at all: absence of the fact is not evidence of no dorms,
+        // so this gap is ordinary Scorecard silence. Every on-campus part is
+        // null INCLUDING the shared books allowance -- one reported part is
+        // enough to price an arrangement (RFC 149), so a school that keeps the
+        // books figure still has an on-campus arrangement to compare.
+        "Quiet U",
+        state = "CA",
+        control = 1,
+        housingAndFoodOnCampusPerYearUsd = null,
+        booksAndSuppliesPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+      ),
+    )
+    answerResidency(student, "CA")
+
+    val byName = profileOf(student).colleges.associateBy { it.name }
+    assertNull(byName.getValue("Quiet U").offersOnCampusHousing, "no IPEDS row: we have no housing fact for it")
+
+    val arrangement = assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+    val gap = arrangement.incompleteByCollege.single()
+    assertEquals("Quiet U", gap.name)
+    assertEquals(
+      ArrangementGap.NOT_REPORTED,
+      gap.reason,
+      "an unknown housing fact is not the no-dorms answer; what IS true is that this school published no " +
+        "on-campus figure, which is what not_reported says",
+    )
+  }
+
+  @Test
+  fun `every school priced the same way leaves the incomplete list empty`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Same One U", state = "CA", control = 1))
+    addToCollegeList(student, seedCollege("Same Two U", state = "CA", control = 1))
+    answerResidency(student, "CA")
+
+    val arrangement = assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+    assertEquals(LivingArrangement.entries, arrangement.comparable)
+    assertEquals(emptyList(), arrangement.incompleteByCollege, "nothing is missing, so nobody is named")
+  }
+
+  @Test
+  fun `the academic years name only the vintages the call actually carries`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Dated One U", state = "CA", control = 1))
+    addToCollegeList(student, seedCollege("Dated Two U", state = "CA", control = 1))
+    answerResidency(student, "CA")
+
+    val years = assertNotNull(profileOf(student).comparisonBasis).academicYears
+    assertEquals(ScorecardVintage.entries, years.map { it.vintage }, "both vintages are carried by these fixtures")
+    val published = years.single { it.vintage == ScorecardVintage.PUBLISHED_PRICE }
+    assertEquals(ScorecardVintage.PUBLISHED_PRICE.label, published.academicYear)
+    assertTrue(
+      CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD in published.figures,
+      "the year names the figures it dates: [${published.figures}]",
+    )
+    assertTrue(
+      published.figures.all { it.vintage == ScorecardVintage.PUBLISHED_PRICE },
+      "a year may never date a figure from the other one: [${published.figures}]",
+    )
+    assertTrue(published.statement.contains(published.academicYear), "the year is spoken, never left as a bare code")
+  }
+
+  @Test
+  fun `a call whose colleges report only undated figures carries no academic year at all`() {
+    val student = createStudent()
+    val sparse =
+      (1..2).map { n ->
+        seedCollege(
+          "Undated $n U",
+          costOfAttendancePerYearUsd = null,
+          netPricePerYearUsd = null,
+          netPricePerYearIncomeQ1Usd = null,
+          netPricePerYearIncomeQ2Usd = null,
+          netPricePerYearIncomeQ3Usd = null,
+          netPricePerYearIncomeQ4Usd = null,
+          netPricePerYearIncomeQ5Usd = null,
+          tuitionAndFeesInStatePerYearUsd = null,
+          tuitionAndFeesOutOfStatePerYearUsd = null,
+          housingAndFoodOnCampusPerYearUsd = null,
+          housingAndFoodOffCampusPerYearUsd = null,
+          booksAndSuppliesPerYearUsd = null,
+          otherExpensesOnCampusPerYearUsd = null,
+          otherExpensesOffCampusPerYearUsd = null,
+          otherExpensesWithFamilyPerYearUsd = null,
+        ).also { addToCollegeList(student, it) }
+      }
+
+    val basis = assertNotNull(profileOf(student, sparse).comparisonBasis)
+    assertEquals(emptyList(), basis.academicYears, "median debt and median earnings are dated by neither vintage")
+    assertEquals(emptyList(), basis.livingArrangement.comparable, "nothing is priced, so nothing is held constant")
+    assertTrue(
+      basis.livingArrangement.statement.contains("No one way of living is priced at every school here"),
+      "the empty intersection is said in words: [${basis.livingArrangement.statement}]",
+    )
+  }
+
+  @Test
+  fun `the comparison basis adds no statement to the read`() {
+    val student = createStudent()
+    val ids =
+      (1..5).map { n ->
+        seedCollege("Basis Batch $n", state = "CA", control = 1).also { addToCollegeList(student, it) }
+      }
+    answerResidency(student, "CA")
+
+    val one = CoachingTestDb.CountingSession()
+    val two = CoachingTestDb.CountingSession()
+    val five = CoachingTestDb.CountingSession()
+    assertNull(service.readInSession(one, student, ids.take(1)).comparisonBasis, "one college, no comparison")
+    assertNotNull(service.readInSession(two, student, ids.take(2)).comparisonBasis)
+    assertEquals(5, service.readInSession(five, student, ids).colleges.size)
+
+    // RFC 151 D-C: the basis is assembled from facts the read already holds, so
+    // the statement count is RFC 149's -- the same for a comparison as for the
+    // single-college answer that carries none.
+    assertEquals(
+      one.prepared.size,
+      two.prepared.size,
+      "assembling the comparison basis must cost no statement: one=[${one.prepared}] two=[${two.prepared}]",
+    )
+    assertEquals(
+      one.prepared.size,
+      five.prepared.size,
+      "and five colleges must still cost what one does: one=[${one.prepared}] five=[${five.prepared}]",
     )
   }
 }

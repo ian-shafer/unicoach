@@ -139,6 +139,21 @@ data class CollegeCost(
   /** The cost fields this college does not report, so the coach says so instead of improvising. */
   val notReported: List<CostField>,
   /**
+   * The cost fields this college DOES carry a figure for -- the positive twin of
+   * [notReported], and exactly the set [CollegeCostChatTool] renders for it.
+   *
+   * Derived in [CollegeCostService] from [CostField.reportedAmountOf], the one
+   * primitive that answers "does this college report this field", so no reader
+   * repeats the per-field null checks: a [CostField] added to the vocabulary
+   * gains its column there and is classified here without a second edit nobody
+   * would fail for forgetting.
+   *
+   * Not the complement of [notReported]: the two on-campus components a
+   * no-dorms school suppresses (RFC 149 D-B) are in neither list -- they are
+   * inapplicable rather than silent, and they are also not rendered.
+   */
+  val reported: Set<CostField>,
+  /**
    * The published price split by living arrangement (RFC 149), or null when
    * this school reports no component at all. The arithmetic lives in
    * [CostBreakdown], reached from [CollegeCostService.costOf], so the totals
@@ -188,6 +203,15 @@ data class CollegeCostProfile(
   val unknownCollegeIds: List<CollegeId>,
   val moneyProfile: MoneyProfileStatuses,
   val ingestYear: Int?,
+  /**
+   * The assumptions a side-by-side holds constant (RFC 151), or NULL below two
+   * colleges: a one-school answer is already fully labelled by its per-college
+   * keys, and a comparison object on it would invite the coach to narrate a
+   * comparison it is not making.
+   *
+   * See [ComparisonBasis] for why assembling it costs no query.
+   */
+  val comparisonBasis: ComparisonBasis?,
 ) {
   /**
    * The in-answer upgrade invitations (RFC 135, RFC 145) for one returned
@@ -378,6 +402,9 @@ class CollegeCostService(
       unknownCollegeIds = selection.unknown,
       moneyProfile = moneyProfile,
       ingestYear = ingestYearOf(selection.colleges),
+      // Reads the per-college list above, so it is built after it. Why it costs
+      // no query of its own is stated once, on [ComparisonBasis].
+      comparisonBasis = ComparisonBasis.of(costs, moneyProfile),
     )
   }
 
@@ -465,6 +492,7 @@ class CollegeCostService(
       reportsBandPricing = reportsBandPricing(college),
       reportsPublishedTuition = reportsPublishedTuition(college),
       notReported = notReportedOf(college, netPrice, offersOnCampusHousing),
+      reported = reportedOf(college, netPrice),
       breakdown = CostBreakdown.of(college, tuitionLineOf(college, control), offersOnCampusHousing),
       offersOnCampusHousing = offersOnCampusHousing,
       // A row with no merit measure under it is a citation with no facts, which
@@ -667,12 +695,7 @@ class CollegeCostService(
     netPrice: NetPrice,
     offersOnCampusHousing: Boolean?,
   ): List<CostField> {
-    // The fields that are NOT a `colleges` column, and the computed figure that
-    // answers for each. [isNotReported] refuses rather than guesses: a new
-    // column-less CostField that nobody added here fails loudly on the first read
-    // -- naming the field and the row -- instead of reporting a computed figure
-    // as a silence the college never kept.
-    val computed = mapOf<CostField, Int?>(CostField.NET_PRICE to netPrice.amount)
+    val computed = computedAmountsOf(netPrice)
 
     // The two on-campus components are inapplicable -- not silent -- only at a
     // school the no-dorms flag actually suppresses: one with no residence halls
@@ -694,6 +717,36 @@ class CollegeCostService(
     // that nothing would have failed for forgetting.
     return CostField.entries.filter { field -> field !in inapplicable && isNotReported(field, college, computed) }
   }
+
+  /**
+   * Every field this college carries a figure for, read through the ONE
+   * primitive that owns the question ([CostField.reportedAmountOf]).
+   *
+   * The SAME per-field decision [notReportedOf] makes, read the other way round
+   * -- never a second ladder of null checks, and deliberately not
+   * `entries - notReported`: the on-campus components suppressed at a no-dorms
+   * school are absent from [CollegeCost.notReported] because they are
+   * inapplicable, and they carry no figure either, so they belong in neither
+   * list. [CostField.reportedAmountOf] underneath is exhaustive, so a field
+   * added tomorrow must gain a column there and cannot silently drop out of the
+   * figures this call is said to report.
+   */
+  private fun reportedOf(
+    college: College,
+    netPrice: NetPrice,
+  ): Set<CostField> = CostField.entries.filterNot { isNotReported(it, college, computedAmountsOf(netPrice)) }.toSet()
+
+  /**
+   * The fields that are NOT a `colleges` column, and the computed figure that
+   * answers for each.
+   *
+   * [isNotReported] refuses rather than guesses: a new column-less [CostField]
+   * that nobody added here fails loudly on the first read -- naming the field
+   * and the row -- instead of reporting a computed figure as a silence the
+   * college never kept. One table, read by both the silence list and its
+   * positive twin, so the two can never disagree about one figure.
+   */
+  private fun computedAmountsOf(netPrice: NetPrice): Map<CostField, Int?> = mapOf(CostField.NET_PRICE to netPrice.amount)
 
   /**
    * Whether this college is silent about ONE field -- a question about a field,

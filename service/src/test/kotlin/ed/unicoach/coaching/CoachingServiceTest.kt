@@ -1900,8 +1900,16 @@ class CoachingServiceTest {
   fun `live college-search round-trip dispatches the real tool and produces a final answer`() =
     runBlocking {
       val student = createStudent()
-      // The real adapter over the real search tool/service (empty DB -> count 0,
-      // a valid domain outcome — the wiring, not the data, is under test).
+      // One seeded college, in a state this query does not ask for: the count is
+      // still 0 (the wiring, not the data, is under test), but
+      // `college_search_index` is BUILT. Since RFC 150 an unbuilt index is a
+      // named refusal rather than a page of zero matches, and this class's
+      // TRUNCATE ... colleges CASCADE empties the index before every test, so a
+      // seedless run asserts the deployment-state message instead of the
+      // round-trip.
+      createCollege()
+      // The real adapter over the real search tool/service (no CA match -> count
+      // 0, a valid domain outcome — the wiring, not the data, is under test).
       val realTool =
         CollegeChatTool(
           ed.unicoach.college.CollegeSearchTool(
