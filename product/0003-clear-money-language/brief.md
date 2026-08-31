@@ -53,6 +53,22 @@ Status:
          Also generalised the money-profile row-intactness guard, since
          residency_status is now decision-bearing.
 
+## Slice IDs
+
+Permanent IDs for this brief's slices (`money/<milestone>/<name>`). The old
+letters stay valid as references; the ledger above is left as written.
+
+| Old  | ID                                 | State          |
+| ---- | ---------------------------------- | -------------- |
+| M1   | money/01/language-standard         | LANDED RFC 141 |
+| M1.1 | money/01.1/bands-in-dollars        | LANDED RFC 142 |
+| M1.2 | money/01.2/residency-before-income | LANDED RFC 145 |
+| M2   | money/02/component-split           | NOT STARTED    |
+| M3   | money/03/comparison-contract       | NOT STARTED    |
+| M4   | money/04/where-youll-live          | NOT STARTED    |
+
+Per-slice dependencies (`Needs:` lines) live in `spec.md`.
+
 ## The question
 
 unicoach already tells a student what a school will _probably_ cost their family

@@ -199,7 +199,9 @@ CREATE TABLE college_index_build (
 
 ## Slices (each one a /ship instruction)
 
-### S1 — Honest name search + provenance (Option A; one /ship run)
+### search/01/honest-name-search (S1) — Honest name search + provenance (Option A; one /ship run)
+
+**Needs:** —
 
 **Intent:** a student's typo or nickname finds the school, and the coach can
 state a true match count; every ingest leaves a provenance trail.
@@ -222,7 +224,10 @@ a read column FAILS before writing. Doors: existing `search_colleges` chat tool
 - `GET /api/v1/colleges?q=` (iOS picker) — both get the fuzzy upgrade free. No
   new user-facing surface. RDS pg_trgm availability verified before land.
 
-### S2 — IPEDS: the attribute ingest (one /ship run)
+### search/02/ipeds-attributes (S2) — IPEDS: the attribute ingest (one /ship run)
+
+**Needs:** BLOCKS search/01/honest-name-search — its ingest CLI merged into that
+slice's launcher (aliases, --*-source provenance).
 
 **Intent:** the attributes Ian named (religion, ROTC, study abroad, disability,
 housing, athletics, test policy, closure) become queryable source data.
@@ -240,7 +245,16 @@ tolerance (e.g. ~954 ROTC-yes, ~1,080 test-optional); UMaine System Central
 Office is loadable but flagged not-degree-granting; no change to any existing
 search surface yet.
 
-### S3 — The index: derived table + subject taxonomy + rebuilt tool (the aha)
+### search/03/the-index (S3) — The index: derived table + subject taxonomy + rebuilt tool (the aha)
+
+**Needs:**
+
+- BLOCKS search/01/honest-name-search — derives from the aliases/provenance
+  layer.
+- BLOCKS search/02/ipeds-attributes — the index derives IPEDS attribute and
+  program-census columns.
+- CONFLICTS money/02/component-split — both edit `bin/ingest-colleges` phases
+  and `CollegesDao.search`/`search_colleges`. Rebase risk only. NOT an order.
 
 **Intent:** "small public schools in Maine with a literature program" answered
 end-to-end, honestly, from one derived table.
@@ -263,7 +277,10 @@ index byte-identically (same snapshot, same method_version). Door: the coach —
 `search_colleges` in chat is the surface; prompt guidance updated so the coach
 uses subjects and reports counts.
 
-### S4 — "Similar colleges to X", query-time (one /ship run)
+### search/04/similar-colleges (S4) — "Similar colleges to X", query-time (one /ship run)
+
+**Needs:** BLOCKS search/03/the-index — weighted distance runs over the index's
+percentile columns.
 
 **Intent:** the second of Ian's two founding queries — with "similar" decided
 per conversation, not pre-baked (gate-1 D8 as amended).
@@ -286,7 +303,10 @@ says so; "like Bowdoin but where I'd likely get in" relaxes selectivity
 _downward_ deliberately; every response names its axes/constraints. Door: the
 coach in chat.
 
-### S5 — Consumer sweep: every search-shaped workflow uses the index
+### search/05/consumer-sweep (S5) — Consumer sweep: every search-shaped workflow uses the index
+
+**Needs:** BLOCKS search/03/the-index — the sweep repoints consumers at the
+index table.
 
 **Intent:** the index is only THE index if everything searches through it (Ian,
 gate 2: "go and update all workflows that should use the search index to use
@@ -309,7 +329,10 @@ list" in chat resolves through the same fuzzy path as the picker; fit-lens still
 passes its suite unchanged. Mostly a deletion/verification slice — small by
 design.
 
-### S6 (optional, deferred) — Unattended refresh
+### search/06/unattended-refresh (S6, optional, deferred) — Unattended refresh
+
+**Needs:** PREFER search/05/consumer-sweep — refresh is worth automating once
+every consumer reads the index.
 
 `periodic_jobs` quarterly cron enqueueing the ingest, seeded `enabled = FALSE`.
 Only if manual quarterly runs prove annoying. Not part of the core design

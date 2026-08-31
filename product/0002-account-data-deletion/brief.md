@@ -4,6 +4,9 @@ Status: FRAMED, awaiting gate 1. Not started. Independent of brief 0001
 (compliance, not differentiation) — but it unblocks repeatable clean-slate
 testing, which 0001's slices need.
 
+Slice IDs: this brief is not sliced yet. Its slices get permanent IDs of the
+form `deletion/NN/name` at SPEC & SLICE.
+
 Raised by Ian 2026-08-25 while looking for a clean account to test S1-S3 on: "we
 should just build this. It's needed to comply with law (delete user data on
 request)."

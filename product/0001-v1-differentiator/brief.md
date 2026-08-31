@@ -41,6 +41,25 @@ list). S4 SPLIT IN DESIGN into S4a (schema + seed + ingest) and S4b (cited tool
   tests assert the payload never contains "without need"), and the prompt. Next:
   S5 (Family Cost Report) — S5 also waits on brief 0003 M2+M3.
 
+## Slice IDs
+
+Permanent IDs for this brief's slices (`first-value/<milestone>/<name>`). The
+old letters stay valid as references; the prose and ledger above are left as
+written.
+
+| Old  | ID                                    | State          |
+| ---- | ------------------------------------- | -------------- |
+| S1   | first-value/01/net-price-and-debt     | LANDED RFC 133 |
+| S2   | first-value/02/money-profile          | LANDED RFC 134 |
+| S3   | first-value/03/know-your-real-price   | LANDED RFC 135 |
+| S3.5 | first-value/03.5/college-list-in-chat | LANDED RFC 136 |
+| S4a  | first-value/04a/admissions-data       | LANDED RFC 140 |
+| S4b  | first-value/04b/admissions-in-chat    | LANDED RFC 148 |
+| S5   | first-value/05/family-cost-report     | NOT STARTED    |
+| S6   | first-value/06/invite-your-parent     | NOT STARTED    |
+
+Per-slice dependencies (`Needs:` lines) live in `spec.md`.
+
 ## The question
 
 Unicoach v1 is chat-centric and reads as "another AI chat app." Before public

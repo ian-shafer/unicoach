@@ -36,6 +36,22 @@ Ledger (updated as slices land):
        total_matches, sort_by, credential_level and ingest provenance are
        untouched. NEXT FREE: RFC 147, migration 0057.
 
+## Slice IDs
+
+Permanent IDs for this brief's slices (`search/<milestone>/<name>`). The old
+letters stay valid as references; the ledger above is left as written.
+
+| Old | ID                           | State                                     |
+| --- | ---------------------------- | ----------------------------------------- |
+| S1  | search/01/honest-name-search | LANDED RFC 139 (matching replaced by 146) |
+| S2  | search/02/ipeds-attributes   | LANDED RFC 144                            |
+| S3  | search/03/the-index          | NOT STARTED (next)                        |
+| S4  | search/04/similar-colleges   | NOT STARTED                               |
+| S5  | search/05/consumer-sweep     | NOT STARTED                               |
+| S6  | search/06/unattended-refresh | DEFERRED                                  |
+
+Per-slice dependencies (`Needs:` lines) live in `spec.md`.
+
 ## The question
 
 Ian: "I want to build a search index for colleges. We will need this for many

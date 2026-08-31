@@ -11,16 +11,22 @@ CDS data. RFC 91 college list, RFC 93 commitments, RFC 94 tool loop all landed.
 
 ## Beat 1 slices — each one /ship instruction, in order
 
-S1. Income-band net price + debt in the Scorecard ingest (lane A, small) Add
-NPT41..NPT45 (pub/priv coalesced per control, mirroring the NPT4 pattern) and
-median-debt fields to `colleges` + loader + CollegeSearchTool output. AC:
+### first-value/01/net-price-and-debt (S1) — Income-band net price + debt in the Scorecard ingest (lane A, small)
+
+**Needs:** —
+
+Add NPT41..NPT45 (pub/priv coalesced per control, mirroring the NPT4 pattern)
+and median-debt fields to `colleges` + loader + CollegeSearchTool output. AC:
 re-ingest populates bands for schools that report them; tool responses include
 them.
 
-S2. Student money profile (lane A) A durable, student-correctable place for
-family income band (+ residency state) so the right NPT4 band can be chosen.
-Mechanism (coaching-memory claim vs. dedicated entity) is an RFC design
-decision, not pre-decided here.
+### first-value/02/money-profile (S2) — Student money profile (lane A)
+
+**Needs:** —
+
+A durable, student-correctable place for family income band (+ residency state)
+so the right NPT4 band can be chosen. Mechanism (coaching-memory claim vs.
+dedicated entity) is an RFC design decision, not pre-decided here.
 
     NEVER FORCED (Ian, gate 2): the profile is guided, not gated. The coach
     invites; the student can start, stop mid-way, continue, skip and restart
@@ -31,23 +37,41 @@ decision, not pre-decided here.
     AC: profile can be started/abandoned/resumed via chat across sessions;
     partial and empty states produce labeled answers in S3.
 
-S3. "Know your real price" in chat (lane A) A cost tool over the student's
-college list + money profile: per school, sticker vs. likely net price for their
-band, debt/earnings context, every number cited to its source-year. Coach prompt
-updated to make this a first-session moment. AC: a new student with 3 listed
-schools gets a cited cost answer in session one.
+### first-value/03/know-your-real-price (S3) — "Know your real price" in chat (lane A)
 
-S3.5. College list in chat (lane A, small — inserted after S3 shipped) Gap found
-after S1-S3 landed: no student-facing door to the list existed — no chat tool
-wrote it and no iOS UI exists — so the condition guarding the whole S1-S3 cost
-chain (schools on the list) was never true outside tests. This slice closes it
-conversationally: an `update_college_list` chat tool (add / restatus / remove,
-mirroring the S2 write tool's shape) plus a coach-prompt update carrying the D12
-offer policy. AC: a student can add, restatus, and remove a school entirely in
-chat; the coach offers — never nags.
+**Needs:**
 
-S4. Admissions Intelligence Layer v0 (lane A, largest — may split in design) New
-reference tables for CDS-derived facts: H2A merit-aid practice (% of no-need
+- BLOCKS first-value/01/net-price-and-debt — reads the NPT41-45 band columns
+  that slice adds.
+- BLOCKS first-value/02/money-profile — the profile's income band selects which
+  band to quote.
+
+A cost tool over the student's college list + money profile: per school, sticker
+vs. likely net price for their band, debt/earnings context, every number cited
+to its source-year. Coach prompt updated to make this a first-session moment.
+AC: a new student with 3 listed schools gets a cited cost answer in session one.
+
+### first-value/03.5/college-list-in-chat (S3.5) — College list in chat (lane A, small — inserted after S3 shipped)
+
+**Needs:** — (it opened the door the 01-03 chain assumed; landed after).
+
+Gap found after S1-S3 landed: no student-facing door to the list existed — no
+chat tool wrote it and no iOS UI exists — so the condition guarding the whole
+S1-S3 cost chain (schools on the list) was never true outside tests. This slice
+closes it conversationally: an `update_college_list` chat tool (add / restatus /
+remove, mirroring the S2 write tool's shape) plus a coach-prompt update carrying
+the D12 offer policy. AC: a student can add, restatus, and remove a school
+entirely in chat; the coach offers — never nags.
+
+### first-value/04a/admissions-data (S4a) + first-value/04b/admissions-in-chat (S4b) — Admissions Intelligence Layer v0 (S4) (lane A, largest — may split in design)
+
+**Needs (first-value/04a/admissions-data):** —
+
+**Needs (first-value/04b/admissions-in-chat):** BLOCKS
+first-value/04a/admissions-data — the tool reads the three CDS tables that slice
+lands.
+
+New reference tables for CDS-derived facts: H2A merit-aid practice (% of no-need
 freshmen receiving merit, avg award), C7 admissions factors, deadlines by round.
 Seed ingest from the collegedata.fyi corpus for the launch set (~300-500 schools
 by student-list popularity). Exposed as a cited LLM tool; merit-aid feeds S3's
@@ -67,17 +91,31 @@ answers in chat.
     never implemented — the CDS publishes no count of no-need freshmen, so the
     only computable share is over ALL full-time freshmen. S4 IS COMPLETE.
 
-S5. Family Cost Report (lane A) Student-initiated shareable artifact: tokenized
-public-web page rendering the per-school cost table (sticker, likely net, merit
-practice, debt context) for the student's list. Revocable token; no parent auth
-yet. AC: student triggers share from chat/iOS, link renders without login,
-student can revoke.
+### first-value/05/family-cost-report (S5) — Family Cost Report (lane A)
 
-S6. Invite-your-parent mechanic (lane B/A, small) The wedge: share CTA on the
-report surface + a synthesis commitment trigger (RFC 93) so the coach nudges
-sharing at the right moment; share events tracked. The token is designed to
-later become the parent-account claim path (Beat 2). AC: nudge fires for
-eligible students; share event recorded.
+**Needs:**
+
+- PREFER money/02/component-split — the parent-facing artifact should show the
+  component split, not one blended number.
+- PREFER money/03/comparison-contract — the report is a multi-school comparison,
+  so it should carry the five assumption lines.
+
+Both are product judgement. Neither is technical. Overridable.
+
+Student-initiated shareable artifact: tokenized public-web page rendering the
+per-school cost table (sticker, likely net, merit practice, debt context) for
+the student's list. Revocable token; no parent auth yet. AC: student triggers
+share from chat/iOS, link renders without login, student can revoke.
+
+### first-value/06/invite-your-parent (S6) — Invite-your-parent mechanic (lane B/A, small)
+
+**Needs:** BLOCKS first-value/05/family-cost-report — the share CTA and its
+token live on the report surface.
+
+The wedge: share CTA on the report surface + a synthesis commitment trigger (RFC
+93) so the coach nudges sharing at the right moment; share events tracked. The
+token is designed to later become the parent-account claim path (Beat 2). AC:
+nudge fires for eligible students; share event recorded.
 
 ## Beat 2 (not sliced yet)
 

@@ -126,6 +126,30 @@ a /ship design phase.
 Write `spec.md`: an ordered list of slices, **each one a self-contained /ship
 instruction** with acceptance criteria. A good slice instruction contains:
 
+- a **permanent slice ID**, `<brief>/<milestone>.<step>/<name>` — e.g.
+  `search/03/the-index`, `money/02/component-split`. Brief handles:
+  `first-value` = 0001, `deletion` = 0002, `money` = 0003, `search` = 0004; a
+  new brief declares its handle here. Two digits so listings sort. An ID is
+  assigned once and **never renumbered** — a slice inserted later takes a
+  decimal step (`money/01.2`), and a slice whose scope changes that much is a
+  new slice, not a renamed one;
+- a **`Needs:` line, with a KIND and a REASON**, on every slice without
+  exception:
+  - **BLOCKS** — technical. Same table, same contract, same output consumed.
+    Cannot proceed. Not overridable.
+  - **PREFER** — product judgement. Could proceed; we choose not to. Overridable
+    by Ian, and naming it PREFER makes the override visible instead of hidden.
+  - **CONFLICTS** — both edit the same files. A rebase risk, **not** an order.
+  - **`Needs: —`** — genuinely nothing.
+
+  **A `Needs:` entry with no reason is not a dependency and must be rejected.**
+  Verify every claimed edge against the binding decision text (the numbered Ds),
+  never against a summary line in `STATUS.md` — summaries drift, decisions do
+  not. And note that **adjacency in an ID never grants or denies permission to
+  start**: `03` following `02` is a plan, not a dependency. This rule exists
+  because a CONFLICTS edge on `bin/ingest-colleges` was written into a status
+  doc as "waits on", with no reason, and hardened over three restatements into a
+  blocker that held `money/02` for weeks;
 - what to build and why it exists (one sentence of product intent);
 - the repo foundations to build on, by RFC/table/tool name;
 - what is decided here vs. **explicitly left to /ship's design phase** (0001 D6:
@@ -143,15 +167,18 @@ briefs inherit them without re-asking.
 
 ### EXECUTE
 
-One /ship run per slice, in order (parallel only when slices are truly disjoint
-— /ship's rebase machinery tolerates a moved base). The kickoff is the slice
-instruction from `spec.md`, pasted or invoked as `/skill:ship`, optionally via
-`product/STATUS.md` for cross-session dispatch. In each run, Ian (or this
-session) is /ship's approval gate; product questions that surface mid-run come
-back to the brief as appended decisions or new slices. After each land: update
-the ledger line and `product/STATUS.md` (work table + the landed feature's
-manual entry), and re-check the next slice's instruction against what actually
-landed (the code wins over the spec).
+One run per slice, dispatched by the **`slice` skill** — "start work on
+`search/04/similar-colleges`" — which resolves the ID, enforces the `Needs:`
+edges, claims the live RFC/migration numbers, runs /ship, and writes the ledger
+and `STATUS.md` back. Slices in the **same wave of `STATUS.md`'s wave board are
+safe to run in parallel**; a CONFLICTS pair may still share a wave, it just
+rebases. The kickoff is the slice instruction from `spec.md`, dispatched by ID
+or pasted verbatim. In each run, Ian (or this session) is /ship's approval gate;
+product questions that surface mid-run come back to the brief as appended
+decisions or new slices. After each land: update the ledger line and
+`product/STATUS.md` (work table + the landed feature's manual entry), and
+re-check the next slice's instruction against what actually landed (the code
+wins over the spec).
 
 ### LEARN
 

@@ -95,7 +95,9 @@ wins.
 
 ---
 
-## M1 — The money language standard (copy-only, small)
+## money/01/language-standard (M1) — The money language standard (copy-only, small)
+
+**Needs:** —
 
 **Why it exists.** Every number the coach already gives is honest; the words
 around them are improvised. One glossary, spoken identically everywhere, is what
@@ -148,7 +150,10 @@ model-facing keys and M2 restructures them anyway; renaming twice is churn.
 
 ---
 
-## M1.1 — Name the band in dollars, never in source jargon (small; inserted after M1 landed)
+## money/01.1/bands-in-dollars (M1.1) — Name the band in dollars, never in source jargon (small; inserted after M1 landed)
+
+**Needs:** BLOCKS money/01/language-standard — extends the vocabulary prompt
+version that slice created.
 
 **Why it exists.** Found in the first phone test of M1 (Ian, 2026-08-28): the
 coach described a figure as the **"Q5 net price"**. It explained the meaning
@@ -196,7 +201,10 @@ fix is on the wire; the prompt rule is the belt to that braces.
 
 ---
 
-## M1.2 — Ask where they live before asking what they earn (small; inserted after M1.1 landed)
+## money/01.2/residency-before-income (M1.2) — Ask where they live before asking what they earn (small; inserted after M1.1 landed)
+
+**Needs:** BLOCKS money/01.1/bands-in-dollars — reuses the single
+band/dollar-range emitter it introduced.
 
 **Why it exists.** Ian, 2026-08-28: residency is the biggest lever on the
 _stable_ half of the cost, and it is a far cheaper question than household
@@ -255,7 +263,20 @@ richer object; whether the residency ask is one question or two (state, then
 
 ---
 
-## M2 — The component cost split (medium; adds columns, DDL at the gate)
+## money/02/component-split (M2) — The component cost split (medium; adds columns, DDL at the gate)
+
+**Needs:**
+
+- BLOCKS search/01/honest-name-search and search/02/ipeds-attributes — D15 ("M2
+  lands after 0004 S1/S2, rebasing onto the two-phase `bin/ingest-colleges`")
+  and D17 ("M2/M3 land after 0004 S1/S2 and before 0001's S5"); DISCOVER #9
+  gives the reason — M2 edits the same loader those slices restructured. LANDED
+  as RFC 139 and RFC 144. **SATISFIED.**
+- CONFLICTS search/03/the-index — both edit `bin/ingest-colleges` phases and
+  `CollegesDao.search`/`search_colleges`. Rebase risk only. NOT an order.
+
+NOTE: money/02/component-split was recorded for weeks as blocked on search/03.
+It never was.
 
 **Why it exists.** Tuition and fees is a median of only 37% of a public
 four-year's on-campus total; the other 63% is the part a family can actually
@@ -337,7 +358,9 @@ from raw components by the tool; the exact wording of the change summary.
 
 ---
 
-## M3 — The comparison contract (small/medium)
+## money/03/comparison-contract (M3) — The comparison contract (small/medium)
+
+**Needs:** BLOCKS money/02/component-split — builds on M2's breakdown object.
 
 **Why it exists.** A side-by-side is where cost advice either earns trust or
 quietly lies. The failure is always the same shape: a dollar figure is a
@@ -381,7 +404,10 @@ per-college; the exact table layout within the three-column phone limit.
 
 ---
 
-## M4 — Where you'll live (medium; adds one money-profile field, DDL at the gate)
+## money/04/where-youll-live (M4) — Where you'll live (medium; adds one money-profile field, DDL at the gate)
+
+**Needs:** BLOCKS money/02/component-split — the living-plan field selects among
+M2's three arrangements.
 
 **Why it exists.** The arrangement choice is a $7,368/yr swing at the worked
 example — larger than its in-state tuition. Until the family says which one they

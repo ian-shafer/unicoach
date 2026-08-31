@@ -7,9 +7,19 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-30 (RFC 148 landed — brief 0001 S4b, the admissions layer is
-now user-visible; next free RFC 149, migration 0059). Live-run discovery from
-any checkout: `.prime/agent/skills/ship/scripts/ship-status`
+Updated: 2026-08-30 (RFC 148 landed — `first-value/04b` (S4b), the admissions
+layer is now user-visible. Slices now carry permanent IDs and declared `Needs:`
+edges; sequencing below is the computed wave board. Next free RFC 149, migration
+0060 — as of this line only; recompute at run time). Live-run discovery from any
+checkout: `.prime/agent/skills/ship/scripts/ship-status`
+
+**Slice IDs are `<brief>/<milestone>.<step>/<name>`** — `first-value` = brief
+0001, `deletion` = 0002, `money` = 0003, `search` = 0004. The old letter follows
+in parentheses on first mention. IDs are permanent: a slice is never renumbered,
+and one inserted later takes a decimal step (`first-value/03.5`). **The number
+never grants or denies permission to start — only the `Needs:` line does.**
+Start a slice with the **`slice` skill**: "start work on
+`search/04/similar-colleges`".
 
 ## TL;DR — next steps, most important first
 
@@ -22,13 +32,14 @@ any checkout: `.prime/agent/skills/ship/scripts/ship-status`
    `bin/ingest-colleges`'s optional all-or-nothing
    `--hd/--ic/--adm/--completions/--survey-year` group — 5,688 attribute rows
    and 80,632 census rows from the real 2023 files, unmatched `unit_id`s counted
-   and skipped. Nothing user-visible changed yet: **that is S3**, the next /ship
-   run (the derived `college_search_index` + subject taxonomy — the aha). Then
-   S4 (query-time `similar_colleges`), S5 (consumer sweep). 0004 D13 (S1–S3
-   before 0001's S4) was consciously narrowed at RFC 140's gate and is now moot
-   for S4a: only S1's conventions were a real dependency, and S4a landed after
-   RFC 139 with its ingest CLI merged into 139's (aliases + `--*-source`
-   provenance + the CDS group in one launcher).
+   and skipped. Nothing user-visible changed yet: **that is
+   `search/03/the-index` (S3), which is IN FLIGHT** on `pipeline/rfc-147` (the
+   derived `college_search_index` + subject taxonomy — the aha). Then
+   `search/04/similar-colleges` (query-time), `search/05/consumer-sweep`. 0004
+   D13 (S1–S3 before 0001's S4) was consciously narrowed at RFC 140's gate and
+   is now moot for S4a: only S1's conventions were a real dependency, and S4a
+   landed after RFC 139 with its ingest CLI merged into 139's (aliases +
+   `--*-source` provenance + the CDS group in one launcher).
 2. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
    admissions layer is now user-visible. The coach can answer, with citations,
    what a school weighs in admissions, when its rounds close, and how it
@@ -45,18 +56,25 @@ any checkout: `.prime/agent/skills/ship/scripts/ship-status`
    `share_of_all_full_time_freshmen_pct` and tests assert the payload never
    contains "without need". A school that reports only a freshman total (28 of
    368) is a silence, not a zero; "not reported" is always the honest answer.
-   **Next for 0001: S5 (Family Cost Report)**, which also waits on brief 0003
-   M2+M3.
+   **Next for 0001: `first-value/05/family-cost-report` (S5)**, which _prefers_
+   `money/02` + `money/03` so the parent-facing artifact speaks the language.
+   That is product judgement (PREFER), not a technical block — Ian can pull it
+   forward.
 
 3. **Brief 0003 — clear money language — M1, M1.1, RFC 143 and M1.2 LANDED (RFCs
    141–143, 145).** The coach speaks one money vocabulary, no bare source code
    reaches a tool result, and — as of 2026-08-29 — it **asks where the family
    lives before it asks what they earn**: `precision_offer` is an ordered list
    of upgrade invitations (residency first, offered only where a public college
-   makes it worth something), and prompt **v7** teaches the ordering. **M2**
-   (component split, DDL approved as D18/D19) is the next slice of this brief
-   but still waits on 0004 S3 (S1/S2 landed as RFCs 139/144), and precedes
-   0001's S5. Migrations: `0049`/`0050` (RFCs 141/142), `0053` (RFC 145).
+   makes it worth something), and prompt **v7** teaches the ordering.
+   **`money/02/component-split` (M2)** (DDL approved as D18/D19) is the next
+   slice of this brief and **is not blocked — it can run today.** Its one real
+   precondition was 0004 S1's two-phase `bin/ingest-colleges` with provenance
+   and a change summary, which landed as **RFC 139** and was extended by **RFC
+   144**. It was recorded for weeks as waiting on 0004 S3; that was wrong, and
+   the edge is really CONFLICTS (both slices edit `bin/ingest-colleges` and
+   `CollegesDao.search`), which is a rebase risk and not an order. It precedes
+   `first-value/05`. Migrations: `0049`/`0050` (RFCs 141/142), `0053` (RFC 145).
 4. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
    S6 is the wedge and its token becomes Beat 2's parent-account claim path. S5
    waits on 0003 M2+M3 so the parent-facing artifact speaks the language.
@@ -239,12 +257,70 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                              | State                                                                                                                                                                                                                                          | Where                                    |
-| --- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | College search index (brief 0004) | EXECUTING — gates 1+2 approved (2026-08-27); S1→S5 specced, DDL approved. **S1 LANDED (RFC 139, matching later replaced by RFC 146) and S2 LANDED (RFC 144). S3 — the derived index + subject taxonomy — is the next run and blocks 0003 M2.** | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003) | **M1 + M1.1 + RFC 143 + M1.2 LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: M2 (waits on 0004 S3; S1/S2 landed, precedes 0001 S5), then M3, M4.                                                | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: S5 → S6         | **S4 COMPLETE** — split into S4a (RFC 140) and S4b (RFC 148), both landed; cited merit answers are live in chat. Next: S5 Family Cost Report (also waits on brief 0003 M2+M3), then S6 invite-parent.                                          | `product/0001-v1-differentiator/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)       | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                    | `bin/state-apply`                        |
+| Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Where                                    |
+| --- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | College search index (brief 0004)          | EXECUTING — gates 1+2 approved (2026-08-27); `search/01`→`search/05` specced, DDL approved. **`search/01/honest-name-search` LANDED (RFC 139, matching later replaced by RFC 146) and `search/02/ipeds-attributes` LANDED (RFC 144). `search/03/the-index` — the derived index + subject taxonomy — is wave 1 and IN FLIGHT on `pipeline/rfc-147`. It does NOT block `money/02/component-split`; it only CONFLICTS with it on shared files — a rebase, not a wait.** | `product/0004-college-search-index`      |
+| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: **`money/02/component-split`, unblocked and runnable today** — its real precondition landed as RFCs 139/144; it precedes `first-value/05`. Then `money/03`, `money/04`.                                                                                                                                          | `product/0003-clear-money-language`      |
+| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, which PREFERs (does not require) `money/02` + `money/03`, then `first-value/06/invite-your-parent`.                                                                                                                                                 | `product/0001-v1-differentiator/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                          | `bin/state-apply`                        |
+
+## Sequencing — the wave board
+
+Computed from the `Needs:` edges declared on each slice in its `spec.md`, not
+from habit. **Same wave = safe to run in parallel** (separate /ship worktrees).
+Regenerate this board whenever a slice lands; never remember it.
+
+Edge kinds: **BLOCKS** = technical, cannot proceed, not overridable. **PREFER**
+= product judgement, overridable by Ian, and marking it PREFER makes the
+override visible instead of hidden. **CONFLICTS** = both touch the same files —
+a rebase risk, **not** an order; schedule apart or absorb the rebase. A `Needs:`
+entry with no reason is not a dependency and is rejected. **Adjacency in an ID
+never grants or denies permission to start** — only the `Needs:` line does.
+
+### Wave 1 — startable today
+
+| Slice                      | State                                                                                          |
+| -------------------------- | ---------------------------------------------------------------------------------------------- |
+| `search/03/the-index`      | **IN FLIGHT** — `pipeline/rfc-147`, PHASE implementing, in `../unicoach-rfc-147`.              |
+| `money/02/component-split` | **READY NOW.** Its stated preconditions (`search/01`, `search/02`) landed as RFCs 139 and 144. |
+| `deletion/*`               | Gate 1 not yet run (brief 0002 is parked in the Backlog, still launch-blocking).               |
+
+`search/03` and `money/02` both edit `bin/ingest-colleges` — that is a
+**CONFLICTS** edge. Expect a rebase, not a wait. Keep them in separate
+worktrees.
+
+### Wave 2 — unlocked by wave 1
+
+| Slice                          | Edge                                                                        |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `search/04/similar-colleges`   | BLOCKS `search/03` — reads the percentile columns it creates.               |
+| `search/05/consumer-sweep`     | BLOCKS `search/03` — every search-shaped workflow routes through the index. |
+| `money/03/comparison-contract` | BLOCKS `money/02` — the stable/variable blocks need the component columns.  |
+| `money/04/where-youll-live`    | BLOCKS `money/02` — personalises the variable half of the breakdown.        |
+
+### Wave 3
+
+`first-value/05/family-cost-report` — PREFER `money/02` + `money/03` (D17: "so
+the parent-facing artifact is born speaking this language"). This is a **quality
+argument, not a technical one** — Ian can override it. Recommendation: honour
+it, because re-languaging a parent-facing artifact after the fact is exactly the
+rework D17 exists to avoid.
+
+### Wave 4
+
+`first-value/06/invite-your-parent` — BLOCKS `first-value/05`: the share CTA
+lives on the report surface, and the report's token becomes Beat 2's
+parent-account claim path.
+
+Not scheduled: `search/06/unattended-refresh` (deferred; PREFERs `search/05`).
+
+**Standing correction (2026-08-30).** `money/02` was recorded for weeks as
+waiting on `search/03`. It never was. The binding text says something narrower —
+0003 D15 ("M2 lands after 0004 **S1/S2**, rebasing onto the two-phase
+`bin/ingest-colleges`") and D17 ("M2/M3 land after 0004 S1/S2 and **before**
+0001's S5") — and both landed. The true edge is CONFLICTS. Verify a dependency
+against the numbered decisions in a `spec.md`, never against a summary line in
+this file: summaries drift, decisions do not.
 
 ## Backlog
 
@@ -280,11 +356,17 @@ Nothing here is committed work.
 
 ## Kickoff prompts
 
-Open a new Prime Agent session in `/Users/ian/Work/unicoach` and paste one. Each
-/ship run claims its own worktree, so parallel runs are safe. YOU are the
-approval gate in each session. Slices from a brief are kicked off with the slice
-instruction from its `spec.md` — the prompts below add only session context the
-spec can't know.
+**The short form now works:** open a new Prime Agent session in
+`/Users/ian/Work/unicoach` and say _"start work on `search/03/the-index`"_,
+naming the **`slice`** skill. It resolves the ID in `spec.md`, checks the
+`Needs:` edges (BLOCKS refuses, PREFER asks you once, CONFLICTS only warns),
+claims the RFC and migration numbers live, runs /ship, and then updates the
+brief ledger and this file. Numbers are never copied from a doc — they move
+under you.
+
+The long prompts below remain for context a spec cannot carry. Each /ship run
+claims its own worktree, so parallel runs are safe **within a wave**. YOU are
+the approval gate in each session.
 
 ### College search index (brief 0004)
 
@@ -385,9 +467,10 @@ the coach to lead with the split, name the living arrangement, and mark the
 estimate lines as estimates. Keep RFC 141's glossary and RFC 142's source-jargon
 sentence intact — say "housing and food", never "room and board" — and RFC 143's
 guard ("no bare source code reaches a tool result") must keep passing. Numbers
-move: claim the next free RFC and migration at run time (migration 0056 and RFC
-146 are taken, so 0057/147 are the next free — re-check at run time, since 0004
-S3 may land first).
+move: claim the next free RFC and migration at run time and re-check them
+immediately before committing — never copy a number out of this file. Note the
+prompt version above is stale too: v8 was consumed by RFC 148 (migration 0058),
+so this slice seeds the next free version.
 
 I am the approval gate. Land it, then update the brief ledger and
 product/STATUS.md.
