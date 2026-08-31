@@ -39,16 +39,19 @@ Ledger (updated as slices land):
 ## Slice IDs
 
 Permanent IDs for this brief's slices (`search/<milestone>/<name>`). The old
-letters stay valid as references; the ledger above is left as written.
+letters stay valid as references; the ledger above is left as written. A slice
+split during /ship's design phase takes a letter (`03a`, `03b`); a slice
+inserted later takes a decimal step. Neither renumbers a neighbour.
 
-| Old | ID                           | State                                     |
-| --- | ---------------------------- | ----------------------------------------- |
-| S1  | search/01/honest-name-search | LANDED RFC 139 (matching replaced by 146) |
-| S2  | search/02/ipeds-attributes   | LANDED RFC 144                            |
-| S3  | search/03/the-index          | NOT STARTED (next)                        |
-| S4  | search/04/similar-colleges   | NOT STARTED                               |
-| S5  | search/05/consumer-sweep     | NOT STARTED                               |
-| S6  | search/06/unattended-refresh | DEFERRED                                  |
+| Old | ID                             | State                                     |
+| --- | ------------------------------ | ----------------------------------------- |
+| S1  | search/01/honest-name-search   | LANDED RFC 139 (matching replaced by 146) |
+| S2  | search/02/ipeds-attributes     | LANDED RFC 144                            |
+| S3  | search/03a/published-codebooks | IN FLIGHT — RFC 147 (split in design)     |
+| S3  | search/03b/the-index           | NOT STARTED — lands on top of 03a         |
+| S4  | search/04/similar-colleges     | NOT STARTED                               |
+| S5  | search/05/consumer-sweep       | NOT STARTED                               |
+| S6  | search/06/unattended-refresh   | DEFERRED                                  |
 
 Per-slice dependencies (`Needs:` lines) live in `spec.md`.
 

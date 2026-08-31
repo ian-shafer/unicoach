@@ -256,6 +256,20 @@ search surface yet.
 - CONFLICTS money/02/component-split — both edit `bin/ingest-colleges` phases
   and `CollegesDao.search`/`search_colleges`. Rebase risk only. NOT an order.
 
+**SPLIT IN DESIGN (Ian, at the S3 design gate).** This instruction is delivered
+as two slices, so both carry permanent IDs:
+
+- **`search/03a/published-codebooks`** — the substrate: published federal
+  codebooks as reference data, so a stored code (`region`, `rel_affil`,
+  `carnegie_basic`) can say what it means. **RFC 147**, in flight on
+  `pipeline/rfc-147`. Needs: — .
+- **`search/03b/the-index`** — S3 proper, everything below: `subjects` + the
+  authored taxonomy, `college_search_index` + the phase-2 rebuild, and the
+  repointed search paths. Needs: BLOCKS `search/03a/published-codebooks` — the
+  index reads the codebook reference tables.
+
+`search/04` and `search/05` therefore BLOCK on `search/03b`, not on `03a`.
+
 **Intent:** "small public schools in Maine with a literature program" answered
 end-to-end, honestly, from one derived table.
 
@@ -279,7 +293,7 @@ uses subjects and reports counts.
 
 ### search/04/similar-colleges (S4) — "Similar colleges to X", query-time (one /ship run)
 
-**Needs:** BLOCKS search/03/the-index — weighted distance runs over the index's
+**Needs:** BLOCKS search/03b/the-index — weighted distance runs over the index's
 percentile columns.
 
 **Intent:** the second of Ian's two founding queries — with "similar" decided
@@ -305,7 +319,7 @@ coach in chat.
 
 ### search/05/consumer-sweep (S5) — Consumer sweep: every search-shaped workflow uses the index
 
-**Needs:** BLOCKS search/03/the-index — the sweep repoints consumers at the
+**Needs:** BLOCKS search/03b/the-index — the sweep repoints consumers at the
 index table.
 
 **Intent:** the index is only THE index if everything searches through it (Ian,

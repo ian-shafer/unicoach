@@ -9,9 +9,13 @@ the brief's ledger wins and this file gets fixed.
 
 Updated: 2026-08-30 (RFC 148 landed — `first-value/04b` (S4b), the admissions
 layer is now user-visible. Slices now carry permanent IDs and declared `Needs:`
-edges; sequencing below is the computed wave board. Next free RFC 149, migration
-0060 — as of this line only; recompute at run time). Live-run discovery from any
-checkout: `.prime/agent/skills/ship/scripts/ship-status`
+edges; sequencing below is the computed wave board. **Never copy a number out of
+this file:** as of this line the next free RFC is 149, and the next free
+migration is 0062 — because the in-flight `pipeline/rfc-147` has already claimed
+`0060` and `0061` in its own worktree, which a plain `ls db/schema` on `main`
+cannot see. Recompute at run time and re-check immediately before committing.)
+Live-run discovery from any checkout:
+`.prime/agent/skills/ship/scripts/ship-status`
 
 **Slice IDs are `<brief>/<milestone>.<step>/<name>`** — `first-value` = brief
 0001, `deletion` = 0002, `money` = 0003, `search` = 0004. The old letter follows
@@ -32,9 +36,11 @@ Start a slice with the **`slice` skill**: "start work on
    `bin/ingest-colleges`'s optional all-or-nothing
    `--hd/--ic/--adm/--completions/--survey-year` group — 5,688 attribute rows
    and 80,632 census rows from the real 2023 files, unmatched `unit_id`s counted
-   and skipped. Nothing user-visible changed yet: **that is
-   `search/03/the-index` (S3), which is IN FLIGHT** on `pipeline/rfc-147` (the
-   derived `college_search_index` + subject taxonomy — the aha). Then
+   and skipped. Nothing user-visible changed yet: **that is `search/03` (S3)**,
+   which was **split at its design gate** into `search/03a/published-codebooks`
+   (RFC 147 — the codebook substrate, IN FLIGHT on `pipeline/rfc-147`, PHASE
+   verifying) and `search/03b/the-index` (the derived `college_search_index` +
+   subject taxonomy — the aha, NOT STARTED, lands on top of 03a). Then
    `search/04/similar-colleges` (query-time), `search/05/consumer-sweep`. 0004
    D13 (S1–S3 before 0001's S4) was consciously narrowed at RFC 140's gate and
    is now moot for S4a: only S1's conventions were a real dependency, and S4a
@@ -257,12 +263,12 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Where                                    |
-| --- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | College search index (brief 0004)          | EXECUTING — gates 1+2 approved (2026-08-27); `search/01`→`search/05` specced, DDL approved. **`search/01/honest-name-search` LANDED (RFC 139, matching later replaced by RFC 146) and `search/02/ipeds-attributes` LANDED (RFC 144). `search/03/the-index` — the derived index + subject taxonomy — is wave 1 and IN FLIGHT on `pipeline/rfc-147`. It does NOT block `money/02/component-split`; it only CONFLICTS with it on shared files — a rebase, not a wait.** | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: **`money/02/component-split`, unblocked and runnable today** — its real precondition landed as RFCs 139/144; it precedes `first-value/05`. Then `money/03`, `money/04`.                                                                                                                                          | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, which PREFERs (does not require) `money/02` + `money/03`, then `first-value/06/invite-your-parent`.                                                                                                                                                 | `product/0001-v1-differentiator/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                          | `bin/state-apply`                        |
+| Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Where                                    |
+| --- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | College search index (brief 0004)          | EXECUTING — gates 1+2 approved (2026-08-27); `search/01`→`search/05` specced, DDL approved. **`search/01/honest-name-search` LANDED (RFC 139, matching later replaced by RFC 146) and `search/02/ipeds-attributes` LANDED (RFC 144). `search/03` split at its design gate: `search/03a/published-codebooks` is IN FLIGHT (RFC 147, PHASE verifying) and `search/03b/the-index` — the derived index + subject taxonomy — lands on top of it. Neither blocks `money/02/component-split`; they only CONFLICT with it on shared files — a rebase, not a wait.** | `product/0004-college-search-index`      |
+| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` LANDED** (RFCs 141–143, 145; 2026-08-28/29). The coach now asks residency before income. Next: **`money/02/component-split`, unblocked and runnable today** — its real precondition landed as RFCs 139/144; it precedes `first-value/05`. Then `money/03`, `money/04`.                                                                                                                                                                                                                                 | `product/0003-clear-money-language`      |
+| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, which PREFERs (does not require) `money/02` + `money/03`, then `first-value/06/invite-your-parent`.                                                                                                                                                                                                                                        | `product/0001-v1-differentiator/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                 | `bin/state-apply`                        |
 
 ## Sequencing — the wave board
 
@@ -279,24 +285,31 @@ never grants or denies permission to start** — only the `Needs:` line does.
 
 ### Wave 1 — startable today
 
-| Slice                      | State                                                                                          |
-| -------------------------- | ---------------------------------------------------------------------------------------------- |
-| `search/03/the-index`      | **IN FLIGHT** — `pipeline/rfc-147`, PHASE implementing, in `../unicoach-rfc-147`.              |
-| `money/02/component-split` | **READY NOW.** Its stated preconditions (`search/01`, `search/02`) landed as RFCs 139 and 144. |
-| `deletion/*`               | Gate 1 not yet run (brief 0002 is parked in the Backlog, still launch-blocking).               |
+| Slice                            | State                                                                                                                                                                        |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search/03a/published-codebooks` | **IN FLIGHT** — RFC 147, `pipeline/rfc-147`, PHASE verifying, in `../unicoach-rfc-147`. Split out of `search/03` at its design gate: the codebook substrate the index reads. |
+| `search/03b/the-index`           | NOT STARTED. BLOCKS `search/03a` — it lands on top of the codebook reference tables.                                                                                         |
+| `money/02/component-split`       | **READY NOW.** Its stated preconditions (`search/01`, `search/02`) landed as RFCs 139 and 144.                                                                               |
+| `deletion/*`                     | Gate 1 not yet run (brief 0002 is parked in the Backlog, still launch-blocking).                                                                                             |
 
-`search/03` and `money/02` both edit `bin/ingest-colleges` — that is a
-**CONFLICTS** edge. Expect a rebase, not a wait. Keep them in separate
-worktrees.
+`search/03a` and `money/02` both edit `bin/ingest-colleges`,
+`CollegeScorecardLoader.kt` and `CollegesDao.kt` — that is a **CONFLICTS** edge,
+verified live against `pipeline/rfc-147`. Expect a rebase, not a wait. Keep them
+in separate worktrees.
+
+**Verified from the repo, 2026-08-30, not from a summary.** RFC 147 is
+"Published codebooks as reference data", a substrate slice split out of S3 at
+Ian's direction during the S3 design gate — `college_search_index` exists
+nowhere yet, on `main` or in that worktree.
 
 ### Wave 2 — unlocked by wave 1
 
-| Slice                          | Edge                                                                        |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| `search/04/similar-colleges`   | BLOCKS `search/03` — reads the percentile columns it creates.               |
-| `search/05/consumer-sweep`     | BLOCKS `search/03` — every search-shaped workflow routes through the index. |
-| `money/03/comparison-contract` | BLOCKS `money/02` — the stable/variable blocks need the component columns.  |
-| `money/04/where-youll-live`    | BLOCKS `money/02` — personalises the variable half of the breakdown.        |
+| Slice                          | Edge                                                                         |
+| ------------------------------ | ---------------------------------------------------------------------------- |
+| `search/04/similar-colleges`   | BLOCKS `search/03b` — reads the percentile columns it creates.               |
+| `search/05/consumer-sweep`     | BLOCKS `search/03b` — every search-shaped workflow routes through the index. |
+| `money/03/comparison-contract` | BLOCKS `money/02` — the stable/variable blocks need the component columns.   |
+| `money/04/where-youll-live`    | BLOCKS `money/02` — personalises the variable half of the breakdown.         |
 
 ### Wave 3
 
@@ -357,7 +370,7 @@ Nothing here is committed work.
 ## Kickoff prompts
 
 **The short form now works:** open a new Prime Agent session in
-`/Users/ian/Work/unicoach` and say _"start work on `search/03/the-index`"_,
+`/Users/ian/Work/unicoach` and say _"start work on `money/02/component-split`"_,
 naming the **`slice`** skill. It resolves the ID in `spec.md`, checks the
 `Needs:` edges (BLOCKS refuses, PREFER asks you once, CONFLICTS only warns),
 claims the RFC and migration numbers live, runs /ship, and then updates the
