@@ -52,6 +52,29 @@ Status:
          DDL. 1,800 tests green; bin/test check and 272 shell assertions pass.
          Also generalised the money-profile row-intactness guard, since
          residency_status is now decision-bearing.
+      M2 (money/02/component-split) LANDED as RFC 149 (main@534b0ac4 +
+         56904f63, 2026-08-31) -- the component cost split. Migration 0062 adds
+         six nullable INTEGER columns to colleges and colleges_versions
+         (housing_and_food_on/off_campus, books_and_supplies,
+         other_expenses_on/off_campus/with_family), each with a nonneg CHECK
+         (D19) and a COMMENT naming its Scorecard field. Named per D18's
+         vocabulary AND 0059's unit convention: housing_and_food_*, never
+         room_board_*, and every dollar column ends _per_year_usd. The
+         college_cost_profile tool gains cost_by_living_arrangement with three
+         arrangements; with_family carries no housing line (no ROOMBOARD_FAM),
+         an arrangement missing a part carries no total, and unanswered
+         residency drops the tuition line and every total. "No residence halls"
+         is read from IPEDS offers_housing (spending D7, whose reason expired
+         when RFC 144 landed IPEDS) and emitted whenever known; when the flag
+         says no housing but the school published on-campus figures, the
+         figures win, the flag rides beside them and the contradiction is
+         logged. Academic-year vintages replaced "data ingested YYYY" and are
+         emitted as objects naming the figures they date; median debt and
+         median earnings carry NO year rather than borrowing one. Coach prompt
+         v9 (0063), v8 is the rollback. 1,881 tests executed green; bin/test
+         check passed as the gate. Declined and open: no vintage-typed
+         CostField split, no money value class (every cost figure in the repo
+         is a bare Int).
 
 ## Slice IDs
 
@@ -63,7 +86,7 @@ letters stay valid as references; the ledger above is left as written.
 | M1   | money/01/language-standard         | LANDED RFC 141 |
 | M1.1 | money/01.1/bands-in-dollars        | LANDED RFC 142 |
 | M1.2 | money/01.2/residency-before-income | LANDED RFC 145 |
-| M2   | money/02/component-split           | NOT STARTED    |
+| M2   | money/02/component-split           | LANDED RFC 149 |
 | M3   | money/03/comparison-contract       | NOT STARTED    |
 | M4   | money/04/where-youll-live          | NOT STARTED    |
 
