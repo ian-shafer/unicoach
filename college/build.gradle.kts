@@ -1,6 +1,10 @@
 plugins {
   alias(libs.plugins.kotlin.jvm)
   application
+  // CodebookFixture: the REAL committed codebook loaded into a test database,
+  // shared with :service so both boundaries that speak the filter vocabulary
+  // are tested against the same loaded reference tables (RFC 147 D45).
+  `java-test-fixtures`
 }
 
 application {
@@ -18,6 +22,11 @@ dependencies {
   // Console logging for the ingester (no logback.xml of its own; inherits the
   // Logback default config, like queue-worker's application entry).
   runtimeOnly(libs.logback.classic)
+
+  // The testFixtures source set does not inherit main's `implementation` deps.
+  // `api` on :db, because CodebookFixture.load takes a Database.
+  testFixturesApi(project(":db"))
+  testFixturesImplementation(libs.kotlinx.coroutines.core)
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)

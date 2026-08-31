@@ -1,6 +1,5 @@
 package ed.unicoach.college
 
-import ed.unicoach.db.models.CipPrefix
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CredentialLevel
@@ -10,11 +9,7 @@ import ed.unicoach.db.models.putIncomeBand
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 import ed.unicoach.error.errorCategory
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -34,10 +29,18 @@ import kotlinx.serialization.json.putJsonObject
  * result rather than throwing into the (future) turn loop, and a zero-match query
  * returns `{ "colleges": [], "count": 0 }` — an empty result is a valid domain
  * outcome, not an error.
+ *
+ * Every coded axis is WORDS in both directions (RFC 147 D45): the filter
+ * vocabulary — region, locale, control — is [CollegeQueryVocabulary]'s, shared
+ * with the fit lens, and the results render the same words a filter accepts. No
+ * published code enters or leaves this tool as a number.
  */
 class CollegeSearchTool(
   private val service: CollegeSearchService,
+  codebook: Codebook,
 ) {
+  private val vocabulary = CollegeQueryVocabulary(codebook)
+
   val definition: JsonObject =
     buildJsonObject {
       put("name", TOOL_NAME)
@@ -45,67 +48,35 @@ class CollegeSearchTool(
       putJsonObject("input_schema") {
         put("type", "object")
         putJsonObject("properties") {
-          putJsonObject("cipPrefix") {
-            put("type", "string")
-            put(
-              "description",
-              "A 2-, 4-, or 6-digit CIP code prefix to require a matching program " +
-                "(e.g. \"26\" biology, \"2613\" ecology, \"260702\" marine biology). " +
-                "The conventional dotted notation is also accepted -- \"26.13\" and " +
-                "\"26.0702\" mean the same as \"2613\" and \"260702\" -- but the canonical " +
-                "form is digits only.",
-            )
-          }
-          putStringArrayProperty(
-            "states",
-            "Two-letter US state postal codes; matches institutions in any of them (OR-set).",
-          )
-          putJsonObject("region") {
-            put("type", "integer")
-            put("description", "IPEDS region code (0-9).")
-          }
-          putIntArrayProperty("locales", "IPEDS urbanization locale codes (11-43); matches any (OR-set).")
-          putIntArrayProperty("control", "Control codes: 1 public, 2 private nonprofit, 3 private for-profit; matches any.")
-          putIntProperty(
-            "minUndergradEnrollmentHeadcount",
-            "Minimum undergraduate enrollment headcount (degree- and certificate-seeking).",
-          )
-          putIntProperty(
-            "maxUndergradEnrollmentHeadcount",
-            "Maximum undergraduate enrollment headcount (degree- and certificate-seeking).",
-          )
-          putNumberProperty("minAdmissionRateShare", "Minimum admission rate (0-1).")
-          putNumberProperty("maxAdmissionRateShare", "Maximum admission rate (0-1).")
-          putIntProperty("maxNetPricePerYearUsd", "Maximum average annual net price, in whole US dollars.")
-          putNumberProperty(
-            "minCompletionRate150pct4yrShare",
-            "Minimum completion rate (0-1): the share of first-time full-time students at a " +
-              "four-year institution who finish within 150% of normal time (6 years). " +
-              "Two-year colleges do not report it and are filtered out by this bound.",
-          )
-          putWordEnumProperty(
+          // The shared filter vocabulary first, then this tool's own three
+          // fields: ordering, program credential, and the result cap.
+          putProperties(vocabulary.schemaProperties())
+          put(
             "sort_by",
-            SORT_BY_WORDS.keys,
-            "Result ordering. \"enrollment\" (default): largest undergraduate " +
-              "enrollment first; \"admission_rate_share\": most selective first; " +
-              "\"net_price_per_year_usd\": cheapest first; \"completion_rate_150pct_4yr_share\": best completion " +
-              "first; \"name\": alphabetical. Sorting never filters: colleges " +
-              "missing the sort field are listed last, not dropped.",
+            wordProperty(
+              SORT_BY_WORDS.keys,
+              "Result ordering. \"enrollment\" (default): largest undergraduate " +
+                "enrollment first; \"admission_rate_share\": most selective first; " +
+                "\"net_price_per_year_usd\": cheapest first; \"completion_rate_150pct_4yr_share\": best completion " +
+                "first; \"name\": alphabetical. Sorting never filters: colleges " +
+                "missing the sort field are listed last, not dropped.",
+            ),
           )
-          putWordEnumProperty(
+          put(
             "credential_level",
-            CREDENTIAL_LEVEL_WORDS.keys,
-            "Require the cipPrefix program at this credential level (e.g. " +
-              "\"bachelors\" for a bachelor's degree in the program). Only valid " +
-              "together with cipPrefix.",
+            wordProperty(
+              CREDENTIAL_LEVEL_WORDS.keys,
+              "Require the cipPrefix program at this credential level (e.g. " +
+                "\"bachelors\" for a bachelor's degree in the program). Only valid " +
+                "together with cipPrefix.",
+            ),
           )
-          putJsonObject("limit") {
-            put("type", "integer")
-            put(
-              "description",
+          put(
+            "limit",
+            intProperty(
               "Maximum number of colleges to return; clamped to $MIN_LIMIT..$MAX_LIMIT. Defaults to $DEFAULT_LIMIT.",
-            )
-          }
+            ),
+          )
         }
         // All fields optional; an implicit result cap is enforced server-side.
         putJsonArray("required") {}
@@ -114,15 +85,11 @@ class CollegeSearchTool(
 
   /**
    * Parses [input] into a [CollegeQuery], runs the search, and serializes the
-   * matches. Unknown fields and type mismatches yield `{ "error": "<reason>" }`;
-   * the executor never throws.
+   * matches. Unknown fields, type mismatches and unknown codebook words yield
+   * `{ "error": "<reason>" }`; the executor never throws.
    */
   suspend fun execute(input: JsonObject): JsonObject {
-    val query =
-      when (val parsed = parseQuery(input)) {
-        is ParseResult.Ok -> parsed.query
-        is ParseResult.Err -> return errorObject(parsed.reason)
-      }
+    val query = parseQuery(input).getOrElse { return errorObject(it.message ?: "invalid input") }
 
     val page =
       service.search(query).getOrElse { error ->
@@ -144,273 +111,32 @@ class CollegeSearchTool(
   // Input parsing (total — never throws)
   // ---------------------------------------------------------------------------
 
-  private sealed interface ParseResult {
-    data class Ok(
-      val query: CollegeQuery,
-    ) : ParseResult
-
-    data class Err(
-      val reason: String,
-    ) : ParseResult
-  }
-
-  private fun parseQuery(input: JsonObject): ParseResult {
+  /**
+   * The shared filter parse plus this tool's own three fields. Unknown keys are
+   * refused here rather than in the vocabulary: the fit lens's forced tool and
+   * this one offer different field sets around the same filters, so which keys
+   * are known is the TOOL's question, not the vocabulary's.
+   */
+  private fun parseQuery(input: JsonObject): Result<CollegeQuery> {
     val unknown = input.keys - KNOWN_FIELDS
     if (unknown.isNotEmpty()) {
-      return ParseResult.Err("unknown field(s): [${unknown.sorted().joinToString(", ")}]")
+      return fail("unknown field(s): [${unknown.sorted().joinToString(", ")}]")
     }
 
-    val cipPrefix =
-      when (val r = parseCipPrefix(input)) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-
-    val states =
-      when (val r = optStringList(input, "states")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (states != null && states.any { !it.matches(STATE_CODE_REGEX) }) {
-      return ParseResult.Err("states must be 2-letter US state postal codes")
-    }
-    // state is stored UPPERCASE (Scorecard STABBR) and bound into a case-sensitive
-    // SQL IN, so normalize here — an LLM emitting "ca" must still match a "CA" row.
-    val normalizedStates = states?.map { it.uppercase() }
-    val region =
-      when (val r = optInt(input, "region")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (region != null && region !in 0..9) {
-      return ParseResult.Err("region must be 0-9")
-    }
-    val locales =
-      when (val r = optIntList(input, "locales")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (locales != null && locales.any { it !in 11..43 }) {
-      return ParseResult.Err("locales must be 11-43")
-    }
-    val control =
-      when (val r = optIntList(input, "control")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (control != null && control.any { it !in 1..3 }) {
-      return ParseResult.Err("control must be 1, 2, or 3")
-    }
-    val minUndergrad =
-      when (val r = optInt(input, "minUndergradEnrollmentHeadcount")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (minUndergrad != null && minUndergrad < 0) {
-      return ParseResult.Err("minUndergradEnrollmentHeadcount must be >= 0")
-    }
-    val maxUndergrad =
-      when (val r = optInt(input, "maxUndergradEnrollmentHeadcount")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (maxUndergrad != null && maxUndergrad < 0) {
-      return ParseResult.Err("maxUndergradEnrollmentHeadcount must be >= 0")
-    }
-    val minAdmission =
-      when (val r = optDouble(input, "minAdmissionRateShare")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (minAdmission != null && minAdmission !in 0.0..1.0) {
-      return ParseResult.Err("minAdmissionRateShare must be 0.0-1.0")
-    }
-    val maxAdmission =
-      when (val r = optDouble(input, "maxAdmissionRateShare")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (maxAdmission != null && maxAdmission !in 0.0..1.0) {
-      return ParseResult.Err("maxAdmissionRateShare must be 0.0-1.0")
-    }
-    val maxNetPricePerYearUsd =
-      when (val r = optInt(input, "maxNetPricePerYearUsd")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (maxNetPricePerYearUsd != null && maxNetPricePerYearUsd < 0) {
-      return ParseResult.Err("maxNetPricePerYearUsd must be >= 0")
-    }
-    val minCompletion =
-      when (val r = optDouble(input, "minCompletionRate150pct4yrShare")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (minCompletion != null && minCompletion !in 0.0..1.0) {
-      return ParseResult.Err("minCompletionRate150pct4yrShare must be 0.0-1.0")
-    }
+    val limit = optInt(input, "limit").getOrElse { return Result.failure(it) } ?: DEFAULT_LIMIT
     val sortBy =
-      when (val r = optWordEnum(input, "sort_by", SORT_BY_WORDS)) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value ?: CollegeQuery.SortBy.ENROLLMENT_DESC
-      }
+      optWordEnum(input, "sort_by", SORT_BY_WORDS).getOrElse { return Result.failure(it) }
+        ?: CollegeQuery.SortBy.ENROLLMENT_DESC
     // The word-to-level mapping lives here, at the boundary: raw CREDLEV codes
     // never appear in the tool schema or reach the LLM (brief 0004 amendment).
-    val credentialLevel =
-      when (val r = optWordEnum(input, "credential_level", CREDENTIAL_LEVEL_WORDS)) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value
-      }
-    if (credentialLevel != null && cipPrefix == null) {
-      return ParseResult.Err("credential_level is only valid together with cipPrefix")
+    val credentialLevel = optWordEnum(input, "credential_level", CREDENTIAL_LEVEL_WORDS).getOrElse { return Result.failure(it) }
+
+    val filters = vocabulary.parse(input, limit).getOrElse { return Result.failure(it) }
+    if (credentialLevel != null && filters.cipPrefix == null) {
+      return fail("credential_level is only valid together with cipPrefix")
     }
-    val limit =
-      when (val r = optInt(input, "limit")) {
-        is Parsed.Err -> return ParseResult.Err(r.reason)
-        is Parsed.Ok -> r.value ?: DEFAULT_LIMIT
-      }
 
-    return ParseResult.Ok(
-      CollegeQuery(
-        cipPrefix = cipPrefix,
-        states = normalizedStates,
-        region = region,
-        locales = locales,
-        control = control,
-        minUndergradEnrollmentHeadcount = minUndergrad,
-        maxUndergradEnrollmentHeadcount = maxUndergrad,
-        minAdmissionRateShare = minAdmission,
-        maxAdmissionRateShare = maxAdmission,
-        maxNetPricePerYearUsd = maxNetPricePerYearUsd,
-        minCompletionRate150pct4yrShare = minCompletion,
-        sortBy = sortBy,
-        credentialLevel = credentialLevel,
-        limit = limit,
-      ),
-    )
-  }
-
-  /**
-   * Reads `cipPrefix` in the same shape as the other opt* readers: absent stays
-   * `Parsed.Ok(null)`, an unreadable prefix is a `Parsed.Err` carrying its reason
-   * -- so "no program filter" and "rejected program filter" can never collapse
-   * onto the same value on the way into [CollegeQuery].
-   *
-   * The dotted notation a model naturally writes is accepted here and stored
-   * canonical; see [CipPrefix].
-   */
-  private fun parseCipPrefix(input: JsonObject): Parsed<String?> {
-    val el = field(input, "cipPrefix") ?: return Parsed.Ok(null)
-    // Deliberately more permissive about TYPE than the other readers, and stricter
-    // about VALUE. The schema says string, but a model writing a dotted CIP code
-    // often drops the quotes ({"cipPrefix": 26.07}), and the literal text of that
-    // number is still a readable prefix -- so any scalar is read and canonicalized,
-    // and only an unreadable VALUE is refused. FitLensService.canonicalCipPrefix
-    // reads the other model-facing cipPrefix the same way, on purpose: the same
-    // input gets the same verdict at both boundaries.
-    val raw = (el as? JsonPrimitive)?.content ?: return Parsed.Err("$CIP_PREFIX_ERROR; got [$el]")
-    val canonical = CipPrefix.parseOrNull(raw) ?: return Parsed.Err("$CIP_PREFIX_ERROR; got [$raw]")
-    return Parsed.Ok(canonical)
-  }
-
-  private sealed interface Parsed<out T> {
-    data class Ok<T>(
-      val value: T,
-    ) : Parsed<T>
-
-    data class Err(
-      val reason: String,
-    ) : Parsed<Nothing>
-  }
-
-  private fun field(
-    input: JsonObject,
-    key: String,
-  ): JsonElement? = input[key]?.takeUnless { it is JsonNull }
-
-  private fun optInt(
-    input: JsonObject,
-    key: String,
-  ): Parsed<Int?> {
-    val el = field(input, key) ?: return Parsed.Ok(null)
-    val prim = el as? JsonPrimitive ?: return Parsed.Err("$key must be an integer")
-    if (prim.isString) return Parsed.Err("$key must be an integer")
-    val value = prim.content.toIntOrNull() ?: return Parsed.Err("$key must be an integer")
-    return Parsed.Ok(value)
-  }
-
-  private fun optDouble(
-    input: JsonObject,
-    key: String,
-  ): Parsed<Double?> {
-    val el = field(input, key) ?: return Parsed.Ok(null)
-    val prim = el as? JsonPrimitive ?: return Parsed.Err("$key must be a number")
-    if (prim.isString) return Parsed.Err("$key must be a number")
-    val value = prim.content.toDoubleOrNull() ?: return Parsed.Err("$key must be a number")
-    return Parsed.Ok(value)
-  }
-
-  /**
-   * Reads an optional word-enum field: absent stays `Ok(null)`, a non-string is
-   * the [optString] type error, and a string outside [words] names the whole
-   * closed vocabulary. Shared by `sort_by` and `credential_level` so the
-   * word-to-value lookup and its error shape exist once.
-   */
-  private fun <T> optWordEnum(
-    input: JsonObject,
-    key: String,
-    words: Map<String, T>,
-  ): Parsed<T?> {
-    val word =
-      when (val r = optString(input, key)) {
-        is Parsed.Err -> return r
-        is Parsed.Ok -> r.value ?: return Parsed.Ok(null)
-      }
-    val value =
-      words[word]
-        ?: return Parsed.Err("$key must be one of [${words.keys.joinToString(", ")}]; got [$word]")
-    return Parsed.Ok(value)
-  }
-
-  private fun optString(
-    input: JsonObject,
-    key: String,
-  ): Parsed<String?> {
-    val el = field(input, key) ?: return Parsed.Ok(null)
-    val prim = el as? JsonPrimitive ?: return Parsed.Err("$key must be a string")
-    if (!prim.isString) return Parsed.Err("$key must be a string")
-    return Parsed.Ok(prim.content)
-  }
-
-  private fun optStringList(
-    input: JsonObject,
-    key: String,
-  ): Parsed<List<String>?> {
-    val el = field(input, key) ?: return Parsed.Ok(null)
-    val arr = el as? JsonArray ?: return Parsed.Err("$key must be an array of strings")
-    val out = mutableListOf<String>()
-    for (item in arr) {
-      val prim = item as? JsonPrimitive ?: return Parsed.Err("$key must be an array of strings")
-      if (!prim.isString) return Parsed.Err("$key must be an array of strings")
-      out += prim.content
-    }
-    return Parsed.Ok(out.toList())
-  }
-
-  private fun optIntList(
-    input: JsonObject,
-    key: String,
-  ): Parsed<List<Int>?> {
-    val el = field(input, key) ?: return Parsed.Ok(null)
-    val arr = el as? JsonArray ?: return Parsed.Err("$key must be an array of integers")
-    val out = mutableListOf<Int>()
-    for (item in arr) {
-      val prim = item as? JsonPrimitive ?: return Parsed.Err("$key must be an array of integers")
-      if (prim.isString) return Parsed.Err("$key must be an array of integers")
-      val value = prim.content.toIntOrNull() ?: return Parsed.Err("$key must be an array of integers")
-      out += value
-    }
-    return Parsed.Ok(out.toList())
+    return Result.success(filters.copy(sortBy = sortBy, credentialLevel = credentialLevel))
   }
 
   // ---------------------------------------------------------------------------
@@ -427,10 +153,20 @@ class CollegeSearchTool(
       put("city", match.city)
       put("state", match.state)
       // The label, never the raw IPEDS code (RFC 143): the model sees the
-      // vocabulary the coach speaks, from its one home. The `control` INPUT
-      // filter stays coded -- there the code is the contract, and its schema
-      // description documents it.
+      // vocabulary the coach speaks, from its one home.
       put("control", InstitutionControl.labelFor(match.control))
+      // The same words the `region`/`locale_type`/`locale_detail` filters take
+      // (RFC 147 D45), so what the model reads back is what it can ask for.
+      putOrNull("region", vocabulary.regionWord(match.region))
+      val localeCode = match.locale
+      val locale = vocabulary.localeOf(localeCode)
+      // A stored code the loaded codebook does not carry is named as unknown and
+      // still never a bare number -- the InstitutionControl.unknownLabel shape.
+      putOrNull(
+        "locale_type",
+        locale?.type?.word ?: localeCode?.let { vocabulary.unknownLocaleWord(it) },
+      )
+      putOrNull("locale_detail", locale?.detail?.word)
       putOrNull("undergrad_enrollment_headcount", match.undergradEnrollmentHeadcount)
       putOrNull("admission_rate_share", match.admissionRateShare)
       putOrNull("net_price_per_year_usd", match.netPricePerYearUsd)
@@ -489,29 +225,9 @@ class CollegeSearchTool(
     const val MIN_LIMIT = CollegeSearchService.MIN_LIMIT
     const val MAX_LIMIT = CollegeSearchService.MAX_LIMIT
 
-    private const val CIP_PREFIX_ERROR =
-      "cipPrefix must be a 2-, 4-, or 6-digit CIP code, with or without the " +
-        "conventional dot (e.g. \"26\", \"2607\" or \"26.07\", \"260702\" or \"26.0702\")"
-
-    private val STATE_CODE_REGEX = Regex("^[A-Za-z]{2}$")
-
-    private val KNOWN_FIELDS =
-      setOf(
-        "cipPrefix",
-        "states",
-        "region",
-        "locales",
-        "control",
-        "minUndergradEnrollmentHeadcount",
-        "maxUndergradEnrollmentHeadcount",
-        "minAdmissionRateShare",
-        "maxAdmissionRateShare",
-        "maxNetPricePerYearUsd",
-        "minCompletionRate150pct4yrShare",
-        "sort_by",
-        "credential_level",
-        "limit",
-      )
+    /** The shared filter fields plus this tool's own three. */
+    private val KNOWN_FIELDS: Set<String> =
+      CollegeQueryVocabulary.FIELD_NAMES + setOf("sort_by", "credential_level", "limit")
 
     /**
      * The `sort_by` word enum → [CollegeQuery.SortBy]. LinkedHashMap order is
@@ -551,11 +267,13 @@ class CollegeSearchTool(
     // from the labels the results themselves carry.
     private val DESCRIPTION =
       "Search the College Scorecard dataset of real US colleges by structured " +
-        "filters: program of study (CIP code prefix), location (US states, IPEDS " +
-        "region, urbanization locale), institutional control (public/private), " +
+        "filters: program of study (CIP code prefix), location (US states, " +
+        "region, urbanization), who runs the institution (public/private), " +
         "undergraduate enrollment size, admission rate (selectivity), maximum net " +
         "price (affordability), and minimum completion rate — plus an optional " +
         "`sort_by` ordering and a `credential_level` word for the program filter. " +
+        "Every location and control filter is named in plain words, and results " +
+        "carry those same words back, so no data-source code is ever read or written. " +
         "The response carries `count` (returned rows, capped at $MAX_LIMIT) and " +
         "`total_matches` (every college matching the filters, uncapped) — cite " +
         "`total_matches` when stating how many schools match. Returns matching real " +
@@ -576,76 +294,5 @@ class CollegeSearchTool(
         "proximity to the coastline, or how close two places are — to approximate " +
         "\"near the ocean\" or a region, pass the relevant set of coastal/nearby " +
         "state codes in `states`."
-  }
-}
-
-// JSON-builder helpers kept at file scope so the schema/output builders read
-// linearly. Each writes one optional value or one typed property.
-
-private fun kotlinx.serialization.json.JsonObjectBuilder.putOrNull(
-  key: String,
-  value: Int?,
-) {
-  if (value != null) put(key, value) else put(key, JsonNull)
-}
-
-private fun kotlinx.serialization.json.JsonObjectBuilder.putOrNull(
-  key: String,
-  value: Double?,
-) {
-  if (value != null) put(key, value) else put(key, JsonNull)
-}
-
-private fun kotlinx.serialization.json.JsonObjectBuilder.putIntProperty(
-  key: String,
-  description: String,
-) {
-  putJsonObject(key) {
-    put("type", "integer")
-    put("description", description)
-  }
-}
-
-private fun kotlinx.serialization.json.JsonObjectBuilder.putNumberProperty(
-  key: String,
-  description: String,
-) {
-  putJsonObject(key) {
-    put("type", "number")
-    put("description", description)
-  }
-}
-
-private fun kotlinx.serialization.json.JsonObjectBuilder.putWordEnumProperty(
-  key: String,
-  words: Collection<String>,
-  description: String,
-) {
-  putJsonObject(key) {
-    put("type", "string")
-    putJsonArray("enum") { words.forEach { add(it) } }
-    put("description", description)
-  }
-}
-
-private fun kotlinx.serialization.json.JsonObjectBuilder.putStringArrayProperty(
-  key: String,
-  description: String,
-) {
-  putJsonObject(key) {
-    put("type", "array")
-    putJsonObject("items") { put("type", "string") }
-    put("description", description)
-  }
-}
-
-private fun kotlinx.serialization.json.JsonObjectBuilder.putIntArrayProperty(
-  key: String,
-  description: String,
-) {
-  putJsonObject(key) {
-    put("type", "array")
-    putJsonObject("items") { put("type", "integer") }
-    put("description", description)
   }
 }

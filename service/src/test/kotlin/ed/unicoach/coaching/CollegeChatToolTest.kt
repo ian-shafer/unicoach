@@ -37,7 +37,9 @@ class CollegeChatToolTest {
     }
   }
 
-  private val wrapped = CollegeSearchTool(CollegeSearchService(database))
+  // The delegation, not the vocabulary, is under test: an empty codebook is the
+  // honest snapshot of a database whose `codebooks` ingest phase never ran.
+  private val wrapped = CollegeSearchTool(CollegeSearchService(database), ed.unicoach.college.Codebook.EMPTY)
   private val adapter = CollegeChatTool(wrapped)
 
   @Test

@@ -14,6 +14,11 @@ package ed.unicoach.db.models
  * coach to reason over in prose; only [completionRate150pct4yrShare] is also a filter
  * (`minCompletionRate150pct4yrShare`). Earnings and Pell share are surfaced, never thresholded
  * on, because filtering on them is value-laden.
+ *
+ * [control], [region] and [locale] are the PUBLISHED codes exactly as the source
+ * stores them. No code leaves this type as a number: the boundary that speaks to
+ * a model resolves each one to its codebook word (RFC 147 D45), the way
+ * `InstitutionControl` already did for [control].
  */
 data class CollegeMatch(
   val id: CollegeId,
@@ -22,6 +27,7 @@ data class CollegeMatch(
   val city: String,
   val state: String,
   val control: Int,
+  val region: Int?,
   val locale: Int?,
   val undergradEnrollmentHeadcount: Int?,
   val admissionRateShare: Double?,

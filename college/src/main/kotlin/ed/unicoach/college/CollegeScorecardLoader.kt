@@ -65,6 +65,10 @@ class CollegeScorecardLoader(
   // is then observable from a test that hands in a loader, instead of only from
   // three real CSVs and a hidden table.
   private val cdsSeedLoader: CdsSeedLoader = CdsSeedLoader(database),
+  // The published-codebook half (RFC 147), injected for the same reason as the
+  // CDS loader above: the phase ordering is then observable from a test that
+  // hands in a loader.
+  private val codebookLoader: CodebookLoader = CodebookLoader(database, ioDispatcher),
 ) {
   private val logger = LoggerFactory.getLogger(CollegeScorecardLoader::class.java)
 
@@ -350,6 +354,13 @@ class CollegeScorecardLoader(
      * renders it; this run only records it.
      */
     val cds: CdsSeedLoader.LoadResult? = null,
+    /**
+     * The published-codebook load (RFC 147) and D46's unknown-code report, both
+     * `null` when no codebook source was supplied — the same omit-vs-zero
+     * distinction [ipeds] and [cds] draw.
+     */
+    val codebooks: CodebookLoader.LoadResult? = null,
+    val unknownCodes: CodebookLoader.UnknownCodeReport? = null,
   ) {
     /**
      * Version bumps this run caused: changed Scorecard rows plus applied alias
@@ -413,6 +424,20 @@ class CollegeScorecardLoader(
               "${census.skipped} skipped (${census.unmatchedIpedsUnitIds} unmatched ipeds_unit_id)",
           )
         }
+        // Printed only when a codebook source was supplied: a run without one
+        // must not print a fabricated "0 domains" (the IPEDS omit-vs-zero rule).
+        codebooks?.let {
+          appendLine(it.render())
+          // The vocabulary the chat tools speak is read ONCE, at process wiring
+          // time (RFC 147, `Codebook.load`). An operator who has just loaded the
+          // codebooks into a live deployment has not changed what the running
+          // rest-server and queue-worker say, and nothing else would tell them.
+          appendLine(
+            "  NOTE: rest-server and queue-worker read the codebook vocabulary once at startup — " +
+              "restart them to pick up this load",
+          )
+        }
+        unknownCodes?.let { appendLine(it.render()) }
         val sourceLine =
           sources.joinToString(", ") { s ->
             "${s.fileName} sha256=${s.sha256.take(SUMMARY_SHA_PREFIX_CHARS)}… (${s.bytes} bytes)"
@@ -459,6 +484,7 @@ class CollegeScorecardLoader(
     aliasesFile: SourceFile,
     ipeds: IpedsSources? = null,
     cds: CdsSources? = null,
+    codebooks: SourceFile? = null,
   ): IngestReport {
     val startedAt = Instant.now()
     // The IPEDS half of the run is ONE nullable value: the source group and the
@@ -466,6 +492,10 @@ class CollegeScorecardLoader(
     // reconcile two nullables that a single condition decided.
     val ipedsRun = ipeds?.let { IpedsRun(it, IpedsLoader(database, ioDispatcher)) }
     val aliasEntries = withContext(ioDispatcher) { parseAliases(aliasesFile.file) }
+    // Parsed up front beside the aliases, for the same reason: the codebook is
+    // generated repo data, so a malformed one is a review error that must abort
+    // before the first phase commits — never after five phases have written rows.
+    val parsedCodebooks = codebooks?.let { source -> withContext(ioDispatcher) { codebookLoader.parse(source) } }
     ipedsRun?.assertHeaders()
     // Beside the IPEDS assertion, not inside the cds phase: all TEN files are
     // header-asserted before the first phase commits, so a renamed column in a
@@ -476,7 +506,8 @@ class CollegeScorecardLoader(
       withContext(ioDispatcher) {
         listOf(digest(institution), digest(fields), digest(aliasesFile)) +
           (ipedsRun?.sources?.files?.map { digest(it) } ?: emptyList()) +
-          (cds?.files?.map { digest(it) } ?: emptyList())
+          (cds?.files?.map { digest(it) } ?: emptyList()) +
+          (codebooks?.let { listOf(digest(it)) } ?: emptyList())
       }
 
     // Each phase below is its own transaction, so a failure in a later one
@@ -489,6 +520,16 @@ class CollegeScorecardLoader(
     // nullable: it exists exactly when the group does, so the report below is
     // built from one non-null value and needs no `!!`.
     val ipedsStart = ipedsRun?.let { run -> run to ipedsNonNullCounts() }
+    // The codebooks phase runs BEFORE the attribute phases: the reference
+    // vocabulary the coded columns are read through should be in place before
+    // the run fills them, not after. It is reference data with no dependency on
+    // `colleges`, so nothing about it needs the row phases to have run — the ONE
+    // part that does, D46's unknown-code report, is deliberately not in this
+    // phase but after every row phase, below.
+    val codebookResult =
+      parsedCodebooks?.let { parsed ->
+        phase("codebooks", committedPhases) { codebookLoader.load(parsed) }
+      }
     val scorecard = loadScorecard(institution, fields, committedPhases)
     val aliasResult = phase("aliases", committedPhases) { applyAliases(aliasEntries) }
     val ipedsReport =
@@ -518,6 +559,29 @@ class CollegeScorecardLoader(
     // aliases it splits words from, and the IPEDS phases beside them — and
     // before provenance, because its row count is provenance.
     val nameWords = phase("name-words", committedPhases) { rebuildNameWords() }
+    // D46's report, and the reason it is here rather than inside the codebooks
+    // phase: it counts the codes stored in `colleges`/`college_ipeds`/
+    // `college_programs_census`, so it must read the snapshot THIS run just
+    // loaded. It writes nothing and never fails the run — an unexplained code
+    // is a finding, not a defect (`colleges.locale`'s range check stays a range
+    // check until RFC 148).
+    //
+    // "Never fails the run" is ENFORCED here, not merely intended: the report is
+    // read-only, runs outside `phase(...)`, and runs after every phase has
+    // committed, so a transient DB fault inside it would otherwise exit the
+    // ingest non-zero on a run that fully succeeded — and without the
+    // PartialIngestException that would explain it. A failed report is a WARN
+    // and a missing report, which is what a finding-not-a-defect deserves.
+    val unknownCodes =
+      codebookResult?.let {
+        runCatching { codebookLoader.reportUnknownCodes() }
+          .onFailure { error ->
+            logger.warn(
+              "Codebook coverage report failed [{}]: the ingest itself is complete and committed",
+              error.toString(),
+            )
+          }.getOrNull()
+      }
     val nonNullAfter = nonNullCounts()
     val finishedAt = Instant.now()
 
@@ -547,6 +611,8 @@ class CollegeScorecardLoader(
       buildId = buildId,
       ipeds = ipedsReport,
       cds = cdsResult,
+      codebooks = codebookResult,
+      unknownCodes = unknownCodes,
     )
   }
 

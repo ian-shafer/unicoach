@@ -1,5 +1,6 @@
 package ed.unicoach.coaching
 
+import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.coaching.admissions.CollegeAdmissionsChatTool
 import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.costs.CollegeCostChatTool
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -54,6 +56,20 @@ class SystemPromptCatalogTest {
      * failure this class exists to make loud.
      */
     private val ADMISSIONS_TOOL_NAME = CollegeAdmissionsChatTool.TOOL_NAME
+
+    /** The first words of the codebook sentence v3 deletes (RFC 147). */
+    private const val CODEBOOK_SENTENCE_OPENER = "The coded fields use these codebooks:"
+
+    /** The first words of the sentence that FOLLOWS it — the span's right edge. */
+    private const val CODEBOOK_SENTENCE_SUCCESSOR = "Do not set a result limit;"
+
+    /**
+     * The hand-transcribed-codebook pattern, from its one home in
+     * [BareSourceCodeGuard] (RFC 147): three files need it, and three hand-typed
+     * copies is how one of them arrived with doubled backslashes and could never
+     * fire. Every use here is preceded by the shared positive control.
+     */
+    private val CODE_EQUALS_WORD = BareSourceCodeGuard.CODE_EQUALS_WORD
 
     private lateinit var connection: Connection
 
@@ -430,6 +446,85 @@ class SystemPromptCatalogTest {
       v8.contains(sentence),
       "v8 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
     )
+  }
+
+  /**
+   * The 0061 seed's structural contract (RFC 147). Unlike every coach seed
+   * above, v3 of the fit-lens query prompt ADDS NOTHING: it is v2 with exactly
+   * one span deleted — the hand-written codebook sentence — so the contract is
+   * a byte-identical prefix, a byte-identical suffix, and a removed middle that
+   * is the sentence and nothing else.
+   *
+   * The deleted text is located from the v2 body at runtime by its opening
+   * words, so the migration stays the single home of both copies, and the
+   * removal is asserted to be non-empty: `removeRange` on a missing span would
+   * silently make this test compare v2 to itself.
+   */
+  @Test
+  fun `fit lens query v3 is v2 with the hand-written codebook deleted`() {
+    val v2 = SystemPromptsDao.findByNameAndVersion(session, "fit_lens_query", "v2").getOrThrow().body
+    val v3 = SystemPromptsDao.findByNameAndVersion(session, "fit_lens_query", "v3").getOrThrow().body
+
+    val start = v2.indexOf(CODEBOOK_SENTENCE_OPENER)
+    assertTrue(start >= 0, "v2 must contain the codebook sentence, or this test is vacuous")
+    val end = v2.indexOf(CODEBOOK_SENTENCE_SUCCESSOR)
+    assertTrue(end > start, "v2 must contain the sentence that follows the codebook, or the span is unbounded")
+
+    assertEquals(v2.removeRange(start, end), v3, "v3 must be v2 with the codebook sentence removed and nothing else")
+
+    // ...and what came out was the codebook itself, not some other sentence.
+    val deleted = v2.substring(start, end)
+    assertTrue(deleted.contains("1=New England"), "the deleted span must be the region codebook: [$deleted]")
+    assertTrue(deleted.contains("11/12/13 city"), "the deleted span must be the locale codebook: [$deleted]")
+    assertTrue(deleted.contains("1=public"), "the deleted span must be the control codebook: [$deleted]")
+
+    // The property the whole slice exists for: every "<digit>=<word>" pair is
+    // gone from the prompt. Positive control first -- a pattern that cannot
+    // fire would make this and the sweep below pass forever.
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertTrue(CODE_EQUALS_WORD.containsMatchIn(deleted), "the guard pattern must fire on the span it describes")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(v3), "v3 must name no code-to-word pair: [$v3]")
+    assertTrue(v3.contains("record_college_query"), "v3 must still name the tool it forces")
+  }
+
+  /**
+   * The other three seeded prompts are asserted NOT to have been re-versioned
+   * for this slice, because the reason they were not is a finding rather than
+   * an omission: the codebook prose existed in `fit_lens_query` alone. A coach
+   * or reason prompt that ever grows one should fail here and be dealt with.
+   */
+  @Test
+  fun `no seeded prompt carries a hand-written codebook except the retired fit lens versions`() {
+    val retired = setOf("fit_lens_query" to "v1", "fit_lens_query" to "v2")
+    val offenders = mutableListOf<String>()
+    var scanned = 0
+    var retiredSeen = 0
+    connection.createStatement().use { stmt ->
+      stmt.executeQuery("SELECT name, version, body FROM system_prompts").use { rs ->
+        while (rs.next()) {
+          val name = rs.getString("name")
+          val version = rs.getString("version")
+          if ((name to version) in retired) {
+            // The two rows the allow-list excuses must BE there and must still
+            // carry a codebook; an allow-list that excuses nothing real is an
+            // allow-list nobody will notice has gone stale.
+            assertTrue(
+              CODE_EQUALS_WORD.containsMatchIn(rs.getString("body")),
+              "the retired row $name/$version must still carry the codebook it is excused for",
+            )
+            retiredSeen++
+            continue
+          }
+          scanned++
+          if (CODE_EQUALS_WORD.containsMatchIn(rs.getString("body"))) offenders += "$name/$version"
+        }
+      }
+    }
+    // A sweep over zero rows is a green test that proved nothing -- the catalog
+    // is migration-seeded and insert-only, so it is never legitimately empty.
+    assertTrue(scanned > 0, "the sweep must actually scan seeded prompts")
+    assertEquals(retired.size, retiredSeen, "both retired fit-lens rows must be present in the catalog")
+    assertEquals(emptyList(), offenders, "a seeded prompt is transcribing a codebook again")
   }
 
   /**

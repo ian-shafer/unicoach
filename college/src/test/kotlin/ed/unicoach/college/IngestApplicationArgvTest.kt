@@ -186,6 +186,44 @@ class IngestApplicationArgvTest {
     assertEquals(listOf("institution", "fields", "aliases"), namedSources(ok()).map { it.first })
   }
 
+  // ---------------------------------------------------------------------------
+  // The generated codebook (RFC 147): optional, with its own provenance partner
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a run with no codebook flag has no codebook source`() {
+    assertNull(ok().codebooks, "absent must stay absent — no fabricated repo default at this layer")
+  }
+
+  @Test
+  fun `the codebook flag carries the path, and its source flag the original argument`() {
+    assertEquals("db/data/codebooks.json", ok("--codebooks=db/data/codebooks.json").codebooks?.file?.path)
+    // Without a partner, the path IS the original argument.
+    assertEquals("db/data/codebooks.json", ok("--codebooks=db/data/codebooks.json").codebooks?.sourceArg)
+    val remote = ok("--codebooks=/tmp/scratch/codebooks.json", "--codebooks-source=s3://snap/codebooks.json")
+    assertEquals("/tmp/scratch/codebooks.json", remote.codebooks?.file?.path)
+    assertEquals("s3://snap/codebooks.json", remote.codebooks?.sourceArg)
+  }
+
+  @Test
+  fun `a codebook source flag without its file is refused, never silently ignored`() {
+    val message = usage(*positional, "--codebooks-source=s3://snap/codebooks.json")
+    assertTrue(message.contains("--codebooks-source"), message)
+    assertTrue(message.contains("was not supplied"), message)
+  }
+
+  @Test
+  fun `a repeated or blank codebook flag is refused like any other`() {
+    assertTrue(usage(*positional, "--codebooks=a.json", "--codebooks=b.json").contains("more than once"))
+    assertTrue(usage(*positional, "--codebooks=").contains("non-empty"))
+  }
+
+  @Test
+  fun `the codebook joins the existence probe under its own role`() {
+    val named = namedSources(ok("--codebooks=db/data/codebooks.json"))
+    assertEquals(listOf("institution", "fields", "aliases", "codebooks"), named.map { it.first })
+  }
+
   private fun ipedsGroupWithYear(year: String): Array<String> =
     arrayOf("--hd=HD.csv", "--ic=IC.csv", "--adm=adm.csv", "--completions=CA.csv", "--survey-year=$year")
 }

@@ -1620,6 +1620,299 @@ assert_success "the committed CDS seed matches PROVENANCE.json (sha256 + row cou
   test_cds_provenance_matches_seed
 rm -rf "$CDS_FIXTURES" "$CDS_OUT"
 
+# ── RFC 147: published codebooks (bin/fetch-codebooks) ───────────────────────
+echo ""
+echo "==== Testing RFC 147 codebook generation ===="
+
+assert_success "bin/fetch-codebooks parses as python3" \
+  python3 -c "import ast; ast.parse(open('$PROJECT_ROOT/bin/fetch-codebooks').read())"
+
+# The whole transform runs offline against the recorded Stata .do fixtures (-F,
+# no network): the value-label and variable-label parses, the caret repair, the
+# sentinel policy, the slug rule and every structure the generator claims to
+# recover (D38-D43). The fixtures are verbatim SUBSETS of the published files,
+# so a parse that only works on invented text cannot pass here.
+CODEBOOK_FIXTURES="$PROJECT_ROOT/college/src/test/resources"
+# No EXIT trap here: the harness's daemon-teardown trap (top of file) must not
+# be clobbered. The dir is removed at the end of this section.
+CODEBOOK_OUT="$(mktemp -d)"
+assert_success "fetch-codebooks runs offline from the recorded .do fixtures" \
+  bin/fetch-codebooks -F "$CODEBOOK_FIXTURES" -o "$CODEBOOK_OUT" \
+    -j "$CODEBOOK_OUT/codebooks.json" > /dev/null
+
+# The generated codebook is JSON with structure per code, so these read it as
+# JSON rather than grepping a line: one helper evaluating a python expression
+# over the parsed file, with `codes(domain)` giving {code -> entry}.
+codebook_assert() {
+  python3 - "$CODEBOOK_OUT/codebooks.json" "$1" << 'PY'
+import json, sys
+codebooks = json.load(open(sys.argv[1]))
+scope = {
+    "codebooks": codebooks,
+    "codes": lambda domain: {c["code"]: c for c in codebooks[domain]["codes"]},
+}
+# Parenthesised so a readable multi-line assertion is one expression.
+if not eval(f"({sys.argv[2]})", scope):
+    sys.exit(f"codebook assertion failed: {sys.argv[2]}")
+PY
+}
+
+# D39: a published label is a record. OBEREG carries its membership, and
+# us_states is built from exactly that parse plus HD2023's own state names.
+assert_success "an OBEREG label yields its name and its state membership" \
+  codebook_assert 'codes("ipeds_region")[1]["name"] == "New England"
+                   and codes("ipeds_region")[1]["member_states"] == ["CT", "ME", "MA", "NH", "RI", "VT"]
+                   and codes("ipeds_region")[0]["member_states"] == []'
+assert_success "every jurisdiction lands in exactly one region, with its kind" \
+  codebook_assert 'codes("us_states")["MA"]["ipeds_region"] == "new-england"
+                   and codes("us_states")["DC"]["jurisdiction_kind"] == "federal-district"
+                   and codes("us_states")["PR"]["jurisdiction_kind"] == "territory"
+                   and codes("us_states")["PW"]["jurisdiction_kind"] == "freely-associated-state"
+                   and sum(1 for c in codebooks["us_states"]["codes"]
+                           if c["jurisdiction_kind"] == "state") == 50'
+assert_success "a locale label yields type and detail" \
+  codebook_assert 'codes("nces_locale")[41]["type"] == "rural"
+                   and codes("nces_locale")[41]["detail"] == "fringe"
+                   and codes("nces_locale")[41]["slug"] == "rural-fringe"
+                   and codes("nces_locale")[41]["name"] == "Rural: Fringe"'
+assert_success "a size-setting label yields years, size and residential character" \
+  codebook_assert 'codes("carnegie_2021_size_setting")[11]["years"] == 4
+                   and codes("carnegie_2021_size_setting")[11]["size"] == "small"
+                   and codes("carnegie_2021_size_setting")[11]["residential_character"] == "highly residential"
+                   and codes("carnegie_2021_size_setting")[18]["years"] is None'
+assert_success "a Carnegie basic label yields degree level and qualifier" \
+  codebook_assert 'codes("carnegie_2021_basic")[15]["degree_level"] == "Doctoral Universities"
+                   and codes("carnegie_2021_basic")[15]["qualifier"] == "Very High Research Activity"
+                   and codes("carnegie_2021_basic")[33]["qualifier"] is None'
+
+# D38: the published bytes are kept verbatim; the human string is repaired HERE,
+# where a person reviews the diff.
+assert_success "the caret apostrophe is repaired in name and kept verbatim in label_raw" \
+  codebook_assert 'codes("carnegie_2021_basic")[1]["name"] == "Associate\u0027s Colleges: High Transfer-High Traditional"
+                   and codes("carnegie_2021_basic")[1]["label_raw"] == "Associate^s Colleges: High Transfer-High Traditional"'
+
+# D40: ASSOC1..6 is six flags whose meaning lives in the VARIABLE label, and
+# college_ipeds.athletic_assoc stores the ordinal, so the ordinal is the code.
+# The publisher's double space is repaired in name only.
+assert_success "the athletic associations come from the variable labels, keyed by ordinal" \
+  codebook_assert 'codes("athletic_association")[3]["slug"] == "njcaa"
+                   and codes("athletic_association")[3]["source_variable"] == "assoc3"
+                   and "Athletic  Association" in codes("athletic_association")[3]["label_raw"]
+                   and "Athletic Association" in codes("athletic_association")[3]["name"]'
+
+# D41: -2 is a real answer and IS a row; -1/-3 are absence, declared and never
+# emitted as codes.
+assert_success "-2 is a codebook row and -1/-3 are declared, not emitted" \
+  codebook_assert 'codes("football_conference")[-2]["slug"] == "not-applicable"
+                   and -1 not in codes("football_conference")
+                   and codebooks["football_conference"]["null_sentinels"] == [-1, -3]
+                   and codebooks["cip_code"]["null_sentinels"] == []'
+
+# D43: the CIP list is the 6-digit code set. "Grand total" is an AGGREGATE the
+# publisher ships in the same label set, and it is not a CIP code.
+assert_success "CIP codes are six-digit strings and the Grand total aggregate is excluded" \
+  codebook_assert 'codes("cip_code")["010000"]["name"] == "Agriculture, General"
+                   and all(len(c) == 6 and c.isdigit() for c in codes("cip_code"))'
+
+# The slug rule is the primary key of nine of the ten domains: it must satisfy
+# the SQL domain's pattern and be unique per domain, or the load fails after the
+# review rather than during it.
+assert_success "every slug matches the slug domain pattern and is unique per domain" \
+  codebook_assert 'all(__import__("re").match(r"^[a-z0-9]+(-[a-z0-9]+)*$", c["slug"])
+                       for d in codebooks.values() for c in d["codes"] if "slug" in c)
+                   and all(len({c["slug"] for c in d["codes"] if "slug" in c})
+                           == len([c for c in d["codes"] if "slug" in c])
+                           for d in codebooks.values())'
+
+# PROVENANCE is read as JSON, not grepped: the per-domain counts are what the
+# shrink guard compares against next time, and the conference note records the
+# measured fact that CONFNO1..4 are NOT one shared vocabulary.
+codebook_provenance_assert() {
+  python3 - "$CODEBOOK_OUT/PROVENANCE.json" "$1" << 'PY'
+import json, sys
+provenance = json.load(open(sys.argv[1]))
+if not eval(f"({sys.argv[2]})", {"provenance": provenance}):
+    sys.exit(f"provenance assertion failed: {sys.argv[2]}")
+PY
+}
+assert_success "PROVENANCE records the offline route and the per-domain counts" \
+  codebook_provenance_assert 'provenance["source"] == "fixtures"
+                              and provenance["domains"]["us_states"] == 59
+                              and provenance["artifacts"]["HD2023_Stata.zip"]["member"].lower().endswith(".do")'
+assert_success "PROVENANCE records the excluded CIP aggregate and the per-sport conference sets" \
+  codebook_provenance_assert 'provenance["notes"]["cip_aggregate_rows_excluded"] == 1
+                              and provenance["notes"]["conference_label_sets"]["confno1"]
+                                  != provenance["notes"]["conference_label_sets"]["confno2"]'
+
+# A successful-looking parse is not evidence: a domain that collapsed against
+# the committed counts is a changed upstream format, and it must never overwrite
+# the reviewed codebook.
+test_codebooks_shrink_refused() {
+  local out output status
+  out="$(mktemp -d)"
+  cp "$CODEBOOK_OUT/PROVENANCE.json" "$out/"
+  python3 - "$out/PROVENANCE.json" << 'PY'
+import json, sys
+path = sys.argv[1]
+provenance = json.loads(open(path).read())
+provenance["domains"] = {name: 1000 for name in provenance["domains"]}
+open(path, "w").write(json.dumps(provenance, indent=2) + "\n")
+PY
+  output="$(bin/fetch-codebooks -F "$CODEBOOK_FIXTURES" -o "$out" -j "$out/codebooks.json" 2>&1)"
+  status=$?
+  # A non-zero exit alone would be satisfied by a typo'd path or a traceback.
+  # The guard's whole claim is that the reviewed file is NOT overwritten, so
+  # that is what is asserted: the named refusal, and no output file at all.
+  case "$output" in
+    *"[FATAL] code counts collapsed"*) ;;
+    *) rm -rf "$out"; return 1 ;;
+  esac
+  [ -e "$out/codebooks.json" ] && { rm -rf "$out"; return 1; }
+  [ "$status" -ne 0 ] || { rm -rf "$out"; return 1; }
+  rm -rf "$out"
+  return 0
+}
+assert_success "a collapsed domain count is refused, and the codebook is NOT written" \
+  test_codebooks_shrink_refused
+
+# The guard is keyed on the file it is about to overwrite, not on -o: -o and -j
+# are independent options, so a fresh -o used to disarm the guard entirely for
+# the committed -j. Here -o is an empty directory and -j is a real codebook.
+test_codebooks_shrink_refused_with_fresh_outdir() {
+  local out target output status
+  out="$(mktemp -d)"
+  target="$(mktemp -d)/codebooks.json"
+  cp "$CODEBOOK_OUT/codebooks.json" "$target"
+  python3 - "$target" << 'PY'
+import json, sys
+path = sys.argv[1]
+codebooks = json.loads(open(path).read())
+for entry in codebooks.values():
+    entry["codes"] = entry["codes"] * 40
+open(path, "w").write(json.dumps(codebooks, indent=2) + "\n")
+PY
+  output="$(bin/fetch-codebooks -F "$CODEBOOK_FIXTURES" -o "$out" -j "$target" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  case "$output" in
+    *"[FATAL] code counts collapsed"*) ;;
+    *) return 1 ;;
+  esac
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "a fresh -o does not disarm the shrink guard protecting -j" \
+  test_codebooks_shrink_refused_with_fresh_outdir
+
+# Provenance records a FETCH. An offline replay has none, so it must never
+# overwrite a manifest that recorded one -- the documented reproduction command
+# points -o at db/seed/codebooks by default.
+test_codebooks_offline_leaves_network_provenance() {
+  local before after json output
+  json="$(mktemp -d)/codebooks.json"
+  before="$(shasum -a 256 < "$PROJECT_ROOT/db/seed/codebooks/PROVENANCE.json")"
+  output="$(bin/fetch-codebooks -F "$PROJECT_ROOT/db/seed/codebooks" -j "$json" 2>&1)" || return 1
+  after="$(shasum -a 256 < "$PROJECT_ROOT/db/seed/codebooks/PROVENANCE.json")"
+  [ "$before" = "$after" ] || return 1
+  case "$output" in
+    *"[WARNING]"*"records a real fetch"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+assert_success "an offline run leaves a network PROVENANCE.json untouched, and says so" \
+  test_codebooks_offline_leaves_network_provenance
+
+# A label whose structure the generator cannot read is FATAL at generation time
+# (D39): a codebook missing the labels it could not parse is worse than none.
+test_codebooks_unreadable_label_refused() {
+  local fixtures output status
+  fixtures="$(mktemp -d)"
+  cp "$CODEBOOK_FIXTURES"/codebooks-*-fixture.do "$fixtures/"
+  echo 'label define label_c21szset 19 "Five-year, gargantuan, semi-residential", add' \
+    >> "$fixtures/codebooks-hd2023-fixture.do"
+  output="$(bin/fetch-codebooks -F "$fixtures" -o "$fixtures" -j "$fixtures/codebooks.json" 2>&1)"
+  status=$?
+  # The named refusal and no output file, not merely a non-zero exit: a missing
+  # fixture or a traceback would satisfy the exit code just as well.
+  case "$output" in
+    *"[FATAL]"*"unreadable label"*) ;;
+    *) rm -rf "$fixtures"; return 1 ;;
+  esac
+  [ -e "$fixtures/codebooks.json" ] && { rm -rf "$fixtures"; return 1; }
+  [ "$status" -ne 0 ] || { rm -rf "$fixtures"; return 1; }
+  rm -rf "$fixtures"
+  return 0
+}
+assert_success "an unparseable label is refused, and the codebook is NOT written" \
+  test_codebooks_unreadable_label_refused
+
+# D39 at generation time: the CODE is a key too (the primary key in us_states
+# and cip_code), and a duplicate used to survive into the reviewed file and fail
+# hours later at the SQL constraint.
+test_codebooks_duplicate_code_refused() {
+  local fixtures output
+  fixtures="$(mktemp -d)"
+  cp "$CODEBOOK_FIXTURES"/codebooks-*-fixture.do "$fixtures/"
+  # Two DIFFERENT labels under one code: distinct slugs, colliding key.
+  echo 'label define label_relaffil 30 "Duplicated Denomination", add' \
+    >> "$fixtures/codebooks-ic2023-fixture.do"
+  output="$(bin/fetch-codebooks -F "$fixtures" -o "$fixtures" -j "$fixtures/codebooks.json" 2>&1)"
+  rm -rf "$fixtures"
+  case "$output" in
+    *"[FATAL]"*"duplicate codes"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+assert_success "a duplicate published code is refused at generation, not at the primary key" \
+  test_codebooks_duplicate_code_refused
+
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-codebooks rejects an unknown option (10)" \
+  bin/fetch-codebooks -z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-codebooks -F without a value exits 11" \
+  bin/fetch-codebooks -F
+
+# The anti-hand-edit guard: the committed codebook must be what the committed
+# artifacts GENERATE, byte for byte, and the artifacts must be what
+# PROVENANCE.json says they are. A hand-tuned label or a half regeneration is a
+# lie the loader would happily import.
+test_codebooks_match_committed_artifacts() {
+  local out
+  out="$(mktemp -d)"
+  bin/fetch-codebooks -F "$PROJECT_ROOT/db/seed/codebooks" -o "$out" -j "$out/codebooks.json" \
+    > /dev/null 2>&1 \
+    && python3 - "$PROJECT_ROOT/db/seed/codebooks" "$PROJECT_ROOT/db/data/codebooks.json" \
+      "$out/codebooks.json" << 'PY'
+import hashlib, json, sys
+from pathlib import Path
+
+seed_dir, committed, regenerated = (Path(argument) for argument in sys.argv[1:4])
+provenance = json.loads((seed_dir / "PROVENANCE.json").read_text())
+# The committed manifest must record a real FETCH. An offline replay writes
+# fixture_derived=true with every fetched_at null, and such a file must never
+# become the committed provenance -- it would claim a download that never
+# happened for artifacts nobody verified against the publisher.
+if provenance.get("source") != "network" or provenance.get("fixture_derived"):
+    sys.exit("PROVENANCE.json is not a network fetch record")
+for name, artifact in provenance["artifacts"].items():
+    body = (seed_dir / name).read_bytes()
+    if hashlib.sha256(body).hexdigest() != artifact["sha256"]:
+        sys.exit(f"{name}: sha256 differs from PROVENANCE.json")
+    if len(body) != artifact["bytes"]:
+        sys.exit(f"{name}: {len(body)} bytes, PROVENANCE.json says {artifact['bytes']}")
+body = committed.read_bytes()
+if hashlib.sha256(body).hexdigest() != provenance["output"]["sha256"]:
+    sys.exit(f"{committed.name}: sha256 differs from PROVENANCE.json")
+if body != regenerated.read_bytes():
+    sys.exit(f"{committed.name} is not what the committed artifacts generate")
+PY
+  local status=$?
+  rm -rf "$out"
+  return $status
+}
+assert_success "the committed codebook matches the committed artifacts (regeneration is byte-identical)" \
+  test_codebooks_match_committed_artifacts
+rm -rf "$CODEBOOK_OUT"
+
 # IPEDS group (RFC 144): all-or-nothing, refused BEFORE any download or JVM
 # start, and each file's original argument forwarded as its --*-source partner.
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only --hd)" \
@@ -1712,6 +2005,94 @@ test_ingest_colleges_no_ipeds_argv() {
   return "$rc"
 }
 assert_success "a Scorecard-only ingest-colleges run passes no IPEDS argv at all" test_ingest_colleges_no_ipeds_argv
+
+# ── RFC 147: the codebook source on ingest-colleges ──────────────────────────
+# Every run loads the generated codebook, so the launcher must always receive
+# BOTH the resolved path (--codebooks) and the caller's original argument
+# (--codebooks-source) — the aliases contract, applied to a flag rather than a
+# positional. Exercised against the same fake-checkout argv-capturing stub.
+test_ingest_colleges_codebooks_default() {
+  local root parent stub argv inst fields entry rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-codebooks"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]:"
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  # The source flag carries the path the script defaulted to (under the fake
+  # checkout); the resolved --codebooks= path is realpath'd through the symlink,
+  # so it is asserted by basename only.
+  grep -qxF -- "--codebooks-source=$root/db/data/codebooks.json" "$argv" &&
+    grep -qE -- "^--codebooks=.*/codebooks\.json$" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges always passes the codebook path and its original arg to the launcher" \
+  test_ingest_colleges_codebooks_default
+
+test_ingest_colleges_codebooks_override() {
+  local root parent stub argv inst fields codebooks entry rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-codebooksoverride"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  codebooks="$parent/other-codebooks.json"
+  : > "$inst"; : > "$fields"; : > "$codebooks"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" --codebooks-source="$codebooks" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]:"
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  grep -qxF -- "--codebooks-source=$codebooks" "$argv" &&
+    ! grep -qF -- "db/data/codebooks.json" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges --codebooks-source replaces the repo default entirely" \
+  test_ingest_colleges_codebooks_override
+
+# An explicitly-empty value is a wrong value, refused rather than silently
+# replaced by the repo default — the rule the aliases argument already follows.
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty --codebooks-source" \
+  bin/ingest-colleges a.csv b.csv --codebooks-source=
+# A nonexistent codebook path fatals in resolve_file_arg, before the launcher.
+test_ingest_colleges_missing_codebooks() {
+  bin/ingest-colleges --codebooks-source="/no/such/$$-codebooks.json" bin/functions bin/functions \
+    > /dev/null 2>&1
+}
+assert_failure "ingest-colleges fatals on a nonexistent codebook path" test_ingest_colleges_missing_codebooks
 
 # ── bin/common layering (RFC 95): ENV_FILES string, both-set, empty base ───────
 echo "==== Testing bin/common dotenv layering ===="

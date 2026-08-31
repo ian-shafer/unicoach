@@ -48,7 +48,16 @@ abstract class CollegeScorecardTestBase {
       database.withConnection { session ->
         session
           .prepareStatement(
-            "TRUNCATE TABLE colleges, college_programs, college_ipeds, college_programs_census CASCADE",
+            // The RFC 147 codebook tables are truncated here too: they are
+            // reference data every suite in this hierarchy can load, and a
+            // leftover domain would make the next test's per-domain counts and
+            // unknown-code report read the previous test's rows. Order matters
+            // to nothing (CASCADE), but us_states' FK onto ipeds_regions means
+            // they must go in ONE statement, as they do.
+            "TRUNCATE TABLE colleges, college_programs, college_ipeds, college_programs_census, " +
+              "ipeds_regions, us_states, nces_locales, carnegie_2021_basic_classes, " +
+              "carnegie_2021_size_settings, religious_affiliations, athletic_associations, " +
+              "football_conferences, admission_test_policies, cip_codes, codebook_sources CASCADE",
           ).use { it.execute() }
       }
       Unit

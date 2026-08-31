@@ -11,6 +11,8 @@ import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.budget.BudgetVerdict
 import ed.unicoach.coaching.forcedToolChoice
 import ed.unicoach.coaching.readForcedTool
+import ed.unicoach.college.Codebook
+import ed.unicoach.college.CollegeQueryVocabulary
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AdvisoryLockDao
@@ -24,12 +26,12 @@ import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SystemPromptsDao
-import ed.unicoach.db.models.CipPrefix
 import ed.unicoach.db.models.Claim
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.FitLensOutcome
+import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
@@ -37,12 +39,9 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.SystemPrompt
 import ed.unicoach.db.models.latestUpdatedAt
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.intOrNull
 import org.slf4j.LoggerFactory
 
 /**
@@ -67,6 +66,13 @@ import org.slf4j.LoggerFactory
  * the read phase with a named [SkipReason], spending nothing on either call and
  * writing no run row. The parameter is undefaulted so a root cannot wire an
  * ungated pass by omission.
+ *
+ * [codebook] is the loaded published codebook (RFC 147). This pass used to carry
+ * its OWN copy of the filter vocabulary — a second `record_college_query` schema
+ * and a second parse — and that copy had drifted far enough that its codebook
+ * had to be re-stated as prose in a seeded prompt. Both halves are now
+ * [CollegeQueryVocabulary]'s, shared verbatim with `search_colleges`, so the
+ * two boundaries cannot describe the same filter differently again.
  */
 class FitLensService(
   private val database: Database,
@@ -74,7 +80,26 @@ class FitLensService(
   private val collegeSearchService: CollegeSearchService,
   private val config: FitLensConfig,
   private val budgetService: BudgetService,
+  codebook: Codebook,
 ) {
+  private val vocabulary = CollegeQueryVocabulary(codebook)
+
+  /**
+   * Call #1's tool: the SHARED [CollegeQuery] filter fields, all optional
+   * (absent = the axis is unconstrained). An instance val rather than a
+   * companion constant because the vocabulary it advertises is read from the
+   * loaded codebook, not written here. `limit` is not in the schema — the
+   * service sets it after parse. Guidance, not a hard validator (tier A) —
+   * [parseQuery] enforces.
+   */
+  private val recordCollegeQueryTool: JsonObject =
+    ToolSchema.tool(
+      name = RECORD_COLLEGE_QUERY_TOOL_NAME,
+      description =
+        "Record the structured college-dataset query distilled from the " +
+          "student's claims. Omit any axis you are unsure of.",
+      inputSchema = ToolSchema.objectSchema(*vocabulary.schemaProperties().toList().toTypedArray()),
+    )
   private val logger = LoggerFactory.getLogger(FitLensService::class.java)
 
   private companion object {
@@ -88,33 +113,6 @@ class FitLensService(
 
     const val RECORD_COLLEGE_QUERY_TOOL_NAME = "record_college_query"
     const val RECORD_FIT_REASON_TOOL_NAME = "record_fit_reason"
-
-    // Call #1: the CollegeQuery filter fields, all optional (absent = the axis is
-    // unconstrained). `limit` is not in the schema — the service sets it after
-    // parse. Guidance, not a hard validator (tier A) — parseQuery enforces.
-    private val RECORD_COLLEGE_QUERY_TOOL: JsonObject =
-      ToolSchema.tool(
-        name = RECORD_COLLEGE_QUERY_TOOL_NAME,
-        description =
-          "Record the structured college-dataset query distilled from the " +
-            "student's claims. Omit any axis you are unsure of.",
-        inputSchema =
-          ToolSchema.objectSchema(
-            // Dotted CIP notation ("26.07") is accepted and canonicalized at
-            // parse; an unreadable prefix fails the pass. See CipPrefix.
-            "cipPrefix" to ToolSchema.string(),
-            "states" to ToolSchema.arrayOf(ToolSchema.string()),
-            "region" to ToolSchema.integer(),
-            "locales" to ToolSchema.arrayOf(ToolSchema.integer()),
-            "control" to ToolSchema.arrayOf(ToolSchema.integer()),
-            "minUndergradEnrollmentHeadcount" to ToolSchema.integer(),
-            "maxUndergradEnrollmentHeadcount" to ToolSchema.integer(),
-            "minAdmissionRateShare" to ToolSchema.number(),
-            "maxAdmissionRateShare" to ToolSchema.number(),
-            "maxNetPricePerYearUsd" to ToolSchema.integer(),
-            "minCompletionRate150pct4yrShare" to ToolSchema.number(),
-          ),
-      )
 
     // Call #2: the chosen college (or none). Absent/blank collegeId = no fit.
     // Guidance, not a hard validator (tier A) — parseReason enforces.
@@ -599,7 +597,7 @@ class FitLensService(
       system = ready.queryPrompt.body,
       messages = listOf(ChatMessage.text(ChatRole.USER, buildQueryContext(ready))),
       maxTokens = config.queryMaxTokens,
-      tools = listOf(RECORD_COLLEGE_QUERY_TOOL),
+      tools = listOf(recordCollegeQueryTool),
       toolChoice = forcedToolChoice(RECORD_COLLEGE_QUERY_TOOL_NAME),
     )
 
@@ -654,7 +652,7 @@ class FitLensService(
       for (match in matches) {
         appendLine(
           "- collegeId=${match.id.asString} name=${match.name} city=${match.city} state=${match.state} " +
-            "control=${match.control} " +
+            "control=${InstitutionControl.labelFor(match.control)} " +
             "undergradEnrollmentHeadcount=${match.undergradEnrollmentHeadcount} " +
             "admissionRateShare=${match.admissionRateShare} " +
             "netPricePerYearUsd=${match.netPricePerYearUsd} " +
@@ -671,93 +669,42 @@ class FitLensService(
 
   /**
    * Reads call #1's [CollegeQuery] filter object from the forced tool's
-   * `tool_use.input` defensively. Any type-invalid field fails the pass (no
-   * partial acceptance). The model never sets `limit`; the service sets it after
-   * parse.
+   * `tool_use.input` through the SHARED [CollegeQueryVocabulary] (RFC 147 D45).
+   * Any type-invalid field, and any codebook word the loaded codebook does not
+   * carry, fails the pass — no partial acceptance, and never a silently dropped
+   * filter. The model never sets `limit`; the service sets it here.
    */
   private fun parseQuery(
     studentId: StudentId,
     root: JsonObject,
   ): QueryParse {
-    /**
-     * Reads `cipPrefix` and canonicalizes it (see [CipPrefix]).
-     *
-     * Deliberately more permissive than the other readers about TYPE and stricter
-     * about VALUE. A model asked for a CIP code writes the conventional dotted
-     * notation, and often writes it unquoted (`"cipPrefix": 26.07`), so the
-     * literal text of any scalar is accepted and canonicalized. What is not
-     * accepted is a prefix that cannot be read one way: forwarding it into
-     * `cip_code LIKE ? || '%'` would match no program and surface as an honest
-     * "no fit" rather than the defect it is, so it fails the parse like any other
-     * invalid field.
-     */
-    fun canonicalCipPrefix(): Result<String?> {
-      val el = root["cipPrefix"] ?: return Result.success(null)
-      val raw =
-        (el as? JsonPrimitive)?.contentOrNull
-          ?: return Result.failure(IllegalArgumentException("cipPrefix"))
-      val canonical =
-        CipPrefix.parseOrNull(raw)
-          ?: return Result.failure(IllegalArgumentException("cipPrefix: unreadable CIP code [$raw]"))
-      return Result.success(canonical)
-    }
-
-    // An absent key is a legitimately unconstrained axis (null). A present key
-    // that is not the expected scalar type fails the whole parse.
-    fun intField(name: String): Result<Int?> {
-      val el = root[name] ?: return Result.success(null)
-      val v = (el as? JsonPrimitive)?.intOrNull ?: return Result.failure(IllegalArgumentException(name))
-      return Result.success(v)
-    }
-
-    fun doubleField(name: String): Result<Double?> {
-      val el = root[name] ?: return Result.success(null)
-      val v = (el as? JsonPrimitive)?.doubleOrNull ?: return Result.failure(IllegalArgumentException(name))
-      return Result.success(v)
-    }
-
-    fun stringList(name: String): Result<List<String>?> {
-      val el = root[name] ?: return Result.success(null)
-      val arr = el as? JsonArray ?: return Result.failure(IllegalArgumentException(name))
-      val out =
-        arr.map { e ->
-          (e as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
-            ?: return Result.failure(IllegalArgumentException("$name[]"))
-        }
-      return Result.success(out)
-    }
-
-    fun intList(name: String): Result<List<Int>?> {
-      val el = root[name] ?: return Result.success(null)
-      val arr = el as? JsonArray ?: return Result.failure(IllegalArgumentException(name))
-      val out =
-        arr.map { e ->
-          (e as? JsonPrimitive)?.intOrNull ?: return Result.failure(IllegalArgumentException("$name[]"))
-        }
-      return Result.success(out)
-    }
-
-    return try {
-      QueryParse.Parsed(
-        CollegeQuery(
-          cipPrefix = canonicalCipPrefix().getOrThrow(),
-          states = stringList("states").getOrThrow(),
-          region = intField("region").getOrThrow(),
-          locales = intList("locales").getOrThrow(),
-          control = intList("control").getOrThrow(),
-          minUndergradEnrollmentHeadcount = intField("minUndergradEnrollmentHeadcount").getOrThrow(),
-          maxUndergradEnrollmentHeadcount = intField("maxUndergradEnrollmentHeadcount").getOrThrow(),
-          minAdmissionRateShare = doubleField("minAdmissionRateShare").getOrThrow(),
-          maxAdmissionRateShare = doubleField("maxAdmissionRateShare").getOrThrow(),
-          maxNetPricePerYearUsd = intField("maxNetPricePerYearUsd").getOrThrow(),
-          minCompletionRate150pct4yrShare = doubleField("minCompletionRate150pct4yrShare").getOrThrow(),
-          // Overwritten by the service before retrieval; a placeholder here.
-          limit = config.searchLimit,
+    // An unknown key is a REFUSAL, not a shrug — the CollegeSearchTool rule
+    // applied here, where it was missing. `vocabulary.parse` reads the keys it
+    // knows and ignores the rest, so a model still writing the RETIRED
+    // vocabulary (`locales: [11,12,13]`, the shape the v2 prompt taught) would
+    // otherwise have its locale filter silently dropped and get every college
+    // back — a narrower question answered with a wider answer, which is exactly
+    // the failure D45 exists to remove. It is also what made the "roll the
+    // prompt back to v2" note a trap rather than a rollback.
+    val unknown = root.keys - vocabulary.fieldNames
+    if (unknown.isNotEmpty()) {
+      return QueryParse.Failure(
+        FailureReason.QueryTypeInvalidField(
+          studentId,
+          "unknown field(s): [${unknown.sorted().joinToString(", ")}]",
         ),
       )
-    } catch (e: IllegalArgumentException) {
-      QueryParse.Failure(FailureReason.QueryTypeInvalidField(studentId, e.message))
     }
+
+    return vocabulary
+      .parse(root, config.searchLimit)
+      .fold(
+        onSuccess = { QueryParse.Parsed(it) },
+        // The vocabulary's message already names the field and, for a word it
+        // does not know, lists the whole vocabulary — so it is carried through
+        // verbatim rather than reduced to a bare field name.
+        onFailure = { QueryParse.Failure(FailureReason.QueryTypeInvalidField(studentId, it.message)) },
+      )
   }
 
   /**

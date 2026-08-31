@@ -1,5 +1,6 @@
 package ed.unicoach.coaching.fitlens
 
+import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.chat.ChatEvent
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.ChatRequest
@@ -41,6 +42,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.jupiter.api.AfterAll
@@ -121,12 +123,32 @@ class FitLensServiceTest {
 
   private val exhaustedBudget = exhaustedBudgetService(database)
 
+  /**
+   * The REAL committed codebook (RFC 147 D45), loaded into the test database:
+   * `record_college_query` now speaks the same published words as
+   * `search_colleges`, so the pass is tested against the same vocabulary the
+   * search tool is rather than a second copy typed here — which is the exact
+   * duplication this slice deleted.
+   */
+  private val codebook =
+    runBlocking {
+      ed.unicoach.college.CodebookFixture
+        .load(database)
+    }
+
   private fun service(
     provider: ChatProvider,
     cfg: FitLensConfig = config,
     budget: BudgetService = generousBudget,
   ): FitLensService =
-    FitLensService(database, ed.unicoach.coaching.LlmCallLog(provider, database), CollegeSearchService(database), cfg, budget)
+    FitLensService(
+      database,
+      ed.unicoach.coaching.LlmCallLog(provider, database),
+      CollegeSearchService(database),
+      cfg,
+      budget,
+      codebook,
+    )
 
   // ---------------------------------------------------------------------------
   // Fakes
@@ -684,6 +706,103 @@ class FitLensServiceTest {
       )
       assertEquals("record_fit_reason", reasonReq.toolChoice!!["name"]?.jsonPrimitive?.content)
       assertEquals("tool", reasonReq.toolChoice!!["type"]?.jsonPrimitive?.content)
+    }
+
+  @Test
+  fun `the query tool advertises the shared filter vocabulary, in words`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      val college = createCollege(name = "Vocabulary U")
+      val provider =
+        ScriptedProvider(
+          terminals = listOf(completed("""{"states":["CA"]}"""), completed(reasonDoc(college), toolName = "record_fit_reason")),
+        )
+      service(provider).discover(student)
+
+      val properties =
+        provider.requests[0]
+          .tools
+          .single()["input_schema"]!!
+          .jsonObject["properties"]!!
+          .jsonObject
+
+      // The SAME fields the search tool offers, from the one shared home -- so
+      // the drift this slice deleted cannot come back by editing one of them.
+      assertEquals(ed.unicoach.college.CollegeQueryVocabulary.FIELD_NAMES, properties.keys)
+      assertEquals(
+        codebook.regionSlugs,
+        (properties["region"]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content },
+      )
+      assertTrue(properties["region"]!!.jsonObject.containsKey("description"), "each field describes itself; the prompt no longer does")
+      // The prompt used to carry this codebook as prose. Nothing here is a code.
+      // Positive control FIRST: this assertion is only worth anything if the
+      // pattern can fire at all. The copy that used to live here was written
+      // with doubled backslashes in a raw string and could never match, which
+      // is why the pattern is now shared from BareSourceCodeGuard.
+      assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+      assertNull(
+        BareSourceCodeGuard.CODE_EQUALS_WORD.find(properties.toString()),
+        "the schema must name no code-to-word pair",
+      )
+    }
+
+  @Test
+  fun `a region word is resolved to its code, and an unknown word fails the pass`() =
+    runBlocking {
+      // createCollege() seeds region 8 / locale 13 -- far-west, city: small.
+      val student = createStudent()
+      createClaims(student, 3)
+      val college = createCollege(name = "Far West Fit U")
+      val provider =
+        ScriptedProvider(
+          terminals =
+            listOf(
+              completed("""{"region":"far-west","locale_type":"city"}"""),
+              completed(reasonDoc(college), toolName = "record_fit_reason"),
+            ),
+        )
+      assertTrue(service(provider).discover(student) is FitLensResult.Applied, "a worded query must retrieve the seeded college")
+
+      // ...and a word the codebook does not carry fails the pass rather than
+      // being dropped, which would have searched with no region filter at all.
+      val unknownStudent = createStudent()
+      createClaims(unknownStudent, 3)
+      createCollege(name = "Unreachable U")
+      val unknown = service(scripted("""{"region":"new-englund"}""")).discover(unknownStudent)
+      assertTrue(unknown is FitLensResult.Failed, "Expected Failed, got: $unknown")
+      assertEquals(
+        FitLensFailureCategory.MALFORMED_OUTPUT,
+        (latestRun(unknownStudent).outcome as FitLensOutcome.Failed).category,
+      )
+      assertTrue(
+        unknown.reason.toDisplay().contains("new-englund"),
+        "the failure carries the offending word, got: ${unknown.reason.toDisplay()}",
+      )
+    }
+
+  @Test
+  fun `an unknown field fails the pass rather than being ignored`() =
+    runBlocking {
+      // The trap the v2 prompt would have set: it teaches `locales: [11,12,13]`,
+      // a field name the shared vocabulary no longer has. Ignoring it would run
+      // the search with NO locale filter and hand back the whole corpus — a
+      // narrower question answered with a wider answer, silently.
+      val student = createStudent()
+      createClaims(student, 3)
+      createCollege(name = "Retired Vocabulary U")
+
+      val result = service(scripted("""{"states":["CA"],"locales":[11,12,13]}""")).discover(student)
+
+      assertTrue(result is FitLensResult.Failed, "Expected Failed, got: $result")
+      assertEquals(
+        FitLensFailureCategory.MALFORMED_OUTPUT,
+        (latestRun(student).outcome as FitLensOutcome.Failed).category,
+      )
+      assertTrue(
+        result.reason.toDisplay().contains("locales"),
+        "the failure names the field it refused, got: ${result.reason.toDisplay()}",
+      )
     }
 
   @Test

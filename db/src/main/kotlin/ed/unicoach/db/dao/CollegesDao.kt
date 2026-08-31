@@ -137,6 +137,7 @@ object CollegesDao :
       city = rs.getString("city"),
       state = rs.getString("state"),
       control = rs.getInt("control"),
+      region = rs.intOrNull("region"),
       locale = rs.intOrNull("locale"),
       undergradEnrollmentHeadcount = rs.intOrNull("undergrad_enrollment_headcount"),
       admissionRateShare = rs.doubleOrNull("admission_rate_share"),
@@ -498,7 +499,7 @@ object CollegesDao :
     val sql =
       """
       SELECT
-        c.id, c.ipeds_unit_id, c.name, c.city, c.state, c.control, c.locale,
+        c.id, c.ipeds_unit_id, c.name, c.city, c.state, c.control, c.region, c.locale,
         c.undergrad_enrollment_headcount, c.admission_rate_share, c.net_price_per_year_usd, c.net_price_per_year_income_q1_usd,
         c.net_price_per_year_income_q2_usd, c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd, c.net_price_per_year_income_q5_usd,
         c.completion_rate_150pct_4yr_share, c.median_earnings_10y_after_entry_usd, c.median_debt_at_completion_usd, c.pell_share, c.website,

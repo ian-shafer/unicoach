@@ -103,6 +103,9 @@ class FitLensHandlerTest {
       CollegeSearchService(database),
       config,
       generousBudget,
+      // Payload/result mapping, not the filter vocabulary: this handler never
+      // reaches a region or locale word.
+      ed.unicoach.college.Codebook.EMPTY,
     )
 
   private var ipedsUnitIdCounter = 500000

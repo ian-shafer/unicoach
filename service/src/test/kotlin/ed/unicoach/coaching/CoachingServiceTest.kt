@@ -1889,7 +1889,13 @@ class CoachingServiceTest {
       val student = createStudent()
       // The real adapter over the real search tool/service (empty DB -> count 0,
       // a valid domain outcome — the wiring, not the data, is under test).
-      val realTool = CollegeChatTool(ed.unicoach.college.CollegeSearchTool(ed.unicoach.college.CollegeSearchService(database)))
+      val realTool =
+        CollegeChatTool(
+          ed.unicoach.college.CollegeSearchTool(
+            ed.unicoach.college.CollegeSearchService(database),
+            ed.unicoach.college.Codebook.EMPTY,
+          ),
+        )
       var continuation: ChatRequest? = null
       val provider =
         SequencedProvider(

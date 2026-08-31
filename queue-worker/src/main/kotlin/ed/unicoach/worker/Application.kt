@@ -21,6 +21,7 @@ import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.coaching.synthesis.SynthesisHandler
 import ed.unicoach.coaching.synthesis.SynthesisService
 import ed.unicoach.coaching.synthesis.SynthesisSweepHandler
+import ed.unicoach.college.Codebook
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
@@ -159,7 +160,11 @@ fun main() {
               add(SynthesisSweepHandler(database, QueueService(database, jobsDao)))
             }
             if (fitLensConfig.enabled) {
-              val fitLensService = FitLensService(database, llmCallLog, CollegeSearchService(database), fitLensConfig, budgetService)
+              // The published codebook, read once at wiring time (RFC 147): the
+              // fit lens's query tool advertises the region words it carries.
+              val codebook = runBlocking { Codebook.loadOrEmpty(database) }
+              val fitLensService =
+                FitLensService(database, llmCallLog, CollegeSearchService(database), fitLensConfig, budgetService, codebook)
               add(FitLensHandler(fitLensService))
               // The weekly dispatcher (RFC 98), gated by the same switch as the
               // per-student handler so the FIT_LENS_SWEEP producer and the FIT_LENS

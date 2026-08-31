@@ -19,6 +19,7 @@ private val CDS_FLAGS = listOf(CDS_MERIT_FLAG, CDS_FACTORS_FLAG, CDS_DEADLINES_F
 private const val USAGE =
   "Usage: ingest-colleges <institution.csv> <fields.csv> <aliases.json> " +
     "[--institution-source=ARG] [--fields-source=ARG] [--aliases-source=ARG] " +
+    "[--codebooks=codebooks.json] [--codebooks-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
     "$CDS_DEADLINES_FLAG <deadlines.csv>] " +
     "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --survey-year=YYYY] " +
@@ -26,6 +27,16 @@ private const val USAGE =
 
 /** The recognized `--<name>=<value>` provenance flags, keyed by positional index. */
 private val SOURCE_FLAGS = listOf("institution-source", "fields-source", "aliases-source")
+
+/**
+ * The generated published codebook (RFC 147). Optional and OPTION-shaped rather
+ * than a fourth positional: `bin/ingest-colleges` always supplies it (defaulting
+ * to the repo copy, exactly as it defaults the aliases path), so the flag exists
+ * for the direct JVM invocation and for a caller loading a codebook from
+ * somewhere else. Omitted, the run has no `codebooks` phase at all — the
+ * omit-vs-zero rule the IPEDS and CDS groups already follow.
+ */
+private const val CODEBOOKS_FLAG = "codebooks"
 
 /**
  * The three CDS admissions seed files (RFC 140), passed as NAMED flags rather
@@ -76,7 +87,9 @@ private const val SURVEY_YEAR_FLAG = "survey-year"
  */
 private val SURVEY_YEAR_RANGE = IpedsLoader.YEAR_RANGE
 
-private val KNOWN_FLAGS = SOURCE_FLAGS + IPEDS_FILE_FLAGS + IPEDS_SOURCE_FLAGS + SURVEY_YEAR_FLAG
+private val KNOWN_FLAGS =
+  SOURCE_FLAGS + IPEDS_FILE_FLAGS + IPEDS_SOURCE_FLAGS + SURVEY_YEAR_FLAG +
+    CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source"
 
 /**
  * The argv grammar's outcome (RFC 139, extended for the CDS group in RFC 140
@@ -95,6 +108,8 @@ internal sealed interface ArgvResult {
     val sources: List<SourceFile>,
     val cds: CdsArgs? = null,
     val ipeds: IpedsSources? = null,
+    /** The generated codebook (RFC 147), null when `--codebooks` was omitted. */
+    val codebooks: SourceFile? = null,
   ) : ArgvResult
 
   /** A grammar violation: [message] is logged and the process exits 2. */
@@ -174,6 +189,15 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       is IpedsGroup.Absent -> null
       is IpedsGroup.Present -> group.sources
     }
+  // A dangling `--codebooks-source` names the provenance of a file that was
+  // never supplied — the same refusal the IPEDS `--*-source` flags get, and for
+  // the same reason: it would otherwise be silently ignored.
+  val codebooksSourceFlag = "$CODEBOOKS_FLAG-source"
+  if (codebooksSourceFlag in flags && CODEBOOKS_FLAG !in flags) {
+    return ArgvResult.Usage(
+      "Option [--$codebooksSourceFlag] names a provenance source for a codebook that was not supplied. $USAGE",
+    )
+  }
   return ArgvResult.Ok(
     sources =
       positional.mapIndexed { i, path ->
@@ -189,6 +213,11 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
         )
       },
     ipeds = ipeds,
+    codebooks =
+      flags[CODEBOOKS_FLAG]?.let { path ->
+        val file = File(path)
+        SourceFile(file = file, sourceArg = flags[codebooksSourceFlag] ?: file.path)
+      },
   )
 }
 
@@ -270,7 +299,8 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   // would have been dropped from the existence check with nothing failing --
   // the same silent-drop this commit removed from `logCdsRun`.
   val cds = parsed.cds?.sources?.namedFiles ?: emptyList()
-  return scorecard + ipeds + cds
+  val codebooks = parsed.codebooks?.let { listOf(CODEBOOKS_FLAG to it) } ?: emptyList()
+  return scorecard + ipeds + cds + codebooks
 }
 
 /** The filesystem probe, kept out of [parseArgv]: it exits the process, so it
@@ -360,6 +390,7 @@ fun main(args: Array<String>) {
           aliasesFile = aliases,
           ipeds = parsed.ipeds,
           cds = parsed.cds?.sources,
+          codebooks = parsed.codebooks,
         )
       }
     println(report.humanSummary())
@@ -391,6 +422,32 @@ fun main(args: Array<String>) {
     // the PartialIngestException below. So this abort can state the write
     // state, exactly as its siblings do.
     logger.error("Ingest aborted before any write: CDS seed defect [{}]", e.defect, e)
+    kotlin.system.exitProcess(1)
+  } catch (e: CodebookLoader.InvalidCodebookFileException) {
+    logger.error(
+      "Ingest aborted before any write: generated codebook [{}] is invalid: [{}]",
+      e.fileName,
+      e.detail,
+      e,
+    )
+    kotlin.system.exitProcess(1)
+  } catch (e: CodebookLoader.SentinelAsCodeException) {
+    logger.error(
+      "Ingest aborted: codebook domain [{}] publishes its own null sentinel(s) {} as codes",
+      e.domain,
+      e.sentinels,
+      e,
+    )
+    kotlin.system.exitProcess(1)
+  } catch (e: CodebookLoader.ReferencedCodebookRowException) {
+    logger.error(
+      "Ingest aborted: codebook domain [{}] dropped row [{}] (code [{}]) that is still referenced by {}",
+      e.domain,
+      e.key,
+      e.code,
+      e.references,
+      e,
+    )
     kotlin.system.exitProcess(1)
   } catch (e: CollegeScorecardLoader.InvalidAliasFileException) {
     logger.error(

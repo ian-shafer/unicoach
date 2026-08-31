@@ -1,0 +1,67 @@
+{
+  "fetched_at": "2026-08-30T22:43:53+00:00",
+  "source": "network",
+  "artifacts": {
+    "HD2023_Stata.zip": {
+      "url": "https://nces.ed.gov/ipeds/datacenter/data/HD2023_Stata.zip",
+      "fetched_at": "2026-08-30T22:43:48+00:00",
+      "bytes": 43089,
+      "sha256": "5a1723d4d5e6ccf4ff5fb71a2720839a9b29886b7c90f8d83563aaa449de864f",
+      "member": "HD2023.do",
+      "label_lines": 4031,
+      "variable_labels": 73
+    },
+    "IC2023_Stata.zip": {
+      "url": "https://nces.ed.gov/ipeds/datacenter/data/IC2023_Stata.zip",
+      "fetched_at": "2026-08-30T22:43:48+00:00",
+      "bytes": 10453,
+      "sha256": "b2afad24aa3e4cafa11a68fa5ae83790af15bc87f6eb178a04afb901cc726079",
+      "member": "IC2023.do",
+      "label_lines": 983,
+      "variable_labels": 138
+    },
+    "ADM2023_Stata.zip": {
+      "url": "https://nces.ed.gov/ipeds/datacenter/data/ADM2023_Stata.zip",
+      "fetched_at": "2026-08-30T22:43:48+00:00",
+      "bytes": 2563,
+      "sha256": "cd88958f33a59f30f2be4ecc8c3294c3e7f5411ee205852da0297bff29cf3a35",
+      "member": "adm2023.do",
+      "label_lines": 35,
+      "variable_labels": 101
+    },
+    "C2023_A_Stata.zip": {
+      "url": "https://nces.ed.gov/ipeds/datacenter/data/C2023_A_Stata.zip",
+      "fetched_at": "2026-08-30T22:43:48+00:00",
+      "bytes": 28827,
+      "sha256": "14373bbf7f7fdacbc639449b02b374b379811fbfe1caff33f6ddc94d13df8d6a",
+      "member": "C2023_a.do",
+      "label_lines": 1730,
+      "variable_labels": 64
+    }
+  },
+  "domains": {
+    "ipeds_region": 10,
+    "us_states": 59,
+    "nces_locale": 12,
+    "carnegie_2021_basic": 34,
+    "carnegie_2021_size_setting": 19,
+    "religious_affiliation": 63,
+    "athletic_association": 6,
+    "football_conference": 99,
+    "admission_test_policy": 3,
+    "cip_code": 1710
+  },
+  "notes": {
+    "conference_label_sets": {
+      "confno1": 100,
+      "confno2": 133,
+      "confno3": 131,
+      "confno4": 130
+    },
+    "cip_aggregate_rows_excluded": 1
+  },
+  "output": {
+    "path": "db/data/codebooks.json",
+    "sha256": "1fc515a3f9ada25be67edc0458a8df4f0d6d29ca21f27faa4d60d538ab1ab3ef"
+  }
+}

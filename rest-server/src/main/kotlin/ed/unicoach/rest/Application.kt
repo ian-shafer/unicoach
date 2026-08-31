@@ -306,10 +306,17 @@ fun Application.appModule(
   // One CollegeSearchService serves both the chat tool and the REST search
   // endpoint (RFC 137), so the two doors answer from the same clamp and SQL.
   val collegeSearchService = CollegeSearchService(database)
+  // The published codebook, read once at wiring time (RFC 147): the search tool
+  // advertises its region words and renders results in the same vocabulary.
+  val codebook =
+    kotlinx.coroutines.runBlocking {
+      ed.unicoach.college.Codebook
+        .loadOrEmpty(database)
+    }
   val toolRegistry =
     ToolRegistry(
       listOf(
-        CollegeChatTool(CollegeSearchTool(collegeSearchService)),
+        CollegeChatTool(CollegeSearchTool(collegeSearchService, codebook)),
         ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
         ed.unicoach.coaching.costs
           .CollegeCostChatTool(

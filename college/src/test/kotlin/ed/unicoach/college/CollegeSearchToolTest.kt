@@ -59,7 +59,15 @@ class CollegeSearchToolTest {
       Unit
     }
 
-  private val tool = CollegeSearchTool(CollegeSearchService(database))
+  /**
+   * The REAL committed codebook, loaded into the test database once (RFC 147
+   * D45): the region and locale words this tool accepts and renders are the
+   * published ones, not a pair invented here, so a word that only works in the
+   * test cannot exist.
+   */
+  private val codebook = runBlocking { CodebookFixture.load(database) }
+
+  private val tool = CollegeSearchTool(CollegeSearchService(database), codebook)
 
   private fun newCollege(ipedsUnitId: Int) =
     NewCollege(
@@ -125,7 +133,8 @@ class CollegeSearchToolTest {
         "cipPrefix",
         "states",
         "region",
-        "locales",
+        "locale_type",
+        "locale_detail",
         "control",
         "minUndergradEnrollmentHeadcount",
         "maxUndergradEnrollmentHeadcount",
@@ -291,23 +300,24 @@ class CollegeSearchToolTest {
   @Test
   fun `execute rejects out-of-domain filter values with a structured error`() =
     runBlocking {
-      // control: every element must be in {1, 2, 3}
-      val badControl = tool.execute(buildJsonObject { put("control", buildJsonArray { add(JsonPrimitive(4)) }) })
+      // control: every element must be a control word, never a code (RFC 147).
+      val badControl = tool.execute(buildJsonObject { put("control", buildJsonArray { add(JsonPrimitive("state-run")) }) })
       assertTrue(badControl.containsKey("error"))
       assertNull(badControl["count"])
 
-      // region: must be in 0..9
-      val badRegion = tool.execute(buildJsonObject { put("region", 10) })
+      // ...and the CODE the column stores is no longer an accepted input: a
+      // model that remembers the old contract is corrected, not obeyed.
+      val codedControl = tool.execute(buildJsonObject { put("control", buildJsonArray { add(JsonPrimitive(1)) }) })
+      assertTrue(codedControl.containsKey("error"))
+      assertNull(codedControl["count"])
+
+      // region: must be a published region word.
+      val badRegion = tool.execute(buildJsonObject { put("region", "narnia") })
       assertTrue(badRegion.containsKey("error"))
       assertNull(badRegion["count"])
-
-      // locales: every element must be in 11..43
-      val badLocaleLow = tool.execute(buildJsonObject { put("locales", buildJsonArray { add(JsonPrimitive(10)) }) })
-      assertTrue(badLocaleLow.containsKey("error"))
-      assertNull(badLocaleLow["count"])
-      val badLocaleHigh = tool.execute(buildJsonObject { put("locales", buildJsonArray { add(JsonPrimitive(44)) }) })
-      assertTrue(badLocaleHigh.containsKey("error"))
-      assertNull(badLocaleHigh["count"])
+      val codedRegion = tool.execute(buildJsonObject { put("region", 1) })
+      assertTrue(codedRegion.containsKey("error"))
+      assertNull(codedRegion["count"])
 
       // minAdmissionRateShare / maxAdmissionRateShare / minCompletionRate150pct4yrShare: must be in 0.0..1.0
       val badMinAdmission = tool.execute(buildJsonObject { put("minAdmissionRateShare", 1.5) })
@@ -677,6 +687,227 @@ class CollegeSearchToolTest {
       assertEquals(2, result["count"]!!.jsonPrimitive.intOrNull)
       assertEquals(5, result["total_matches"]!!.jsonPrimitive.intOrNull)
       assertEquals(2, (result["colleges"] as JsonArray).size)
+    }
+
+  // ---------------------------------------------------------------------------
+  // The published vocabulary, in and out (RFC 147 D45)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the region enum offered is the loaded codebook's own word list`() {
+    val region =
+      tool.definition["input_schema"]!!
+        .jsonObject["properties"]!!
+        .jsonObject["region"]!!
+        .jsonObject
+
+    assertEquals("string", region["type"]!!.jsonPrimitive.content)
+    // Read from the loaded table, not retyped: the assertion is that the schema
+    // and the reference table are THE SAME LIST, which a literal could not say.
+    assertEquals(
+      codebook.regionSlugs,
+      (region["enum"] as JsonArray).map { it.jsonPrimitive.content },
+    )
+    assertTrue(codebook.regionSlugs.contains("new-england"), "the published codebook must carry the region words")
+    // Not a single bare code anywhere in what the model reads about the field,
+    // proved with the shared pattern's own positive control first.
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertNull(
+      BareSourceCodeGuard.CODE_EQUALS_WORD.find(region.toString()),
+      "the region property must name no code: $region",
+    )
+
+    val localeType =
+      tool.definition["input_schema"]!!
+        .jsonObject["properties"]!!
+        .jsonObject["locale_type"]!!
+        .jsonObject
+    assertEquals(
+      NcesLocaleType.WORDS,
+      (localeType["enum"] as JsonArray).map { it.jsonPrimitive.content },
+    )
+  }
+
+  @Test
+  fun `a region word filters on the code it names`() =
+    runBlocking {
+      // newCollege() is region 8 (far-west) / locale 13 (city: small).
+      seedNamed(840, "Far West College")
+
+      val hit = tool.execute(buildJsonObject { put("region", "far-west") })
+      assertNull(hit["error"])
+      assertEquals(1, hit["count"]!!.jsonPrimitive.intOrNull)
+
+      val miss = tool.execute(buildJsonObject { put("region", "new-england") })
+      assertNull(miss["error"])
+      assertEquals(0, miss["count"]!!.jsonPrimitive.intOrNull)
+    }
+
+  @Test
+  fun `a locale type matches every published size and locale detail narrows it`() =
+    runBlocking {
+      seedNamed(841, "City Small College") // locale 13 = city: small
+      database.withConnection { session ->
+        CollegesDao.upsert(session, newCollege(842).copy(name = "Rural Remote College", locale = 43)).getOrThrow()
+      }
+
+      // The type alone is the OR-set over its published sizes -- one word where
+      // the old contract took [11, 12, 13].
+      val city = tool.execute(buildJsonObject { put("locale_type", "city") })
+      assertEquals(1, city["count"]!!.jsonPrimitive.intOrNull)
+      val rural = tool.execute(buildJsonObject { put("locale_type", "rural") })
+      assertEquals(1, rural["count"]!!.jsonPrimitive.intOrNull)
+
+      val citySmall =
+        tool.execute(
+          buildJsonObject {
+            put("locale_type", "city")
+            put("locale_detail", "small")
+          },
+        )
+      assertEquals(1, citySmall["count"]!!.jsonPrimitive.intOrNull)
+      val cityLarge =
+        tool.execute(
+          buildJsonObject {
+            put("locale_type", "city")
+            put("locale_detail", "large")
+          },
+        )
+      assertNull(cityLarge["error"])
+      assertEquals(0, cityLarge["count"]!!.jsonPrimitive.intOrNull, "a real pairing with no rows is an empty result, not an error")
+    }
+
+  @Test
+  fun `an unknown word is a listed error, never a silent no-op`() =
+    runBlocking {
+      seedNamed(843, "Listed Error College")
+
+      // The failure mode this replaces: an unresolvable filter that is dropped
+      // returns EVERY college, answering a narrower question with a wider answer.
+      val region = tool.execute(buildJsonObject { put("region", "new-englund") })
+      val regionError = region["error"]!!.jsonPrimitive.content
+      assertNull(region["count"], "an unknown word must not fall through to a search")
+      assertTrue(regionError.contains("new-englund"), "the error echoes the offending word: $regionError")
+      codebook.regionSlugs.forEach {
+        assertTrue(regionError.contains(it), "the error lists the whole vocabulary; [$it] is missing: $regionError")
+      }
+
+      val localeType = tool.execute(buildJsonObject { put("locale_type", "metropolis") })
+      val typeError = localeType["error"]!!.jsonPrimitive.content
+      assertNull(localeType["count"])
+      NcesLocaleType.WORDS.forEach { assertTrue(typeError.contains(it), "locale_type error must list [$it]: $typeError") }
+
+      // A pairing the publisher does not define is an error too -- "city: fringe"
+      // is not a locale, and matching zero colleges would read as "none exist".
+      val impossible =
+        tool.execute(
+          buildJsonObject {
+            put("locale_type", "city")
+            put("locale_detail", "fringe")
+          },
+        )
+      val pairError = impossible["error"]!!.jsonPrimitive.content
+      assertNull(impossible["count"])
+      assertTrue(pairError.contains("large"), "the error lists what the type DOES publish: $pairError")
+
+      // ...and a detail with no type is refused rather than quietly ignored.
+      val orphan = tool.execute(buildJsonObject { put("locale_detail", "large") })
+      assertTrue(orphan.containsKey("error"))
+      assertNull(orphan["count"])
+    }
+
+  @Test
+  fun `search results name the region and locale in words`() =
+    runBlocking {
+      seedNamed(844, "Worded College")
+
+      val first = ((tool.execute(buildJsonObject {}))["colleges"] as JsonArray).single().jsonObject
+      assertEquals("far-west", first["region"]!!.jsonPrimitive.content, "the same word the region filter takes")
+      assertEquals("city", first["locale_type"]!!.jsonPrimitive.content)
+      assertEquals("small", first["locale_detail"]!!.jsonPrimitive.content)
+      assertNull(first["region"]!!.jsonPrimitive.intOrNull, "never the bare OBEREG code")
+      assertNull(first["locale_type"]!!.jsonPrimitive.intOrNull, "never the bare LOCALE code")
+
+      // The round trip: what the result says is what the filter accepts.
+      val echoed =
+        tool.execute(
+          buildJsonObject {
+            put("region", first["region"]!!.jsonPrimitive.content)
+            put("locale_type", first["locale_type"]!!.jsonPrimitive.content)
+            put("locale_detail", first["locale_detail"]!!.jsonPrimitive.content)
+          },
+        )
+      assertNull(echoed["error"])
+      assertEquals(1, echoed["count"]!!.jsonPrimitive.intOrNull)
+    }
+
+  @Test
+  fun `a control word filters on the code the column stores`() =
+    runBlocking {
+      database.withConnection { session ->
+        CollegesDao.upsert(session, newCollege(845).copy(control = 2)).getOrThrow()
+      }
+
+      val hit = tool.execute(buildJsonObject { put("control", buildJsonArray { add(JsonPrimitive("private_nonprofit")) }) })
+      assertEquals(1, hit["count"]!!.jsonPrimitive.intOrNull)
+      val miss = tool.execute(buildJsonObject { put("control", buildJsonArray { add(JsonPrimitive("public")) }) })
+      assertEquals(0, miss["count"]!!.jsonPrimitive.intOrNull)
+    }
+
+  @Test
+  fun `a stored code with no codebook row is named unknown, never a bare number`() =
+    runBlocking {
+      // colleges.locale's CHECK still admits 11..43, which is wider than the 12
+      // codes IPEDS publishes (D46). A code inside the range and outside the
+      // codebook must still leave as a word.
+      database.withConnection { session ->
+        CollegesDao.upsert(session, newCollege(846).copy(locale = 14)).getOrThrow()
+      }
+
+      val first = ((tool.execute(buildJsonObject {}))["colleges"] as JsonArray).single().jsonObject
+      val localeType = first["locale_type"]!!.jsonPrimitive
+      assertNull(localeType.intOrNull, "an unmapped code must not fall back to the raw number")
+      assertTrue(localeType.content.startsWith("unknown"), "it is named as unknown: ${localeType.content}")
+      assertEquals(emptyList(), listViolations(first), "and it still trips no source-code guard")
+    }
+
+  @Test
+  fun `an empty codebook advertises nothing and refuses every word, both halves alike`() =
+    runBlocking {
+      // The state of every database before the `codebooks` ingest phase runs.
+      // The rule is ONE rule: advertise what is LOADED. `region` already did;
+      // `locale_type`/`locale_detail` used to advertise their Kotlin enums and
+      // then refuse every word of them.
+      val bare = CollegeSearchTool(CollegeSearchService(database), Codebook.EMPTY)
+      val properties =
+        bare.definition["input_schema"]!!
+          .jsonObject["properties"]!!
+          .jsonObject
+
+      for (field in listOf("region", "locale_type", "locale_detail")) {
+        val property = properties[field]!!.jsonObject
+        assertNull(property["enum"], "[$field] must advertise no words when none are loaded")
+        assertTrue(
+          property["description"]!!.jsonPrimitive.content.contains("none are loaded"),
+          "[$field] must say so: ${property["description"]}",
+        )
+      }
+
+      seedNamed(850, "Unvocabularied College")
+      // And every word is a clean, explained refusal — never a dropped filter
+      // that would answer with the whole corpus.
+      for (
+      input in
+      listOf(
+        buildJsonObject { put("region", "far-west") },
+        buildJsonObject { put("locale_type", "city") },
+      )
+      ) {
+        val result = bare.execute(input)
+        val error = result["error"]!!.jsonPrimitive.content
+        assertNull(result["count"], "an unresolvable word must not fall through to a search")
+        assertTrue(error.contains(Codebook.UNAVAILABLE), "the refusal must say why: $error")
+      }
     }
 
   private fun seedNamed(

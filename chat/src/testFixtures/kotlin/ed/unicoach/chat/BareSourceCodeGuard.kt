@@ -37,6 +37,31 @@ object BareSourceCodeGuard {
   const val NPT4: String = "NPT4"
 
   /**
+   * A hand-transcribed codebook as it looks in PROSE: a source code glued to the
+   * word it means -- `1=New England`, `2=private nonprofit`. RFC 147 deleted the
+   * last one of these from a seeded prompt and moved the vocabulary into the
+   * tool schema, where it is read from the loaded reference tables; this is the
+   * pattern that says it has not come back.
+   *
+   * It lives HERE, beside [QUINTILE_CODE], because three test files need it and
+   * three hand-typed copies is exactly how the defect arrived: one of them was
+   * written `Regex("""\\d\\s*=\\s*[A-Za-z]""")`, which in a Kotlin raw string is a
+   * LITERAL backslash-d and can never match. A guard that cannot fire reads as
+   * covered, so it is worse than no guard at all.
+   *
+   * Deliberately narrow: `<digit>=<letter>` and nothing else. It does NOT catch a
+   * bare list of codes ("11/12/13 city"); the callers that care about a specific
+   * list assert that list directly.
+   */
+  val CODE_EQUALS_WORD: Regex = Regex("""\d\s*=\s*[A-Za-z]""")
+
+  /**
+   * A self-check on [CODE_EQUALS_WORD], callable so every consumer gets the
+   * positive control for free rather than remembering to write one.
+   */
+  fun codeToWordPatternFires(): Boolean = CODE_EQUALS_WORD.containsMatchIn("region (1=New England)")
+
+  /**
    * Every way [payload] carries a bare source code, in the general form RFC 143
    * put in place of RFC 142's string-specific grep: a `qN` bucket token, the
    * `NPT4` column family, or any field carrying a bare number that is not a

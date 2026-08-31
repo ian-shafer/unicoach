@@ -21,7 +21,7 @@ class FitLensConfigTest {
     assertEquals(200, fitLens.maxClaims)
     assertEquals(3, fitLens.maxConsecutiveFailures)
     assertEquals("fit_lens_query", fitLens.queryPromptName)
-    assertEquals("v2", fitLens.queryPromptVersion)
+    assertEquals("v3", fitLens.queryPromptVersion)
     assertEquals("fit_lens_reason", fitLens.reasonPromptName)
     assertEquals("v2", fitLens.reasonPromptVersion)
   }

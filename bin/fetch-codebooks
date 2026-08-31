@@ -1,0 +1,944 @@
+#!/usr/bin/env python3
+"""fetch-codebooks: build the published-codebook reference data from IPEDS.
+
+RFC 147. Downloads the four IPEDS 2023 Stata syntax archives, keeps them as
+committed artifacts under db/seed/codebooks/, parses their value-label and
+variable-label blocks, and writes the reviewable, diffable codebook:
+
+    db/seed/codebooks/*.zip            the artifacts, exactly as published
+    db/seed/codebooks/PROVENANCE.json  url, fetched_at, bytes, sha256 per
+                                       artifact, plus per-domain code counts
+    db/data/codebooks.json             the generated codebook (committed)
+
+ALL interpretation lives here (the Kotlin loader is a dumb typed reader): the
+domain -> source-variable mapping, the slug rule and its override map, the caret
+repair (D38), the sentinel policy (D41) and the label parses (D39). A label this
+script cannot parse is FATAL, never guessed -- a published vocabulary that
+changed shape is a review, not a silent partial codebook.
+
+Stdlib-only (dev-shell python3), no dependencies. Usage:
+
+    fetch-codebooks [-o <outdir>] [-j <json-path>] [-F <fixtures-dir>]
+
+    -o DIR    artifact + PROVENANCE.json directory
+              (default: db/seed/codebooks under the repo root)
+    -j PATH   generated codebook path (default: db/data/codebooks.json)
+    -F DIR    offline mode for tests: read the recorded .do/.zip syntax files
+              from <dir> instead of downloading, and do not write artifacts
+    -h        help
+
+It is OPERATOR-RUN: no ingest and no test ever fetches. Regenerating from the
+committed artifacts (-F db/seed/codebooks) reproduces db/data/codebooks.json
+byte for byte, which is what makes the committed file reviewable rather than
+merely present.
+
+The byte-identical claim is about db/data/codebooks.json ONLY. PROVENANCE.json
+embeds fetched_at at two levels, so it changes on every real fetch by design --
+and an offline (-F) run never overwrites a manifest that records a real fetch,
+because a replay has no fetch to record.
+
+The run REFUSES to write a codebook that lost a domain, or whose domain code
+count collapsed against the committed PROVENANCE.json: this tool overwrites a
+reviewed artifact, and a successful-looking parse that produced three labels
+where 4,031 lines exist is a changed upstream format, never a changed
+vocabulary.
+"""
+
+import hashlib
+import io
+import json
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTDIR = REPO_ROOT / "db" / "seed" / "codebooks"
+DEFAULT_JSON_PATH = REPO_ROOT / "db" / "data" / "codebooks.json"
+
+BASE_URL = "https://nces.ed.gov/ipeds/datacenter/data"
+
+# The survey year every artifact here is drawn from. It is recorded per domain
+# (D42: the vintage is data, and C21BASIC also carries its own in its name).
+SURVEY_YEAR = 2023
+
+# The artifacts, keyed by the short name the domains below refer to. The member
+# INSIDE the zip is found case-insensitively, never by an assumed name: IPEDS
+# ships HD2023.do and IC2023.do but adm2023.do and C2023_a.do.
+ARTIFACTS = (
+    ("hd", "HD2023_Stata.zip"),
+    ("ic", "IC2023_Stata.zip"),
+    ("adm", "ADM2023_Stata.zip"),
+    ("ca", "C2023_A_Stata.zip"),
+)
+
+# The network bounds, named once each.
+HTTP_MAX_ATTEMPTS = 3
+HTTP_TIMEOUT_SECONDS = 60
+HTTP_RETRY_BACKOFF_SECONDS = 2
+# Transient statuses: throttling and server-side faults are worth another
+# attempt. Every other status is the REQUEST being wrong (a renamed or retired
+# survey file) and retrying it only delays the diagnosis.
+RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+# A regenerated domain smaller than this fraction of the committed one is
+# treated as a failed parse rather than a real vocabulary change.
+SEED_SHRINK_FLOOR = 0.5
+
+# The usage-error exit codes bin/functions reserves (10-29), kept in step here
+# so a caller that invoked this script wrongly is distinguishable from a fetch
+# that faulted.
+EXIT_UNKNOWN_OPTION = 10
+EXIT_OPTION_REQUIRES_VALUE = 11
+
+# One line, one label, each carrying its own label-set name: the Stata .do is
+# the only line-oriented syntax file IPEDS publishes, and this regex matched
+# 6,779 of 6,779 `label define` lines across the four 2023 files. The \w+ code
+# branch is for the string-valued sets (label_stabbr AL "Alabama").
+VALUE_LABEL_RE = re.compile(
+    r'^label define label_(\w+)\s+(-?\d+|\w+|"[^"]*")\s+"(.*)"(?:, ?add)?$'
+)
+VARIABLE_LABEL_RE = re.compile(r'^label variable (\w+)\s+"(.*)"$')
+
+SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+# D41. -1 "not reported" and -3 "not available" are ABSENCE: 0055 lands them as
+# NULL for every coded column, so they are declared per domain and are not rows.
+# -2 is a real "none"/"not applicable" answer and IS a row. The pair is declared
+# for every domain that labels a stored numeric code, whether or not the
+# publisher happened to print a label for it -- the loader asserts a declared
+# sentinel is never also a row, and that assertion is about what INGEST stores.
+NULL_SENTINELS = (-1, -3)
+
+# The slug rule is fixed (slugify below) plus this override map, so regenerating
+# reproduces the reviewed slugs instead of re-deriving new ones. Overrides exist
+# only where the published label makes a bad key: an initialism the dots would
+# shred, a sentence-long sentinel, or a name a human already uses ("test-blind").
+SLUG_OVERRIDES = {
+    ("ipeds_region", 0): "us-service-schools",
+    ("ipeds_region", 9): "other-us-jurisdictions",
+    ("carnegie_2021_basic", -2): "not-in-carnegie-universe",
+    ("carnegie_2021_size_setting", -2): "not-in-carnegie-universe",
+    ("religious_affiliation", -2): "not-applicable",
+    ("football_conference", -2): "not-applicable",
+    ("admission_test_policy", 1): "required",
+    ("admission_test_policy", 5): "test-optional",
+    ("admission_test_policy", 3): "test-blind",
+    ("athletic_association", 1): "ncaa",
+    ("athletic_association", 2): "naia",
+    ("athletic_association", 3): "njcaa",
+    ("athletic_association", 4): "nscaa",
+    ("athletic_association", 5): "nccaa",
+    ("athletic_association", 6): "other-association",
+}
+
+# HD2023's OBEREG labels carry the membership but not what a member IS, and no
+# IPEDS artifact publishes it. This is the one authored table in the file: the
+# 50 states are states, DC is the federal district, the five inhabited
+# territories are territories, and the three COFA states (FM, MH, PW) are
+# sovereign countries in free association with the US -- calling them
+# territories would be wrong, so they are named as what they are. The USPS code
+# and the NAME both come from HD2023's own label_stabbr set; only the kind is
+# authored here.
+FEDERAL_DISTRICT = frozenset({"DC"})
+TERRITORIES = frozenset({"AS", "GU", "MP", "PR", "VI"})
+FREELY_ASSOCIATED_STATES = frozenset({"FM", "MH", "PW"})
+
+
+def log_warning(message):
+    """A non-fatal fault, on the channel and with the prefix bin/functions'
+    log-warning uses, so one grep finds them across shell and python."""
+    print(f"[WARNING] {message}", file=sys.stderr)
+
+
+def fatal(message, status=1):
+    print(f"[FATAL] {message}", file=sys.stderr)
+    sys.exit(status)
+
+
+# ---------------------------------------------------------------------------
+# Fetching and reading the syntax files
+# ---------------------------------------------------------------------------
+
+
+def http_get(url):
+    """The response body, retrying only TRANSIENT faults. A permanent fault is
+    reported immediately through this script's own fatal channel, and the
+    swallowed causes of the earlier attempts are logged rather than discarded."""
+    request = urllib.request.Request(url, headers={"User-Agent": "unicoach"})
+    for attempt in range(HTTP_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            cause = f"HTTP [{error.code}] [{error.reason}]"
+            if error.code not in RETRYABLE_STATUS:
+                fatal(f"GET [{url}] failed permanently: {cause}")
+        except urllib.error.URLError as error:
+            cause = f"URL error [{error.reason}]"
+        except TimeoutError:
+            cause = f"timed out after [{HTTP_TIMEOUT_SECONDS}]s"
+        if attempt == HTTP_MAX_ATTEMPTS - 1:
+            fatal(f"GET [{url}] failed after [{HTTP_MAX_ATTEMPTS}] attempts: {cause}")
+        log_warning(f"GET [{url}] attempt [{attempt + 1}] failed: {cause}; retrying")
+        time.sleep(HTTP_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
+def normalise(name):
+    """A filename reduced to its alphanumerics, so a fixture may be named by the
+    repo's own convention (codebooks-hd2023-fixture.do) and still be recognised
+    as the HD2023 syntax file."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def find_fixture(fixtures, filename):
+    """The one file in `fixtures` that stands in for `filename`: either the zip
+    itself or a plain .do recorded from it. Ambiguity is fatal -- picking the
+    first of two candidates would make the harness depend on readdir order."""
+    stem = normalise(filename.replace("_Stata.zip", ""))
+    candidates = sorted(
+        path
+        for path in fixtures.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in (".do", ".zip")
+        and stem in normalise(path.name)
+    )
+    if not candidates:
+        fatal(f"no fixture for [{filename}] in [{fixtures}] (looked for [{stem}] in .do/.zip names)")
+    if len(candidates) > 1:
+        fatal(f"[{len(candidates)}] fixtures match [{filename}] in [{fixtures}]: {candidates}")
+    return candidates[0]
+
+
+def read_syntax(body, filename):
+    """(text, member) for a syntax archive body: the single .do member, matched
+    case-insensitively (IPEDS ships HD2023.do but adm2023.do), or the body
+    itself when the fixture is already a plain .do."""
+    if not body[:2] == b"PK":
+        return decode(body, filename), filename
+    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+        members = [name for name in archive.namelist() if name.lower().endswith(".do")]
+        if len(members) != 1:
+            fatal(f"[{filename}] holds [{len(members)}] .do members, expected exactly one")
+        return decode(archive.read(members[0]), members[0]), members[0]
+
+
+def decode(body, filename):
+    """UTF-8, falling back to the Windows codepage IPEDS' tooling emits. A
+    silently replaced character would land in a label a student reads."""
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError:
+        log_warning(f"[{filename}] is not UTF-8; decoding as cp1252")
+        return body.decode("cp1252")
+
+
+class Source:
+    """One syntax artifact: where it came from, its digest, and its text."""
+
+    def __init__(self, filename, url, body, member, text, fetched_at):
+        self.filename = filename
+        self.url = url
+        self.body = body
+        self.bytes = len(body)
+        self.sha256 = hashlib.sha256(body).hexdigest()
+        self.member = member
+        self.text = text
+        self.fetched_at = fetched_at
+        self.values = parse_value_labels(text, filename)
+        self.variables = parse_variable_labels(text)
+
+    def value_set(self, name):
+        labels = self.values.get(name)
+        if not labels:
+            fatal(f"[{self.filename}] defines no value labels for [{name}]")
+        return labels
+
+    def variable_label(self, name):
+        label = self.variables.get(name)
+        if label is None:
+            fatal(f"[{self.filename}] defines no variable label for [{name}]")
+        return label
+
+    def as_json(self):
+        return {
+            "url": self.url,
+            "fetched_at": self.fetched_at,
+            "bytes": self.bytes,
+            "sha256": self.sha256,
+            "member": self.member,
+            "label_lines": sum(len(labels) for labels in self.values.values()),
+            "variable_labels": len(self.variables),
+        }
+
+
+def load_sources(fixtures):
+    """{key -> Source} for the four artifacts, downloaded, or read from
+    `fixtures` with no network at all. Nothing is written here: the artifacts
+    land only once the parse they feed has been believed."""
+    sources = {}
+    fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for key, filename in ARTIFACTS:
+        if fixtures is not None:
+            path = find_fixture(fixtures, filename)
+            body = path.read_bytes()
+            url = None
+            # The fixture's own name, so PROVENANCE names the file actually read
+            # rather than the artifact it stands in for.
+            origin = path.name
+        else:
+            url = f"{BASE_URL}/{filename}"
+            body = http_get(url)
+            origin = filename
+        text, member = read_syntax(body, origin)
+        sources[key] = Source(filename, url, body, member, text, fetched_at)
+    return sources
+
+
+# ---------------------------------------------------------------------------
+# Parsing the .do
+# ---------------------------------------------------------------------------
+
+
+def parse_value_labels(text, filename):
+    """{label-set name -> [(code, label_raw)]} in published order. Every
+    `label define` line must match: a line this script cannot read is a changed
+    upstream format, and a codebook missing the labels it could not read is
+    worse than no codebook."""
+    labels = {}
+    for line in text.splitlines():
+        line = line.rstrip().rstrip("\r")
+        if not line.startswith("label define"):
+            continue
+        match = VALUE_LABEL_RE.match(line)
+        if not match:
+            fatal(f"[{filename}] has an unreadable label line [{line}]")
+        name, code, label = match.group(1), match.group(2), match.group(3)
+        labels.setdefault(name, []).append((code.strip('"'), label))
+    return labels
+
+
+def parse_variable_labels(text):
+    """{variable -> label}: D40, the meaning of ASSOC1..6 lives here and
+    nowhere else."""
+    labels = {}
+    for line in text.splitlines():
+        match = VARIABLE_LABEL_RE.match(line.rstrip().rstrip("\r"))
+        if match:
+            labels[match.group(1)] = match.group(2)
+    return labels
+
+
+def repair(label_raw):
+    """D38: the human string. The .do files encode an apostrophe as a caret
+    (146 labels in HD2023 alone) and one variable label carries a double space;
+    label_raw keeps the published bytes, this is what a person reads."""
+    return re.sub(r"\s{2,}", " ", label_raw.replace("^", "'")).strip()
+
+
+def slugify(text):
+    """The fixed slug rule: caret repaired, `&` spelled, apostrophes dropped,
+    every other run of non-alphanumerics collapsed to one hyphen."""
+    slug = repair(text).lower().replace("&", " and ").replace("'", "")
+    slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
+    return slug
+
+
+def slug_for(domain, code, text):
+    slug = SLUG_OVERRIDES.get((domain, code)) or slugify(text)
+    if not SLUG_RE.match(slug):
+        fatal(f"[{domain}] code [{code}] produced an invalid slug [{slug}] from [{text}]")
+    return slug
+
+
+def is_sentinel(code):
+    return code in NULL_SENTINELS
+
+
+# ---------------------------------------------------------------------------
+# The domains (D39: a published label is a record, not a string)
+# ---------------------------------------------------------------------------
+
+# "New England (CT, ME, MA, NH, RI, VT)" -> the name and its membership. A
+# region with no parenthesised list (0, the service schools) has no states; a
+# parenthesis this pattern cannot read is fatal, because us_states is built from
+# exactly this membership.
+REGION_RE = re.compile(r"^(?P<name>[^()]+?)\s*\((?P<states>[A-Z]{2}(?:, [A-Z]{2})*)\)$")
+
+LOCALE_TYPES = {"City": "city", "Suburb": "suburb", "Town": "town", "Rural": "rural"}
+LOCALE_DETAILS = {
+    "Large": "large",
+    "Midsize": "midsize",
+    "Small": "small",
+    "Fringe": "fringe",
+    "Distant": "distant",
+    "Remote": "remote",
+}
+
+# "Four-year, small, highly residential" -> 4 / small / highly residential. The
+# two-year classes carry no residential character (the publisher does not
+# classify it), which the optional third group is for.
+SIZE_SETTING_RE = re.compile(
+    r"^(?P<years>Two|Four)-year, (?P<size>very small|small|medium|large|very large)"
+    r"(?:, (?P<residential>primarily nonresidential|primarily residential|highly residential))?$"
+)
+SIZE_SETTING_YEARS = {"Two": 2, "Four": 4}
+# The two published size-setting codes that carry no size and no setting: 18 is
+# a category of its own ("Exclusively graduate/professional") and -2 is the
+# not-in-universe sentinel. Any OTHER unparseable label is a changed vocabulary.
+SIZE_SETTING_UNSTRUCTURED = frozenset({18, -2})
+
+# "01.0101-Agricultural Business and Management, General": the 6-digit code is
+# printed in the label as well as being the Stata code, and the two are asserted
+# to agree rather than one being trusted.
+CIP_RE = re.compile(r"^(?P<code>\d{2}\.\d{4})-(?P<title>.+)$")
+# C2023_a's cipcode set ends with an AGGREGATE row, not a CIP code. It is
+# excluded by name and counted, so "1,711 labels, 1,710 codes" is explained in
+# PROVENANCE.json rather than looking like a lost row.
+CIP_AGGREGATE = ("99", "Grand total")
+
+
+def domain(name, source, artifact, codes, sentinels=NULL_SENTINELS):
+    """One domain's published shape, with its provenance inline: the loader
+    reads source_sha256 and never has to be told which artifact it came from."""
+    if not codes:
+        fatal(f"[{name}] produced no codes; refusing to write a domain that lost its vocabulary")
+
+    slugs = [code["slug"] for code in codes if "slug" in code]
+    duplicates = sorted({slug for slug in slugs if slugs.count(slug) > 1})
+    if duplicates:
+        fatal(f"[{name}] produced duplicate slugs {duplicates}")
+    # The CODE is a key too -- the primary key in us_states and cip_code, a
+    # UNIQUE column everywhere else -- and it was unchecked, so a duplicate
+    # survived generation and failed hours later at the SQL constraint, on a
+    # file a human had already reviewed. D39 says a defect is fatal AT
+    # GENERATION; a key collision is a defect. Codes are compared as text
+    # because two domains key on strings ("CT", "010101") and eight on ints.
+    published = [str(code["code"]) for code in codes]
+    duplicate_codes = sorted({code for code in published if published.count(code) > 1})
+    if duplicate_codes:
+        fatal(f"[{name}] produced duplicate codes {duplicate_codes}")
+    return {
+        "source": source,
+        "source_file": artifact.filename,
+        "source_sha256": artifact.sha256,
+        "source_vintage_year": SURVEY_YEAR,
+        "null_sentinels": list(sentinels),
+        "codes": codes,
+    }
+
+
+def build_ipeds_region(hd):
+    """OBEREG: the name, and the state membership the label carries (D39).
+    Returns (domain, {usps -> region slug})."""
+    codes = []
+    membership = {}
+    for code_text, label_raw in hd.value_set("obereg"):
+        code = int(code_text)
+        match = REGION_RE.match(label_raw)
+        if match:
+            name, states = match.group("name"), match.group("states").split(", ")
+        elif "(" in label_raw:
+            fatal(f"ipeds_region code [{code}] has an unreadable membership [{label_raw}]")
+        else:
+            name, states = label_raw, []
+        slug = slug_for("ipeds_region", code, name)
+        for state in states:
+            if state in membership:
+                fatal(
+                    f"[{state}] is claimed by both [{membership[state]}] and [{slug}]; "
+                    "OBEREG regions must partition the jurisdictions"
+                )
+            membership[state] = slug
+        codes.append(
+            {
+                "code": code,
+                "slug": slug,
+                "name": repair(name),
+                "label_raw": label_raw,
+                "member_states": states,
+            }
+        )
+    codes.sort(key=lambda entry: entry["code"])
+    return domain("ipeds_region", "IPEDS HD2023 (OBEREG)", hd, codes), membership
+
+
+def build_us_states(hd, membership):
+    """The jurisdictions, keyed by USPS code: the NAME from HD2023's own
+    label_stabbr set, the region from the OBEREG membership parsed above, and
+    the kind from the one authored table in this file. Either side missing the
+    other is fatal -- a state with no region cannot be filtered on, and a region
+    member with no name would ship a bare abbreviation to a student."""
+    names = dict(hd.value_set("stabbr"))
+    unnamed = sorted(set(membership) - set(names))
+    if unnamed:
+        fatal(f"OBEREG claims {unnamed}, which HD2023's STABBR labels do not name")
+    unregioned = sorted(set(names) - set(membership))
+    if unregioned:
+        fatal(f"HD2023's STABBR labels name {unregioned}, which no OBEREG region claims")
+    codes = []
+    for usps in sorted(names):
+        if usps in FEDERAL_DISTRICT:
+            kind = "federal-district"
+        elif usps in TERRITORIES:
+            kind = "territory"
+        elif usps in FREELY_ASSOCIATED_STATES:
+            kind = "freely-associated-state"
+        else:
+            kind = "state"
+        codes.append(
+            {
+                "code": usps,
+                "name": repair(names[usps]),
+                "label_raw": names[usps],
+                "jurisdiction_kind": kind,
+                "ipeds_region": membership[usps],
+            }
+        )
+    states = sum(1 for entry in codes if entry["jurisdiction_kind"] == "state")
+    if states != 50:
+        fatal(f"us_states carries [{states}] states, expected the 50")
+    return domain("us_states", "IPEDS HD2023 (STABBR, OBEREG)", hd, codes, sentinels=())
+
+
+def build_nces_locale(hd):
+    """LOCALE: "Rural: Fringe" -> type + detail (D39). -3 is absence (D41)."""
+    codes = []
+    for code_text, label_raw in hd.value_set("locale"):
+        code = int(code_text)
+        if is_sentinel(code):
+            continue
+        head, _, tail = label_raw.partition(": ")
+        if head not in LOCALE_TYPES or tail not in LOCALE_DETAILS:
+            fatal(f"nces_locale code [{code}] has an unreadable label [{label_raw}]")
+        codes.append(
+            {
+                "code": code,
+                "slug": f"{LOCALE_TYPES[head]}-{LOCALE_DETAILS[tail]}",
+                "name": repair(label_raw),
+                "label_raw": label_raw,
+                "type": LOCALE_TYPES[head],
+                "detail": LOCALE_DETAILS[tail],
+            }
+        )
+    codes.sort(key=lambda entry: entry["code"])
+    return domain("nces_locale", "IPEDS HD2023 (LOCALE)", hd, codes)
+
+
+def build_carnegie_basic(hd):
+    """C21BASIC: "Doctoral Universities: Very High Research Activity" ->
+    degree_level + qualifier. A class with no colon (33 Tribal Colleges) is a
+    degree level with no qualifier; -2 is not-in-universe and carries neither."""
+    codes = []
+    for code_text, label_raw in hd.value_set("c21basic"):
+        code = int(code_text)
+        if is_sentinel(code):
+            continue
+        name = repair(label_raw)
+        if code == -2:
+            level, qualifier = None, None
+        else:
+            head, separator, tail = name.partition(": ")
+            level, qualifier = head, (tail if separator else None)
+        codes.append(
+            {
+                "code": code,
+                "slug": slug_for("carnegie_2021_basic", code, label_raw),
+                "name": name,
+                "label_raw": label_raw,
+                "degree_level": level,
+                "qualifier": qualifier,
+            }
+        )
+    codes.sort(key=lambda entry: entry["code"])
+    return domain("carnegie_2021_basic", "IPEDS HD2023 (C21BASIC)", hd, codes)
+
+
+def build_carnegie_size_setting(hd):
+    """C21SZSET: "Four-year, small, highly residential" -> years + size +
+    residential character (D39) -- what makes "small residential college" a
+    sourced filter instead of a guess at an enrollment number."""
+    codes = []
+    for code_text, label_raw in hd.value_set("c21szset"):
+        code = int(code_text)
+        if is_sentinel(code):
+            continue
+        match = SIZE_SETTING_RE.match(label_raw)
+        if match:
+            years = SIZE_SETTING_YEARS[match.group("years")]
+            size, residential = match.group("size"), match.group("residential")
+        elif code in SIZE_SETTING_UNSTRUCTURED:
+            years, size, residential = None, None, None
+        else:
+            fatal(f"carnegie_2021_size_setting code [{code}] has an unreadable label [{label_raw}]")
+        codes.append(
+            {
+                "code": code,
+                "slug": slug_for("carnegie_2021_size_setting", code, label_raw),
+                "name": repair(label_raw),
+                "label_raw": label_raw,
+                "years": years,
+                "size": size,
+                "residential_character": residential,
+            }
+        )
+    codes.sort(key=lambda entry: entry["code"])
+    return domain("carnegie_2021_size_setting", "IPEDS HD2023 (C21SZSET)", hd, codes)
+
+
+def build_religious_affiliation(ic):
+    """RELAFFIL: kept FLAT, deliberately (D39) -- there is no reliable structure
+    in a denomination name, and inventing a "tradition" column here would be
+    this repo's opinion, not the publisher's data."""
+    codes = []
+    for code_text, label_raw in ic.value_set("relaffil"):
+        code = int(code_text)
+        if is_sentinel(code):
+            continue
+        codes.append(
+            {
+                "code": code,
+                "slug": slug_for("religious_affiliation", code, label_raw),
+                "name": repair(label_raw),
+                "label_raw": label_raw,
+            }
+        )
+    codes.sort(key=lambda entry: entry["code"])
+    return domain("religious_affiliation", "IPEDS IC2023 (RELAFFIL)", ic, codes)
+
+
+def build_athletic_association(ic):
+    """D40: ASSOC1..6 is not a code list -- it is six yes/no flags whose meaning
+    lives in the VARIABLE label. college_ipeds.athletic_assoc stores the
+    ordinals of the flags that are 1, so the ordinal is the code here."""
+    codes = []
+    for ordinal in range(1, 7):
+        variable = f"assoc{ordinal}"
+        label_raw = ic.variable_label(variable)
+        codes.append(
+            {
+                "code": ordinal,
+                "slug": slug_for("athletic_association", ordinal, label_raw),
+                "source_variable": variable,
+                "name": repair(label_raw),
+                "label_raw": label_raw,
+            }
+        )
+    return domain(
+        "athletic_association",
+        "IPEDS IC2023 (ASSOC1-ASSOC6 variable labels)",
+        ic,
+        codes,
+        sentinels=(),
+    )
+
+
+def build_football_conference(ic):
+    """CONFNO1, the FOOTBALL conference set, which is what
+    college_ipeds.football_conf stores. The four CONFNO sets are NOT one shared
+    vocabulary (see PROVENANCE.json's conference_label_sets): each sport
+    publishes its own, they disagree on membership by tens of entries, and two
+    codes carry different wording between sets. Emitting a union would have to
+    pick one of two published labels for the same code, so this emits the one
+    set the stored column means, once.
+
+    PROVENANCE.json records confno1 as 100 label entries while this emits 99.
+    The missing one is code -1, a declared null sentinel dropped by is_sentinel
+    below (D41) -- stated here so the gap is explained rather than re-derived
+    from the artifact by whoever notices it next."""
+    codes = []
+    for code_text, label_raw in ic.value_set("confno1"):
+        code = int(code_text)
+        if is_sentinel(code):
+            continue
+        codes.append(
+            {
+                "code": code,
+                "slug": slug_for("football_conference", code, label_raw),
+                "name": repair(label_raw),
+                "label_raw": label_raw,
+            }
+        )
+    codes.sort(key=lambda entry: entry["code"])
+    return domain("football_conference", "IPEDS IC2023 (CONFNO1)", ic, codes)
+
+
+def build_admission_test_policy(adm):
+    """ADMCON7, the one admission criterion whose answer the repo stores
+    (college_ipeds.test_policy), emitted as its own three-code vocabulary.
+
+    It is NOT asserted that ADMCON1..12 share one vocabulary. That claim was
+    written here and is the same class of statement D40 already had to correct
+    for CONFNO1..4: a per-variable label set assumed to be shared because the
+    codes look alike. Only the variable the column stores is read, so nothing
+    depends on whether the other eleven agree."""
+    codes = []
+    for code_text, label_raw in adm.value_set("admcon7"):
+        code = int(code_text)
+        if is_sentinel(code):
+            continue
+        codes.append(
+            {
+                "code": code,
+                "slug": slug_for("admission_test_policy", code, label_raw),
+                "name": repair(label_raw),
+                "label_raw": label_raw,
+            }
+        )
+    codes.sort(key=lambda entry: entry["code"])
+    return domain("admission_test_policy", "IPEDS ADM2023 (ADMCON7)", adm, codes)
+
+
+def build_cip_codes(ca):
+    """CIPCODE: the full 6-digit CIP list with titles (D43), keyed by the
+    zero-padded code as text -- "01.0000" is 010000, and the leading zero is
+    part of the code, never an integer. The label prints the code as well, and
+    the two must agree."""
+    codes = []
+    excluded = 0
+    for code_text, label_raw in ca.value_set("cipcode"):
+        if (code_text, label_raw) == CIP_AGGREGATE:
+            excluded += 1
+            continue
+        match = CIP_RE.match(label_raw)
+        if not match:
+            fatal(f"cip_code [{code_text}] has an unreadable label [{label_raw}]")
+        code = match.group("code").replace(".", "")
+        if code != f"{int(code_text):06d}":
+            fatal(f"cip_code [{code_text}] disagrees with its own label [{label_raw}]")
+        codes.append(
+            {
+                "code": code,
+                "name": repair(match.group("title")),
+                "label_raw": label_raw,
+                "cip_family": code[:2],
+            }
+        )
+    codes.sort(key=lambda entry: entry["code"])
+    return domain("cip_code", "IPEDS C2023_A (CIPCODE)", ca, codes, sentinels=()), excluded
+
+
+def build_codebooks(sources):
+    """The whole file, in a fixed domain order: deterministic output is what
+    makes a regenerated codebook a reviewable diff (and the anti-hand-edit guard
+    possible at all)."""
+    hd, ic, adm, ca = sources["hd"], sources["ic"], sources["adm"], sources["ca"]
+    ipeds_region, membership = build_ipeds_region(hd)
+    cip_code, cip_excluded = build_cip_codes(ca)
+    codebooks = {
+        "ipeds_region": ipeds_region,
+        "us_states": build_us_states(hd, membership),
+        "nces_locale": build_nces_locale(hd),
+        "carnegie_2021_basic": build_carnegie_basic(hd),
+        "carnegie_2021_size_setting": build_carnegie_size_setting(hd),
+        "religious_affiliation": build_religious_affiliation(ic),
+        "athletic_association": build_athletic_association(ic),
+        "football_conference": build_football_conference(ic),
+        "admission_test_policy": build_admission_test_policy(adm),
+        "cip_code": cip_code,
+    }
+    for name, entry in codebooks.items():
+        sentinels = set(entry["null_sentinels"])
+        present = sorted(sentinels.intersection(code["code"] for code in entry["codes"]))
+        if present:
+            fatal(f"[{name}] declares {sorted(sentinels)} as absent but emits {present} as codes")
+    notes = {
+        # The measured refutation of "CONFNO1..4 share one set": recorded as
+        # data so the next regeneration shows the day it stops being true.
+        "conference_label_sets": {
+            f"confno{n}": len(labels)
+            for n in range(1, 5)
+            if (labels := ic.values.get(f"confno{n}"))
+        },
+        "cip_aggregate_rows_excluded": cip_excluded,
+    }
+    return codebooks, notes
+
+
+# ---------------------------------------------------------------------------
+# Writing (and refusing to write)
+# ---------------------------------------------------------------------------
+
+
+def previous_domain_counts(json_path, outdir):
+    """(counts, path) to compare a fresh parse against, or (None, None).
+
+    Keyed on THE FILE ABOUT TO BE OVERWRITTEN first. The guard used to read
+    PROVENANCE.json out of `outdir` while the artifact it protects is `-j`, and
+    the two are independent options -- so `fetch-codebooks -o /tmp/anything`
+    rewrote the committed, reviewed codebook with the guard disarmed. The
+    codebook itself carries per-domain code lists, so it is its own baseline;
+    `outdir`'s manifest stays the fallback for a first generation of a new
+    json_path beside an existing manifest."""
+    if json_path.exists():
+        try:
+            previous = json.loads(json_path.read_text())
+        except (OSError, ValueError) as error:
+            fatal(f"[{json_path}] exists but is unreadable [{error}]; move it aside to regenerate from scratch")
+        return {name: len(entry.get("codes", [])) for name, entry in previous.items()}, json_path
+    manifest = outdir / "PROVENANCE.json"
+    if not manifest.exists():
+        return None, None
+    try:
+        return json.loads(manifest.read_text()).get("domains", {}), manifest
+    except (OSError, ValueError) as error:
+        fatal(f"[{manifest}] is unreadable [{error}]; move it aside to regenerate from scratch")
+
+
+def require_plausible_codebooks(outdir, json_path, codebooks):
+    """Refuses to overwrite the committed codebook with a failed parse. The four
+    artifacts carry 6,779 label lines between them, so a domain that collapsed
+    against the count the previous generation recorded is a changed upstream
+    FORMAT arriving quietly -- a real vocabulary change moves a handful of
+    codes, never half of them. Re-review by hand: move the file aside to
+    regenerate from scratch."""
+    previous, previous_path = previous_domain_counts(json_path, outdir)
+    if previous is None:
+        return
+    shrunk = [
+        f"[{name}]: [{len(entry['codes'])}] now, [{previous[name]}] committed"
+        for name, entry in codebooks.items()
+        if isinstance(previous.get(name), int)
+        and len(entry["codes"]) < SEED_SHRINK_FLOOR * previous[name]
+    ]
+    missing = sorted(name for name in previous if name not in codebooks)
+    if missing:
+        shrunk.append(f"domains gone entirely: {missing}")
+    if shrunk:
+        fatal(
+            f"code counts collapsed against [{previous_path}] ({'; '.join(shrunk)}); "
+            f"refusing to overwrite the codebook recorded by [{previous_path}]"
+        )
+
+
+def write_artifacts(outdir, sources):
+    """The published archives, byte for byte. They are committed so that the
+    generated codebook can be REGENERATED and compared rather than trusted."""
+    for source in sources.values():
+        (outdir / source.filename).write_bytes(source.body)
+
+
+def write_codebooks(path, codebooks):
+    """Two-space JSON with a trailing newline: the shape deno fmt already agrees
+    with, so a generated file never fights the formatter."""
+    path.write_text(json.dumps(codebooks, indent=2, ensure_ascii=False) + "\n")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_provenance(outdir, sources, codebooks, notes, source_kind, json_path, digest, fixtures):
+    """The regenerable-codebook manifest: when and from where each artifact came,
+    its size and digest, how many label lines it carried, the per-domain code
+    counts the shrink guard reads next time, and the digest of the file that was
+    generated from all of it.
+
+    An OFFLINE (-F) run never overwrites a manifest that records a real fetch.
+    `write_artifacts` was already skipped offline, but this was not, so the
+    docstring's own reproduction command (-F db/seed/codebooks, with the default
+    -o pointing at that same directory) replaced the committed fetch record with
+    source="fixtures", url=null and a fetched_at for a fetch that did not
+    happen. Provenance is the one file here that must never be approximate, so
+    an offline run leaves a network manifest exactly as it found it and says so.
+
+    Where an offline run DOES write one -- a fresh output directory, which is
+    what the shell harness uses -- the manifest is marked unmistakably:
+    fixture_derived=true, source="fixtures", and every fetched_at null, because
+    a replay has no fetch time. `bin/scripts-tests` refuses to let such a
+    manifest be the committed one.
+
+    Unlike codebooks.json, this file is NOT byte-reproducible: it embeds
+    fetched_at at two levels, so any real re-fetch churns the diff by design."""
+    path = outdir / "PROVENANCE.json"
+    offline = fixtures is not None
+    if offline and path.exists():
+        try:
+            existing = json.loads(path.read_text())
+        except (OSError, ValueError):
+            existing = {}
+        if existing.get("source") == "network":
+            log_warning(
+                f"[{path}] records a real fetch; an offline (-F) run leaves it untouched "
+                f"rather than replacing it with a replay's provenance"
+            )
+            return
+    artifacts = {source.filename: source.as_json() for source in sources.values()}
+    if offline:
+        for artifact in artifacts.values():
+            artifact["fetched_at"] = None
+    provenance = {
+        "fetched_at": None if offline else datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": source_kind,
+        "fixture_derived": offline,
+        "artifacts": artifacts,
+        "domains": {name: len(entry["codes"]) for name, entry in codebooks.items()},
+        "notes": notes,
+        "output": {"path": relative_to_repo(json_path), "sha256": digest},
+    }
+    path.write_text(json.dumps(provenance, indent=2) + "\n")
+
+
+def relative_to_repo(path):
+    """The repo-relative path where there is one: an absolute temp path in the
+    committed manifest would be a machine's accident recorded as provenance."""
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return path.name
+
+
+def parse_args(argv):
+    """(outdir, json_path, fixtures) from argv, fataling on a malformed
+    option."""
+    outdir = DEFAULT_OUTDIR
+    json_path = DEFAULT_JSON_PATH
+    fixtures = None
+    args = list(argv[1:])
+    while args:
+        arg = args.pop(0)
+        if arg == "-h":
+            print(__doc__)
+            sys.exit(0)
+        if arg in ("-o", "-j", "-F"):
+            if not args:
+                fatal(f"option [{arg}] requires a value", status=EXIT_OPTION_REQUIRES_VALUE)
+            value = Path(args.pop(0))
+            if arg == "-o":
+                outdir = value
+            elif arg == "-j":
+                json_path = value
+            else:
+                fixtures = value
+        else:
+            fatal(f"unknown argument [{arg}]", status=EXIT_UNKNOWN_OPTION)
+    return outdir, json_path, fixtures
+
+
+def main(argv):
+    outdir, json_path, fixtures = parse_args(argv)
+    if fixtures is not None and not fixtures.is_dir():
+        fatal(f"fixtures directory [{fixtures}] does not exist")
+    outdir.mkdir(parents=True, exist_ok=True)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    sources = load_sources(fixtures)
+    codebooks, notes = build_codebooks(sources)
+    # Nothing is written until the parse is believed: a fetch that succeeded and
+    # a parse that collapsed must leave the committed artifacts untouched.
+    require_plausible_codebooks(outdir, json_path, codebooks)
+    if fixtures is None:
+        write_artifacts(outdir, sources)
+    digest = write_codebooks(json_path, codebooks)
+    source_kind = "fixtures" if fixtures is not None else "network"
+    write_provenance(outdir, sources, codebooks, notes, source_kind, json_path, digest, fixtures)
+
+    counts = " ".join(f"{name}={len(entry['codes'])}" for name, entry in codebooks.items())
+    print(f"codebook written to [{json_path}] from [{source_kind}]: {counts}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

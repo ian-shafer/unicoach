@@ -25,6 +25,10 @@ dependencies {
   // The shared RFC 143 source-code guard (RFC 148 D9), hosted in the one module
   // :service and :college both already depend on.
   testImplementation(testFixtures(project(":chat")))
+  // The real loaded codebook (RFC 147): the fit lens's query tool speaks the
+  // same vocabulary as :college's search tool, so it is tested against the same
+  // loaded reference tables rather than a hand-typed pair of rows.
+  testImplementation(testFixtures(project(":college")))
   // The runtime logging backend, pulled into the test source set only so
   // LlmCallLogTest can capture the estimated-model WARN via a ListAppender
   // (web-common's precedent). RFC 108.
