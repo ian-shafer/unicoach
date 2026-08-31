@@ -70,6 +70,34 @@ Ledger (updated as slices land):
        NCES Exhibit A is not in the distributed zip.
        NEXT FREE: RFC 149 (148 taken by brief 0001's S4b), migration 0062.
 
+    S3b LANDED as RFC 150 (main@92c1d36e + f5091c22, 2026-08-31) — the aha.
+       One derived college_search_index (30 columns), rebuilt whole in a new
+       search-index ingest phase between name-words and provenance (DELETE ->
+       insert -> rank percentiles -> ANALYZE, one transaction, method_version
+       5, row count recorded on college_index_build). An authored 181-subject
+       taxonomy (db/data/subjects.json, loaded by a new subjects phase) whose
+       every CIP prefix is validated fatally against RFC 147's published
+       codes: 1,690 of 1,710 six-digit codes, 405/405 four-digit series, 38/38
+       families. Both search entry points repointed at the index and the old
+       ones deleted — the college_programs join and every old colleges filter
+       clause are gone, so filtering and counting touch the index alone and
+       only the returned rows join back for payload. Coded columns store
+       codebook slugs with real foreign keys, never raw codes (D61), and the
+       index carries only what is filtered, sorted or indexed (D60, 46 columns
+       -> 30). credential_level was removed from search_colleges with the
+       census's bachelor's-only filter. Migrations 0064 (subjects +
+       college_search_index + the provenance rename) and 0065 (coach prompt
+       v10, rollback COACHING_SYSTEM_PROMPT_VERSION=v9). Gate: the full
+       bin/pre-commit — 2,163 tests, 0 failures, 0 skipped, 210 classes; review
+       was 39 lenses over 4 tiers, ~90 findings, 7 fix passes. Ian removed the
+       taxonomy size cap at the gate (D25, below). Honest about what did not
+       land: the colleges state/locale foreign keys are a fast-follow with a
+       trigger, not a wish — the corpus measurement PASSED, but us_states and
+       nces_locales are ingest-loaded and the test bases truncate them; and
+       the percentile columns are computed and read by nothing until
+       search/04. NEXT FREE: RFC 152 (151 claimed by a live run), migration
+       0066 — recompute both at run time, never copy them.
+
 ## Slice IDs
 
 Permanent IDs for this brief's slices (`search/<milestone>/<name>`). The old
@@ -82,7 +110,7 @@ inserted later takes a decimal step. Neither renumbers a neighbour.
 | S1  | search/01/honest-name-search   | LANDED RFC 139 (matching replaced by 146) |
 | S2  | search/02/ipeds-attributes     | LANDED RFC 144                            |
 | S3  | search/03a/published-codebooks | LANDED RFC 147                            |
-| S3  | search/03b/the-index           | NEXT — lands on top of 03a                |
+| S3  | search/03b/the-index           | LANDED RFC 150                            |
 | S4  | search/04/similar-colleges     | NOT STARTED                               |
 | S5  | search/05/consumer-sweep       | NOT STARTED                               |
 | S6  | search/06/unattended-refresh   | DEFERRED                                  |
@@ -320,3 +348,30 @@ for school character only (enrollment, admission rate, SAT, net price); outcome
 measures stay raw and cited, never ranked, never a similarity axis.**
 
 Status update: PRIORITISE complete → SPEC & SLICE. See `spec.md`.
+
+## Decisions taken while executing
+
+Gate decisions D1–D13 are above; D14–D22 are in `spec.md`; D23 and D24 were
+recorded in the S2 ledger line. Later rulings that need more than a sentence go
+here.
+
+**D25 — no size cap on the subject taxonomy** (Ian, RFC 150 approval gate).
+Offered a cap against the spec's "~60–100 subjects" target, Ian said "i'd be
+fine keeping it unlimited", and on removing the target itself, "i agree". The
+spec's "~60–100 subjects" phrase is **superseded**: it was a guess written
+before the CIP corpus was measured, and it is not a design constraint.
+
+What replaces it are the measured ceilings from RFC 147's published codebooks:
+**1,710** six-digit CIP codes, **405** four-digit series, **38** families. A
+taxonomy with one subject per thing a student actually says therefore tops out
+in the low hundreds — the landed file is 181 subjects — and there is no cliff
+between 100 and that number. The file is authored and Ian reviews its content,
+which is the real control.
+
+**The one cost that scales with the file** is the tool schema, not the database:
+every slug is an enum value in the `search_colleges` definition, which ships in
+the model's context on **every** call (181 slugs ≈ 2,650 characters). A few
+hundred is affordable, so this slice inlines them. If it stops being affordable,
+the escape hatch is to stop inlining the enum and resolve free text server-side
+against slugs and synonyms, returning a named error that lists near matches.
+Recorded so the trade is visible when the file gets large.

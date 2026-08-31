@@ -7,11 +7,18 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-31 — `money/02/component-split` (M2) landed as RFC 149: the
-cost of attendance is now split into components a family can act on, priced per
-living arrangement, and the coach speaks it (prompt v9). Slices carry permanent
-IDs and declared `Needs:` edges, and readiness is computed by `slice-board`
-rather than written down here.
+Updated: 2026-08-31 — `search/03b/the-index` (S3) landed as RFC 150: the derived
+`college_search_index` and a 181-subject taxonomy are live, both search paths
+run through the index, and the coach searches by subject on prompt v10
+(migrations 0064/0065). `money/02/component-split` (M2) landed the same day as
+RFC 149. Slices carry permanent IDs and declared `Needs:` edges, and readiness
+is computed by `slice-board` rather than written down here.
+
+At that moment the next free RFC was **152** — 151 was already claimed by a live
+run (`pipeline/rfc-151`, designing) — and the next free migration was **0066**.
+Those two numbers are a snapshot and are almost certainly stale by the time you
+read them: recompute both at run time with the commands below, and never copy a
+number out of a document.
 
 **No RFC or migration number is recorded in this file, on purpose.** They are
 claimed by live runs in other worktrees, so any number written here is wrong
@@ -37,32 +44,26 @@ the answer to "what can I kick off?".
 
 ## TL;DR — next steps, most important first
 
-1. **Brief 0004 — college search index — EXECUTING; S1 and S2 LANDED (RFCs 139
-   and 144, 2026-08-28/29).** Fuzzy names, honest match counts and ingest
-   provenance are live, and the IPEDS attribute layer is now source data:
-   `college_ipeds` (religion, ROTC, study abroad, the disability band, housing,
-   application fee, athletics, test policy, closure) and
-   `college_programs_census` (bachelor's 6-digit CIP), loaded by
-   `bin/ingest-colleges`'s optional all-or-nothing
-   `--hd/--ic/--adm/--completions/--survey-year` group — 5,688 attribute rows
-   and 80,632 census rows from the real 2023 files, unmatched `unit_id`s counted
-   and skipped. Nothing user-visible changed yet: **that is `search/03` (S3)**,
-   which was **split at its design gate** into `search/03a/published-codebooks`
-   (**RFC 147 — LANDED 2026-08-30**) and `search/03b/the-index` (the derived
-   `college_search_index` + subject taxonomy — the aha, **NEXT**, lands on top
-   of 03a). 03a made the stored federal codes explainable: `bin/fetch-codebooks`
-   pulls IPEDS's own Stata syntax files, and 10 domains / 2,015 rows of
-   published labels now live in eleven reference tables, with the search tool
-   and the fit lens speaking words in both directions from ONE shared schema and
-   the hand-written codebook prose deleted from the fit-lens prompt. Two
-   mechanical naming runs landed first, at Ian's call from the same gate:
-   `ipeds_unit_id` (migration 0057) and unit-last numeric column names
-   (migration 0059). Then `search/04/similar-colleges` (query-time),
-   `search/05/consumer-sweep`. 0004 D13 (S1–S3 before 0001's S4) was consciously
-   narrowed at RFC 140's gate and is now moot for S4a: only S1's conventions
-   were a real dependency, and S4a landed after RFC 139 with its ingest CLI
-   merged into 139's (aliases + `--*-source` provenance + the CDS group in one
-   launcher).
+1. **Brief 0004 — college search index — S1, S2, S3a and now S3b LANDED (RFCs
+   139, 144, 147, 150; the last on 2026-08-31). The aha is real: "small public
+   schools in Maine with a literature program" is answerable end to end.** One
+   derived `college_search_index`, rebuilt whole by an ingest phase, now serves
+   both search paths — the old `college_programs` join and every old `colleges`
+   filter clause are deleted. An authored 181-subject taxonomy turns what a
+   student says into CIP codes (1,690/1,710 codes, 405/405 series, 38/38
+   families, every prefix validated fatally against RFC 147's published
+   codebooks), and nine new filters bind codebook **slugs** with real foreign
+   keys instead of raw federal codes. The coach speaks it on prompt **v10**
+   (migrations 0064/0065; rollback `COACHING_SYSTEM_PROMPT_VERSION=v9`). What
+   came before: S1 gave fuzzy name search and honest counts (matching later
+   replaced by RFC 146), S2 ingested the IPEDS attribute layer, S3a made the
+   stored federal codes explainable. **Next in 0004:
+   `search/04/similar-colleges`, which this slice UNBLOCKED** — it was 0004's
+   only BLOCKS edge, and its weighted distance reads the percentile columns S3b
+   computes (nothing reads them yet). Run the `colleges` state/locale
+   foreign-key fast-follow BEFORE it starts (Backlog). Then
+   `search/05/consumer-sweep`.
+
 2. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
    admissions layer is now user-visible. The coach can answer, with citations,
    what a school weighs in admissions, when its rounds close, and how it
@@ -265,6 +266,48 @@ Typing a school's name finds it even when the typing is imperfect.
   its source headers before writing a single row, and prints a change summary —
   a no-op load can no longer masquerade as a real one.
 
+### Searching for colleges by what they are (brief 0004 S3, RFCs 147 + 150)
+
+"Small public schools in Maine with a literature program" — asked in plain
+English, answered honestly.
+
+- **How a user reaches it:** the coach in chat. It calls `search_colleges` on
+  coach prompt **v10**; no user action and no new screen. Live on the next
+  `service` deploy once the migrations and an ingest have run.
+- **What it does:** filters on **subject** (a 181-subject taxonomy —
+  "literature" means CIP 23.01, 23.13, 23.14 _and_ 16.0104 Comparative
+  Literature, because a person authored that), **state**, **size**,
+  **selectivity**, **price**, **religious affiliation**, **test policy**,
+  **Carnegie class**, **athletics**, **ROTC**, **study abroad** and **housing**
+  — all against one derived `college_search_index` rather than a join across the
+  raw tables. The filters bind codebook slugs with real foreign keys, so no
+  federal code reaches the model and none has to be looked up at query time.
+- **What it reports:** `total_matches` (the true count, not the size of the page
+  it returned), a per-filter `excluded_unknown` count, and `source_years` for
+  the figures it used.
+- **How it degrades — the honest part:** an index that has not been built yet
+  **says so** instead of answering zero (a deploy migrates first, then ingests;
+  between the two, search states its own emptiness). A word the vocabulary does
+  not know is a **named refusal that lists the vocabulary** — never a silent
+  empty result, and never presented as "the search broke". An attribute a school
+  does not report is **counted in `excluded_unknown`, never read as "no"** —
+  filtering on it excludes the school and says how many it excluded.
+- **Where the data comes from:** the same ingest, in two new phases — `subjects`
+  loads the authored `db/data/subjects.json` (every CIP prefix validated fatally
+  against RFC 147's published codes: 1,690 of 1,710 codes, 405/405 four-digit
+  series, 38/38 families), and `search-index` rebuilds the index whole in one
+  transaction and records the row count in the `college_index_build` provenance
+  row.
+- **Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v9`; the v9 row is immutable and
+  stays in the catalog.
+- **Honest limits:** `credential_level` **left** `search_colleges` — the program
+  census carries bachelor's first majors only, so the filter had one legal value
+  and asserting a choice would have been a lie. It returns only if
+  `college_programs_census` ever carries more than that. The percentile-rank
+  columns are computed but read by nothing until `search/04/similar-colleges`.
+  `is_active` is not tri-state (Backlog), and the `colleges` state/locale
+  foreign keys did not land (Backlog, triggered).
+
 ### Know how a school admits and what it pays (brief 0001 S4, RFCs 140 + 148)
 
 School-authored Common Data Set facts for the launch set, now answerable in chat
@@ -326,12 +369,12 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Where                                    |
-| --- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
-| P1  | College search index (brief 0004)          | EXECUTING — gates 1+2 approved (2026-08-27); `search/01`→`search/05` specced, DDL approved. **`search/01/honest-name-search` LANDED (RFC 139, matching later replaced by RFC 146) and `search/02/ipeds-attributes` LANDED (RFC 144). `search/03` split at its design gate: `search/03a/published-codebooks` LANDED (RFC 147) and `search/03b/the-index` — the derived index + subject taxonomy — is IN FLIGHT (RFC 150, `pipeline/rfc-150`). The CONFLICTS edge with `money/02` was real and cost only a rebase: M2 landed as RFC 149 while 03b was in flight, exactly as a CONFLICTS edge predicts.** | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` + `money/02` LANDED** (RFCs 141–143, 145, 149; 2026-08-28/31). The coach asks residency before income, and as of RFC 149 it prices three living arrangements from six ingested Scorecard components instead of one blended number (prompt v9; v8 is the rollback). Next: **`money/03/comparison-contract`**, whose stable/variable blocks build directly on M2's breakdown object, then `money/04/where-youll-live`, which now has real components to personalise.                                                                                | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, which PREFERs (does not require) `money/02` + `money/03`, then `first-value/06/invite-your-parent`.                                                                                                                                                                                                                                                                                   | `product/0001-v1-differentiator/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `bin/state-apply`                        |
+| Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Where                                    |
+| --- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | College search index (brief 0004)          | EXECUTING — gates 1+2 approved (2026-08-27); `search/01`→`search/05` specced, DDL approved. **`search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147) and `search/03b/the-index` (RFC 150, 2026-08-31) have all LANDED.** S3b is the aha: the derived index serves both search paths, the coach searches by subject on prompt v10, and the CONFLICTS edge with `money/02` cost only a rebase, exactly as a CONFLICTS edge predicts. Next: **`search/04/similar-colleges`**, unblocked by S3b and the only consumer of its percentile columns — but the `colleges` state/locale foreign-key fast-follow (Backlog) is triggered to run BEFORE it. Then `search/05/consumer-sweep`. | `product/0004-college-search-index`      |
+| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` + `money/02` LANDED** (RFCs 141–143, 145, 149; 2026-08-28/31). The coach asks residency before income, and as of RFC 149 it prices three living arrangements from six ingested Scorecard components instead of one blended number (prompt v9; v8 is the rollback). Next: **`money/03/comparison-contract`**, whose stable/variable blocks build directly on M2's breakdown object, then `money/04/where-youll-live`, which now has real components to personalise.                                                                                                                                                                                                                                                                   | `product/0003-clear-money-language`      |
+| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, which PREFERs (does not require) `money/02` + `money/03`, then `first-value/06/invite-your-parent`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `product/0001-v1-differentiator/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `bin/state-apply`                        |
 
 ## Sequencing — ask the board, do not read a list
 
@@ -378,6 +421,27 @@ bullet, enough context to pick it up cold); /chart promotes an item into the
 work table by giving it a priority, or into a brief when it deserves gates.
 Nothing here is committed work.
 
+- **`colleges` state/locale foreign keys — fast-follow, ruled by Ian at RFC
+  150's gate. TRIGGER: run BEFORE `search/04/similar-colleges` starts.** The
+  corpus measurement PASSED — every stored `state` and `locale` value resolves
+  to a codebook row — so the blocker is not the data. It is that `us_states` and
+  `nces_locales` are ingest-loaded and the test bases truncate them, so the
+  constraints would fail tests that load no codebooks. Two places need seeding:
+  `CollegeScorecardTestBase` (8 ingest suites) and the db-module college
+  fixtures, both reusing `SearchIndexFixture.seedCodebooks`, which RFC 150
+  added. The exact SQL is in RFC 150 `## Deferred` (D57). One design question
+  belongs to that run: whether `--codebooks` becomes mandatory at the JVM entry
+  point. RFC 147 already deferred this once, which is why it now carries a
+  trigger and a run of its own rather than a hope.
+- **`is_active` is not tri-state** — deferred by Ian at RFC 150's gate. The
+  index column is `NOT NULL` and coalesces a missing IPEDS row to TRUE, so it
+  asserts "open" about a college the ingest knows nothing about; on a
+  Scorecard-only ingest it reads TRUE for every row and carries no information.
+  The untaken fix: `is_operating BOOLEAN NULL` (TRUE when IPEDS reports active,
+  FALSE when it reports otherwise, NULL with no IPEDS row) with the default
+  universe reading `IS NOT FALSE` — behaviour-preserving for every real query,
+  and it would let a result say "closed in 2019". See RFC 150 `## Deferred`. Not
+  a defect S3b introduced: it is brief 0004 D18 carried forward.
 - **Account deletion (brief 0002)** — moved out of the work table (Ian,
   2026-08-27). Brief is FRAMED with six decisions D1–D6 awaiting gate 1 at
   `product/0002-account-data-deletion`. Still App-Store-blocking when we submit:
@@ -419,25 +483,40 @@ the approval gate in each session.
 
 ### College search index (brief 0004)
 
-PASTE: Ship S<n> from product brief 0004: use the slice instruction in
-product/0004-college-search-index/spec.md verbatim as the /ship instruction.
-Both gates are approved; gate decisions D1–D22 (brief.md + spec.md) are binding
-context — notably: Postgres-only, no queue, two-phase ingest (rows first, one
-transactional index rebuild at the end), raw source codes in schema with word
-enums at the tool boundary, tri-state unknowns with excluded counts, outcome
-measures never ranked. I approve every new table with visible DDL at the /ship
-gate; the spec's DDL is the approved shape.
+PASTE: start work on `search/04/similar-colleges`.
 
-S3 is next. S1 landed as RFC 139 (migrations 0051/0052) and S2 as RFC 144
-(migration 0055: `college_ipeds` + `college_programs_census`, loaded by
-`bin/ingest-colleges --hd/--ic/--adm/--completions/--survey-year`); S3 builds
-phase 2 — the derived `college_search_index`, the subject taxonomy, and the
-switch of both search paths onto the index. Extend that ingest rather than
-inventing a parallel path, and read RFC 144's open items first: `sector` matched
-no administrative units in the real corpus, `athletic_assoc` cannot express
-"unreported", `college_programs_census_cip_idx` still has no reader, and
-whole-run orchestration still sits inside `CollegeScorecardLoader.ingest` — S3
-is the run that should decide each of those.
+FIRST, THOUGH: the `colleges` state/locale foreign-key fast-follow (Backlog) is
+triggered to run before this slice starts. Do that run, or tell me you are
+skipping it, before you begin S4.
+
+WHAT LANDED BEFORE IT: S3b (RFC 150, migrations 0064/0065) built the derived
+`college_search_index` — 30 columns, rebuilt whole by a `search-index` ingest
+phase in one transaction — plus a 181-subject taxonomy and nine new filters
+binding codebook slugs with real foreign keys. Both search paths now read the
+index; the old `college_programs` join and every old `colleges` filter clause
+are deleted. Read the code, not the spec's sketch of it.
+
+CARRY THESE FORWARD, they are true in code and must not regress: filtering and
+counting touch the index alone and only the returned rows join back for payload;
+no raw federal code reaches a tool result; an unresolvable word is a named
+refusal listing the vocabulary, never a silent empty result; unknown is counted
+per filter (`excluded_unknown`) and never read as "no"; an unbuilt index says so
+rather than answering zero; outcome measures are never ranked (gate-1 ruling).
+
+S4 is the first and only reader of the index's percentile columns, which S3b
+computes for enrollment, admission rate, SAT and net price. "Similar" is decided
+per call — axes, weights and constraints chosen by the coach with visible
+defaults, not precomputed (D8 as amended) — and every response names the axes
+and constraints it used.
+
+Gate decisions D1–D25 (brief.md + spec.md) are binding context. Note D25: the
+subject taxonomy has no size cap, and the spec's "~60–100 subjects" phrase is
+superseded. I approve every new table with visible DDL at the /ship gate. Claim
+RFC and migration numbers at run time and re-check them immediately before
+committing.
+
+I am the approval gate. Land it, then update the brief ledger and
+product/STATUS.md.
 
 ### Account deletion (brief 0002) — parked in Backlog, kept ready
 
