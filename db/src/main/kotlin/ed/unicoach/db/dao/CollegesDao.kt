@@ -6,19 +6,84 @@ import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeProgram
 import ed.unicoach.db.models.CollegeProgramId
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.CollegeSearchPage
 import ed.unicoach.db.models.CollegeSummary
+import ed.unicoach.db.models.InstitutionControl
+import ed.unicoach.db.models.InstitutionSector
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
 import ed.unicoach.db.models.Version
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonPrimitive
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.sql.Types
 import java.util.UUID
+
+/**
+ * The DEFAULT searchable universe (RFC 150 D52/D56) — ONE home for its three
+ * axes, over `college_search_index`.
+ *
+ * It was written twice and the copies disagreed: the percentile pass ranked
+ * over a corpus that still contained the administrative units the default
+ * search drops, so a percentile described a population no student searches.
+ * Both readers now take the same words. [CollegesDao.search] uses one [Axis] at
+ * a time, because a caller may override any of them; the percentile pass, which
+ * has no caller to override it, takes [sql] whole.
+ *
+ * Each axis RENDERS itself — under a table alias, and where a caller may invert
+ * it, negated. It used to be three finished predicate strings that a reader
+ * rewrote: the alias was pasted on the front and `NOT ` before that. Both only
+ * work while an axis happens to be shaped like a bare column, so
+ * `NOT is_four_year IS NOT FALSE` and `i.sector IS DISTINCT FROM ...` were one
+ * edit apart — a predicate silently meaning something else, in SQL no compiler
+ * reads. Nothing here is caller text — the sector word is [InstitutionSector]'s
+ * own constant — so no axis carries a bind parameter at all.
+ */
+private object DefaultUniverse {
+  /**
+   * One axis of the default universe: the column it reads and the predicate it
+   * states about that column, both rendered by the axis itself.
+   *
+   * [negated] exists only where a caller may state the opposite; an axis with
+   * no negation cannot be asked for one, because there is no correct text to
+   * return and a wrong one would compile.
+   */
+  class Axis(
+    private val column: String,
+    private val predicate: (String) -> String,
+    private val negation: ((String) -> String)? = null,
+  ) {
+    /**
+     * The predicate, reading [column] through [prefix] — the table alias, empty
+     * when the index is the only table in scope, `i.` when it is joined.
+     */
+    fun sql(prefix: String = ""): String = predicate("$prefix$column")
+
+    /** The OPPOSITE of [sql], for the one axis a caller may invert. */
+    fun negated(prefix: String = ""): String = (negation ?: error("[$column] is not an invertible universe axis"))("$prefix$column")
+  }
+
+  /** A closed school is not a school a student can apply to. */
+  val ACTIVE = Axis("is_active", { it }, { "NOT $it" })
+
+  /** An unknown LEVEL is INCLUDED; only a school KNOWN to be two-year is out. */
+  val FOUR_YEAR = Axis("is_four_year", { "$it IS NOT FALSE" })
+
+  /**
+   * A university system's central office is not one of its campuses. An unknown
+   * sector is kept, which is what `IS DISTINCT FROM` buys over `<>`.
+   */
+  val NOT_ADMINISTRATIVE =
+    Axis("sector", { "$it IS DISTINCT FROM '${InstitutionSector.ADMINISTRATIVE_UNIT.value}'" })
+
+  /** Every axis, in the order [sql] states them. */
+  private val AXES = listOf(ACTIVE, FOUR_YEAR, NOT_ADMINISTRATIVE)
+
+  /** All three axes at once, for a reader that cannot override any of them. */
+  fun sql(prefix: String = ""): String = AXES.joinToString(" AND ") { it.sql(prefix) }
+}
 
 /**
  * Data-access layer over the college reference tables (RFC 67): `colleges` and
@@ -56,8 +121,16 @@ object CollegesDao :
    * handle afterward (it holds driver-side resources). A NULL array collapses to an
    * empty list.
    */
-  private fun ResultSet.getStringList(column: String): List<String> {
-    val arr = getArray(column) ?: return emptyList()
+  private fun ResultSet.getStringList(column: String): List<String> = getStringListOrNull(column) ?: emptyList()
+
+  /**
+   * [getStringList] where a SQL NULL is a FACT rather than an absence: null
+   * back, not an empty list. `program_titles` is the one such column — a page
+   * with no program filter reports nothing about programs, which is a different
+   * statement from "no program matched".
+   */
+  private fun ResultSet.getStringListOrNull(column: String): List<String>? {
+    val arr = getArray(column) ?: return null
     try {
       @Suppress("UNCHECKED_CAST")
       return (arr.array as Array<String?>).filterNotNull()
@@ -135,16 +208,16 @@ object CollegesDao :
    * `array_agg` saw no rows — collapses to an empty list.
    */
   private fun mapMatch(rs: ResultSet): CollegeMatch {
-    val titles = rs.getStringList("program_titles")
+    val titles = rs.getStringListOrNull("program_titles")
     return CollegeMatch(
       id = CollegeId(UUID.fromString(rs.getString("id"))),
       ipedsUnitId = rs.getInt("ipeds_unit_id"),
       name = rs.getString("name"),
       city = rs.getString("city"),
       state = rs.getString("state"),
-      control = rs.getInt("control"),
-      region = rs.intOrNull("region"),
-      locale = rs.intOrNull("locale"),
+      control = rs.getString("control"),
+      region = rs.getString("region"),
+      locale = rs.getString("locale"),
       undergradEnrollmentHeadcount = rs.intOrNull("undergrad_enrollment_headcount"),
       admissionRateShare = rs.doubleOrNull("admission_rate_share"),
       netPricePerYearUsd = rs.intOrNull("net_price_per_year_usd"),
@@ -159,6 +232,8 @@ object CollegesDao :
       pellShare = rs.doubleOrNull("pell_share"),
       website = rs.getString("website"),
       programTitles = titles,
+      ipedsSurveyYear = rs.intOrNull("ipeds_survey_year"),
+      programsCensusSurveyYear = rs.intOrNull("programs_census_survey_year"),
     )
   }
 
@@ -450,148 +525,691 @@ object CollegesDao :
       )
 
   /**
-   * Structured filtering over the typed columns. Builds a parameterized SELECT,
-   * appending one `AND` clause per non-null filter; joins `college_programs` only
-   * when `cipPrefix` is set (matching `cip_code LIKE prefix || '%'` so 2/4/6-digit
-   * prefixes all resolve, and aggregating the matched titles into
-   * `program_titles`; a `credentialLevel` alone joins without title aggregation).
-   * Applies the [CollegeQuery.SortBy] ordering (see [orderBy]) and the
-   * caller-supplied `LIMIT`, then runs the companion unclamped COUNT over the
-   * same FROM/WHERE for [CollegeSearchPage.totalMatches] (RFC 139). Every value
-   * is bound as a parameter — no filter value is interpolated into SQL text.
+   * Structured filtering over `college_search_index` (RFC 150 D53/D60).
+   *
+   * **Filtering, sorting and counting touch the index and nothing else.** Every
+   * `WHERE` clause the vocabulary can build, every unknown-count `FILTER` arm
+   * and every `ORDER BY` key resolves inside one table with no join at all —
+   * the hot path that reads ~6,300 rows to find 142 got narrower, not wider.
+   * The `college_programs` join and the twelve `colleges` filter clauses this
+   * function used to carry are DELETED, not kept alongside.
+   *
+   * **Only the returned page reaches the source of truth.** After `LIMIT`, at
+   * most 25 rows join back to `colleges` for the payload (city, the money and
+   * outcome fields, website), to `college_ipeds` for its `survey_year`, and to
+   * a LATERAL over `college_programs_census`/`cip_codes` for the matched
+   * program titles and the census vintage. Sixteen duplicated columns would
+   * have been sixteen chances for two tables to disagree.
+   *
+   * **No code-to-word step remains.** `control`, `region`, `locale` and the
+   * attribute slugs come off the index already in the vocabulary the result
+   * speaks (D61), so every value bound here is the word the model said.
+   *
+   * The count is ONE statement of `FILTER` aggregates (D55): the total, plus
+   * one `excluded_unknown` arm per supplied filter over a nullable column,
+   * evaluated against the DEFAULT UNIVERSE rather than against the other
+   * filters — so the number answers "how many schools could not be judged on
+   * this axis" and not an order-dependent residue. Not N extra round trips.
+   *
+   * Every value is bound as a parameter — no filter value is interpolated into
+   * SQL text.
    */
   fun search(
     session: SqlSession,
     query: CollegeQuery,
-  ): Result<CollegeSearchPage> {
-    val binders = mutableListOf<(PreparedStatement, Int) -> Unit>()
-    val wheres = mutableListOf<String>()
-    val hasProgramFilter = query.cipPrefix != null || query.credentialLevel != null
+  ): Result<CollegeSearchOutcome> {
+    // An UNBUILT index answers everything with zero, and a zero is the one
+    // answer that cannot be told apart from a real one (RFC 150). Checked
+    // BEFORE the query, so nothing downstream has to interpret an empty page.
+    if (!isSearchIndexBuilt(session).getOrElse { return Result.failure(it) }) {
+      return Result.success(CollegeSearchOutcome.IndexNotBuilt)
+    }
 
-    if (query.cipPrefix != null) {
-      wheres += "p.cip_code LIKE ? || '%'"
-      val prefix = query.cipPrefix
-      binders += { stmt, i -> stmt.setString(i, prefix) }
+    // The program filter is expanded to a real 6-digit code set BEFORE anything
+    // is matched, so "5116" — a CIP series the 2023 vocabulary does not carry —
+    // is a named REFUSAL rather than a silent empty result (D54). The refusal is
+    // a successful outcome: the database did not fail, the word did.
+    val programCodes =
+      when (val expansion = expandProgramCodes(session, query).getOrElse { return Result.failure(it) }) {
+        is ProgramExpansion.Unresolvable -> return Result.success(expansion.refusal)
+        is ProgramExpansion.Codes -> expansion.programs
+      }
+
+    val plan = createSearchPlan(query, programCodes)
+
+    val matches =
+      listMatches(session, query, plan, programCodes.matchedCodes).getOrElse { return Result.failure(it) }
+
+    return countPage(session, plan, matches)
+  }
+
+  /**
+   * The whole predicate of one search, as ONE value both statements consume.
+   *
+   * Everything the `WHERE` of the page query and the `FILTER` arms of the count
+   * query are built from lives here — nothing else in this file may write a
+   * search predicate. That is the point: the two statements used to be handed
+   * a clause string and a separate binder list, and the rule that the second
+   * had to stay in step with the first was written only in comments. Adding a
+   * filter to one statement and not the other, or binding in a different order,
+   * compiled and returned wrong answers. Now [SearchPlan] emits both the text
+   * and the binds from the same list, so they cannot disagree.
+   */
+  private fun createSearchPlan(
+    query: CollegeQuery,
+    programCodes: ExpandedPrograms,
+  ): SearchPlan {
+    val universe = mutableListOf<String>()
+
+    // The default universe is a default, not a wall (D56): all three axes are
+    // overridable per call, and every one of them is [DefaultUniverse]'s own
+    // words rather than a second copy of them. An overriding caller states a
+    // boolean, so no clause here binds a parameter.
+    query.isActive?.let { active ->
+      universe += if (active) DefaultUniverse.ACTIVE.sql() else DefaultUniverse.ACTIVE.negated()
     }
-    query.credentialLevel?.let { level ->
-      wheres += "p.credential_level = ?"
-      binders += { stmt, i -> stmt.setInt(i, level.code) }
+    // Only the DEFAULT belongs in the universe. An EXPLICIT level is an ordinary
+    // filter over a nullable column, so it reports how many colleges it could
+    // not judge instead of silently reading unknown as "no" (D55) — see below.
+    if (query.isFourYear == null) universe += DefaultUniverse.FOUR_YEAR.sql()
+    if (!query.includeAdministrativeUnits) universe += DefaultUniverse.NOT_ADMINISTRATIVE.sql()
+
+    val filters = mutableListOf<IndexFilter>()
+
+    query.isFourYear?.let { fourYear ->
+      filters += IndexFilter("is_four_year = ?", listOf(booleanBinder(fourYear)), UnknownAxis("is_four_year"))
     }
+
     query.states?.let { states ->
       if (states.isNotEmpty()) {
-        wheres += "c.state IN (${states.joinToString(", ") { "?" }})"
-        states.forEach { s -> binders += { stmt, i -> stmt.setString(i, s) } }
+        // NOT NULL on the index, so there is no unknown to exclude or report.
+        filters += IndexFilter("state = ANY ($TEXT_ARRAY_PARAM)", listOf(jsonbArrayBinder(states)))
       }
     }
     query.region?.let { region ->
-      wheres += "c.region = ?"
-      binders += { stmt, i -> stmt.setInt(i, region) }
+      filters += IndexFilter("region = ?", listOf(stringBinder(region)), UnknownAxis("region"))
     }
     query.locales?.let { locales ->
       if (locales.isNotEmpty()) {
-        wheres += "c.locale IN (${locales.joinToString(", ") { "?" }})"
-        locales.forEach { l -> binders += { stmt, i -> stmt.setInt(i, l) } }
+        filters +=
+          IndexFilter("locale = ANY ($TEXT_ARRAY_PARAM)", listOf(jsonbArrayBinder(locales)), UnknownAxis("locale"))
       }
     }
     query.control?.let { control ->
       if (control.isNotEmpty()) {
-        wheres += "c.control IN (${control.joinToString(", ") { "?" }})"
-        control.forEach { ctrl -> binders += { stmt, i -> stmt.setInt(i, ctrl) } }
+        // The word is produced HERE, from the enum the query carries: the index
+        // column stores [InstitutionControl]'s own label under a CHECK, so the
+        // label is the bind and no unvalidated string can reach it.
+        filters +=
+          IndexFilter("control = ANY ($TEXT_ARRAY_PARAM)", listOf(jsonbArrayBinder(control.map { it.label })))
       }
     }
     query.minUndergradEnrollmentHeadcount?.let { min ->
-      wheres += "c.undergrad_enrollment_headcount >= ?"
-      binders += { stmt, i -> stmt.setInt(i, min) }
+      filters +=
+        IndexFilter(
+          "undergrad_enrollment_headcount >= ?",
+          listOf(intBinder(min)),
+          UnknownAxis("undergrad_enrollment_headcount"),
+        )
     }
     query.maxUndergradEnrollmentHeadcount?.let { max ->
-      wheres += "c.undergrad_enrollment_headcount <= ?"
-      binders += { stmt, i -> stmt.setInt(i, max) }
+      filters +=
+        IndexFilter(
+          "undergrad_enrollment_headcount <= ?",
+          listOf(intBinder(max)),
+          UnknownAxis("undergrad_enrollment_headcount"),
+        )
     }
     query.minAdmissionRateShare?.let { min ->
-      wheres += "c.admission_rate_share >= ?"
-      binders += { stmt, i -> stmt.setDouble(i, min) }
+      filters += IndexFilter("admission_rate_share >= ?", listOf(doubleBinder(min)), UnknownAxis("admission_rate_share"))
     }
     query.maxAdmissionRateShare?.let { max ->
-      wheres += "c.admission_rate_share <= ?"
-      binders += { stmt, i -> stmt.setDouble(i, max) }
+      filters += IndexFilter("admission_rate_share <= ?", listOf(doubleBinder(max)), UnknownAxis("admission_rate_share"))
     }
     query.maxNetPricePerYearUsd?.let { max ->
-      wheres += "c.net_price_per_year_usd <= ?"
-      binders += { stmt, i -> stmt.setInt(i, max) }
+      filters += IndexFilter("net_price_per_year_usd <= ?", listOf(intBinder(max)), UnknownAxis("net_price_per_year_usd"))
     }
     query.minCompletionRate150pct4yrShare?.let { min ->
-      wheres += "c.completion_rate_150pct_4yr_share >= ?"
-      binders += { stmt, i -> stmt.setDouble(i, min) }
+      filters +=
+        IndexFilter(
+          "completion_rate_150pct_4yr_share >= ?",
+          listOf(doubleBinder(min)),
+          UnknownAxis("completion_rate_150pct_4yr_share"),
+        )
+    }
+    query.testPolicy?.let { slug ->
+      filters += IndexFilter("test_policy = ?", listOf(stringBinder(slug)), UnknownAxis("test_policy"))
+    }
+    query.religiousAffiliation?.let { slug ->
+      filters += IndexFilter("religious_affiliation = ?", listOf(stringBinder(slug)), UnknownAxis("religious_affiliation"))
+    }
+    query.carnegieClass?.let { slug ->
+      filters += IndexFilter("carnegie_class = ?", listOf(stringBinder(slug)), UnknownAxis("carnegie_class"))
+    }
+    query.carnegieSize?.let { slug ->
+      filters += IndexFilter("carnegie_size = ?", listOf(stringBinder(slug)), UnknownAxis("carnegie_size"))
+    }
+    query.athleticAssociation?.let { slug ->
+      // Unjudgeable is NULL — nothing was reported about this college's
+      // associations. An EMPTY array is the KNOWN answer "it belongs to none",
+      // which is a judged NO and must never be counted as unknown: most of the
+      // country belongs to no athletic association, so the sentinel this column
+      // used to carry made `excluded_unknown` a number in the thousands.
+      filters +=
+        IndexFilter(
+          "athletic_associations @> ARRAY[?]::slug[]",
+          listOf(stringBinder(slug)),
+          UnknownAxis("athletic_associations"),
+        )
+    }
+    query.hasRotc?.let { value ->
+      filters += IndexFilter("has_rotc = ?", listOf(booleanBinder(value)), UnknownAxis("has_rotc"))
+    }
+    query.hasStudyAbroad?.let { value ->
+      filters += IndexFilter("has_study_abroad = ?", listOf(booleanBinder(value)), UnknownAxis("has_study_abroad"))
+    }
+    query.hasHousing?.let { value ->
+      filters += IndexFilter("offers_housing = ?", listOf(booleanBinder(value)), UnknownAxis("offers_housing"))
+    }
+    query.subject?.let { slug ->
+      // The taxonomy expansion is MATERIALISED on the index (D51), so a subject
+      // is one GIN containment test, not a prefix join over the census.
+      //
+      // Unjudgeable is "this college reported NO programs at all", which the
+      // rebuild writes as a NULL `subject_slugs` (it is NULL exactly when
+      // `cip_codes` is). An EMPTY `subject_slugs` beside a non-empty
+      // `cip_codes` is a judged NO — the programs are known and none of them is
+      // this subject — and counting it as unknown would overstate the number a
+      // coach reads aloud on the one axis this slice was built for.
+      filters +=
+        IndexFilter(
+          "subject_slugs @> ARRAY[?]::slug[]",
+          listOf(stringBinder(slug)),
+          UnknownAxis("subject_slugs"),
+        )
+    }
+    if (programCodes.cipPrefixCodes != null) {
+      val codes = programCodes.cipPrefixCodes
+      filters +=
+        IndexFilter(
+          "cip_codes && $TEXT_ARRAY_PARAM",
+          listOf(jsonbArrayBinder(codes)),
+          UnknownAxis("cip_codes"),
+        )
     }
 
-    val selectTitles =
-      if (query.cipPrefix != null) {
-        "array_agg(DISTINCT p.cip_title) AS program_titles"
-      } else {
-        "ARRAY[]::text[] AS program_titles"
-      }
-    val join = if (hasProgramFilter) "JOIN college_programs p ON p.college_id = c.id" else ""
-    val whereClause = if (wheres.isEmpty()) "" else "WHERE ${wheres.joinToString(" AND ")}"
+    return SearchPlan(universe, filters)
+  }
 
-    // limit is positional and always last; bound below after the filter binders.
+  /**
+   * Has the `search-index` phase ever run against this database?
+   *
+   * TWO facts, because either one alone lies. Rows in the table settle it
+   * outright; a `college_index_build` row carrying a non-null
+   * `search_index_rows` settles the honest empty case — a database whose
+   * `colleges` table really is empty has a BUILT index with no rows, and that
+   * search should answer zero. Neither present means the migration has landed
+   * and no ingest has followed it: every search would report zero out of a full
+   * database.
+   */
+  fun isSearchIndexBuilt(session: SqlSession): Result<Boolean> =
+    session.queryOne(
+      """
+      SELECT (EXISTS (SELECT 1 FROM college_search_index)
+           OR EXISTS (SELECT 1 FROM college_index_build WHERE search_index_rows IS NOT NULL)) AS built
+      """.trimIndent(),
+      bind = {},
+      map = { rs -> rs.getBoolean("built") },
+    )
+
+  /**
+   * The page itself: at most `limit` index rows, then the join back to the
+   * source of truth for the payload (see [search]).
+   */
+  private fun listMatches(
+    session: SqlSession,
+    query: CollegeQuery,
+    plan: SearchPlan,
+    matchedCodes: List<String>?,
+  ): Result<List<CollegeMatch>> {
+    // The titles LATERAL is restricted to the filter's expanded code set when
+    // there is one, so `programs` keeps its meaning: the titles that matched
+    // YOUR program filter. With NO program filter the column is SQL NULL — there
+    // is nothing to report, which is not the same claim as the empty array's
+    // "your filter matched none of this college's programs", and the boundary
+    // omits the key rather than printing `programs: []` on every search. Titles
+    // are never stored on the index — one join over a 1,710-row table for at
+    // most 25 rows beats a second place for a CIP title to live.
+    val titlesSelect =
+      if (matchedCodes == null) "NULL::text[]" else "coalesce(array_agg(cc.title ORDER BY cc.code), ARRAY[]::text[])"
+    val censusRestriction = if (matchedCodes == null) "" else "AND pc.cip_code = ANY ($TEXT_ARRAY_PARAM)"
+
     val sql =
       """
       SELECT
-        c.id, c.ipeds_unit_id, c.name, c.city, c.state, c.control, c.region, c.locale,
-        c.undergrad_enrollment_headcount, c.admission_rate_share, c.net_price_per_year_usd, c.net_price_per_year_income_q1_usd,
-        c.net_price_per_year_income_q2_usd, c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd, c.net_price_per_year_income_q5_usd,
-        c.completion_rate_150pct_4yr_share, c.median_earnings_10y_after_entry_usd, c.median_debt_at_completion_usd, c.pell_share, c.website,
-        $selectTitles
-      FROM colleges c
-      $join
-      $whereClause
-      GROUP BY c.id
-      ORDER BY ${orderBy(query.sortBy)}
-      LIMIT ?
+        i.college_id AS id, i.ipeds_unit_id, i.name, i.state, i.control, i.region, i.locale,
+        i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
+        i.completion_rate_150pct_4yr_share,
+        c.city, c.net_price_per_year_income_q1_usd, c.net_price_per_year_income_q2_usd,
+        c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd,
+        c.net_price_per_year_income_q5_usd, c.median_earnings_10y_after_entry_usd,
+        c.median_debt_at_completion_usd, c.pell_share, c.website,
+        ci.survey_year AS ipeds_survey_year,
+        t.titles AS program_titles,
+        t.census_year AS programs_census_survey_year
+      FROM (
+        SELECT
+          college_id, ipeds_unit_id, name, state, control, region, locale,
+          undergrad_enrollment_headcount, admission_rate_share, net_price_per_year_usd,
+          completion_rate_150pct_4yr_share
+        FROM college_search_index
+        ${plan.whereClause}
+        ORDER BY ${orderBy(query.sortBy, "")}
+        LIMIT ?
+      ) i
+      JOIN colleges c ON c.id = i.college_id
+      LEFT JOIN college_ipeds ci ON ci.ipeds_unit_id = i.ipeds_unit_id
+      LEFT JOIN LATERAL (
+        SELECT $titlesSelect AS titles, max(pc.survey_year) AS census_year
+        FROM college_programs_census pc
+        JOIN cip_codes cc ON cc.code = pc.cip_code
+        WHERE pc.college_id = i.college_id
+        $censusRestriction
+      ) t ON TRUE
+      ORDER BY ${orderBy(query.sortBy, "i.")}
       """.trimIndent()
 
-    val matches =
-      session
-        .queryList(
-          sql,
-          bind = { stmt ->
-            var idx = 1
-            binders.forEach { b -> b(stmt, idx++) }
-            stmt.setInt(idx, query.limit)
-          },
-          map = ::mapMatch,
-        ).getOrElse { return Result.failure(it) }
+    return session.queryList(
+      sql,
+      bind = { stmt ->
+        var idx = plan.bindPredicate(stmt)
+        stmt.setInt(idx++, query.limit)
+        if (matchedCodes != null) jsonbArrayBinder(matchedCodes)(stmt, idx++)
+      },
+      map = ::mapMatch,
+    )
+  }
 
-    // The honest population count: same FROM/WHERE, no GROUP BY, no LIMIT. Two
-    // statements on one connection; at ~6k rows the COUNT costs microseconds and
-    // keeps the main query untouched.
-    val countSql = "SELECT COUNT(DISTINCT c.id) AS total FROM colleges c $join $whereClause"
+  /**
+   * The counts, and the finished page. ONE statement (D55): the honest
+   * population total plus one `excluded_unknown` arm per supplied filter whose
+   * column can be unknown. The arms read the UNIVERSE, not the other filters.
+   */
+  private fun countPage(
+    session: SqlSession,
+    plan: SearchPlan,
+    matches: List<CollegeMatch>,
+  ): Result<CollegeSearchOutcome> {
+    val countSelects =
+      buildList {
+        add("count(*) FILTER (WHERE ${plan.matchClause}) AS total")
+        plan.unknownAxes.forEach { axis ->
+          add("count(*) FILTER (WHERE ${plan.universeClause} AND ${axis.condition}) AS ${axis.countColumn}")
+        }
+      }
+    val countSql = "SELECT ${countSelects.joinToString(", ")} FROM college_search_index"
+
     return session
       .queryOne(
         countSql,
-        bind = { stmt ->
-          var idx = 1
-          binders.forEach { b -> b(stmt, idx++) }
+        // The unknown arms restate the universe, which [SearchPlan] guarantees
+        // binds nothing, so the predicate binds are the whole statement's binds
+        // — the same call, in the same order, as the page query above.
+        bind = { stmt -> plan.bindPredicate(stmt) },
+        map = { rs ->
+          val total = rs.getInt("total")
+          val excluded = plan.unknownAxes.associate { axis -> axis.key to rs.getInt(axis.countColumn) }
+          total to excluded
         },
-        map = { rs -> rs.getInt("total") },
-      ).map { total -> CollegeSearchPage(matches = matches, totalMatches = total) }
+      ).map { (total, excluded) ->
+        CollegeSearchOutcome.Page(
+          CollegeSearchPage(
+            matches = matches,
+            totalMatches = total,
+            excludedUnknown = excluded,
+            sourceYears = sourceYears(matches),
+          ),
+        )
+      }
+  }
+
+  /**
+   * One search's predicate: the clause TEXT and the binds that feed it, from
+   * ONE list, so the page query and the count query cannot desynchronise.
+   *
+   * A statement takes [whereClause] or [matchClause] and then calls
+   * [bindPredicate]; there is no way to obtain the text without the matching
+   * binder sequence, and no second place that flattens the filters into a
+   * binder list of its own.
+   */
+  private class SearchPlan(
+    private val universe: List<String>,
+    private val filters: List<IndexFilter>,
+  ) {
+    init {
+      // The count query restates the universe once per unknown arm WITHOUT
+      // rebinding it. That is only sound while no universe fragment carries a
+      // parameter, so the plan refuses to exist if one ever does.
+      require(universe.none { "?" in it }) { "a universe fragment may not bind a parameter" }
+    }
+
+    /** The DEFAULT-universe predicate alone: the corpus an unknown count is measured against. */
+    val universeClause: String = if (universe.isEmpty()) "TRUE" else universe.joinToString(" AND ")
+
+    /** The universe AND every filter: the rows the search matches. */
+    val matchClause: String =
+      (universe + filters.map { it.clause }).let { if (it.isEmpty()) "TRUE" else it.joinToString(" AND ") }
+
+    /** [matchClause] as a `WHERE`, or nothing at all when the search is unrestricted. */
+    val whereClause: String = if (universe.isEmpty() && filters.isEmpty()) "" else "WHERE $matchClause"
+
+    /** The unjudgeable axes to report, one `excluded_unknown` key each, in select-list order. */
+    val unknownAxes: List<UnknownAxis> = filters.mapNotNull { it.unknown }.distinctBy { it.key }
+
+    /**
+     * Binds every parameter [matchClause] and [whereClause] carry, starting at
+     * [from], and returns the NEXT free index for whatever the statement adds
+     * of its own (a `LIMIT`, a LATERAL restriction).
+     */
+    fun bindPredicate(
+      stmt: PreparedStatement,
+      from: Int = 1,
+    ): Int {
+      var idx = from
+      filters.forEach { filter -> filter.binders.forEach { bind -> bind(stmt, idx++) } }
+      return idx
+    }
+  }
+
+  /** One index filter: its clause, its binds, and how it can be unjudgeable. */
+  private data class IndexFilter(
+    val clause: String,
+    val binders: List<Bind>,
+    val unknown: UnknownAxis? = null,
+  )
+
+  /**
+   * How a filter's column can be unjudgeable: the `excluded_unknown` key it is
+   * reported under, and the predicate that counts it. The key DEFAULTS the
+   * predicate and the two travel together, so a condition cannot exist without
+   * its key — the state that used to compile and then silently delete the
+   * filter's whole `excluded_unknown` count (D55).
+   */
+  private data class UnknownAxis(
+    val key: String,
+    val condition: String = "$key IS NULL",
+  ) {
+    /**
+     * The count column BOTH sides of the count query cite: the select list that
+     * writes the arm, and the read that puts it under [key].
+     *
+     * They used to be numbered by POSITION (`AS unk_$n`, read back by a second,
+     * independent `mapIndexed`), so the correspondence between arm 3 and the
+     * third axis was a fact about two loops rather than anything either one
+     * stated. Naming it after the axis makes the two sides quote the SAME
+     * string, so they cannot be reordered apart.
+     */
+    val countColumn: String = "unknown_$key"
+  }
+
+  /**
+   * The program filter, expanded to real CIP codes before anything is matched.
+   *
+   * [ExpandedPrograms.cipPrefixCodes] is the `cipPrefix` escape hatch's own
+   * expansion — the set the `cip_codes &&` clause binds — and
+   * [ExpandedPrograms.matchedCodes] is what the titles LATERAL restricts to,
+   * which is the INTERSECTION when both a `subject` and a `cipPrefix` were
+   * given, because `programs` reports the titles that satisfied the whole
+   * program filter.
+   *
+   * A prefix matching no real CIP code, and a subject word no taxonomy row
+   * carries, are both NAMED refusals (D54): a filter that silently matches
+   * nothing answers a narrow question with an empty answer and no reason. The
+   * refusal is a [CollegeSearchOutcome.UnresolvableProgramFilter], not a
+   * `Result.failure` — the vocabulary is wrong, the database is not — so a
+   * caller renders it as the validation error it is rather than as a fault.
+   */
+  private fun expandProgramCodes(
+    session: SqlSession,
+    query: CollegeQuery,
+  ): Result<ProgramExpansion> {
+    val prefix = query.cipPrefix
+    val subject = query.subject
+    if (prefix == null && subject == null) {
+      return Result.success(ProgramExpansion.Codes(ExpandedPrograms(null, null)))
+    }
+
+    val prefixCodes =
+      prefix?.let {
+        when (val expansion = expandCipPrefix(session, it).getOrElse { e -> return Result.failure(e) }) {
+          is WordExpansion.Unresolvable -> return Result.success(ProgramExpansion.Unresolvable(expansion.refusal))
+          is WordExpansion.Codes -> expansion.codes
+        }
+      }
+    val subjectCodes =
+      subject?.let {
+        when (val expansion = expandSubject(session, it).getOrElse { e -> return Result.failure(e) }) {
+          is WordExpansion.Unresolvable -> return Result.success(ProgramExpansion.Unresolvable(expansion.refusal))
+          is WordExpansion.Codes -> expansion.codes
+        }
+      }
+
+    // THE two-filter decision, stated once and named, rather than left implicit
+    // in a `when` at the end of three inline queries. `programs` reports the
+    // titles that satisfied the WHOLE program filter, so when both words were
+    // written the answer is their INTERSECTION — and an EMPTY intersection is a
+    // refusal, not a search. The two clauses are independent on the index
+    // (`cip_codes &&` and `subject_slugs @>`), so running it would have matched
+    // a college offering biology and, separately, nursing: a page of colleges no
+    // single program of which satisfies the question, handed back with
+    // `programs: []` and no reason for the emptiness. The two words contradict
+    // each other; say that, the way every other unusable program word is said.
+    if (prefixCodes != null && subjectCodes != null) {
+      val shared = prefixCodes.filter { it in subjectCodes.toSet() }
+      if (shared.isEmpty()) {
+        return createUnresolvableExpansion(
+          CollegeSearchOutcome.UnresolvableProgramFilter.Field.SUBJECT,
+          checkNotNull(subject),
+          CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_AND_CIP_PREFIX_SHARE_NO_CIP_CODE,
+          conflictsWith = prefix,
+        )
+      }
+      return Result.success(ProgramExpansion.Codes(ExpandedPrograms(prefixCodes, shared)))
+    }
+    // Exactly one word was written: what it expands to is both the clause's code
+    // set and what `programs` reports.
+    return Result.success(ProgramExpansion.Codes(ExpandedPrograms(prefixCodes, prefixCodes ?: subjectCodes)))
+  }
+
+  /**
+   * The `cipPrefix` escape hatch's own expansion: every published CIP code the
+   * prefix names, or the refusal that it names none.
+   */
+  private fun expandCipPrefix(
+    session: SqlSession,
+    prefix: String,
+  ): Result<WordExpansion> {
+    val codes =
+      session
+        .queryList(
+          "SELECT code FROM cip_codes WHERE code LIKE ? || '%' ORDER BY code",
+          bind = { stmt -> stmt.setString(1, prefix) },
+          map = { rs -> rs.getString("code") },
+        ).getOrElse { return Result.failure(it) }
+    if (codes.isEmpty()) {
+      return createUnresolvableWord(
+        CollegeSearchOutcome.UnresolvableProgramFilter.Field.CIP_PREFIX,
+        prefix,
+        CollegeSearchOutcome.UnresolvableProgramFilter.Cause.NOT_A_PUBLISHED_CIP_CODE,
+      )
+    }
+    return Result.success(WordExpansion.Codes(codes))
+  }
+
+  /**
+   * A `subject` word's expansion through the taxonomy, or the refusal — with the
+   * SECOND query that splits the two ways it can fail: a word no `subjects` row
+   * carries at all, and a subject whose prefixes name no published CIP code.
+   * They are different defects — a wrong word, versus a taxonomy this vocabulary
+   * has outgrown — and the caller is told which.
+   */
+  private fun expandSubject(
+    session: SqlSession,
+    subject: String,
+  ): Result<WordExpansion> {
+    val codes =
+      session
+        .queryList(
+          """
+          SELECT c.code
+          FROM cip_codes c
+          WHERE EXISTS (
+            SELECT 1 FROM subjects s, unnest(s.cip_prefixes) AS pfx
+            WHERE s.slug = ? AND c.code LIKE pfx || '%')
+          ORDER BY c.code
+          """.trimIndent(),
+          bind = { stmt -> stmt.setString(1, subject) },
+          map = { rs -> rs.getString("code") },
+        ).getOrElse { return Result.failure(it) }
+    if (codes.isNotEmpty()) return Result.success(WordExpansion.Codes(codes))
+
+    val known =
+      session
+        .queryList(
+          "SELECT 1 AS one FROM subjects WHERE slug = ?",
+          bind = { stmt -> stmt.setString(1, subject) },
+          map = { rs -> rs.getInt("one") },
+        ).getOrElse { return Result.failure(it) }
+    return createUnresolvableWord(
+      CollegeSearchOutcome.UnresolvableProgramFilter.Field.SUBJECT,
+      subject,
+      if (known.isEmpty()) {
+        CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_NOT_IN_TAXONOMY
+      } else {
+        CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_MATCHES_NO_CIP_CODE
+      },
+    )
+  }
+
+  /** One program WORD's expansion: the codes it names, or the refusal it is. */
+  private sealed interface WordExpansion {
+    data class Codes(
+      val codes: List<String>,
+    ) : WordExpansion
+
+    data class Unresolvable(
+      val refusal: CollegeSearchOutcome.UnresolvableProgramFilter,
+    ) : WordExpansion
+  }
+
+  /** [createUnresolvableExpansion], for one word rather than the whole program filter. */
+  private fun createUnresolvableWord(
+    field: CollegeSearchOutcome.UnresolvableProgramFilter.Field,
+    value: String,
+    cause: CollegeSearchOutcome.UnresolvableProgramFilter.Cause,
+  ): Result<WordExpansion> =
+    Result.success(
+      WordExpansion.Unresolvable(CollegeSearchOutcome.UnresolvableProgramFilter(field, value, cause)),
+    )
+
+  /**
+   * One named program-filter refusal, as the successful outcome it is. The DAO
+   * states the FACT — which field, which word, which cause — and never the
+   * sentence: the wording belongs to whichever boundary is speaking.
+   */
+  private fun createUnresolvableExpansion(
+    field: CollegeSearchOutcome.UnresolvableProgramFilter.Field,
+    value: String,
+    cause: CollegeSearchOutcome.UnresolvableProgramFilter.Cause,
+    conflictsWith: String? = null,
+  ): Result<ProgramExpansion> =
+    Result.success(
+      ProgramExpansion.Unresolvable(
+        CollegeSearchOutcome.UnresolvableProgramFilter(field, value, cause, conflictsWith),
+      ),
+    )
+
+  /**
+   * The two outcomes of expanding the program filter (see [expandProgramCodes]):
+   * the real code sets, or the refusal the caller returns as its own outcome.
+   */
+  private sealed interface ProgramExpansion {
+    data class Codes(
+      val programs: ExpandedPrograms,
+    ) : ProgramExpansion
+
+    data class Unresolvable(
+      val refusal: CollegeSearchOutcome.UnresolvableProgramFilter,
+    ) : ProgramExpansion
+  }
+
+  /** See [expandProgramCodes]. Both members are null when no program filter was given. */
+  private data class ExpandedPrograms(
+    val cipPrefixCodes: List<String>?,
+    val matchedCodes: List<String>?,
+  )
+
+  /**
+   * `source_years` for the rows actually returned (D55): the RANGE each source's
+   * vintages span, which is one year in the ordinary case where the rows agree.
+   *
+   * It reduced with `singleOrNull()` first, so a page mixing 2022 and 2023
+   * reported nothing for that source and read exactly like a page carrying no
+   * vintage — a real fact about the answer, deleted. A source no returned row
+   * carries is still absent, because there is genuinely nothing to report.
+   */
+  private fun sourceYears(matches: List<CollegeMatch>): Map<String, IntRange> =
+    buildMap {
+      yearRange(matches.mapNotNull { it.ipedsSurveyYear })?.let { put("ipeds", it) }
+      yearRange(matches.mapNotNull { it.programsCensusSurveyYear })?.let { put("programs_census", it) }
+    }
+
+  /** The span of [years], or null when no returned row carried one. */
+  private fun yearRange(years: List<Int>): IntRange? {
+    val min = years.minOrNull() ?: return null
+    return min..years.max()
   }
 
   /**
    * The ORDER BY clause for a [CollegeQuery.SortBy] — a closed enum-to-constant
-   * mapping (no caller text reaches SQL). A sort never filters: rows NULL on the
-   * sort key sink (`NULLS LAST`), they do not vanish (brief 0004 D11); every
-   * ordering ends with the `ipeds_unit_id ASC` tiebreak for a total, deterministic
-   * order (`name` is not unique, so NAME_ASC needs the tiebreak too).
+   * mapping (no caller text reaches SQL) over `college_search_index` columns.
+   * [prefix] is the alias the columns are read through: empty inside the
+   * filtered subquery, `i.` in the payload query that re-states the same order.
+   *
+   * A sort never filters: rows NULL on the sort key sink (`NULLS LAST`), they
+   * do not vanish (brief 0004 D11); every ordering ends with the
+   * `ipeds_unit_id ASC` tiebreak for a total, deterministic order (`name` is
+   * not unique, so NAME_ASC needs the tiebreak too).
    */
-  private fun orderBy(sortBy: CollegeQuery.SortBy): String =
+  private fun orderBy(
+    sortBy: CollegeQuery.SortBy,
+    prefix: String,
+  ): String =
     when (sortBy) {
-      CollegeQuery.SortBy.ENROLLMENT_DESC -> "c.undergrad_enrollment_headcount DESC NULLS LAST"
-      CollegeQuery.SortBy.ADMISSION_RATE_SHARE_ASC -> "c.admission_rate_share ASC NULLS LAST"
-      CollegeQuery.SortBy.NET_PRICE_PER_YEAR_USD_ASC -> "c.net_price_per_year_usd ASC NULLS LAST"
-      CollegeQuery.SortBy.COMPLETION_RATE_150PCT_4YR_SHARE_DESC -> "c.completion_rate_150pct_4yr_share DESC NULLS LAST"
-      CollegeQuery.SortBy.NAME_ASC -> "c.name ASC NULLS LAST"
-    } + ", c.ipeds_unit_id ASC"
+      CollegeQuery.SortBy.ENROLLMENT_DESC -> {
+        "${prefix}undergrad_enrollment_headcount DESC NULLS LAST"
+      }
+
+      CollegeQuery.SortBy.ADMISSION_RATE_SHARE_ASC -> {
+        "${prefix}admission_rate_share ASC NULLS LAST"
+      }
+
+      CollegeQuery.SortBy.NET_PRICE_PER_YEAR_USD_ASC -> {
+        "${prefix}net_price_per_year_usd ASC NULLS LAST"
+      }
+
+      CollegeQuery.SortBy.COMPLETION_RATE_150PCT_4YR_SHARE_DESC -> {
+        "${prefix}completion_rate_150pct_4yr_share DESC NULLS LAST"
+      }
+
+      CollegeQuery.SortBy.NAME_ASC -> {
+        "${prefix}name ASC NULLS LAST"
+      }
+    } + ", ${prefix}ipeds_unit_id ASC"
+
+  // ---------------------------------------------------------------------------
+  // Filter binding helpers (RFC 150)
+  // ---------------------------------------------------------------------------
 
   /**
    * Student-facing name search (RFC 137 boundary, RFC 146 matching). Three
@@ -666,6 +1284,14 @@ object CollegesDao :
     query: String,
     limit: Int,
   ): Result<List<CollegeSummary>> {
+    // The same honesty gate [search] takes, and this path needs it MORE: name
+    // search used to degrade to a `colleges` substring scan, so an unbuilt
+    // index makes it strictly worse than before rather than merely narrower.
+    // It is a named, retryable failure rather than an empty list — the next
+    // ingest fixes it — and never a zero result.
+    if (!isSearchIndexBuilt(session).getOrElse { return Result.failure(it) }) {
+      return Result.failure(SearchIndexNotBuiltException())
+    }
     val escaped = escapeLikePattern(query)
     val sql =
       """
@@ -690,13 +1316,23 @@ object CollegesDao :
         FROM word_match
         GROUP BY college_id
       )
+      -- The MATCHING and the RANKING read `college_search_index` (RFC 150 D53):
+      -- one search path, so the substring arm and the enrollment tiebreak come
+      -- off the same table the structured search filters. The PROJECTION stays
+      -- on the source of truth (D60) -- `city` is not on the index and does not
+      -- need to be, because nothing matches or sorts on it. Both
+      -- `college_name_words.college_id` and `college_search_index.college_id`
+      -- ARE `colleges.id`, so the join needs no translation and
+      -- `PublicCollegeSummary.id` keeps carrying the same value: the REST
+      -- contract is byte-identical in shape.
       SELECT c.id, c.name, c.city, c.state
-      FROM colleges c
+      FROM college_search_index i
+        JOIN colleges c ON c.id = i.college_id
         CROSS JOIN q
-        LEFT JOIN scored s ON s.college_id = c.id
+        LEFT JOIN scored s ON s.college_id = i.college_id
       WHERE (cardinality(q.words) > 0 AND s.matched_words = cardinality(q.words))
-         OR college_search_text(c.name, c.aliases) ILIKE '%' || ? || '%'
-      ORDER BY (c.name ILIKE ? || '%') DESC,
+         OR i.search_text ILIKE '%' || ? || '%'
+      ORDER BY (i.name ILIKE ? || '%') DESC,
         -- Two explicit keys, not one number with a penalty folded into it.
         -- First the CLASS: did the row match the one-keystroke rule at all
         -- (every query word matched)? A boolean cannot collide with a distance,
@@ -708,7 +1344,7 @@ object CollegesDao :
         -- 1 per one-keystroke word. NULL for a substring-only row that matched
         -- no query word, which sorts last — it is the least-explained match.
         s.distance ASC NULLS LAST,
-        c.undergrad_enrollment_headcount DESC NULLS LAST, c.name, c.ipeds_unit_id
+        i.undergrad_enrollment_headcount DESC NULLS LAST, i.name, i.ipeds_unit_id
       LIMIT ?
       """.trimIndent()
     return session.queryList(
@@ -791,6 +1427,311 @@ object CollegesDao :
   }
 
   // ---------------------------------------------------------------------------
+  // The derived search index (RFC 150)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The `colleges.control` codes [InstitutionControl] does not name, with how
+   * many rows carry each — empty in every healthy database.
+   *
+   * `colleges_control_valid_check` restricts the column to 1/2/3 today, so this
+   * can only be non-empty after the CHECK and the enum drift apart. That is
+   * exactly the case worth naming: the alternative report is a NOT NULL
+   * violation on `college_search_index.control` with no code in it.
+   */
+  fun unmappedControlCodes(session: SqlSession): Result<Map<String, Int>> =
+    unmappedCodeCounts(session, "colleges", "control", InstitutionControl.entries.map { it.code })
+
+  /**
+   * The same read over `college_ipeds.sector` (D61b) — a COUNTED REPORT rather
+   * than a failure, because `sector` is nullable and SECTOR_CASE degrades an
+   * unnamed code to NULL. Silent degradation is the defect: a college whose
+   * sector went NULL is silently kept out of the administrative-unit exclusion
+   * and reported NOWHERE. The `search-index` phase logs this, RFC 147 D46 style.
+   */
+  fun unmappedSectorCodes(session: SqlSession): Result<Map<String, Int>> =
+    unmappedCodeCounts(session, "college_ipeds", "sector", InstitutionSector.entries.map { it.code })
+
+  /**
+   * Distinct stored values of [column] that are not in [known], with row counts.
+   *
+   * Table, column and codes are all constants of this file — the codes come
+   * from the Kotlin enums the rebuild generates its `CASE` arms from — so no
+   * caller text reaches the SQL text.
+   */
+  private fun unmappedCodeCounts(
+    session: SqlSession,
+    table: String,
+    column: String,
+    known: List<Int>,
+  ): Result<Map<String, Int>> =
+    session
+      .queryList(
+        """
+        SELECT $column::text AS code, count(*) AS n
+        FROM $table
+        WHERE $column IS NOT NULL AND $column NOT IN (${known.joinToString(", ")})
+        GROUP BY $column
+        ORDER BY $column
+        """.trimIndent(),
+        bind = {},
+        map = { rs -> rs.getString("code") to rs.getInt("n") },
+      ).map { it.toMap() }
+
+  /**
+   * `CASE` arms mapping a raw `colleges.control` code to the word
+   * `college_search_index.control` stores, GENERATED from
+   * [InstitutionControl] rather than written out as SQL literals (D61a).
+   *
+   * Generated on purpose: the schema CHECK, the enum and this SQL are three
+   * statements of one vocabulary, and a hand-written third copy is the one that
+   * silently drifts. A code the enum does not define yields NULL, and `control`
+   * is NOT NULL, so the rebuild FAILS rather than storing a school with no
+   * control — a school with no control is not a searchable school.
+   */
+  private val CONTROL_CASE: String =
+    InstitutionControl.entries.joinToString(
+      separator = " ",
+      prefix = "CASE c.control ",
+      postfix = " END",
+    ) { "WHEN ${it.code} THEN '${it.label}'" }
+
+  /**
+   * The same generation for `college_ipeds.sector` (D61b), from
+   * [InstitutionSector].
+   *
+   * The difference from [CONTROL_CASE] is what NULL means. `sector` is nullable,
+   * and it is NULL exactly when there is no `college_ipeds` row to read — an
+   * absence. The publisher's OWN "sector unknown (not active)" is code 99 and
+   * maps to the word `unknown`, a reported fact. A code outside the eleven
+   * cannot arrive here at all: `college_ipeds_sector_domain_check` refused it at
+   * ingest.
+   */
+  private val SECTOR_CASE: String =
+    InstitutionSector.entries.joinToString(
+      separator = " ",
+      prefix = "CASE ci.sector ",
+      postfix = " END",
+    ) { "WHEN ${it.code} THEN '${it.value}'" }
+
+  /**
+   * `HD.ICLEVEL` = 1, "four or more years": the one `college_ipeds.inst_level`
+   * code that makes a college four-year, named rather than typed as a bare `1`
+   * in the SELECT below.
+   *
+   * Every other coded axis in that statement is GENERATED from an enum
+   * ([CONTROL_CASE], [SECTOR_CASE]) precisely so a raw publisher code cannot be
+   * hand-written into SQL; this one axis was the exception, and `= 1` beside
+   * `= 2` (two-year) and `= 3` (less than two years) is one keystroke from
+   * dropping every four-year school out of the default universe. The domain is
+   * the 0055 `college_ipeds_inst_level_domain_check`, which `IpedsLoader` bounds
+   * the ingest against.
+   */
+  private const val INST_LEVEL_FOUR_OR_MORE_YEARS = 1
+
+  /**
+   * Rebuilds `college_search_index` WHOLESALE inside the caller's transaction
+   * and returns the rows written — the `search-index` phase (RFC 150 D47), and
+   * [rebuildNameWords] in shape and in transaction discipline.
+   *
+   * Four statements, and there is no fifth: D60 removed `build_id`, so nothing
+   * has to be stamped after the fact and the reproducibility assertion (D59)
+   * has no column to exempt. The body names them in order — delete, insert
+   * ([insertIndexRows]), rank ([rankPercentiles]), analyze — so this list no
+   * longer has to describe code the reader cannot see:
+   *
+   * - `DELETE`, not `TRUNCATE` — the reasoning already recorded on
+   *   [rebuildNameWords]: TRUNCATE takes an ACCESS EXCLUSIVE lock against live
+   *   readers. The DELETE also settles the foreign key: every child row is gone
+   *   before the INSERT re-references a parent, and the INSERT draws its keys
+   *   FROM `colleges`, so inside this one transaction the constraint cannot be
+   *   the thing that fails.
+   * - `ANALYZE`, inside the same transaction — permitted there, unlike
+   *   `VACUUM` — because the table was just emptied and refilled and the
+   *   planner's statistics otherwise describe the previous build.
+   *
+   * Determinism is a property, not a hope (D59): every `array_agg` carries an
+   * explicit `ORDER BY`, `percent_rank()` is deterministic under ties, and no
+   * row contains `NOW()`. Re-ingesting the same snapshot reproduces the table
+   * column for column.
+   *
+   * Wholesale is the complete story in production because `colleges` is written
+   * only by the ingest, so this phase sees the finished snapshot. A test that
+   * seeds `colleges` directly must call this itself.
+   */
+  fun rebuildSearchIndex(session: SqlSession): Result<Int> {
+    // A `colleges.control` code [InstitutionControl] does not name would make
+    // CONTROL_CASE evaluate to NULL against a NOT NULL column, so the rebuild
+    // already failed — as a bare constraint violation naming neither the code
+    // nor how many rows carry it (D61a). Say the cause instead, before the
+    // write: the operator needs the CODE, not the constraint name.
+    val unmappedControl = unmappedControlCodes(session).getOrElse { return Result.failure(it) }
+    if (unmappedControl.isNotEmpty()) return Result.failure(UnmappedControlCodeException(unmappedControl))
+
+    session.execute("DELETE FROM college_search_index").getOrElse { return Result.failure(it) }
+    val written = insertIndexRows(session).getOrElse { return Result.failure(it) }
+    rankPercentiles(session).getOrElse { return Result.failure(it) }
+    session.execute("ANALYZE college_search_index").getOrElse { return Result.failure(it) }
+    return Result.success(written)
+  }
+
+  /**
+   * Statement 2 of [rebuildSearchIndex]: the one `INSERT ... SELECT` that
+   * derives every index row from `colleges` and its sources, returning the rows
+   * written.
+   *
+   * **Every join is a LEFT JOIN** — both the source joins (a Scorecard-only
+   * ingest has no `college_ipeds` rows at all) and the six code-to-slug
+   * resolutions. A college is NEVER dropped from the index because one of its
+   * codes has no codebook row: the column goes NULL, the college stays
+   * searchable, and RFC 147 D46's unknown-code report is what names the gap. An
+   * INNER JOIN here would silently delete colleges from search, which is the
+   * worst failure this table can have and the hardest to notice.
+   *
+   * Every `array_agg` carries an explicit `ORDER BY`, so a re-ingest of the same
+   * snapshot reproduces these rows column for column (D59).
+   */
+  private fun insertIndexRows(session: SqlSession): Result<Int> =
+    session.execute(
+      """
+      INSERT INTO college_search_index (
+          college_id, ipeds_unit_id, name, search_text, state, region, locale,
+          control, is_active, is_four_year, is_degree_granting, sector,
+          undergrad_enrollment_headcount, admission_rate_share,
+          net_price_per_year_usd, completion_rate_150pct_4yr_share,
+          test_policy, religious_affiliation, carnegie_class, carnegie_size,
+          has_rotc, has_study_abroad, offers_housing, athletic_associations,
+          cip_codes, subject_slugs)
+      SELECT
+          c.id,
+          c.ipeds_unit_id,
+          c.name,
+          -- The SAME expression the name-search path matches on (0051), not a
+          -- second copy of it: materialising the words here cannot drift from
+          -- what a name query reads.
+          college_search_text(c.name, c.aliases),
+          c.state,
+          reg.slug,
+          loc.slug,
+          $CONTROL_CASE,
+          -- These two lines read a MISSING `college_ipeds` row in opposite ways,
+          -- on purpose. `is_active` is NOT NULL, so it has to say something and
+          -- says "not known to be closed" -- on a Scorecard-only ingest that is
+          -- every row, and the column then carries no information. It is the one
+          -- axis here where unknown reads as "yes", and it is the trade-off Ian
+          -- deferred at the RFC 150 approval gate (`## Deferred`, the tri-state
+          -- `is_operating` sketch). `is_four_year` below does it correctly: an
+          -- unreported level stays NULL -- unknown, never "no" -- which is why
+          -- the default universe reads it as `IS NOT FALSE`.
+          (coalesce(ci.cy_active, TRUE) AND ci.death_year IS NULL AND ci.closed_at IS NULL),
+          (ci.inst_level = $INST_LEVEL_FOUR_OR_MORE_YEARS),
+          -- `HD.UGOFFER` ("offers undergraduate awards") -> `is_degree_granting`:
+          -- the one column D60 carries that nothing filters, sorts or indexes on
+          -- today. Kept because brief 0004 D2 mandates the three universe flags
+          -- together, so the axis is there without a rebuild. See 0064's comment.
+          ci.ug_offer,
+          $SECTOR_CASE,
+          c.undergrad_enrollment_headcount,
+          c.admission_rate_share,
+          c.net_price_per_year_usd,
+          c.completion_rate_150pct_4yr_share,
+          pol.slug, rel.slug, cbc.slug, csz.slug,
+          ci.has_rotc, ci.has_study_abroad, ci.offers_housing,
+          -- NULL is "nothing was reported", the empty array is "reported: none"
+          -- (D55). `array_agg` already returns NULL over no rows, so the only
+          -- work here is keeping the two apart where the SOURCE distinguishes
+          -- them: a college that reported an EMPTY `athletic_assoc` knows it
+          -- belongs to none, and `subject_slugs` is unknown exactly when the
+          -- program census is. Coalescing all three into '{}' was the sentinel
+          -- that made `excluded_unknown` count every association-less school as
+          -- unjudgeable.
+          CASE WHEN ci.athletic_assoc IS NULL THEN NULL ELSE coalesce(aso.slugs, '{}'::slug[]) END,
+          pr.cip_codes,
+          CASE WHEN pr.cip_codes IS NULL THEN NULL ELSE coalesce(sub.subject_slugs, '{}'::slug[]) END
+      FROM colleges c
+      LEFT JOIN college_ipeds ci ON ci.ipeds_unit_id = c.ipeds_unit_id
+      LEFT JOIN ipeds_regions                reg ON reg.code = c.region
+      LEFT JOIN nces_locales                 loc ON loc.code = c.locale
+      LEFT JOIN admission_test_policies      pol ON pol.code = ci.test_policy
+      LEFT JOIN religious_affiliations       rel ON rel.code = ci.rel_affil
+      LEFT JOIN carnegie_2021_basic_classes  cbc ON cbc.code = ci.carnegie_basic
+      LEFT JOIN carnegie_2021_size_settings  csz ON csz.code = ci.carnegie_size
+      LEFT JOIN LATERAL (
+          SELECT array_agg(a.slug ORDER BY a.code) AS slugs
+          FROM unnest(coalesce(ci.athletic_assoc, '{}'::smallint[])) AS ord
+          JOIN athletic_associations a ON a.code = ord
+      ) aso ON TRUE
+      LEFT JOIN LATERAL (
+          SELECT array_agg(DISTINCT pc.cip_code ORDER BY pc.cip_code) AS cip_codes
+          FROM college_programs_census pc
+          WHERE pc.college_id = c.id
+      ) pr ON TRUE
+      LEFT JOIN LATERAL (
+          SELECT array_agg(DISTINCT s.slug ORDER BY s.slug) AS subject_slugs
+          FROM subjects s
+          WHERE EXISTS (
+              SELECT 1 FROM college_programs_census pc
+              WHERE pc.college_id = c.id
+                AND EXISTS (SELECT 1 FROM unnest(s.cip_prefixes) p
+                            WHERE pc.cip_code LIKE p || '%'))
+      ) sub ON TRUE
+      """.trimIndent(),
+    )
+
+  /**
+   * Statement 3 of [rebuildSearchIndex]: the percentile `UPDATE`, over the
+   * DEFAULT universe only (D52).
+   *
+   * The four ranks are computed INDEPENDENTLY so a row missing one input still
+   * ranks on the others, and the universe CTE joins `colleges` for
+   * `sat_average_equivalent_score`, which D60 does not carry on the index: it is
+   * the input to a percentile and nothing else. Rows OUTSIDE the default
+   * universe are never touched and keep NULL — a percentile taken against the
+   * 2-year rows and the system offices describes a corpus no student is
+   * searching. The corpus is [DefaultUniverse]'s own words, not a second copy of
+   * them, so it cannot drift from what a default search returns (D52).
+   * `percent_rank()` is deterministic under ties (D59).
+   */
+  private fun rankPercentiles(session: SqlSession): Result<Int> =
+    session.execute(
+      """
+      WITH universe AS (
+          SELECT i.college_id, i.undergrad_enrollment_headcount,
+                 i.admission_rate_share, i.net_price_per_year_usd,
+                 c.sat_average_equivalent_score
+          FROM college_search_index i
+          JOIN colleges c ON c.id = i.college_id
+          WHERE ${DefaultUniverse.sql("i.")}
+      ),
+      enrollment AS (
+          SELECT college_id,
+                 percent_rank() OVER (ORDER BY undergrad_enrollment_headcount) AS v
+          FROM universe WHERE undergrad_enrollment_headcount IS NOT NULL),
+      admission AS (
+          SELECT college_id, percent_rank() OVER (ORDER BY admission_rate_share) AS v
+          FROM universe WHERE admission_rate_share IS NOT NULL),
+      sat AS (
+          SELECT college_id,
+                 percent_rank() OVER (ORDER BY sat_average_equivalent_score) AS v
+          FROM universe WHERE sat_average_equivalent_score IS NOT NULL),
+      price AS (
+          SELECT college_id, percent_rank() OVER (ORDER BY net_price_per_year_usd) AS v
+          FROM universe WHERE net_price_per_year_usd IS NOT NULL)
+      UPDATE college_search_index t
+      SET undergrad_enrollment_percentile_share = e.v,
+          admission_rate_percentile_share       = a.v,
+          sat_average_percentile_share          = s.v,
+          net_price_percentile_share            = p.v
+      FROM universe u
+      LEFT JOIN enrollment e ON e.college_id = u.college_id
+      LEFT JOIN admission  a ON a.college_id = u.college_id
+      LEFT JOIN sat        s ON s.college_id = u.college_id
+      LEFT JOIN price      p ON p.college_id = u.college_id
+      WHERE t.college_id = u.college_id
+      """.trimIndent(),
+    )
+
+  // ---------------------------------------------------------------------------
   // Aliases + ingest provenance (RFC 139)
   // ---------------------------------------------------------------------------
 
@@ -821,26 +1762,23 @@ object CollegesDao :
     aliases: List<String>,
   ): Result<AliasUpdateOutcome> =
     try {
-      // The alias set is bound as one jsonb parameter and expanded to text[] by
-      // Postgres, not built client-side with `Connection.createArrayOf`: the
-      // [SqlSession] boundary deliberately withholds the pooled connection (its
-      // commit/rollback guarantee), and reaching through a returned statement to
-      // recover it would make that boundary advisory. It also removes the
-      // `java.sql.Array` handle entirely, so there is no `finally { free() }`
-      // that could replace the real SQLException with a cleanup one.
+      // The alias set is bound through the shared [TEXT_ARRAY_PARAM] /
+      // [jsonbArrayBinder] pair — one jsonb parameter expanded to text[] by
+      // Postgres. ONE binder is bound at BOTH indexes, so the SET value and the
+      // IS DISTINCT FROM comparison cannot be given different alias sets.
       val sql =
         """
         UPDATE colleges
-        SET aliases = ARRAY(SELECT jsonb_array_elements_text(?::jsonb)), version = version + 1
+        SET aliases = $TEXT_ARRAY_PARAM, version = version + 1
         WHERE ipeds_unit_id = ?
-          AND aliases IS DISTINCT FROM ARRAY(SELECT jsonb_array_elements_text(?::jsonb))
+          AND aliases IS DISTINCT FROM $TEXT_ARRAY_PARAM
         """.trimIndent()
-      val aliasesJson = JsonArray(aliases.map { JsonPrimitive(it) }).toString()
+      val bindAliases = jsonbArrayBinder(aliases)
       val updated =
         session.prepareStatement(sql).use { stmt ->
-          stmt.setString(1, aliasesJson)
+          bindAliases(stmt, 1)
           stmt.setInt(2, ipedsUnitId)
-          stmt.setString(3, aliasesJson)
+          bindAliases(stmt, 3)
           stmt.executeUpdate()
         }
       if (updated > 0) {
@@ -948,10 +1886,10 @@ object CollegesDao :
     val sql =
       """
       INSERT INTO college_index_build (
-        started_at, finished_at, sources, rows_ingested, index_rows,
-        change_summary, method_version
+        started_at, finished_at, sources, rows_ingested, name_words_rows,
+        search_index_rows, change_summary, method_version
       )
-      VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?::jsonb, ?)
+      VALUES (?, ?, ?::jsonb, ?::jsonb, ?, ?, ?::jsonb, ?)
       RETURNING id
       """.trimIndent()
     return session.mutateReturning(
@@ -961,9 +1899,10 @@ object CollegesDao :
         stmt.setTimestamp(2, java.sql.Timestamp.from(input.finishedAt))
         stmt.setJsonbOrNull(3, input.sources)
         stmt.setJsonbOrNull(4, input.rowsIngested)
-        stmt.setIntOrNull(5, input.indexRows)
-        stmt.setJsonbOrNull(6, input.changeSummary)
-        stmt.setInt(7, input.methodVersion)
+        stmt.setIntOrNull(5, input.nameWordsRows)
+        stmt.setIntOrNull(6, input.searchIndexRows)
+        stmt.setJsonbOrNull(7, input.changeSummary)
+        stmt.setInt(8, input.methodVersion)
       },
       map = { rs -> UUID.fromString(rs.getString("id")) },
       mapError = ::mapCollegeWriteError,

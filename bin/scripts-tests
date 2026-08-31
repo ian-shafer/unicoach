@@ -2094,6 +2094,88 @@ test_ingest_colleges_missing_codebooks() {
 }
 assert_failure "ingest-colleges fatals on a nonexistent codebook path" test_ingest_colleges_missing_codebooks
 
+# RFC 150: the authored subject taxonomy takes the SAME flag shape as the
+# codebook above — a repo default, an explicit override that replaces it
+# entirely, an empty value refused, a nonexistent path fatal. Same shape, same
+# assertions, so a divergence between the two is visible here rather than in a
+# production run.
+test_ingest_colleges_subjects_default() {
+  local root parent stub argv inst fields entry rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-subjects"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]:"
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  grep -qxF -- "--subjects-source=$root/db/data/subjects.json" "$argv" &&
+    grep -qE -- "^--subjects=.*/subjects\.json$" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges always passes the subject taxonomy path and its original arg to the launcher" \
+  test_ingest_colleges_subjects_default
+
+test_ingest_colleges_subjects_override() {
+  local root parent stub argv inst fields subjects entry rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-subjectsoverride"
+  mkdir -p "$root"
+  for entry in bin .env .env.dev .env.test .env.fuzz db; do
+    ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
+  done
+  stub="$root/college/build/install/college/bin/college"
+  argv="$parent/launcher-argv"
+  mkdir -p "$(dirname "$stub")"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %q\n' "$argv" > "$stub"
+  chmod +x "$stub"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  subjects="$parent/other-subjects.json"
+  : > "$inst"; : > "$fields"; : > "$subjects"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" "$inst" "$fields" --subjects-source="$subjects" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]:"
+    cat "$log" >&2
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  grep -qxF -- "--subjects-source=$subjects" "$argv" &&
+    ! grep -qF -- "db/data/subjects.json" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || { log-error "launcher argv was:"; cat "$argv" >&2; }
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges --subjects-source replaces the repo default entirely" \
+  test_ingest_colleges_subjects_override
+
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty --subjects-source" \
+  bin/ingest-colleges a.csv b.csv --subjects-source=
+test_ingest_colleges_missing_subjects() {
+  bin/ingest-colleges --subjects-source="/no/such/$$-subjects.json" bin/functions bin/functions \
+    > /dev/null 2>&1
+}
+assert_failure "ingest-colleges fatals on a nonexistent subject taxonomy path" test_ingest_colleges_missing_subjects
+
 # ── bin/common layering (RFC 95): ENV_FILES string, both-set, empty base ───────
 echo "==== Testing bin/common dotenv layering ===="
 

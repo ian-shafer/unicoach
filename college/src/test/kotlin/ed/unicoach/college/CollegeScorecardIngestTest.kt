@@ -240,7 +240,11 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
         assertThrows<PartialIngestException> {
           runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
         }
-      assertEquals(listOf("institutions", "fields", "aliases", "name-words"), thrown.committedPhases)
+      assertEquals(
+        listOf("institutions", "fields", "aliases", "name-words", "search-index"),
+        thrown.committedPhases,
+        "the derived search index registers itself as a committed phase too (RFC 150)",
+      )
       assertEquals("provenance", thrown.failedPhase, "the report names the phase that threw, not just what landed")
       // Exactly the expected table, not merely non-empty: the independent
       // recomputation is in hand, so a rebuild that committed one college's
@@ -307,10 +311,11 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // The build row exists and says what the report says.
     val row = withSession { buildRow(it, report.buildId) }
     assertNotNull(row)
-    // Deliberately 4, not 1: RFC 144 added a second source family, RFC 146 the
-    // derived name-word rebuild, and RFC 148 the CDS seed load — each is
-    // exactly the derivation change method_version exists to record.
-    assertEquals(4, row.methodVersion)
+    // Deliberately 5, not 1: RFC 144 added a second source family, RFC 146 the
+    // derived name-word rebuild, RFC 148 the CDS seed load, and RFC 150 the
+    // derived search index — each is exactly the derivation change
+    // method_version exists to record.
+    assertEquals(5, row.methodVersion)
     assertTrue(row.rowsIngested.contains("\"inserted\": 5"), "rows_ingested carries the insert count: ${row.rowsIngested}")
     assertTrue(row.sources.contains(institutionCsv.name), "sources carries the file name")
     assertTrue(row.changeSummary.contains("version_bumps"), "change_summary carries version bumps")
@@ -443,9 +448,10 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     // words: the phase runs AFTER the alias phase.
     assertTrue("csu" in storedNameWords().map { it.second }.toSet(), "alias words are indexed: ${storedNameWords()}")
 
-    // The count reaches provenance (index_rows was NULL for every RFC 139 build
-    // row) and the printed summary.
-    assertEquals(report.nameWords, withSession { indexRows(it, report.buildId) })
+    // The count reaches provenance (the column was NULL for every RFC 139 build
+    // row) and the printed summary. 0064 renamed it `name_words_rows`, because
+    // `index_rows` is now a name that describes a different table (D48).
+    assertEquals(report.nameWords, withSession { nameWordsRows(it, report.buildId) })
     assertTrue(
       report.humanSummary().contains("name words: ${report.nameWords} rows"),
       "the summary carries the derived row count: ${report.humanSummary()}",
@@ -462,6 +468,90 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     assertEquals(first.nameWords, second.nameWords)
     assertEquals(after, storedNameWords(), "a wholesale rebuild of unchanged rows is the same table")
   }
+
+  // ---------------------------------------------------------------------------
+  // Phase 2b: the derived search index (RFC 150)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the search-index phase writes one row per college and records the count`() {
+    val report = ingest()
+
+    assertEquals(report.colleges.inserted, report.searchIndex, "one index row per loaded college")
+    assertEquals(report.searchIndex, withSession { count(it, "college_search_index") })
+    // BOTH derived counts land, under their own names: that is the whole point
+    // of D48's rename, and a shared column could not carry them.
+    assertEquals(report.searchIndex, withSession { searchIndexRows(it, report.buildId) })
+    assertEquals(report.nameWords, withSession { nameWordsRows(it, report.buildId) })
+  }
+
+  @Test
+  fun `a Scorecard-only ingest still fills the index, with NULL attributes and is_active TRUE`() {
+    ingest()
+    // No IPEDS group, so no `college_ipeds` rows at all: every attribute column
+    // is NULL and the row is still searchable. This is the LEFT JOIN discipline
+    // at the source-join level, not just the codebook level.
+    //
+    // The three array columns are NULL here, not '{}' (RFC 150): nothing was
+    // reported about this college's associations or programs, and the empty
+    // array is reserved for the school that reported belonging to none.
+    withSession { session ->
+      session
+        .prepareStatement(
+          """
+          SELECT count(*) AS n
+          FROM college_search_index
+          WHERE is_active AND sector IS NULL AND is_four_year IS NULL
+            AND test_policy IS NULL AND religious_affiliation IS NULL
+            AND carnegie_class IS NULL AND carnegie_size IS NULL
+            AND athletic_associations IS NULL AND cip_codes IS NULL AND subject_slugs IS NULL
+          """.trimIndent(),
+        ).use { stmt ->
+          stmt.executeQuery().use { rs ->
+            rs.next()
+            assertEquals(5, rs.getInt("n"), "every Scorecard-only row is present and honestly empty")
+          }
+        }
+    }
+  }
+
+  @Test
+  fun `a failed later phase leaves no build row and so no search_index_rows`() {
+    // The success-only provenance rule, restated for the new counts: a partial
+    // run records nothing at all, so neither count can describe a run that did
+    // not finish.
+    val buildRowsBefore = withSession { count(it, "college_index_build") }
+    val hostile = aliasesFile("""[{ "ipeds_unit_id": 110100, "aliases": ["\u0000bad"] }]""")
+    assertThrows<PartialIngestException> {
+      runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(hostile)) }
+    }
+    assertEquals(buildRowsBefore, withSession { count(it, "college_index_build") })
+  }
+
+  @Test
+  fun `an unchanged re-ingest reproduces the index column for column`() {
+    ingest()
+    val first = indexSnapshot()
+    val second = ingest()
+    assertEquals(0, second.colleges.changed, "the premise: nothing changed")
+    // D59: every column, no exclusions. `build_id` was removed by D60, so there
+    // is nothing build-specific left to exempt.
+    assertEquals(first, indexSnapshot(), "the same snapshot at the same method_version reproduces the index")
+  }
+
+  /** Every column of every index row, as text, in a stable order. */
+  private fun indexSnapshot(): List<String> =
+    withSession { session ->
+      session
+        .prepareStatement("SELECT i::text AS whole_row FROM college_search_index i ORDER BY i.college_id")
+        .use { stmt ->
+          stmt.executeQuery().use { rs ->
+            val rows = mutableListOf<String>()
+            while (rs.next()) rows += rs.getString("whole_row")
+            rows
+          }
+        }
+    }
 
   /** The (ipeds_unit_id, word) pairs actually stored, alphabetical. */
   private fun storedNameWords(): List<Pair<Int, String>> =
@@ -514,18 +604,31 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     }
 
   /**
-   * `college_index_build.index_rows` for one build. Nullable in the schema — it
+   * `college_index_build.name_words_rows` for one build — the column 0064
+   * renamed out of `index_rows` (RFC 150 D48). Nullable in the schema — it
    * was NULL for every RFC 139-era build row, which is exactly the regression
    * this helper's callers assert against — so it is read as `Int?`: `getInt`
    * alone would map SQL NULL onto the very same `0` a real zero count produces.
    * The lookup is by primary key, so exactly one row is the contract and both
    * ends of it are checked.
    */
-  private fun indexRows(
+  private fun nameWordsRows(
     session: SqlSession,
     id: UUID,
+  ): Int? = buildCount(session, "name_words_rows", id)
+
+  /** `college_index_build.search_index_rows` for one build (RFC 150). See [nameWordsRows]. */
+  private fun searchIndexRows(
+    session: SqlSession,
+    id: UUID,
+  ): Int? = buildCount(session, "search_index_rows", id)
+
+  private fun buildCount(
+    session: SqlSession,
+    column: String,
+    id: UUID,
   ): Int? =
-    session.prepareStatement("SELECT index_rows FROM college_index_build WHERE id = ?").use { stmt ->
+    session.prepareStatement("SELECT $column FROM college_index_build WHERE id = ?").use { stmt ->
       stmt.setObject(1, id)
       stmt.executeQuery().use { rs ->
         assertTrue(rs.next(), "no college_index_build row for build [$id]")

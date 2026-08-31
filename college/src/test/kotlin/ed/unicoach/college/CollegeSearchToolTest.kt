@@ -5,13 +5,18 @@ import ed.unicoach.chat.BareSourceCodeGuard
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CodebooksDao
+import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.NewCollege
-import ed.unicoach.db.models.NewCollegeProgram
+import ed.unicoach.db.models.NewCollegeIndexBuild
+import ed.unicoach.db.models.NewCollegeProgramsCensus
+import ed.unicoach.db.models.NewSubject
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -25,6 +30,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -54,7 +60,9 @@ class CollegeSearchToolTest {
   fun resetDatabase() =
     runBlocking {
       database.withConnection { session ->
-        session.prepareStatement("TRUNCATE TABLE colleges, college_programs CASCADE").use { it.execute() }
+        // `subjects` too (RFC 150): the taxonomy is loaded per test, and a row
+        // left behind would advertise a subject the next test did not seed.
+        session.prepareStatement("TRUNCATE TABLE colleges, college_programs, subjects CASCADE").use { it.execute() }
       }
       Unit
     }
@@ -106,20 +114,42 @@ class CollegeSearchToolTest {
       website = null,
     )
 
-  private fun seedWithMarineBiology(ipedsUnitId: Int) = seedWithProgram(ipedsUnitId, "260702", "Marine Biology")
+  private fun seedWithMarineBiology(ipedsUnitId: Int) = seedWithProgram(ipedsUnitId, "260702")
 
+  /**
+   * Seeds one college with one IPEDS-census program. The census, not
+   * `college_programs`, is what the search index derives from (RFC 150 D51),
+   * and the TITLE is not passed in at all: it comes back from `cip_codes`, the
+   * one home for a CIP title, joined over the returned page.
+   */
   private fun seedWithProgram(
     ipedsUnitId: Int,
     cipCode: String,
-    title: String,
   ) = runBlocking {
     database.withConnection { session ->
       val college = CollegesDao.upsert(session, newCollege(ipedsUnitId)).getOrThrow()
-      CollegesDao
-        .upsertProgram(session, NewCollegeProgram(college.id, cipCode, title, 3))
+      CollegeIpedsDao
+        .upsertProgramsCensus(session, NewCollegeProgramsCensus(college.id, cipCode, 5, 12, 2023))
         .getOrThrow()
+      CollegesDao.rebuildSearchIndex(session).getOrThrow()
+      college
     }
   }
+
+  /**
+   * Seeds one college and rebuilds `college_search_index` (RFC 150 D53). Both
+   * search entry points read that table, and only the ingest's `search-index`
+   * phase writes it — so a test that writes `colleges` directly must rebuild it
+   * here, where a later test cannot forget to.
+   */
+  private fun insert(input: NewCollege) =
+    runBlocking {
+      database.withConnection { session ->
+        val college = CollegesDao.upsert(session, input).getOrThrow()
+        CollegesDao.rebuildSearchIndex(session).getOrThrow()
+        college
+      }
+    }
 
   // ---------------------------------------------------------------------------
   // Definition
@@ -134,6 +164,9 @@ class CollegeSearchToolTest {
     assertEquals("object", schema["type"]!!.jsonPrimitive.content)
 
     val properties = schema["properties"]!!.jsonObject
+    // `subject` is ABSENT here on purpose: this fixture loads the published
+    // codebooks but no taxonomy, and a filter with no vocabulary is not
+    // advertised at all (RFC 150). The test below loads one and sees it.
     val expected =
       setOf(
         "cipPrefix",
@@ -148,8 +181,17 @@ class CollegeSearchToolTest {
         "maxAdmissionRateShare",
         "maxNetPricePerYearUsd",
         "minCompletionRate150pct4yrShare",
+        "test_policy",
+        "religious_affiliation",
+        "carnegie_class",
+        "carnegie_size",
+        "athletic_association",
+        "has_rotc",
+        "has_study_abroad",
+        "has_housing",
+        "is_active",
+        "is_four_year",
         "sort_by",
-        "credential_level",
         "limit",
       )
     assertEquals(expected, properties.keys)
@@ -204,13 +246,15 @@ class CollegeSearchToolTest {
       val first = colleges.single().jsonObject
       assertEquals("Coastal College 800", first["name"]!!.jsonPrimitive.content)
       val programs = first["programs"] as JsonArray
-      assertEquals(listOf("Marine Biology"), programs.map { it.jsonPrimitive.content })
+      // The title comes from the loaded `cip_codes` vocabulary, not from a
+      // string this test typed: there is exactly one home for a CIP title.
+      assertEquals(listOf("Entomology"), programs.map { it.jsonPrimitive.content })
     }
 
   @Test
   fun `each search result carries the college_id update_college_list takes`() =
     runBlocking {
-      val seeded = database.withConnection { session -> CollegesDao.upsert(session, newCollege(842)).getOrThrow() }
+      val seeded = insert(newCollege(842))
 
       val result = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("CA")) }) })
 
@@ -220,6 +264,26 @@ class CollegeSearchToolTest {
       // First key by design: the model reads the id before anything it might
       // mistake for one (the name, the unit id).
       assertEquals("college_id", first.keys.first())
+    }
+
+  @Test
+  fun `programs is OMITTED on a search that asked nothing about programs`() =
+    runBlocking {
+      seedWithMarineBiology(806)
+
+      val unfiltered = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("CA")) }) })
+      val row = (unfiltered["colleges"] as JsonArray).single().jsonObject
+      // The key MEANS "what your program filter matched". With no filter there
+      // is no answer, and `programs: []` on every search reads as "this college
+      // offers nothing".
+      assertFalse(row.containsKey("programs"), "expected no programs key, got: $row")
+
+      val filtered = tool.execute(buildJsonObject { put("cipPrefix", "2607") })
+      val matched = (filtered["colleges"] as JsonArray).single().jsonObject
+      assertEquals(
+        listOf("Entomology"),
+        (matched["programs"] as JsonArray).map { it.jsonPrimitive.content },
+      )
     }
 
   @Test
@@ -276,7 +340,7 @@ class CollegeSearchToolTest {
   @Test
   fun `execute reads a dotted CIP prefix whose family lost its leading zero`() =
     runBlocking {
-      seedWithProgram(801, "050103", "Asian Studies")
+      seedWithProgram(801, "050103")
 
       // "5.0103" is 05.0103 with the leading zero elided -- splitting on the dot
       // and padding the family recovers it, where deleting the dot would not.
@@ -388,13 +452,9 @@ class CollegeSearchToolTest {
       // and some bands absent. RFC 142: the five opaque net_price_per_year_income_qN_usd keys are
       // gone -- what serializes is one entry per REPORTED band, each carrying
       // the band code, the dollar range a coach says aloud, and the amount.
-      database.withConnection { session ->
-        CollegesDao
-          .upsert(
-            session,
-            newCollege(820).copy(netPricePerYearIncomeQ1Usd = -1200, netPricePerYearIncomeQ3Usd = 14500, medianDebtAtCompletionUsd = 21000),
-          ).getOrThrow()
-      }
+      insert(
+        newCollege(820).copy(netPricePerYearIncomeQ1Usd = -1200, netPricePerYearIncomeQ3Usd = 14500, medianDebtAtCompletionUsd = 21000),
+      )
 
       val result = tool.execute(buildJsonObject {})
       assertNull(result["error"])
@@ -424,9 +484,7 @@ class CollegeSearchToolTest {
     runBlocking {
       // The gap RFC 143 closes: the sibling cost tool already said "public"
       // while search shipped the raw IPEDS integer beside it.
-      database.withConnection { session ->
-        CollegesDao.upsert(session, newCollege(822).copy(control = 2)).getOrThrow()
-      }
+      insert(newCollege(822).copy(control = 2))
 
       val first = ((tool.execute(buildJsonObject {}))["colleges"] as JsonArray).single().jsonObject
       val control = first["control"]!!.jsonPrimitive
@@ -447,21 +505,17 @@ class CollegeSearchToolTest {
       // guard never sees it -- and `foo?.let { put("foo", code) }` is exactly
       // the shape the NEXT coded field will take. A sparse fixture would let it
       // sleep through.
-      database.withConnection { session ->
-        CollegesDao
-          .upsert(
-            session,
-            newCollege(821).copy(
-              netPricePerYearIncomeQ5Usd = 31000,
-              control = 3,
-              medianDebtAtCompletionUsd = 21000,
-              satAverageEquivalentScore = 1200,
-              costOfAttendancePerYearUsd = 40000,
-              tuitionAndFeesInStatePerYearUsd = 12000,
-              tuitionAndFeesOutOfStatePerYearUsd = 30000,
-            ),
-          ).getOrThrow()
-      }
+      insert(
+        newCollege(821).copy(
+          netPricePerYearIncomeQ5Usd = 31000,
+          control = 3,
+          medianDebtAtCompletionUsd = 21000,
+          satAverageEquivalentScore = 1200,
+          costOfAttendancePerYearUsd = 40000,
+          tuitionAndFeesInStatePerYearUsd = 12000,
+          tuitionAndFeesOutOfStatePerYearUsd = 30000,
+        ),
+      )
 
       val result = tool.execute(buildJsonObject {})
       assertEquals(emptyList(), listViolations(result), "the search result must carry no source code")
@@ -521,15 +575,121 @@ class CollegeSearchToolTest {
   fun `execute on a zero-match query returns count 0`() =
     runBlocking {
       seedWithMarineBiology(900)
-      val result = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("ZZ")) }) })
+      // A REAL state with no college in it. "ZZ" used to stand here, and it was
+      // a zero-match for the wrong reason (see the test below).
+      val result = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("WY")) }) })
       assertNull(result["error"])
       assertEquals(0, result["count"]!!.jsonPrimitive.intOrNull)
       assertTrue((result["colleges"] as JsonArray).isEmpty())
     }
 
   @Test
+  fun `a state code the published vocabulary does not carry is refused, not answered with zero`() =
+    runBlocking {
+      seedWithMarineBiology(901)
+      // "ZZ" is not a US jurisdiction. Shape-checked but never resolved, it came
+      // back as an ordinary zero-match -- which reads to a family as "there are
+      // no colleges there" rather than "that is not a state". The refusal names
+      // the field and echoes the offending code, exactly as `region` does.
+      val result = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("ZZ")) }) })
+      val error = result["error"]!!.jsonPrimitive.content
+      assertTrue(error.startsWith("[states] must be one of ["), "the refusal must name the vocabulary, got [$error]")
+      assertTrue(error.contains("got [ZZ]"), "the refusal must echo the offending code, got [$error]")
+      assertNull(result["count"], "a refused query must not carry a count")
+    }
+
+  @Test
+  fun `an empty OR-set array is refused rather than silently dropped`() =
+    runBlocking {
+      // Both arrays used to parse clean and then be skipped at the bind, so a
+      // NARROWED question came back with an UNNARROWED answer: every college in
+      // the country, with nothing to say the filter had gone.
+      seedWithMarineBiology(902)
+      seedWithMarineBiology(903)
+
+      val emptyStates = tool.execute(buildJsonObject { put("states", buildJsonArray { }) })
+      val statesError = emptyStates["error"]!!.jsonPrimitive.content
+      assertTrue(statesError.contains("[states] must name at least one value"), "got [$statesError]")
+      assertTrue(statesError.contains("got []"), "the refusal must echo the empty array, got [$statesError]")
+      assertNull(emptyStates["count"], "a refused query must not answer with every college")
+
+      val emptyControl = tool.execute(buildJsonObject { put("control", buildJsonArray { }) })
+      val controlError = emptyControl["error"]!!.jsonPrimitive.content
+      assertTrue(controlError.contains("[control] must name at least one value"), "got [$controlError]")
+      assertNull(emptyControl["count"], "a refused query must not answer with every college")
+    }
+
+  @Test
+  fun `a type refusal echoes the value that was written`() =
+    runBlocking {
+      // These strings are the model's only means of self-correction, and both
+      // of these inputs used to produce the identical "has_rotc must be a
+      // boolean" -- so the model could not see which of its two mistakes it had
+      // made.
+      val number = tool.execute(buildJsonObject { put("has_rotc", 1) })["error"]!!.jsonPrimitive.content
+      val word = tool.execute(buildJsonObject { put("has_rotc", "yes") })["error"]!!.jsonPrimitive.content
+
+      assertEquals("[has_rotc] must be a boolean; got [1]", number)
+      assertEquals("[has_rotc] must be a boolean; got [\"yes\"]", word)
+      assertTrue(number != word, "two different mistakes must not produce the same feedback")
+
+      // The same helper for every reader: an int, a number, a string and an array.
+      assertEquals(
+        "[minUndergradEnrollmentHeadcount] must be an integer; got [\"lots\"]",
+        tool.execute(buildJsonObject { put("minUndergradEnrollmentHeadcount", "lots") })["error"]!!.jsonPrimitive.content,
+      )
+      assertEquals(
+        "[maxAdmissionRateShare] must be a number; got [\"half\"]",
+        tool.execute(buildJsonObject { put("maxAdmissionRateShare", "half") })["error"]!!.jsonPrimitive.content,
+      )
+      assertEquals(
+        "[region] must be a string; got [8]",
+        tool.execute(buildJsonObject { put("region", 8) })["error"]!!.jsonPrimitive.content,
+      )
+      assertEquals(
+        "[states] must be an array of strings; got [[1,2]]",
+        tool
+          .execute(
+            buildJsonObject {
+              put(
+                "states",
+                buildJsonArray {
+                  add(JsonPrimitive(1))
+                  add(JsonPrimitive(2))
+                },
+              )
+            },
+          )["error"]!!
+          .jsonPrimitive.content,
+      )
+    }
+
+  @Test
+  fun `an unbuilt search index is a named refusal, never a zero result`() =
+    runBlocking {
+      // The migration creates `college_search_index` EMPTY and only the ingest's
+      // `search-index` phase fills it. Between the two, a database full of
+      // colleges answered "0 colleges match" to everything and warned nobody.
+      database.withConnection { session ->
+        session.prepareStatement("TRUNCATE TABLE colleges CASCADE").use { it.execute() }
+        // The other half of the signal: no build row claims a search index either.
+        session.prepareStatement("DELETE FROM college_index_build").use { it.execute() }
+      }
+
+      val result = tool.execute(buildJsonObject { })
+
+      assertEquals(CollegeSearchTool.INDEX_NOT_BUILT, result["error"]?.jsonPrimitive?.content)
+      assertNull(result["count"], "an unbuilt index must never answer with a count")
+      assertNull(result["total_matches"], "an unbuilt index must never answer with a total")
+    }
+
+  @Test
   fun `execute on a DAO failure returns a structured error carrying the failure category`() =
     runBlocking {
+      // A seeded college first, so the index is BUILT: an unbuilt index is
+      // refused before the query runs, which is a different (and correct)
+      // answer than the one this test is about.
+      seedWithMarineBiology(960)
       // Drop a column the search SELECTs, on a committed raw connection, so the
       // next search fails with a permanent (non-transient) DatabaseException. The
       // structured error must preserve that category rather than flattening it to a
@@ -569,7 +729,7 @@ class CollegeSearchToolTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `definition exposes sort_by and credential_level as word enums only`() {
+  fun `definition exposes sort_by as a word enum only`() {
     val properties =
       tool.definition["input_schema"]!!
         .jsonObject["properties"]!!
@@ -581,13 +741,17 @@ class CollegeSearchToolTest {
       sortWords,
     )
 
-    val credentialWords =
-      (properties["credential_level"]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content }
-    assertEquals(listOf("certificate", "associate", "bachelors", "masters", "doctoral"), credentialWords)
-    // Raw CREDLEV codes never reach the LLM (brief 0004 amendment): the schema
-    // text for credential_level carries words, not numeric codes.
-    val description = properties["credential_level"]!!.jsonObject["description"]!!.jsonPrimitive.content
-    assertTrue(Regex("[0-9]").containsMatchIn(description).not(), "no raw code may appear: $description")
+    // Every attribute filter is a word enum too, drawn from the LOADED
+    // reference tables (RFC 150 D54) — never a code, and never a list typed
+    // here that the database might not carry.
+    for (field in listOf("test_policy", "religious_affiliation", "carnegie_class", "carnegie_size", "athletic_association")) {
+      val words = (properties[field]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content }
+      assertTrue(words.isNotEmpty(), "[$field] advertises the loaded vocabulary")
+      assertTrue(words.none { Regex("^[0-9]+$").matches(it) }, "[$field] offers words, not codes: $words")
+    }
+    for (field in listOf("has_rotc", "has_study_abroad", "has_housing", "is_active", "is_four_year")) {
+      assertEquals("boolean", properties[field]!!.jsonObject["type"]!!.jsonPrimitive.content)
+    }
   }
 
   @Test
@@ -613,74 +777,36 @@ class CollegeSearchToolTest {
     }
 
   @Test
-  fun `execute maps credential_level words to the program join at the boundary`() =
+  fun `credential_level is refused as an unknown field, not silently ignored`() =
     runBlocking {
-      seedWithProgram(920, "230101", "English")
-      // A master's-only sibling: same CIP, credential level 5.
-      runBlocking {
-        database.withConnection { session ->
-          val college = CollegesDao.upsert(session, newCollege(921)).getOrThrow()
-          CollegesDao
-            .upsertProgram(
-              session,
-              ed.unicoach.db.models
-                .NewCollegeProgram(college.id, "230101", "English", 5),
-            ).getOrThrow()
-        }
-      }
-
-      val bachelors =
-        tool.execute(
-          buildJsonObject {
-            put("cipPrefix", "23")
-            put("credential_level", "bachelors")
-          },
-        )
-      assertNull(bachelors["error"])
-      assertEquals(1, (bachelors["colleges"] as JsonArray).size)
-      assertEquals(
-        "Coastal College 920",
-        (bachelors["colleges"] as JsonArray)
-          .single()
-          .jsonObject["name"]!!
-          .jsonPrimitive.content,
+      // RFC 150 D53 removed it: the census the index derives programs from is
+      // bachelor's first majors only, so the filter was a tautology for
+      // "bachelors" and a falsehood for anything else. A model that still
+      // writes it must be TOLD, not quietly given a wider answer.
+      val refused = tool.execute(buildJsonObject { put("credential_level", "bachelors") })
+      assertTrue(refused.containsKey("error"))
+      assertTrue(
+        refused["error"]!!.toString().contains("credential_level"),
+        "the rejection names the field: ${refused["error"]}",
       )
-
-      val masters =
-        tool.execute(
-          buildJsonObject {
-            put("cipPrefix", "23")
-            put("credential_level", "masters")
-          },
-        )
-      assertNull(masters["error"])
-      assertEquals(
-        "Coastal College 921",
-        (masters["colleges"] as JsonArray)
-          .single()
-          .jsonObject["name"]!!
-          .jsonPrimitive.content,
+      assertNull(
+        tool.definition["input_schema"]!!
+          .jsonObject["properties"]!!
+          .jsonObject["credential_level"],
+        "and it is gone from the schema, so nothing advertises it",
       )
     }
 
   @Test
-  fun `execute rejects credential_level without cipPrefix and unknown words`() =
+  fun `a program filter returns every college the census records the code for`() =
     runBlocking {
-      val alone = tool.execute(buildJsonObject { put("credential_level", "bachelors") })
-      assertTrue(alone.containsKey("error"))
+      seedWithProgram(920, "230101")
+      seedWithProgram(921, "230101")
 
-      val unknown =
-        tool.execute(
-          buildJsonObject {
-            put("cipPrefix", "23")
-            put("credential_level", "bachelor's degree")
-          },
-        )
-      assertTrue(unknown.containsKey("error"))
-      assertTrue(
-        unknown["error"]!!.toString().contains("bachelor's degree"),
-        "the rejection echoes the offending word: ${unknown["error"]}",
-      )
+      val page = tool.execute(buildJsonObject { put("cipPrefix", "23") })
+      assertNull(page["error"])
+      assertEquals(2, (page["colleges"] as JsonArray).size)
+      assertEquals(2, page["total_matches"]!!.jsonPrimitive.intOrNull)
     }
 
   @Test
@@ -753,9 +879,7 @@ class CollegeSearchToolTest {
   fun `a locale type matches every published size and locale detail narrows it`() =
     runBlocking {
       seedNamed(841, "City Small College") // locale 13 = city: small
-      database.withConnection { session ->
-        CollegesDao.upsert(session, newCollege(842).copy(name = "Rural Remote College", locale = 43)).getOrThrow()
-      }
+      insert(newCollege(842).copy(name = "Rural Remote College", locale = 43))
 
       // The type alone is the OR-set over its published sizes -- one word where
       // the old contract took [11, 12, 13].
@@ -850,9 +974,7 @@ class CollegeSearchToolTest {
   @Test
   fun `a control word filters on the code the column stores`() =
     runBlocking {
-      database.withConnection { session ->
-        CollegesDao.upsert(session, newCollege(845).copy(control = 2)).getOrThrow()
-      }
+      insert(newCollege(845).copy(control = 2))
 
       val hit = tool.execute(buildJsonObject { put("control", buildJsonArray { add(JsonPrimitive("private_nonprofit")) }) })
       assertEquals(1, hit["count"]!!.jsonPrimitive.intOrNull)
@@ -861,19 +983,18 @@ class CollegeSearchToolTest {
     }
 
   @Test
-  fun `a stored code with no codebook row is named unknown, never a bare number`() =
+  fun `a stored code with no codebook row leaves the college searchable with a null word`() =
     runBlocking {
       // colleges.locale's CHECK still admits 11..43, which is wider than the 12
-      // codes IPEDS publishes (D46). A code inside the range and outside the
-      // codebook must still leave as a word.
-      database.withConnection { session ->
-        CollegesDao.upsert(session, newCollege(846).copy(locale = 14)).getOrThrow()
-      }
+      // codes IPEDS publishes (D46). After RFC 150 D61 the index resolves that
+      // code through a LEFT JOIN, so the WORD is null and the COLLEGE stays --
+      // the "unknown (locale [N])" rendering is gone because the case it named
+      // (a code with no word) cannot reach this boundary any more.
+      insert(newCollege(846).copy(locale = 14))
 
       val first = ((tool.execute(buildJsonObject {}))["colleges"] as JsonArray).single().jsonObject
-      val localeType = first["locale_type"]!!.jsonPrimitive
-      assertNull(localeType.intOrNull, "an unmapped code must not fall back to the raw number")
-      assertTrue(localeType.content.startsWith("unknown"), "it is named as unknown: ${localeType.content}")
+      assertTrue(first.containsKey("locale_type"), "the key is present, explicitly null")
+      assertEquals(JsonNull, first["locale_type"], "an unmapped code is an absence, never a bare number")
       assertEquals(emptyList(), listViolations(first), "and it still trips no source-code guard")
     }
 
@@ -881,23 +1002,20 @@ class CollegeSearchToolTest {
   fun `an empty codebook advertises nothing and refuses every word, both halves alike`() =
     runBlocking {
       // The state of every database before the `codebooks` ingest phase runs.
-      // The rule is ONE rule: advertise what is LOADED. `region` already did;
-      // `locale_type`/`locale_detail` used to advertise their Kotlin enums and
-      // then refuse every word of them.
+      // The rule is ONE rule: advertise what is LOADED, and nothing else.
       val bare = CollegeSearchTool(CollegeSearchService(database), Codebook.EMPTY)
       val properties =
         bare.definition["input_schema"]!!
           .jsonObject["properties"]!!
           .jsonObject
 
-      for (field in listOf("region", "locale_type", "locale_detail")) {
-        val property = properties[field]!!.jsonObject
-        assertNull(property["enum"], "[$field] must advertise no words when none are loaded")
-        assertTrue(
-          property["description"]!!.jsonPrimitive.content.contains("none are loaded"),
-          "[$field] must say so: ${property["description"]}",
-        )
+      // Not offered AT ALL, rather than offered as a bare string whose every
+      // value is then refused: an advertised filter that cannot be used is
+      // worse than one the model is never told about.
+      for (field in listOf("region", "locale_type", "locale_detail", "subject", "test_policy")) {
+        assertNull(properties[field], "[$field] must not be advertised when no word is loaded")
       }
+      assertTrue(Codebook.EMPTY.isDegraded, "an empty codebook must not read as healthy")
 
       seedNamed(850, "Unvocabularied College")
       // And every word is a clean, explained refusal — never a dropped filter
@@ -916,14 +1034,158 @@ class CollegeSearchToolTest {
       }
     }
 
+  // ---------------------------------------------------------------------------
+  // The honesty figures (RFC 150 D55)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `the payload carries total_matches, excluded_unknown and source_years`() =
+    runBlocking {
+      insert(newCollege(950).copy(admissionRateShare = 0.4))
+      insert(newCollege(951).copy(admissionRateShare = null))
+
+      val result = tool.execute(buildJsonObject { put("maxAdmissionRateShare", 0.5) })
+      assertNull(result["error"])
+      assertEquals(1, result["count"]!!.jsonPrimitive.intOrNull)
+      assertEquals(1, result["total_matches"]!!.jsonPrimitive.intOrNull)
+      // Unknown is never silently "no": the one college that does not report an
+      // admission rate is excluded AND counted, under the axis it failed.
+      assertEquals(
+        mapOf("admission_rate_share" to 1),
+        result["excluded_unknown"]!!.jsonObject.mapValues { it.value.jsonPrimitive.intOrNull },
+      )
+      // No IPEDS row and no census row on this fixture, so the honest answer is
+      // no vintages at all rather than an invented one.
+      assertEquals(emptyMap(), result["source_years"]!!.jsonObject)
+    }
+
+  @Test
+  fun `a filter that cannot exclude an unknown reports an empty excluded_unknown`() =
+    runBlocking {
+      insert(newCollege(952))
+      val result = tool.execute(buildJsonObject { put("states", buildJsonArray { add(JsonPrimitive("CA")) }) })
+      assertNull(result["error"])
+      // `state` is NOT NULL on the index: there is nothing it could exclude, so
+      // the key is present and empty rather than absent or invented.
+      assertEquals(emptyMap(), result["excluded_unknown"]!!.jsonObject)
+    }
+
+  @Test
+  fun `a BUILT index over no colleges returns an honest empty page, not an error`() =
+    runBlocking {
+      // The honest empty case, and the reason the unbuilt check reads a build
+      // row as well as the rows: a database whose `colleges` table really is
+      // empty has a BUILT index with nothing in it, and that search must answer
+      // zero rather than refuse.
+      database.withConnection { session ->
+        session.prepareStatement("DELETE FROM college_index_build").use { it.execute() }
+        CollegesDao
+          .insertIndexBuild(
+            session,
+            NewCollegeIndexBuild(
+              startedAt = Instant.now(),
+              finishedAt = Instant.now(),
+              sources = JsonArray(emptyList()),
+              rowsIngested = JsonObject(emptyMap()),
+              nameWordsRows = 0,
+              searchIndexRows = 0,
+              changeSummary = JsonObject(emptyMap()),
+              methodVersion = 1,
+            ),
+          ).getOrThrow()
+      }
+
+      val result = tool.execute(buildJsonObject {})
+      assertNull(result["error"])
+      assertEquals(0, result["count"]!!.jsonPrimitive.intOrNull)
+      assertEquals(0, result["total_matches"]!!.jsonPrimitive.intOrNull)
+      assertEquals(emptyMap(), result["source_years"]!!.jsonObject)
+    }
+
+  // ---------------------------------------------------------------------------
+  // subject (RFC 150 D54)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a subject word is advertised, filters, and an unknown one is a named error`() =
+    runBlocking {
+      val subjectTool =
+        database
+          .withConnection { session ->
+            CodebooksDao
+              .upsertSubject(session, NewSubject("literature", "Literature", listOf("2301")))
+              .getOrThrow()
+            Unit
+          }.let { CollegeSearchTool(CollegeSearchService(database), Codebook.load(database).getOrThrow()) }
+
+      // The taxonomy is inlined as the schema's own enum, so the model can SEE
+      // the vocabulary rather than guess a federal code at it.
+      val words =
+        (
+          subjectTool.definition["input_schema"]!!
+            .jsonObject["properties"]!!
+            .jsonObject["subject"]!!
+            .jsonObject["enum"] as JsonArray
+        ).map { it.jsonPrimitive.content }
+      assertTrue(words.contains("literature"), "the loaded taxonomy is what is advertised: $words")
+
+      seedWithProgram(953, "230101")
+      val hit = subjectTool.execute(buildJsonObject { put("subject", "literature") })
+      assertNull(hit["error"])
+      assertEquals(1, hit["count"]!!.jsonPrimitive.intOrNull)
+
+      val unknown = subjectTool.execute(buildJsonObject { put("subject", "underwater-basket-weaving") })
+      assertTrue(unknown.containsKey("error"))
+      assertTrue(
+        unknown["error"]!!.toString().contains("underwater-basket-weaving"),
+        "the refusal echoes the offending word: ${unknown["error"]}",
+      )
+      assertNull(unknown["count"], "an unresolvable word must not fall through to a search")
+    }
+
+  @Test
+  fun `a filter with no loaded vocabulary is not advertised, and any word for it is refused`() =
+    runBlocking {
+      // This database has the published codebooks and NO taxonomy: the state an
+      // ingest run without the `subjects` phase leaves.
+      assertTrue(codebook.subjectSlugs.isEmpty())
+      assertTrue(codebook.isDegraded, "a missing vocabulary must not read as healthy")
+      assertTrue(codebook.emptyVocabularies.contains("subject"))
+
+      // Not offered at all -- neither as an enum nor as a bare string, which
+      // would invite a word every parse then refuses.
+      val properties =
+        tool.definition["input_schema"]!!
+          .jsonObject["properties"]!!
+          .jsonObject
+      assertNull(properties["subject"])
+
+      // And a model that writes it anyway is told why, not silently unfiltered.
+      val refused = tool.execute(buildJsonObject { put("subject", "literature") })
+      assertTrue(refused["error"]!!.toString().contains("not loaded in this database"), "${refused["error"]}")
+      assertNull(refused["count"])
+    }
+
+  @Test
+  fun `an unusable program word is a plain validation error, not a search failure`() =
+    runBlocking {
+      seedWithMarineBiology(957)
+
+      // "5116" is a well-formed CIP prefix that the loaded vocabulary carries no
+      // code under. The database did not fail, so the coach must not read the
+      // retryable `search_failed` shape a DB fault gets -- it must read the same
+      // plain refusal an unknown `region` word gets.
+      val result = tool.execute(buildJsonObject { put("cipPrefix", "5116") })
+      val error = result["error"]!!
+      assertTrue(error is JsonPrimitive, "an unresolvable word is a validation string, not a fault object: $error")
+      assertTrue(error.jsonPrimitive.content.contains("5116"))
+      assertNull(result["count"], "a refusal must not fall through to a search")
+    }
+
   private fun seedNamed(
     ipedsUnitId: Int,
     name: String,
-  ) = runBlocking {
-    database.withConnection { session ->
-      CollegesDao.upsert(session, newCollege(ipedsUnitId).copy(name = name)).getOrThrow()
-    }
-  }
+  ) = insert(newCollege(ipedsUnitId).copy(name = name))
 }
 
 // ---------------------------------------------------------------------------

@@ -108,6 +108,41 @@ class ConcurrentModificationException(
   TransientError
 
 /**
+ * A `colleges.control` code no [ed.unicoach.db.models.InstitutionControl] entry
+ * names, found by the search-index rebuild BEFORE it writes (RFC 150 D61a).
+ *
+ * Named rather than left to the NOT NULL violation it used to cause: a
+ * constraint name tells an operator which column broke, this tells them which
+ * CODE broke it and how many colleges carry it. [PermanentError] — retrying the
+ * same snapshot cannot map a code the enum does not have.
+ */
+class UnmappedControlCodeException(
+  val counts: Map<String, Int>,
+) : DaoException(
+    "colleges.control carries ${counts.size} code(s) InstitutionControl does not name: " +
+      counts.entries.joinToString(", ") { (code, n) -> "[$code] on $n row(s)" } +
+      "; the search index cannot store a college with no control",
+  ),
+  PermanentError
+
+/**
+ * `college_search_index` has never been built (RFC 150) — the migration creates
+ * it empty and only the ingest's `search-index` phase fills it.
+ *
+ * [TransientError], because it is: the next ingest fixes it without any code
+ * change, so a caller should retry rather than dead-letter, and the REST layer
+ * already answers a transient DAO failure with 503 plus this message. The
+ * alternative — an empty list — is a zero that no caller can tell from a real
+ * one, which is the defect this type exists to make impossible.
+ */
+class SearchIndexNotBuiltException :
+  DaoException(
+    "The college search index has not been built yet; run the ingest's `search-index` phase " +
+      "(`bin/ingest-colleges`) — until then no college can be found by name",
+  ),
+  TransientError
+
+/**
  * The reference-table write-path SQLSTATE mapping: `23503` (a fact row
  * referencing an absent parent) to [NotFoundException]; `23505`/`23514`
  * (unique/check, including a domain CHECK) to [ConstraintViolationException];

@@ -221,6 +221,13 @@ class CoachingServiceTest {
         ),
       ).getOrThrow()
       .id
+      .also {
+        // `search_colleges` reads `college_search_index` (RFC 150 D53), which
+        // the ingest rebuilds in its own phase — a direct seed must rebuild it.
+        ed.unicoach.db.dao.CollegesDao
+          .rebuildSearchIndex(sqlSession)
+          .getOrThrow()
+      }
 
   /** Creates an open fit suggestion for the student and returns its id. */
   private fun createFitSuggestion(
@@ -1905,7 +1912,12 @@ class CoachingServiceTest {
       var continuation: ChatRequest? = null
       val provider =
         SequencedProvider(
-          terminals = listOf(toolUseTerminal("search_colleges" to """{"cipPrefix":"26"}"""), completedTerminal("no biology matches yet")),
+          // A STATE filter, not a cipPrefix: after RFC 150 D54 a CIP prefix is
+          // expanded against the loaded `cip_codes` vocabulary and a prefix
+          // matching nothing is a named error, so a prefix here would assert
+          // whether some other suite happened to leave the codebook loaded.
+          // The wiring, not the data, is what this test is about.
+          terminals = listOf(toolUseTerminal("search_colleges" to """{"states":["CA"]}"""), completedTerminal("no biology matches yet")),
           onRequest = { if (it.messages.any { m -> m.role == ChatRole.ASSISTANT }) continuation = it },
         )
       val started =

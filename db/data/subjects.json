@@ -1,0 +1,1628 @@
+[
+  {
+    "slug": "biology",
+    "name": "Biology",
+    "cip_prefixes": [
+      "26"
+    ]
+  },
+  {
+    "slug": "biochemistry",
+    "name": "Biochemistry",
+    "cip_prefixes": [
+      "2602"
+    ]
+  },
+  {
+    "slug": "neuroscience",
+    "name": "Neuroscience",
+    "cip_prefixes": [
+      "2615",
+      "3010",
+      "422706"
+    ]
+  },
+  {
+    "slug": "marine-biology",
+    "name": "Marine Biology",
+    "cip_prefixes": [
+      "261302",
+      "261304",
+      "3029",
+      "3032",
+      "400607"
+    ]
+  },
+  {
+    "slug": "chemistry",
+    "name": "Chemistry",
+    "cip_prefixes": [
+      "4005"
+    ]
+  },
+  {
+    "slug": "physics",
+    "name": "Physics",
+    "cip_prefixes": [
+      "1412",
+      "4001",
+      "4008",
+      "4011",
+      "4099"
+    ]
+  },
+  {
+    "slug": "astronomy",
+    "name": "Astronomy",
+    "cip_prefixes": [
+      "4002",
+      "4011"
+    ]
+  },
+  {
+    "slug": "geology",
+    "name": "Geology",
+    "cip_prefixes": [
+      "3038",
+      "3041",
+      "3042",
+      "4006"
+    ]
+  },
+  {
+    "slug": "environmental-science",
+    "name": "Environmental Science",
+    "cip_prefixes": [
+      "0301",
+      "0302",
+      "0303",
+      "0305",
+      "030601",
+      "0399",
+      "1414",
+      "261305",
+      "3033",
+      "3035",
+      "4004"
+    ]
+  },
+  {
+    "slug": "mathematics",
+    "name": "Mathematics",
+    "cip_prefixes": [
+      "261102",
+      "27",
+      "521302",
+      "521304"
+    ]
+  },
+  {
+    "slug": "data-science",
+    "name": "Data Science",
+    "cip_prefixes": [
+      "3070",
+      "3071"
+    ]
+  },
+  {
+    "slug": "computer-science",
+    "name": "Computer Science",
+    "cip_prefixes": [
+      "1101",
+      "1102",
+      "1107",
+      "110801",
+      "111004",
+      "1199",
+      "3008",
+      "3030",
+      "3048"
+    ]
+  },
+  {
+    "slug": "artificial-intelligence",
+    "name": "Artificial Intelligence",
+    "cip_prefixes": [
+      "110102"
+    ]
+  },
+  {
+    "slug": "software-engineering",
+    "name": "Software Engineering",
+    "cip_prefixes": [
+      "1102",
+      "110201",
+      "110899",
+      "140903"
+    ]
+  },
+  {
+    "slug": "cybersecurity",
+    "name": "Cybersecurity",
+    "cip_prefixes": [
+      "111003",
+      "430401",
+      "430403",
+      "430404",
+      "430408",
+      "510723"
+    ]
+  },
+  {
+    "slug": "information-technology",
+    "name": "Information Technology",
+    "cip_prefixes": [
+      "110103",
+      "1103",
+      "1104",
+      "1105",
+      "1106",
+      "110802",
+      "1109",
+      "1110"
+    ]
+  },
+  {
+    "slug": "game-design",
+    "name": "Game Design",
+    "cip_prefixes": [
+      "110204",
+      "110804",
+      "500411"
+    ]
+  },
+  {
+    "slug": "engineering",
+    "name": "Engineering",
+    "cip_prefixes": [
+      "14"
+    ]
+  },
+  {
+    "slug": "mechanical-engineering",
+    "name": "Mechanical Engineering",
+    "cip_prefixes": [
+      "1419",
+      "1436",
+      "1441",
+      "1442"
+    ]
+  },
+  {
+    "slug": "electrical-engineering",
+    "name": "Electrical Engineering",
+    "cip_prefixes": [
+      "1410",
+      "1447"
+    ]
+  },
+  {
+    "slug": "computer-engineering",
+    "name": "Computer Engineering",
+    "cip_prefixes": [
+      "1409",
+      "1447"
+    ]
+  },
+  {
+    "slug": "civil-engineering",
+    "name": "Civil Engineering",
+    "cip_prefixes": [
+      "1408",
+      "1433",
+      "1438"
+    ]
+  },
+  {
+    "slug": "chemical-engineering",
+    "name": "Chemical Engineering",
+    "cip_prefixes": [
+      "1407",
+      "1443",
+      "1444"
+    ]
+  },
+  {
+    "slug": "aerospace-engineering",
+    "name": "Aerospace Engineering",
+    "cip_prefixes": [
+      "1402"
+    ]
+  },
+  {
+    "slug": "biomedical-engineering",
+    "name": "Biomedical Engineering",
+    "cip_prefixes": [
+      "1405",
+      "512307",
+      "512312"
+    ]
+  },
+  {
+    "slug": "industrial-engineering",
+    "name": "Industrial Engineering",
+    "cip_prefixes": [
+      "1427",
+      "1435",
+      "1437"
+    ]
+  },
+  {
+    "slug": "materials-engineering",
+    "name": "Materials Engineering",
+    "cip_prefixes": [
+      "1406",
+      "1418",
+      "1420",
+      "1432",
+      "4010"
+    ]
+  },
+  {
+    "slug": "engineering-technology",
+    "name": "Engineering Technology",
+    "cip_prefixes": [
+      "15"
+    ]
+  },
+  {
+    "slug": "architecture",
+    "name": "Architecture",
+    "cip_prefixes": [
+      "0402",
+      "040301",
+      "0404",
+      "0405",
+      "0406",
+      "0408",
+      "0409",
+      "0499",
+      "4512"
+    ]
+  },
+  {
+    "slug": "nursing",
+    "name": "Nursing",
+    "cip_prefixes": [
+      "511105",
+      "513203",
+      "5134",
+      "5138",
+      "5139"
+    ]
+  },
+  {
+    "slug": "pre-med",
+    "name": "Pre-Med",
+    "cip_prefixes": [
+      "5111",
+      "511102",
+      "5112",
+      "5114",
+      "511401"
+    ]
+  },
+  {
+    "slug": "public-health",
+    "name": "Public Health",
+    "cip_prefixes": [
+      "261309",
+      "5122"
+    ]
+  },
+  {
+    "slug": "health-administration",
+    "name": "Health Administration",
+    "cip_prefixes": [
+      "5107",
+      "5127",
+      "5132"
+    ]
+  },
+  {
+    "slug": "physician-assistant",
+    "name": "Physician Assistant",
+    "cip_prefixes": [
+      "510912",
+      "511111"
+    ]
+  },
+  {
+    "slug": "physical-therapy",
+    "name": "Physical Therapy",
+    "cip_prefixes": [
+      "510806",
+      "511109",
+      "512308"
+    ]
+  },
+  {
+    "slug": "occupational-therapy",
+    "name": "Occupational Therapy",
+    "cip_prefixes": [
+      "512306",
+      "512300",
+      "512314",
+      "512399",
+      "510803",
+      "511107"
+    ]
+  },
+  {
+    "slug": "speech-pathology",
+    "name": "Speech Pathology",
+    "cip_prefixes": [
+      "5102",
+      "510816"
+    ]
+  },
+  {
+    "slug": "kinesiology",
+    "name": "Kinesiology",
+    "cip_prefixes": [
+      "260908",
+      "3101",
+      "3105",
+      "3106",
+      "3199",
+      "512311"
+    ]
+  },
+  {
+    "slug": "nutrition",
+    "name": "Nutrition",
+    "cip_prefixes": [
+      "1905",
+      "3019",
+      "5131"
+    ]
+  },
+  {
+    "slug": "pharmacy",
+    "name": "Pharmacy",
+    "cip_prefixes": [
+      "511103",
+      "5120"
+    ]
+  },
+  {
+    "slug": "dentistry",
+    "name": "Dentistry",
+    "cip_prefixes": [
+      "5104",
+      "5105",
+      "5106",
+      "511101"
+    ]
+  },
+  {
+    "slug": "radiologic-technology",
+    "name": "Radiologic Technology",
+    "cip_prefixes": [
+      "510905",
+      "510907",
+      "510910",
+      "510911",
+      "510919",
+      "510920"
+    ]
+  },
+  {
+    "slug": "paramedic",
+    "name": "Paramedic / EMT",
+    "cip_prefixes": [
+      "510810",
+      "510904"
+    ]
+  },
+  {
+    "slug": "veterinary-science",
+    "name": "Veterinary Science",
+    "cip_prefixes": [
+      "010903",
+      "0113",
+      "0180",
+      "0181",
+      "0182",
+      "0183"
+    ]
+  },
+  {
+    "slug": "mental-health-counseling",
+    "name": "Mental Health Counseling",
+    "cip_prefixes": [
+      "422801",
+      "422803",
+      "5115",
+      "512310"
+    ]
+  },
+  {
+    "slug": "social-work",
+    "name": "Social Work",
+    "cip_prefixes": [
+      "440000",
+      "440201",
+      "4407",
+      "511503"
+    ]
+  },
+  {
+    "slug": "psychology",
+    "name": "Psychology",
+    "cip_prefixes": [
+      "3017",
+      "42"
+    ]
+  },
+  {
+    "slug": "sociology",
+    "name": "Sociology",
+    "cip_prefixes": [
+      "4501",
+      "4505",
+      "4511",
+      "4513",
+      "4599"
+    ]
+  },
+  {
+    "slug": "anthropology",
+    "name": "Anthropology",
+    "cip_prefixes": [
+      "4502",
+      "4503",
+      "4515"
+    ]
+  },
+  {
+    "slug": "economics",
+    "name": "Economics",
+    "cip_prefixes": [
+      "3039",
+      "3040",
+      "3049",
+      "4506",
+      "520601"
+    ]
+  },
+  {
+    "slug": "political-science",
+    "name": "Political Science",
+    "cip_prefixes": [
+      "3046",
+      "3051",
+      "4510"
+    ]
+  },
+  {
+    "slug": "international-relations",
+    "name": "International Relations",
+    "cip_prefixes": [
+      "0501",
+      "3020",
+      "4509"
+    ]
+  },
+  {
+    "slug": "public-policy",
+    "name": "Public Policy",
+    "cip_prefixes": [
+      "4404",
+      "4405",
+      "4499"
+    ]
+  },
+  {
+    "slug": "criminal-justice",
+    "name": "Criminal Justice",
+    "cip_prefixes": [
+      "4301",
+      "4303",
+      "4399",
+      "450401"
+    ]
+  },
+  {
+    "slug": "forensic-science",
+    "name": "Forensic Science",
+    "cip_prefixes": [
+      "400510",
+      "430402",
+      "430405",
+      "430406",
+      "430499",
+      "450205"
+    ]
+  },
+  {
+    "slug": "fire-science",
+    "name": "Fire Science",
+    "cip_prefixes": [
+      "4302"
+    ]
+  },
+  {
+    "slug": "geography",
+    "name": "Geography",
+    "cip_prefixes": [
+      "3044",
+      "430407",
+      "4507"
+    ]
+  },
+  {
+    "slug": "history",
+    "name": "History",
+    "cip_prefixes": [
+      "54"
+    ]
+  },
+  {
+    "slug": "philosophy",
+    "name": "Philosophy",
+    "cip_prefixes": [
+      "3800",
+      "3801",
+      "3899",
+      "513201"
+    ]
+  },
+  {
+    "slug": "religious-studies",
+    "name": "Religious Studies",
+    "cip_prefixes": [
+      "3802",
+      "39"
+    ]
+  },
+  {
+    "slug": "english",
+    "name": "English",
+    "cip_prefixes": [
+      "23"
+    ]
+  },
+  {
+    "slug": "literature",
+    "name": "Literature",
+    "cip_prefixes": [
+      "160104",
+      "2301",
+      "2314",
+      "3036"
+    ]
+  },
+  {
+    "slug": "creative-writing",
+    "name": "Creative Writing",
+    "cip_prefixes": [
+      "2313",
+      "500504",
+      "500511"
+    ]
+  },
+  {
+    "slug": "linguistics",
+    "name": "Linguistics",
+    "cip_prefixes": [
+      "1601",
+      "160103",
+      "161603",
+      "3047",
+      "3048"
+    ]
+  },
+  {
+    "slug": "foreign-languages",
+    "name": "Foreign Languages",
+    "cip_prefixes": [
+      "16"
+    ]
+  },
+  {
+    "slug": "spanish",
+    "name": "Spanish",
+    "cip_prefixes": [
+      "050130",
+      "131330",
+      "160900",
+      "160905",
+      "160908"
+    ]
+  },
+  {
+    "slug": "american-sign-language",
+    "name": "American Sign Language",
+    "cip_prefixes": [
+      "050211",
+      "1616"
+    ]
+  },
+  {
+    "slug": "ethnic-studies",
+    "name": "Ethnic Studies",
+    "cip_prefixes": [
+      "0502",
+      "0599"
+    ]
+  },
+  {
+    "slug": "liberal-arts",
+    "name": "Liberal Arts",
+    "cip_prefixes": [
+      "24",
+      "3000",
+      "3001"
+    ]
+  },
+  {
+    "slug": "education",
+    "name": "Education",
+    "cip_prefixes": [
+      "13"
+    ]
+  },
+  {
+    "slug": "elementary-education",
+    "name": "Elementary Education",
+    "cip_prefixes": [
+      "131017",
+      "131202",
+      "131203"
+    ]
+  },
+  {
+    "slug": "early-childhood-education",
+    "name": "Early Childhood Education",
+    "cip_prefixes": [
+      "131015",
+      "131209",
+      "131210",
+      "1907",
+      "190706",
+      "190708"
+    ]
+  },
+  {
+    "slug": "special-education",
+    "name": "Special Education",
+    "cip_prefixes": [
+      "1310"
+    ]
+  },
+  {
+    "slug": "art",
+    "name": "Art",
+    "cip_prefixes": [
+      "040801",
+      "3014",
+      "470408",
+      "5001",
+      "5002",
+      "5007",
+      "500703",
+      "5010",
+      "5011",
+      "5099"
+    ]
+  },
+  {
+    "slug": "graphic-design",
+    "name": "Graphic Design",
+    "cip_prefixes": [
+      "1003",
+      "100303",
+      "500401",
+      "500402",
+      "500404",
+      "500409",
+      "500410",
+      "500499"
+    ]
+  },
+  {
+    "slug": "interior-design",
+    "name": "Interior Design",
+    "cip_prefixes": [
+      "0405",
+      "500408"
+    ]
+  },
+  {
+    "slug": "fashion-design",
+    "name": "Fashion Design",
+    "cip_prefixes": [
+      "1909",
+      "500407",
+      "521902",
+      "521904"
+    ]
+  },
+  {
+    "slug": "photography",
+    "name": "Photography",
+    "cip_prefixes": [
+      "090404",
+      "100201",
+      "500406",
+      "500605"
+    ]
+  },
+  {
+    "slug": "film",
+    "name": "Film",
+    "cip_prefixes": [
+      "090102",
+      "1002",
+      "500504",
+      "5006"
+    ]
+  },
+  {
+    "slug": "animation",
+    "name": "Animation",
+    "cip_prefixes": [
+      "100304",
+      "110803",
+      "500411"
+    ]
+  },
+  {
+    "slug": "theatre",
+    "name": "Theatre",
+    "cip_prefixes": [
+      "5005"
+    ]
+  },
+  {
+    "slug": "dance",
+    "name": "Dance",
+    "cip_prefixes": [
+      "5003",
+      "500512"
+    ]
+  },
+  {
+    "slug": "music",
+    "name": "Music",
+    "cip_prefixes": [
+      "100203",
+      "390501",
+      "470404",
+      "5009",
+      "501003"
+    ]
+  },
+  {
+    "slug": "journalism",
+    "name": "Journalism",
+    "cip_prefixes": [
+      "0904",
+      "091001"
+    ]
+  },
+  {
+    "slug": "communications",
+    "name": "Communications",
+    "cip_prefixes": [
+      "0901",
+      "0907",
+      "0909",
+      "090900",
+      "0999",
+      "1001",
+      "1099",
+      "520501"
+    ]
+  },
+  {
+    "slug": "business",
+    "name": "Business",
+    "cip_prefixes": [
+      "5201",
+      "5202",
+      "5205",
+      "5206",
+      "5207",
+      "5210",
+      "5212",
+      "5213",
+      "5299"
+    ]
+  },
+  {
+    "slug": "accounting",
+    "name": "Accounting",
+    "cip_prefixes": [
+      "220211",
+      "5203",
+      "5216"
+    ]
+  },
+  {
+    "slug": "finance",
+    "name": "Finance",
+    "cip_prefixes": [
+      "270305",
+      "5208",
+      "521701"
+    ]
+  },
+  {
+    "slug": "marketing",
+    "name": "Marketing",
+    "cip_prefixes": [
+      "5214",
+      "5218"
+    ]
+  },
+  {
+    "slug": "entrepreneurship",
+    "name": "Entrepreneurship",
+    "cip_prefixes": [
+      "5207"
+    ]
+  },
+  {
+    "slug": "supply-chain",
+    "name": "Supply Chain Management",
+    "cip_prefixes": [
+      "470409",
+      "4999",
+      "520202",
+      "520203",
+      "520205",
+      "520409"
+    ]
+  },
+  {
+    "slug": "hospitality-management",
+    "name": "Hospitality Management",
+    "cip_prefixes": [
+      "120504",
+      "1206",
+      "5209",
+      "521905",
+      "521906"
+    ]
+  },
+  {
+    "slug": "sports-management",
+    "name": "Sports Management",
+    "cip_prefixes": [
+      "090906",
+      "3103",
+      "310504"
+    ]
+  },
+  {
+    "slug": "construction-management",
+    "name": "Construction Management",
+    "cip_prefixes": [
+      "040902",
+      "1433",
+      "5220"
+    ]
+  },
+  {
+    "slug": "pre-law",
+    "name": "Pre-Law",
+    "cip_prefixes": [
+      "2200",
+      "2299"
+    ]
+  },
+  {
+    "slug": "law",
+    "name": "Law",
+    "cip_prefixes": [
+      "2201",
+      "2202"
+    ]
+  },
+  {
+    "slug": "paralegal",
+    "name": "Paralegal Studies",
+    "cip_prefixes": [
+      "2203"
+    ]
+  },
+  {
+    "slug": "agriculture",
+    "name": "Agriculture",
+    "cip_prefixes": [
+      "0100",
+      "0101",
+      "0102",
+      "0103",
+      "0104",
+      "0106",
+      "0107",
+      "0108",
+      "0110",
+      "0111",
+      "0112",
+      "0199"
+    ]
+  },
+  {
+    "slug": "animal-science",
+    "name": "Animal Science",
+    "cip_prefixes": [
+      "010302",
+      "010307",
+      "010505",
+      "0109"
+    ]
+  },
+  {
+    "slug": "culinary-arts",
+    "name": "Culinary Arts",
+    "cip_prefixes": [
+      "1205",
+      "1299"
+    ]
+  },
+  {
+    "slug": "aviation",
+    "name": "Aviation",
+    "cip_prefixes": [
+      "4901"
+    ]
+  },
+  {
+    "slug": "automotive-technology",
+    "name": "Automotive Technology",
+    "cip_prefixes": [
+      "4706"
+    ]
+  },
+  {
+    "slug": "welding",
+    "name": "Welding",
+    "cip_prefixes": [
+      "4805"
+    ]
+  },
+  {
+    "slug": "construction-trades",
+    "name": "Construction Trades",
+    "cip_prefixes": [
+      "46",
+      "4701",
+      "4702",
+      "48"
+    ]
+  },
+  {
+    "slug": "cosmetology",
+    "name": "Cosmetology",
+    "cip_prefixes": [
+      "1204"
+    ]
+  },
+  {
+    "slug": "interdisciplinary-studies",
+    "name": "Interdisciplinary Studies",
+    "cip_prefixes": [
+      "30"
+    ]
+  },
+  {
+    "slug": "medical-laboratory-science",
+    "name": "Medical Laboratory Science",
+    "cip_prefixes": [
+      "5108",
+      "5110"
+    ]
+  },
+  {
+    "slug": "allied-health",
+    "name": "Allied Health",
+    "cip_prefixes": [
+      "510000",
+      "510001",
+      "5109",
+      "5126",
+      "5199"
+    ]
+  },
+  {
+    "slug": "optometry",
+    "name": "Optometry",
+    "cip_prefixes": [
+      "5117",
+      "5118",
+      "511108"
+    ]
+  },
+  {
+    "slug": "art-therapy",
+    "name": "Art & Music Therapy",
+    "cip_prefixes": [
+      "512301",
+      "512302",
+      "512305",
+      "512313",
+      "512315",
+      "512316",
+      "512317"
+    ]
+  },
+  {
+    "slug": "recreational-therapy",
+    "name": "Recreational Therapy",
+    "cip_prefixes": [
+      "512309"
+    ]
+  },
+  {
+    "slug": "french",
+    "name": "French",
+    "cip_prefixes": [
+      "050124",
+      "131325",
+      "160901"
+    ]
+  },
+  {
+    "slug": "german",
+    "name": "German",
+    "cip_prefixes": [
+      "050125",
+      "131326",
+      "1605"
+    ]
+  },
+  {
+    "slug": "chinese",
+    "name": "Chinese",
+    "cip_prefixes": [
+      "050123",
+      "1603",
+      "160301"
+    ]
+  },
+  {
+    "slug": "japanese",
+    "name": "Japanese",
+    "cip_prefixes": [
+      "050127",
+      "160302"
+    ]
+  },
+  {
+    "slug": "korean",
+    "name": "Korean",
+    "cip_prefixes": [
+      "050128",
+      "160303"
+    ]
+  },
+  {
+    "slug": "russian",
+    "name": "Russian",
+    "cip_prefixes": [
+      "050105",
+      "050110",
+      "160402"
+    ]
+  },
+  {
+    "slug": "italian",
+    "name": "Italian",
+    "cip_prefixes": [
+      "050126",
+      "160902"
+    ]
+  },
+  {
+    "slug": "arabic",
+    "name": "Arabic",
+    "cip_prefixes": [
+      "050108",
+      "161100",
+      "161101"
+    ]
+  },
+  {
+    "slug": "hebrew",
+    "name": "Hebrew",
+    "cip_prefixes": [
+      "161102",
+      "380206",
+      "380207"
+    ]
+  },
+  {
+    "slug": "portuguese",
+    "name": "Portuguese",
+    "cip_prefixes": [
+      "160904"
+    ]
+  },
+  {
+    "slug": "classics",
+    "name": "Classics",
+    "cip_prefixes": [
+      "131333",
+      "1612",
+      "3022"
+    ]
+  },
+  {
+    "slug": "genetics",
+    "name": "Genetics",
+    "cip_prefixes": [
+      "2608",
+      "260806"
+    ]
+  },
+  {
+    "slug": "microbiology",
+    "name": "Microbiology",
+    "cip_prefixes": [
+      "2605"
+    ]
+  },
+  {
+    "slug": "zoology",
+    "name": "Zoology",
+    "cip_prefixes": [
+      "2607"
+    ]
+  },
+  {
+    "slug": "botany",
+    "name": "Botany",
+    "cip_prefixes": [
+      "0111",
+      "2603"
+    ]
+  },
+  {
+    "slug": "ecology",
+    "name": "Ecology",
+    "cip_prefixes": [
+      "2613"
+    ]
+  },
+  {
+    "slug": "physiology",
+    "name": "Anatomy & Physiology",
+    "cip_prefixes": [
+      "2604",
+      "2609"
+    ]
+  },
+  {
+    "slug": "biotechnology",
+    "name": "Biotechnology",
+    "cip_prefixes": [
+      "2612",
+      "4101"
+    ]
+  },
+  {
+    "slug": "bioinformatics",
+    "name": "Bioinformatics",
+    "cip_prefixes": [
+      "2611"
+    ]
+  },
+  {
+    "slug": "pharmacology",
+    "name": "Pharmacology & Toxicology",
+    "cip_prefixes": [
+      "2610"
+    ]
+  },
+  {
+    "slug": "statistics",
+    "name": "Statistics",
+    "cip_prefixes": [
+      "261102",
+      "2705",
+      "2706",
+      "521302"
+    ]
+  },
+  {
+    "slug": "actuarial-science",
+    "name": "Actuarial Science",
+    "cip_prefixes": [
+      "270305",
+      "521304"
+    ]
+  },
+  {
+    "slug": "web-development",
+    "name": "Web Development",
+    "cip_prefixes": [
+      "110105",
+      "110801",
+      "111004"
+    ]
+  },
+  {
+    "slug": "robotics",
+    "name": "Robotics",
+    "cip_prefixes": [
+      "1442",
+      "1504"
+    ]
+  },
+  {
+    "slug": "nuclear-engineering",
+    "name": "Nuclear Engineering",
+    "cip_prefixes": [
+      "1423",
+      "1448",
+      "4102",
+      "410205"
+    ]
+  },
+  {
+    "slug": "petroleum-engineering",
+    "name": "Petroleum Engineering",
+    "cip_prefixes": [
+      "1421",
+      "1425",
+      "1439"
+    ]
+  },
+  {
+    "slug": "environmental-engineering",
+    "name": "Environmental Engineering",
+    "cip_prefixes": [
+      "1414"
+    ]
+  },
+  {
+    "slug": "landscape-architecture",
+    "name": "Landscape Architecture",
+    "cip_prefixes": [
+      "0406"
+    ]
+  },
+  {
+    "slug": "urban-planning",
+    "name": "Urban Planning",
+    "cip_prefixes": [
+      "040301",
+      "440403",
+      "4512"
+    ]
+  },
+  {
+    "slug": "gender-studies",
+    "name": "Gender Studies",
+    "cip_prefixes": [
+      "050207",
+      "050208"
+    ]
+  },
+  {
+    "slug": "cognitive-science",
+    "name": "Cognitive Science",
+    "cip_prefixes": [
+      "3025",
+      "3031"
+    ]
+  },
+  {
+    "slug": "gerontology",
+    "name": "Gerontology",
+    "cip_prefixes": [
+      "190702",
+      "3011",
+      "422809"
+    ]
+  },
+  {
+    "slug": "peace-studies",
+    "name": "Peace Studies",
+    "cip_prefixes": [
+      "3005",
+      "3028"
+    ]
+  },
+  {
+    "slug": "forestry",
+    "name": "Forestry",
+    "cip_prefixes": [
+      "0305"
+    ]
+  },
+  {
+    "slug": "wildlife-and-fisheries",
+    "name": "Wildlife & Fisheries",
+    "cip_prefixes": [
+      "0303",
+      "030601",
+      "260709"
+    ]
+  },
+  {
+    "slug": "sustainability",
+    "name": "Sustainability",
+    "cip_prefixes": [
+      "010308",
+      "030209",
+      "040403",
+      "3033"
+    ]
+  },
+  {
+    "slug": "human-development",
+    "name": "Human Development & Family Studies",
+    "cip_prefixes": [
+      "1907"
+    ]
+  },
+  {
+    "slug": "art-history",
+    "name": "Art History",
+    "cip_prefixes": [
+      "040801",
+      "3014",
+      "500703"
+    ]
+  },
+  {
+    "slug": "music-production",
+    "name": "Music Production",
+    "cip_prefixes": [
+      "100203",
+      "500913",
+      "500917"
+    ]
+  },
+  {
+    "slug": "public-relations",
+    "name": "Public Relations",
+    "cip_prefixes": [
+      "0909",
+      "520501"
+    ]
+  },
+  {
+    "slug": "industrial-design",
+    "name": "Industrial Design",
+    "cip_prefixes": [
+      "3037",
+      "500404"
+    ]
+  },
+  {
+    "slug": "secondary-education",
+    "name": "Secondary Education",
+    "cip_prefixes": [
+      "131205",
+      "1313"
+    ]
+  },
+  {
+    "slug": "respiratory-therapy",
+    "name": "Respiratory Therapy",
+    "cip_prefixes": [
+      "510812",
+      "510908"
+    ]
+  },
+  {
+    "slug": "medical-assisting",
+    "name": "Medical Assisting",
+    "cip_prefixes": [
+      "5108",
+      "5126"
+    ]
+  },
+  {
+    "slug": "athletic-training",
+    "name": "Athletic Training",
+    "cip_prefixes": [
+      "510913",
+      "512311"
+    ]
+  },
+  {
+    "slug": "management",
+    "name": "Management",
+    "cip_prefixes": [
+      "5202",
+      "520213",
+      "5221"
+    ]
+  },
+  {
+    "slug": "human-resources",
+    "name": "Human Resources",
+    "cip_prefixes": [
+      "5210"
+    ]
+  },
+  {
+    "slug": "international-business",
+    "name": "International Business",
+    "cip_prefixes": [
+      "520806",
+      "5211",
+      "521403"
+    ]
+  },
+  {
+    "slug": "real-estate",
+    "name": "Real Estate",
+    "cip_prefixes": [
+      "0410",
+      "5215"
+    ]
+  },
+  {
+    "slug": "hvac",
+    "name": "HVAC",
+    "cip_prefixes": [
+      "4702"
+    ]
+  },
+  {
+    "slug": "library-science",
+    "name": "Library Science",
+    "cip_prefixes": [
+      "25"
+    ]
+  },
+  {
+    "slug": "military-science",
+    "name": "Military Science",
+    "cip_prefixes": [
+      "29"
+    ]
+  },
+  {
+    "slug": "mortuary-science",
+    "name": "Mortuary Science",
+    "cip_prefixes": [
+      "1203"
+    ]
+  },
+  {
+    "slug": "family-and-consumer-sciences",
+    "name": "Family & Consumer Sciences",
+    "cip_prefixes": [
+      "19"
+    ]
+  },
+  {
+    "slug": "laboratory-technology",
+    "name": "Laboratory Technology",
+    "cip_prefixes": [
+      "41"
+    ]
+  },
+  {
+    "slug": "renewable-energy",
+    "name": "Renewable Energy",
+    "cip_prefixes": [
+      "030210",
+      "144801",
+      "4707"
+    ]
+  },
+  {
+    "slug": "industrial-maintenance",
+    "name": "Industrial Maintenance",
+    "cip_prefixes": [
+      "1506",
+      "4700",
+      "4703",
+      "4799"
+    ]
+  },
+  {
+    "slug": "commercial-driving",
+    "name": "Commercial Driving & Heavy Equipment",
+    "cip_prefixes": [
+      "4902"
+    ]
+  },
+  {
+    "slug": "maritime-studies",
+    "name": "Maritime Studies",
+    "cip_prefixes": [
+      "3029",
+      "4903"
+    ]
+  },
+  {
+    "slug": "chiropractic",
+    "name": "Chiropractic",
+    "cip_prefixes": [
+      "5101",
+      "510813",
+      "511106"
+    ]
+  },
+  {
+    "slug": "alternative-medicine",
+    "name": "Alternative & Complementary Medicine",
+    "cip_prefixes": [
+      "5133",
+      "5134",
+      "5136",
+      "5137"
+    ]
+  },
+  {
+    "slug": "massage-therapy",
+    "name": "Massage Therapy",
+    "cip_prefixes": [
+      "5135"
+    ]
+  },
+  {
+    "slug": "meteorology",
+    "name": "Meteorology",
+    "cip_prefixes": [
+      "3035",
+      "3050",
+      "4004"
+    ]
+  },
+  {
+    "slug": "dental-hygiene",
+    "name": "Dental Hygiene",
+    "cip_prefixes": [
+      "5106"
+    ]
+  },
+  {
+    "slug": "surgical-technology",
+    "name": "Surgical Technology",
+    "cip_prefixes": [
+      "510909",
+      "511012"
+    ]
+  },
+  {
+    "slug": "equine-studies",
+    "name": "Equine Studies",
+    "cip_prefixes": [
+      "010307",
+      "010507",
+      "010509"
+    ]
+  },
+  {
+    "slug": "horticulture",
+    "name": "Horticulture",
+    "cip_prefixes": [
+      "0106",
+      "011103"
+    ]
+  },
+  {
+    "slug": "food-science",
+    "name": "Food Science",
+    "cip_prefixes": [
+      "010401",
+      "0110"
+    ]
+  },
+  {
+    "slug": "machining",
+    "name": "Machining & Metalworking",
+    "cip_prefixes": [
+      "4805"
+    ]
+  },
+  {
+    "slug": "gunsmithing",
+    "name": "Gunsmithing",
+    "cip_prefixes": [
+      "470402"
+    ]
+  }
+]

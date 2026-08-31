@@ -2,7 +2,9 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.SoftDeleteScope
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -194,6 +196,40 @@ internal fun <T> SqlSession.occUpdate(
  * fixed DAO identifiers, never caller data.
  */
 internal typealias Bind = (PreparedStatement, Int) -> Unit
+
+/**
+ * The SQL fragment a [jsonbArrayBinder] parameter is read through: one jsonb
+ * bind expanded to `text[]` inside Postgres.
+ *
+ * It lives here, beside [Bind] and the `set*OrNull` helpers, because it is one
+ * half of a primitive: the fragment and the binder that feeds it are only
+ * correct together, and both `CollegesDao` and `CodebooksDao` need them.
+ */
+internal const val TEXT_ARRAY_PARAM = "ARRAY(SELECT jsonb_array_elements_text(?::jsonb))"
+
+/**
+ * A set of strings bound as ONE jsonb parameter and expanded to `text[]` by
+ * Postgres — the other half of [TEXT_ARRAY_PARAM]. Client-side
+ * `Connection.createArrayOf` is not reachable from a [SqlSession]: the boundary
+ * deliberately withholds the pooled connection. This shape also removes the
+ * `java.sql.Array` handle that would otherwise need a `finally { free() }`.
+ */
+internal fun jsonbArrayBinder(values: Collection<String>): Bind {
+  val json = JsonArray(values.map { JsonPrimitive(it) }).toString()
+  return { stmt, i -> stmt.setString(i, json) }
+}
+
+/** Binds one non-null `text` value. */
+internal fun stringBinder(value: String): Bind = { stmt, i -> stmt.setString(i, value) }
+
+/** Binds one non-null `integer` value. */
+internal fun intBinder(value: Int): Bind = { stmt, i -> stmt.setInt(i, value) }
+
+/** Binds one non-null `double precision` value. */
+internal fun doubleBinder(value: Double): Bind = { stmt, i -> stmt.setDouble(i, value) }
+
+/** Binds one non-null `boolean` value. */
+internal fun booleanBinder(value: Boolean): Bind = { stmt, i -> stmt.setBoolean(i, value) }
 
 /**
  * Generates `INSERT INTO $table (<cols>) VALUES (?, …) RETURNING *` from the

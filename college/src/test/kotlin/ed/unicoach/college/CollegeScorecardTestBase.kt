@@ -54,8 +54,12 @@ abstract class CollegeScorecardTestBase {
             // unknown-code report read the previous test's rows. Order matters
             // to nothing (CASCADE), but us_states' FK onto ipeds_regions means
             // they must go in ONE statement, as they do.
+            // `college_search_index` is not named: it is ON DELETE CASCADE from
+            // `colleges`, so truncating colleges takes it. `subjects` IS named
+            // — nothing cascades to it, and a leftover taxonomy would silently
+            // populate the next test's `subject_slugs`.
             "TRUNCATE TABLE colleges, college_programs, college_ipeds, college_programs_census, " +
-              "ipeds_regions, us_states, nces_locales, carnegie_2021_basic_classes, " +
+              "subjects, ipeds_regions, us_states, nces_locales, carnegie_2021_basic_classes, " +
               "carnegie_2021_size_settings, religious_affiliations, athletic_associations, " +
               "football_conferences, admission_test_policies, cip_codes, codebook_sources CASCADE",
           ).use { it.execute() }

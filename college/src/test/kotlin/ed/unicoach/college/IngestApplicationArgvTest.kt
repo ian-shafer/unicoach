@@ -224,6 +224,43 @@ class IngestApplicationArgvTest {
     assertEquals(listOf("institution", "fields", "aliases", "codebooks"), named.map { it.first })
   }
 
+  // ---------------------------------------------------------------------------
+  // The authored subject taxonomy (RFC 150): the same shape, deliberately
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a run with no subjects flag has no subject source`() {
+    assertNull(ok().subjects, "absent must stay absent — no fabricated repo default at this layer")
+  }
+
+  @Test
+  fun `the subjects flag carries the path, and its source flag the original argument`() {
+    assertEquals("db/data/subjects.json", ok("--subjects=db/data/subjects.json").subjects?.file?.path)
+    assertEquals("db/data/subjects.json", ok("--subjects=db/data/subjects.json").subjects?.sourceArg)
+    val remote = ok("--subjects=/tmp/scratch/subjects.json", "--subjects-source=s3://snap/subjects.json")
+    assertEquals("/tmp/scratch/subjects.json", remote.subjects?.file?.path)
+    assertEquals("s3://snap/subjects.json", remote.subjects?.sourceArg)
+  }
+
+  @Test
+  fun `a subjects source flag without its file is refused, never silently ignored`() {
+    val message = usage(*positional, "--subjects-source=s3://snap/subjects.json")
+    assertTrue(message.contains("--subjects-source"), message)
+    assertTrue(message.contains("was not supplied"), message)
+  }
+
+  @Test
+  fun `a repeated or blank subjects flag is refused like any other`() {
+    assertTrue(usage(*positional, "--subjects=a.json", "--subjects=b.json").contains("more than once"))
+    assertTrue(usage(*positional, "--subjects=").contains("non-empty"))
+  }
+
+  @Test
+  fun `the subject file joins the existence probe under its own role`() {
+    val named = namedSources(ok("--codebooks=db/data/codebooks.json", "--subjects=db/data/subjects.json"))
+    assertEquals(listOf("institution", "fields", "aliases", "codebooks", "subjects"), named.map { it.first })
+  }
+
   private fun ipedsGroupWithYear(year: String): Array<String> =
     arrayOf("--hd=HD.csv", "--ic=IC.csv", "--adm=adm.csv", "--completions=CA.csv", "--survey-year=$year")
 }

@@ -108,19 +108,21 @@ class CodebookVocabularyTest {
         },
       )
 
+    // Slugs in, slugs out (RFC 150 D61): the code-facing half of this
+    // vocabulary is gone, because the search index stores our word and there is
+    // nothing left on the serving path that resolves a word to a number.
     for (region in regions) {
       val slug = region["slug"]!!.jsonPrimitive.content
-      val code = region["code"]!!.jsonPrimitive.content.toInt()
-      assertEquals(code, book.regionCode(slug))
-      assertEquals(slug, book.regionSlug(code))
+      assertTrue(book.hasRegion(slug), "region [$slug] is in the loaded vocabulary")
     }
+    assertTrue(!book.hasRegion("not-a-region"))
     for (locale in locales) {
-      val code = locale["code"]!!.jsonPrimitive.content.toInt()
-      val resolved = book.locale(code)!!
+      val slug = locale["slug"]!!.jsonPrimitive.content
+      val resolved = book.locale(slug)!!
       assertEquals(locale["type"]!!.jsonPrimitive.content, resolved.type.word)
       assertEquals(locale["detail"]!!.jsonPrimitive.content, resolved.detail.word)
-      assertTrue(book.localeCodes(resolved.type, resolved.detail) == listOf(code))
-      assertTrue(book.localeCodes(resolved.type).contains(code))
+      assertTrue(book.localeSlugs(resolved.type, resolved.detail) == listOf(slug))
+      assertTrue(book.localeSlugs(resolved.type).contains(slug))
     }
   }
 

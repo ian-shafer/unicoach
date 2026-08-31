@@ -2,9 +2,8 @@ package ed.unicoach.college
 
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
-import ed.unicoach.db.models.CredentialLevel
+import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.IncomeBand
-import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.putIncomeBand
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
@@ -48,8 +47,11 @@ class CollegeSearchTool(
       putJsonObject("input_schema") {
         put("type", "object")
         putJsonObject("properties") {
-          // The shared filter vocabulary first, then this tool's own three
-          // fields: ordering, program credential, and the result cap.
+          // The shared filter vocabulary first, then this tool's own two
+          // fields: ordering and the result cap. `credential_level` is gone
+          // (RFC 150 D53): the index derives its programs from the bachelor's-
+          // only census, so the filter would have been a tautology for
+          // "bachelors" and a falsehood for everything else.
           putProperties(vocabulary.schemaProperties())
           put(
             "sort_by",
@@ -60,15 +62,6 @@ class CollegeSearchTool(
                 "\"net_price_per_year_usd\": cheapest first; \"completion_rate_150pct_4yr_share\": best completion " +
                 "first; \"name\": alphabetical. Sorting never filters: colleges " +
                 "missing the sort field are listed last, not dropped.",
-            ),
-          )
-          put(
-            "credential_level",
-            wordProperty(
-              CREDENTIAL_LEVEL_WORDS.keys,
-              "Require the cipPrefix program at this credential level (e.g. " +
-                "\"bachelors\" for a bachelor's degree in the program). Only valid " +
-                "together with cipPrefix.",
             ),
           )
           put(
@@ -91,9 +84,22 @@ class CollegeSearchTool(
   suspend fun execute(input: JsonObject): JsonObject {
     val query = parseQuery(input).getOrElse { return errorObject(it.message ?: "invalid input") }
 
+    // Two channels, kept apart on purpose. `Result.failure` is the DATABASE
+    // failing, and gets the retryable `search_failed` shape; an unresolvable
+    // program word is a DOMAIN outcome, and gets the same plain validation shape
+    // an unknown `region` word already gets — so the coach never tells a family
+    // the search broke when the word simply is not in the vocabulary.
+    val outcome = service.search(query).getOrElse { error -> return searchFailureObject(error) }
     val page =
-      service.search(query).getOrElse { error ->
-        return searchFailureObject(error)
+      when (outcome) {
+        is CollegeSearchOutcome.UnresolvableProgramFilter -> return errorObject(refusalSentence(outcome))
+
+        // Never a page of zero: an unbuilt index would report "0 colleges
+        // match" out of a full database, and no reader could tell that from a
+        // real zero (RFC 150).
+        is CollegeSearchOutcome.IndexNotBuilt -> return errorObject(INDEX_NOT_BUILT)
+
+        is CollegeSearchOutcome.Page -> outcome.page
       }
 
     return buildJsonObject {
@@ -104,6 +110,30 @@ class CollegeSearchTool(
       // The honest population count (RFC 139): unclamped, so the model can say
       // "total_matches match; showing count".
       put("total_matches", page.totalMatches)
+      // Unknown is never silently "no" (RFC 150 D55): every supplied filter over
+      // a column a college may not report says how many colleges it could not
+      // judge. `{}` when no supplied filter can exclude an unknown.
+      putJsonObject("excluded_unknown") {
+        page.excludedUnknown.toSortedMap().forEach { (axis, count) -> put(axis, count) }
+      }
+      // The vintages of the rows actually returned, read at result time. A key
+      // is ABSENT when no returned row carries that vintage -- an empty page
+      // reports no years, which is the truthful answer. When the returned rows
+      // MIX vintages the key carries the span instead of one year: the mixture
+      // is a fact about the answer, and reporting nothing (what a single-year
+      // reading had to do) hid it behind the same silence as "unknown".
+      putJsonObject("source_years") {
+        page.sourceYears.toSortedMap().forEach { (source, years) ->
+          if (years.first == years.last) {
+            put(source, years.first)
+          } else {
+            putJsonObject(source) {
+              put("earliest", years.first)
+              put("latest", years.last)
+            }
+          }
+        }
+      }
     }
   }
 
@@ -112,7 +142,7 @@ class CollegeSearchTool(
   // ---------------------------------------------------------------------------
 
   /**
-   * The shared filter parse plus this tool's own three fields. Unknown keys are
+   * The shared filter parse plus this tool's own two fields. Unknown keys are
    * refused here rather than in the vocabulary: the fit lens's forced tool and
    * this one offer different field sets around the same filters, so which keys
    * are known is the TOOL's question, not the vocabulary's.
@@ -127,16 +157,10 @@ class CollegeSearchTool(
     val sortBy =
       optWordEnum(input, "sort_by", SORT_BY_WORDS).getOrElse { return Result.failure(it) }
         ?: CollegeQuery.SortBy.ENROLLMENT_DESC
-    // The word-to-level mapping lives here, at the boundary: raw CREDLEV codes
-    // never appear in the tool schema or reach the LLM (brief 0004 amendment).
-    val credentialLevel = optWordEnum(input, "credential_level", CREDENTIAL_LEVEL_WORDS).getOrElse { return Result.failure(it) }
 
     val filters = vocabulary.parse(input, limit).getOrElse { return Result.failure(it) }
-    if (credentialLevel != null && filters.cipPrefix == null) {
-      return fail("credential_level is only valid together with cipPrefix")
-    }
 
-    return Result.success(filters.copy(sortBy = sortBy, credentialLevel = credentialLevel))
+    return Result.success(filters.copy(sortBy = sortBy))
   }
 
   // ---------------------------------------------------------------------------
@@ -152,20 +176,15 @@ class CollegeSearchTool(
       put("name", match.name)
       put("city", match.city)
       put("state", match.state)
-      // The label, never the raw IPEDS code (RFC 143): the model sees the
-      // vocabulary the coach speaks, from its one home.
-      put("control", InstitutionControl.labelFor(match.control))
+      // The word, never a code -- and now STRUCTURALLY so (RFC 150 D61): the
+      // search index stores our vocabulary, so there is no code on this path to
+      // leak and no code-to-word step left to forget.
+      put("control", match.control)
       // The same words the `region`/`locale_type`/`locale_detail` filters take
       // (RFC 147 D45), so what the model reads back is what it can ask for.
-      putOrNull("region", vocabulary.regionWord(match.region))
-      val localeCode = match.locale
-      val locale = vocabulary.localeOf(localeCode)
-      // A stored code the loaded codebook does not carry is named as unknown and
-      // still never a bare number -- the InstitutionControl.unknownLabel shape.
-      putOrNull(
-        "locale_type",
-        locale?.type?.word ?: localeCode?.let { vocabulary.unknownLocaleWord(it) },
-      )
+      putOrNull("region", match.region)
+      val locale = vocabulary.localeOf(match.locale)
+      putOrNull("locale_type", locale?.type?.word)
       putOrNull("locale_detail", locale?.detail?.word)
       putOrNull("undergrad_enrollment_headcount", match.undergradEnrollmentHeadcount)
       putOrNull("admission_rate_share", match.admissionRateShare)
@@ -193,8 +212,44 @@ class CollegeSearchTool(
       putOrNull("median_earnings_10y_after_entry_usd", match.medianEarnings10yAfterEntryUsd)
       putOrNull("median_debt_at_completion_usd", match.medianDebtAtCompletionUsd)
       putOrNull("pell_share", match.pellShare)
-      putJsonArray("programs") {
-        match.programTitles.forEach { add(it) }
+      // Present only when a program filter was written: the key MEANS "what your
+      // program filter matched", so on a search that asked nothing about
+      // programs there is no answer to give. It used to print `programs: []` on
+      // every non-program search — an empty array that reads as "this college
+      // offers nothing".
+      match.programTitles?.let { titles ->
+        putJsonArray("programs") {
+          titles.forEach { add(it) }
+        }
+      }
+    }
+
+  /**
+   * The SENTENCE for a typed program-filter refusal — composed here, at the
+   * boundary that speaks to the model, from the field, the word and the cause
+   * the DAO reported as data.
+   *
+   * The DAO used to hand up a pre-formatted string and this was `outcome.reason`.
+   * The wording is model-facing copy, so it belongs beside the rest of the
+   * model-facing copy; the DAO's job is the fact.
+   */
+  private fun refusalSentence(outcome: CollegeSearchOutcome.UnresolvableProgramFilter): String =
+    when (outcome.cause) {
+      CollegeSearchOutcome.UnresolvableProgramFilter.Cause.NOT_A_PUBLISHED_CIP_CODE -> {
+        "[${outcome.field.word}] [${outcome.value}] is not a CIP code in the loaded vocabulary"
+      }
+
+      CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_NOT_IN_TAXONOMY -> {
+        "[${outcome.field.word}] [${outcome.value}] is not in the loaded taxonomy"
+      }
+
+      CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_MATCHES_NO_CIP_CODE -> {
+        "[${outcome.field.word}] [${outcome.value}] matches no CIP code in the loaded vocabulary"
+      }
+
+      CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_AND_CIP_PREFIX_SHARE_NO_CIP_CODE -> {
+        "subject [${outcome.value}] and cipPrefix [${outcome.conflictsWith}] name no CIP code in common, " +
+          "so no single program can satisfy both -- write only the one you mean"
       }
     }
 
@@ -221,13 +276,23 @@ class CollegeSearchTool(
 
   companion object {
     const val TOOL_NAME = "search_colleges"
+
+    /** What the tool says when `college_search_index` has never been built (RFC 150). */
+    const val INDEX_NOT_BUILT =
+      "the search index has not been built yet, so no college can be found -- this is a deployment " +
+        "state, not an empty result; tell the family the college search is temporarily unavailable " +
+        "and do not say that no colleges match"
     const val DEFAULT_LIMIT = 10
     const val MIN_LIMIT = CollegeSearchService.MIN_LIMIT
     const val MAX_LIMIT = CollegeSearchService.MAX_LIMIT
 
-    /** The shared filter fields plus this tool's own three. */
+    /**
+     * The shared filter fields plus this tool's own two. `credential_level` is
+     * deliberately NOT here (RFC 150 D53), so a model that still writes it is
+     * refused as an unknown field rather than quietly ignored.
+     */
     private val KNOWN_FIELDS: Set<String> =
-      CollegeQueryVocabulary.FIELD_NAMES + setOf("sort_by", "credential_level", "limit")
+      CollegeQueryVocabulary.FIELD_NAMES + setOf("sort_by", "limit")
 
     /**
      * The `sort_by` word enum → [CollegeQuery.SortBy]. LinkedHashMap order is
@@ -246,22 +311,6 @@ class CollegeSearchTool(
         }
       }
 
-    /**
-     * The `credential_level` word enum → [CredentialLevel], the named level the
-     * query carries; the Scorecard CREDLEV code lives only in that enum, so raw
-     * codes reach neither the LLM nor this file. [CredentialLevel] deliberately
-     * omits 4 (post-bacc certificate), 6 (post-master's certificate) and 8
-     * (first professional): real codes, not offered as words.
-     */
-    private val CREDENTIAL_LEVEL_WORDS: Map<String, CredentialLevel> =
-      linkedMapOf(
-        "certificate" to CredentialLevel.CERTIFICATE,
-        "associate" to CredentialLevel.ASSOCIATE,
-        "bachelors" to CredentialLevel.BACHELORS,
-        "masters" to CredentialLevel.MASTERS,
-        "doctoral" to CredentialLevel.DOCTORAL,
-      )
-
     // Not `const`: the income-band ranges are rendered from IncomeBand.bracket,
     // the one home for that copy (RFC 142), so the description can never drift
     // from the labels the results themselves carry.
@@ -270,8 +319,23 @@ class CollegeSearchTool(
         "filters: program of study (CIP code prefix), location (US states, " +
         "region, urbanization), who runs the institution (public/private), " +
         "undergraduate enrollment size, admission rate (selectivity), maximum net " +
-        "price (affordability), and minimum completion rate — plus an optional " +
-        "`sort_by` ordering and a `credential_level` word for the program filter. " +
+        "price (affordability), and minimum completion rate — plus a `subject` " +
+        "word naming a field of study and an optional `sort_by` ordering. " +
+        "It also filters on what a school IS and what it OFFERS: `test_policy` " +
+        "(whether admission tests are required, optional or not considered), " +
+        "`religious_affiliation`, `carnegie_class` (what kind of institution it " +
+        "is) and `carnegie_size` (how big and how residential), " +
+        "`athletic_association` (a college matches if it belongs to it), " +
+        "`has_rotc`, `has_study_abroad` and `has_housing` (on-campus housing). " +
+        "Two more set the population searched: `is_active` (default true — a " +
+        "closed school is not one a student can apply to) and `is_four_year` " +
+        "(by default four-year AND unknown-level schools are both included, and " +
+        "only schools known to be two-year are dropped). Each of these is a " +
+        "plain word or a true/false, and the schema lists the words each one " +
+        "accepts; a filter this database has no vocabulary for is not offered " +
+        "at all. Colleges that do not report a filtered field are never counted " +
+        "as a \"no\": they are excluded and reported in `excluded_unknown`, one " +
+        "entry per axis, so you can say how many schools could not be judged. " +
         "Every location and control filter is named in plain words, and results " +
         "carry those same words back, so no data-source code is ever read or written. " +
         "The response carries `count` (returned rows, capped at $MAX_LIMIT) and " +

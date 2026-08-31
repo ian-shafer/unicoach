@@ -30,8 +30,8 @@ import ed.unicoach.db.models.Claim
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
+import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.FitLensOutcome
-import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
@@ -261,12 +261,43 @@ class FitLensService(
       }
 
     // Retrieve — run the query directly in the worker (no shared txn).
-    val matches =
+    val outcome =
       try {
-        collegeSearchService.search(query.copy(limit = config.searchLimit)).getOrThrow().matches
+        collegeSearchService.search(query.copy(limit = config.searchLimit)).getOrThrow()
       } catch (e: Exception) {
         logger.warn("fit-lens retrieval failed for student=[{}]", studentId.asString, e)
         return FitLensResult.TransientFailure("retrieval: ${e.message}", e)
+      }
+    val matches =
+      when (outcome) {
+        // A program word the vocabulary cannot expand is not a fault and not
+        // worth a retry: no college can match it, which is the zero-match
+        // outcome with a reason. Logged so the formulating prompt can be fixed.
+        is CollegeSearchOutcome.UnresolvableProgramFilter -> {
+          val reason =
+            SkipReason.UnresolvableProgramFilter(studentId, outcome.field, outcome.value, outcome.cause)
+          logger.warn("fit-lens query named an unusable program filter: {}", reason.toDisplay())
+          // The run row is written exactly as a zero-match pass writes it — the
+          // tokens were spent — but the SKIP carries the cause, so a broken
+          // formulating prompt is not filed as "the search found nothing".
+          return onZeroMatches(studentId, ready, queryLlmRequestId, reason)
+        }
+
+        // Not a domain outcome at all: the index has never been built, which no
+        // retry of the LLM can fix and the next ingest does. Retriable, and
+        // never billed as an applied run with zero suggestions.
+        is CollegeSearchOutcome.IndexNotBuilt -> {
+          logger.error(
+            "fit-lens retrieval hit an UNBUILT college_search_index for student=[{}]; " +
+              "run the ingest's `search-index` phase",
+            studentId.asString,
+          )
+          return FitLensResult.TransientFailure("retrieval: the college search index has not been built yet")
+        }
+
+        is CollegeSearchOutcome.Page -> {
+          outcome.page.matches
+        }
       }
     if (matches.isEmpty()) return onZeroMatches(studentId, ready, queryLlmRequestId)
 
@@ -368,6 +399,10 @@ class FitLensService(
     studentId: StudentId,
     ready: ReadPhase.Ready,
     queryLlmRequestId: LlmRequestId,
+    // Why there was nothing to reason over. Defaulted to the plain zero-match
+    // reason, so the one caller with a CAUSE (an unexpandable program filter)
+    // states it and every other caller is unchanged.
+    reason: SkipReason = SkipReason.ZeroSearchMatches(studentId),
   ): FitLensResult {
     val write =
       writeAppliedRun(
@@ -378,7 +413,7 @@ class FitLensService(
         queryLlmRequestId = queryLlmRequestId,
         reasonLlmRequestId = null,
       )
-    return write ?: FitLensResult.Skipped(SkipReason.ZeroSearchMatches(studentId))
+    return write ?: FitLensResult.Skipped(reason)
   }
 
   private suspend fun onReasonParseFailure(
@@ -652,13 +687,13 @@ class FitLensService(
       for (match in matches) {
         appendLine(
           "- collegeId=${match.id.asString} name=${match.name} city=${match.city} state=${match.state} " +
-            "control=${InstitutionControl.labelFor(match.control)} " +
+            "control=${match.control} " +
             "undergradEnrollmentHeadcount=${match.undergradEnrollmentHeadcount} " +
             "admissionRateShare=${match.admissionRateShare} " +
             "netPricePerYearUsd=${match.netPricePerYearUsd} " +
             "completionRate150pct4yrShare=${match.completionRate150pct4yrShare} " +
             "medianEarnings10yAfterEntryUsd=${match.medianEarnings10yAfterEntryUsd} " +
-            "programs=${match.programTitles.joinToString("; ")}",
+            "programs=${match.programTitles.orEmpty().joinToString("; ")}",
         )
       }
     }

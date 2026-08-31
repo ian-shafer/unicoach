@@ -1,9 +1,15 @@
 package ed.unicoach.db.models
 
 /**
- * A single result row from [ed.unicoach.db.dao.CollegesDao.search] (RFC 67): the
- * curated college fields plus [programTitles] — the `cip_title`s of programs
- * matched by the query's `cipPrefix` (empty when no program filter was applied).
+ * A single result row from [ed.unicoach.db.dao.CollegesDao.search] (RFC 150):
+ * the filter surface read off `college_search_index` plus the payload read back
+ * from the source of truth for the at-most-25 rows actually returned (D60).
+ *
+ * [programTitles] are the `cip_codes.title`s of census programs matched by the
+ * query's `cipPrefix`/`subject` filter. NULL when no program filter was applied
+ * — nothing was asked about programs, so nothing is reported; the EMPTY list is
+ * the different fact that the filter matched none of this college's programs.
+ * A boundary omits the key entirely for the null.
  *
  * [netPricePerYearIncomeQ1Usd]..[netPricePerYearIncomeQ5Usd] are the average annual net price by household
  * income band ($0-30k / 30,001-48k / 48,001-75k / 75,001-110k / 110k+) and
@@ -15,10 +21,14 @@ package ed.unicoach.db.models
  * (`minCompletionRate150pct4yrShare`). Earnings and Pell share are surfaced, never thresholded
  * on, because filtering on them is value-laden.
  *
- * [control], [region] and [locale] are the PUBLISHED codes exactly as the source
- * stores them. No code leaves this type as a number: the boundary that speaks to
- * a model resolves each one to its codebook word (RFC 147 D45), the way
- * `InstitutionControl` already did for [control].
+ * [control], [region] and [locale] are OUR WORDS, not published codes (RFC 150
+ * D61): the index stores the slug, so no code enters this type and there is no
+ * code-to-word step left at the boundary. A code the codebook did not name is
+ * NULL on the index (the rebuild's LEFT-JOIN discipline), so it is null here.
+ *
+ * [ipedsSurveyYear] and [programsCensusSurveyYear] are the vintages of THIS
+ * row, read at result time rather than copied onto the index (D55/D60), and are
+ * what the tool aggregates into `source_years`.
  */
 data class CollegeMatch(
   val id: CollegeId,
@@ -26,9 +36,9 @@ data class CollegeMatch(
   val name: String,
   val city: String,
   val state: String,
-  val control: Int,
-  val region: Int?,
-  val locale: Int?,
+  val control: String,
+  val region: String?,
+  val locale: String?,
   val undergradEnrollmentHeadcount: Int?,
   val admissionRateShare: Double?,
   val netPricePerYearUsd: Int?,
@@ -42,5 +52,7 @@ data class CollegeMatch(
   val medianDebtAtCompletionUsd: Int?,
   val pellShare: Double?,
   val website: String?,
-  val programTitles: List<String>,
+  val programTitles: List<String>?,
+  val ipedsSurveyYear: Int? = null,
+  val programsCensusSurveyYear: Int? = null,
 )

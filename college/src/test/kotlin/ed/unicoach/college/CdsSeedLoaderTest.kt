@@ -311,9 +311,10 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     assertEquals(meritCsv.length(), recorded.bytes)
 
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
-    // 4, not RFC 148's prose "3": RFC 146 took 3 for the derived name-word
-    // rebuild, so the CDS bump is the next number in the sequence.
-    assertEquals(4, row.methodVersion)
+    // 5: RFC 146 took 3 for the derived name-word rebuild, RFC 148's CDS bump
+    // was therefore 4, and RFC 150's derived search index is the next number in
+    // the sequence.
+    assertEquals(5, row.methodVersion)
     for (file in listOf(meritCsv, factorsCsv, deadlinesCsv)) {
       assertTrue(row.sources.contains(file.name), "sources names ${file.name}: ${row.sources}")
     }
@@ -376,7 +377,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     renameBuildTable("college_index_build", "college_index_build_hidden")
     try {
       val thrown = assertFailsWith<PartialIngestException> { ingest() }
-      assertEquals(listOf("institutions", "fields", "aliases", "cds", "name-words"), thrown.committedPhases)
+      assertEquals(listOf("institutions", "fields", "aliases", "cds", "name-words", "search-index"), thrown.committedPhases)
       assertEquals("provenance", thrown.failedPhase)
       assertEquals(2, withSession { count(it, "college_merit_aid") }, "the cds phase committed before provenance ran")
     } finally {

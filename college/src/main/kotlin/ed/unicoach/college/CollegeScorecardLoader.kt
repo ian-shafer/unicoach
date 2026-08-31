@@ -69,6 +69,12 @@ class CollegeScorecardLoader(
   // CDS loader above: the phase ordering is then observable from a test that
   // hands in a loader.
   private val codebookLoader: CodebookLoader = CodebookLoader(database, ioDispatcher),
+  // The authored subject taxonomy (RFC 150 D49), injected for the same reason:
+  // it loads in its OWN `subjects` phase placed immediately after `codebooks`,
+  // because it is validated against exactly the `cip_codes` rows that phase
+  // wrote and must not be able to run against a stale CIP vocabulary. That
+  // ordering is observable from a test.
+  private val subjectLoader: SubjectLoader = SubjectLoader(database, ioDispatcher),
 ) {
   private val logger = LoggerFactory.getLogger(CollegeScorecardLoader::class.java)
 
@@ -344,6 +350,8 @@ class CollegeScorecardLoader(
     val aliases: AliasResult,
     /** Rows the `name-words` phase wrote to `college_name_words` (RFC 146). */
     val nameWords: Int,
+    /** Rows the `search-index` phase wrote to `college_search_index` (RFC 150). */
+    val searchIndex: Int,
     val nonNullBefore: Map<String, Int>,
     val nonNullAfter: Map<String, Int>,
     val buildId: java.util.UUID,
@@ -360,6 +368,12 @@ class CollegeScorecardLoader(
      * distinction [ipeds] and [cds] draw.
      */
     val codebooks: CodebookLoader.LoadResult? = null,
+    /**
+     * The authored subject taxonomy load (RFC 150), `null` when no
+     * `--subjects` source was supplied — the same omit-vs-zero distinction
+     * every other optional group draws.
+     */
+    val subjects: SubjectLoader.LoadResult? = null,
     val unknownCodes: CodebookLoader.UnknownCodeReport? = null,
   ) {
     /**
@@ -485,6 +499,7 @@ class CollegeScorecardLoader(
     ipeds: IpedsSources? = null,
     cds: CdsSources? = null,
     codebooks: SourceFile? = null,
+    subjects: SourceFile? = null,
   ): IngestReport {
     val startedAt = Instant.now()
     // The IPEDS half of the run is ONE nullable value: the source group and the
@@ -496,6 +511,15 @@ class CollegeScorecardLoader(
     // generated repo data, so a malformed one is a review error that must abort
     // before the first phase commits — never after five phases have written rows.
     val parsedCodebooks = codebooks?.let { source -> withContext(ioDispatcher) { codebookLoader.parse(source) } }
+    // The taxonomy's FILE half is parsed here beside the codebook, for the same
+    // reason and with the same contract: it is authored repo data, so a typo is
+    // a review error that must abort before the first phase commits. No
+    // `withContext` here, unlike the line above: `SubjectLoader.parse` makes the
+    // IO switch itself, so no caller has to know it touches a disk. Its
+    // DATABASE half — every prefix matches a real `cip_codes` row — cannot run
+    // this early, because the vocabulary it checks against is written by the
+    // very phase it loads in (RFC 150 D49).
+    val parsedSubjects = subjects?.let { source -> subjectLoader.parse(source) }
     ipedsRun?.assertHeaders()
     // Beside the IPEDS assertion, not inside the cds phase: all TEN files are
     // header-asserted before the first phase commits, so a renamed column in a
@@ -507,7 +531,8 @@ class CollegeScorecardLoader(
         listOf(digest(institution), digest(fields), digest(aliasesFile)) +
           (ipedsRun?.sources?.files?.map { digest(it) } ?: emptyList()) +
           (cds?.files?.map { digest(it) } ?: emptyList()) +
-          (codebooks?.let { listOf(digest(it)) } ?: emptyList())
+          (codebooks?.let { listOf(digest(it)) } ?: emptyList()) +
+          (subjects?.let { listOf(digest(it)) } ?: emptyList())
       }
 
     // Each phase below is its own transaction, so a failure in a later one
@@ -529,6 +554,23 @@ class CollegeScorecardLoader(
     val codebookResult =
       parsedCodebooks?.let { parsed ->
         phase("codebooks", committedPhases) { codebookLoader.load(parsed) }
+      }
+    // The taxonomy is its OWN phase, and deliberately NOT a step inside
+    // `codebooks` as RFC 150 D49 drafted it: a step would make
+    // `CodebookLoader.load` know the taxonomy exists in order to share its
+    // transaction. It still runs IMMEDIATELY after `codebooks`, so it is
+    // validated against the `cip_codes` rows that phase just wrote and can
+    // never run against a stale CIP vocabulary.
+    //
+    // What the separate phase gives up is the shared rollback: `codebooks` has
+    // already committed by the time this runs, so a dead prefix leaves the
+    // codebook load in place. That is acceptable because the failure is FATAL
+    // either way and reaches no build row, which is what the run is judged by.
+    val subjectResult =
+      parsedSubjects?.let { parsed ->
+        phase("subjects", committedPhases) {
+          subjectLoader.load(subjects?.file?.path ?: "subjects.json", parsed)
+        }
       }
     val scorecard = loadScorecard(institution, fields, committedPhases)
     val aliasResult = phase("aliases", committedPhases) { applyAliases(aliasEntries) }
@@ -559,6 +601,12 @@ class CollegeScorecardLoader(
     // aliases it splits words from, and the IPEDS phases beside them — and
     // before provenance, because its row count is provenance.
     val nameWords = phase("name-words", committedPhases) { rebuildNameWords() }
+    // The second derived rebuild of phase 2 (RFC 150 D47), between `name-words`
+    // and the read-only unknown-code report: it reads `colleges`,
+    // `college_ipeds`, `college_programs_census` and `subjects` after EVERY row
+    // phase has committed, and before `provenance`, because its row count IS
+    // provenance.
+    val searchIndex = phase("search-index", committedPhases) { rebuildSearchIndex() }
     // D46's report, and the reason it is here rather than inside the codebooks
     // phase: it counts the codes stored in `colleges`/`college_ipeds`/
     // `college_programs_census`, so it must read the snapshot THIS run just
@@ -594,7 +642,8 @@ class CollegeScorecardLoader(
           rowsIngested = rowsIngestedJson(scorecard.colleges, scorecard.programs, aliasResult, ipedsReport, cdsResult),
           changeSummary =
             changeSummaryJson(nonNullBefore, nonNullAfter, scorecard.colleges.changed + aliasResult.applied, ipedsReport),
-          indexRows = nameWords,
+          nameWordsRows = nameWords,
+          searchIndexRows = searchIndex,
         )
       }
 
@@ -606,12 +655,14 @@ class CollegeScorecardLoader(
       programs = scorecard.programs,
       aliases = aliasResult,
       nameWords = nameWords,
+      searchIndex = searchIndex,
       nonNullBefore = nonNullBefore,
       nonNullAfter = nonNullAfter,
       buildId = buildId,
       ipeds = ipedsReport,
       cds = cdsResult,
       codebooks = codebookResult,
+      subjects = subjectResult,
       unknownCodes = unknownCodes,
     )
   }
@@ -629,7 +680,8 @@ class CollegeScorecardLoader(
     sources: List<SourceDigest>,
     rowsIngested: JsonObject,
     changeSummary: JsonObject,
-    indexRows: Int,
+    nameWordsRows: Int,
+    searchIndexRows: Int,
   ): java.util.UUID =
     database
       .withConnection { session ->
@@ -640,7 +692,8 @@ class CollegeScorecardLoader(
             finishedAt = finishedAt,
             sources = sourcesJson(sources),
             rowsIngested = rowsIngested,
-            indexRows = indexRows,
+            nameWordsRows = nameWordsRows,
+            searchIndexRows = searchIndexRows,
             changeSummary = changeSummary,
             methodVersion = METHOD_VERSION,
           ),
@@ -806,6 +859,34 @@ class CollegeScorecardLoader(
   private suspend fun rebuildNameWords(): Int =
     database.withConnection { session ->
       CollegesDao.rebuildNameWords(session).getOrThrow()
+    }
+
+  /**
+   * Rebuilds the derived `college_search_index` in its own transaction
+   * ([CollegesDao.rebuildSearchIndex]) and returns the rows written — the
+   * `search-index` phase (RFC 150). Wholesale for [rebuildNameWords]'s reason:
+   * a college that changed this run, one that was deleted, and a subject
+   * taxonomy that was edited are all handled by construction.
+   */
+  private suspend fun rebuildSearchIndex(): Int =
+    database.withConnection { session ->
+      val rows = CollegesDao.rebuildSearchIndex(session).getOrThrow()
+      // RFC 147 D46's rule applied to the one code the rebuild maps SILENTLY:
+      // an `HD.SECTOR` value InstitutionSector does not name becomes a NULL
+      // `sector`, which keeps the college searchable and reports the gap
+      // nowhere. Counted and said out loud here, where the phase runs. Its
+      // sibling, an unmapped `control`, is a hard failure inside the DAO —
+      // there is no honest NULL to degrade to.
+      val unmappedSectors = CollegesDao.unmappedSectorCodes(session).getOrThrow()
+      if (unmappedSectors.isNotEmpty()) {
+        logger.warn(
+          "search-index: college_ipeds.sector carries {} code(s) InstitutionSector does not name: {}; " +
+            "those colleges are indexed with a NULL sector and are NOT excluded as administrative units",
+          unmappedSectors.size,
+          unmappedSectors.entries.joinToString(", ") { (code, n) -> "[$code] on $n row(s)" },
+        )
+      }
+      rows
     }
 
   /** Non-null counts for every nullable curated column on `colleges` (the change-summary axis). */
@@ -1248,8 +1329,12 @@ class CollegeScorecardLoader(
      * RFC 148's prose says "3" because it was written against RFC 144's 2; RFC
      * 146 took 3 first, so the CDS bump is 4 — the number is a sequence, not a
      * literal from the RFC.
+     *
+     * 5 = RFC 150's derived `college_search_index` rebuild and its subject
+     * taxonomy: the derivation is new, so a build row from this ingest is not
+     * comparable to one from the last.
      */
-    const val METHOD_VERSION = 4
+    const val METHOD_VERSION = 5
 
     /** The exact key set one curated alias entry may carry — a surplus key is a typo, never surplus data. */
     private val ALIAS_ENTRY_KEYS = setOf("ipeds_unit_id", "aliases")

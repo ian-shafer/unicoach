@@ -10,9 +10,8 @@ import ed.unicoach.db.models.NewFootballConference
 import ed.unicoach.db.models.NewIpedsRegion
 import ed.unicoach.db.models.NewNcesLocale
 import ed.unicoach.db.models.NewReligiousAffiliation
+import ed.unicoach.db.models.NewSubject
 import ed.unicoach.db.models.NewUsState
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonPrimitive
 import java.sql.PreparedStatement
 import java.sql.SQLException
 
@@ -243,7 +242,7 @@ object CodebooksDao {
       INSERT INTO codebook_sources (
         domain, source, source_file, source_sha256, source_vintage_year, null_sentinels, loaded_at
       )
-      VALUES (?, ?, ?, ?, ?, ARRAY(SELECT jsonb_array_elements_text(?::jsonb))::smallint[], NOW())
+      VALUES (?, ?, ?, ?, ?, $TEXT_ARRAY_PARAM::smallint[], NOW())
       ON CONFLICT (domain) DO UPDATE SET
         source = EXCLUDED.source,
         source_file = EXCLUDED.source_file,
@@ -259,7 +258,7 @@ object CodebooksDao {
         stmt.setString(3, row.sourceFile)
         stmt.setString(4, row.sourceSha256)
         stmt.setInt(5, row.sourceVintageYear)
-        stmt.setString(6, JsonArray(row.nullSentinels.map { JsonPrimitive(it) }).toString())
+        jsonbArrayBinder(row.nullSentinels.map { it.toString() })(stmt, 6)
       },
       map = { },
       mapError = ::mapCodebookWriteError,
@@ -351,6 +350,54 @@ object CodebooksDao {
       },
     )
 
+  /**
+   * Every slug of [table], in published-code order — the closed WORD LIST a
+   * boundary advertises to a model and validates a word against (RFC 150 D54).
+   *
+   * ONE generic read over the existing [CodebookTable] identifier allowlist,
+   * not six typed row readers. After RFC 150 D61 the derived search index
+   * stores the SLUG, so what the serving path needs from a codebook is the
+   * vocabulary, not the code: nothing on that path resolves a word to a number
+   * any more. The two tables whose key is not a slug ([CodebookTable.US_STATES],
+   * [CodebookTable.CIP_CODES]) are refused rather than silently returning
+   * postal or CIP codes dressed as slugs.
+   */
+  fun slugs(
+    session: SqlSession,
+    table: CodebookTable,
+  ): Result<List<String>> {
+    require(table.keyColumn == "slug") {
+      "slugs: [${table.tableName}] is not keyed by a slug (its key is [${table.keyColumn}])"
+    }
+    // Every slug-keyed table carries a published `code` today, so in practice
+    // this is published-code order, as the doc above says. The fallback is for a
+    // future slug-keyed table with no published code — slug order is then the
+    // only stable one — and it keeps the interpolated identifier a column the
+    // table actually has.
+    val order = if (table.hasCodeColumn) "code" else table.keyColumn
+    return session.queryList(
+      "SELECT ${table.keyColumn} AS slug FROM ${table.tableName} ORDER BY $order",
+      bind = {},
+      map = { rs -> rs.getString("slug") },
+    )
+  }
+
+  /**
+   * Every published `us_states.usps_code`, in postal-code order — the closed
+   * vocabulary the `states` filter is resolved against (RFC 150).
+   *
+   * Its own read rather than a [slugs] call, because [CodebookTable.US_STATES]
+   * is one of the two tables `slugs` deliberately refuses: its key is a postal
+   * code, not a slug, and returning it as one would be the dressing-up that
+   * function exists to prevent.
+   */
+  fun usStateCodes(session: SqlSession): Result<List<String>> =
+    session.queryList(
+      "SELECT ${CodebookTable.US_STATES.keyColumn} AS code FROM ${CodebookTable.US_STATES.tableName} ORDER BY 1",
+      bind = {},
+      map = { rs -> rs.getString("code") },
+    )
+
   /** The row count of [table], for the loader's per-domain report. */
   fun rowCount(
     session: SqlSession,
@@ -405,6 +452,130 @@ object CodebooksDao {
    * columns both the delete refusal and the unknown-code report consult.
    */
   val CODE_COLUMNS: Set<CodeColumn> = CodeColumns.ALL
+
+  // ---------------------------------------------------------------------------
+  // The authored subject taxonomy (RFC 150 D49)
+  //
+  // `subjects` is not a published codebook — it is repo-authored data — but it
+  // is reference data loaded by the SAME ingest phase against the SAME
+  // vocabulary, so it lives beside the tables it is validated against rather
+  // than in a DAO of its own.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Upserts one subject on its slug, suppressing an unchanged write exactly as
+   * every codebook row does, so a re-load of an unedited `subjects.json` leaves
+   * each row byte-identical, `updated_at` included.
+   *
+   * Hand-written rather than routed through [upsertDetectingChange] for the
+   * [CollegeIpedsDao.upsert] reason: the primitive binds every column as a bare
+   * `?`, and the `cip_prefixes` array needs a value EXPRESSION —
+   * [TEXT_ARRAY_PARAM] — around its parameter, fed by a [jsonbArrayBinder].
+   */
+  fun upsertSubject(
+    session: SqlSession,
+    row: NewSubject,
+  ): Result<UpsertOutcome> {
+    val sql =
+      """
+      WITH up AS (
+        INSERT INTO subjects (slug, name, cip_prefixes)
+        VALUES (?, ?, $TEXT_ARRAY_PARAM)
+        ON CONFLICT (slug) DO UPDATE SET
+          name = EXCLUDED.name,
+          cip_prefixes = EXCLUDED.cip_prefixes
+        WHERE (subjects.name, subjects.cip_prefixes)
+          IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.cip_prefixes)
+        RETURNING (xmax = 0) AS inserted
+      )
+      SELECT inserted FROM up
+      UNION ALL
+      SELECT NULL::boolean WHERE NOT EXISTS (SELECT 1 FROM up)
+      """.trimIndent()
+    return session.mutateReturning(
+      sql,
+      bind = { stmt ->
+        stmt.setString(1, row.slug)
+        stmt.setString(2, row.name)
+        jsonbArrayBinder(row.cipPrefixes)(stmt, 3)
+      },
+      map = { rs ->
+        val inserted = rs.getBoolean("inserted")
+        when {
+          rs.wasNull() -> UpsertOutcome.UNCHANGED
+          inserted -> UpsertOutcome.INSERTED
+          else -> UpsertOutcome.CHANGED
+        }
+      },
+      mapError = ::mapCodebookWriteError,
+    )
+  }
+
+  /**
+   * Deletes every stored subject whose slug the incoming file no longer carries,
+   * returning how many went.
+   *
+   * Unlike a codebook row, a dropped subject needs no reference check: nothing
+   * has a foreign key onto `subjects`. `college_search_index.subject_slugs` is
+   * a materialised `slug[]` the very next rebuild recomputes, and the phase
+   * order guarantees that rebuild happens in the same run — an upsert without
+   * this delete would leave a deleted subject matching colleges forever, which
+   * is the one way editing the file could make search WORSE.
+   *
+   * The keep-list is bound as one jsonb array for the same reason the write
+   * binds its arrays that way.
+   */
+  fun deleteSubjectsNotIn(
+    session: SqlSession,
+    keptSlugs: Collection<String>,
+  ): Result<Int> =
+    session.execute(
+      "DELETE FROM subjects WHERE slug <> ALL ($TEXT_ARRAY_PARAM)",
+    ) { stmt ->
+      jsonbArrayBinder(keptSlugs)(stmt, 1)
+    }
+
+  /** Every `subjects` row in slug order — the taxonomy read the boundary's vocabulary is built from. */
+  fun subjects(session: SqlSession): Result<List<NewSubject>> =
+    session.queryList(
+      "SELECT slug, name, cip_prefixes FROM subjects ORDER BY slug",
+      bind = {},
+      map = { rs ->
+        NewSubject(
+          slug = rs.getString("slug"),
+          name = rs.getString("name"),
+          cipPrefixes = rs.getStringList("cip_prefixes"),
+        )
+      },
+    )
+
+  /** The `subjects` row count, for the loader's report. */
+  fun subjectCount(session: SqlSession): Result<Int> =
+    session.queryOne("SELECT count(*) AS n FROM subjects", bind = {}, map = { rs -> rs.getInt("n") })
+
+  /**
+   * The six-digit `cip_codes` keys that start with any of [prefixes] — the read
+   * [ed.unicoach.college.SubjectLoader]'s fatal validation is built on (D49).
+   *
+   * One statement for the whole file rather than one per prefix: a 540-prefix
+   * taxonomy is 540 round trips otherwise, and the answer the loader needs is
+   * per-prefix, so the prefix it matched rides back beside the code.
+   */
+  fun cipCodesMatchingPrefixes(
+    session: SqlSession,
+    prefixes: Collection<String>,
+  ): Result<Map<String, Int>> =
+    session
+      .queryList(
+        """
+        SELECT p.prefix AS prefix, count(c.code) AS n
+        FROM unnest($TEXT_ARRAY_PARAM) AS p(prefix)
+        LEFT JOIN cip_codes c ON c.code LIKE p.prefix || '%'
+        GROUP BY p.prefix
+        """.trimIndent(),
+        bind = { stmt -> jsonbArrayBinder(prefixes)(stmt, 1) },
+        map = { rs -> rs.getString("prefix") to rs.getInt("n") },
+      ).map { it.toMap() }
 }
 
 /**

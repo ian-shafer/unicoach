@@ -117,6 +117,7 @@ class CollegeSearchRoutingTest {
           stmt.executeUpdate()
         }
       rebuildNameWords()
+      rebuildSearchIndex()
     }
     return id
   }
@@ -158,6 +159,21 @@ class CollegeSearchRoutingTest {
         override fun prepareStatement(sql: String): java.sql.PreparedStatement = dbConnection.prepareStatement(sql)
       }
     CollegesDao.rebuildNameWords(session).getOrThrow()
+  }
+
+  /**
+   * Re-derives `college_search_index` after a direct seed (RFC 150). Both
+   * search entry points now MATCH and RANK on that table, so a college seeded
+   * behind the ingest's back is invisible to `GET /api/v1/colleges` until the
+   * index carries it — the same rule as [rebuildNameWords], and the same
+   * single transaction.
+   */
+  private fun rebuildSearchIndex() {
+    val session =
+      object : SqlSession {
+        override fun prepareStatement(sql: String): java.sql.PreparedStatement = dbConnection.prepareStatement(sql)
+      }
+    CollegesDao.rebuildSearchIndex(session).getOrThrow()
   }
 
   private fun encode(q: String): String = URLEncoder.encode(q, Charsets.UTF_8)

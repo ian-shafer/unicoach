@@ -2,9 +2,14 @@ package ed.unicoach.college
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.SearchIndexNotBuiltException
+import ed.unicoach.db.dao.mapDatabaseError
 import ed.unicoach.db.models.CollegeQuery
-import ed.unicoach.db.models.CollegeSearchPage
+import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.CollegeSummary
+import kotlinx.coroutines.CancellationException
+import org.slf4j.LoggerFactory
+import java.sql.SQLException
 
 /**
  * Orchestrates structured college retrieval over the `db` module's
@@ -20,21 +25,33 @@ class CollegeSearchService(
 ) {
   /**
    * Runs [query] after clamping its `limit` to [MIN_LIMIT]`..`[MAX_LIMIT]. A
-   * zero-match query yields an empty page (a valid outcome), not a failure.
-   * `credentialLevel` narrows the program join, so it is rejected without a
-   * `cipPrefix` to join on (RFC 139) — validated here so every caller inherits
-   * the boundary, not just the chat tool.
+   * zero-match query yields an empty page (a valid outcome), not a failure; a
+   * program word the loaded vocabulary cannot expand comes back as
+   * [CollegeSearchOutcome.UnresolvableProgramFilter]; and a database that has
+   * been migrated but never ingested comes back as
+   * [CollegeSearchOutcome.IndexNotBuilt] rather than as a page of zero matches.
+   * `Result.failure` here means the database failed — and now actually does,
+   * because [handleFailures] catches the raw JDBC `withConnection` throws
+   * AROUND the DAO's `Result`.
+   *
+   * The `credentialLevel`-requires-`cipPrefix` pairing rule is GONE with the
+   * field itself (RFC 150 D53), so the clamp is once again the only domain rule
+   * this boundary applies.
    */
-  suspend fun search(query: CollegeQuery): Result<CollegeSearchPage> {
-    if (query.credentialLevel != null && query.cipPrefix == null) {
-      return Result.failure(
-        IllegalArgumentException(
-          "credentialLevel [${query.credentialLevel}] requires a cipPrefix program filter, but cipPrefix was absent",
-        ),
-      )
-    }
+  suspend fun search(query: CollegeQuery): Result<CollegeSearchOutcome> {
     val clamped = query.copy(limit = query.limit.coerceIn(MIN_LIMIT, MAX_LIMIT))
-    return database.withConnection { session -> CollegesDao.search(session, clamped) }
+    return handleFailures { database.withConnection { session -> CollegesDao.search(session, clamped) } }
+      .onSuccess { outcome ->
+        // Loud, on every call, because the state is invisible from the answer:
+        // an unbuilt index is an operator fact, not a user one.
+        if (outcome is CollegeSearchOutcome.IndexNotBuilt) {
+          logger.error(
+            "college search ran against an UNBUILT college_search_index: no rows and no build row -- " +
+              "run the ingest's `search-index` phase (`bin/ingest-colleges`); until then every search " +
+              "is refused rather than answered with a false zero",
+          )
+        }
+      }
   }
 
   /**
@@ -58,10 +75,47 @@ class CollegeSearchService(
       )
     }
     val clamped = limit.coerceIn(MIN_LIMIT, MAX_LIMIT)
-    return database.withConnection { session -> CollegesDao.searchByName(session, trimmed, clamped) }
+    return handleFailures { database.withConnection { session -> CollegesDao.searchByName(session, trimmed, clamped) } }
+      .onFailure { error ->
+        if (error is SearchIndexNotBuiltException) {
+          logger.error(
+            "college name search ran against an UNBUILT college_search_index -- " +
+              "run the ingest's `search-index` phase (`bin/ingest-colleges`); until then the picker " +
+              "can find nothing, and is refused rather than answered with a false zero",
+          )
+        }
+      }
   }
 
+  /**
+   * Runs [block] and keeps EVERY failure inside the [Result] both entry points
+   * promise.
+   *
+   * [ed.unicoach.db.Database.withConnection] throws raw JDBC — a pool timeout,
+   * a failed commit, a failed rollback — around the enveloped `Result` the DAO
+   * returns, so `Result.failure` did not in fact mean "the database failed": a
+   * transient blip escaped as an exception instead. The tool boundary's
+   * retryable `search_failed` shape is built from a failure, never from a
+   * throw, so a blip reached the model as a hard failure. A `SQLException` is
+   * mapped through the DAO's own [mapDatabaseError], so a transient SQLSTATE
+   * keeps its [ed.unicoach.error.TransientError] trait here exactly as it does
+   * inside the DAO. A [CancellationException] is not this function's to
+   * report — structured concurrency must see it.
+   */
+  private suspend fun <T> handleFailures(block: suspend () -> Result<T>): Result<T> =
+    try {
+      block()
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: SQLException) {
+      Result.failure(mapDatabaseError(e))
+    } catch (e: Exception) {
+      Result.failure(e)
+    }
+
   companion object {
+    private val logger = LoggerFactory.getLogger(CollegeSearchService::class.java)
+
     const val MIN_LIMIT = 1
     const val MAX_LIMIT = 25
 

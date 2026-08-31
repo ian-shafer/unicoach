@@ -584,6 +584,48 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The 0065 seed's structural contract (RFC 150 D58): v10 is the v9 body
+   * byte-identical plus exactly one appended paragraph, the additive shape
+   * every coach seed since 0047 has used. Extracted at runtime, so the
+   * migration stays the one home of the copy.
+   */
+  @Test
+  fun `coach v10 is the v9 body verbatim plus one appended search paragraph`() {
+    val paragraph = searchParagraph()
+
+    // Search by SUBJECT, never by a code the model guessed at.
+    assertTrue(paragraph.contains("subject word"), "the paragraph must teach the subject word: [$paragraph]")
+    // The honest population count, and the unjudgeable ones said in words.
+    assertTrue(paragraph.contains("total number of matches"), "it must cite the tool's total: [$paragraph]")
+    assertTrue(paragraph.contains("could not be judged"), "it must report the excluded unknowns: [$paragraph]")
+    // Never a source's own code, in writing or aloud.
+    assertTrue(paragraph.contains("code"), "it must forbid stating a source code: [$paragraph]")
+    // Brief 0003's money vocabulary applies verbatim to any price the tool returns.
+    assertTrue(paragraph.contains("tuition and fees"), "the money words must apply to tool prices: [$paragraph]")
+    assertTrue(paragraph.contains("housing and food"), "[$paragraph]")
+    assertTrue(paragraph.contains("published price"), "[$paragraph]")
+    assertTrue(paragraph.contains("financial aid offer"), "[$paragraph]")
+    assertTrue(paragraph.contains("subtract loans"), "loans are never taken off a price: [$paragraph]")
+  }
+
+  @Test
+  fun `coach v10 preserves the source-jargon sentence and the money paragraph verbatim`() {
+    val v10 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v10").getOrThrow().body
+    assertTrue(v10.contains(sourceJargonSentence()), "v10 must carry v6's source-jargon sentence byte-for-byte")
+    assertTrue(v10.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+  }
+
+  /** See [livingArrangementParagraph]: everything v10 appends to the v9 body. */
+  private fun searchParagraph(): String {
+    val v9 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v9").getOrThrow().body
+    val v10 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v10").getOrThrow().body
+    assertTrue(v10.startsWith(v9), "the v9 prefix must be byte-identical, so the new paragraph is the only change")
+    val appended = v10.removePrefix(v9)
+    assertTrue(appended.isNotEmpty(), "v10 must actually append something; an empty remainder means it equals v9")
+    return appended
+  }
+
+  /**
    * The 0061 seed's structural contract (RFC 147). Unlike every coach seed
    * above, v3 of the fit-lens query prompt ADDS NOTHING: it is v2 with exactly
    * one span deleted — the hand-written codebook sentence — so the contract is

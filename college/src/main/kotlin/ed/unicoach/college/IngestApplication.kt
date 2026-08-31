@@ -20,6 +20,7 @@ private const val USAGE =
   "Usage: ingest-colleges <institution.csv> <fields.csv> <aliases.json> " +
     "[--institution-source=ARG] [--fields-source=ARG] [--aliases-source=ARG] " +
     "[--codebooks=codebooks.json] [--codebooks-source=ARG] " +
+    "[--subjects=subjects.json] [--subjects-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
     "$CDS_DEADLINES_FLAG <deadlines.csv>] " +
     "[--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --survey-year=YYYY] " +
@@ -37,6 +38,16 @@ private val SOURCE_FLAGS = listOf("institution-source", "fields-source", "aliase
  * omit-vs-zero rule the IPEDS and CDS groups already follow.
  */
 private const val CODEBOOKS_FLAG = "codebooks"
+
+/**
+ * The authored subject taxonomy (RFC 150). Optional and OPTION-shaped for
+ * exactly [CODEBOOKS_FLAG]'s reasons: `bin/ingest-colleges` always supplies it,
+ * defaulting to the repo copy, so the flag exists for the direct JVM invocation
+ * and for a caller loading a taxonomy from somewhere else. Omitted, the run
+ * loads no subjects at all and the search index's `subject_slugs` come out
+ * empty — the omit-vs-zero rule every other group follows.
+ */
+private const val SUBJECTS_FLAG = "subjects"
 
 /**
  * The three CDS admissions seed files (RFC 140), passed as NAMED flags rather
@@ -89,7 +100,7 @@ private val SURVEY_YEAR_RANGE = IpedsLoader.YEAR_RANGE
 
 private val KNOWN_FLAGS =
   SOURCE_FLAGS + IPEDS_FILE_FLAGS + IPEDS_SOURCE_FLAGS + SURVEY_YEAR_FLAG +
-    CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source"
+    CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source" + SUBJECTS_FLAG + "$SUBJECTS_FLAG-source"
 
 /**
  * The argv grammar's outcome (RFC 139, extended for the CDS group in RFC 140
@@ -110,6 +121,8 @@ internal sealed interface ArgvResult {
     val ipeds: IpedsSources? = null,
     /** The generated codebook (RFC 147), null when `--codebooks` was omitted. */
     val codebooks: SourceFile? = null,
+    /** The authored subject taxonomy (RFC 150), null when `--subjects` was omitted. */
+    val subjects: SourceFile? = null,
   ) : ArgvResult
 
   /** A grammar violation: [message] is logged and the process exits 2. */
@@ -198,6 +211,13 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       "Option [--$codebooksSourceFlag] names a provenance source for a codebook that was not supplied. $USAGE",
     )
   }
+  // Same refusal, same reason, for the taxonomy (RFC 150).
+  val subjectsSourceFlag = "$SUBJECTS_FLAG-source"
+  if (subjectsSourceFlag in flags && SUBJECTS_FLAG !in flags) {
+    return ArgvResult.Usage(
+      "Option [--$subjectsSourceFlag] names a provenance source for a subject file that was not supplied. $USAGE",
+    )
+  }
   return ArgvResult.Ok(
     sources =
       positional.mapIndexed { i, path ->
@@ -217,6 +237,11 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       flags[CODEBOOKS_FLAG]?.let { path ->
         val file = File(path)
         SourceFile(file = file, sourceArg = flags[codebooksSourceFlag] ?: file.path)
+      },
+    subjects =
+      flags[SUBJECTS_FLAG]?.let { path ->
+        val file = File(path)
+        SourceFile(file = file, sourceArg = flags[subjectsSourceFlag] ?: file.path)
       },
   )
 }
@@ -300,7 +325,8 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   // the same silent-drop this commit removed from `logCdsRun`.
   val cds = parsed.cds?.sources?.namedFiles ?: emptyList()
   val codebooks = parsed.codebooks?.let { listOf(CODEBOOKS_FLAG to it) } ?: emptyList()
-  return scorecard + ipeds + cds + codebooks
+  val subjects = parsed.subjects?.let { listOf(SUBJECTS_FLAG to it) } ?: emptyList()
+  return scorecard + ipeds + cds + codebooks + subjects
 }
 
 /** The filesystem probe, kept out of [parseArgv]: it exits the process, so it
@@ -391,6 +417,7 @@ fun main(args: Array<String>) {
           ipeds = parsed.ipeds,
           cds = parsed.cds?.sources,
           codebooks = parsed.codebooks,
+          subjects = parsed.subjects,
         )
       }
     println(report.humanSummary())
@@ -446,6 +473,27 @@ fun main(args: Array<String>) {
       e.key,
       e.code,
       e.references,
+      e,
+    )
+    kotlin.system.exitProcess(1)
+  } catch (e: SubjectLoader.InvalidFileException) {
+    logger.error(
+      "Ingest aborted before any write: subject taxonomy [{}] is invalid: [{}]",
+      e.fileName,
+      e.detail,
+      e,
+    )
+    kotlin.system.exitProcess(1)
+  } catch (e: SubjectLoader.UnmatchedCipPrefixException) {
+    // NOT "before any write": this one is found inside the `subjects` phase,
+    // against the CIP vocabulary the `codebooks` phase just committed. The
+    // taxonomy itself is untouched — the check runs before the first subject
+    // upsert — and the run reaches no build row.
+    logger.error(
+      "Ingest aborted: subject taxonomy [{}] has {} cip_prefix value(s) matching no cip_codes row: {}",
+      e.fileName,
+      e.unmatched.size,
+      e.unmatched.joinToString(", ") { (slug, prefix) -> "[$slug] -> [$prefix]" },
       e,
     )
     kotlin.system.exitProcess(1)

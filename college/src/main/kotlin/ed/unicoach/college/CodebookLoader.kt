@@ -934,8 +934,6 @@ class CodebookLoader(
     }
   }
 
-  private fun stringOf(element: JsonElement): String? = (element as? JsonPrimitive)?.takeIf { it.isString }?.content
-
   /**
    * A JSON INTEGER, refusing the quoted form: kotlinx models `1` and `"1"` as
    * the same class differing only in `isString`, and a typo'd quote in generated

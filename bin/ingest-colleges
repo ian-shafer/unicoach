@@ -5,7 +5,7 @@ help() {
   cat << 'EOF'
 ingest-colleges [-m <merit-aid.csv> -a <admission-factors.csv> -d <deadlines.csv>]
                 <institution.csv> <fields.csv> [aliases.json] \
-    [--codebooks-source=codebooks.json] \
+    [--codebooks-source=codebooks.json] [--subjects-source=subjects.json] \
     [--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --survey-year=YYYY]
 
 Loads a version-pinned College Scorecard CSV pair into the `colleges` and
@@ -25,6 +25,19 @@ upserts the ten reference domains, REFUSES to delete a row still referenced,
 reports any drift in the recorded source digests, and — after the row phases —
 reports every stored code with no codebook row (D46). Regenerate the file with
 bin/fetch-codebooks; never hand-edit it.
+
+Every run also loads the authored subject taxonomy (RFC 150) in its own
+`subjects` phase, run immediately after `codebooks` so it is validated against
+the CIP codes that phase just loaded:
+db/data/subjects.json by default, overridable with --subjects-source=PATH. Every
+cip_prefix must match at least one real cip_codes row — a prefix that matches
+none is FATAL and names the subject, because a subject that can never match a
+college is indistinguishable, in a result, from one no college offers.
+
+The taxonomy is MATERIALISED into college_search_index by the later
+`search-index` phase, so editing db/data/subjects.json changes nothing that
+search returns until this script runs again. The run prints the subject count
+and the total expanded code count so a rebuild is visibly a rebuild.
 
 The chat boundary reads that vocabulary ONCE, when rest-server and queue-worker
 start. A codebook loaded into a live deployment therefore does NOT change what a
@@ -109,6 +122,10 @@ IPEDS_SURVEY_YEAR=""
 # every other source arg, may be an s3:// URL). An explicitly-empty value is a
 # wrong value, refused rather than silently replaced by the default.
 CODEBOOKS_ARG=""
+# The authored subject taxonomy (RFC 150). Same shape as --codebooks-source
+# above, and for the same reasons: a repo default, an s3:// source allowed, and
+# an explicitly-empty value refused rather than silently replaced.
+SUBJECTS_ARG=""
 POSITIONAL=()
 IPEDS_GIVEN=()
 
@@ -134,6 +151,10 @@ for arg in "$@"; do
   --codebooks-source=*) CODEBOOKS_ARG="${arg#--codebooks-source=}"
     [ -n "$CODEBOOKS_ARG" ] ||
       fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [--codebooks-source] must have a non-empty value"
+    ;;
+  --subjects-source=*) SUBJECTS_ARG="${arg#--subjects-source=}"
+    [ -n "$SUBJECTS_ARG" ] ||
+      fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [--subjects-source] must have a non-empty value"
     ;;
   --hd=*)          IPEDS_HD="${arg#--hd=}";                   set_ipeds_flag hd "$IPEDS_HD" ;;
   --ic=*)          IPEDS_IC="${arg#--ic=}";                   set_ipeds_flag ic "$IPEDS_IC" ;;
@@ -207,6 +228,12 @@ ALIASES_JSON="$(resolve_file_arg "$ALIASES_ARG" "$INGEST_SCRATCH")"
 CODEBOOKS_ARG="${CODEBOOKS_ARG:-$PROJECT_ROOT/db/data/codebooks.json}"
 CODEBOOKS_JSON="$(resolve_file_arg "$CODEBOOKS_ARG" "$INGEST_SCRATCH")"
 
+# The authored subject taxonomy (RFC 150), loaded by its own `subjects` phase,
+# run immediately after `codebooks` so it is validated against the CIP codes
+# that phase just loaded. Resolved and forwarded exactly like the codebook above.
+SUBJECTS_ARG="${SUBJECTS_ARG:-$PROJECT_ROOT/db/data/subjects.json}"
+SUBJECTS_JSON="$(resolve_file_arg "$SUBJECTS_ARG" "$INGEST_SCRATCH")"
+
 # Pass the CDS seed paths to the launcher as NAMED flags, so the file-to-table
 # mapping is explicit on the command line (and in `ps` output) instead of being
 # a positional convention two files have to keep in step.
@@ -256,5 +283,6 @@ LAUNCHER="$PROJECT_ROOT/$COLLEGE_DIST/bin/college"
 "$LAUNCHER" "$INSTITUTION_CSV" "$FIELDS_CSV" "$ALIASES_JSON" \
   --institution-source="$1" --fields-source="$2" --aliases-source="$ALIASES_ARG" \
   --codebooks="$CODEBOOKS_JSON" --codebooks-source="$CODEBOOKS_ARG" \
+  --subjects="$SUBJECTS_JSON" --subjects-source="$SUBJECTS_ARG" \
   ${CDS_ARGS[@]+"${CDS_ARGS[@]}"} \
   ${IPEDS_ARGV[@]+"${IPEDS_ARGV[@]}"}

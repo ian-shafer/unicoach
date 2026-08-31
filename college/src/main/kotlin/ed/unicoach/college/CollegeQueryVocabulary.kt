@@ -42,18 +42,37 @@ import kotlinx.serialization.json.putJsonArray
 class CollegeQueryVocabulary(
   private val codebook: Codebook,
 ) {
+  init {
+    // [Codebook.emptyVocabularies] hand-types the FIELD names it drops from the
+    // schema, and nothing checked those strings against the fields that exist.
+    // A typo there ("carnegie_classes") would advertise the filter anyway and
+    // then refuse every word sent for it — an unusable filter, offered, with no
+    // failure anywhere to show for it. One `require` and the drift is a boot
+    // crash instead.
+    val unknown = codebook.emptyVocabularies - FIELD_NAMES
+    require(unknown.isEmpty()) {
+      "Codebook.emptyVocabularies names [${unknown.sorted().joinToString(", ")}], " +
+        "which the filter vocabulary does not offer: a dropped field must be one of " +
+        "[${FIELD_NAMES.joinToString(", ")}]"
+    }
+  }
+
   /** The filter fields this vocabulary owns; a tool adds its own around them. */
   val fieldNames: Set<String> = FIELD_NAMES
 
   /**
    * The JSON-Schema `properties` entries for [fieldNames], in the order a model
-   * reads them. `region`'s enum is the loaded codebook's own word list, so a
-   * codebook the publisher extends widens the schema with no code change; when
-   * nothing is loaded the enum is omitted rather than published as an empty
-   * list, and any word sent is refused with [Codebook.UNAVAILABLE].
+   * reads them. Every word enum is the loaded codebook's own list, so a codebook
+   * the publisher extends widens the schema with no code change.
+   *
+   * A field whose vocabulary this database carries NO value for is not offered
+   * at all ([Codebook.emptyVocabularies]). Offering it as a bare string would
+   * invite a word that the parse then refuses with [Codebook.UNAVAILABLE] — an
+   * advertised filter that cannot be used is worse than one the model is never
+   * told about, and the boot-time warning names the same fields.
    */
   fun schemaProperties(): Map<String, JsonObject> =
-    linkedMapOf(
+    linkedMapOf<String, JsonObject>(
       "cipPrefix" to
         stringProperty(
           "A 2-, 4-, or 6-digit CIP code prefix to require a matching program " +
@@ -62,10 +81,22 @@ class CollegeQueryVocabulary(
             "\"26.0702\" mean the same as \"2613\" and \"260702\" -- but the canonical " +
             "form is digits only.",
         ),
+      "subject" to
+        wordProperty(
+          codebook.subjectSlugs,
+          "A field of study, as one word from the published subject taxonomy " +
+            "(e.g. \"nursing\", \"literature\", \"mechanical-engineering\"). " +
+            "This is the RIGHT way to ask about what a student wants to study: " +
+            "the word is expanded to the real set of federal program codes the " +
+            "college is recorded as offering, so no code has to be guessed. " +
+            "Prefer it over cipPrefix, which is an escape hatch.",
+        ),
       "states" to
         arrayProperty(
           buildJsonObject { put("type", "string") },
-          "Two-letter US state postal codes; matches institutions in any of them (OR-set).",
+          "Two-letter US state postal codes, as published (e.g. \"CA\", \"NY\"); matches institutions " +
+            "in any of them (OR-set). Must name at least one state -- an empty array is refused, " +
+            "not read as \"anywhere\".",
         ),
       "region" to
         wordProperty(
@@ -112,12 +143,80 @@ class CollegeQueryVocabulary(
             "four-year institution who finish within 150% of normal time (6 years). " +
             "Two-year colleges do not report it and are filtered out by this bound.",
         ),
-    )
+      // The IPEDS attribute filters (RFC 150 D54). Every one of them is a word
+      // from a published reference table, and the search index stores that same
+      // word, so the value bound is the value the model wrote.
+      "test_policy" to
+        wordProperty(
+          codebook.testPolicySlugs,
+          "The institution's admission-test policy, as a published word: " +
+            vocabularyOf(codebook.testPolicySlugs) + ".",
+        ),
+      "religious_affiliation" to
+        wordProperty(
+          codebook.religiousAffiliationSlugs,
+          "The institution's religious affiliation, as a published word. " +
+            "Colleges that report no affiliation carry the published \"none\" word, " +
+            "which is different from not reporting one at all.",
+        ),
+      "carnegie_class" to
+        wordProperty(
+          codebook.carnegieClassSlugs,
+          "The 2021 Carnegie Basic classification, as a published word — what " +
+            "KIND of institution it is (a doctoral university, a baccalaureate " +
+            "college, and so on).",
+        ),
+      "carnegie_size" to
+        wordProperty(
+          codebook.carnegieSizeSlugs,
+          "The 2021 Carnegie size-and-setting classification, as a published " +
+            "word: how big the institution is and how residential it is.",
+        ),
+      "athletic_association" to
+        wordProperty(
+          codebook.athleticAssociationSlugs,
+          "An athletic association the institution belongs to, as a published " +
+            "word; a college may belong to several and matches if this is one of them.",
+        ),
+      "has_rotc" to
+        booleanProperty(
+          "Whether the institution offers ROTC. Colleges that do not report it " +
+            "are excluded either way and counted in excluded_unknown -- not " +
+            "silently treated as a \"no\".",
+        ),
+      "has_study_abroad" to
+        booleanProperty(
+          "Whether the institution offers study abroad. Unreported is excluded " +
+            "and counted, never read as \"no\".",
+        ),
+      "has_housing" to
+        booleanProperty(
+          "Whether the institution offers on-campus housing. Unreported is " +
+            "excluded and counted, never read as \"no\".",
+        ),
+      // The default universe, overridable per call (D56).
+      "is_active" to
+        booleanProperty(
+          "Whether the institution is currently operating. Defaults to true: a " +
+            "closed school is not a school a student can apply to. Pass false to " +
+            "look at closed institutions deliberately.",
+        ),
+      "is_four_year" to
+        booleanProperty(
+          "Whether the institution is a four-year institution. By default this " +
+            "is left open in the honest sense -- four-year and unknown-level " +
+            "institutions are both included, and only institutions KNOWN to be " +
+            "two-year are excluded. Pass true for four-year only, false for " +
+            "two-year only; either way, institutions that do not report their " +
+            "level are excluded and counted in excluded_unknown, never read as " +
+            "a \"no\".",
+        ),
+    ).filterKeys { it !in codebook.emptyVocabularies }
 
   /**
    * Reads every field of [fieldNames] out of [input] into a [CollegeQuery] with
-   * the given [limit]. `sortBy` and `credentialLevel` are left at their defaults
-   * — they are one tool's own fields, not shared vocabulary.
+   * the given [limit]. `sortBy` is left at its default — it is one tool's own
+   * field, not shared vocabulary.
    *
    * Total in the sense that matters: it never throws, and it never accepts
    * half a filter. The failure carries the reason as an [IllegalArgumentException]
@@ -129,45 +228,53 @@ class CollegeQueryVocabulary(
   ): Result<CollegeQuery> {
     val cipPrefix = parseCipPrefix(input).getOrElse { return Result.failure(it) }
 
-    val states = optStringList(input, "states").getOrElse { return Result.failure(it) }
-    if (states != null && states.any { !STATE_CODE_REGEX.matches(it) }) {
-      return fail("states must be 2-letter US state postal codes")
-    }
-    // state is stored UPPERCASE (Scorecard STABBR) and bound into a case-sensitive
-    // SQL IN, so normalize here — an LLM emitting "ca" must still match a "CA" row.
-    val normalizedStates = states?.map { it.uppercase() }
+    val normalizedStates = parseStates(input).getOrElse { return Result.failure(it) }
 
-    val regionSlug = optString(input, "region").getOrElse { return Result.failure(it) }
-    val region =
-      if (regionSlug == null) {
-        null
-      } else {
-        codebook.regionCode(regionSlug) ?: return fail(unknownRegion(regionSlug))
-      }
+    val subject = parseSlug(input, "subject", codebook.subjectSlugs).getOrElse { return Result.failure(it) }
+
+    // The slug the model wrote IS the value the index stores and the SQL binds
+    // (RFC 150 D61): there is no code lookup left on this path.
+    val region = parseSlug(input, "region", codebook.regionSlugs).getOrElse { return Result.failure(it) }
 
     val locales = parseLocales(input).getOrElse { return Result.failure(it) }
 
     val control = parseControl(input).getOrElse { return Result.failure(it) }
 
-    val minUndergrad = optInt(input, "minUndergradEnrollmentHeadcount").getOrElse { return Result.failure(it) }
-    if (minUndergrad != null && minUndergrad < 0) return fail("minUndergradEnrollmentHeadcount must be >= 0")
-    val maxUndergrad = optInt(input, "maxUndergradEnrollmentHeadcount").getOrElse { return Result.failure(it) }
-    if (maxUndergrad != null && maxUndergrad < 0) return fail("maxUndergradEnrollmentHeadcount must be >= 0")
+    val testPolicy =
+      parseSlug(input, "test_policy", codebook.testPolicySlugs).getOrElse { return Result.failure(it) }
+    val religiousAffiliation =
+      parseSlug(input, "religious_affiliation", codebook.religiousAffiliationSlugs)
+        .getOrElse { return Result.failure(it) }
+    val carnegieClass =
+      parseSlug(input, "carnegie_class", codebook.carnegieClassSlugs).getOrElse { return Result.failure(it) }
+    val carnegieSize =
+      parseSlug(input, "carnegie_size", codebook.carnegieSizeSlugs).getOrElse { return Result.failure(it) }
+    val athleticAssociation =
+      parseSlug(input, "athletic_association", codebook.athleticAssociationSlugs)
+        .getOrElse { return Result.failure(it) }
 
-    val minAdmission = optDouble(input, "minAdmissionRateShare").getOrElse { return Result.failure(it) }
-    if (minAdmission != null && minAdmission !in 0.0..1.0) return fail("minAdmissionRateShare must be 0.0-1.0")
-    val maxAdmission = optDouble(input, "maxAdmissionRateShare").getOrElse { return Result.failure(it) }
-    if (maxAdmission != null && maxAdmission !in 0.0..1.0) return fail("maxAdmissionRateShare must be 0.0-1.0")
+    val hasRotc = optBoolean(input, "has_rotc").getOrElse { return Result.failure(it) }
+    val hasStudyAbroad = optBoolean(input, "has_study_abroad").getOrElse { return Result.failure(it) }
+    val hasHousing = optBoolean(input, "has_housing").getOrElse { return Result.failure(it) }
+    val isActive = optBoolean(input, "is_active").getOrElse { return Result.failure(it) }
+    val isFourYear = optBoolean(input, "is_four_year").getOrElse { return Result.failure(it) }
 
-    val maxNetPrice = optInt(input, "maxNetPricePerYearUsd").getOrElse { return Result.failure(it) }
-    if (maxNetPrice != null && maxNetPrice < 0) return fail("maxNetPricePerYearUsd must be >= 0")
+    // Read through the two numeric DOMAIN readers, so this function only
+    // assembles: a count is >= 0 and a share is 0.0-1.0 wherever it appears.
+    val minUndergrad = optCount(input, "minUndergradEnrollmentHeadcount").getOrElse { return Result.failure(it) }
+    val maxUndergrad = optCount(input, "maxUndergradEnrollmentHeadcount").getOrElse { return Result.failure(it) }
 
-    val minCompletion = optDouble(input, "minCompletionRate150pct4yrShare").getOrElse { return Result.failure(it) }
-    if (minCompletion != null && minCompletion !in 0.0..1.0) return fail("minCompletionRate150pct4yrShare must be 0.0-1.0")
+    val minAdmission = optShare(input, "minAdmissionRateShare").getOrElse { return Result.failure(it) }
+    val maxAdmission = optShare(input, "maxAdmissionRateShare").getOrElse { return Result.failure(it) }
+
+    val maxNetPrice = optUsd(input, "maxNetPricePerYearUsd").getOrElse { return Result.failure(it) }
+
+    val minCompletion = optShare(input, "minCompletionRate150pct4yrShare").getOrElse { return Result.failure(it) }
 
     return Result.success(
       CollegeQuery(
         cipPrefix = cipPrefix,
+        subject = subject,
         states = normalizedStates,
         region = region,
         locales = locales,
@@ -178,39 +285,68 @@ class CollegeQueryVocabulary(
         maxAdmissionRateShare = maxAdmission,
         maxNetPricePerYearUsd = maxNetPrice,
         minCompletionRate150pct4yrShare = minCompletion,
+        testPolicy = testPolicy,
+        religiousAffiliation = religiousAffiliation,
+        carnegieClass = carnegieClass,
+        carnegieSize = carnegieSize,
+        athleticAssociation = athleticAssociation,
+        hasRotc = hasRotc,
+        hasStudyAbroad = hasStudyAbroad,
+        hasHousing = hasHousing,
+        // An absent `is_active` keeps the DEFAULT (true), not "unconstrained":
+        // the universe is a default, and a caller who says nothing gets it.
+        isActive = isActive ?: true,
+        isFourYear = isFourYear,
         limit = limit,
       ),
     )
   }
 
   /**
-   * The published words for a stored `colleges.region` code — the OUTPUT half of
-   * the same vocabulary. A code with no codebook row renders as a named unknown
-   * carrying the code, the [InstitutionControl.unknownLabel] shape: a source that
-   * has grown a value stays visible instead of vanishing into a plausible word.
+   * The two published halves of a `college_search_index.locale` SLUG — the only
+   * OUTPUT-side resolution left in this class.
+   *
+   * The code-facing half is GONE (RFC 150 D54/D61): `regionCode`, `regionWord`,
+   * `localeOf(code)` and `unknownLocaleWord` had no caller once the index
+   * started storing slugs with real foreign keys. `region` needs no rendering
+   * at all now — it comes off the index as the word — and the
+   * `unknown (region [N])` shape those functions existed for cannot occur on
+   * this path, because a code the codebook does not name is NULL on the index,
+   * not a number.
    */
-  fun regionWord(code: Int?): String? =
-    when (code) {
-      null -> null
-      else -> codebook.regionSlug(code) ?: "unknown (region [$code])"
-    }
-
-  /** The locale row a stored `colleges.locale` code names. See [regionWord]. */
-  fun localeOf(code: Int?): Codebook.Locale? = code?.let { codebook.locale(it) }
-
-  /** The word for a `colleges.locale` code the loaded codebook does not carry. */
-  fun unknownLocaleWord(code: Int): String = "unknown (locale [$code])"
+  fun localeOf(slug: String?): Codebook.Locale? = slug?.let { codebook.locale(it) }
 
   // ---------------------------------------------------------------------------
   // Word resolution
   // ---------------------------------------------------------------------------
 
-  private fun unknownRegion(word: String): String =
-    if (codebook.regionSlugs.isEmpty()) {
-      "region cannot be resolved: ${Codebook.UNAVAILABLE}; got [$word]"
+  /**
+   * The one shape every unresolvable word gets: a NAMED failure listing the
+   * vocabulary it was refused against, or saying plainly that none is loaded.
+   * Never a dropped filter — a filter that silently disappears answers a
+   * narrower question with a wider answer.
+   */
+  private fun unknownWord(
+    field: String,
+    word: String,
+    vocabulary: List<String>,
+  ): String =
+    if (vocabulary.isEmpty()) {
+      "[$field] cannot be resolved: ${Codebook.UNAVAILABLE}; got [$word]"
     } else {
-      "region must be one of [${codebook.regionSlugs.joinToString(", ")}]; got [$word]"
+      "[$field] must be one of [${vocabulary.joinToString(", ")}]; got [$word]"
     }
+
+  /** An optional slug field checked against a closed, loaded word list. */
+  private fun parseSlug(
+    input: JsonObject,
+    key: String,
+    vocabulary: List<String>,
+  ): Result<String?> {
+    val word = optString(input, key).getOrElse { return Result.failure(it) } ?: return Result.success(null)
+    if (word !in vocabulary) return fail(unknownWord(key, word, vocabulary))
+    return Result.success(word)
+  }
 
   private fun regionVocabulary(): String =
     if (codebook.regions.isEmpty()) {
@@ -228,7 +364,7 @@ class CollegeQueryVocabulary(
    * with no `locale_type`, and a pairing the publisher does not define, are BOTH
    * errors rather than an ignored field or an empty match.
    */
-  private fun parseLocales(input: JsonObject): Result<List<Int>?> {
+  private fun parseLocales(input: JsonObject): Result<List<String>?> {
     val typeWord = optString(input, "locale_type").getOrElse { return Result.failure(it) }
     val detailWord = optString(input, "locale_detail").getOrElse { return Result.failure(it) }
 
@@ -249,7 +385,7 @@ class CollegeQueryVocabulary(
           ?: return fail("locale_detail must be one of [${NcesLocaleDetail.WORDS.joinToString(", ")}]; got [$detailWord]")
       }
 
-    val codes = codebook.localeCodes(type, detail)
+    val codes = codebook.localeSlugs(type, detail)
     if (codes.isEmpty()) {
       val published = codebook.localeDetails(type)
       return if (published.isEmpty()) {
@@ -264,18 +400,61 @@ class CollegeQueryVocabulary(
     return Result.success(codes)
   }
 
-  /** `control` words -> the codes the column stores. See [InstitutionControl]. */
-  private fun parseControl(input: JsonObject): Result<List<Int>?> {
+  /**
+   * `states` -> the UPPERCASE postal codes the index stores.
+   *
+   * Three refusals, and the third is the one that was missing: an EMPTY array,
+   * a code that is not two letters, and a code the LOADED `us_states`
+   * vocabulary does not publish. "ZZ" used to pass the regex and come back as a
+   * genuine zero-match, which reads to a family as "there are no colleges
+   * there" — the same silent narrowing an unknown `region` word has always been
+   * refused for, on the one field a model writes most often.
+   *
+   * State is stored UPPERCASE (Scorecard STABBR) and bound into a
+   * case-sensitive SQL comparison, so the case fold happens here: a model
+   * emitting "ca" must still match a "CA" row, and must be checked against the
+   * vocabulary in the same case the vocabulary is in.
+   */
+  private fun parseStates(input: JsonObject): Result<List<String>?> {
+    val states = optStringList(input, "states").getOrElse { return Result.failure(it) } ?: return Result.success(null)
+    if (states.isEmpty()) return fail(EMPTY_SET_ERROR("states"))
+    val normalized = states.map { it.uppercase() }
+    normalized.forEach { code ->
+      if (!STATE_CODE_REGEX.matches(code)) {
+        return fail("states must be 2-letter US state postal codes; got [$code]")
+      }
+      // Checked only against a LOADED `us_states`. Unlike `region`, whose
+      // stored value IS a codebook slug, `colleges.state` is a real postal code
+      // written by the Scorecard ingest and needs no codebook to match — so on
+      // a database that has never run the `codebooks` phase this filter still
+      // works, and refusing every code there would delete a working filter
+      // rather than protect anyone. The shape check above stands either way.
+      if (codebook.stateCodes.isNotEmpty() && code !in codebook.stateCodes) {
+        return fail(unknownWord("states", code, codebook.stateCodes))
+      }
+    }
+    return Result.success(normalized)
+  }
+
+  /**
+   * `control` words -> [InstitutionControl] itself (RFC 150 D61a). There is no
+   * `control` codebook table; the enum IS the vocabulary, and the index column
+   * carries its underscored label verbatim under a CHECK. The resolved entry is
+   * what the query carries, so the guarantee this parse just proved survives to
+   * the bind instead of decaying back into an unchecked string.
+   */
+  private fun parseControl(input: JsonObject): Result<List<InstitutionControl>?> {
     val words = optStringList(input, "control").getOrElse { return Result.failure(it) }
     if (words == null) return Result.success(null)
-    val codes =
+    if (words.isEmpty()) return fail(EMPTY_SET_ERROR("control"))
+    val controls =
       words.map { word ->
-        InstitutionControl.entries.firstOrNull { it.label == word }?.code
+        InstitutionControl.entries.firstOrNull { it.label == word }
           ?: return fail(
             "control must be one of [${InstitutionControl.entries.joinToString(", ") { it.label }}]; got [$word]",
           )
       }
-    return Result.success(codes)
+    return Result.success(controls)
   }
 
   /**
@@ -299,6 +478,7 @@ class CollegeQueryVocabulary(
     val FIELD_NAMES: Set<String> =
       linkedSetOf(
         "cipPrefix",
+        "subject",
         "states",
         "region",
         "locale_type",
@@ -310,6 +490,16 @@ class CollegeQueryVocabulary(
         "maxAdmissionRateShare",
         "maxNetPricePerYearUsd",
         "minCompletionRate150pct4yrShare",
+        "test_policy",
+        "religious_affiliation",
+        "carnegie_class",
+        "carnegie_size",
+        "athletic_association",
+        "has_rotc",
+        "has_study_abroad",
+        "has_housing",
+        "is_active",
+        "is_four_year",
       )
 
     private const val CIP_PREFIX_ERROR =
@@ -318,6 +508,22 @@ class CollegeQueryVocabulary(
 
     private val STATE_CODE_REGEX = Regex("^[A-Za-z]{2}$")
 
+    /**
+     * What an EMPTY OR-set array is refused with.
+     *
+     * `{"states": []}` and `{"control": []}` parsed clean and were then skipped
+     * by an `isNotEmpty()` guard at the bind, so a model that meant to narrow
+     * the search got every college in the country back and no sign that its
+     * filter had gone. That is the exact failure this file refuses a bad WORD
+     * for; an empty set is the same failure with no word to name. There is no
+     * useful reading of "match none of these": a caller who wants every state
+     * omits the field.
+     */
+    private val EMPTY_SET_ERROR: (String) -> String = { key ->
+      "[$key] must name at least one value; got []. An empty array is not a filter -- " +
+        "omit [$key] entirely to leave that axis unrestricted"
+    }
+
     /** What an advertised word list says when the codebook carries none. */
     private const val NONE_LOADED = "none are loaded in this database"
   }
@@ -325,8 +531,8 @@ class CollegeQueryVocabulary(
 
 // ---------------------------------------------------------------------------
 // The JSON readers and schema builders both boundaries share. File-scope and
-// `internal` so CollegeSearchTool's own fields (sort_by, credential_level,
-// limit) are read by exactly the same code as the shared ones.
+// `internal` so CollegeSearchTool's own fields (sort_by, limit) are read by
+// exactly the same code as the shared ones.
 // ---------------------------------------------------------------------------
 
 internal fun fail(reason: String): Result<Nothing> = Result.failure(IllegalArgumentException(reason))
@@ -336,14 +542,28 @@ internal fun field(
   key: String,
 ): JsonElement? = input[key]?.takeUnless { it is JsonNull }
 
+/**
+ * The ONE shape a type refusal takes: what the field must be, and WHAT WAS
+ * WRITTEN. These strings are the model's only means of self-correction, and
+ * without the offending element a `has_rotc` of 1 and a `has_rotc` of "yes"
+ * produced the identical sentence — the same defect the word fields solved
+ * years ago with their "got [word]" tail. [element] renders as JSON, so a
+ * number, a quoted string and an array are visibly different.
+ */
+internal fun failTypeMismatch(
+  key: String,
+  expected: String,
+  element: JsonElement,
+): Result<Nothing> = fail("[$key] must be $expected; got [$element]")
+
 internal fun optInt(
   input: JsonObject,
   key: String,
 ): Result<Int?> {
   val el = field(input, key) ?: return Result.success(null)
-  val prim = el as? JsonPrimitive ?: return fail("$key must be an integer")
-  if (prim.isString) return fail("$key must be an integer")
-  return Result.success(prim.content.toIntOrNull() ?: return fail("$key must be an integer"))
+  val prim = el as? JsonPrimitive ?: return failTypeMismatch(key, "an integer", el)
+  if (prim.isString) return failTypeMismatch(key, "an integer", el)
+  return Result.success(prim.content.toIntOrNull() ?: return failTypeMismatch(key, "an integer", el))
 }
 
 internal fun optDouble(
@@ -351,9 +571,68 @@ internal fun optDouble(
   key: String,
 ): Result<Double?> {
   val el = field(input, key) ?: return Result.success(null)
-  val prim = el as? JsonPrimitive ?: return fail("$key must be a number")
-  if (prim.isString) return fail("$key must be a number")
-  return Result.success(prim.content.toDoubleOrNull() ?: return fail("$key must be a number"))
+  val prim = el as? JsonPrimitive ?: return failTypeMismatch(key, "a number", el)
+  if (prim.isString) return failTypeMismatch(key, "a number", el)
+  return Result.success(prim.content.toDoubleOrNull() ?: return failTypeMismatch(key, "a number", el))
+}
+
+/**
+ * A non-negative count: absent is null, a negative value is a named refusal.
+ * Beside [optInt] rather than inlined at each call site, so "a count is >= 0" is
+ * stated once for every field that is one.
+ */
+internal fun optCount(
+  input: JsonObject,
+  key: String,
+): Result<Int?> {
+  val value = optInt(input, key).getOrElse { return Result.failure(it) } ?: return Result.success(null)
+  if (value < 0) return fail("[$key] must be >= 0")
+  return Result.success(value)
+}
+
+/**
+ * An amount of MONEY in whole US dollars: absent is null, a negative amount is a
+ * named refusal.
+ *
+ * The same bound as [optCount] and deliberately not the same function. A price
+ * is not a count of anything, and reading the one money filter this vocabulary
+ * has through a helper whose contract reads "a non-negative count" is how the
+ * two drift: the day a dollar figure needs a different bound — cents, a ceiling,
+ * a currency — the money reading has a home to change instead of a shared count
+ * to fork.
+ */
+internal fun optUsd(
+  input: JsonObject,
+  key: String,
+): Result<Int?> {
+  val value = optInt(input, key).getOrElse { return Result.failure(it) } ?: return Result.success(null)
+  if (value < 0) return fail("[$key] must be >= 0")
+  return Result.success(value)
+}
+
+/** A share: absent is null, a value outside 0.0-1.0 is a named refusal. */
+internal fun optShare(
+  input: JsonObject,
+  key: String,
+): Result<Double?> {
+  val value = optDouble(input, key).getOrElse { return Result.failure(it) } ?: return Result.success(null)
+  if (value !in 0.0..1.0) return fail("[$key] must be 0.0-1.0")
+  return Result.success(value)
+}
+
+/**
+ * A JSON string element, or null when it is absent or not a string. The ONE
+ * element-level string reader the `college` package has: the loaders
+ * ([SubjectLoader], [CodebookLoader]) read authored/generated files with it and
+ * report a miss in their own voice, exactly as [optString] does for the
+ * model-facing boundary.
+ */
+internal fun stringOf(element: JsonElement?): String? = (element as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+/** A JSON array of strings, or null when it is absent, not an array, or holds a non-string. */
+internal fun stringListOf(element: JsonElement?): List<String>? {
+  val array = element as? JsonArray ?: return null
+  return array.map { item -> stringOf(item) ?: return null }
 }
 
 internal fun optString(
@@ -361,8 +640,8 @@ internal fun optString(
   key: String,
 ): Result<String?> {
   val el = field(input, key) ?: return Result.success(null)
-  val prim = el as? JsonPrimitive ?: return fail("$key must be a string")
-  if (!prim.isString) return fail("$key must be a string")
+  val prim = el as? JsonPrimitive ?: return failTypeMismatch(key, "a string", el)
+  if (!prim.isString) return failTypeMismatch(key, "a string", el)
   return Result.success(prim.content)
 }
 
@@ -371,11 +650,13 @@ internal fun optStringList(
   key: String,
 ): Result<List<String>?> {
   val el = field(input, key) ?: return Result.success(null)
-  val arr = el as? JsonArray ?: return fail("$key must be an array of strings")
+  val arr = el as? JsonArray ?: return failTypeMismatch(key, "an array of strings", el)
   val out = mutableListOf<String>()
   for (item in arr) {
-    val prim = item as? JsonPrimitive ?: return fail("$key must be an array of strings")
-    if (!prim.isString) return fail("$key must be an array of strings")
+    // The whole array is echoed, not the one bad element: the model has to
+    // rewrite the array, and seeing it whole is what tells it which one is bad.
+    val prim = item as? JsonPrimitive ?: return failTypeMismatch(key, "an array of strings", el)
+    if (!prim.isString) return failTypeMismatch(key, "an array of strings", el)
     out += prim.content
   }
   return Result.success(out.toList())
@@ -392,6 +673,28 @@ internal fun <T> optWordEnum(
     words[word] ?: return fail("$key must be one of [${words.keys.joinToString(", ")}]; got [$word]"),
   )
 }
+
+internal fun optBoolean(
+  input: JsonObject,
+  key: String,
+): Result<Boolean?> {
+  val el = field(input, key) ?: return Result.success(null)
+  val prim = el as? JsonPrimitive ?: return failTypeMismatch(key, "a boolean", el)
+  if (prim.isString) return failTypeMismatch(key, "a boolean", el)
+  return Result.success(
+    when (prim.content) {
+      "true" -> true
+      "false" -> false
+      else -> return failTypeMismatch(key, "a boolean", el)
+    },
+  )
+}
+
+internal fun booleanProperty(description: String): JsonObject =
+  buildJsonObject {
+    put("type", "boolean")
+    put("description", description)
+  }
 
 internal fun stringProperty(description: String): JsonObject =
   buildJsonObject {

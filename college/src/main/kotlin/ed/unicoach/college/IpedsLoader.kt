@@ -960,7 +960,7 @@ internal class IpedsLoader(
      * junk indistinguishable from a real sector — and the 0055 CHECK is narrowed
      * to the same set.
      */
-    private val SECTOR_CODES: Set<Int> = (0..9).toSet() + 99
+    internal val SECTOR_CODES: Set<Int> = (0..9).toSet() + 99
     private const val DISABILITY_BAND_MIN = 1
     private const val DISABILITY_BAND_MAX = 2
     private const val PCT_MIN = 0.0

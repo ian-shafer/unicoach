@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.CodebookTable
 import ed.unicoach.db.dao.CodebooksDao
 import ed.unicoach.db.models.NewIpedsRegion
 import ed.unicoach.db.models.NewNcesLocale
@@ -97,6 +98,25 @@ enum class AdmissionTestPolicy(
 class Codebook(
   regionRows: List<NewIpedsRegion>,
   localeRows: List<NewNcesLocale>,
+  /**
+   * The closed SLUG vocabularies the RFC 150 filters speak. After D61 the
+   * derived search index stores the slug, so a filter binds the word itself and
+   * these lists are the whole job: what the schema advertises, and what an
+   * unknown word is refused against. They default to empty so a caller that
+   * only needs the two typed codebooks — a test, a fixture — is unchanged.
+   */
+  val subjectSlugs: List<String> = emptyList(),
+  /**
+   * The published `us_states.usps_code` values — the closed vocabulary the
+   * `states` filter is resolved against. Not a slug list: the postal code IS
+   * the key, and it is the value `colleges.state` stores.
+   */
+  val stateCodes: List<String> = emptyList(),
+  val testPolicySlugs: List<String> = emptyList(),
+  val religiousAffiliationSlugs: List<String> = emptyList(),
+  val carnegieClassSlugs: List<String> = emptyList(),
+  val carnegieSizeSlugs: List<String> = emptyList(),
+  val athleticAssociationSlugs: List<String> = emptyList(),
 ) {
   /** One `ipeds_regions` row, reduced to what the boundary says and reads. */
   data class Region(
@@ -130,9 +150,40 @@ class Codebook(
       Locale(row.slug, row.code, type, detail, row.name)
     }
 
-  private val regionBySlug: Map<String, Region> = regions.associateBy { it.slug }
-  private val regionByCode: Map<Int, Region> = regions.associateBy { it.code }
-  private val localeByCode: Map<Int, Locale> = locales.associateBy { it.code }
+  private val localeBySlug: Map<String, Locale> = locales.associateBy { it.slug }
+
+  /**
+   * The filter FIELDS this snapshot can offer no word for, named exactly as the
+   * model-facing schema names them.
+   *
+   * The health check has to cover what the boundary advertises, not just the
+   * two typed codebooks: a database whose `subjects` phase never ran carries
+   * regions and locales, so the old check called it healthy while the `subject`
+   * filter had no values at all. A field listed here is NOT advertised
+   * ([CollegeQueryVocabulary.schemaProperties] drops it) and every word sent for
+   * it is refused with [UNAVAILABLE] — one fact, one home, both readers.
+   */
+  val emptyVocabularies: List<String> =
+    buildList {
+      if (regions.isEmpty()) add("region")
+      if (locales.isEmpty()) {
+        add("locale_type")
+        add("locale_detail")
+      }
+      if (subjectSlugs.isEmpty()) add("subject")
+      if (testPolicySlugs.isEmpty()) add("test_policy")
+      if (religiousAffiliationSlugs.isEmpty()) add("religious_affiliation")
+      if (carnegieClassSlugs.isEmpty()) add("carnegie_class")
+      if (carnegieSizeSlugs.isEmpty()) add("carnegie_size")
+      if (athleticAssociationSlugs.isEmpty()) add("athletic_association")
+    }
+
+  /**
+   * True when a vocabulary the boundary advertises is missing — including the
+   * partially-loaded snapshot an ingest run without `--subjects` leaves, which
+   * must never read as healthy.
+   */
+  val isDegraded: Boolean = emptyVocabularies.isNotEmpty()
 
   /** True when neither codebook has been loaded — see the class note. */
   val isEmpty: Boolean = regions.isEmpty() && locales.isEmpty()
@@ -140,25 +191,29 @@ class Codebook(
   /** Every region word, in published-code order: the tool's `region` enum. */
   val regionSlugs: List<String> = regions.map { it.slug }
 
-  /** The published `OBEREG` code for [slug], or null when no such word exists. */
-  fun regionCode(slug: String): Int? = regionBySlug[slug]?.code
-
-  /** The word for a stored `colleges.region` code, or null when it has no row. */
-  fun regionSlug(code: Int): String? = regionByCode[code]?.slug
-
-  /** The locale row a stored `colleges.locale` code names, or null. */
-  fun locale(code: Int): Locale? = localeByCode[code]
+  /** True when [slug] is a region this codebook carries. */
+  fun hasRegion(slug: String): Boolean = regions.any { it.slug == slug }
 
   /**
-   * The published locale codes matching [type], narrowed to [detail] when one is
-   * given. An empty list means the pairing is not published (there is no
-   * "city: fringe"), which the caller reports as a listed error — the codes
-   * themselves never leave this class as a filter that quietly matches nothing.
+   * The locale row named by a `college_search_index.locale` SLUG, or null.
+   *
+   * There is no code-keyed counterpart any more (RFC 150 D61): the index holds
+   * a slug with a real foreign key onto `nces_locales`, so a "stored code the
+   * codebook does not name" is not a state this path can reach, and the
+   * `unknown (locale [N])` rendering that described it is gone with it.
    */
-  fun localeCodes(
+  fun locale(slug: String): Locale? = localeBySlug[slug]
+
+  /**
+   * The published locale SLUGS matching [type], narrowed to [detail] when one is
+   * given. An empty list means the pairing is not published (there is no
+   * "city: fringe"), which the caller reports as a listed error — the set never
+   * leaves this class as a filter that quietly matches nothing.
+   */
+  fun localeSlugs(
     type: NcesLocaleType,
     detail: NcesLocaleDetail? = null,
-  ): List<Int> = locales.filter { it.type == type && (detail == null || it.detail == detail) }.map { it.code }
+  ): List<String> = locales.filter { it.type == type && (detail == null || it.detail == detail) }.map { it.slug }
 
   /** The details published for [type], for the listed error a bad pairing gets. */
   fun localeDetails(type: NcesLocaleType): List<String> = locales.filter { it.type == type }.map { it.detail.word }
@@ -224,7 +279,27 @@ class Codebook(
         database
           .withConnection { session ->
             CodebooksDao.ipedsRegions(session).mapCatching { regions ->
-              Codebook(regions, CodebooksDao.ncesLocales(session).getOrThrow())
+              Codebook(
+                regionRows = regions,
+                localeRows = CodebooksDao.ncesLocales(session).getOrThrow(),
+                // The slug vocabularies (RFC 150 D54): one generic read per
+                // domain over the CodebookTable allowlist, not a typed row
+                // reader each. `subjects` is not a codebook — it is the
+                // authored taxonomy — so it comes from its own read.
+                subjectSlugs = CodebooksDao.subjects(session).getOrThrow().map { it.slug },
+                // Not a `slugs` read: `us_states` is keyed by the postal code,
+                // which that function refuses to dress up as a slug.
+                stateCodes = CodebooksDao.usStateCodes(session).getOrThrow(),
+                testPolicySlugs = CodebooksDao.slugs(session, CodebookTable.ADMISSION_TEST_POLICIES).getOrThrow(),
+                religiousAffiliationSlugs =
+                  CodebooksDao.slugs(session, CodebookTable.RELIGIOUS_AFFILIATIONS).getOrThrow(),
+                carnegieClassSlugs =
+                  CodebooksDao.slugs(session, CodebookTable.CARNEGIE_2021_BASIC_CLASSES).getOrThrow(),
+                carnegieSizeSlugs =
+                  CodebooksDao.slugs(session, CodebookTable.CARNEGIE_2021_SIZE_SETTINGS).getOrThrow(),
+                athleticAssociationSlugs =
+                  CodebooksDao.slugs(session, CodebookTable.ATHLETIC_ASSOCIATIONS).getOrThrow(),
+              )
             }
           }.getOrThrow()
       }.onFailure { error ->
@@ -238,6 +313,14 @@ class Codebook(
           // Loud, once, at wiring time. Silence here would mean discovering the
           // missing ingest phase as a puzzling per-tool-call refusal instead.
           logger.warn("codebook: no ipeds_regions or nces_locales rows -- {}", UNAVAILABLE)
+        } else if (codebook.isDegraded) {
+          // A PARTIAL load is the dangerous one: it looks healthy. Name the
+          // filters that will not be offered, and the phase that fills them.
+          logger.warn(
+            "codebook: no values loaded for filter(s) {} -- those filters are not offered and every value " +
+              "sent for them is refused; run the ingest phase that loads them (`codebooks`, `subjects`)",
+            codebook.emptyVocabularies,
+          )
         } else {
           // The counts AND the snapshot semantics, so an operator who has just
           // run the ingest can see whether this process picked it up.

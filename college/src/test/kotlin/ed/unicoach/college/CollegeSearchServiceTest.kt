@@ -4,10 +4,13 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.SearchIndexNotBuiltException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeQuery
-import ed.unicoach.db.models.CredentialLevel
+import ed.unicoach.db.models.CollegeSearchOutcome
+import ed.unicoach.db.models.CollegeSearchPage
 import ed.unicoach.db.models.NewCollege
+import ed.unicoach.error.TransientError
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -98,6 +101,9 @@ class CollegeSearchServiceTest {
       database.withConnection { session: SqlSession ->
         val college = CollegesDao.upsert(session, input).getOrThrow()
         CollegesDao.rebuildNameWords(session).getOrThrow()
+        // ...and `college_search_index` (RFC 150 D53), which both entry points
+        // now read. Same rule, same reason: the ingest rebuilds it in a phase.
+        CollegesDao.rebuildSearchIndex(session).getOrThrow()
         college
       }
     }
@@ -107,10 +113,10 @@ class CollegeSearchServiceTest {
     runBlocking {
       for (u in 1..30) seed(newCollege(u))
 
-      val tooMany = service.search(CollegeQuery(limit = 100)).getOrThrow().matches
+      val tooMany = service.search(CollegeQuery(limit = 100)).page().matches
       assertEquals(CollegeSearchService.MAX_LIMIT, tooMany.size)
 
-      val tooFew = service.search(CollegeQuery(limit = 0)).getOrThrow().matches
+      val tooFew = service.search(CollegeQuery(limit = 0)).page().matches
       assertTrue(tooFew.size >= CollegeSearchService.MIN_LIMIT)
     }
 
@@ -120,7 +126,7 @@ class CollegeSearchServiceTest {
       seed(newCollege(11, state = "CA"))
       seed(newCollege(12, state = "TX"))
 
-      val matches = service.search(CollegeQuery(states = listOf("CA"), limit = 25)).getOrThrow().matches
+      val matches = service.search(CollegeQuery(states = listOf("CA"), limit = 25)).page().matches
       assertEquals(listOf(11), matches.map { it.ipedsUnitId })
     }
 
@@ -130,19 +136,8 @@ class CollegeSearchServiceTest {
       seed(newCollege(21, state = "CA"))
       val result = service.search(CollegeQuery(states = listOf("ZZ"), limit = 25))
       assertTrue(result.isSuccess)
-      assertTrue(result.getOrThrow().matches.isEmpty())
-      assertEquals(0, result.getOrThrow().totalMatches)
-    }
-
-  @Test
-  fun `credentialLevel without cipPrefix is rejected at the service boundary`() =
-    runBlocking {
-      val result = service.search(CollegeQuery(credentialLevel = CredentialLevel.BACHELORS, limit = 25))
-      assertTrue(result.isFailure)
-      assertTrue(result.exceptionOrNull() is IllegalArgumentException)
-      val message = result.exceptionOrNull()!!.message!!
-      assertTrue(message.contains("BACHELORS"), "the rejection names the offending value: $message")
-      assertTrue(message.contains("cipPrefix"), "the rejection names the absent field: $message")
+      assertTrue(result.page().matches.isEmpty())
+      assertEquals(0, result.page().totalMatches)
     }
 
   // ---------------------------------------------------------------------------
@@ -200,6 +195,50 @@ class CollegeSearchServiceTest {
     }
 
   @Test
+  fun `searchByName against an UNBUILT index is a named failure, never an empty list`() =
+    runBlocking {
+      // The migration lands the table empty; only the ingest fills it. Name
+      // search is the entry point this hurts most — it used to degrade to a
+      // `colleges` substring scan, so an unbuilt index makes it strictly worse
+      // than it was, and an empty list is indistinguishable from "no such
+      // college".
+      database.withConnection { session ->
+        session.prepareStatement("TRUNCATE TABLE colleges CASCADE").use { it.execute() }
+        session.prepareStatement("DELETE FROM college_index_build").use { it.execute() }
+      }
+
+      val result = service.searchByName("Test U", 25)
+
+      val error = result.exceptionOrNull()
+      assertTrue(error is SearchIndexNotBuiltException, "expected a named refusal, got: $error")
+      // Retryable: the next ingest fixes it with no code change, and the REST
+      // layer answers a transient DAO failure with 503 rather than a 200 of
+      // nothing.
+      assertTrue(error is TransientError, "an unbuilt index must be retryable")
+      assertTrue(error.message!!.contains("search-index"), "the failure must name the phase that fixes it")
+    }
+
+  @Test
+  fun `a raw JDBC fault from the connection boundary comes back as a failure, not a throw`() =
+    runBlocking {
+      // `withConnection` throws AROUND the DAO's enveloped Result -- a pool
+      // timeout, a failed commit, a failed rollback -- so `Result.failure` did
+      // not in fact mean "the database failed": the exception escaped the
+      // Result the tool boundary builds its retryable `search_failed` shape
+      // from, and a transient blip reached the model as a hard failure. A
+      // CLOSED pool is that fault in its simplest form.
+      val closed = Database(DatabaseConfig.from(AppConfig.load("common.conf", "db.conf").getOrThrow()).getOrThrow())
+      closed.close()
+      val closedService = CollegeSearchService(closed)
+
+      val structured = closedService.search(CollegeQuery(limit = 25))
+      assertTrue(structured.isFailure, "a connection fault must be a failure, not a thrown exception")
+
+      val byName = closedService.searchByName("Test U", 25)
+      assertTrue(byName.isFailure, "a connection fault must be a failure, not a thrown exception")
+    }
+
+  @Test
   fun `searchByName oversized query is a failure naming the bound`() =
     runBlocking {
       val result = service.searchByName("x".repeat(CollegeSearchService.MAX_QUERY_LENGTH + 1), 25)
@@ -209,3 +248,19 @@ class CollegeSearchServiceTest {
       assertTrue(exception.message!!.contains("${CollegeSearchService.MAX_QUERY_LENGTH}"))
     }
 }
+
+/** The page a search must have produced; a program-filter refusal fails loudly. */
+private fun Result<CollegeSearchOutcome>.page(): CollegeSearchPage =
+  when (val outcome = getOrThrow()) {
+    is CollegeSearchOutcome.Page -> {
+      outcome.page
+    }
+
+    is CollegeSearchOutcome.UnresolvableProgramFilter -> {
+      throw AssertionError("expected a page, got a refusal: [${outcome.field}] [${outcome.value}] ${outcome.cause}")
+    }
+
+    is CollegeSearchOutcome.IndexNotBuilt -> {
+      throw AssertionError("expected a page, but college_search_index has never been built")
+    }
+  }

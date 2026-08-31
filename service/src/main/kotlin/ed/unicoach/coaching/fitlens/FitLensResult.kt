@@ -2,6 +2,7 @@ package ed.unicoach.coaching.fitlens
 
 import ed.unicoach.coaching.budget.Entitlement
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.StudentId
 import java.time.Instant
@@ -93,6 +94,22 @@ sealed interface SkipReason {
     override val studentId: StudentId,
   ) : SkipReason
 
+  /**
+   * Call #1 wrote a program filter the loaded vocabulary cannot expand, so the
+   * search could not run (RFC 150 D54). It is still a skip — no college can
+   * match it and a retry of the same prompt would write the same word — but it
+   * is NOT [ZeroSearchMatches]: that says the query was fine and the corpus was
+   * empty, and collapsing the two made a broken prompt indistinguishable from a
+   * genuinely empty search in the persisted run. Carries the CAUSE, the way
+   * [BudgetExhausted] carries the entitlement it was decided on.
+   */
+  data class UnresolvableProgramFilter(
+    override val studentId: StudentId,
+    val field: CollegeSearchOutcome.UnresolvableProgramFilter.Field,
+    val value: String,
+    val cause: CollegeSearchOutcome.UnresolvableProgramFilter.Cause,
+  ) : SkipReason
+
   data class ReasonReturnedNoFit(
     override val studentId: StudentId,
   ) : SkipReason
@@ -129,6 +146,11 @@ fun SkipReason.toDisplay(): String =
 
     is SkipReason.ZeroSearchMatches -> {
       "zero search matches (student=${studentId.asString})"
+    }
+
+    is SkipReason.UnresolvableProgramFilter -> {
+      "the formulated query's program filter could not be expanded " +
+        "(field=[${field.word}], value=[$value], cause=[$cause]) (student=${studentId.asString})"
     }
 
     is SkipReason.ReasonReturnedNoFit -> {

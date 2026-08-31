@@ -428,9 +428,10 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     assertEquals(7, report.sources.size, "three Scorecard sources plus the four IPEDS files")
 
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
-    // 4 since RFC 146 added the derived name-word rebuild and RFC 148 the CDS
-    // seed load; 2 was RFC 144's own bump for this IPEDS source family.
-    assertEquals(4, row.methodVersion)
+    // 5 since RFC 146 added the derived name-word rebuild, RFC 148 the CDS
+    // seed load and RFC 150 the derived search index; 2 was RFC 144's own bump
+    // for this IPEDS source family.
+    assertEquals(5, row.methodVersion)
     assertTrue(row.sources.contains("ipeds-hd-joined-fixture.csv"), "sources names the HD file: ${row.sources}")
     assertTrue(row.rowsIngested.contains("\"ipeds\""), "rows_ingested carries the ipeds block: ${row.rowsIngested}")
     assertTrue(row.rowsIngested.contains("\"programs_census\""), row.rowsIngested)

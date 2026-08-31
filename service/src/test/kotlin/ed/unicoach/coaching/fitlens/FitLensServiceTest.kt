@@ -13,6 +13,7 @@ import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimsDao
+import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.FitLensRunsDao
@@ -25,13 +26,14 @@ import ed.unicoach.db.models.ClaimTopic
 import ed.unicoach.db.models.ClaimVisibility
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.FitLensFailureCategory
 import ed.unicoach.db.models.FitLensOutcome
 import ed.unicoach.db.models.LlmRequestId
 import ed.unicoach.db.models.NewClaim
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeListEntry
-import ed.unicoach.db.models.NewCollegeProgram
+import ed.unicoach.db.models.NewCollegeProgramsCensus
 import ed.unicoach.db.models.NewFitLensRun
 import ed.unicoach.db.models.NewFitSuggestion
 import ed.unicoach.db.models.StudentId
@@ -277,15 +279,26 @@ class FitLensServiceTest {
         ),
       ).getOrThrow()
       .id
+      .also {
+        // Both search entry points read `college_search_index` (RFC 150 D53),
+        // which is derived state the ingest rebuilds in its own phase — so a
+        // test that seeds `colleges` directly must rebuild it or the college is
+        // invisible to retrieval.
+        CollegesDao.rebuildSearchIndex(session).getOrThrow()
+      }
 
   private fun createCollegeWithProgram(
     cipCode: String,
     title: String,
   ): CollegeId {
     val collegeId = createCollege()
-    CollegesDao
-      .upsertProgram(session, NewCollegeProgram(collegeId, cipCode, title, 3))
+    // The index derives its programs from the IPEDS census, not from
+    // `college_programs` (RFC 150 D51); the title comes back from `cip_codes`,
+    // which the real codebook fixture has loaded.
+    CollegeIpedsDao
+      .upsertProgramsCensus(session, NewCollegeProgramsCensus(collegeId, cipCode, 5, 12, 2023))
       .getOrThrow()
+    CollegesDao.rebuildSearchIndex(session).getOrThrow()
     return collegeId
   }
 
@@ -560,14 +573,49 @@ class FitLensServiceTest {
     runBlocking {
       val student = createStudent()
       createClaims(student, 3)
-      // No college seeded -> the search matches nothing.
-      val provider = scripted("""{"states":["ZZ"]}""")
+      // A seeded college, so the index is BUILT, and a real state it is not in:
+      // a genuine zero-match. ("ZZ" stood here and is now refused at parse —
+      // it is not a US jurisdiction, RFC 150.)
+      createCollege()
+      val provider = scripted("""{"states":["WY"]}""")
       val result = service(provider).discover(student)
 
       assertTrue(result is FitLensResult.Skipped, "Expected Skipped, got: $result")
       assertEquals(1, runRows(student), "an applied run records the spent tokens")
       assertEquals(FitLensOutcome.Applied(suggestionsWritten = 0), latestRun(student).outcome)
       assertEquals(0, latestRun(student).matchesConsidered)
+    }
+
+  @Test
+  fun `an unexpandable program filter skips with its CAUSE, not as a zero match`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      createCollege()
+
+      // "5116" is the retired nursing series: a well-formed prefix the loaded
+      // vocabulary carries no code for. The search cannot run at all, which is
+      // a different fact from "the search ran and found nothing" -- and the
+      // persisted run could not tell them apart while both collapsed into
+      // ZeroSearchMatches.
+      val provider = scripted("""{"cipPrefix":"5116"}""")
+      val result = service(provider).discover(student)
+
+      assertTrue(result is FitLensResult.Skipped, "Expected Skipped, got: $result")
+      val reason = result.reason
+      assertTrue(reason is SkipReason.UnresolvableProgramFilter, "Expected the named skip, got: $reason")
+      assertEquals(student, reason.studentId)
+      assertEquals(CollegeSearchOutcome.UnresolvableProgramFilter.Field.CIP_PREFIX, reason.field)
+      assertEquals("5116", reason.value)
+      assertEquals(
+        CollegeSearchOutcome.UnresolvableProgramFilter.Cause.NOT_A_PUBLISHED_CIP_CODE,
+        reason.cause,
+      )
+      assertTrue(reason.toDisplay().contains("cipPrefix"), "the log line names the field, got: ${reason.toDisplay()}")
+      // The tokens were spent, so the run is still recorded as applied with no
+      // suggestion -- the skip's CAUSE changed, not its billing.
+      assertEquals(1, runRows(student))
+      assertEquals(FitLensOutcome.Applied(suggestionsWritten = 0), latestRun(student).outcome)
     }
 
   @Test
@@ -735,7 +783,12 @@ class FitLensServiceTest {
 
       // The SAME fields the search tool offers, from the one shared home -- so
       // the drift this slice deleted cannot come back by editing one of them.
-      assertEquals(ed.unicoach.college.CollegeQueryVocabulary.FIELD_NAMES, properties.keys)
+      // Minus any whose vocabulary this database has not loaded: a filter with
+      // no values is not advertised on either surface (RFC 150).
+      assertEquals(
+        ed.unicoach.college.CollegeQueryVocabulary.FIELD_NAMES - codebook.emptyVocabularies.toSet(),
+        properties.keys,
+      )
       assertEquals(
         codebook.regionSlugs,
         (properties["region"]!!.jsonObject["enum"] as JsonArray).map { it.jsonPrimitive.content },
@@ -888,10 +941,12 @@ class FitLensServiceTest {
     runBlocking {
       val student = createStudent()
       createClaims(student, 3)
-      // No college seeded -> zero matches -> writeAppliedRun runs. A provider id
-      // outside fit_lens_runs_provider_check ('anthropic','log') makes the run-row
-      // append fail with a real DB constraint violation.
-      val provider = ScriptedProvider(id = "bogus-provider", terminals = listOf(completed("""{"states":["ZZ"]}""")))
+      // A college in CA and a query for WY -> zero matches -> writeAppliedRun
+      // runs. A provider id outside fit_lens_runs_provider_check
+      // ('anthropic','log') makes the run-row append fail with a real DB
+      // constraint violation.
+      createCollege()
+      val provider = ScriptedProvider(id = "bogus-provider", terminals = listOf(completed("""{"states":["WY"]}""")))
 
       val result = service(provider).discover(student)
 

@@ -237,6 +237,12 @@ object CostsTestDb {
         ),
       ).getOrThrow()
       .id
+      .also {
+        // `search_colleges` reads `college_search_index` (RFC 150 D53), derived
+        // state the ingest rebuilds in its own phase; a fixture that writes
+        // `colleges` directly has to rebuild it or the college is unsearchable.
+        CollegesDao.rebuildSearchIndex(sqlSession).getOrThrow()
+      }
   }
 
   /**
