@@ -38,14 +38,21 @@ Start a slice with the **`slice` skill**: "start work on
    and 80,632 census rows from the real 2023 files, unmatched `unit_id`s counted
    and skipped. Nothing user-visible changed yet: **that is `search/03` (S3)**,
    which was **split at its design gate** into `search/03a/published-codebooks`
-   (RFC 147 — the codebook substrate, IN FLIGHT on `pipeline/rfc-147`, PHASE
-   verifying) and `search/03b/the-index` (the derived `college_search_index` +
-   subject taxonomy — the aha, NOT STARTED, lands on top of 03a). Then
-   `search/04/similar-colleges` (query-time), `search/05/consumer-sweep`. 0004
-   D13 (S1–S3 before 0001's S4) was consciously narrowed at RFC 140's gate and
-   is now moot for S4a: only S1's conventions were a real dependency, and S4a
-   landed after RFC 139 with its ingest CLI merged into 139's (aliases +
-   `--*-source` provenance + the CDS group in one launcher).
+   (**RFC 147 — LANDED 2026-08-30**) and `search/03b/the-index` (the derived
+   `college_search_index` + subject taxonomy — the aha, **NEXT**, lands on top
+   of 03a). 03a made the stored federal codes explainable: `bin/fetch-codebooks`
+   pulls IPEDS's own Stata syntax files, and 10 domains / 2,015 rows of
+   published labels now live in eleven reference tables, with the search tool
+   and the fit lens speaking words in both directions from ONE shared schema and
+   the hand-written codebook prose deleted from the fit-lens prompt. Two
+   mechanical naming runs landed first, at Ian's call from the same gate:
+   `ipeds_unit_id` (migration 0057) and unit-last numeric column names
+   (migration 0059). Then `search/04/similar-colleges` (query-time),
+   `search/05/consumer-sweep`. 0004 D13 (S1–S3 before 0001's S4) was consciously
+   narrowed at RFC 140's gate and is now moot for S4a: only S1's conventions
+   were a real dependency, and S4a landed after RFC 139 with its ingest CLI
+   merged into 139's (aliases + `--*-source` provenance + the CDS group in one
+   launcher).
 2. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
    admissions layer is now user-visible. The coach can answer, with citations,
    what a school weighs in admissions, when its rounds close, and how it

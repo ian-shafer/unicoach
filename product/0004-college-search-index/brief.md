@@ -36,6 +36,40 @@ Ledger (updated as slices land):
        total_matches, sort_by, credential_level and ingest provenance are
        untouched. NEXT FREE: RFC 147, migration 0057.
 
+    NAMING RUNS LANDED (2026-08-30) — not slices; two mechanical /ship runs
+       Ian called for at S3's design gate, when the proposed index DDL made it
+       plain that the stored data was hard to read. `ipeds_unit_id` (main@
+       309b829f, migration 0057) renames the federal institution id so it says
+       which identifier it is. `Name numeric columns by their unit` (main@
+       dab43829, migration 0059) gives every numeric column a unit-last name —
+       `_usd`, `_share`, `_percent`, `_headcount`, `_count`, `_score` — and in
+       doing so corrected five names that overstated their source
+       (tuition_and_fees_*, completion_rate_150pct_4yr_share,
+       undergrad_enrollment_headcount, sat_average_equivalent_score,
+       housing_capacity_headcount). It also surfaced, without fixing, that
+       C150_4 has no C150_L4 fallback: every less-than-four-year college stores
+       NULL for completion rate.
+
+    S3a LANDED as RFC 147 (main@6886b5ab + 848b14eb, 2026-08-30) — published
+       codebooks as reference data, split out of S3 at the design gate. IPEDS
+       ships a Stata syntax file beside every survey file, so bin/fetch-codebooks
+       fetches those artifacts (sha256 in db/seed/codebooks/PROVENANCE.json),
+       parses their value- and variable-label blocks, and emits
+       db/data/codebooks.json: 10 domains, 2,015 rows, from 6,779 label lines
+       with none unreadable. Migration 0060 adds a shared `slug` DOMAIN and
+       eleven reference tables; a codebooks phase in bin/ingest-colleges loads
+       them, refuses to delete a referenced row, asserts no declared sentinel is
+       also a code, hashes the committed artifacts against what the database
+       recorded, and reports stored codes with no codebook row (measured: zero,
+       over the real 6,273-college snapshot). The search tool and the fit lens
+       now speak words in both directions and share ONE schema instead of two
+       copies; migration 0061 deletes the hand-written codebook sentence from
+       fit_lens_query (v3). Corrections the real data forced on the RFC:
+       CONFNO1..4 do not share one value set, CIP is 1,710 codes once the
+       grand-total aggregate is excluded, and definition_raw was dropped because
+       NCES Exhibit A is not in the distributed zip.
+       NEXT FREE: RFC 149 (148 taken by brief 0001's S4b), migration 0062.
+
 ## Slice IDs
 
 Permanent IDs for this brief's slices (`search/<milestone>/<name>`). The old
@@ -47,8 +81,8 @@ inserted later takes a decimal step. Neither renumbers a neighbour.
 | --- | ------------------------------ | ----------------------------------------- |
 | S1  | search/01/honest-name-search   | LANDED RFC 139 (matching replaced by 146) |
 | S2  | search/02/ipeds-attributes     | LANDED RFC 144                            |
-| S3  | search/03a/published-codebooks | IN FLIGHT — RFC 147 (split in design)     |
-| S3  | search/03b/the-index           | NOT STARTED — lands on top of 03a         |
+| S3  | search/03a/published-codebooks | LANDED RFC 147                            |
+| S3  | search/03b/the-index           | NEXT — lands on top of 03a                |
 | S4  | search/04/similar-colleges     | NOT STARTED                               |
 | S5  | search/05/consumer-sweep       | NOT STARTED                               |
 | S6  | search/06/unattended-refresh   | DEFERRED                                  |
