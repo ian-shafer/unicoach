@@ -108,6 +108,12 @@ class CollegeListServiceTest {
       .upsert(
         sqlSession,
         NewCollege(
+          housingAndFoodOnCampusPerYearUsd = null,
+          housingAndFoodOffCampusPerYearUsd = null,
+          booksAndSuppliesPerYearUsd = null,
+          otherExpensesOnCampusPerYearUsd = null,
+          otherExpensesOffCampusPerYearUsd = null,
+          otherExpensesWithFamilyPerYearUsd = null,
           ipedsUnitId = ipedsUnitIdCounter++,
           opeid = null,
           name = "Test College",

@@ -208,6 +208,42 @@ object CollegeIpedsDao {
       ).map { it.toMap() }
 
   /**
+   * The IPEDS on-campus housing flag for each college, keyed by
+   * `ipeds_unit_id` (RFC 149). The cost read's no-dorms answer: the Scorecard publishes no
+   * housing flag, and inferring one from a null `ROOMBOARD_ON` would present a
+   * guess as a fact, so IPEDS `IC.ROOM` is the authority.
+   *
+   * THREE states, kept apart all the way from the row: a key with `true` or
+   * `false` is what IPEDS says, a key with a `null` value is a
+   * `college_ipeds` row that does not report the flag, and an absent key is a
+   * school IPEDS has no row for. The read used to weld the last two together
+   * with an `offers_housing IS NOT NULL` filter -- in SQL, so no caller could
+   * ever tell them apart, though they are different facts and the second is the
+   * ingest owner's diagnosis. A caller that only acts on a known `false` reads
+   * `map[unitId] == false` and is unaffected either way.
+   *
+   * `getBoolean` reads a SQL NULL as `false`, so the null is recovered through
+   * `wasNull` rather than trusted from the getter.
+   *
+   * Batch by construction, like [CdsAdmissionsDao]'s latest-cycle reads: one
+   * query for the whole answer, never one per college, and an empty
+   * [ipedsUnitIds] short-circuits without a query at all.
+   */
+  fun housingFlagsByIpedsUnitId(
+    session: SqlSession,
+    ipedsUnitIds: Collection<Int>,
+  ): Result<Map<Int, Boolean?>> =
+    session
+      .queryListWhereIn(
+        table = "college_ipeds",
+        columns = "ipeds_unit_id, offers_housing",
+        keyColumn = "ipeds_unit_id",
+        keys = ipedsUnitIds,
+        bindKey = { stmt, index, id -> stmt.setInt(index, id) },
+        map = { rs -> rs.getInt("ipeds_unit_id") to rs.getBoolean("offers_housing").takeUnless { rs.wasNull() } },
+      ).map { it.toMap() }
+
+  /**
    * Every `college_ipeds` column [nonNullCounts] may count — the closed
    * identifier allowlist, mirroring [CollegesDao.NON_NULL_COUNTABLE_COLUMNS].
    * SQL has no identifier binding, so the boundary is this set: anything outside

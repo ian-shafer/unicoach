@@ -95,6 +95,12 @@ object CollegesDao :
       completionRate150pct4yrShare = rs.doubleOrNull("completion_rate_150pct_4yr_share"),
       medianEarnings10yAfterEntryUsd = rs.intOrNull("median_earnings_10y_after_entry_usd"),
       medianDebtAtCompletionUsd = rs.intOrNull("median_debt_at_completion_usd"),
+      housingAndFoodOnCampusPerYearUsd = rs.intOrNull("housing_and_food_on_campus_per_year_usd"),
+      housingAndFoodOffCampusPerYearUsd = rs.intOrNull("housing_and_food_off_campus_per_year_usd"),
+      booksAndSuppliesPerYearUsd = rs.intOrNull("books_and_supplies_per_year_usd"),
+      otherExpensesOnCampusPerYearUsd = rs.intOrNull("other_expenses_on_campus_per_year_usd"),
+      otherExpensesOffCampusPerYearUsd = rs.intOrNull("other_expenses_off_campus_per_year_usd"),
+      otherExpensesWithFamilyPerYearUsd = rs.intOrNull("other_expenses_with_family_per_year_usd"),
       pellShare = rs.doubleOrNull("pell_share"),
       website = rs.getString("website"),
       aliases = rs.getStringList("aliases"),
@@ -191,9 +197,11 @@ object CollegesDao :
           control, undergrad_enrollment_headcount, admission_rate_share, sat_average_equivalent_score, cost_of_attendance_per_year_usd,
           net_price_per_year_usd, tuition_and_fees_in_state_per_year_usd, tuition_and_fees_out_of_state_per_year_usd, completion_rate_150pct_4yr_share,
           median_earnings_10y_after_entry_usd, pell_share, website, net_price_per_year_income_q1_usd, net_price_per_year_income_q2_usd,
-          net_price_per_year_income_q3_usd, net_price_per_year_income_q4_usd, net_price_per_year_income_q5_usd, median_debt_at_completion_usd
+          net_price_per_year_income_q3_usd, net_price_per_year_income_q4_usd, net_price_per_year_income_q5_usd, median_debt_at_completion_usd,
+          housing_and_food_on_campus_per_year_usd, housing_and_food_off_campus_per_year_usd, books_and_supplies_per_year_usd,
+          other_expenses_on_campus_per_year_usd, other_expenses_off_campus_per_year_usd, other_expenses_with_family_per_year_usd
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (ipeds_unit_id) DO UPDATE SET
           opeid = EXCLUDED.opeid,
           name = EXCLUDED.name,
@@ -221,6 +229,12 @@ object CollegesDao :
           net_price_per_year_income_q4_usd = EXCLUDED.net_price_per_year_income_q4_usd,
           net_price_per_year_income_q5_usd = EXCLUDED.net_price_per_year_income_q5_usd,
           median_debt_at_completion_usd = EXCLUDED.median_debt_at_completion_usd,
+          housing_and_food_on_campus_per_year_usd = EXCLUDED.housing_and_food_on_campus_per_year_usd,
+          housing_and_food_off_campus_per_year_usd = EXCLUDED.housing_and_food_off_campus_per_year_usd,
+          books_and_supplies_per_year_usd = EXCLUDED.books_and_supplies_per_year_usd,
+          other_expenses_on_campus_per_year_usd = EXCLUDED.other_expenses_on_campus_per_year_usd,
+          other_expenses_off_campus_per_year_usd = EXCLUDED.other_expenses_off_campus_per_year_usd,
+          other_expenses_with_family_per_year_usd = EXCLUDED.other_expenses_with_family_per_year_usd,
           version = colleges.version + 1
         WHERE (
           colleges.opeid, colleges.name, colleges.city, colleges.state,
@@ -231,7 +245,11 @@ object CollegesDao :
           colleges.completion_rate_150pct_4yr_share, colleges.median_earnings_10y_after_entry_usd, colleges.pell_share,
           colleges.website, colleges.net_price_per_year_income_q1_usd, colleges.net_price_per_year_income_q2_usd,
           colleges.net_price_per_year_income_q3_usd, colleges.net_price_per_year_income_q4_usd, colleges.net_price_per_year_income_q5_usd,
-          colleges.median_debt_at_completion_usd, colleges.ipeds_unit_id
+          colleges.median_debt_at_completion_usd,
+          colleges.housing_and_food_on_campus_per_year_usd, colleges.housing_and_food_off_campus_per_year_usd,
+          colleges.books_and_supplies_per_year_usd, colleges.other_expenses_on_campus_per_year_usd,
+          colleges.other_expenses_off_campus_per_year_usd, colleges.other_expenses_with_family_per_year_usd,
+          colleges.ipeds_unit_id
         ) IS DISTINCT FROM (
           EXCLUDED.opeid, EXCLUDED.name, EXCLUDED.city, EXCLUDED.state,
           EXCLUDED.region, EXCLUDED.locale, EXCLUDED.latitude, EXCLUDED.longitude,
@@ -241,7 +259,11 @@ object CollegesDao :
           EXCLUDED.completion_rate_150pct_4yr_share, EXCLUDED.median_earnings_10y_after_entry_usd, EXCLUDED.pell_share,
           EXCLUDED.website, EXCLUDED.net_price_per_year_income_q1_usd, EXCLUDED.net_price_per_year_income_q2_usd,
           EXCLUDED.net_price_per_year_income_q3_usd, EXCLUDED.net_price_per_year_income_q4_usd, EXCLUDED.net_price_per_year_income_q5_usd,
-          EXCLUDED.median_debt_at_completion_usd, EXCLUDED.ipeds_unit_id
+          EXCLUDED.median_debt_at_completion_usd,
+          EXCLUDED.housing_and_food_on_campus_per_year_usd, EXCLUDED.housing_and_food_off_campus_per_year_usd,
+          EXCLUDED.books_and_supplies_per_year_usd, EXCLUDED.other_expenses_on_campus_per_year_usd,
+          EXCLUDED.other_expenses_off_campus_per_year_usd, EXCLUDED.other_expenses_with_family_per_year_usd,
+          EXCLUDED.ipeds_unit_id
         )
         RETURNING *
       )
@@ -252,34 +274,50 @@ object CollegesDao :
     return session.mutateReturning(
       sql,
       bind = { stmt ->
-        stmt.setInt(1, input.ipedsUnitId)
-        stmt.setStringOrNull(2, input.opeid)
-        stmt.setString(3, input.name)
-        stmt.setString(4, input.city)
-        stmt.setString(5, input.state)
-        stmt.setIntOrNull(6, input.region)
-        stmt.setIntOrNull(7, input.locale)
-        stmt.setDoubleOrNull(8, input.latitude)
-        stmt.setDoubleOrNull(9, input.longitude)
-        stmt.setInt(10, input.control)
-        stmt.setIntOrNull(11, input.undergradEnrollmentHeadcount)
-        stmt.setDoubleOrNull(12, input.admissionRateShare)
-        stmt.setIntOrNull(13, input.satAverageEquivalentScore)
-        stmt.setIntOrNull(14, input.costOfAttendancePerYearUsd)
-        stmt.setIntOrNull(15, input.netPricePerYearUsd)
-        stmt.setIntOrNull(16, input.tuitionAndFeesInStatePerYearUsd)
-        stmt.setIntOrNull(17, input.tuitionAndFeesOutOfStatePerYearUsd)
-        stmt.setDoubleOrNull(18, input.completionRate150pct4yrShare)
-        stmt.setIntOrNull(19, input.medianEarnings10yAfterEntryUsd)
-        stmt.setDoubleOrNull(20, input.pellShare)
-        stmt.setStringOrNull(21, input.website)
-        stmt.setIntOrNull(22, input.netPricePerYearIncomeQ1Usd)
-        stmt.setIntOrNull(23, input.netPricePerYearIncomeQ2Usd)
-        stmt.setIntOrNull(24, input.netPricePerYearIncomeQ3Usd)
-        stmt.setIntOrNull(25, input.netPricePerYearIncomeQ4Usd)
-        stmt.setIntOrNull(26, input.netPricePerYearIncomeQ5Usd)
-        stmt.setIntOrNull(27, input.medianDebtAtCompletionUsd)
-        stmt.setInt(28, input.ipedsUnitId)
+        // The ordinal is the CURSOR's, never a literal: a column added below is
+        // one line, and the trailing `WHERE ipeds_unit_id = ?` cannot drift out
+        // of step with the placeholder list above it. Hand-counted indices were
+        // exactly what the old comment here admitted to -- "every column added
+        // above shifts it" -- with nothing but a second count to keep them true.
+        var ordinal = 0
+
+        fun next(): Int = ++ordinal
+
+        stmt.setInt(next(), input.ipedsUnitId)
+        stmt.setStringOrNull(next(), input.opeid)
+        stmt.setString(next(), input.name)
+        stmt.setString(next(), input.city)
+        stmt.setString(next(), input.state)
+        stmt.setIntOrNull(next(), input.region)
+        stmt.setIntOrNull(next(), input.locale)
+        stmt.setDoubleOrNull(next(), input.latitude)
+        stmt.setDoubleOrNull(next(), input.longitude)
+        stmt.setInt(next(), input.control)
+        stmt.setIntOrNull(next(), input.undergradEnrollmentHeadcount)
+        stmt.setDoubleOrNull(next(), input.admissionRateShare)
+        stmt.setIntOrNull(next(), input.satAverageEquivalentScore)
+        stmt.setIntOrNull(next(), input.costOfAttendancePerYearUsd)
+        stmt.setIntOrNull(next(), input.netPricePerYearUsd)
+        stmt.setIntOrNull(next(), input.tuitionAndFeesInStatePerYearUsd)
+        stmt.setIntOrNull(next(), input.tuitionAndFeesOutOfStatePerYearUsd)
+        stmt.setDoubleOrNull(next(), input.completionRate150pct4yrShare)
+        stmt.setIntOrNull(next(), input.medianEarnings10yAfterEntryUsd)
+        stmt.setDoubleOrNull(next(), input.pellShare)
+        stmt.setStringOrNull(next(), input.website)
+        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ1Usd)
+        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ2Usd)
+        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ3Usd)
+        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ4Usd)
+        stmt.setIntOrNull(next(), input.netPricePerYearIncomeQ5Usd)
+        stmt.setIntOrNull(next(), input.medianDebtAtCompletionUsd)
+        stmt.setIntOrNull(next(), input.housingAndFoodOnCampusPerYearUsd)
+        stmt.setIntOrNull(next(), input.housingAndFoodOffCampusPerYearUsd)
+        stmt.setIntOrNull(next(), input.booksAndSuppliesPerYearUsd)
+        stmt.setIntOrNull(next(), input.otherExpensesOnCampusPerYearUsd)
+        stmt.setIntOrNull(next(), input.otherExpensesOffCampusPerYearUsd)
+        stmt.setIntOrNull(next(), input.otherExpensesWithFamilyPerYearUsd)
+        // The UNION ALL arm's own `WHERE ipeds_unit_id = ?` -- positionally last.
+        stmt.setInt(next(), input.ipedsUnitId)
       },
       map = ::mapCollege,
       mapError = ::mapCollegeWriteError,
@@ -861,6 +899,14 @@ object CollegesDao :
       "completion_rate_150pct_4yr_share",
       "median_earnings_10y_after_entry_usd",
       "median_debt_at_completion_usd",
+      // The six published cost components (RFC 149): counted so the ingest
+      // change summary proves they actually loaded.
+      "housing_and_food_on_campus_per_year_usd",
+      "housing_and_food_off_campus_per_year_usd",
+      "books_and_supplies_per_year_usd",
+      "other_expenses_on_campus_per_year_usd",
+      "other_expenses_off_campus_per_year_usd",
+      "other_expenses_with_family_per_year_usd",
       "pell_share",
       "website",
     )

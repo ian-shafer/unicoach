@@ -40,6 +40,44 @@ internal fun <T> SqlSession.queryOne(
     Result.failure(mapDatabaseError(e))
   }
 
+/**
+ * `SELECT $columns FROM $table WHERE $keyColumn IN (?, …)` over [keys] -- the one
+ * home for expanding a collection into positional parameters.
+ *
+ * The placeholder string and the binder are generated TOGETHER, from the same
+ * de-duplicated list, so no DAO can put them out of step or restate the 1-based
+ * index rule for itself. [bindKey] gives each key its own JDBC type.
+ *
+ * The WHERE clause is this function's OWN and takes no fragment from a caller.
+ * It briefly did: a `String?` spliced in unparenthesised and AND-ed at top
+ * level, allowlisted only by a sentence in this KDoc -- a blank one emitted a
+ * dangling `AND`, and an `OR` inside one would have bound looser than that
+ * `AND` and silently widened the key filter. Neither would have been an error.
+ * A caller that wants fewer rows filters the mapped rows in Kotlin, where no
+ * string reaches SQL at all.
+ *
+ * Table and column names are fixed DAO identifiers, never caller data; only the
+ * keys are bound. An empty [keys] short-circuits without a query, because
+ * `IN ()` is not valid SQL and a query for nothing has nothing to answer.
+ */
+internal fun <K, T> SqlSession.queryListWhereIn(
+  table: String,
+  columns: String,
+  keyColumn: String,
+  keys: Collection<K>,
+  bindKey: (PreparedStatement, Int, K) -> Unit,
+  map: (ResultSet) -> T,
+): Result<List<T>> {
+  val distinct = keys.distinct()
+  if (distinct.isEmpty()) return Result.success(emptyList())
+  val placeholders = distinct.joinToString(", ") { "?" }
+  return queryList(
+    "SELECT $columns FROM $table WHERE $keyColumn IN ($placeholders)",
+    bind = { stmt -> distinct.forEachIndexed { i, key -> bindKey(stmt, i + 1, key) } },
+    map = map,
+  )
+}
+
 /** SELECT yielding N rows mapped into a list. */
 internal fun <T> SqlSession.queryList(
   sql: String,

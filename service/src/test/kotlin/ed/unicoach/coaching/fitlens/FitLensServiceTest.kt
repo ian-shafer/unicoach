@@ -241,6 +241,12 @@ class FitLensServiceTest {
       .upsert(
         session,
         NewCollege(
+          housingAndFoodOnCampusPerYearUsd = null,
+          housingAndFoodOffCampusPerYearUsd = null,
+          booksAndSuppliesPerYearUsd = null,
+          otherExpensesOnCampusPerYearUsd = null,
+          otherExpensesOffCampusPerYearUsd = null,
+          otherExpensesWithFamilyPerYearUsd = null,
           ipedsUnitId = ipedsUnitIdCounter++,
           opeid = null,
           name = name,

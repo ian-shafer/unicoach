@@ -191,6 +191,12 @@ object AdminTestSupport {
           CollegesDao.upsert(
             session,
             NewCollege(
+              housingAndFoodOnCampusPerYearUsd = null,
+              housingAndFoodOffCampusPerYearUsd = null,
+              booksAndSuppliesPerYearUsd = null,
+              otherExpensesOnCampusPerYearUsd = null,
+              otherExpensesOffCampusPerYearUsd = null,
+              otherExpensesWithFamilyPerYearUsd = null,
               ipedsUnitId = ipedsUnitId,
               opeid = opeid,
               name = name,

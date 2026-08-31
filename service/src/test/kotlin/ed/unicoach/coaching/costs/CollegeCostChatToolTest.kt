@@ -17,6 +17,7 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -182,6 +184,10 @@ class CollegeCostChatToolTest {
       medianDebtAtCompletionUsd = 23000,
     )
     answerBand(student, IncomeBand.OVER_110K)
+    // Residency too, so the arrangement objects render their tuition line AND
+    // their total_per_year_usd: the guard must see the RFC 149 numbers, not a
+    // breakdown that stopped short of emitting them.
+    answerResidency(student, "CA")
 
     // The whole rendered payload, not one field: the leak this guards against
     // (RFC 142) is a FUTURE field quietly carrying the source's own codes into
@@ -198,7 +204,7 @@ class CollegeCostChatToolTest {
     val college = collegesOf(payload).single()
     assertEquals(
       emptySet(),
-      CostField.entries.map { it.wireName }.toSet() - college.keys,
+      CostField.entries.map { it.wireName }.toSet() - keysAnywhereIn(college),
       "every cost field the allowlist sanctions must be in the payload",
     )
 
@@ -860,6 +866,434 @@ class CollegeCostChatToolTest {
     assertEquals(emptyList(), listViolations(payload), "the merit sub-object must carry no source code")
     assertFalse(payload.toString().contains("without need"), "never a share of freshmen without need")
   }
+
+  // ---------------------------------------------------------------------------
+  // The living-arrangement breakdown on the wire (RFC 149)
+  // ---------------------------------------------------------------------------
+
+  private fun breakdownOf(college: JsonObject): JsonObject? = college[CollegeCostChatTool.BREAKDOWN_KEY]?.jsonObject
+
+  private fun arrangementOf(
+    college: JsonObject,
+    arrangement: LivingArrangement,
+  ): JsonObject? = breakdownOf(college)?.get(arrangement.wireName)?.jsonObject
+
+  private fun intsOf(arrangement: JsonObject): Map<String, Int> =
+    arrangement.mapValues {
+      it.value.jsonPrimitive.content
+        .toInt()
+    }
+
+  /** One vintage's spoken academic year, read from the object the key now carries (RFC 149 D-E). */
+  private fun academicYearOf(
+    college: JsonObject,
+    vintage: ScorecardVintage,
+  ): String? =
+    college[vintage.wireName]
+      ?.jsonObject
+      ?.getValue(CollegeCostChatTool.ACADEMIC_YEAR_KEY)
+      ?.jsonPrimitive
+      ?.content
+
+  /** The wire names one vintage says it dates -- the membership the payload now states in-band. */
+  private fun datedFiguresOf(
+    college: JsonObject,
+    vintage: ScorecardVintage,
+  ): List<String> =
+    college[vintage.wireName]
+      ?.jsonObject
+      ?.getValue(CollegeCostChatTool.DATED_FIGURES_KEY)
+      ?.jsonArray
+      ?.map { it.jsonPrimitive.content }
+      .orEmpty()
+
+  @Test
+  fun `cost_by_living_arrangement renders each arrangement with component keys and a total`() {
+    val student = createStudent()
+    seedListedCollege(student, "Arrangement U")
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val breakdown = assertNotNull(breakdownOf(college))
+    assertEquals(
+      listOf(
+        LivingArrangement.ON_CAMPUS.wireName,
+        LivingArrangement.OFF_CAMPUS.wireName,
+        LivingArrangement.WITH_FAMILY.wireName,
+      ),
+      breakdown.keys.toList(),
+      "the arrangements ride in the order the coach reads them",
+    )
+
+    val onCampus = intsOf(assertNotNull(arrangementOf(college, LivingArrangement.ON_CAMPUS)))
+    assertEquals(
+      setOf(
+        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName,
+        CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName,
+        CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD.wireName,
+        CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD.wireName,
+        CollegeCostChatTool.TOTAL_KEY,
+      ),
+      onCampus.keys,
+      "the component keys ARE the CostField wire names, so data_availability names keys the payload has",
+    )
+    assertEquals(
+      onCampus.filterKeys { it != CollegeCostChatTool.TOTAL_KEY }.values.sum(),
+      onCampus.getValue(CollegeCostChatTool.TOTAL_KEY),
+      "the total is exactly the lines above it",
+    )
+
+    val withFamily = intsOf(assertNotNull(arrangementOf(college, LivingArrangement.WITH_FAMILY)))
+    assertTrue(
+      withFamily.keys.none { it.startsWith("housing_and_food") },
+      "no school publishes a housing allowance for a student living at home: [$withFamily]",
+    )
+    assertTrue(
+      withFamily.getValue(CollegeCostChatTool.TOTAL_KEY) < onCampus.getValue(CollegeCostChatTool.TOTAL_KEY),
+      "the one comparison this slice exists to make sayable",
+    )
+  }
+
+  @Test
+  fun `an incomplete arrangement renders its parts and no total`() {
+    val student = createStudent()
+    CostsTestDb.addToCollegeList(
+      student,
+      CostsTestDb.seedCollege("Gap U", otherExpensesOnCampusPerYearUsd = null),
+    )
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    val onCampus = assertNotNull(arrangementOf(college, LivingArrangement.ON_CAMPUS))
+    assertNull(onCampus[CollegeCostChatTool.TOTAL_KEY], "a partial sum must not be rendered as a total")
+    assertNotNull(onCampus[CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName], "the reported parts still ride")
+    assertTrue(
+      college
+        .getValue("data_availability")
+        .jsonArray
+        .map { it.jsonPrimitive.content }
+        .contains(CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD.wireName),
+      "and the missing part is named in the one vocabulary both keys share",
+    )
+  }
+
+  @Test
+  fun `unanswered residency renders the components with no tuition line and no total`() {
+    val student = createStudent()
+    seedListedCollege(student, "Unknown Residency U")
+
+    val onCampus = intsOf(assertNotNull(arrangementOf(collegesOf(execute(student)).single(), LivingArrangement.ON_CAMPUS)))
+    assertTrue(onCampus.keys.none { it.startsWith("tuition_and_fees") }, "a guessed residency is a lie: [$onCampus]")
+    assertTrue(CollegeCostChatTool.TOTAL_KEY !in onCampus, "and there is nothing to total")
+    assertEquals(
+      CostsTestDb.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
+      onCampus.getValue(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName),
+      "the components are true whoever is reading them",
+    )
+  }
+
+  @Test
+  fun `a college reporting no component carries no breakdown key at all`() {
+    val student = createStudent()
+    CostsTestDb.addToCollegeList(
+      student,
+      CostsTestDb.seedCollege(
+        "Componentless U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        housingAndFoodOffCampusPerYearUsd = null,
+        booksAndSuppliesPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        otherExpensesOffCampusPerYearUsd = null,
+        otherExpensesWithFamilyPerYearUsd = null,
+      ),
+    )
+
+    val college = collegesOf(execute(student)).single()
+    assertNull(college[CollegeCostChatTool.BREAKDOWN_KEY], "an absent key, never an empty object")
+  }
+
+  @Test
+  fun `a school with no residence halls renders the flag and no on_campus arrangement`() {
+    val student = createStudent()
+    CostsTestDb.addToCollegeList(
+      student,
+      CostsTestDb.seedCollege(
+        "No Dorms Wire U",
+        // The ordinary no-dorms shape: nothing on-campus is published either, so
+        // the flag has nothing to contradict (RFC 149 D-B).
+        housingAndFoodOnCampusPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ),
+    )
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    assertEquals(
+      false,
+      college
+        .getValue(CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY)
+        .jsonPrimitive.content
+        .toBoolean(),
+    )
+    assertNull(arrangementOf(college, LivingArrangement.ON_CAMPUS), "there is no on-campus option to price")
+    assertNotNull(arrangementOf(college, LivingArrangement.OFF_CAMPUS))
+    assertFalse(
+      college
+        .getValue("data_availability")
+        .jsonArray
+        .map { it.jsonPrimitive.content }
+        .contains(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName),
+      "no dorms is an ANSWER, not a Scorecard silence: [$college]",
+    )
+  }
+
+  @Test
+  fun `a published on-campus price rides beside the no-dorms flag, and the coach is told both`() {
+    // RFC 149 D-B, at the wire: the school's own published figures win, and the
+    // flag is still there, so the coach can say the two sources disagree instead
+    // of being handed one of them.
+    val student = createStudent()
+    CostsTestDb.addToCollegeList(
+      student,
+      CostsTestDb.seedCollege("Contradiction Wire U", ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER),
+    )
+    answerResidency(student, "CA")
+
+    val college = collegesOf(execute(student)).single()
+    assertEquals(
+      false,
+      college
+        .getValue(CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY)
+        .jsonPrimitive.content
+        .toBoolean(),
+      "the flag is a reported fact and does not disappear because the price disagrees with it",
+    )
+    val onCampus = intsOf(assertNotNull(arrangementOf(college, LivingArrangement.ON_CAMPUS), "the published figures are rendered"))
+    assertEquals(
+      CostsTestDb.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
+      onCampus.getValue(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName),
+      "a figure the school published is never withheld: [$onCampus]",
+    )
+    assertFalse(
+      college
+        .getValue("data_availability")
+        .jsonArray
+        .map { it.jsonPrimitive.content }
+        .contains(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName),
+      "and a reported figure is never also called unreported: [$college]",
+    )
+  }
+
+  @Test
+  fun `the housing flag is emitted whenever IPEDS knows it, true as well as false`() {
+    // RFC 149 D-B: the flag is emitted whenever it is KNOWN. "IPEDS says this
+    // school HAS dorms" is a reported fact, and rendering it as silence made it
+    // indistinguishable from "IPEDS never said" -- with a rendered on_campus
+    // arrangement standing in for the fact, which it is not: a school with
+    // dorms that publishes no on-campus component carries no arrangement.
+    val student = createStudent()
+    CostsTestDb.addToCollegeList(student, CostsTestDb.seedCollege("Dorms Wire U", ipedsHousing = CostsTestDb.IpedsHousing.OFFERS))
+
+    val college = collegesOf(execute(student)).single()
+    assertEquals(
+      true,
+      college
+        .getValue(CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY)
+        .jsonPrimitive.content
+        .toBoolean(),
+      "a known true is an answer, not a silence: [$college]",
+    )
+    assertNotNull(arrangementOf(college, LivingArrangement.ON_CAMPUS))
+  }
+
+  @Test
+  fun `a school IPEDS is silent about carries the flag as an absent key, whether the row is missing or quiet`() {
+    // The ONE state with nothing to say. Both silences render the same way here
+    // -- no IPEDS row at all, and a row that does not report `IC.ROOM` -- but
+    // they stay distinguishable in the DAO, which returns a null VALUE for the
+    // quiet row and no key for the missing one.
+    val student = createStudent()
+    CostsTestDb.addToCollegeList(student, CostsTestDb.seedCollege("Silent IPEDS U", ipedsHousing = CostsTestDb.IpedsHousing.NO_ROW))
+    CostsTestDb.addToCollegeList(student, CostsTestDb.seedCollege("Quiet Row U", ipedsHousing = CostsTestDb.IpedsHousing.UNREPORTED))
+
+    val byName = collegesOf(execute(student)).associateBy { it.getValue("name").jsonPrimitive.content }
+    for (name in listOf("Silent IPEDS U", "Quiet Row U")) {
+      assertNull(
+        byName.getValue(name)[CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY],
+        "an absent IPEDS answer is not evidence either way: [$name]",
+      )
+      assertNotNull(arrangementOf(byName.getValue(name), LivingArrangement.ON_CAMPUS), "[$name]")
+    }
+  }
+
+  @Test
+  fun `each vintage label rides beside the figures it governs, and never as a bare year`() {
+    val student = createStudent()
+    seedListedCollege(student, "Vintage U")
+    answerResidency(student, "CA")
+
+    val payload = execute(student)
+    val college = collegesOf(payload).single()
+    assertEquals(ScorecardVintage.PUBLISHED_PRICE.label, academicYearOf(college, ScorecardVintage.PUBLISHED_PRICE))
+    assertEquals(ScorecardVintage.BLENDED_AVERAGE.label, academicYearOf(college, ScorecardVintage.BLENDED_AVERAGE))
+
+    // The year NAMES the figures it dates (RFC 149 D-E): a bare year beside the
+    // college object left membership to a convention the payload never states,
+    // and the prompt tells the coach to quote the year beside a figure.
+    val published = datedFiguresOf(college, ScorecardVintage.PUBLISHED_PRICE)
+    assertTrue(
+      published.containsAll(CostField.COMPONENTS.map { it.wireName }),
+      "every component this college reports is dated by the published-price year: [$published]",
+    )
+    assertTrue(
+      published.contains(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName),
+      "and so is the tuition line that applies: [$published]",
+    )
+    assertEquals(
+      listOf(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName, CostField.NET_PRICE.wireName),
+      datedFiguresOf(college, ScorecardVintage.BLENDED_AVERAGE),
+      "and the blended year dates ONLY the two blended figures, in CostField declaration order",
+    )
+    assertTrue(
+      datedFiguresOf(college, ScorecardVintage.PUBLISHED_PRICE)
+        .intersect(datedFiguresOf(college, ScorecardVintage.BLENDED_AVERAGE).toSet())
+        .isEmpty(),
+      "no figure is dated by both years, which is what makes 'never add across years' sayable",
+    )
+    assertTrue(
+      datedFiguresOf(college, ScorecardVintage.PUBLISHED_PRICE).none {
+        it == CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName || it == CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName
+      } &&
+        datedFiguresOf(college, ScorecardVintage.BLENDED_AVERAGE).none {
+          it == CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName || it == CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName
+        },
+      "an undated figure is named by neither key: [$college]",
+    )
+
+    assertEquals("2022-23", ScorecardVintage.PUBLISHED_PRICE.label, "the academic-year form, rendered once in CdsCitation")
+    assertEquals("2021-22", ScorecardVintage.BLENDED_AVERAGE.label)
+    assertTrue(
+      ScorecardVintage.PUBLISHED_PRICE.label != ScorecardVintage.BLENDED_AVERAGE.label,
+      "the components and the blended averages are different years; that is why they are never summed together",
+    )
+
+    // The payload attribution stops claiming an ingest year (RFC 149 D-E):
+    // updated_at was WHEN WE LOADED THE FILE, never the year of the figures.
+    val source = payload.getValue("source").jsonPrimitive.content
+    assertEquals(CollegeCostChatTool.SOURCE_ATTRIBUTION, source)
+    assertFalse(source.contains("ingested"), "the ingest year was never a vintage: [$source]")
+  }
+
+  @Test
+  fun `a college with no blended figure carries no blended vintage label`() {
+    val student = createStudent()
+    CostsTestDb.addToCollegeList(
+      student,
+      CostsTestDb.seedCollege(
+        "Published Only U",
+        costOfAttendancePerYearUsd = null,
+        netPricePerYearUsd = null,
+        netPricePerYearIncomeQ1Usd = null,
+        netPricePerYearIncomeQ2Usd = null,
+        netPricePerYearIncomeQ3Usd = null,
+        netPricePerYearIncomeQ4Usd = null,
+        netPricePerYearIncomeQ5Usd = null,
+        medianDebtAtCompletionUsd = null,
+        medianEarnings10yAfterEntryUsd = null,
+      ),
+    )
+
+    val college = collegesOf(execute(student)).single()
+    assertNotNull(college[ScorecardVintage.PUBLISHED_PRICE.wireName], "it still publishes a price list")
+    assertNull(
+      college[ScorecardVintage.BLENDED_AVERAGE.wireName],
+      "a label for a vintage no figure here carries would be a citation of nothing: [$college]",
+    )
+  }
+
+  @Test
+  fun `a college whose only blended-looking figures are debt and earnings carries NO vintage label`() {
+    // RFC 149 D-E: a figure this RFC has not dated carries no vintage at all.
+    // Median debt at completion and median earnings ten years after entry are on
+    // neither cohort basis D-E dates, so labelling them AY2021-22 because
+    // COSTT4_A happens to be that year would be a citation we cannot source.
+    val student = createStudent()
+    CostsTestDb.addToCollegeList(
+      student,
+      CostsTestDb.seedCollege(
+        "Undated U",
+        costOfAttendancePerYearUsd = null,
+        netPricePerYearUsd = null,
+        netPricePerYearIncomeQ1Usd = null,
+        netPricePerYearIncomeQ2Usd = null,
+        netPricePerYearIncomeQ3Usd = null,
+        netPricePerYearIncomeQ4Usd = null,
+        netPricePerYearIncomeQ5Usd = null,
+        medianDebtAtCompletionUsd = 23000,
+        medianEarnings10yAfterEntryUsd = 55000,
+      ),
+    )
+
+    val college = collegesOf(execute(student)).single()
+    assertEquals("23000", college.getValue(CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName).jsonPrimitive.content)
+    assertEquals("55000", college.getValue(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName).jsonPrimitive.content)
+    assertNull(
+      college[ScorecardVintage.BLENDED_AVERAGE.wireName],
+      "no COSTT4_A and no net price here, so the blended year describes nothing in this object: [$college]",
+    )
+  }
+
+  @Test
+  fun `the description states the breakdown contract`() {
+    val description =
+      tool.definition
+        .getValue("description")
+        .jsonPrimitive.content
+
+    assertTrue(description.contains(CollegeCostChatTool.BREAKDOWN_KEY), "the new key must be described")
+    assertTrue(
+      description.contains(LivingArrangement.WITH_FAMILY.wireName) &&
+        description.contains(LivingArrangement.ON_CAMPUS.wireName) &&
+        description.contains(LivingArrangement.OFF_CAMPUS.wireName),
+      "the three arrangements must be named",
+    )
+    assertTrue(
+      description.contains("never add up what is there and call it the total"),
+      "a missing total is a rule, not an invitation to improvise one",
+    )
+    assertTrue(
+      description.contains("never a housing cost of zero"),
+      "with_family's missing housing line is absence, never a zero",
+    )
+    assertTrue(
+      description.contains("never compare it with an arrangement total"),
+      "RFC 149 D-F rule 1: COSTT4_A is not the component sum",
+    )
+    assertTrue(
+      description.contains("never subtract ${CostField.NET_PRICE.wireName} from tuition"),
+      "RFC 149 D-F rule 2: aid applies to the blend, never to a component",
+    )
+    assertTrue(
+      description.contains(CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY) &&
+        description.contains("has no residence halls"),
+      "the no-dorms answer must be readable as one",
+    )
+    assertTrue(
+      description.contains("never add figures from the two different years together"),
+      "RFC 149 D-F rule 3, said to the model as well as enforced in the types",
+    )
+    assertTrue(
+      description.contains("quote a number with the year of the key that lists it") &&
+        description.contains(CollegeCostChatTool.ACADEMIC_YEAR_KEY) &&
+        description.contains(CollegeCostChatTool.DATED_FIGURES_KEY),
+      "each vintage key names the figures it dates, and the description must say how to read that",
+    )
+    assertTrue(
+      description.contains("\"${CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY}\": true"),
+      "the known-true housing answer must be readable as one too",
+    )
+  }
 }
 
 /**
@@ -880,7 +1314,11 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
     "tuition_applicable",
     CollegeCostChatTool.PRECISION_OFFER_KEY,
     "data_availability",
-  ) + CostField.entries.map { it.wireName }
+    // RFC 149's additions: the per-arrangement split, the no-dorms answer, and
+    // the two academic-year labels that say which year a figure describes.
+    CollegeCostChatTool.BREAKDOWN_KEY,
+    CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY,
+  ) + CostField.entries.map { it.wireName } + ScorecardVintage.entries.map { it.wireName }
 
 // ---------------------------------------------------------------------------
 // The generalised source-code guard (RFC 143), hosted in :chat's test fixtures
@@ -901,6 +1339,27 @@ private val PRE_FEED_COLLEGE_KEYS: Set<String> =
  * never reach this check.
  */
 private val NUMBERS_BY_CONTRACT =
-  CostField.entries.map { it.wireName }.toSet() + setOf("count", "amount_usd") + MeritAidWire.NUMERIC_KEYS
+  CostField.entries.map { it.wireName }.toSet() +
+    setOf("count", "amount_usd", CollegeCostChatTool.TOTAL_KEY) +
+    MeritAidWire.NUMERIC_KEYS
 
 private fun listViolations(payload: JsonElement): List<BareSourceCode> = BareSourceCodeGuard.listViolations(payload, NUMBERS_BY_CONTRACT)
+
+/**
+ * Every key in [element] at ANY depth.
+ *
+ * The coverage assertion above -- "every cost field the allowlist sanctions is
+ * actually in this payload, so the allowlist is exercised rather than vacuously
+ * satisfied" -- used to read `college.keys`, which was the whole vocabulary
+ * while every cost field was a top-level scalar. RFC 149's six components render
+ * INSIDE the arrangement objects, so a flat read would find them missing and,
+ * worse, a future nested field would slip past the guard's exercise check
+ * unnoticed. The walk mirrors [BareSourceCodeGuard.listNumericFields], which has
+ * always been recursive.
+ */
+private fun keysAnywhereIn(element: JsonElement): Set<String> =
+  when (element) {
+    is JsonObject -> element.keys + element.values.flatMap { keysAnywhereIn(it) }
+    is JsonArray -> element.flatMap { keysAnywhereIn(it) }.toSet()
+    else -> emptySet()
+  }

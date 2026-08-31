@@ -51,6 +51,30 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   }
 
   @Test
+  fun `a snapshot missing a cost component column is fatal and writes nothing`() {
+    // RFC 149: the six components are REQUIRED, so a release that stopped
+    // publishing one must stop the ingest rather than load silent nulls over a
+    // column the cost read now depends on. Triggered rather than inferred -- a
+    // header assertion is silent on every run where the column is present, and
+    // the shared missing-column fixture carries all six.
+    //
+    // A header-only CSV is enough: the assertion runs before any row is read,
+    // which is the property the "writes nothing" half of the name asserts.
+    val header = CollegeScorecardLoader.REQUIRED_INSTITUTION_COLUMNS.filterNot { it == "ROOMBOARD_ON" }
+    val stripped = File.createTempFile("scorecard-without-roomboard-on", ".csv")
+    stripped.deleteOnExit()
+    stripped.writeText(header.joinToString(",") + "\n")
+
+    val thrown =
+      assertThrows<MissingSourceColumnsException> {
+        runBlocking { loader.ingest(source(stripped), source(fieldsCsv), source(aliasesJson)) }
+      }
+    assertEquals(listOf("ROOMBOARD_ON"), thrown.missing)
+    assertTrue(thrown.message!!.contains("ROOMBOARD_ON"), "the fatal message must name the missing column")
+    assertEquals(0, withSession { count(it, "colleges") })
+  }
+
+  @Test
   fun `the legacy load path asserts headers too`() {
     val missingColumn = fixture("scorecard-institutions-missing-column-fixture.csv")
     assertThrows<MissingSourceColumnsException> {
@@ -343,6 +367,33 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     assertEquals(4, report.nonNullAfter["admission_rate_share"])
     val summary = report.humanSummary()
     assertTrue(summary.contains("admission_rate_share 0→4"), "summary carries the delta: $summary")
+  }
+
+  @Test
+  fun `the change summary proves all six cost components loaded`() {
+    // RFC 149: the six components are in NON_NULL_SUMMARY_COLUMNS precisely so
+    // the run's own report proves they arrived. The fixture's five loaded rows
+    // report 4 of each component except the two the fixture leaves NA:
+    // 330300's ROOMBOARD_OFF and 550500's ROOMBOARD_ON, plus 440400's whole row.
+    val report = ingest()
+    val expectedAfter =
+      mapOf(
+        "books_and_supplies_per_year_usd" to 4,
+        "housing_and_food_on_campus_per_year_usd" to 3,
+        "housing_and_food_off_campus_per_year_usd" to 3,
+        "other_expenses_on_campus_per_year_usd" to 4,
+        "other_expenses_off_campus_per_year_usd" to 4,
+        "other_expenses_with_family_per_year_usd" to 4,
+      )
+    for ((column, after) in expectedAfter) {
+      assertEquals(0, report.nonNullBefore[column], "[$column] starts from an empty table")
+      assertEquals(after, report.nonNullAfter[column], "[$column] must be counted by the change summary")
+    }
+    val summary = report.humanSummary()
+    assertTrue(
+      summary.contains("books_and_supplies_per_year_usd 0→4"),
+      "the printed non-null deltas must carry the components: $summary",
+    )
   }
 
   @Test

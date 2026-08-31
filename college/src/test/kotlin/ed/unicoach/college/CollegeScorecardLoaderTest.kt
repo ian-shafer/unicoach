@@ -277,10 +277,17 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       // nonneg money field, RFC 133): nulled and counted, row kept.
       assertEquals(1, result.fieldsCoercedToNull["median_debt_at_completion_usd"])
 
+      // BOOKSUPPLY=-50 is out-of-domain for a GROSS cost (RFC 149): the six
+      // components are mechanism-A fields exactly like tuition, so a negative is
+      // nulled and counted rather than dropping the row or reaching the CHECK.
+      assertEquals(1, result.fieldsCoercedToNull["books_and_supplies_per_year_usd"])
+
       val college = withSession { CollegesDao.findByIpedsUnitId(it, 600600).getOrThrow() }
       assertNotNull(college)
       assertNull(college.admissionRateShare)
       assertNull(college.medianDebtAtCompletionUsd)
+      assertNull(college.booksAndSuppliesPerYearUsd)
+      assertEquals(9000, college.housingAndFoodOnCampusPerYearUsd, "the in-domain components still load")
     }
 
   @Test

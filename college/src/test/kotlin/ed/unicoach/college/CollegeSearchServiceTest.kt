@@ -51,6 +51,12 @@ class CollegeSearchServiceTest {
     state: String = "CA",
     netPricePerYearUsd: Int? = 20000,
   ) = NewCollege(
+    housingAndFoodOnCampusPerYearUsd = null,
+    housingAndFoodOffCampusPerYearUsd = null,
+    booksAndSuppliesPerYearUsd = null,
+    otherExpensesOnCampusPerYearUsd = null,
+    otherExpensesOffCampusPerYearUsd = null,
+    otherExpensesWithFamilyPerYearUsd = null,
     ipedsUnitId = ipedsUnitId,
     opeid = null,
     name = "Test U $ipedsUnitId",

@@ -449,6 +449,141 @@ class SystemPromptCatalogTest {
   }
 
   /**
+   * The 0063 seed's structural contract (RFC 149). v9 is ADDITIVE like v3 over
+   * v2, v4 over v3 and v8 over v7: the whole v8 body byte-identical as a prefix,
+   * joined by a single space to exactly one appended paragraph — the
+   * living-arrangement instruction. The paragraph's markers are asserted, not its
+   * full copy: the seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v9 is v8 plus one appended living-arrangement paragraph`() {
+    val appended = livingArrangementParagraph()
+
+    assertTrue(
+      appended.startsWith(" When a school reports its costs by living arrangement"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(
+      appended.contains("lead with that split rather than with one total"),
+      "v9's whole point: the split comes first, not the blended total",
+    )
+    assertTrue(
+      appended.contains("Always name which arrangement you are quoting"),
+      "the same school has three prices; an unnamed one is a number the family cannot use",
+    )
+    assertTrue(
+      appended.contains("living on campus") &&
+        appended.contains("renting off campus") &&
+        appended.contains("living at home"),
+      "the three arrangements must be named in words a student says, not in wire keys",
+    )
+    assertTrue(
+      appended.contains("say they are estimates"),
+      "the living-cost lines are the school's own estimates and must be marked as such",
+    )
+    assertTrue(
+      appended.contains("living at home instead of on campus would cost"),
+      "the at-home comparison is the sentence this slice exists to make sayable",
+    )
+    assertTrue(
+      appended.contains("never add up the parts that are there and call the result the total"),
+      "a missing total is a missing part, never a sum of whatever happens to be present",
+    )
+    assertTrue(
+      appended.contains("no residence halls"),
+      "the no-dorms case is an answer the coach states, not an unreported figure",
+    )
+    // RFCs 141/142 money language, carried into the new paragraph.
+    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+  }
+
+  /**
+   * RFC 149's D-F rules, as the prompt half of the contract whose code half is
+   * `ForbiddenCostArithmeticTest`. A tool can refuse to compute a forbidden
+   * number; only the prompt can stop the coach computing it out loud.
+   *
+   * Absence is assertable for the arithmetic itself — every "subtract" in the
+   * whole v9 body is preceded by "never", which is a property of the finished
+   * copy rather than of one paragraph, so a later version that relaxed it
+   * anywhere fails here.
+   */
+  @Test
+  fun `the served coach prompt forbids the net-price arithmetic and the cross-vintage sum`() {
+    // The prompt the runtime actually SERVES, read from the pin rather than
+    // typed here: a literal "v9" would keep passing after a v10 was pinned,
+    // leaving the body the coach is really given unverified -- which is the one
+    // failure this class exists to make loud.
+    val served =
+      SystemPromptsDao
+        .findByNameAndVersion(session, coaching.systemPromptName, coaching.systemPromptVersion)
+        .getOrThrow()
+        .body
+
+    val subtractions = Regex("""(.{0,6})subtract""").findAll(served).map { it.groupValues[1] }.toList()
+    assertTrue(subtractions.isNotEmpty(), "the rule must actually be stated, or this assertion is vacuous")
+    assertEquals(
+      emptyList(),
+      subtractions.filterNot { it == "never " },
+      "every mention of subtracting a price in the coach prompt must forbid it: [$subtractions]",
+    )
+
+    val appended = livingArrangementParagraph()
+    assertTrue(
+      appended.contains("never subtract a net price from tuition"),
+      "D-F rule 2: aid applies to the whole price, never to one part of it",
+    )
+    assertTrue(
+      appended.contains("never present it as one arrangement's total and never compare the two"),
+      "D-F rule 1: the blended cost of attendance is not the component sum",
+    )
+    assertTrue(
+      appended.contains("never add figures from two different years together"),
+      "D-F rule 3: only same-vintage figures are ever summed",
+    )
+  }
+
+  /**
+   * RFC 142's source-jargon sentence must survive RFC 149's append. It does so by
+   * construction — v9 keeps the whole v8 body as a prefix — but it is the one
+   * piece of copy three prior versions have already had to preserve, so it is
+   * asserted rather than assumed. It is extracted from v6 at runtime, never
+   * retyped here.
+   */
+  @Test
+  fun `coach v9 preserves the v7 and v8 source-jargon sentence verbatim`() {
+    val sentence = sourceJargonSentence()
+    val v9 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v9").getOrThrow().body
+
+    assertTrue(
+      v9.contains(sentence),
+      "v9 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
+    )
+    // And RFC 141's contrastive glossary pairs, which live in the money
+    // paragraph v7 rewrote and v9 leaves untouched -- extracted at runtime,
+    // never retyped. v5's own paragraph is NOT the one to look for: v7 replaced
+    // it, so asserting that would assert the wrong copy survived.
+    assertTrue(v9.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+  }
+
+  /**
+   * The v9 living-arrangement paragraph: everything v9 appends to the v8 body.
+   * Guarded exactly as [admissionsParagraph] is -- `removePrefix` is a silent
+   * no-op when the affix does not match, so the prefix is asserted before it is
+   * removed, and an empty remainder would let every `contains` pass vacuously.
+   */
+  private fun livingArrangementParagraph(): String {
+    val v8 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v8").getOrThrow().body
+    val v9 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v9").getOrThrow().body
+    assertTrue(v9.startsWith(v8), "the v8 prefix must be byte-identical, so the new paragraph is the only change")
+    val appended = v9.removePrefix(v8)
+    assertTrue(appended.isNotEmpty(), "v9 must actually append something; an empty remainder means it equals v8")
+    return appended
+  }
+
+  /**
    * The 0061 seed's structural contract (RFC 147). Unlike every coach seed
    * above, v3 of the fit-lens query prompt ADDS NOTHING: it is v2 with exactly
    * one span deleted — the hand-written codebook sentence — so the contract is

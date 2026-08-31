@@ -71,6 +71,12 @@ class CollegeSearchToolTest {
 
   private fun newCollege(ipedsUnitId: Int) =
     NewCollege(
+      housingAndFoodOnCampusPerYearUsd = null,
+      housingAndFoodOffCampusPerYearUsd = null,
+      booksAndSuppliesPerYearUsd = null,
+      otherExpensesOnCampusPerYearUsd = null,
+      otherExpensesOffCampusPerYearUsd = null,
+      otherExpensesWithFamilyPerYearUsd = null,
       ipedsUnitId = ipedsUnitId,
       opeid = null,
       name = "Coastal College $ipedsUnitId",

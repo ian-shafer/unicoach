@@ -22,7 +22,9 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -545,5 +547,574 @@ class CollegeCostServiceTest {
     val merit = profileOf(student).colleges.single().meritAid
     assertEquals(2000, merit?.averageNonNeedAid)
     assertEquals("Two Cycle U's 2025-26 Common Data Set", merit?.source?.citedAs)
+  }
+
+  // ---------------------------------------------------------------------------
+  // The living-arrangement breakdown (RFC 149)
+  // ---------------------------------------------------------------------------
+
+  /** One arrangement of a college's breakdown, or null when it was omitted. */
+  private fun arrangementOf(
+    cost: CollegeCost,
+    arrangement: LivingArrangement,
+  ): ArrangementCost? = cost.breakdown?.arrangements?.firstOrNull { it.arrangement == arrangement }
+
+  private fun amountsOf(arrangement: ArrangementCost): Map<CostField, Int> = arrangement.lines.associate { it.field to it.amountUsd }
+
+  @Test
+  fun `all three arrangements are assembled, each totalling its own parts plus the applicable tuition`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Breakdown U", state = "CA", control = 1))
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    val breakdown = assertNotNull(cost.breakdown)
+    assertEquals(
+      listOf(LivingArrangement.ON_CAMPUS, LivingArrangement.OFF_CAMPUS, LivingArrangement.WITH_FAMILY),
+      breakdown.arrangements.map { it.arrangement },
+      "the arrangements ride in declaration order, which is the order the coach reads them",
+    )
+
+    val tuition = 12000
+    val onCampus = assertNotNull(arrangementOf(cost, LivingArrangement.ON_CAMPUS))
+    assertEquals(
+      mapOf(
+        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD to tuition,
+        CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD to CostsTestDb.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
+        CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD to CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
+        CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD to CostsTestDb.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD,
+      ),
+      amountsOf(onCampus),
+    )
+    assertEquals(
+      tuition +
+        CostsTestDb.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD +
+        CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD +
+        CostsTestDb.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD,
+      onCampus.totalPerYearUsd,
+    )
+
+    val offCampus = assertNotNull(arrangementOf(cost, LivingArrangement.OFF_CAMPUS))
+    assertEquals(
+      tuition +
+        CostsTestDb.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD +
+        CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD +
+        CostsTestDb.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD,
+      offCampus.totalPerYearUsd,
+    )
+
+    // The one sentence this whole slice exists to make sayable: living at home
+    // costs the on-campus housing-and-food figure less, plus the difference in
+    // everyday spending.
+    val withFamily = assertNotNull(arrangementOf(cost, LivingArrangement.WITH_FAMILY))
+    assertEquals(
+      tuition + CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD + CostsTestDb.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,
+      withFamily.totalPerYearUsd,
+    )
+    assertTrue(withFamily.totalPerYearUsd!! < onCampus.totalPerYearUsd!!)
+  }
+
+  @Test
+  fun `with_family carries no housing and food line at all, never a zero`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Home U"))
+    answerResidency(student, "CA")
+
+    val withFamily = assertNotNull(arrangementOf(profileOf(student).colleges.single(), LivingArrangement.WITH_FAMILY))
+    val fields = withFamily.lines.map { it.field }
+    assertTrue(
+      CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD !in fields &&
+        CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD !in fields,
+      "the Scorecard publishes no ROOMBOARD_FAM, so this arrangement has one fewer part: [$fields]",
+    )
+    assertTrue(withFamily.lines.none { it.amountUsd == 0 }, "absence is never rendered as a zero")
+  }
+
+  @Test
+  fun `an arrangement missing one part carries the parts it has and no total`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Partial U", otherExpensesOffCampusPerYearUsd = null))
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    val offCampus = assertNotNull(arrangementOf(cost, LivingArrangement.OFF_CAMPUS))
+    assertNull(offCampus.totalPerYearUsd, "a partial sum is not a total")
+    assertEquals(
+      setOf(
+        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+        CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD,
+        CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD,
+      ),
+      amountsOf(offCampus).keys,
+      "the reported parts still ride, they are true whatever is missing",
+    )
+    assertNotNull(
+      arrangementOf(cost, LivingArrangement.ON_CAMPUS)?.totalPerYearUsd,
+      "one arrangement's gap never costs another its total",
+    )
+    assertTrue(CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD in cost.notReported)
+  }
+
+  @Test
+  fun `an arrangement with no reported part at all is omitted entirely`() {
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "No Off-Campus U",
+        housingAndFoodOffCampusPerYearUsd = null,
+        otherExpensesOffCampusPerYearUsd = null,
+        // Books is shared, so the arrangement is empty only once its own two
+        // parts AND the shared one are gone.
+        booksAndSuppliesPerYearUsd = null,
+      ),
+    )
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertNull(arrangementOf(cost, LivingArrangement.OFF_CAMPUS), "an empty arrangement is absent, never an empty object")
+    assertNotNull(arrangementOf(cost, LivingArrangement.ON_CAMPUS), "the arrangements it can price still answer")
+  }
+
+  @Test
+  fun `a college reporting no component at all carries no breakdown`() {
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "Silent U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        housingAndFoodOffCampusPerYearUsd = null,
+        booksAndSuppliesPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        otherExpensesOffCampusPerYearUsd = null,
+        otherExpensesWithFamilyPerYearUsd = null,
+      ),
+    )
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertNull(cost.breakdown)
+    assertEquals(
+      CostField.COMPONENTS,
+      cost.notReported.filter { it in CostField.COMPONENTS },
+      "every component it does not report is named, so the coach says so instead of estimating",
+    )
+  }
+
+  @Test
+  fun `unanswered residency at a public college drops the tuition line and every total`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Unknown Residency U", control = 1))
+
+    val cost = profileOf(student).colleges.single()
+    val breakdown = assertNotNull(cost.breakdown, "the components are true whoever is reading them")
+    assertTrue(
+      breakdown.arrangements.all { it.totalPerYearUsd == null },
+      "a total that silently picked one residency would be a lie",
+    )
+    assertTrue(
+      breakdown.arrangements.none { line -> line.lines.any { it.field.wireName.startsWith("tuition_and_fees") } },
+      "and the tuition line it would have picked is absent, not guessed",
+    )
+  }
+
+  @Test
+  fun `out-of-state residency selects the out-of-state tuition line`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Away U", state = "NY", control = 1))
+    answerResidency(student, "CA")
+
+    val onCampus = assertNotNull(arrangementOf(profileOf(student).colleges.single(), LivingArrangement.ON_CAMPUS))
+    assertEquals(
+      30000,
+      amountsOf(onCampus)[CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD],
+      "the breakdown reuses the payload's own TuitionApplicable decision",
+    )
+    assertNull(amountsOf(onCampus)[CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD])
+  }
+
+  @Test
+  fun `a private college is priced without a residency answer, because it has one price`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Private Breakdown U", control = 2))
+
+    val onCampus = assertNotNull(arrangementOf(profileOf(student).colleges.single(), LivingArrangement.ON_CAMPUS))
+    assertEquals(12000, amountsOf(onCampus)[CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD])
+    assertNotNull(onCampus.totalPerYearUsd, "there is no residency question here to leave unanswered")
+  }
+
+  @Test
+  fun `an arrangement can never mix Scorecard vintages`() {
+    // RFC 149 D-F rule 3, asserted on the type rather than on one payload: the
+    // constructor refuses, so no future assembly site can quietly add COSTT4_A
+    // or a net price into a published-price sum.
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        ArrangementCost(
+          arrangement = LivingArrangement.ON_CAMPUS,
+          tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
+          componentLines = listOf(CostLine(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, 40000)),
+        )
+      }
+    assertTrue(error.message!!.contains("differing or unknown Scorecard vintages"), "got [${error.message}]")
+
+    // ...and the two blended figures really are a different vintage from the
+    // components, which is what makes the guard bite.
+    assertEquals(ScorecardVintage.BLENDED_AVERAGE, CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.vintage)
+    assertEquals(ScorecardVintage.BLENDED_AVERAGE, CostField.NET_PRICE.vintage)
+    assertTrue(
+      CostField.COMPONENTS.all { it.vintage == ScorecardVintage.PUBLISHED_PRICE },
+      "the six components share one vintage, which is why they may be summed",
+    )
+  }
+
+  @Test
+  fun `an arrangement refuses an UNDATED figure, which can never be shown to share a year`() {
+    // RFC 149 D-E: median debt and median earnings carry no vintage, because
+    // this RFC dates neither. The require is what makes that safe rather than
+    // merely quiet -- a null vintage is not a wildcard that matches everything,
+    // it is a year nobody established, so it may not be summed with a dated one.
+    assertNull(CostField.MEDIAN_DEBT_AT_COMPLETION_USD.vintage)
+    assertNull(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.vintage)
+
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        ArrangementCost(
+          arrangement = LivingArrangement.WITH_FAMILY,
+          tuitionLine = null,
+          componentLines =
+            listOf(
+              CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500),
+              CostLine(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, 23000),
+            ),
+        )
+      }
+    assertTrue(error.message!!.contains("differing or unknown Scorecard vintages"), "got [${error.message}]")
+  }
+
+  @Test
+  fun `an arrangement refuses a component that is not its own`() {
+    // The total used to be gated by a line COUNT: any three published-price
+    // lines satisfied ON_CAMPUS. An on-campus housing charge could therefore be
+    // carried -- and summed -- under WITH_FAMILY, publishing an at-home total
+    // containing a dorm charge. The check is on IDENTITY now.
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        ArrangementCost(
+          arrangement = LivingArrangement.WITH_FAMILY,
+          tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
+          componentLines =
+            listOf(
+              CostLine(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, 15000),
+              CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000),
+            ),
+        )
+      }
+    assertTrue(error.message!!.contains("only its own components"), "got [${error.message}]")
+  }
+
+  @Test
+  fun `an arrangement refuses the same component twice, however many lines that makes`() {
+    // Three copies of the shared books allowance is three lines, which is
+    // exactly ON_CAMPUS's component count -- and was therefore a complete
+    // budget as far as the old size test could tell.
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        ArrangementCost(
+          arrangement = LivingArrangement.ON_CAMPUS,
+          tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
+          componentLines = List(3) { CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500) },
+        )
+      }
+    assertTrue(error.message!!.contains("once each"), "got [${error.message}]")
+  }
+
+  @Test
+  fun `the tuition slot refuses a figure that is not a published tuition figure`() {
+    // The slot's type is CostLine, which admits all twelve fields. A component
+    // there shares the components' vintage, so every other check passes and the
+    // figure is summed a second time under tuition's name.
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        ArrangementCost(
+          arrangement = LivingArrangement.WITH_FAMILY,
+          tuitionLine = CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500),
+          componentLines =
+            listOf(
+              CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500),
+              CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000),
+            ),
+        )
+      }
+    assertTrue(error.message!!.contains("must be a published tuition figure"), "got [${error.message}]")
+    assertEquals(
+      setOf(
+        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+        CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
+      ),
+      CostField.TUITION_FIELDS,
+      "the allowlist is the two published tuition figures, and nothing else",
+    )
+  }
+
+  @Test
+  fun `an arrangement with no line at all is refused, not silently totalled as nothing`() {
+    // The zero case the old `vintages.size <= 1` tolerated: no line, no
+    // vintage, every check satisfied, and a null total that reads like ordinary
+    // partial reporting rather than like the empty value it is.
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        ArrangementCost(arrangement = LivingArrangement.WITH_FAMILY, tuitionLine = null, componentLines = emptyList())
+      }
+    assertTrue(error.message!!.contains("absent arrangement, never an empty one"), "got [${error.message}]")
+  }
+
+  @Test
+  fun `a complete arrangement carries exactly its own components, in render order, and totals them`() {
+    // The positive case the refusals above bound: identity, not count, is what
+    // admits a total.
+    val arrangement =
+      ArrangementCost(
+        arrangement = LivingArrangement.WITH_FAMILY,
+        tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
+        componentLines =
+          listOf(
+            CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500),
+            CostLine(CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD, 3000),
+          ),
+      )
+    assertEquals(LivingArrangement.WITH_FAMILY.components, arrangement.componentLines.map { it.field })
+    assertEquals(16500, arrangement.totalPerYearUsd)
+
+    // A partial one is still legal and still carries NO total.
+    val partial =
+      ArrangementCost(
+        arrangement = LivingArrangement.WITH_FAMILY,
+        tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
+        componentLines = listOf(CostLine(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, 1500)),
+      )
+    assertNull(partial.totalPerYearUsd, "a partial sum is not a total")
+  }
+
+  @Test
+  fun `the mixed-vintage refusal carries the offending lines, not just a set of vintages`() {
+    // This throw is caught into Result.failure by getForStudent, so its message
+    // is the whole diagnostic an operator ever sees: it must name WHICH figure
+    // came from another reporting year.
+    val error =
+      assertFailsWith<MixedVintageArrangementException> {
+        ArrangementCost(
+          arrangement = LivingArrangement.ON_CAMPUS,
+          tuitionLine = CostLine(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, 12000),
+          componentLines = listOf(CostLine(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, 40000)),
+        )
+      }
+    assertEquals(LivingArrangement.ON_CAMPUS, error.arrangement)
+    assertEquals(
+      setOf(ScorecardVintage.PUBLISHED_PRICE, ScorecardVintage.BLENDED_AVERAGE),
+      error.vintages,
+      "the offending lines are carried, and the vintages derived from them",
+    )
+    assertTrue(
+      error.message!!.contains(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName) &&
+        error.message!!.contains("40000"),
+      "the field and its amount are in the message: [${error.message}]",
+    )
+  }
+
+  @Test
+  fun `no arrangement total ever equals the sticker cost by construction`() {
+    // RFC 149 D-F rule 1: COSTT4_A is a weighted blend across arrangements and a
+    // year older, so it is never the on-campus sum -- it keeps its own key and
+    // nothing substitutes one for the other.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Sticker U"))
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(40000, cost.stickerCostOfAttendancePerYearUsd)
+    val breakdown = assertNotNull(cost.breakdown)
+
+    // The STRUCTURAL claim, which is the rule itself: COSTT4_A is a blend ACROSS
+    // arrangements, so it is never a line inside one. Asserted over CostField
+    // membership rather than over values, because a comparison of seeded numbers
+    // is a property of CostsTestDb and would still pass if the blend were summed
+    // in under a different amount.
+    assertTrue(
+      breakdown.arrangements.none { arrangement ->
+        arrangement.lines.any { it.field == CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD }
+      },
+      "COSTT4_A is a blend across arrangements, so it is never a line in one: [${breakdown.arrangements}]",
+    )
+    assertTrue(
+      breakdown.arrangements.all { arrangement ->
+        arrangement.lines.all { it.field.vintage == ScorecardVintage.PUBLISHED_PRICE }
+      },
+      "an arrangement is one published price list for one year: [${breakdown.arrangements}]",
+    )
+
+    // ...and, on these fixture numbers, it does not stand in for a total either.
+    val totals = breakdown.arrangements.mapNotNull { it.totalPerYearUsd }
+    assertTrue(totals.isNotEmpty())
+    assertTrue(
+      totals.none { it == cost.stickerCostOfAttendancePerYearUsd },
+      "the fixture must keep the two figures distinguishable: [$totals]",
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // The no-dorms case (RFC 149 D-B): IPEDS offers_housing, never inferred
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `a school with no residence halls drops on_campus and carries the flag instead`() {
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "No Dorms U",
+        // The ORDINARY no-dorms shape: IPEDS says no residence halls and the
+        // Scorecard publishes no on-campus figure either, so there is nothing
+        // to show and nothing to contradict.
+        housingAndFoodOnCampusPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ),
+    )
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(false, cost.offersOnCampusHousing)
+    assertNull(arrangementOf(cost, LivingArrangement.ON_CAMPUS), "there is no cheap on-campus option; there is none")
+    assertNotNull(arrangementOf(cost, LivingArrangement.OFF_CAMPUS))
+    assertNotNull(arrangementOf(cost, LivingArrangement.WITH_FAMILY))
+  }
+
+  @Test
+  fun `published on-campus figures beat the no-dorms flag, and both facts still ride`() {
+    // RFC 149 D-B: the two sources can disagree. Suppressing a figure the school
+    // itself published would be the worse failure of the two, so the arrangement
+    // is rendered from what was published and the flag is reported beside it.
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege("Contradiction U", ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER),
+    )
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertEquals(false, cost.offersOnCampusHousing, "the flag is still reported; we do not pick one source and hide the other")
+    val onCampus = assertNotNull(arrangementOf(cost, LivingArrangement.ON_CAMPUS), "the school published these figures itself")
+    assertEquals(
+      CostsTestDb.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD,
+      amountsOf(onCampus)[CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD],
+      "the published figure is rendered, not dropped",
+    )
+    assertNotNull(onCampus.totalPerYearUsd, "every part is present, so the arrangement totals like any other")
+  }
+
+  @Test
+  fun `a contradicting school still names the on-campus part it genuinely does not report`() {
+    // The suppression follows the arrangement: once the on-campus arrangement is
+    // rendered, a part missing FROM it is ordinary Scorecard silence and must be
+    // named, or the coach would be told nothing about a gap it can see.
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "Half Contradiction U",
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ),
+    )
+    answerResidency(student, "CA")
+
+    val cost = profileOf(student).colleges.single()
+    assertNotNull(arrangementOf(cost, LivingArrangement.ON_CAMPUS), "one published on-campus figure is enough to price it")
+    assertTrue(
+      CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD in cost.notReported,
+      "the arrangement is rendered, so its missing part is a silence and is named: [${cost.notReported}]",
+    )
+    assertNull(
+      arrangementOf(cost, LivingArrangement.ON_CAMPUS)?.totalPerYearUsd,
+      "and a partial arrangement still carries no total",
+    )
+  }
+
+  @Test
+  fun `the no-dorms case is not a data_availability silence`() {
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "Commuter Only U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ),
+    )
+
+    val cost = profileOf(student).colleges.single()
+    assertTrue(
+      CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD !in cost.notReported &&
+        CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD !in cost.notReported,
+      "a school with no dorms ANSWERED; it did not stay silent: [${cost.notReported}]",
+    )
+    assertTrue(
+      CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD !in cost.notReported,
+      "books and supplies is shared by every arrangement and this college reports it",
+    )
+  }
+
+  @Test
+  fun `a school that offers housing keeps on_campus, and no IPEDS fact changes nothing`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Dorms U", ipedsHousing = CostsTestDb.IpedsHousing.OFFERS))
+    addToCollegeList(student, seedCollege("No Row U", ipedsHousing = CostsTestDb.IpedsHousing.NO_ROW))
+    addToCollegeList(student, seedCollege("Quiet Row U", ipedsHousing = CostsTestDb.IpedsHousing.UNREPORTED))
+    answerResidency(student, "CA")
+
+    val byName = profileOf(student).colleges.associateBy { it.name }
+    assertEquals(true, byName.getValue("Dorms U").offersOnCampusHousing)
+    assertNotNull(arrangementOf(byName.getValue("Dorms U"), LivingArrangement.ON_CAMPUS))
+
+    // Both silences fold to the same "not reported", and neither drops the
+    // arrangement: absence of the IPEDS fact is not evidence of no dorms.
+    for (name in listOf("No Row U", "Quiet Row U")) {
+      assertNull(byName.getValue(name).offersOnCampusHousing, "[$name] must read as not reported")
+      assertNotNull(arrangementOf(byName.getValue(name), LivingArrangement.ON_CAMPUS), "[$name]")
+      assertTrue(
+        CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD !in byName.getValue(name).notReported,
+        "[$name] reports the figure, so it is not a silence",
+      )
+    }
+  }
+
+  @Test
+  fun `the housing read adds no query per college`() {
+    val student = createStudent()
+    val ids =
+      (1..5).map { n ->
+        seedCollege("Housing Batch $n", ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER)
+          .also { addToCollegeList(student, it) }
+      }
+
+    val one = CoachingTestDb.CountingSession()
+    val five = CoachingTestDb.CountingSession()
+    assertEquals(1, service.readInSession(one, student, ids.take(1)).colleges.size)
+    assertEquals(5, service.readInSession(five, student, ids).colleges.size)
+
+    assertEquals(
+      one.prepared.size,
+      five.prepared.size,
+      "the IPEDS housing read must cost the same statements for five colleges as for one, " +
+        "never one per college: one=[${one.prepared}] five=[${five.prepared}]",
+    )
+    assertEquals(
+      5,
+      service.readInSession(five, student, ids).colleges.count { it.offersOnCampusHousing == false },
+      "and it must actually answer every one of them",
+    )
   }
 }

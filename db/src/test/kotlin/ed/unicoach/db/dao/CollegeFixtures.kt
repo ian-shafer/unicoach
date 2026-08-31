@@ -13,6 +13,12 @@ internal fun newCollegeFixture(
   name: String = "Test College",
 ): NewCollege =
   NewCollege(
+    housingAndFoodOnCampusPerYearUsd = null,
+    housingAndFoodOffCampusPerYearUsd = null,
+    booksAndSuppliesPerYearUsd = null,
+    otherExpensesOnCampusPerYearUsd = null,
+    otherExpensesOffCampusPerYearUsd = null,
+    otherExpensesWithFamilyPerYearUsd = null,
     ipedsUnitId = ipedsUnitId,
     opeid = null,
     name = name,

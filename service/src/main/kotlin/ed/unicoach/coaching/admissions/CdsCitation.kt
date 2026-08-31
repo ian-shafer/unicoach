@@ -1,8 +1,8 @@
 package ed.unicoach.coaching.admissions
 
+import ed.unicoach.coaching.AcademicYear
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.put
-import java.util.Locale
 
 /**
  * The citation one CDS section carries (RFC 148 D2), and the one renderer that
@@ -36,20 +36,14 @@ data class CdsCitation(
 
   companion object {
     /**
-     * A CDS cycle names the NEXT calendar year by its last two digits, zero
-     * padded: 2024 -> "2024-25", 2099 -> "2099-00". The rule is named rather
-     * than written twice inside one expression, so the modulus and the width
-     * cannot drift apart.
+     * The spoken cycle label for a CDS `source_year`: 2024 -> "2024-25".
+     *
+     * Delegates to [AcademicYear], the shared home for that rendering: an
+     * academic year is said the same way whoever published the fact, so this
+     * citation states the CDS meaning of the year and borrows nobody's
+     * formatter -- and owns nobody else's either.
      */
-    private const val TWO_DIGIT_YEAR_MODULUS = 100
-
-    /**
-     * The spoken cycle label for a CDS `source_year`: 2024 -> "2024-25". The
-     * one home for that rendering, so no call site invents a bare year.
-     * [Locale.US] is pinned because the label is spoken beside numbers the
-     * payload carries, and an ambient locale would render the two differently.
-     */
-    fun cycleLabel(sourceYear: Int): String = "$sourceYear-%02d".format(Locale.US, (sourceYear + 1) % TWO_DIGIT_YEAR_MODULUS)
+    fun cycleLabel(sourceYear: Int): String = AcademicYear(sourceYear).label
   }
 }
 

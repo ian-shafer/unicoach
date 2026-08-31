@@ -86,6 +86,12 @@ class CollegesDaoTest {
     completionRate150pct4yrShare: Double? = 0.7,
     medianEarnings10yAfterEntryUsd: Int? = 55000,
     medianDebtAtCompletionUsd: Int? = 23000,
+    housingAndFoodOnCampusPerYearUsd: Int? = 9000,
+    housingAndFoodOffCampusPerYearUsd: Int? = 11000,
+    booksAndSuppliesPerYearUsd: Int? = 1200,
+    otherExpensesOnCampusPerYearUsd: Int? = 3000,
+    otherExpensesOffCampusPerYearUsd: Int? = 3500,
+    otherExpensesWithFamilyPerYearUsd: Int? = 2500,
     pellShare: Double? = 0.4,
     locale: Int? = 13,
     region: Int? = 8,
@@ -115,6 +121,12 @@ class CollegesDaoTest {
     completionRate150pct4yrShare = completionRate150pct4yrShare,
     medianEarnings10yAfterEntryUsd = medianEarnings10yAfterEntryUsd,
     medianDebtAtCompletionUsd = medianDebtAtCompletionUsd,
+    housingAndFoodOnCampusPerYearUsd = housingAndFoodOnCampusPerYearUsd,
+    housingAndFoodOffCampusPerYearUsd = housingAndFoodOffCampusPerYearUsd,
+    booksAndSuppliesPerYearUsd = booksAndSuppliesPerYearUsd,
+    otherExpensesOnCampusPerYearUsd = otherExpensesOnCampusPerYearUsd,
+    otherExpensesOffCampusPerYearUsd = otherExpensesOffCampusPerYearUsd,
+    otherExpensesWithFamilyPerYearUsd = otherExpensesWithFamilyPerYearUsd,
     pellShare = pellShare,
     website = "https://test$ipedsUnitId.edu",
   )
@@ -257,6 +269,28 @@ class CollegesDaoTest {
     val bad = CollegesDao.upsert(session, newCollege(100661, medianDebtAtCompletionUsd = -1))
     assertTrue(bad.isFailure)
     assertTrue(bad.exceptionOrNull() is ConstraintViolationException)
+  }
+
+  @Test
+  fun `a negative cost component is rejected`() {
+    // RFC 149: all six components are GROSS costs -- unlike the net-price band
+    // columns, a negative is a loader bug, so every one carries a nonneg CHECK.
+    // Each is asserted separately: one shared CHECK would pass this test while
+    // five columns went unconstrained.
+    val negatives: List<Pair<String, NewCollege>> =
+      listOf(
+        "housing_and_food_on_campus_per_year_usd" to newCollege(100670, housingAndFoodOnCampusPerYearUsd = -1),
+        "housing_and_food_off_campus_per_year_usd" to newCollege(100671, housingAndFoodOffCampusPerYearUsd = -1),
+        "books_and_supplies_per_year_usd" to newCollege(100672, booksAndSuppliesPerYearUsd = -1),
+        "other_expenses_on_campus_per_year_usd" to newCollege(100673, otherExpensesOnCampusPerYearUsd = -1),
+        "other_expenses_off_campus_per_year_usd" to newCollege(100674, otherExpensesOffCampusPerYearUsd = -1),
+        "other_expenses_with_family_per_year_usd" to newCollege(100675, otherExpensesWithFamilyPerYearUsd = -1),
+      )
+    for ((column, input) in negatives) {
+      val result = CollegesDao.upsert(session, input)
+      assertTrue(result.isFailure, "expected a negative [$column] to be rejected")
+      assertTrue(result.exceptionOrNull() is ConstraintViolationException, "[$column]: ${result.exceptionOrNull()}")
+    }
   }
 
   @Test
@@ -530,6 +564,56 @@ class CollegesDaoTest {
     assertEquals(17000, latest.netPricePerYearIncomeQ4Usd)
     assertEquals(21000, latest.netPricePerYearIncomeQ5Usd)
     assertEquals(23000, latest.medianDebtAtCompletionUsd)
+  }
+
+  @Test
+  fun `a change in only one cost component bumps version and logs history carrying all six`() {
+    // RFC 149: the six components are in the upsert's IS DISTINCT FROM tuple, so
+    // a re-ingest differing only in the books allowance is a real content change
+    // -- and the redefined log_college_version() carries all six into history.
+    val first = CollegesDao.upsert(session, newCollege(800260)).getOrThrow()
+    assertEquals(1, first.version)
+    assertEquals(9000, first.housingAndFoodOnCampusPerYearUsd)
+    assertEquals(11000, first.housingAndFoodOffCampusPerYearUsd)
+    assertEquals(1200, first.booksAndSuppliesPerYearUsd)
+    assertEquals(3000, first.otherExpensesOnCampusPerYearUsd)
+    assertEquals(3500, first.otherExpensesOffCampusPerYearUsd)
+    assertEquals(2500, first.otherExpensesWithFamilyPerYearUsd)
+
+    val unchanged = CollegesDao.upsert(session, newCollege(800260)).getOrThrow()
+    assertEquals(1, unchanged.version, "an unchanged re-ingest must not bump the version")
+
+    val second = CollegesDao.upsert(session, newCollege(800260, booksAndSuppliesPerYearUsd = 1350)).getOrThrow()
+    assertEquals(2, second.version)
+    assertEquals(1350, second.booksAndSuppliesPerYearUsd)
+
+    val history = CollegesDao.listVersions(session, first.id).getOrThrow()
+    assertEquals(listOf(1, 2), history.map { it.version })
+    val latest = history.last().entity
+    assertEquals(9000, latest.housingAndFoodOnCampusPerYearUsd)
+    assertEquals(11000, latest.housingAndFoodOffCampusPerYearUsd)
+    assertEquals(1350, latest.booksAndSuppliesPerYearUsd)
+    assertEquals(3000, latest.otherExpensesOnCampusPerYearUsd)
+    assertEquals(3500, latest.otherExpensesOffCampusPerYearUsd)
+    assertEquals(2500, latest.otherExpensesWithFamilyPerYearUsd)
+  }
+
+  @Test
+  fun `a null cost component round-trips as not reported, never as zero`() {
+    val seeded =
+      CollegesDao
+        .upsert(
+          session,
+          newCollege(
+            800270,
+            housingAndFoodOnCampusPerYearUsd = null,
+            otherExpensesOnCampusPerYearUsd = null,
+          ),
+        ).getOrThrow()
+    val read = CollegesDao.findById(session, seeded.id).getOrThrow()
+    assertNull(read.housingAndFoodOnCampusPerYearUsd, "an unreported component is null, never 0")
+    assertNull(read.otherExpensesOnCampusPerYearUsd)
+    assertEquals(11000, read.housingAndFoodOffCampusPerYearUsd, "the reported ones are untouched")
   }
 
   @Test

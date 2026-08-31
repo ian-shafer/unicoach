@@ -5,6 +5,7 @@ import ed.unicoach.coaching.admissions.MeritPractice
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CdsAdmissionsDao
+import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
@@ -19,6 +20,7 @@ import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
+import org.slf4j.LoggerFactory
 import java.time.ZoneOffset
 
 /**
@@ -136,6 +138,24 @@ data class CollegeCost(
   val reportsPublishedTuition: Boolean,
   /** The cost fields this college does not report, so the coach says so instead of improvising. */
   val notReported: List<CostField>,
+  /**
+   * The published price split by living arrangement (RFC 149), or null when
+   * this school reports no component at all. The arithmetic lives in
+   * [CostBreakdown], reached from [CollegeCostService.costOf], so the totals
+   * are assertable without a JSON round trip.
+   */
+  val breakdown: CostBreakdown?,
+  /**
+   * Whether this school offers on-campus housing, from IPEDS `IC.ROOM`
+   * (`college_ipeds.offers_housing`) -- null when IPEDS does not say.
+   *
+   * Three explicit states, never inferred from a null `ROOMBOARD_ON`: offers
+   * housing, does NOT offer housing ("this school has no residence halls"), and
+   * not reported. It is deliberately NOT a [notReported] entry -- that
+   * vocabulary means "this college does not report this SCORECARD cost field",
+   * and a school with no dorms is answering, not staying silent.
+   */
+  val offersOnCampusHousing: Boolean?,
   /**
    * What this school reported about the non-need (merit) money it gives, or
    * null when it reports none (RFC 148 D7). Purely additive: a college without
@@ -339,9 +359,18 @@ class CollegeCostService(
         .getOrThrow()
         .associateBy { it.collegeId }
 
+    // The no-dorms fact (RFC 149 D-B), on the SAME connection and batched over
+    // the units already selected -- one IPEDS read for the whole answer, so a
+    // fifty-school list still costs one statement here and not fifty. Joined by
+    // ipeds_unit_id, which is the natural key both tables carry.
+    val offersHousingByUnitId =
+      CollegeIpedsDao
+        .housingFlagsByIpedsUnitId(session, selection.colleges.map { it.ipedsUnitId })
+        .getOrThrow()
+
     val costs =
       selection.map { college, listStatus ->
-        costOf(college, listStatus, moneyProfile, meritById[college.id])
+        costOf(college, listStatus, moneyProfile, meritById[college.id], offersHousingByUnitId[college.ipedsUnitId])
       }
 
     return CollegeCostProfile(
@@ -415,14 +444,17 @@ class CollegeCostService(
     listStatus: CollegeListEntryStatus,
     moneyProfile: MoneyProfileStatuses,
     merit: CollegeMeritAid?,
+    offersOnCampusHousing: Boolean?,
   ): CollegeCost {
     val netPrice = netPriceOf(college, moneyProfile)
+    val control = controlOf(college, moneyProfile)
+    warnOnHousingContradiction(college, offersOnCampusHousing)
     return CollegeCost(
       collegeId = college.id,
       name = college.name,
       city = college.city,
       state = college.state,
-      control = controlOf(college, moneyProfile),
+      control = control,
       listStatus = listStatus,
       stickerCostOfAttendancePerYearUsd = college.costOfAttendancePerYearUsd,
       tuitionAndFeesInStatePerYearUsd = college.tuitionAndFeesInStatePerYearUsd,
@@ -432,7 +464,9 @@ class CollegeCostService(
       medianEarnings10yAfterEntryUsd = college.medianEarnings10yAfterEntryUsd,
       reportsBandPricing = reportsBandPricing(college),
       reportsPublishedTuition = reportsPublishedTuition(college),
-      notReported = notReportedOf(college, netPrice),
+      notReported = notReportedOf(college, netPrice, offersOnCampusHousing),
+      breakdown = CostBreakdown.of(college, tuitionLineOf(college, control), offersOnCampusHousing),
+      offersOnCampusHousing = offersOnCampusHousing,
       // A row with no merit measure under it is a citation with no facts, which
       // is not data: [MeritPractice.from] returns null and the result degrades
       // to no merit sub-object at all, exactly like a school with no row. The
@@ -440,6 +474,35 @@ class CollegeCostService(
       meritAid = merit?.let { MeritPractice.from(college.name, it) },
     )
   }
+
+  /**
+   * Says the IPEDS/Scorecard disagreement out loud (RFC 149 D-B): the published
+   * figures win and the flag still rides beside them, so a systematic
+   * divergence must stay visible rather than merely be absorbed.
+   *
+   * A named step rather than ten lines inside [costOf], whose own contract is
+   * that every rule lives in a helper: the guard, the wording and the evidence
+   * are one subject and belong one level down from the composition.
+   */
+  private fun warnOnHousingContradiction(
+    college: College,
+    offersOnCampusHousing: Boolean?,
+  ) {
+    if (!CostBreakdown.publishedOnCampusContradictsFlag(college, offersOnCampusHousing)) return
+    logger.warn(
+      "college=[{}] ipeds_unit_id=[{}] IPEDS offers_housing=false but the Scorecard publishes on-campus " +
+        "figures [{}]; rendering the published on-campus arrangement and reporting the flag beside it",
+      college.id.value,
+      college.ipedsUnitId,
+      publishedOnCampusFieldNames(college),
+    )
+  }
+
+  /** The on-campus components this college publishes in spite of the flag -- the warning's evidence. */
+  private fun publishedOnCampusFieldNames(college: College): List<String> =
+    LivingArrangement.ON_CAMPUS.exclusiveComponents
+      .filter { it.amountOn(college) != null }
+      .map { it.wireName }
 
   /** The basis selection (RFC 135): an answered band picks its bracket column; anything else is the overall average. */
   private fun netPriceOf(
@@ -514,18 +577,155 @@ class CollegeCostService(
   private fun reportsPublishedTuition(college: College): Boolean =
     college.tuitionAndFeesInStatePerYearUsd != null || college.tuitionAndFeesOutOfStatePerYearUsd != null
 
-  /** The unreported cost fields, in the shared field vocabulary ([CostField]). */
+  /**
+   * The tuition line for one arrangement (RFC 149 D-C): the published figure
+   * this student's residency selects, reusing the existing
+   * [TuitionApplicable] decision rather than making a second one.
+   *
+   * Null -- and so no arrangement total -- in exactly two cases:
+   *
+   * - residency is unanswered or declined at a PUBLIC college. A total that
+   *   silently picked one residency would be a lie, and the payload already
+   *   carries the residency [PrecisionOffer] that fixes it.
+   * - the applicable figure is not published. A total missing its largest part
+   *   is not a total.
+   *
+   * A private college has ONE price, so there is no residency question to
+   * answer there and no `tuition_applicable` label on its result; the in-state
+   * column is the one the Scorecard publishes it in. An [CollegeControl.Unrecognized]
+   * control gets no line at all: outside the vocabulary we cannot say which
+   * price applies, and inventing one is the failure this whole file is against.
+   */
+  private fun tuitionLineOf(
+    college: College,
+    control: CollegeControl,
+  ): CostLine? {
+    val field = applicableTuitionFor(control) ?: return null
+    return field.amountOn(college)?.let { CostLine(field, it) }
+  }
+
+  /**
+   * WHICH published tuition figure applies, decided from the control alone --
+   * split out from [tuitionLineOf] because it answers a different question about
+   * a different subject: this one is about the school and the student, the caller
+   * is about what the school published.
+   *
+   * Null here means "no figure applies to this reader" -- an unanswered residency
+   * at a public college, or a control outside the vocabulary. Null in
+   * [tuitionLineOf] can also mean "the applicable figure is not published". Both
+   * produce no line and no total, but they are not the same fact, and folding
+   * them into one function made the payload's `data_availability` and
+   * `precision_offer` answers look like one decision when they are two.
+   *
+   * Exhaustive with no `else`, exactly as `controlOf` is: a control added to the
+   * vocabulary must fail to compile here rather than quietly lose its tuition line.
+   */
+  private fun applicableTuitionFor(control: CollegeControl): CostField? =
+    when (control) {
+      is CollegeControl.Public -> {
+        when (control.tuitionApplicable) {
+          TuitionApplicable.IN_STATE -> CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
+          TuitionApplicable.OUT_OF_STATE -> CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD
+          TuitionApplicable.UNKNOWN -> null
+        }
+      }
+
+      // One price, published in the in-state column, and no residency question
+      // to answer.
+      CollegeControl.PrivateNonprofit -> {
+        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
+      }
+
+      CollegeControl.PrivateForProfit -> {
+        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
+      }
+
+      // Outside the vocabulary we cannot say which price applies, and inventing
+      // one is the failure this whole file is against.
+      is CollegeControl.Unrecognized -> {
+        null
+      }
+    }
+
+  /**
+   * The unreported cost fields, in the shared field vocabulary ([CostField]).
+   *
+   * [offersOnCampusHousing] is read for one reason only (RFC 149 D-B): at a
+   * school with no residence halls AND nothing on-campus published, the two
+   * on-campus components are not silence, they are inapplicable -- the school
+   * answered by having no dorms. Listing them would tell the coach "this school
+   * does not report its on-campus housing cost" when the truth is "there is no
+   * on-campus". That answer rides `offers_on_campus_housing` instead.
+   *
+   * When the school publishes an on-campus figure in spite of the flag, the
+   * arrangement is rendered and nothing here is suppressed: a part missing from
+   * a rendered arrangement is ordinary silence, and calling a published figure
+   * unreported would be false about it either way.
+   */
   private fun notReportedOf(
     college: College,
     netPrice: NetPrice,
-  ): List<CostField> =
-    buildList {
-      if (college.costOfAttendancePerYearUsd == null) add(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD)
-      if (college.tuitionAndFeesInStatePerYearUsd == null) add(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD)
-      if (college.tuitionAndFeesOutOfStatePerYearUsd == null) add(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD)
-      if (netPrice.amount == null) add(CostField.NET_PRICE)
-      if (college.medianDebtAtCompletionUsd == null) add(CostField.MEDIAN_DEBT_AT_COMPLETION_USD)
-      if (college.medianEarnings10yAfterEntryUsd == null) add(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD)
+    offersOnCampusHousing: Boolean?,
+  ): List<CostField> {
+    // The fields that are NOT a `colleges` column, and the computed figure that
+    // answers for each. [isNotReported] refuses rather than guesses: a new
+    // column-less CostField that nobody added here fails loudly on the first read
+    // -- naming the field and the row -- instead of reporting a computed figure
+    // as a silence the college never kept.
+    val computed = mapOf<CostField, Int?>(CostField.NET_PRICE to netPrice.amount)
+
+    // The two on-campus components are inapplicable -- not silent -- only at a
+    // school the no-dorms flag actually suppresses: one with no residence halls
+    // AND nothing on-campus published (RFC 149 D-B). When the school publishes
+    // an on-campus figure anyway the arrangement IS rendered, so a part still
+    // missing from it is ordinary silence and must be named. The rule is read
+    // from [CostBreakdown], the one home for it, so the payload can never render
+    // an arrangement it also calls inapplicable. Books and supplies is shared by
+    // every arrangement and is never in this set.
+    val inapplicable =
+      if (CostBreakdown.isOnCampusSuppressed(college, offersOnCampusHousing)) {
+        LivingArrangement.ON_CAMPUS.exclusiveComponents
+      } else {
+        emptySet()
+      }
+
+    // Enum declaration order, and every member considered: adding a CostField is
+    // one edit (its column in `reportedAmountOf`), not one edit plus a null check here
+    // that nothing would have failed for forgetting.
+    return CostField.entries.filter { field -> field !in inapplicable && isNotReported(field, college, computed) }
+  }
+
+  /**
+   * Whether this college is silent about ONE field -- a question about a field,
+   * split out from the list-shaped decisions above it.
+   *
+   * A field with a column answers from it. A field with no column has nothing
+   * to be silent with, so [computed] is the only thing that can answer for it;
+   * a MISSING key there is a programming error, not a silence, and is named as
+   * one. `containsKey` rather than `?:`, because a present null is the
+   * legitimate "the computed figure is not reported" case -- and the message
+   * carries the field, the row and what the map did hold, because the stdlib
+   * "Key X is missing in the map" says nothing about which cost read produced
+   * it.
+   */
+  private fun isNotReported(
+    field: CostField,
+    college: College,
+    computed: Map<CostField, Int?>,
+  ): Boolean =
+    when (val reported = field.reportedAmountOf(college)) {
+      is ReportedAmount.Column -> {
+        reported.amountUsd == null
+      }
+
+      ReportedAmount.NoColumn -> {
+        require(computed.containsKey(field)) {
+          "cost field [${field.wireName}] is not a `colleges` column and no computed figure answers for it: " +
+            "college_id=[${college.id.value}] ipeds_unit_id=[${college.ipedsUnitId}] " +
+            "computed_fields=[${computed.keys.joinToString(", ") { it.wireName }}]"
+        }
+        computed[field] == null
+      }
     }
 
   /**
@@ -540,6 +740,8 @@ class CollegeCostService(
   private fun ingestYearOf(colleges: Collection<College>): Int? = colleges.maxOfOrNull { it.updatedAt.atZone(ZoneOffset.UTC).year }
 
   companion object {
+    private val logger = LoggerFactory.getLogger(CollegeCostService::class.java)
+
     private val ALL_UNANSWERED =
       MoneyProfileStatuses(
         incomeBandStatus = AnswerStatus.UNANSWERED,

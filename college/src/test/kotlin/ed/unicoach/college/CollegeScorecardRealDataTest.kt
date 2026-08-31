@@ -63,6 +63,46 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
     }
 
   @Test
+  fun `the six cost components load from real rows, NA is not reported (RFC 149)`() =
+    runBlocking {
+      loader.load(institutionCsv, fieldsCsv)
+
+      // Auburn Montgomery: a school that reports every one of the six, so all
+      // three living arrangements are answerable from this row.
+      val auburn = withSession { CollegesDao.findByIpedsUnitId(it, 100830).getOrThrow() }
+      assertNotNull(auburn)
+      assertEquals(1500, auburn.booksAndSuppliesPerYearUsd)
+      assertEquals(7368, auburn.housingAndFoodOnCampusPerYearUsd)
+      assertEquals(12762, auburn.housingAndFoodOffCampusPerYearUsd)
+      assertEquals(4545, auburn.otherExpensesOnCampusPerYearUsd)
+      assertEquals(4545, auburn.otherExpensesOffCampusPerYearUsd)
+      assertEquals(4545, auburn.otherExpensesWithFamilyPerYearUsd)
+
+      // Ventura: a community college. The ON-CAMPUS pair is the NA sentinel and
+      // the off-campus pair is published -- the real shape that makes "not
+      // reported" a per-arrangement fact rather than a per-school one.
+      val ventura = withSession { CollegesDao.findByIpedsUnitId(it, 125028).getOrThrow() }
+      assertNotNull(ventura)
+      assertNull(ventura.housingAndFoodOnCampusPerYearUsd, "NA is not reported, never 0")
+      assertNull(ventura.otherExpensesOnCampusPerYearUsd)
+      assertEquals(22086, ventura.housingAndFoodOffCampusPerYearUsd)
+      assertEquals(4968, ventura.otherExpensesOffCampusPerYearUsd)
+      assertEquals(4059, ventura.otherExpensesWithFamilyPerYearUsd)
+      assertEquals(1062, ventura.booksAndSuppliesPerYearUsd)
+
+      // Pensacola Christian: all six are NA -- a school that reports no
+      // components at all, and so gets no breakdown rather than a zeroed one.
+      val pensacola = withSession { CollegesDao.findByIpedsUnitId(it, 136455).getOrThrow() }
+      assertNotNull(pensacola)
+      assertNull(pensacola.booksAndSuppliesPerYearUsd)
+      assertNull(pensacola.housingAndFoodOnCampusPerYearUsd)
+      assertNull(pensacola.housingAndFoodOffCampusPerYearUsd)
+      assertNull(pensacola.otherExpensesOnCampusPerYearUsd)
+      assertNull(pensacola.otherExpensesOffCampusPerYearUsd)
+      assertNull(pensacola.otherExpensesWithFamilyPerYearUsd)
+    }
+
+  @Test
   fun `out-of-domain optional locale is nulled, institution kept (mechanism A)`() =
     runBlocking {
       val result = loader.load(institutionCsv, fieldsCsv)

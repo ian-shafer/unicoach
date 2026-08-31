@@ -47,6 +47,12 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
           .upsert(
             session,
             NewCollege(
+              housingAndFoodOnCampusPerYearUsd = null,
+              housingAndFoodOffCampusPerYearUsd = null,
+              booksAndSuppliesPerYearUsd = null,
+              otherExpensesOnCampusPerYearUsd = null,
+              otherExpensesOffCampusPerYearUsd = null,
+              otherExpensesWithFamilyPerYearUsd = null,
               ipedsUnitId = ipedsUnitId,
               opeid = null,
               name = "IPEDS U $ipedsUnitId",

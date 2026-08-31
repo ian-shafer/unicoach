@@ -44,6 +44,19 @@ data class College(
   val medianEarnings10yAfterEntryUsd: Int?,
   // Median cumulative federal debt of completers (Scorecard GRAD_DEBT_MDN, RFC 133).
   val medianDebtAtCompletionUsd: Int?,
+  // The six published cost components (RFC 149, Scorecard ROOMBOARD_ON /
+  // ROOMBOARD_OFF / BOOKSUPPLY / OTHEREXPENSE_ON / OTHEREXPENSE_OFF /
+  // OTHEREXPENSE_FAM), whole USD per academic year: what the school publishes
+  // as its allowance for each living arrangement. Gross costs, so a negative is
+  // a loader bug and the schema rejects it; null = not reported, never zero.
+  // There is no with-family housing-and-food figure -- the Scorecard publishes
+  // none -- so that arrangement renders no housing line rather than a $0 one.
+  val housingAndFoodOnCampusPerYearUsd: Int?,
+  val housingAndFoodOffCampusPerYearUsd: Int?,
+  val booksAndSuppliesPerYearUsd: Int?,
+  val otherExpensesOnCampusPerYearUsd: Int?,
+  val otherExpensesOffCampusPerYearUsd: Int?,
+  val otherExpensesWithFamilyPerYearUsd: Int?,
   val pellShare: Double?,
   val website: String?,
   // Curated nicknames ("Mizzou", "UMass Amherst") from db/data/college-aliases.json

@@ -1032,6 +1032,24 @@ class CollegeScorecardLoader(
   // here, once per dropped row / coerced cell, so the audit trail is unchanged.
   // ---------------------------------------------------------------------------
 
+  /**
+   * A GROSS dollar column: non-negative by definition, so an out-of-domain value
+   * is coerced to null and tallied (mechanism A), with the schema's own
+   * `_nonneg_check` as the backstop.
+   *
+   * The ONE home for that domain on the loader side, and the loader-side twin of
+   * `db/schema/0062`'s `*_nonneg_check` constraints: the bound was written as a
+   * bare `0, Int.MAX_VALUE` pair at a dozen call sites in a file that names
+   * every other domain (`REGION_MIN`, `RATE_MIN`), so nothing tied the loader's
+   * rule to the migration's. Named once here, they can be read together.
+   */
+  private fun grossUsdOrNull(
+    record: CSVRecord,
+    column: String,
+    columnName: String,
+    coercions: MutableMap<String, Int>,
+  ): Int? = intInDomainOrNull(record, column, GROSS_USD_MIN, GROSS_USD_MAX, columnName, coercions)
+
   private fun mapInstitution(record: CSVRecord): MapResult<NewCollege> {
     val ipedsUnitId = intOrNull(record, COL_UNITID)
     val name = stringOrNull(record, COL_INSTNM)
@@ -1108,32 +1126,16 @@ class CollegeScorecardLoader(
           intInDomainOrNull(record, COL_UGDS, 0, Int.MAX_VALUE, "undergrad_enrollment_headcount", coercions),
         admissionRateShare = doubleInDomainOrNull(record, COL_ADM_RATE, RATE_MIN, RATE_MAX, "admission_rate_share", coercions),
         satAverageEquivalentScore = intInDomainOrNull(record, COL_SAT_AVG, 0, Int.MAX_VALUE, "sat_average_equivalent_score", coercions),
-        costOfAttendancePerYearUsd =
-          intInDomainOrNull(
-            record,
-            COL_COSTT4_A,
-            0,
-            Int.MAX_VALUE,
-            "cost_of_attendance_per_year_usd",
-            coercions,
-          ),
+        costOfAttendancePerYearUsd = grossUsdOrNull(record, COL_COSTT4_A, "cost_of_attendance_per_year_usd", coercions),
         netPricePerYearUsd = netPricePerYearUsd,
         netPricePerYearIncomeQ1Usd = readBandPrice(1),
         netPricePerYearIncomeQ2Usd = readBandPrice(2),
         netPricePerYearIncomeQ3Usd = readBandPrice(3),
         netPricePerYearIncomeQ4Usd = readBandPrice(4),
         netPricePerYearIncomeQ5Usd = readBandPrice(5),
-        tuitionAndFeesInStatePerYearUsd =
-          intInDomainOrNull(
-            record,
-            COL_TUITIONFEE_IN,
-            0,
-            Int.MAX_VALUE,
-            "tuition_and_fees_in_state_per_year_usd",
-            coercions,
-          ),
+        tuitionAndFeesInStatePerYearUsd = grossUsdOrNull(record, COL_TUITIONFEE_IN, "tuition_and_fees_in_state_per_year_usd", coercions),
         tuitionAndFeesOutOfStatePerYearUsd =
-          intInDomainOrNull(record, COL_TUITIONFEE_OUT, 0, Int.MAX_VALUE, "tuition_and_fees_out_of_state_per_year_usd", coercions),
+          grossUsdOrNull(record, COL_TUITIONFEE_OUT, "tuition_and_fees_out_of_state_per_year_usd", coercions),
         completionRate150pct4yrShare =
           doubleInDomainOrNull(
             record,
@@ -1143,19 +1145,24 @@ class CollegeScorecardLoader(
             "completion_rate_150pct_4yr_share",
             coercions,
           ),
-        medianEarnings10yAfterEntryUsd =
-          intInDomainOrNull(record, COL_MD_EARN_WNE_P10, 0, Int.MAX_VALUE, "median_earnings_10y_after_entry_usd", coercions),
+        medianEarnings10yAfterEntryUsd = grossUsdOrNull(record, COL_MD_EARN_WNE_P10, "median_earnings_10y_after_entry_usd", coercions),
         // median_debt_at_completion_usd is a loan amount: genuinely nonneg, so mechanism A applies
         // like the sibling money fields.
-        medianDebtAtCompletionUsd =
-          intInDomainOrNull(
-            record,
-            COL_GRAD_DEBT_MDN,
-            0,
-            Int.MAX_VALUE,
-            "median_debt_at_completion_usd",
-            coercions,
-          ),
+        medianDebtAtCompletionUsd = grossUsdOrNull(record, COL_GRAD_DEBT_MDN, "median_debt_at_completion_usd", coercions),
+        // The six published cost components (RFC 149). Gross costs, so mechanism
+        // A applies exactly as it does to tuition: an out-of-domain value is
+        // coerced to null and tallied, with the DB nonneg CHECK as the backstop.
+        // The "NA"/"PrivacySuppressed" sentinels fall out as null through
+        // intOrNull's toIntOrNull path, which is what "not reported" looks like.
+        housingAndFoodOnCampusPerYearUsd = grossUsdOrNull(record, COL_ROOMBOARD_ON, "housing_and_food_on_campus_per_year_usd", coercions),
+        housingAndFoodOffCampusPerYearUsd =
+          grossUsdOrNull(record, COL_ROOMBOARD_OFF, "housing_and_food_off_campus_per_year_usd", coercions),
+        booksAndSuppliesPerYearUsd = grossUsdOrNull(record, COL_BOOKSUPPLY, "books_and_supplies_per_year_usd", coercions),
+        otherExpensesOnCampusPerYearUsd = grossUsdOrNull(record, COL_OTHEREXPENSE_ON, "other_expenses_on_campus_per_year_usd", coercions),
+        otherExpensesOffCampusPerYearUsd =
+          grossUsdOrNull(record, COL_OTHEREXPENSE_OFF, "other_expenses_off_campus_per_year_usd", coercions),
+        otherExpensesWithFamilyPerYearUsd =
+          grossUsdOrNull(record, COL_OTHEREXPENSE_FAM, "other_expenses_with_family_per_year_usd", coercions),
         pellShare = doubleInDomainOrNull(record, COL_PCTPELL, RATE_MIN, RATE_MAX, "pell_share", coercions),
         website = stringOrNull(record, COL_INSTURL),
       )
@@ -1296,6 +1303,16 @@ class CollegeScorecardLoader(
     private const val COL_PCTPELL = "PCTPELL"
     private const val COL_INSTURL = "INSTURL"
 
+    // The six published cost components (RFC 149). Six, not seven: the
+    // Scorecard publishes no ROOMBOARD_FAM, so a student living at home has no
+    // housing-and-food allowance to read.
+    private const val COL_ROOMBOARD_ON = "ROOMBOARD_ON"
+    private const val COL_ROOMBOARD_OFF = "ROOMBOARD_OFF"
+    private const val COL_BOOKSUPPLY = "BOOKSUPPLY"
+    private const val COL_OTHEREXPENSE_ON = "OTHEREXPENSE_ON"
+    private const val COL_OTHEREXPENSE_OFF = "OTHEREXPENSE_OFF"
+    private const val COL_OTHEREXPENSE_FAM = "OTHEREXPENSE_FAM"
+
     /** Control-keyed column suffixes: public institutions read `_PUB`, all else `_PRIV`. */
     private const val SUFFIX_PUBLIC = "_PUB"
     private const val SUFFIX_PRIVATE = "_PRIV"
@@ -1337,6 +1354,12 @@ class CollegeScorecardLoader(
         COL_GRAD_DEBT_MDN,
         COL_PCTPELL,
         COL_INSTURL,
+        COL_ROOMBOARD_ON,
+        COL_ROOMBOARD_OFF,
+        COL_BOOKSUPPLY,
+        COL_OTHEREXPENSE_ON,
+        COL_OTHEREXPENSE_OFF,
+        COL_OTHEREXPENSE_FAM,
       ) + NET_PRICE_BASES.flatMap { listOf("$it$SUFFIX_PUBLIC", "$it$SUFFIX_PRIVATE") }
 
     /** Every field-of-study column [mapField] reads; derived like [REQUIRED_INSTITUTION_COLUMNS]. */
@@ -1368,6 +1391,12 @@ class CollegeScorecardLoader(
         "completion_rate_150pct_4yr_share",
         "median_earnings_10y_after_entry_usd",
         "median_debt_at_completion_usd",
+        "housing_and_food_on_campus_per_year_usd",
+        "housing_and_food_off_campus_per_year_usd",
+        "books_and_supplies_per_year_usd",
+        "other_expenses_on_campus_per_year_usd",
+        "other_expenses_off_campus_per_year_usd",
+        "other_expenses_with_family_per_year_usd",
         "pell_share",
         "website",
       )
@@ -1382,6 +1411,14 @@ class CollegeScorecardLoader(
     private const val LOCALE_MAX = 43
     private const val RATE_MIN = 0.0
     private const val RATE_MAX = 1.0
+
+    // A gross published cost cannot be negative -- the loader-side twin of
+    // `db/schema/0062`'s `*_nonneg_check` constraints (and of the same rule on
+    // the older money columns). The upper end is the column's own INTEGER
+    // width, not a business bound: the Scorecard publishes no cap and inventing
+    // one here would silently drop a real, if startling, figure.
+    private const val GROSS_USD_MIN = 0
+    private const val GROSS_USD_MAX = Int.MAX_VALUE
     private const val CREDENTIAL_LEVEL_MIN = 1
     private const val CREDENTIAL_LEVEL_MAX = 8
   }

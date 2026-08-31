@@ -8,6 +8,7 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.putIncomeBand
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -72,41 +73,174 @@ class CollegeCostChatTool(
         }
       }
       put("money_profile", moneyProfileObject(profile.moneyProfile))
-      put("source", sourceAttribution(profile.ingestYear))
+      put("source", SOURCE_ATTRIBUTION)
     }
 
   private fun collegeObject(
     profile: CollegeCostProfile,
     cost: CollegeCost,
-  ): JsonObject =
-    buildJsonObject {
+  ): JsonObject {
+    // The vintage labels are derived from what this object ACTUALLY carries,
+    // recorded as each figure is put. One decision per key, made once: a second
+    // list restating the same emit conditions is how a figure comes to be
+    // labelled with a year no key beside it describes, or to lose its label
+    // entirely -- and nothing would fail for it.
+    val emitted = mutableSetOf<CostField>()
+
+    fun JsonObjectBuilder.putFigure(
+      field: CostField,
+      amountUsd: Int?,
+    ) {
+      amountUsd?.let {
+        put(field.wireName, it)
+        emitted += field
+      }
+    }
+
+    return buildJsonObject {
       put("college_id", cost.collegeId.value.toString())
       put("name", cost.name)
       put("city", cost.city)
       put("state", cost.state)
       put("control", cost.control.label)
       put("list_status", cost.listStatus.value)
-      cost.stickerCostOfAttendancePerYearUsd?.let { put(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName, it) }
-      cost.tuitionAndFeesInStatePerYearUsd?.let { put(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD.wireName, it) }
-      cost.tuitionAndFeesOutOfStatePerYearUsd?.let { put(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD.wireName, it) }
+      putFigure(CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD, cost.stickerCostOfAttendancePerYearUsd)
+      putFigure(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, cost.tuitionAndFeesInStatePerYearUsd)
+      putFigure(CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD, cost.tuitionAndFeesOutOfStatePerYearUsd)
       // Present only on the public case; the model makes the distinction
       // uncarryable by a private college, so it cannot be misread onto one.
       (cost.control as? CollegeControl.Public)?.let { put("tuition_applicable", it.tuitionApplicable.value) }
+      // The one figure that is not a bare scalar: it keys an object, so it is
+      // recorded beside its own emit rather than through putFigure.
       put(CostField.NET_PRICE.wireName, netPriceObject(cost.netPrice))
+      if (cost.netPrice.amount != null) emitted += CostField.NET_PRICE
       // Emitted only when there is something to offer: an absent key, never an
       // empty array, so its mere presence stays meaningful to the model.
       val offers = profile.precisionOffersFor(cost)
       if (offers.isNotEmpty()) {
         putJsonArray(PRECISION_OFFER_KEY) { offers.forEach { add(precisionOfferObject(it)) } }
       }
-      cost.medianDebtAtCompletionUsd?.let { put(CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName, it) }
-      cost.medianEarnings10yAfterEntryUsd?.let { put(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName, it) }
+      putFigure(CostField.MEDIAN_DEBT_AT_COMPLETION_USD, cost.medianDebtAtCompletionUsd)
+      putFigure(CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD, cost.medianEarnings10yAfterEntryUsd)
+      // The published price split by living arrangement (RFC 149). Absent, not
+      // empty, when this school reports no component at all. Its lines are
+      // recorded here, at the one place they are rendered.
+      cost.breakdown?.let { putBreakdown(it, emitted) }
+      putOffersOnCampusHousing(cost)
+      // LAST of the figure-bearing keys, and it must stay there: it reads the
+      // [emitted] set the puts above filled in, so a figure emitted BELOW this
+      // line would ride with no academic year beside it and nothing -- no type,
+      // no test -- would fail for it. The keys after it emit no CostField, which
+      // is the only reason they may sit where they do.
+      putVintageLabels(emitted)
       // Purely additive (RFC 148 D7): present only when the school reports it,
       // and carrying its OWN citation, because merit aid is not a Scorecard
       // fact and must never fold into the payload's Scorecard `source` string.
       cost.meritAid?.let { put(MeritAidWire.KEY, MeritAidWire.objectOf(it)) }
       putJsonArray("data_availability") {
         cost.notReported.forEach { add(JsonPrimitive(it.wireName)) }
+      }
+    }
+  }
+
+  /**
+   * The per-arrangement split, RECORDING the fields it renders in [emitted] so
+   * the vintage labels below follow exactly what this object carries.
+   */
+  private fun JsonObjectBuilder.putBreakdown(
+    breakdown: CostBreakdown,
+    emitted: MutableSet<CostField>,
+  ) {
+    put(BREAKDOWN_KEY, breakdownObject(breakdown))
+    breakdown.arrangements.forEach { arrangement -> arrangement.lines.forEach { emitted += it.field } }
+  }
+
+  /**
+   * The no-dorms answer (RFC 149 D-B), emitted whenever IPEDS ANSWERED -- true
+   * as well as false.
+   *
+   * `false` is "this school has no residence halls"; `true` is the reported
+   * fact that an absent `on_campus` arrangement is this school's silence about
+   * its components rather than its having no dorms. A rendered arrangement is
+   * NOT a surrogate for the flag: a school with dorms that publishes no
+   * on-campus figure carries no arrangement, so the two are different facts and
+   * collapsing them left the model unable to tell a known fact from a gap.
+   *
+   * Only an unknown flag is absent -- no IPEDS row is not evidence either way.
+   * The key rides even when the school publishes on-campus figures in spite of
+   * a `false` flag (D-B): both facts are true and the coach is owed both.
+   *
+   * Exhaustive on the nullable, so a future fourth state cannot fall through
+   * this branch silently.
+   */
+  private fun JsonObjectBuilder.putOffersOnCampusHousing(cost: CollegeCost) {
+    when (cost.offersOnCampusHousing) {
+      true -> put(OFFERS_ON_CAMPUS_HOUSING_KEY, true)
+      false -> put(OFFERS_ON_CAMPUS_HOUSING_KEY, false)
+      null -> Unit
+    }
+  }
+
+  /**
+   * One object per vintage this college actually carries a figure of (RFC 149
+   * D-E): the academic year, and the wire names that year dates.
+   *
+   * The year NAMES ITS FIGURES rather than sitting beside the college as a bare
+   * label. Membership -- "the components are the published price, the sticker
+   * and the net price are the blend" -- otherwise lived only in
+   * `CostField.vintage` and in prose, so a reader that did not carry the
+   * convention could attach either year to any figure, and the prompt's
+   * instruction to quote the year beside a figure had no year beside any
+   * figure.
+   *
+   * Both the key and its [DATED_FIGURES_KEY] list are read off the SAME
+   * recorded [emitted] set, so the label can never date a figure this payload
+   * did not render. A field whose vintage is null appears under no key and is
+   * therefore said with no year at all.
+   *
+   * MUST be called AFTER every figure this object emits. [emitted] is complete
+   * only because each `put*` above it recorded into it; a figure put after this
+   * call is a figure said with no academic year, and neither the types nor a
+   * test would notice.
+   */
+  private fun JsonObjectBuilder.putVintageLabels(emitted: Set<CostField>) {
+    ScorecardVintage.entries.forEach { vintage ->
+      val dated = emitted.filter { it.vintage == vintage }
+      if (dated.isNotEmpty()) {
+        putJsonObject(vintage.wireName) {
+          put(ACADEMIC_YEAR_KEY, vintage.label)
+          // Enum declaration order, not the order they happened to be emitted
+          // in: the list is a fact about the payload, so it must not depend on
+          // set iteration.
+          putJsonArray(DATED_FIGURES_KEY) {
+            CostField.entries.filter { it in dated }.forEach { add(JsonPrimitive(it.wireName)) }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * The `cost_by_living_arrangement` object: one entry per arrangement this
+   * school can be priced for, keyed by the arrangement's wire name.
+   *
+   * The component keys inside are [CostField] wire names -- identical to the
+   * column names -- so the JSON, `data_availability` and the schema all speak
+   * one vocabulary. They look redundant nested inside an arrangement object on
+   * purpose: the alternative is a second set of arrangement-local names that
+   * nothing else shares, and a `data_availability` entry no key in the payload
+   * matches.
+   */
+  private fun breakdownObject(breakdown: CostBreakdown): JsonObject =
+    buildJsonObject {
+      breakdown.arrangements.forEach { arrangement ->
+        putJsonObject(arrangement.arrangement.wireName) {
+          arrangement.lines.forEach { put(it.field.wireName, it.amountUsd) }
+          // Absent whenever any part is missing (RFC 149 D-C): a partial sum is
+          // not a total, and neither is a sum that guessed at the student's
+          // residency.
+          arrangement.totalPerYearUsd?.let { put(TOTAL_KEY, it) }
+        }
       }
     }
 
@@ -169,9 +303,34 @@ class CollegeCostChatTool(
 
     const val TOOL_NAME = "college_cost_profile"
 
-    /** The attribution the coach must quote when using these numbers. */
-    fun sourceAttribution(ingestYear: Int?): String =
-      "U.S. Department of Education College Scorecard" + (ingestYear?.let { " (data ingested $it)" } ?: "")
+    /**
+     * The attribution the coach must quote when using these numbers.
+     *
+     * It names the source and nothing else (RFC 149 D-E). It used to append
+     * "(data ingested 2026)", which was `colleges.updated_at` -- WHEN WE LOADED
+     * THE FILE, not the year of the figures -- and the coach read it aloud as a
+     * vintage. The real vintage now rides per college, beside the figures it
+     * governs, as a [ScorecardVintage] academic-year label.
+     */
+    const val SOURCE_ATTRIBUTION = "U.S. Department of Education College Scorecard"
+
+    /** The wire key carrying the per-arrangement price split (RFC 149). */
+    const val BREAKDOWN_KEY = "cost_by_living_arrangement"
+
+    /** The IPEDS housing answer's own key -- emitted whenever the flag is known, true or false (RFC 149 D-B). */
+    const val OFFERS_ON_CAMPUS_HOUSING_KEY = "offers_on_campus_housing"
+
+    /** The academic year one vintage names -- a label ("2022-23"), never a bare year. */
+    const val ACADEMIC_YEAR_KEY = "academic_year"
+
+    /** The wire names one vintage dates, so no reader infers membership from a naming convention. */
+    const val DATED_FIGURES_KEY = "figures"
+
+    /**
+     * One arrangement's total. Unsuffixed by measure but not by unit: it is a
+     * scalar, so it says its own unit, exactly like every other dollar key here.
+     */
+    const val TOTAL_KEY = "total_per_year_usd"
 
     /** The wire key carrying the upgrade invitations — one home for the emit site and the description. */
     const val PRECISION_OFFER_KEY = "precision_offer"
@@ -237,6 +396,36 @@ class CollegeCostChatTool(
         "at that school - never a share of the students with no financial need, which no school reports - and " +
         "${MeritAidWire.AVERAGE_KEY} is what last year's recipients averaged, not an offer to this student, so " +
         "never subtract it from any price here. Its absence means only that this school does not report it. " +
+        "A college result may also carry $BREAKDOWN_KEY, the published price split into the parts a family can " +
+        "actually influence, keyed by where the student would live: " +
+        "${LivingArrangement.ON_CAMPUS.wireName}, ${LivingArrangement.OFF_CAMPUS.wireName}, " +
+        "${LivingArrangement.WITH_FAMILY.wireName}. Each " +
+        "arrangement carries the tuition and fees line that applies to this student and the school's published " +
+        "allowances for that way of living, and $TOTAL_KEY only when every part of it is reported - when there is " +
+        "no $TOTAL_KEY, say the parts and say a part is missing, never add up what is there and call it the total. " +
+        "${LivingArrangement.WITH_FAMILY.wireName} carries no housing and food line because no school publishes " +
+        "one for a student living at home; " +
+        "that is missing data about the arrangement, never a housing cost of zero. " +
+        "${CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName} is a separate figure - an average blended " +
+        "across all three arrangements and from an earlier year - so never compare it with an arrangement total and " +
+        "never present one as the other. Aid applies to the whole price and not to any one part of it, so never " +
+        "subtract ${CostField.NET_PRICE.wireName} from tuition or from any of these components, or one from the " +
+        "other. When a college carries \"$OFFERS_ON_CAMPUS_HOUSING_KEY\": false, IPEDS reports that school has no " +
+        "residence halls: say so, and do not treat the absent ${LivingArrangement.ON_CAMPUS.wireName} arrangement as " +
+        "unreported data. If that college nevertheless carries an ${LivingArrangement.ON_CAMPUS.wireName} " +
+        "arrangement, the school published those figures itself and the two sources disagree: quote the published " +
+        "figures and say the school reports no on-campus housing, never one fact without the other. " +
+        "\"$OFFERS_ON_CAMPUS_HOUSING_KEY\": true means IPEDS reports the school does have on-campus housing, so a " +
+        "missing ${LivingArrangement.ON_CAMPUS.wireName} arrangement there is unreported cost data rather than the " +
+        "absence of dorms. When the key is absent altogether IPEDS does not say either way - never read a present or " +
+        "missing ${LivingArrangement.ON_CAMPUS.wireName} arrangement as the answer. " +
+        "${ScorecardVintage.PUBLISHED_PRICE.wireName} and ${ScorecardVintage.BLENDED_AVERAGE.wireName} each carry an " +
+        "$ACADEMIC_YEAR_KEY (e.g. \"${ScorecardVintage.PUBLISHED_PRICE.label}\") and the $DATED_FIGURES_KEY it dates: " +
+        "quote a number with the year of the key that lists it, never with the other one, and never add figures from " +
+        "the two different years together. A figure named by neither key has no academic year - " +
+        "${CostField.MEDIAN_DEBT_AT_COMPLETION_USD.wireName} and " +
+        "${CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD.wireName} describe cohorts rather than one price year - " +
+        "so say those numbers without a year rather than borrowing one from another figure. " +
         "Read-only: this tool changes nothing."
   }
 }

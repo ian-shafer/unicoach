@@ -72,6 +72,12 @@ class CollegeIpedsDaoTest {
       .upsert(
         session,
         NewCollege(
+          housingAndFoodOnCampusPerYearUsd = null,
+          housingAndFoodOffCampusPerYearUsd = null,
+          booksAndSuppliesPerYearUsd = null,
+          otherExpensesOnCampusPerYearUsd = null,
+          otherExpensesOffCampusPerYearUsd = null,
+          otherExpensesWithFamilyPerYearUsd = null,
           ipedsUnitId = ipedsUnitId,
           opeid = null,
           name = "Test U $ipedsUnitId",
@@ -358,6 +364,29 @@ class CollegeIpedsDaoTest {
     val second = seedCollege(166027)
     val byIpedsUnitId = CollegeIpedsDao.collegeIdsByIpedsUnitId(session).getOrThrow()
     assertEquals(mapOf(186131 to first, 166027 to second), byIpedsUnitId)
+  }
+
+  @Test
+  fun `housingFlagsByIpedsUnitId keeps the three IPEDS states apart`() {
+    // RFC 149 D-B. The read used to filter `offers_housing IS NOT NULL` in SQL,
+    // which welded "no `college_ipeds` row" and "a row that does not report the
+    // flag" into one absence -- in the query, so no caller could ever tell them
+    // apart, though the second is a fact about our own ingest.
+    CollegeIpedsDao.upsert(session, ipeds(186131, offersHousing = true)).getOrThrow()
+    CollegeIpedsDao.upsert(session, ipeds(166027, offersHousing = false)).getOrThrow()
+    CollegeIpedsDao.upsert(session, ipeds(100690, offersHousing = null)).getOrThrow()
+
+    val byUnitId = CollegeIpedsDao.housingFlagsByIpedsUnitId(session, listOf(186131, 166027, 100690, 999999)).getOrThrow()
+    assertEquals(true, byUnitId[186131], "IPEDS says this school has residence halls")
+    assertEquals(false, byUnitId[166027], "and this one says it has none")
+    assertTrue(100690 in byUnitId, "a row that does not report the flag is a row we HAVE")
+    assertNull(byUnitId[100690], "and its answer is null, never a getBoolean false")
+    assertTrue(999999 !in byUnitId, "a school with no IPEDS row at all is an absent key")
+  }
+
+  @Test
+  fun `housingFlagsByIpedsUnitId asks nothing of an empty id list`() {
+    assertEquals(emptyMap(), CollegeIpedsDao.housingFlagsByIpedsUnitId(session, emptyList()).getOrThrow())
   }
 
   @Test
