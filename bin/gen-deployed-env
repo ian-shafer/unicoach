@@ -70,7 +70,13 @@ DEPLOY_VAR_NAMES=(
   ADMIN_COOKIE_SECURE
   APP_DOMAIN
   EMAIL_DEFAULT_FROM
-  EMAIL_VERIFICATION_VERIFY_URL_BASE
+  # The ONE public-web origin (RFC 155 D-J). service.conf derives every
+  # public-web link from it, so a new public page adds no key here. The per-link
+  # escape hatches EMAIL_VERIFICATION_VERIFY_URL_BASE and
+  # COST_REPORT_SHARE_URL_BASE are still read by the JVM and still win when set;
+  # they are deliberately NOT in this REQUIRED set, so an env that wants one on
+  # the deploy path adds it here and to its .env.<env> together.
+  PUBLIC_WEB_URL_BASE
   EMAIL_PROVIDER
   CHAT_PROVIDER
   GOOGLE_AUTH_PROVIDER

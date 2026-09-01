@@ -244,6 +244,7 @@ class AppleNotificationRoutingTest {
             appStoreServerApi,
             subscriptionPlans,
             notificationVerifier,
+            costReportConfigFrom(config),
           )
         }
       server.start(wait = false)

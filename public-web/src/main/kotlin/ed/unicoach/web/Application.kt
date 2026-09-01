@@ -2,11 +2,14 @@ package ed.unicoach.web
 
 import ed.unicoach.auth.DbEmailVerifier
 import ed.unicoach.auth.EmailVerifier
+import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.web.common.logging.RequestLoggingConfig
 import ed.unicoach.web.common.logging.configureRequestLogging
+import ed.unicoach.web.report.CostReportSource
+import ed.unicoach.web.report.ServiceCostReportSource
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.engine.EmbeddedServer
@@ -21,7 +24,10 @@ import io.ktor.server.netty.Netty
  *
  * It reuses the shared `db.conf` `database` block (the same block `rest-server`
  * and `admin-web` load) to build a [Database], wraps it in a [DbEmailVerifier]
- * for the in-process verify flow, and closes the `Database` on server stop via
+ * for the in-process verify flow and a [ServiceCostReportSource] over
+ * [CollegeCostService] for the tokenized Family Cost Report (RFC 155) — both
+ * in-process rather than one service hopping to the other over HTTP — and
+ * closes the `Database` on server stop via
  * the `ApplicationStopped` hook in the module lambda — matching the
  * `rest-server` / `admin-web` precedent.
  */
@@ -43,11 +49,12 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val database = Database(DatabaseConfig.from(config).getOrThrow())
   val emailVerifier: EmailVerifier = DbEmailVerifier(database)
+  val costReportSource: CostReportSource = ServiceCostReportSource(database, CollegeCostService(database))
 
   val server =
     embeddedServer(Netty, port = publicWebConfig.port, host = publicWebConfig.host) {
       environment.monitor.subscribe(ApplicationStopped) { database.close() }
-      publicWebModule(emailVerifier, publicWebConfig.openInAppUrl, requestLoggingConfig)
+      publicWebModule(emailVerifier, costReportSource, publicWebConfig.openInAppUrl, requestLoggingConfig)
     }
 
   server.start(wait = false)
@@ -67,10 +74,11 @@ fun main() {
 
 fun Application.publicWebModule(
   emailVerifier: EmailVerifier,
+  costReportSource: CostReportSource,
   openInAppUrl: String?,
   requestLoggingConfig: RequestLoggingConfig,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
-  installPublicWebRouting(emailVerifier, openInAppUrl)
+  installPublicWebRouting(emailVerifier, costReportSource, openInAppUrl)
 }

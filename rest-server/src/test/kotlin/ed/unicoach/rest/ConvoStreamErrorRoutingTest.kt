@@ -118,6 +118,7 @@ class ConvoStreamErrorRoutingTest {
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
             testAppleNotificationVerifier(),
+            costReportConfigFrom(config),
           )
         }
       testServer.start(wait = false)

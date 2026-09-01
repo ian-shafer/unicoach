@@ -122,6 +122,7 @@ class EmailSendE2eTest {
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
             testAppleNotificationVerifier(),
+            costReportConfigFrom(config),
           )
         }
 

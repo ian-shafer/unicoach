@@ -7,6 +7,8 @@ import ed.unicoach.coaching.costs.CollegeCostChatTool
 import ed.unicoach.coaching.costs.PrecisionOffer
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.fitlens.FitLensConfig
+import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
+import ed.unicoach.coaching.report.ShareCostReportChatTool
 import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.college.FindCollegeTool
@@ -75,6 +77,19 @@ class SystemPromptCatalogTest {
      * pairing under test is SEEDED COPY versus SHIPPING TOOL.
      */
     private val SIMILAR_TOOL_NAME = SimilarCollegesTool.TOOL_NAME
+
+    /**
+     * The two Family Cost Report tools the v15 paragraph names (RFC 155), read
+     * from the tool classes themselves on the same precedent as
+     * [ADMISSIONS_TOOL_NAME]: the pairing under test is SEEDED COPY versus
+     * SHIPPING TOOL, and a literal here would keep passing after a rename,
+     * leaving the seeded prompt telling the model to call a tool that no longer
+     * exists.
+     */
+    private val SHARE_REPORT_TOOL_NAME = ShareCostReportChatTool.TOOL_NAME
+
+    /** See [SHARE_REPORT_TOOL_NAME]: the revoke half of the same pair. */
+    private val REVOKE_SHARE_TOOL_NAME = RevokeCostReportShareChatTool.TOOL_NAME
 
     /** The first words of the codebook sentence v3 deletes (RFC 147). */
     private const val CODEBOOK_SENTENCE_OPENER = "The coded fields use these codebooks:"
@@ -793,35 +808,160 @@ class SystemPromptCatalogTest {
   }
 
   /**
-   * The v14 living-plan paragraph: everything v14 appends to the v13 body.
-   * Guarded exactly as [comparisonParagraph] is — `removePrefix` is a silent
-   * no-op when the affix does not match, so the prefix is asserted before it is
-   * removed, and an empty remainder would let every `contains` pass vacuously.
+   * The 0074 seed's structural contract (RFC 155). v15 is ADDITIVE like every
+   * coach seed since 0047: the whole v14 body byte-identical as a prefix,
+   * joined by a single space to exactly one appended paragraph — the Family
+   * Cost Report instruction. The paragraph's markers are asserted, not its full
+   * copy: the seed migration is the single home of the approved wording.
    */
-  private fun livingPlanParagraph(): String {
-    val v13 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v13").getOrThrow().body
-    val v14 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v14").getOrThrow().body
-    assertTrue(v14.startsWith(v13), "the v13 prefix must be byte-identical, so the new paragraph is the only change")
-    val appended = v14.removePrefix(v13)
-    assertTrue(appended.isNotEmpty(), "v14 must actually append something; an empty remainder means it equals v13")
-    return appended
+  @Test
+  fun `coach v15 is v14 plus one appended cost-report paragraph`() {
+    val appended = costReportParagraph()
+
+    assertTrue(
+      appended.startsWith(" When the student and you have actually compared"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(appended.contains(SHARE_REPORT_TOOL_NAME), "the paragraph must name the share tool")
+    assertTrue(appended.contains(REVOKE_SHARE_TOOL_NAME), "the paragraph must name the revoke tool")
+    assertTrue(
+      appended.contains("Offer it only after the comparison has happened"),
+      "value before ask (brief 0001 D12): the offer follows a real cost comparison, it never opens one",
+    )
+    assertTrue(
+      appended.contains("unless the student asks for it or accepts the offer"),
+      "the link is never minted or sent without the student's say-so",
+    )
+    assertTrue(
+      appended.contains("anyone who has it can see"),
+      "handing over the link must always carry what the link actually is",
+    )
+    assertTrue(appended.contains("needs no login"), "the parent opens it with no account; the coach says so")
+    assertTrue(appended.contains("can revoke"), "revocation is the control, and the student is told they hold it")
+    assertTrue(
+      appended.contains("every link they have shared is now dead"),
+      "RFC 155 D-B: revoke is a promise about every link ever sent, not the latest one",
+    )
+    assertTrue(
+      appended.contains("let it change nothing about what you do next"),
+      "a declined offer changes nothing: the nudge belongs to first-value/06, not here",
+    )
+    assertTrue(
+      appended.contains("the report is live") && appended.contains("it updates as the student updates their list"),
+      "the page is not a document: a parent must not read last week's list as this week's answer",
+    )
+    assertTrue(
+      appended.contains("you get the same one back"),
+      "asking again returns the SAME link, so a link a parent already saved keeps working (RFC 155 D-B)",
+    )
+    // RFCs 141/142 money language, carried into the new paragraph.
+    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
+    assertTrue(appended.contains("published price"), "the published price, stated positively")
+    assertTrue(appended.contains("financial aid offer"), "a financial aid offer, stated positively")
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertFalse(appended.contains("without need"), "the banned denominator: no source reports a count of students without need")
+    // The served-body guard elsewhere sweeps the WHOLE prompt; this says the
+    // rule holds inside the span v15 actually adds, so a relaxation here is
+    // reported as v15's own rather than as the catalog's.
+    assertEquals(
+      emptyList(),
+      Regex("""(.{0,6})subtract""")
+        .findAll(appended)
+        .map { it.groupValues[1] }
+        .toList()
+        .filterNot { it == "never " },
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
   }
 
   /**
-   * The v11 comparison paragraph: everything v11 appends to the v10 body.
-   * Guarded exactly as [livingArrangementParagraph] is — `removePrefix` is a
-   * silent no-op when the affix does not match, so the prefix is asserted before
-   * it is removed, and an empty remainder would let every `contains` pass
-   * vacuously.
+   * RFC 142's source-jargon sentence, RFC 141's money paragraph, RFC 151's
+   * comparison paragraph, RFC 154's name-lookup paragraph, RFC 153's
+   * similar-colleges paragraph and RFC 152's living-plan paragraph must all
+   * survive RFC 155's append. They do so by construction — v15 keeps the whole
+   * v14 body as a prefix — but they are the copy every prior version has
+   * already had to preserve, so they are asserted rather than assumed. All six
+   * are extracted at runtime, never retyped here.
    */
-  private fun comparisonParagraph(): String {
-    val v10 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v10").getOrThrow().body
-    val v11 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v11").getOrThrow().body
-    assertTrue(v11.startsWith(v10), "the v10 prefix must be byte-identical, so the new paragraph is the only change")
-    val appended = v11.removePrefix(v10)
-    assertTrue(appended.isNotEmpty(), "v11 must actually append something; an empty remainder means it equals v10")
+  @Test
+  fun `coach v15 preserves the source-jargon, money, comparison, name-lookup, similar-colleges and living-plan copy verbatim`() {
+    val sentence = sourceJargonSentence()
+    val v15 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v15").getOrThrow().body
+
+    assertTrue(
+      v15.contains(sentence),
+      "v15 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
+    )
+    assertTrue(v15.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+    assertTrue(v15.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
+    assertTrue(v15.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
+    assertTrue(
+      v15.contains(similarCollegesParagraph()),
+      "v13's similar-colleges paragraph must survive the append byte-for-byte",
+    )
+    assertTrue(v15.contains(livingPlanParagraph()), "v14's living-plan paragraph must survive the append byte-for-byte")
+  }
+
+  /**
+   * The rollback RFC 155 documents is one env var
+   * (`COACHING_SYSTEM_PROMPT_VERSION=v14`), which is only real if the v14 row is
+   * still in the insert-only catalog and still carries the copy it was approved
+   * with. Asserted here rather than assumed, because a rollback nobody checks
+   * is discovered to be broken at the worst moment.
+   */
+  @Test
+  fun `coach v14 stays selectable so the v15 rollback is real`() {
+    val v14 =
+      SystemPromptsDao
+        .findByNameAndVersion(session, "coach", "v14")
+        .getOrElse { fail("the v14 row must remain selectable, or COACHING_SYSTEM_PROMPT_VERSION=v14 is not a rollback") }
+    val v15 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v15").getOrThrow().body
+
+    assertTrue(v14.body.isNotEmpty(), "the v14 body must be the copy it was seeded with, not an empty row")
+    assertTrue(v14.body != v15, "v14 and v15 must be different bodies, or the pin bought nothing")
+    assertTrue(v14.body.contains(sourceJargonSentence()), "v14 must still carry v6's source-jargon sentence byte-for-byte")
+    assertTrue(v14.body.contains(v7MoneyParagraph()), "v14 must still carry v7's money paragraph byte-for-byte")
+    assertFalse(v14.body.contains(SHARE_REPORT_TOOL_NAME), "the rollback target must not already name the v15 share tool")
+  }
+
+  /**
+   * Everything [revised] appends to the [base] coach body — the ONE extractor
+   * behind every "vN is vN-1 plus one paragraph" test in this class.
+   *
+   * The two guards are the whole point and are why this is a function rather
+   * than a `removePrefix` at each site. `removePrefix` is a SILENT NO-OP when
+   * the affix does not match, so a seed that changed the body instead of
+   * appending to it would hand every caller the WHOLE revised prompt and let
+   * each of their `contains` assertions pass vacuously. The prefix is therefore
+   * asserted before it is removed, and an empty remainder — a revision that
+   * appended nothing — is refused too. Seven hand-written copies of that pair
+   * is seven chances to drop one.
+   */
+  private fun appendedParagraph(
+    base: String,
+    revised: String,
+  ): String {
+    val baseBody = SystemPromptsDao.findByNameAndVersion(session, "coach", base).getOrThrow().body
+    val revisedBody = SystemPromptsDao.findByNameAndVersion(session, "coach", revised).getOrThrow().body
+    assertTrue(revisedBody.startsWith(baseBody), "the [$base] prefix must be byte-identical, so the new paragraph is the only change")
+    val appended = revisedBody.removePrefix(baseBody)
+    assertTrue(appended.isNotEmpty(), "[$revised] must actually append something; an empty remainder means it equals [$base]")
     return appended
   }
+
+  /** The v15 cost-report paragraph: everything v15 appends to the v14 body. The guards are [appendedParagraph]'s. */
+  private fun costReportParagraph(): String = appendedParagraph(base = "v14", revised = "v15")
+
+  /** The v14 living-plan paragraph: everything v14 appends to the v13 body. The guards are [appendedParagraph]'s. */
+  private fun livingPlanParagraph(): String = appendedParagraph(base = "v13", revised = "v14")
+
+  /** The v11 comparison paragraph: everything v11 appends to the v10 body. The guards are [appendedParagraph]'s. */
+  private fun comparisonParagraph(): String = appendedParagraph(base = "v10", revised = "v11")
 
   /**
    * The 0068 seed's structural contract (RFC 154). v12 is ADDITIVE like every
@@ -914,20 +1054,8 @@ class SystemPromptCatalogTest {
     assertTrue(v12.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
   }
 
-  /**
-   * The v12 name-lookup paragraph: everything v12 appends to the v11 body.
-   * Guarded exactly as [comparisonParagraph] is — `removePrefix` is a silent
-   * no-op when the affix does not match, so the prefix is asserted before it is
-   * removed, and an empty remainder would let every `contains` pass vacuously.
-   */
-  private fun nameLookupParagraph(): String {
-    val v11 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v11").getOrThrow().body
-    val v12 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v12").getOrThrow().body
-    assertTrue(v12.startsWith(v11), "the v11 prefix must be byte-identical, so the new paragraph is the only change")
-    val appended = v12.removePrefix(v11)
-    assertTrue(appended.isNotEmpty(), "v12 must actually append something; an empty remainder means it equals v11")
-    return appended
-  }
+  /** The v12 name-lookup paragraph: everything v12 appends to the v11 body. The guards are [appendedParagraph]'s. */
+  private fun nameLookupParagraph(): String = appendedParagraph(base = "v11", revised = "v12")
 
   /**
    * The 0069 seed's structural contract (RFC 153). v13 is ADDITIVE like every
@@ -1024,35 +1152,11 @@ class SystemPromptCatalogTest {
     assertTrue(v13.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
   }
 
-  /**
-   * The v13 similar-colleges paragraph: everything v13 appends to the v12 body.
-   * Guarded exactly as [nameLookupParagraph] is — `removePrefix` is a silent
-   * no-op when the affix does not match, so the prefix is asserted before it is
-   * removed, and an empty remainder would let every `contains` pass vacuously.
-   */
-  private fun similarCollegesParagraph(): String {
-    val v12 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v12").getOrThrow().body
-    val v13 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v13").getOrThrow().body
-    assertTrue(v13.startsWith(v12), "the v12 prefix must be byte-identical, so the new paragraph is the only change")
-    val appended = v13.removePrefix(v12)
-    assertTrue(appended.isNotEmpty(), "v13 must actually append something; an empty remainder means it equals v12")
-    return appended
-  }
+  /** The v13 similar-colleges paragraph: everything v13 appends to the v12 body. The guards are [appendedParagraph]'s. */
+  private fun similarCollegesParagraph(): String = appendedParagraph(base = "v12", revised = "v13")
 
-  /**
-   * The v9 living-arrangement paragraph: everything v9 appends to the v8 body.
-   * Guarded exactly as [admissionsParagraph] is -- `removePrefix` is a silent
-   * no-op when the affix does not match, so the prefix is asserted before it is
-   * removed, and an empty remainder would let every `contains` pass vacuously.
-   */
-  private fun livingArrangementParagraph(): String {
-    val v8 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v8").getOrThrow().body
-    val v9 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v9").getOrThrow().body
-    assertTrue(v9.startsWith(v8), "the v8 prefix must be byte-identical, so the new paragraph is the only change")
-    val appended = v9.removePrefix(v8)
-    assertTrue(appended.isNotEmpty(), "v9 must actually append something; an empty remainder means it equals v8")
-    return appended
-  }
+  /** The v9 living-arrangement paragraph: everything v9 appends to the v8 body. The guards are [appendedParagraph]'s. */
+  private fun livingArrangementParagraph(): String = appendedParagraph(base = "v8", revised = "v9")
 
   /**
    * The 0065 seed's structural contract (RFC 150 D58): v10 is the v9 body
@@ -1086,15 +1190,8 @@ class SystemPromptCatalogTest {
     assertTrue(v10.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
   }
 
-  /** See [livingArrangementParagraph]: everything v10 appends to the v9 body. */
-  private fun searchParagraph(): String {
-    val v9 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v9").getOrThrow().body
-    val v10 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v10").getOrThrow().body
-    assertTrue(v10.startsWith(v9), "the v9 prefix must be byte-identical, so the new paragraph is the only change")
-    val appended = v10.removePrefix(v9)
-    assertTrue(appended.isNotEmpty(), "v10 must actually append something; an empty remainder means it equals v9")
-    return appended
-  }
+  /** The v10 search paragraph: everything v10 appends to the v9 body. The guards are [appendedParagraph]'s. */
+  private fun searchParagraph(): String = appendedParagraph(base = "v9", revised = "v10")
 
   /**
    * The 0061 seed's structural contract (RFC 147). Unlike every coach seed
@@ -1175,20 +1272,8 @@ class SystemPromptCatalogTest {
     assertEquals(emptyList(), offenders, "a seeded prompt is transcribing a codebook again")
   }
 
-  /**
-   * The v8 admissions paragraph: everything v8 appends to the v7 body. Guarded
-   * the way [revisedMiddle] is — `removePrefix` is a silent no-op when the
-   * affix does not match, so the prefix is asserted before it is removed, and
-   * an empty remainder would let every `contains` below pass vacuously.
-   */
-  private fun admissionsParagraph(): String {
-    val v7 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v7").getOrThrow().body
-    val v8 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v8").getOrThrow().body
-    assertTrue(v8.startsWith(v7), "the v7 prefix must be byte-identical, so the admissions paragraph is the only change")
-    val appended = v8.removePrefix(v7)
-    assertTrue(appended.isNotEmpty(), "v8 must actually append something; an empty remainder means it equals v7")
-    return appended
-  }
+  /** The v8 admissions paragraph: everything v8 appends to the v7 body. The guards are [appendedParagraph]'s. */
+  private fun admissionsParagraph(): String = appendedParagraph(base = "v7", revised = "v8")
 
   /**
    * The v7 money paragraph: the paragraph v7 puts where v6's money paragraph

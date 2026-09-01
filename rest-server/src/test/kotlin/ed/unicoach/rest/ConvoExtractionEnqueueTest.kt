@@ -160,6 +160,7 @@ class ConvoExtractionEnqueueTest {
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
             testAppleNotificationVerifier(),
+            costReportConfigFrom(config),
           )
         }
       enabledServer.start(wait = false)
@@ -191,6 +192,7 @@ class ConvoExtractionEnqueueTest {
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
             testAppleNotificationVerifier(),
+            costReportConfigFrom(config),
           )
         }
       disabledServer.start(wait = false)

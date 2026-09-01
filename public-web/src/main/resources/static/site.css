@@ -81,3 +81,146 @@ a {
   color: var(--muted);
   margin: 0 0.5rem;
 }
+
+/* RFC 155 — the Family Cost Report. Wide screens get a real table; below the
+   phone breakpoint every row stacks into a card per school, because the parent
+   reading a link pasted into a message is on a phone and a five-column table
+   there is unreadable. The stacked layout re-labels each value with the way of
+   living it came from (the `data-label` the page writes), so a figure is never
+   read under the wrong column. */
+
+.report h1 {
+  margin-bottom: 0.25rem;
+}
+
+.report-live {
+  color: var(--muted);
+  margin-top: 0;
+}
+
+.report-basis ul,
+.report-single-basis ul {
+  padding-left: 1.1rem;
+}
+
+.report-basis li,
+.report-single-basis li {
+  margin-bottom: 0.5rem;
+}
+
+.report-school {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  margin-top: 2rem;
+}
+
+.report-school-where,
+.report-school-residency,
+.report-hint,
+.report-source {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+.report-table th,
+.report-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.report-table thead th {
+  font-size: 0.85rem;
+  text-transform: none;
+  color: var(--muted);
+}
+
+.report-table .report-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The cross-school summary: rows are schools, so the school's own name leads
+   the row and the figures stay right-aligned beside it. */
+.report-summary-table th[scope="row"] {
+  font-weight: 600;
+}
+
+.report-summary-table .report-way-of-living {
+  text-align: left;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.report-row-total th,
+.report-row-total td,
+.report-row-school th,
+.report-row-school td {
+  font-weight: 600;
+}
+
+/* A missing part is a labelled blank: quieter than a figure, never a zero, and
+   never mistakable for one. */
+.report-blank,
+.report-note {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.report-merit h3 {
+  margin-bottom: 0.25rem;
+}
+
+.report-sources {
+  border-top: 1px solid var(--border);
+  margin-top: 2rem;
+  padding-top: 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 640px) {
+  .report-table,
+  .report-table tbody,
+  .report-table tr,
+  .report-table th,
+  .report-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .report-table thead {
+    display: none;
+  }
+
+  .report-table tr {
+    border-bottom: 1px solid var(--border);
+    padding: 0.5rem 0;
+  }
+
+  .report-table th,
+  .report-table td {
+    border-bottom: none;
+    padding: 0.15rem 0;
+  }
+
+  .report-table .report-value {
+    text-align: left;
+  }
+
+  /* The column header the grid no longer shows, restored beside the figure. */
+  .report-table .report-value[data-label]::before {
+    content: attr(data-label) ": ";
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+}

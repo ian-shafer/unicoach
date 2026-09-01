@@ -27,6 +27,11 @@ import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.extraction.ExtractionConfig
+import ed.unicoach.coaching.report.CostReportConfig
+import ed.unicoach.coaching.report.CostReportShareService
+import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
+import ed.unicoach.coaching.report.ShareCostReportChatTool
+import ed.unicoach.coaching.report.ShareTokenDeriver
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
@@ -52,6 +57,7 @@ import ed.unicoach.web.common.logging.configureRequestLogging
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.application.install
+import io.ktor.server.application.log
 import io.ktor.server.config.MapApplicationConfig
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -121,6 +127,11 @@ fun startServer(
 
   val emailVerificationConfig =
     EmailVerificationConfig
+      .from(config)
+      .getOrThrow()
+
+  val costReportConfig =
+    CostReportConfig
       .from(config)
       .getOrThrow()
 
@@ -234,6 +245,7 @@ fun startServer(
             appStore.api,
             subscriptionPlans,
             appleNotificationVerifier,
+            costReportConfig,
           )
 
           install(SessionExpiryPlugin) {
@@ -279,6 +291,7 @@ fun Application.appModule(
   appStoreServerApi: AppStoreServerApi,
   subscriptionPlans: SubscriptionPlans,
   appleNotificationVerifier: AppleNotificationVerifier,
+  costReportConfig: CostReportConfig,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
@@ -313,6 +326,29 @@ fun Application.appModule(
       ed.unicoach.college.Codebook
         .loadOrEmpty(database)
     }
+  // The Family Cost Report share door (RFC 155): one service behind both tools,
+  // so minting and revoking cannot drift apart. Its token is DERIVED from the
+  // share row's id, so re-sharing hands back the same link and the raw token is
+  // stored nowhere. An unset share-token secret is not a boot failure: the
+  // service starts and the two tools decline with a sentence the coach can say.
+  // The deriver is built HERE rather than inside the service: a collaborator a
+  // service builds from its own config cannot be substituted, and "no secret
+  // configured" reads as the absent collaborator it is.
+  val shareTokenDeriver = costReportConfig.secret?.let(::ShareTokenDeriver)
+  if (shareTokenDeriver == null) {
+    // SAID ONCE, AT BOOT. An unset secret disables sharing for every student
+    // forever, and the only other evidence was a sentence spoken to a student —
+    // so "why can no one share?" started by reading source. The config path is
+    // named from its one home rather than re-typed here.
+    log.warn(
+      "cost report sharing is disabled: config key [{}] is unset, so tool [{}] declines every call; " +
+        "viewing an already-shared report and tool [{}] are unaffected",
+      CostReportConfig.SHARE_TOKEN_SECRET_PATH,
+      ShareCostReportChatTool.TOOL_NAME,
+      RevokeCostReportShareChatTool.TOOL_NAME,
+    )
+  }
+  val costReportShareService = CostReportShareService(database, costReportConfig, shareTokenDeriver)
   val toolRegistry =
     ToolRegistry(
       listOf(
@@ -343,6 +379,8 @@ fun Application.appModule(
             ed.unicoach.coaching.admissions
               .CollegeAdmissionsService(database),
           ),
+        ShareCostReportChatTool(costReportShareService),
+        RevokeCostReportShareChatTool(costReportShareService),
       ),
     )
   // One BudgetService serves both the chat gate and the usage endpoint, so the

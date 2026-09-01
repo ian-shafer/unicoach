@@ -29,6 +29,11 @@ locals {
     DATABASE_USER = var.app_db_user
   }
 
+  # COST_REPORT_SHARE_TOKEN_SECRET (RFC 155) keys the HMAC that derives a family
+  # cost report's share link from its row id. Seeded out-of-band like the rest;
+  # any long random string will do (openssl rand -base64 48). Rotating it kills
+  # every link already shared -- which is why it is seeded once and left alone.
+  #
   # SecureString secrets the operator seeds out-of-band. The App Store Server
   # API credential (RFC 110) is three keys seeded as one unit once the Paid Apps
   # agreement activates — issuer and key id are identifiers, not secrets, but
@@ -41,6 +46,7 @@ locals {
     "APP_STORE_ISSUER_ID",
     "APP_STORE_KEY_ID",
     "APP_STORE_PRIVATE_KEY",
+    "COST_REPORT_SHARE_TOKEN_SECRET",
   ]
 }
 

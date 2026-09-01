@@ -101,3 +101,69 @@ enum class CostField(
     }
   }
 }
+
+/**
+ * The ROW vocabulary of a per-arrangement price table: which PART of a price a
+ * cost component is (RFC 155).
+ *
+ * A way of living has at most one field in each role, so a role is one row and
+ * every column in it is the same kind of money — which is why the report page
+ * renders one "Housing and food" row rather than two half-empty ones side by
+ * side, one per field.
+ *
+ * It lives beside [CostField], not in the renderer: the mapping below is an
+ * exhaustive `when` with NO `else`, so a seventh component added to the
+ * vocabulary FAILS TO COMPILE until it says which part of a price it is. A
+ * hand-copied list in a renderer had the opposite property — a new component
+ * silently rendered no row at all while still being counted in the total.
+ */
+enum class ComponentRole(
+  val label: String,
+) {
+  HOUSING_AND_FOOD("Housing and food"),
+  BOOKS_AND_SUPPLIES("Books and supplies"),
+  OTHER_EXPENSES("Other expenses"),
+  ;
+
+  /** This arrangement's field in this role, or null when the role is not part of that way of living. */
+  fun fieldOf(arrangement: LivingArrangement): CostField? = arrangement.components.firstOrNull { it.componentRole == this }
+}
+
+/**
+ * Which part of a price this field is, or null when it is not a component at
+ * all (a whole-school figure, a tuition figure, an outcome figure).
+ *
+ * Exhaustive with no `else` on purpose: this is the ONE site that owes a new
+ * [CostField] a row, and it must refuse to compile rather than let one drop out
+ * of every table that sums it.
+ */
+val CostField.componentRole: ComponentRole?
+  get() =
+    when (this) {
+      CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD -> ComponentRole.HOUSING_AND_FOOD
+
+      CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD -> ComponentRole.HOUSING_AND_FOOD
+
+      CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD -> ComponentRole.BOOKS_AND_SUPPLIES
+
+      CostField.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD -> ComponentRole.OTHER_EXPENSES
+
+      CostField.OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD -> ComponentRole.OTHER_EXPENSES
+
+      CostField.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD -> ComponentRole.OTHER_EXPENSES
+
+      // Not parts of a way of living: a blended whole-school average, the two
+      // published tuition figures, the computed price after aid, and the two
+      // undated outcome figures. None of them is a row in an arrangement table.
+      CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD -> null
+
+      CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD -> null
+
+      CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD -> null
+
+      CostField.NET_PRICE -> null
+
+      CostField.MEDIAN_DEBT_AT_COMPLETION_USD -> null
+
+      CostField.MEDIAN_EARNINGS_10Y_AFTER_ENTRY_USD -> null
+    }

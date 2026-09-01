@@ -32,6 +32,50 @@ rests on. Full design:
     (SecureStrings) and RDS identity (`PGHOST`/`DATABASE_HOST`/`POSTGRES_USER`/
     `DATABASE_USER`).
 
+  A worked example of the split, across three of these roles — the Family Cost
+  Report's share link (RFC 155):
+
+  - The report's **link** is not its own key at all. `service.conf` states the
+    public-web origin exactly once, as `publicWeb.urlBase`, and derives every
+    public-web link from it by appending that page's path —
+    `costReport.shareUrlBase` is `${publicWeb.urlBase}/report`, exactly as
+    `emailVerification.verifyUrlBase` is `${publicWeb.urlBase}/verify-email`
+    (RFC 155 D-J). The origin is env-**specific** and non-secret, so it lives in
+    each `.env.<env>` as one line,
+    `PUBLIC_WEB_URL_BASE=https://app.${APP_DOMAIN}`, never in the env-neutral
+    `.env`; the laptop needs no line at all, because the committed default
+    composes `http://${APP_DOMAIN}:${PUBLIC_WEB_PORT}`. A third public page adds
+    a `.conf` line and **no** dotenv key.
+
+    The two per-link variables `EMAIL_VERIFICATION_VERIFY_URL_BASE` and
+    `COST_REPORT_SHARE_URL_BASE` are still read, and still **win** when set —
+    they are supported escape hatches for the environment whose pages are not
+    all on one origin, and email verification is a shipped surface that may
+    already be overridden somewhere. Only the default moved under them. They are
+    not in `bin/gen-deployed-env`'s `DEPLOY_VAR_NAMES`, so using one on the
+    deploy path means adding it to that enumerated set as well as to the
+    `.env.<env>`.
+
+    A trailing slash is not a trap: the composed base passes through one shared
+    rule (`ed.unicoach.common.config.normalizeUrlBase`), so
+    `https://app.uni.coach/` yields `.../report`, never `...//report`.
+  - `COST_REPORT_SHARE_TOKEN_SECRET` is a **secret**, so by invariant 2 it is an
+    SSM SecureString under `/unicoach/<env>`, seeded out-of-band like the App
+    Store credential trio, and no committed file carries a value. It reaches the
+    JVM as `costReport.shareTokenSecret`, and only `:service` reads it — the
+    public report page hashes the token it is shown and holds no secret at all.
+
+  The secret is **optional on purpose**, which is the part worth stating here: a
+  deployment without it still starts. The share link is derived from that secret
+  (`HMAC-SHA256(secret, row id)`), so with no secret no link can be derived —
+  and the two share chat tools decline with a sentence the coach can say, rather
+  than the process failing to boot or a page rendering a broken link. The
+  feature stays dark and degrades honestly. This is not an exception to
+  invariant 7: absence disables a feature loudly at the point of use, it does
+  not run a silently-wrong mode. Rotating the secret is a global revoke — every
+  link already shared stops working, which is the intended behaviour during an
+  incident.
+
   A **harness-only override** is the one thing outside these five roles.
   `.env`'s `PORT=8080`, `ADMIN_WEB_PORT=8081` and `PUBLIC_WEB_PORT=8082` are
   unconditional — as the base must be, so a cloud `.env.<env>` that omits a key

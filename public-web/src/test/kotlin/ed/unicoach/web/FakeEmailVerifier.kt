@@ -5,6 +5,8 @@ import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.web.common.logging.Detail
 import ed.unicoach.web.common.logging.HeaderSelection
 import ed.unicoach.web.common.logging.RequestLoggingConfig
+import ed.unicoach.web.report.CostReportSource
+import io.ktor.server.application.Application
 import java.util.concurrent.atomic.AtomicInteger
 
 /** A test open-in-app URL used by the route tests' `publicWebModule` wiring. */
@@ -22,6 +24,25 @@ val TEST_REQUEST_LOG_CONFIG =
     headers = HeaderSelection.Allowlist(setOf("Accept", "Content-Type", "User-Agent", "Expect", "Content-Length")),
     detail = Detail.FAILURE,
   )
+
+/**
+ * The suites' one way to install the module under test.
+ *
+ * Every parameter is defaulted to the standing test wiring, so a suite names
+ * only the collaborator it is actually about: a verify-email test passes a
+ * verifier, a report test passes a source, and the twenty call sites that care
+ * about neither pass nothing. Adding a parameter to `publicWebModule` is then
+ * one edit here rather than twenty mechanical ones, none of which a reader can
+ * tell from a deliberate choice.
+ */
+fun Application.testPublicWebModule(
+  emailVerifier: EmailVerifier = FakeEmailVerifier(),
+  costReportSource: CostReportSource = FakeCostReportSource(),
+  openInAppUrl: String? = TEST_OPEN_IN_APP_URL,
+  requestLoggingConfig: RequestLoggingConfig = TEST_REQUEST_LOG_CONFIG,
+) {
+  publicWebModule(emailVerifier, costReportSource, openInAppUrl, requestLoggingConfig)
+}
 
 /**
  * A hand-written fake [EmailVerifier] (a real class, not a mock) returning a

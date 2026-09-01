@@ -674,7 +674,10 @@ class CollegeCostChatTool(
     const val TOOL_NAME = "college_cost_profile"
 
     /**
-     * The attribution the coach must quote when using these numbers.
+     * The attribution the coach must quote when using these numbers — unchanged
+     * on the wire, and now a delegating alias for [CostSources], which is where
+     * the fact actually lives. A parent-facing page cites the same source and
+     * must not couple to this chat boundary to do it.
      *
      * It names the source and nothing else (RFC 149 D-E). It used to append
      * "(data ingested 2026)", which was `colleges.updated_at` -- WHEN WE LOADED
@@ -682,7 +685,7 @@ class CollegeCostChatTool(
      * vintage. The real vintage now rides per college, beside the figures it
      * governs, as a [ScorecardVintage] academic-year label.
      */
-    const val SOURCE_ATTRIBUTION = "U.S. Department of Education College Scorecard"
+    const val SOURCE_ATTRIBUTION = CostSources.SCORECARD_ATTRIBUTION
 
     /** The wire key carrying the per-arrangement price split (RFC 149). */
     const val BREAKDOWN_KEY = "cost_by_living_arrangement"

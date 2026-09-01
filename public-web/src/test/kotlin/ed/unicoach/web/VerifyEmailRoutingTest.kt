@@ -126,7 +126,7 @@ class VerifyEmailRoutingTest {
         .create(sqlSession, NewVerificationToken(user.id, TokenHash.fromRawToken(raw), Instant.now().plus(1, ChronoUnit.DAYS)))
         .getOrThrow()
 
-      application { publicWebModule(DbEmailVerifier(database), TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG) }
+      application { testPublicWebModule(DbEmailVerifier(database)) }
 
       val response =
         client.post("/verify-email") {
@@ -146,7 +146,7 @@ class VerifyEmailRoutingTest {
   fun `GET verify-email with a token renders the confirm form and makes no verify call`() =
     testApplication {
       val verifier = fake(Result.success(VerifyEmailResult.InvalidToken))
-      application { publicWebModule(verifier, TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG) }
+      application { testPublicWebModule(verifier) }
 
       val response = client.get("/verify-email?token=abc")
 
@@ -165,7 +165,7 @@ class VerifyEmailRoutingTest {
   fun `GET verify-email with no token renders InvalidToken and makes no verify call`() =
     testApplication {
       val verifier = fake(Result.success(VerifyEmailResult.InvalidToken))
-      application { publicWebModule(verifier, TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG) }
+      application { testPublicWebModule(verifier) }
 
       val response = client.get("/verify-email")
 
@@ -182,11 +182,7 @@ class VerifyEmailRoutingTest {
   fun `POST verify-email Success renders success and the iPhone open-in-app link`() =
     testApplication {
       application {
-        publicWebModule(
-          fake(Result.success(VerifyEmailResult.Success(stubUser()))),
-          TEST_OPEN_IN_APP_URL,
-          TEST_REQUEST_LOG_CONFIG,
-        )
+        testPublicWebModule(fake(Result.success(VerifyEmailResult.Success(stubUser()))))
       }
 
       val response =
@@ -208,11 +204,7 @@ class VerifyEmailRoutingTest {
   fun `POST verify-email Success with a non-iPhone UA omits the open-in-app link`() =
     testApplication {
       application {
-        publicWebModule(
-          fake(Result.success(VerifyEmailResult.Success(stubUser()))),
-          TEST_OPEN_IN_APP_URL,
-          TEST_REQUEST_LOG_CONFIG,
-        )
+        testPublicWebModule(fake(Result.success(VerifyEmailResult.Success(stubUser()))))
       }
 
       val response =
@@ -231,11 +223,7 @@ class VerifyEmailRoutingTest {
   fun `POST verify-email AlreadyConsumed renders already-verified with the iPhone open-in-app link`() =
     testApplication {
       application {
-        publicWebModule(
-          fake(Result.success(VerifyEmailResult.AlreadyConsumed)),
-          TEST_OPEN_IN_APP_URL,
-          TEST_REQUEST_LOG_CONFIG,
-        )
+        testPublicWebModule(fake(Result.success(VerifyEmailResult.AlreadyConsumed)))
       }
 
       val response =
@@ -253,7 +241,9 @@ class VerifyEmailRoutingTest {
   @Test
   fun `POST verify-email InvalidToken omits the open-in-app link even for iPhone`() =
     testApplication {
-      application { publicWebModule(fake(Result.success(VerifyEmailResult.InvalidToken)), TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG) }
+      application {
+        testPublicWebModule(fake(Result.success(VerifyEmailResult.InvalidToken)))
+      }
 
       val response =
         client.post("/verify-email") {
@@ -270,7 +260,9 @@ class VerifyEmailRoutingTest {
   @Test
   fun `POST verify-email Expired omits the open-in-app link even for iPhone`() =
     testApplication {
-      application { publicWebModule(fake(Result.success(VerifyEmailResult.Expired)), TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG) }
+      application {
+        testPublicWebModule(fake(Result.success(VerifyEmailResult.Expired)))
+      }
 
       val response =
         client.post("/verify-email") {
@@ -288,7 +280,7 @@ class VerifyEmailRoutingTest {
   fun `POST verify-email failure renders the unavailable page with no open-in-app link`() =
     testApplication {
       application {
-        publicWebModule(fake(Result.failure(RuntimeException("db fault"))), TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG)
+        testPublicWebModule(fake(Result.failure(RuntimeException("db fault"))))
       }
 
       val response =
@@ -307,7 +299,7 @@ class VerifyEmailRoutingTest {
   fun `POST verify-email with a blank token short-circuits to InvalidToken with no verify call`() =
     testApplication {
       val verifier = fake(Result.success(VerifyEmailResult.Success(stubUser())))
-      application { publicWebModule(verifier, TEST_OPEN_IN_APP_URL, TEST_REQUEST_LOG_CONFIG) }
+      application { testPublicWebModule(verifier) }
 
       val response =
         client.post("/verify-email") {
@@ -325,11 +317,7 @@ class VerifyEmailRoutingTest {
   fun `every verify page renders through the shared layout`() =
     testApplication {
       application {
-        publicWebModule(
-          fake(Result.success(VerifyEmailResult.Success(stubUser()))),
-          TEST_OPEN_IN_APP_URL,
-          TEST_REQUEST_LOG_CONFIG,
-        )
+        testPublicWebModule(fake(Result.success(VerifyEmailResult.Success(stubUser()))))
       }
 
       assertSharedChrome(client.get("/verify-email?token=abc").bodyAsText())

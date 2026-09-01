@@ -11,6 +11,7 @@ import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreTestFixtures
 import ed.unicoach.appstore.AppleJwsVerifier
 import ed.unicoach.appstore.AppleNotificationVerifier
+import ed.unicoach.coaching.report.CostReportConfig
 import ed.unicoach.subscriptions.SubscriptionPlans
 import java.security.cert.X509Certificate
 
@@ -32,6 +33,14 @@ fun offlineAppStoreServerApi(): AppStoreServerApi =
  * [Result] every suite would unwrap identically.
  */
 fun subscriptionPlansFrom(config: Config): SubscriptionPlans = SubscriptionPlans.from(config).getOrThrow()
+
+/**
+ * The suites' one way to read the Family Cost Report config block (RFC 155) —
+ * the same mechanical `appModule` ripple [subscriptionPlansFrom] covers, and
+ * read the same way: a malformed block is a broken test fixture, so it throws
+ * rather than returning a [Result] twelve suites would unwrap identically.
+ */
+fun costReportConfigFrom(config: Config): CostReportConfig = CostReportConfig.from(config).getOrThrow()
 
 /**
  * A minted root nothing in the suite holds the signing key for — the anchor a

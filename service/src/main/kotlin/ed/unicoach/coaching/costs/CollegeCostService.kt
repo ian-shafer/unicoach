@@ -436,6 +436,30 @@ class CollegeCostService(
     }
 
   /**
+   * The same-session read RFC 155's report path names: the CALLER owns the
+   * connection, so a caller that has already opened one — the Family Cost
+   * Report resolves a share token first — reads the whole profile on that one
+   * connection.
+   *
+   * The reason is ONE READ, ONE SNAPSHOT. Two connections are two points in
+   * time, and the report would then be free to render a list that changed, or a
+   * share that was revoked, between the token resolving and the figures being
+   * read. What the caller authorised is what the caller reads. (It also avoids
+   * nesting a second pool checkout inside the first, which is untidy — but that
+   * page serves roughly one request per second, so a claim about pool
+   * exhaustion would not be an honest reason.)
+   *
+   * Public because the only caller outside `:service` is `public-web`'s
+   * [CostReportSource] adapter, which is an in-process port by D-E rather than
+   * an HTTP hop. The full three-argument form stays `internal`: a college-id
+   * filter is a chat concern, and the report always reads the whole list.
+   */
+  fun readInSession(
+    session: SqlSession,
+    studentId: StudentId,
+  ): CollegeCostProfile = readInSession(session, studentId, collegeIds = null)
+
+  /**
    * The whole read on ONE session, extracted so the batching contract above is
    * assertable: a test can hand this a session that counts the statements it
    * prepares and prove that a five-college list costs the same statements as a
@@ -850,76 +874,6 @@ class CollegeCostService(
     college.tuitionAndFeesInStatePerYearUsd != null || college.tuitionAndFeesOutOfStatePerYearUsd != null
 
   /**
-   * The tuition line for one arrangement (RFC 149 D-C): the published figure
-   * this student's residency selects, reusing the existing
-   * [TuitionApplicable] decision rather than making a second one.
-   *
-   * Null -- and so no arrangement total -- in exactly two cases:
-   *
-   * - residency is unanswered or declined at a PUBLIC college. A total that
-   *   silently picked one residency would be a lie, and the payload already
-   *   carries the residency [PrecisionOffer] that fixes it.
-   * - the applicable figure is not published. A total missing its largest part
-   *   is not a total.
-   *
-   * A private college has ONE price, so there is no residency question to
-   * answer there and no `tuition_applicable` label on its result; the in-state
-   * column is the one the Scorecard publishes it in. An [CollegeControl.Unrecognized]
-   * control gets no line at all: outside the vocabulary we cannot say which
-   * price applies, and inventing one is the failure this whole file is against.
-   */
-  private fun tuitionLineOf(
-    college: College,
-    control: CollegeControl,
-  ): CostLine? {
-    val field = applicableTuitionFor(control) ?: return null
-    return field.amountOn(college)?.let { CostLine(field, it) }
-  }
-
-  /**
-   * WHICH published tuition figure applies, decided from the control alone --
-   * split out from [tuitionLineOf] because it answers a different question about
-   * a different subject: this one is about the school and the student, the caller
-   * is about what the school published.
-   *
-   * Null here means "no figure applies to this reader" -- an unanswered residency
-   * at a public college, or a control outside the vocabulary. Null in
-   * [tuitionLineOf] can also mean "the applicable figure is not published". Both
-   * produce no line and no total, but they are not the same fact, and folding
-   * them into one function made the payload's `data_availability` and
-   * `precision_offer` answers look like one decision when they are two.
-   *
-   * Exhaustive with no `else`, exactly as `controlOf` is: a control added to the
-   * vocabulary must fail to compile here rather than quietly lose its tuition line.
-   */
-  private fun applicableTuitionFor(control: CollegeControl): CostField? =
-    when (control) {
-      is CollegeControl.Public -> {
-        when (control.tuitionApplicable) {
-          TuitionApplicable.IN_STATE -> CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
-          TuitionApplicable.OUT_OF_STATE -> CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD
-          TuitionApplicable.UNKNOWN -> null
-        }
-      }
-
-      // One price, published in the in-state column, and no residency question
-      // to answer.
-      CollegeControl.PrivateNonprofit -> {
-        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
-      }
-
-      CollegeControl.PrivateForProfit -> {
-        CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
-      }
-
-      // Outside the vocabulary we cannot say which price applies, and inventing
-      // one is the failure this whole file is against.
-      is CollegeControl.Unrecognized -> {
-        null
-      }
-    }
-
-  /**
    * The unreported cost fields, in the shared field vocabulary ([CostField]).
    *
    * [offersOnCampusHousing] is read for one reason only (RFC 149 D-B): at a
@@ -963,69 +917,6 @@ class CollegeCostService(
   }
 
   /**
-   * Every field this college carries a figure for, read through the ONE
-   * primitive that owns the question ([CostField.reportedAmountOf]).
-   *
-   * The SAME per-field decision [notReportedOf] makes, read the other way round
-   * -- never a second ladder of null checks, and deliberately not
-   * `entries - notReported`: the on-campus components suppressed at a no-dorms
-   * school are absent from [CollegeCost.notReported] because they are
-   * inapplicable, and they carry no figure either, so they belong in neither
-   * list. [CostField.reportedAmountOf] underneath is exhaustive, so a field
-   * added tomorrow must gain a column there and cannot silently drop out of the
-   * figures this call is said to report.
-   */
-  private fun reportedOf(
-    college: College,
-    netPrice: NetPrice,
-  ): Set<CostField> = CostField.entries.filterNot { isNotReported(it, college, computedAmountsOf(netPrice)) }.toSet()
-
-  /**
-   * The fields that are NOT a `colleges` column, and the computed figure that
-   * answers for each.
-   *
-   * [isNotReported] refuses rather than guesses: a new column-less [CostField]
-   * that nobody added here fails loudly on the first read -- naming the field
-   * and the row -- instead of reporting a computed figure as a silence the
-   * college never kept. One table, read by both the silence list and its
-   * positive twin, so the two can never disagree about one figure.
-   */
-  private fun computedAmountsOf(netPrice: NetPrice): Map<CostField, Int?> = mapOf(CostField.NET_PRICE to netPrice.amount)
-
-  /**
-   * Whether this college is silent about ONE field -- a question about a field,
-   * split out from the list-shaped decisions above it.
-   *
-   * A field with a column answers from it. A field with no column has nothing
-   * to be silent with, so [computed] is the only thing that can answer for it;
-   * a MISSING key there is a programming error, not a silence, and is named as
-   * one. `containsKey` rather than `?:`, because a present null is the
-   * legitimate "the computed figure is not reported" case -- and the message
-   * carries the field, the row and what the map did hold, because the stdlib
-   * "Key X is missing in the map" says nothing about which cost read produced
-   * it.
-   */
-  private fun isNotReported(
-    field: CostField,
-    college: College,
-    computed: Map<CostField, Int?>,
-  ): Boolean =
-    when (val reported = field.reportedAmountOf(college)) {
-      is ReportedAmount.Column -> {
-        reported.amountUsd == null
-      }
-
-      ReportedAmount.NoColumn -> {
-        require(computed.containsKey(field)) {
-          "cost field [${field.wireName}] is not a `colleges` column and no computed figure answers for it: " +
-            "college_id=[${college.id.value}] ipeds_unit_id=[${college.ipedsUnitId}] " +
-            "computed_fields=[${computed.keys.joinToString(", ") { it.wireName }}]"
-        }
-        computed[field] == null
-      }
-    }
-
-  /**
    * The recency the attribution quotes. `colleges.updated_at` is the row's
    * modification time — the last ingest that touched it — used as a proxy for
    * data vintage; it is *not* the Scorecard release year, which we do not
@@ -1049,3 +940,145 @@ class CollegeCostService(
       )
   }
 }
+
+/*
+ * The cost-domain derivations published for the ONE out-of-module caller,
+ * exactly as [CollegeCostService.readInSession] was published for it: the
+ * `public-web` report fixtures must build a `CollegeCost` this service could
+ * really have produced. Top-level rather than members, because they are
+ * questions about a `colleges` row and a control, not about a service
+ * instance — and because the copies they replace had already begun to drift.
+ */
+
+/**
+ * The tuition line for one arrangement (RFC 149 D-C): the published figure
+ * this student's residency selects, reusing the existing
+ * [TuitionApplicable] decision rather than making a second one.
+ *
+ * Null -- and so no arrangement total -- in exactly two cases:
+ *
+ * - residency is unanswered or declined at a PUBLIC college. A total that
+ *   silently picked one residency would be a lie, and the payload already
+ *   carries the residency [PrecisionOffer] that fixes it.
+ * - the applicable figure is not published. A total missing its largest part
+ *   is not a total.
+ *
+ * A private college has ONE price, so there is no residency question to
+ * answer there and no `tuition_applicable` label on its result; the in-state
+ * column is the one the Scorecard publishes it in. An [CollegeControl.Unrecognized]
+ * control gets no line at all: outside the vocabulary we cannot say which
+ * price applies, and inventing one is the failure this whole file is against.
+ */
+fun tuitionLineOf(
+  college: College,
+  control: CollegeControl,
+): CostLine? {
+  val field = applicableTuitionFor(control) ?: return null
+  return field.amountOn(college)?.let { CostLine(field, it) }
+}
+
+/**
+ * WHICH published tuition figure applies, decided from the control alone --
+ * split out from [tuitionLineOf] because it answers a different question about
+ * a different subject: this one is about the school and the student, the caller
+ * is about what the school published.
+ *
+ * Null here means "no figure applies to this reader" -- an unanswered residency
+ * at a public college, or a control outside the vocabulary. Null in
+ * [tuitionLineOf] can also mean "the applicable figure is not published". Both
+ * produce no line and no total, but they are not the same fact, and folding
+ * them into one function made the payload's `data_availability` and
+ * `precision_offer` answers look like one decision when they are two.
+ *
+ * Exhaustive with no `else`, exactly as `controlOf` is: a control added to the
+ * vocabulary must fail to compile here rather than quietly lose its tuition line.
+ */
+fun applicableTuitionFor(control: CollegeControl): CostField? =
+  when (control) {
+    is CollegeControl.Public -> {
+      when (control.tuitionApplicable) {
+        TuitionApplicable.IN_STATE -> CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
+        TuitionApplicable.OUT_OF_STATE -> CostField.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD
+        TuitionApplicable.UNKNOWN -> null
+      }
+    }
+
+    // One price, published in the in-state column, and no residency question
+    // to answer.
+    CollegeControl.PrivateNonprofit -> {
+      CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
+    }
+
+    CollegeControl.PrivateForProfit -> {
+      CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD
+    }
+
+    // Outside the vocabulary we cannot say which price applies, and inventing
+    // one is the failure this whole file is against.
+    is CollegeControl.Unrecognized -> {
+      null
+    }
+  }
+
+/**
+ * Every field this college carries a figure for, read through the ONE
+ * primitive that owns the question ([CostField.reportedAmountOf]).
+ *
+ * The SAME per-field decision [notReportedOf] makes, read the other way round
+ * -- never a second ladder of null checks, and deliberately not
+ * `entries - notReported`: the on-campus components suppressed at a no-dorms
+ * school are absent from [CollegeCost.notReported] because they are
+ * inapplicable, and they carry no figure either, so they belong in neither
+ * list. [CostField.reportedAmountOf] underneath is exhaustive, so a field
+ * added tomorrow must gain a column there and cannot silently drop out of the
+ * figures this call is said to report.
+ */
+fun reportedOf(
+  college: College,
+  netPrice: NetPrice,
+): Set<CostField> = CostField.entries.filterNot { isNotReported(it, college, computedAmountsOf(netPrice)) }.toSet()
+
+/**
+ * The fields that are NOT a `colleges` column, and the computed figure that
+ * answers for each.
+ *
+ * [isNotReported] refuses rather than guesses: a new column-less [CostField]
+ * that nobody added here fails loudly on the first read -- naming the field
+ * and the row -- instead of reporting a computed figure as a silence the
+ * college never kept. One table, read by both the silence list and its
+ * positive twin, so the two can never disagree about one figure.
+ */
+private fun computedAmountsOf(netPrice: NetPrice): Map<CostField, Int?> = mapOf(CostField.NET_PRICE to netPrice.amount)
+
+/**
+ * Whether this college is silent about ONE field -- a question about a field,
+ * split out from the list-shaped decisions above it.
+ *
+ * A field with a column answers from it. A field with no column has nothing
+ * to be silent with, so [computed] is the only thing that can answer for it;
+ * a MISSING key there is a programming error, not a silence, and is named as
+ * one. `containsKey` rather than `?:`, because a present null is the
+ * legitimate "the computed figure is not reported" case -- and the message
+ * carries the field, the row and what the map did hold, because the stdlib
+ * "Key X is missing in the map" says nothing about which cost read produced
+ * it.
+ */
+private fun isNotReported(
+  field: CostField,
+  college: College,
+  computed: Map<CostField, Int?>,
+): Boolean =
+  when (val reported = field.reportedAmountOf(college)) {
+    is ReportedAmount.Column -> {
+      reported.amountUsd == null
+    }
+
+    ReportedAmount.NoColumn -> {
+      require(computed.containsKey(field)) {
+        "cost field [${field.wireName}] is not a `colleges` column and no computed figure answers for it: " +
+          "college_id=[${college.id.value}] ipeds_unit_id=[${college.ipedsUnitId}] " +
+          "computed_fields=[${computed.keys.joinToString(", ") { it.wireName }}]"
+      }
+      computed[field] == null
+    }
+  }

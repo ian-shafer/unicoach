@@ -13,6 +13,10 @@ dependencies {
   implementation(project(":web-common"))
   implementation(project(":db"))
   implementation(project(":auth"))
+  // RFC 155 D-E: the Family Cost Report renders the SAME computation the coach
+  // reads in chat (CollegeCostService), in-process behind the CostReportSource
+  // port — the admin-web precedent for a web module depending on :service.
+  implementation(project(":service"))
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)
   implementation(libs.ktor.server.status.pages)

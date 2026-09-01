@@ -11,6 +11,7 @@ import java.sql.SQLException
 import java.sql.Types
 import java.time.Instant
 import java.time.LocalDate
+import java.util.UUID
 
 /*
  * Shared query/mutate execution scaffolding. These `SqlSession` extensions own
@@ -517,6 +518,23 @@ internal fun <T> Result<T>.orNullOnNotFound(): Result<T?> =
   fold(
     onSuccess = { Result.success(it) },
     onFailure = { if (it is NotFoundException) Result.success(null) else Result.failure(it) },
+  )
+
+/**
+ * The next `uuidv7()` from the SAME generator every id column defaults to.
+ *
+ * On the session rather than on the one DAO that needs it first: which
+ * generator mints an id is the database's fact, not one table's. A caller wants
+ * it only when the id is an INPUT to a value stored beside it — the cost-report
+ * share row derives its token from its own id — so the insert cannot let the
+ * column default do the minting.
+ */
+internal fun SqlSession.nextUuidV7(): Result<UUID> =
+  queryOne(
+    "SELECT uuidv7() AS id",
+    bind = { },
+    map = { rs -> UUID.fromString(rs.getString("id")) },
+    onNoRow = { NotFoundException() },
   )
 
 // Read-time soft-delete predicate (fixed SQL fragment, no caller data)

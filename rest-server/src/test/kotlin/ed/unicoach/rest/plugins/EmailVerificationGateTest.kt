@@ -9,6 +9,7 @@ import ed.unicoach.rest.appModule
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
+import ed.unicoach.rest.costReportConfigFrom
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.VerifyEmailRequest
 import ed.unicoach.web.common.logging.RequestLoggingConfig
@@ -440,5 +441,6 @@ private fun io.ktor.server.application.Application.moduleWith(
     ed.unicoach.rest.offlineAppStoreServerApi(),
     ed.unicoach.rest.subscriptionPlansFrom(config),
     ed.unicoach.rest.testAppleNotificationVerifier(),
+    costReportConfigFrom(config),
   )
 }

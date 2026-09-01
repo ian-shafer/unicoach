@@ -123,6 +123,7 @@ class ChatToDbIntegrationTest {
             offlineAppStoreServerApi(),
             subscriptionPlansFrom(config),
             testAppleNotificationVerifier(),
+            costReportConfigFrom(config),
           )
         }
       server.start(wait = false)

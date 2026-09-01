@@ -62,3 +62,16 @@ object AppConfig {
  * guaranteeing strings are present and refuse empty/blank permutations cleanly.
  */
 fun Config.getNonBlankString(path: String): String = this.getString(path).also { require(it.isNotBlank()) { "[$path] cannot be blank" } }
+
+/**
+ * An OPTIONAL config string: its value, or null when the key is absent or holds
+ * a blank value.
+ *
+ * Blank reads as absent on purpose, and that is the whole reason this is a
+ * function rather than a per-config `hasPath` check. Every deployed value
+ * arrives through HOCON `${?VAR}` substitution, and an environment variable
+ * exported as `""` leaves the key PRESENT with an empty value — so a bare
+ * `hasPath` says "configured" about a setting nobody configured. One reading of
+ * "unset", shared, means a key can never mean two things in two modules.
+ */
+fun Config.optionalString(path: String): String? = if (hasPath(path)) getString(path).takeIf { it.isNotBlank() } else null

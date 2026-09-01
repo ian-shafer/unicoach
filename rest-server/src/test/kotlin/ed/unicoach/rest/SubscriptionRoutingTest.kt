@@ -166,6 +166,7 @@ class SubscriptionRoutingTest {
             AppStoreServerApi(SwappableTransport, AppStoreTestFixtures.authTokens()),
             subscriptionPlansFrom(config),
             testAppleNotificationVerifier(),
+            costReportConfigFrom(config),
           )
         }
       testServer.start(wait = false)

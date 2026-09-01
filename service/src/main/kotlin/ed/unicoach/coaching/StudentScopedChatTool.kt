@@ -199,6 +199,33 @@ abstract class StudentScopedChatTool : ChatTool {
 }
 
 /**
+ * The whole definition of a tool that takes NOTHING: the name, the description,
+ * and the closed empty input schema.
+ *
+ * Written once because "scoped to the turn's student, and takes no argument" is
+ * one contract, not one per tool: the two Family Cost Report doors advertise it,
+ * and a third would otherwise re-type the `additionalProperties = false` that
+ * makes a surplus key a misunderstanding of the call rather than a bigger share.
+ */
+internal fun noArgumentToolDefinition(
+  name: String,
+  description: String,
+): JsonObject =
+  buildJsonObject {
+    put("name", name)
+    put("description", description)
+    putJsonObject("input_schema") {
+      put("type", "object")
+      putJsonObject("properties") {}
+      putJsonArray("required") {}
+      // The published boundary is the closed set the tool enforces: a surplus
+      // key is refused at runtime, so the model is told so rather than
+      // discovering it through an error object.
+      put("additionalProperties", false)
+    }
+  }
+
+/**
  * The `input_schema` both `college_ids` tools advertise, written once so the
  * two definitions cannot describe the same input differently — and so the cap
  * the parser enforces is the cap the model is told about.

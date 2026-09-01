@@ -2271,7 +2271,7 @@ GOOGLE_AUTH_PROVIDER=google
 APPLE_AUTH_PROVIDER=apple
 APP_STORE_ENVIRONMENT=production
 EMAIL_DEFAULT_FROM=noreply@$APP_DOMAIN
-EMAIL_VERIFICATION_VERIFY_URL_BASE=https://app.$APP_DOMAIN/verify-email
+PUBLIC_WEB_URL_BASE=https://app.$APP_DOMAIN
 EOF
 }
 
@@ -2288,6 +2288,10 @@ test_gen_deployed_env_happy() {
   # nothing has a surviving '$'; and PATH/HOME are absent.
   echo "$out" | grep -qx 'APP_DOMAIN=gentest.example.com' || { echo "APP_DOMAIN wrong: $out"; return 1; }
   echo "$out" | grep -qx 'EMAIL_DEFAULT_FROM=noreply@gentest.example.com' || { echo "email not interpolated: $out"; return 1; }
+  # The ONE public-web origin (RFC 155 D-J) ships, and the retired per-link keys
+  # do not: service.conf derives both page links from this single value.
+  echo "$out" | grep -qx 'PUBLIC_WEB_URL_BASE=https://app.gentest.example.com' || { log-error "public-web origin wrong: [$out]"; return 1; }
+  echo "$out" | grep -qE '^(EMAIL_VERIFICATION_VERIFY_URL_BASE|COST_REPORT_SHARE_URL_BASE)=' && { log-error "retired per-link key shipped: [$out]"; return 1; }
   echo "$out" | grep -q '[$]' && { echo "unresolved \$ in output: $out"; return 1; }
   echo "$out" | grep -qE '^(PATH|HOME)=' && { echo "leaked PATH/HOME: $out"; return 1; }
   return 0

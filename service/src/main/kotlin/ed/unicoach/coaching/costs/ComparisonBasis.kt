@@ -1,6 +1,7 @@
 package ed.unicoach.coaching.costs
 
 import ed.unicoach.common.models.ValidationError
+import ed.unicoach.common.util.phraseOf
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.CollegeId
@@ -38,6 +39,29 @@ data class ComparisonBasis(
   val academicYears: List<DatedFigures>,
   val aid: AidBasis,
 ) {
+  /**
+   * EVERY per-call statement this basis makes, in the order they must be said.
+   *
+   * The list exists so a renderer cannot hand-pick a subset. A sixth honesty
+   * statement added to this object arrives at every surface that renders the
+   * basis — the coach in chat AND the parent-facing report page — rather than
+   * reaching only the reader whose file happened to be edited. Withholding one
+   * of these from a parent is precisely the failure the basis exists to prevent,
+   * so no reader gets to choose which ones it prints.
+   *
+   * Read off the fields rather than stored beside them: a statement can never
+   * disagree with the code it labels.
+   */
+  val statements: List<String>
+    get() =
+      buildList {
+        add(population.statement)
+        add(residency.statement)
+        add(livingArrangement.statement)
+        academicYears.forEach { add(it.statement) }
+        add(aid.statement)
+      }
+
   companion object {
     /**
      * The basis for one call, or NULL below two colleges (D-B).
@@ -941,26 +965,6 @@ data class ArrangementBasis(
      */
     private fun arrangementPhraseOf(arrangements: List<LivingArrangement>): String = phraseOf(arrangements.map { it.label })
   }
-}
-
-/**
- * A list of things said as English rather than as a comma-separated dump: "a",
- * "a and b", "a, b and c".
- *
- * Grammar, not vocabulary -- the words come from wherever they are declared
- * ([LivingArrangement.label], a school's own name). File-private on purpose: the
- * `:common` module has no sentence-building home today, and inventing one for a
- * four-line joiner would put a copy decision in a module that owns none of this
- * copy. It moves the day a second module needs it.
- */
-private fun phraseOf(words: List<String>): String {
-  // No words is not a shorter phrase, it is nothing to say -- and an empty
-  // string spliced into a sentence renders a hole in student-facing copy
-  // ("The public schools here -  - are shown at..."). Every caller holds a
-  // non-empty list by construction; this refuses the one that stops doing so.
-  require(words.isNotEmpty()) { "a phrase needs words: an absent phrase is never an empty one" }
-  if (words.size == 1) return words.single()
-  return words.dropLast(1).joinToString(", ") + " and " + words.last()
 }
 
 /**
