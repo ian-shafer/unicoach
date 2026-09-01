@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Test
 import java.io.File
 import kotlin.test.assertEquals
@@ -34,6 +35,14 @@ import kotlin.test.assertTrue
  * each one is a one-line difference from a codebook that is known to load.
  */
 class CodebookLoaderTest : CollegeScorecardTestBase() {
+  /**
+   * The ONE suite that must start with the reference tables EMPTY: its subject
+   * is the loader that fills them, and several tests count the committed
+   * codebook's rows as first-load INSERTS. Every other suite lets the base class
+   * seed them.
+   */
+  override val seedsCodebookReference: Boolean get() = false
+
   private val loader = CodebookLoader(database)
 
   /**
@@ -311,6 +320,69 @@ class CodebookLoaderTest : CollegeScorecardTestBase() {
     }
 
   @Test
+  fun `a state only the STALE search index still holds is refused by name, not as a raw FK error`() =
+    runBlocking {
+      loader.load(source(committedCodebook))
+      seedCollege(100001, state = "CA")
+      withSession { CollegesDao.rebuildSearchIndex(it).getOrThrow() }
+      // A STALE index row: the college is in CA, the index still says WY. That
+      // is the ordinary state the `codebooks` phase sees, because it runs
+      // BEFORE `search-index` — the index it shares the database with is always
+      // the PREVIOUS run's. `college_search_index_state_fkey` (0067) would then
+      // refuse the delete as a raw constraint error if the reference map named
+      // only `colleges.state`.
+      withSession { session ->
+        session.prepareStatement("UPDATE college_search_index SET state = 'WY'").use { it.executeUpdate() }
+      }
+
+      val failure =
+        assertFailsWith<CodebookLoader.ReferencedCodebookRowException> { loader.load(codebookWithoutState("WY")) }
+
+      assertEquals("us_states", failure.domain)
+      assertEquals("WY", failure.key)
+      assertEquals(listOf("college_search_index.state (1 row(s))"), failure.references)
+      // Nothing was deleted: the whole load rolled back.
+      assertEquals(59, withSession { count(it, "us_states") })
+    }
+
+  @Test
+  fun `a state the colleges table still holds is refused naming that column too`() =
+    runBlocking {
+      loader.load(source(committedCodebook))
+      seedCollege(100001, state = "WY")
+      withSession { CollegesDao.rebuildSearchIndex(it).getOrThrow() }
+
+      val failure =
+        assertFailsWith<CodebookLoader.ReferencedCodebookRowException> { loader.load(codebookWithoutState("WY")) }
+
+      // BOTH storing columns are named — the row itself and the derived copy.
+      assertEquals(
+        listOf("colleges.state (1 row(s))", "college_search_index.state (1 row(s))"),
+        failure.references,
+      )
+    }
+
+  /**
+   * The committed codebook with one state dropped from BOTH halves of the
+   * membership the loader cross-checks: the `us_states` row and the region
+   * label's `member_states`. Dropping only the state would fail the
+   * region-agreement check instead of reaching the delete under test.
+   */
+  private fun codebookWithoutState(uspsCode: String): SourceFile {
+    val json = codebookJson()
+    withCodes(json, "us_states", codes(json, "us_states").filter { it.getValue("code").jsonPrimitive.content != uspsCode })
+    withCodes(
+      json,
+      "ipeds_region",
+      codes(json, "ipeds_region").map { region ->
+        val members = (region.getValue("member_states") as JsonArray).filter { it.jsonPrimitive.content != uspsCode }
+        JsonObject(region.toMutableMap().also { it["member_states"] = JsonArray(members) })
+      },
+    )
+    return writeCodebook(json)
+  }
+
+  @Test
   fun `dropping an unreferenced row deletes exactly it`() =
     runBlocking {
       loader.load(source(committedCodebook))
@@ -581,11 +653,20 @@ class CodebookLoaderTest : CollegeScorecardTestBase() {
   fun `a run with no codebook source has no codebooks phase at all`() {
     // Omit-vs-zero (the IPEDS rule): a run that was never given a codebook must
     // not report "0 domains", and must not run a coverage report over nothing.
+    // The rule survives 0067: `--codebooks` is required at the JVM ENTRY POINT,
+    // but the loader API still accepts a run without one, and such a run needs
+    // only the two reference tables `colleges` points at to be non-empty. They
+    // are seeded here — this suite is the one that must NOT seed them by
+    // default, because its other tests count the committed codebook's rows as
+    // first-load INSERTS.
+    seedCodebookReference()
     val report = ingest(codebooks = null)
 
     assertNull(report.codebooks)
     assertNull(report.unknownCodes)
-    assertEquals(0, withSession { count(it, "ipeds_regions") })
+    // Nine regions and no more: the seed above, untouched. A `codebooks` phase
+    // would have written the committed file's ten.
+    assertEquals(9, withSession { count(it, "ipeds_regions") })
     assertTrue(!report.humanSummary().contains("codebooks:"), report.humanSummary())
     assertTrue(!report.humanSummary().contains("codebook coverage"), report.humanSummary())
 

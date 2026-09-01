@@ -3,6 +3,7 @@ package ed.unicoach.college
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SearchIndexNotBuiltException
 import ed.unicoach.db.dao.SqlSession
@@ -43,6 +44,8 @@ class CollegeSearchServiceTest {
     runBlocking {
       database.withConnection { session ->
         session.prepareStatement("TRUNCATE TABLE colleges, college_programs CASCADE").use { it.execute() }
+        // The state/locale reference rows `colleges` foreign-keys into (0067).
+        CodebookReferenceFixture.seed(session)
       }
       Unit
     }

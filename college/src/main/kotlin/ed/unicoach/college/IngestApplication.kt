@@ -19,7 +19,7 @@ private val CDS_FLAGS = listOf(CDS_MERIT_FLAG, CDS_FACTORS_FLAG, CDS_DEADLINES_F
 private const val USAGE =
   "Usage: ingest-colleges <institution.csv> <fields.csv> <aliases.json> " +
     "[--institution-source=ARG] [--fields-source=ARG] [--aliases-source=ARG] " +
-    "[--codebooks=codebooks.json] [--codebooks-source=ARG] " +
+    "--codebooks=codebooks.json [--codebooks-source=ARG] " +
     "[--subjects=subjects.json] [--subjects-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
     "$CDS_DEADLINES_FLAG <deadlines.csv>] " +
@@ -30,12 +30,21 @@ private const val USAGE =
 private val SOURCE_FLAGS = listOf("institution-source", "fields-source", "aliases-source")
 
 /**
- * The generated published codebook (RFC 147). Optional and OPTION-shaped rather
- * than a fourth positional: `bin/ingest-colleges` always supplies it (defaulting
- * to the repo copy, exactly as it defaults the aliases path), so the flag exists
- * for the direct JVM invocation and for a caller loading a codebook from
- * somewhere else. Omitted, the run has no `codebooks` phase at all — the
- * omit-vs-zero rule the IPEDS and CDS groups already follow.
+ * The generated published codebook (RFC 147). REQUIRED, and option-shaped
+ * rather than a fourth positional.
+ *
+ * Required since migration 0067: `colleges.state` and `colleges.locale` are
+ * foreign keys onto `us_states` and `nces_locales`, so a run that loaded no
+ * codebook cannot write a single college row. It used to be optional — omitted
+ * meant "no `codebooks` phase", the omit-vs-zero rule the IPEDS and CDS groups
+ * follow — and that rule still holds for THEM, because their tables constrain
+ * nothing. This one now names a precondition, so the binary states it instead
+ * of leaving `bin/ingest-colleges` to be the only thing that knows.
+ *
+ * Still an OPTION, and still with no default inside the JVM: the artifact ships
+ * via `installDist` and has no PROJECT_ROOT, so a deployed binary guessing a
+ * repo layout is exactly the mistake the launcher exists to prevent. The
+ * launcher decides WHICH file; the binary insists there is one.
  */
 private const val CODEBOOKS_FLAG = "codebooks"
 
@@ -119,8 +128,8 @@ internal sealed interface ArgvResult {
     val sources: List<SourceFile>,
     val cds: CdsArgs? = null,
     val ipeds: IpedsSources? = null,
-    /** The generated codebook (RFC 147), null when `--codebooks` was omitted. */
-    val codebooks: SourceFile? = null,
+    /** The generated codebook (RFC 147). Required since 0067, so never null. */
+    val codebooks: SourceFile,
     /** The authored subject taxonomy (RFC 150), null when `--subjects` was omitted. */
     val subjects: SourceFile? = null,
   ) : ArgvResult
@@ -202,15 +211,19 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       is IpedsGroup.Absent -> null
       is IpedsGroup.Present -> group.sources
     }
-  // A dangling `--codebooks-source` names the provenance of a file that was
-  // never supplied — the same refusal the IPEDS `--*-source` flags get, and for
-  // the same reason: it would otherwise be silently ignored.
+  // The codebook is REQUIRED since migration 0067 (see [CODEBOOKS_FLAG]): a run
+  // without one cannot write a college row, so it is refused here rather than
+  // discovered as a foreign-key violation. This subsumes the dangling
+  // `--codebooks-source` refusal that used to live here — a provenance flag can
+  // no longer name a codebook that was not supplied, because there is always
+  // one.
   val codebooksSourceFlag = "$CODEBOOKS_FLAG-source"
-  if (codebooksSourceFlag in flags && CODEBOOKS_FLAG !in flags) {
-    return ArgvResult.Usage(
-      "Option [--$codebooksSourceFlag] names a provenance source for a codebook that was not supplied. $USAGE",
-    )
-  }
+  val codebooksPath =
+    flags[CODEBOOKS_FLAG]
+      ?: return ArgvResult.Usage(
+        "Option [--$CODEBOOKS_FLAG] is required: `colleges.state` and `colleges.locale` reference the " +
+          "published codebook tables, so an ingest without one can write no college row. $USAGE",
+      )
   // Same refusal, same reason, for the taxonomy (RFC 150).
   val subjectsSourceFlag = "$SUBJECTS_FLAG-source"
   if (subjectsSourceFlag in flags && SUBJECTS_FLAG !in flags) {
@@ -234,8 +247,7 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       },
     ipeds = ipeds,
     codebooks =
-      flags[CODEBOOKS_FLAG]?.let { path ->
-        val file = File(path)
+      File(codebooksPath).let { file ->
         SourceFile(file = file, sourceArg = flags[codebooksSourceFlag] ?: file.path)
       },
     subjects =
@@ -324,7 +336,7 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   // would have been dropped from the existence check with nothing failing --
   // the same silent-drop this commit removed from `logCdsRun`.
   val cds = parsed.cds?.sources?.namedFiles ?: emptyList()
-  val codebooks = parsed.codebooks?.let { listOf(CODEBOOKS_FLAG to it) } ?: emptyList()
+  val codebooks = listOf(CODEBOOKS_FLAG to parsed.codebooks)
   val subjects = parsed.subjects?.let { listOf(SUBJECTS_FLAG to it) } ?: emptyList()
   return scorecard + ipeds + cds + codebooks + subjects
 }
@@ -502,6 +514,21 @@ fun main(args: Array<String>) {
       "Ingest aborted before any write: curated aliases file [{}] is invalid: [{}]",
       e.fileName,
       e.detail,
+      e,
+    )
+    kotlin.system.exitProcess(1)
+  } catch (e: CollegeScorecardLoader.EmptyCodebookReferenceTablesException) {
+    // NOT "before any write": the `codebooks` and `subjects` phases run BEFORE
+    // the check and have already committed, so the phases that landed are named
+    // exactly as the PARTIAL INGEST arm below names them. Without this arm the
+    // one precondition 0067 added escaped as a bare stack trace while every
+    // sibling refusal got a structured line.
+    logger.error(
+      "Ingest aborted before the institutions phase: codebook reference table(s) {} are EMPTY after " +
+        "codebook [{}]; phases {} COMMITTED, no college_index_build row was written",
+      e.emptyTables,
+      e.codebookPath,
+      e.committedPhases,
       e,
     )
     kotlin.system.exitProcess(1)

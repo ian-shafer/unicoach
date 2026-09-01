@@ -61,6 +61,10 @@ class CollegeListEntrySupportDaoTest {
           "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, students, users, colleges CASCADE",
       )
     }
+    // The published state/locale rows `colleges` foreign-keys into since
+    // migration 0067. Truncating `colleges` does not empty them, but another
+    // suite on this shared database does, so each suite puts them back.
+    CodebookReferenceFixture.seed(session)
   }
 
   private val session =

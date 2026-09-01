@@ -104,6 +104,30 @@ class CollegeScorecardLoader(
     )
 
   /**
+   * The `colleges` codebook reference tables are empty, so no college row can
+   * be written (migration 0067). Thrown BEFORE the `institutions` phase writes
+   * anything, mapped to a non-zero exit by [IngestApplication].
+   *
+   * Distinct from the argv refusal of a missing `--codebooks`: that one is a
+   * caller who supplied no codebook FILE, this one is a database with no
+   * codebook ROWS. Both are actionable and they are not actionable in the same
+   * way, so they do not share a message.
+   *
+   * The message does NOT tell the operator to run the codebooks phase: that
+   * phase runs FIRST, `--codebooks` is required at the entry point, and by the
+   * time this is thrown it has already run and COMMITTED. What it states is what
+   * actually happened — the tables are empty AFTER that load — which points at
+   * the codebook FILE ([codebookPath]) rather than at the run. It is thrown
+   * outside `phase(...)`, so it carries [committedPhases] itself, the way the
+   * PARTIAL INGEST report does; nothing bubbles it for free.
+   */
+  class EmptyCodebookReferenceTablesException(
+    val emptyTables: List<String>,
+    val codebookPath: String?,
+    val committedPhases: List<String>,
+  ) : RuntimeException(emptyReferenceTablesMessage(emptyTables, codebookPath, committedPhases))
+
+  /**
    * The alias-application tally (RFC 139): entries seen, applied, unchanged,
    * and the `ipeds_unit_id`s that matched no college. The unmatched ids are carried
    * by VALUE, not counted: "3 entries were dead" is unactionable, "entries
@@ -197,6 +221,7 @@ class CollegeScorecardLoader(
       SourceFile(institutionCsv, institutionCsv.path),
       SourceFile(fieldsCsv, fieldsCsv.path),
       committedPhases = mutableListOf(),
+      codebookPath = null,
     )
 
   /**
@@ -212,15 +237,61 @@ class CollegeScorecardLoader(
     institution: SourceFile,
     fields: SourceFile,
     committedPhases: MutableList<String>,
+    // The codebook this run loaded, or null for the legacy no-codebook call
+    // above. Carried only so the precondition below can NAME the file whose
+    // load left the reference tables empty.
+    codebookPath: String?,
   ): LoadResult {
     withContext(ioDispatcher) {
       assertRequiredColumns(institution, REQUIRED_INSTITUTION_COLUMNS)
       assertRequiredColumns(fields, REQUIRED_FIELDS_COLUMNS)
     }
+    assertCodebookReferenceTablesLoaded(codebookPath, committedPhases)
     return LoadResult(
       colleges = phase("institutions", committedPhases) { loadInstitutions(institution.file) },
       programs = phase("fields", committedPhases) { loadFields(fields.file) },
     )
+  }
+
+  /**
+   * The one check that stands between an empty codebook and a wall of raw
+   * foreign-key violations.
+   *
+   * Migration 0067 pointed `colleges.state` at `us_states (usps_code)` and
+   * `colleges.locale` at `nces_locales (code)`, which makes a loaded codebook a
+   * PRECONDITION of writing any college row rather than merely the phase that
+   * runs first. Left to the database, that precondition is reported once per
+   * row, from the middle of the `institutions` phase, as
+   * `colleges_state_codebook_fkey`, over a transaction that has already written
+   * thousands of colleges — a message that names a constraint and not a
+   * remedy.
+   *
+   * So it is checked HERE: two `EXISTS` reads, before the phase writes anything
+   * at all, naming the empty tables and the remedy. It is deliberately NOT the
+   * same failure as a missing `--codebooks` argument, which
+   * [IngestApplication] refuses at argv parse: that one says a CALLER passed no
+   * codebook, this one says the DATABASE has none — which happens to a migrated
+   * database that has never been ingested, and to a test that truncated the
+   * reference tables.
+   */
+  private suspend fun assertCodebookReferenceTablesLoaded(
+    codebookPath: String?,
+    committedPhases: List<String>,
+  ) {
+    val empty =
+      database.withConnection { session ->
+        REFERENCE_TABLES.filter { table ->
+          session.prepareStatement("SELECT NOT EXISTS (SELECT 1 FROM $table)").use { stmt ->
+            stmt.executeQuery().use { rs ->
+              rs.next()
+              rs.getBoolean(1)
+            }
+          }
+        }
+      }
+    if (empty.isNotEmpty()) {
+      throw EmptyCodebookReferenceTablesException(empty, codebookPath, committedPhases.toList())
+    }
   }
 
   private suspend fun loadInstitutions(file: File): CollegeLoadResult =
@@ -572,7 +643,7 @@ class CollegeScorecardLoader(
           subjectLoader.load(subjects?.file?.path ?: "subjects.json", parsed)
         }
       }
-    val scorecard = loadScorecard(institution, fields, committedPhases)
+    val scorecard = loadScorecard(institution, fields, committedPhases, codebooks?.file?.path)
     val aliasResult = phase("aliases", committedPhases) { applyAliases(aliasEntries) }
     val ipedsReport =
       ipedsStart?.let { (run, ipedsNonNullBefore) ->
@@ -1358,6 +1429,21 @@ class CollegeScorecardLoader(
     // 1 = $0-30k, 2 = $30,001-48k, 3 = $48,001-75k, 4 = $75,001-110k, 5 = $110k+.
     private val INCOME_BANDS = 1..5
 
+    /**
+     * The two reference tables `colleges` foreign-keys into (0067), checked for
+     * emptiness before the `institutions` phase writes. Not every codebook
+     * table: only these two constrain a `colleges` row, and a check that
+     * demanded the other eight would fail an ingest that is perfectly able to
+     * succeed.
+     *
+     * A hand-kept copy of a fact the SCHEMA owns, so a later migration could add
+     * a third codebook foreign key and leave it with no precondition — silently
+     * restoring the wall of raw FK violations this check exists to replace.
+     * `internal` because `CollegeScorecardIngestTest` asserts it against
+     * `pg_constraint` for exactly that reason.
+     */
+    internal val REFERENCE_TABLES = listOf("us_states", "nces_locales")
+
     // -------------------------------------------------------------------------
     // CSV column names — the single source of truth (RFC 139): the row mappers
     // read through these constants and the REQUIRED_* assertion lists are
@@ -1366,6 +1452,7 @@ class CollegeScorecardLoader(
     // absent from the asserted header fails loudly (see the coverage test in
     // CollegeScorecardLoaderTest).
     // -------------------------------------------------------------------------
+
     private const val COL_UNITID = "UNITID"
     private const val COL_OPEID = "OPEID"
     private const val COL_INSTNM = "INSTNM"
@@ -1507,4 +1594,40 @@ class CollegeScorecardLoader(
     private const val CREDENTIAL_LEVEL_MIN = 1
     private const val CREDENTIAL_LEVEL_MAX = 8
   }
+}
+
+/**
+ * The message of [CollegeScorecardLoader.EmptyCodebookReferenceTablesException],
+ * built here because a `RuntimeException` superclass call cannot hold a `when`.
+ *
+ * It states the run's actual position rather than a remedy that has already been
+ * applied: which tables are empty, which codebook this run loaded (the phase runs
+ * first and `--codebooks` is required, so on a real run there IS one), and which
+ * phases have already COMMITTED — because this is thrown outside `phase(...)`,
+ * after `codebooks` and `subjects` wrote rows, so "nothing was written" would be
+ * false.
+ */
+private fun emptyReferenceTablesMessage(
+  emptyTables: List<String>,
+  codebookPath: String?,
+  committedPhases: List<String>,
+): String {
+  val cause =
+    if (codebookPath != null) {
+      "they are STILL empty after this run's `codebooks` phase loaded [$codebookPath], so that file " +
+        "publishes no rows for them — look at the codebook, not at the run"
+    } else {
+      "this run was given no codebook at all (only a direct loader call can do that; the ingest binary " +
+        "requires `--codebooks`) and the database has none loaded — re-run through `bin/ingest-colleges`"
+    }
+  val written =
+    if (committedPhases.isEmpty()) {
+      "no phase has committed and nothing was written"
+    } else {
+      "phase(s) $committedPhases have already COMMITTED"
+    }
+  return "codebook reference table(s) $emptyTables are EMPTY, so no college row can be written: " +
+    "`colleges.state` references `us_states (usps_code)` and `colleges.locale` references " +
+    "`nces_locales (code)` (migration 0067). $cause. The `institutions` phase was NOT started, " +
+    "$written, and no `college_index_build` row was written."
 }

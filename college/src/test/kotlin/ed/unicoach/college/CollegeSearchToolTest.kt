@@ -983,18 +983,26 @@ class CollegeSearchToolTest {
     }
 
   @Test
-  fun `a stored code with no codebook row leaves the college searchable with a null word`() =
+  fun `an unpublished locale code cannot be stored, and an absent one renders as null`() =
     runBlocking {
-      // colleges.locale's CHECK still admits 11..43, which is wider than the 12
-      // codes IPEDS publishes (D46). After RFC 150 D61 the index resolves that
-      // code through a LEFT JOIN, so the WORD is null and the COLLEGE stays --
-      // the "unknown (locale [N])" rendering is gone because the case it named
-      // (a code with no word) cannot reach this boundary any more.
-      insert(newCollege(846).copy(locale = 14))
+      // This test used to store locale 14 — inside the old
+      // `colleges_locale_range_check` (11..43) and outside the 12 codes IPEDS
+      // publishes — and assert the boundary rendered it as null. Migration 0067
+      // closed that gap at the source: `colleges.locale` is a foreign key onto
+      // `nces_locales`, so the code can no longer reach the database, let alone
+      // this boundary. Both halves of the new truth are asserted here.
+      val refused =
+        database.withConnection { session -> CollegesDao.upsert(session, newCollege(846).copy(locale = 14)) }
+      assertTrue(refused.isFailure, "an unpublished locale code must not be storable at all")
+
+      // And the absence that IS reachable — a college whose locale was never
+      // reported — is still an explicit null, never a bare number and never a
+      // missing key.
+      insert(newCollege(846).copy(locale = null))
 
       val first = ((tool.execute(buildJsonObject {}))["colleges"] as JsonArray).single().jsonObject
       assertTrue(first.containsKey("locale_type"), "the key is present, explicitly null")
-      assertEquals(JsonNull, first["locale_type"], "an unmapped code is an absence, never a bare number")
+      assertEquals(JsonNull, first["locale_type"], "an unknown locale is an absence, never a bare number")
       assertEquals(emptyList(), listViolations(first), "and it still trips no source-code guard")
     }
 

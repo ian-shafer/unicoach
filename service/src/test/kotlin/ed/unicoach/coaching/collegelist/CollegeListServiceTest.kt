@@ -4,6 +4,7 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.SqlSession
@@ -77,6 +78,10 @@ class CollegeListServiceTest {
           "convos, convo_requests, llm_requests, llm_responses, llm_responses_raw, students, users, colleges CASCADE",
       )
     }
+    // The published state/locale rows `colleges` foreign-keys into (0067).
+    // Truncating `colleges` does not empty them, but another suite on this
+    // shared database does, so each suite puts them back.
+    CodebookReferenceFixture.seed(sqlSession)
   }
 
   private val sqlSession =

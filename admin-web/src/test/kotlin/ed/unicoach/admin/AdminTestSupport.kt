@@ -11,6 +11,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimSupportDao
 import ed.unicoach.db.dao.ClaimsDao
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.CommitmentSupportDao
 import ed.unicoach.db.dao.CommitmentsDao
@@ -143,6 +144,10 @@ object AdminTestSupport {
       // is truncated explicitly: an orphan/unlinked call has no FK back to `users`, so
       // the user cascade alone would leave stale calls to pollute the unlinked-call test.
       conn.createStatement().use { it.execute("TRUNCATE TABLE users, colleges, jobs, llm_requests CASCADE") }
+      // The published state/locale rows `colleges` foreign-keys into (0067).
+      // Truncating `colleges` does not empty them, but another suite on this
+      // shared database does, so each suite puts them back.
+      CodebookReferenceFixture.seed(conn)
     }
   }
 

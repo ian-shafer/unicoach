@@ -5,8 +5,6 @@ import ed.unicoach.db.models.NewAthleticAssociation
 import ed.unicoach.db.models.NewCarnegieBasicClass
 import ed.unicoach.db.models.NewCarnegieSizeSetting
 import ed.unicoach.db.models.NewCipCode
-import ed.unicoach.db.models.NewIpedsRegion
-import ed.unicoach.db.models.NewNcesLocale
 import ed.unicoach.db.models.NewReligiousAffiliation
 import java.sql.Connection
 
@@ -64,10 +62,14 @@ internal object SearchIndexFixture {
   }
 
   /**
-   * The miniature codebook both suites filter and rebuild against: two regions,
-   * two locales, a Carnegie class and size, an affiliation, two athletic
-   * associations, a test policy, and the four CIP codes the program tests
-   * expand prefixes against.
+   * The miniature codebook both suites filter and rebuild against: the shared
+   * [CodebookReferenceFixture] region/state/locale vocabulary plus a Carnegie
+   * class and size, an affiliation, two athletic associations, a test policy,
+   * and the four CIP codes the program tests expand prefixes against.
+   *
+   * The counts of the shared half are NOT restated here — that fixture derives
+   * them from `db/data/codebooks.json`, so a number written down here would be a
+   * third copy of the vocabulary, wrong the day the codebook is regenerated.
    *
    * It is deliberately ONE set rather than a per-suite subset: two nearly-equal
    * seeds are two things to keep in step, and no row here creates a college, so
@@ -76,19 +78,20 @@ internal object SearchIndexFixture {
    * A row is not free, though. The rebuild suite proves an unknown code goes
    * NULL rather than dropping the college, so it names codes by their ABSENCE
    * from this seed — adding one here silently turns such a test into a
-   * tautology. Locale 43 is the live example: `CollegesDaoTest` needs it to
-   * resolve, so the rebuild suite uses 42 for "unknown". Pick an unseeded code
-   * there; do not seed a code a test needs missing.
+   * tautology. Since 0067 that argument only applies to the columns with NO
+   * foreign key: `colleges.region` (region 9, which the shared fixture omits
+   * for exactly this reason) and the `college_ipeds` code columns.
+   * `colleges.state` and `colleges.locale` can no longer HOLD a code the
+   * codebook does not name, which is the point of the constraint.
    */
   fun seedCodebooks(session: SqlSession) {
-    CodebooksDao.upsertIpedsRegion(session, NewIpedsRegion("far-west", 8, "Far West", "Far West CA")).getOrThrow()
-    CodebooksDao.upsertIpedsRegion(session, NewIpedsRegion("new-england", 1, "New England", "New England")).getOrThrow()
-    CodebooksDao
-      .upsertNcesLocale(session, NewNcesLocale("city-small", 13, "city", "small", "City: Small", "City: Small"))
-      .getOrThrow()
-    CodebooksDao
-      .upsertNcesLocale(session, NewNcesLocale("rural-remote", 43, "rural", "remote", "Rural: Remote", "Rural: Remote"))
-      .getOrThrow()
+    // The regions, states and locales come from the SHARED fixture, not from
+    // two hand-typed rows here: migration 0067 made `us_states` and
+    // `nces_locales` a precondition of inserting any college, so every suite in
+    // every module needs the same rows and there must be one copy of them. It
+    // omits the `other-us-jurisdictions` region on purpose, which is what keeps
+    // region 9 usable below as a code no codebook explains.
+    CodebookReferenceFixture.seed(session)
     CodebooksDao
       .upsertCarnegieBasicClass(
         session,

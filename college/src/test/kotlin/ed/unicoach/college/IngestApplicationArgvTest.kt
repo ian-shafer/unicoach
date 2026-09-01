@@ -15,8 +15,18 @@ import kotlin.test.assertTrue
 class IngestApplicationArgvTest {
   private val positional = arrayOf("institution.csv", "fields.csv", "aliases.json")
 
+  /**
+   * The codebook flag every `ok(...)` call supplies unless it names its own.
+   * `--codebooks` is REQUIRED since migration 0067 — `colleges.state` and
+   * `colleges.locale` reference the codebook tables — so a valid argv always
+   * carries one, and a test about some OTHER part of the grammar should not
+   * have to restate that.
+   */
+  private val codebooksFlag = "--codebooks=db/data/codebooks.json"
+
   private fun ok(vararg args: String): ArgvResult.Ok {
-    val result = parseArgv(arrayOf(*positional, *args))
+    val withCodebooks = if (args.any { it.startsWith("--codebooks=") }) args else arrayOf(codebooksFlag, *args)
+    val result = parseArgv(arrayOf(*positional, *withCodebooks))
     assertTrue(result is ArgvResult.Ok, "expected Ok, got $result")
     return result
   }
@@ -167,7 +177,7 @@ class IngestApplicationArgvTest {
       )
     val named = namedSources(parsed)
     assertEquals(
-      listOf("institution", "fields", "aliases", "hd", "ic", "adm", "completions"),
+      listOf("institution", "fields", "aliases", "hd", "ic", "adm", "completions", "codebooks"),
       named.map { it.first },
       "every file the run reads is named by the flag the operator typed",
     )
@@ -182,34 +192,45 @@ class IngestApplicationArgvTest {
   }
 
   @Test
-  fun `a run with no IPEDS group names only the three Scorecard sources`() {
-    assertEquals(listOf("institution", "fields", "aliases"), namedSources(ok()).map { it.first })
+  fun `a run with no IPEDS group names only the Scorecard sources and the codebook`() {
+    assertEquals(listOf("institution", "fields", "aliases", "codebooks"), namedSources(ok()).map { it.first })
   }
 
   // ---------------------------------------------------------------------------
-  // The generated codebook (RFC 147): optional, with its own provenance partner
+  // The generated codebook (RFC 147): REQUIRED since 0067, with its own
+  // provenance partner
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `a run with no codebook flag has no codebook source`() {
-    assertNull(ok().codebooks, "absent must stay absent — no fabricated repo default at this layer")
+  fun `a run with no codebook flag is refused, not defaulted`() {
+    val message = usage(*positional)
+    assertTrue(message.contains("--codebooks"), message)
+    assertTrue(message.contains("required"), message)
+    // And the refusal states WHY, so the caller is not left guessing which
+    // repo file the binary wanted: `bin/ingest-colleges` decides the path,
+    // this layer only insists there is one.
+    assertTrue(message.contains("colleges.state"), message)
   }
 
   @Test
   fun `the codebook flag carries the path, and its source flag the original argument`() {
-    assertEquals("db/data/codebooks.json", ok("--codebooks=db/data/codebooks.json").codebooks?.file?.path)
+    assertEquals("db/data/codebooks.json", ok("--codebooks=db/data/codebooks.json").codebooks.file.path)
     // Without a partner, the path IS the original argument.
-    assertEquals("db/data/codebooks.json", ok("--codebooks=db/data/codebooks.json").codebooks?.sourceArg)
+    assertEquals("db/data/codebooks.json", ok("--codebooks=db/data/codebooks.json").codebooks.sourceArg)
     val remote = ok("--codebooks=/tmp/scratch/codebooks.json", "--codebooks-source=s3://snap/codebooks.json")
-    assertEquals("/tmp/scratch/codebooks.json", remote.codebooks?.file?.path)
-    assertEquals("s3://snap/codebooks.json", remote.codebooks?.sourceArg)
+    assertEquals("/tmp/scratch/codebooks.json", remote.codebooks.file.path)
+    assertEquals("s3://snap/codebooks.json", remote.codebooks.sourceArg)
   }
 
   @Test
-  fun `a codebook source flag without its file is refused, never silently ignored`() {
+  fun `a codebook source flag without its file is refused as a missing codebook`() {
+    // Before 0067 this was its own refusal ("a provenance source for a codebook
+    // that was not supplied"). It cannot be any more: the codebook itself is
+    // required, so the missing-file refusal fires first and says the same thing
+    // more directly. One refusal, not two spellings of one.
     val message = usage(*positional, "--codebooks-source=s3://snap/codebooks.json")
-    assertTrue(message.contains("--codebooks-source"), message)
-    assertTrue(message.contains("was not supplied"), message)
+    assertTrue(message.contains("--codebooks"), message)
+    assertTrue(message.contains("required"), message)
   }
 
   @Test
@@ -244,7 +265,7 @@ class IngestApplicationArgvTest {
 
   @Test
   fun `a subjects source flag without its file is refused, never silently ignored`() {
-    val message = usage(*positional, "--subjects-source=s3://snap/subjects.json")
+    val message = usage(*positional, codebooksFlag, "--subjects-source=s3://snap/subjects.json")
     assertTrue(message.contains("--subjects-source"), message)
     assertTrue(message.contains("was not supplied"), message)
   }

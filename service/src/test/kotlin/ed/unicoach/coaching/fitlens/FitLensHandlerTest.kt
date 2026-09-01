@@ -10,6 +10,7 @@ import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimsDao
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.ClaimKind
@@ -78,6 +79,10 @@ class FitLensHandlerTest {
           "students, users CASCADE",
       )
     }
+    // The published state/locale rows `colleges` foreign-keys into (0067).
+    // Truncating `colleges` does not empty them, but another suite on this
+    // shared database does, so each suite puts them back.
+    CodebookReferenceFixture.seed(sqlSession)
   }
 
   private val sqlSession =

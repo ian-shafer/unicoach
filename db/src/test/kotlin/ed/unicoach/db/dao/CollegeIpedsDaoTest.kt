@@ -56,6 +56,10 @@ class CollegeIpedsDaoTest {
     connection.createStatement().use { stmt ->
       stmt.execute("TRUNCATE TABLE colleges, college_programs, college_ipeds, college_programs_census CASCADE")
     }
+    // The published state/locale rows `colleges` foreign-keys into since
+    // migration 0067. Truncating `colleges` does not empty them, but another
+    // suite on this shared database does, so each suite puts them back.
+    CodebookReferenceFixture.seed(session)
   }
 
   private val session =

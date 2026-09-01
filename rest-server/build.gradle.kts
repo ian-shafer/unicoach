@@ -47,6 +47,9 @@ dependencies {
   testImplementation(libs.jackson.dataformat.yaml)
   // Transport-seam fakes and recorded wire captures shared from the provider
   // modules, so the end-to-end tests drive the real providers (RFC 107).
+  // The published state/locale reference rows migration 0067 made a
+  // precondition of inserting any college row.
+  testImplementation(testFixtures(project(":db")))
   testImplementation(testFixtures(project(":chat")))
   testImplementation(testFixtures(project(":email")))
   testImplementation(testFixtures(project(":appstore")))

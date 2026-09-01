@@ -30,6 +30,9 @@ dependencies {
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)
+  // The published state/locale reference rows migration 0067 made a
+  // precondition of inserting any college row.
+  testImplementation(testFixtures(project(":db")))
   // The shared RFC 143 source-code guard (RFC 148 D9). :chat is otherwise not a
   // :college dependency; only the test fixture is pulled in, never main code.
   testImplementation(testFixtures(project(":chat")))

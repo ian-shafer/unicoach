@@ -1,7 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.common.util.DataSize
-import ed.unicoach.db.dao.ConstraintViolationException
+import ed.unicoach.db.dao.ConstraintDiagnostics
 import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.error.PermanentError
@@ -393,7 +393,9 @@ internal object CsvIngestSupport {
   /**
    * Buckets a post-DB upsert failure (mechanism C): a [TransientError] is a
    * retryable [SkipReason.Transient] kept at WARN (rare); a
-   * [ConstraintViolationException] is bucketed by its constraint name; any other
+   * failure carrying PostgreSQL diagnostics ([ConstraintDiagnostics] — a CHECK,
+   * a unique violation, or a FOREIGN KEY rejection) is bucketed by its
+   * constraint name; any other
    * [PermanentError] is an unkeyed [SkipReason.ConstraintViolation]; a null or
    * otherwise-unclassifiable failure is [SkipReason.UnknownFailure] — never
    * silently fused into an unnamed constraint violation. The per-row line is
@@ -417,7 +419,7 @@ internal object CsvIngestSupport {
   /**
    * Emits the per-row skip line for an upsert failure: the row's natural key and
    * line number plus the constraint/detail pulled from a
-   * [ConstraintViolationException] (null otherwise) and the categorized cause. A
+   * [ConstraintDiagnostics] failure (null otherwise) and the categorized cause. A
    * [SkipReason.Transient] stays WARN (rare, retryable); every other reason is
    * demoted to DEBUG so a drill-down shows which value failed without dumping
    * every row at WARN.
@@ -430,7 +432,12 @@ internal object CsvIngestSupport {
     line: Long,
     error: Throwable?,
   ) {
-    val violation = error as? ConstraintViolationException
+    // [ConstraintDiagnostics], not [ConstraintViolationException]: a `23503`
+    // arrives as a NotFoundException carrying the same two fields, and since
+    // migration 0067 a row rejected by `colleges_state_codebook_fkey` is a
+    // routine skip. Matching only the CHECK/unique type logged that skip as
+    // [constraint=null] [detail=null] — the two things that name the value.
+    val violation = error as? ConstraintDiagnostics
     val constraintName = violation?.constraint
     val detail = violation?.detail
     val message = "Skipping [$kind] row [$keyName={}] [line={}] [constraint={}] [detail={}]: [{}]"
@@ -445,12 +452,17 @@ internal object CsvIngestSupport {
    * Pure classifier (no logging, no mutation) mapping an upsert failure to its
    * [SkipReason] bucket. Null-guarded first so a missing exception is an explicit
    * [SkipReason.UnknownFailure], never an unnamed constraint violation.
+   *
+   * The named bucket keys off [ConstraintDiagnostics], which BOTH violation
+   * types implement: a foreign-key rejection is a `NotFoundException`, and
+   * bucketing it under the unnamed `PermanentError` arm below lost the
+   * constraint that says which value was bad.
    */
   fun classifyUpsertFailure(error: Throwable?): SkipReason =
     when (error) {
       null -> SkipReason.UnknownFailure
       is TransientError -> SkipReason.Transient
-      is ConstraintViolationException -> SkipReason.ConstraintViolation(error.constraint)
+      is ConstraintDiagnostics -> SkipReason.ConstraintViolation(error.constraint)
       is PermanentError -> SkipReason.ConstraintViolation(null)
       else -> SkipReason.UnknownFailure
     }

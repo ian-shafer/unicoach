@@ -11,6 +11,23 @@ sealed class DaoException(
 ) : RuntimeException(message, cause)
 
 /**
+ * A write failure carrying PostgreSQL's own diagnostics: the violated
+ * [constraint] name and the server DETAIL line, which names the offending value
+ * (`Key (state)=(ZZ) is not present in table "us_states"`).
+ *
+ * It exists so a CONSUMER can ask for the diagnostics without knowing which
+ * SQLSTATE produced them. `23505`/`23514` arrive as [ConstraintViolationException]
+ * and `23503` as [NotFoundException]; both carry the same two fields, and an
+ * ingest that matched only the first one logged `[constraint=null] [detail=null]`
+ * for every row a foreign key rejected — which since migration 0067 is a routine
+ * `colleges` outcome, not an exotic one.
+ */
+interface ConstraintDiagnostics {
+  val constraint: String?
+  val detail: String?
+}
+
+/**
  * A row that had to exist did not. On the write path (a `23503` foreign-key
  * violation) it also carries the PostgreSQL diagnostics its `23505`/`23514`
  * sibling [ConstraintViolationException] carries -- the violated [constraint]
@@ -21,9 +38,10 @@ sealed class DaoException(
 class NotFoundException(
   message: String = "Record not found",
   cause: Throwable? = null,
-  val constraint: String? = null,
-  val detail: String? = null,
+  override val constraint: String? = null,
+  override val detail: String? = null,
 ) : DaoException(message, cause),
+  ConstraintDiagnostics,
   PermanentError
 
 /**
@@ -61,9 +79,10 @@ class StudentAlreadyExistsException(
  */
 class ConstraintViolationException(
   cause: Throwable,
-  val constraint: String? = null,
-  val detail: String? = null,
+  override val constraint: String? = null,
+  override val detail: String? = null,
 ) : DaoException("Database constraint violation", cause),
+  ConstraintDiagnostics,
   PermanentError
 
 class DatabaseException(
@@ -181,6 +200,25 @@ fun mapReferenceWriteError(
 }
 
 /**
+ * The `colleges` / `college_search_index` foreign keys that point at a CODEBOOK
+ * table rather than at `colleges` (migration 0067), each mapped to the table it
+ * points AT. Named so [mapCollegeWriteError] can tell "this college_id does not
+ * exist" from "this code is not in the published vocabulary", and so the message
+ * can say WHICH vocabulary instead of listing every one it might have been.
+ *
+ * These are schema-owned names restated in Kotlin, which is a copy: a rename in
+ * a migration without a change here silently reverts the message to "Referenced
+ * college not found". `CollegesDaoTest` provokes all three from the real
+ * database for exactly that reason.
+ */
+private val CODEBOOK_FOREIGN_KEYS =
+  mapOf(
+    "colleges_state_codebook_fkey" to "us_states",
+    "colleges_locale_codebook_fkey" to "nces_locales",
+    "college_search_index_state_fkey" to "us_states",
+  )
+
+/**
  * The write-path SQLSTATE mapping both college DAOs share: `23503` (FK -- a row
  * referencing an absent college) to [NotFoundException]; `23505`/`23514`
  * (unique/check) to [ConstraintViolationException] carrying the violated
@@ -202,9 +240,24 @@ internal fun mapCollegeWriteError(e: java.sql.SQLException): Exception {
   val serverError = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
   return when (e.sqlState) {
     "23503" -> {
+      // Two different absences arrive as one SQLSTATE, and saying "referenced
+      // college not found" about both would be a lie half the time. A row
+      // hanging off `colleges` can miss its COLLEGE; since migration 0067 a
+      // `colleges` (or `college_search_index`) row can also miss its CODEBOOK
+      // row, because `state` and `locale` reference `us_states` / `nces_locales`.
+      // The constraint name is what tells them apart, and the remedy differs:
+      // one is a dangling college_id, the other is an unloaded codebook.
+      val codebookTable = CODEBOOK_FOREIGN_KEYS[serverError?.constraint]
+      val message =
+        if (codebookTable != null) {
+          "Referenced codebook row not found in [$codebookTable] — the value names no published code, or " +
+            "that codebook table was never loaded [constraint=${serverError?.constraint}] " +
+            "[detail=${serverError?.detail}]"
+        } else {
+          "Referenced college not found [constraint=${serverError?.constraint}] [detail=${serverError?.detail}]"
+        }
       NotFoundException(
-        message =
-          "Referenced college not found [constraint=${serverError?.constraint}] [detail=${serverError?.detail}]",
+        message = message,
         cause = e,
         constraint = serverError?.constraint,
         detail = serverError?.detail,

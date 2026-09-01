@@ -19,6 +19,9 @@ dependencies {
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)
+  // The published state/locale reference rows migration 0067 made a
+  // precondition of inserting any college row.
+  testImplementation(testFixtures(project(":db")))
   // Transport-seam fake and signed App Store fixtures (RFC 110), so
   // SubscriptionServiceTest drives the real AppStoreServerApi.
   testImplementation(testFixtures(project(":appstore")))

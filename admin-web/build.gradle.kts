@@ -28,6 +28,9 @@ dependencies {
   implementation(libs.logstash.logback.encoder)
 
   testImplementation(libs.kotlin.test.junit5)
+  // The published state/locale reference rows migration 0067 made a
+  // precondition of inserting any college row.
+  testImplementation(testFixtures(project(":db")))
   testImplementation(libs.ktor.server.test.host)
   testImplementation(libs.ktor.client.cio)
 }

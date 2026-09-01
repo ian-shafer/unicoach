@@ -13,6 +13,7 @@ import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.ClaimsDao
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegesDao
@@ -99,6 +100,10 @@ class FitLensServiceTest {
           "llm_requests, llm_responses, llm_responses_raw, students, users CASCADE",
       )
     }
+    // The published state/locale rows `colleges` foreign-keys into (0067).
+    // Truncating `colleges` does not empty them, but another suite on this
+    // shared database does, so each suite puts them back.
+    CodebookReferenceFixture.seed(session)
   }
 
   private val session =

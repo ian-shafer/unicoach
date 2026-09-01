@@ -3,6 +3,7 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.rest.models.CreateCollegeListEntryRequest
 import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.RegisterRequest
@@ -106,6 +107,15 @@ class CollegeListRoutingTest {
     }
   }
 
+  /**
+   * The published `us_states` row `colleges.state` foreign-keys into since
+   * migration 0067. Seeded here rather than in a `@BeforeEach`: this suite
+   * shares an un-truncated dev database and only [seedCollege] needs the rows,
+   * and the fixture is idempotent, so the cheapest correct place is the one
+   * call site that would otherwise fail.
+   */
+  private fun seedCodebookReference() = CodebookReferenceFixture.seed(dbConnection)
+
   private fun seedCollege(): UUID {
     val id = UUID.randomUUID()
     // Each test class instance is fresh per @Test (JUnit default), so an
@@ -113,6 +123,7 @@ class CollegeListRoutingTest {
     // the un-truncated dev DB; a masked random int keeps ipeds_unit_id unique
     // across the whole suite without a shared counter.
     val uniqueIpedsUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
+    seedCodebookReference()
     dbConnection
       .prepareStatement(
         """

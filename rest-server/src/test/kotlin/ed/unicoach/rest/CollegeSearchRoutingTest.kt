@@ -4,6 +4,7 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.rest.models.RegisterRequest
@@ -99,10 +100,20 @@ class CollegeSearchRoutingTest {
       .trim()
   }
 
+  /**
+   * The published `us_states` row `colleges.state` foreign-keys into since
+   * migration 0067. Seeded here rather than in a `@BeforeEach`: this suite
+   * shares an un-truncated dev database and only [seedCollege] needs the rows,
+   * and the fixture is idempotent, so the cheapest correct place is the one
+   * call site that would otherwise fail.
+   */
+  private fun seedCodebookReference() = CodebookReferenceFixture.seed(dbConnection)
+
   /** A uniquely-named college this test alone matches, on the shared un-truncated dev DB. */
   private fun seedCollege(name: String): UUID {
     val id = UUID.randomUUID()
     val uniqueIpedsUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
+    seedCodebookReference()
     withTransaction {
       dbConnection
         .prepareStatement(

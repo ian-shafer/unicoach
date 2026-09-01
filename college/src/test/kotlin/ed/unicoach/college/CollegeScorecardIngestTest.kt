@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.db.dao.CodebookTable
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import kotlinx.coroutines.runBlocking
@@ -12,6 +13,7 @@ import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -29,6 +31,108 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
 
   private fun ingest(): CollegeScorecardLoader.IngestReport =
     runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
+
+  // ---------------------------------------------------------------------------
+  // The codebook precondition (migration 0067)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `an empty codebook reference table refuses the run by name, before any write`() {
+    // Migration 0067 made `us_states` / `nces_locales` a precondition of
+    // writing ANY college row. Left to the database that arrives as
+    // `colleges_state_codebook_fkey` once per row, from inside the
+    // `institutions` phase — a constraint name, not a remedy.
+    withSession { session ->
+      session.prepareStatement("TRUNCATE TABLE us_states, nces_locales CASCADE").use { it.execute() }
+    }
+
+    val thrown =
+      assertThrows<CollegeScorecardLoader.EmptyCodebookReferenceTablesException> { ingest() }
+
+    assertEquals(listOf("us_states", "nces_locales"), thrown.emptyTables)
+    // This suite calls the loader API directly, with no codebook, so the
+    // message says exactly that and points at `bin/ingest-colleges` — it does
+    // NOT tell the operator to run a phase this run already ran (the
+    // with-a-codebook wording is asserted in CodebookLoaderTest).
+    assertNull(thrown.codebookPath)
+    assertEquals(emptyList(), thrown.committedPhases)
+    assertTrue(thrown.message!!.contains("bin/ingest-colleges"), thrown.message!!)
+    // "before any write" is the claim, so it is the assertion: no college, no
+    // program, and no build row from a run that got as far as the CSVs.
+    // `college_index_build` is NOT asserted on: the base class does not
+    // truncate it, so it carries rows from earlier tests in this suite. The two
+    // tables this run would have written are the evidence.
+    withSession { session ->
+      assertEquals(0, count(session, "colleges"))
+      assertEquals(0, count(session, "college_programs"))
+    }
+  }
+
+  @Test
+  fun `one empty reference table is enough to refuse, and only the empty one is named`() {
+    withSession { session ->
+      session.prepareStatement("TRUNCATE TABLE nces_locales CASCADE").use { it.execute() }
+    }
+
+    val thrown =
+      assertThrows<CollegeScorecardLoader.EmptyCodebookReferenceTablesException> { ingest() }
+
+    assertEquals(listOf("nces_locales"), thrown.emptyTables)
+  }
+
+  @Test
+  fun `every codebook table colleges foreign-keys into is checked by the precondition`() {
+    // REFERENCE_TABLES is a hand-kept copy of a fact `pg_constraint` owns. A
+    // migration adding a third codebook foreign key to `colleges` without
+    // adding it here would give that column NO precondition, and the failure
+    // would come back as the per-row raw violation 0067 replaced.
+    val referenced =
+      withSession { session ->
+        session
+          .prepareStatement(
+            """
+            SELECT DISTINCT parent.relname AS parent
+            FROM pg_constraint c
+            JOIN pg_class child ON child.oid = c.conrelid
+            JOIN pg_class parent ON parent.oid = c.confrelid
+            WHERE c.contype = 'f' AND child.relname = 'colleges'
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.executeQuery().use { rs ->
+              buildList { while (rs.next()) add(rs.getString("parent")) }
+            }
+          }
+      }
+    val codebookTables = CodebookTable.entries.map { it.tableName }.toSet()
+
+    assertEquals(
+      CollegeScorecardLoader.REFERENCE_TABLES.toSet(),
+      referenced.filter { it in codebookTables }.toSet(),
+      "every codebook table `colleges` references must be in REFERENCE_TABLES: $referenced",
+    )
+  }
+
+  @Test
+  fun `the precondition message states what committed, not a phase the run already ran`() {
+    // The wording for the shape a real run takes: `--codebooks` is required at
+    // the entry point and the codebooks phase runs FIRST, so by the time this
+    // is thrown the phase named in any "run the codebooks phase" advice has
+    // already run AND COMMITTED. The exception is thrown outside `phase(...)`,
+    // so it carries the committed list itself — nothing else would report it.
+    val thrown =
+      CollegeScorecardLoader.EmptyCodebookReferenceTablesException(
+        emptyTables = listOf("us_states"),
+        codebookPath = "db/data/codebooks.json",
+        committedPhases = listOf("codebooks", "subjects"),
+      )
+
+    val message = thrown.message!!
+    assertTrue(message.contains("db/data/codebooks.json"), message)
+    assertTrue(message.contains("STILL empty"), "it says what happened, not what to run: $message")
+    assertTrue(message.contains("[codebooks, subjects]"), "the committed phases are named: $message")
+    assertTrue(message.contains("COMMITTED"), message)
+    assertFalse(message.contains("Nothing was written"), "two phases DID write: $message")
+  }
 
   // ---------------------------------------------------------------------------
   // Header assertion (fatal, before any write)

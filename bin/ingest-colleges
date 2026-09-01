@@ -20,7 +20,11 @@ printed change summary and one college_index_build provenance row.
 
 Every run also loads the generated published codebook (RFC 147) as its
 `codebooks` phase, before the attribute phases: db/data/codebooks.json by
-default, overridable with --codebooks-source=PATH (or an s3:// URL). The load
+default, overridable with --codebooks-source=PATH (or an s3:// URL). The JVM
+entry point REQUIRES it (migration 0067 made `colleges.state` and
+`colleges.locale` foreign keys onto the codebook tables, so a run without one
+can write no college row); this launcher is what supplies the path, because a
+deployed binary has no repo layout to guess from. The load
 upserts the ten reference domains, REFUSES to delete a row still referenced,
 reports any drift in the recorded source digests, and — after the row phases —
 reports every stored code with no codebook row (D46). Regenerate the file with

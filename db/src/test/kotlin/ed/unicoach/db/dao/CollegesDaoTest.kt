@@ -402,10 +402,70 @@ class CollegesDaoTest {
   }
 
   @Test
-  fun `state of length not two is rejected`() {
-    val result = CollegesDao.upsert(session, newCollege(100700, state = "CAL"))
-    assertTrue(result.isFailure)
-    assertTrue(result.exceptionOrNull() is ConstraintViolationException)
+  fun `a state the published codebook does not name is rejected`() {
+    // Migration 0067 replaced `colleges_state_length_check` with a real
+    // foreign key onto `us_states (usps_code)`, so this covers strictly more
+    // than the old "length must be 2" test did: "CAL" is the wrong SHAPE and
+    // "ZZ" is the right shape naming nothing, and the length check only ever
+    // caught the first.
+    for (state in listOf("CAL", "ZZ")) {
+      val result = CollegesDao.upsert(session, newCollege(100700, state = state))
+      assertTrue(result.isFailure, "expected state [$state] to be rejected")
+      val error = result.exceptionOrNull()
+      assertIs<NotFoundException>(error, "[$state]: $error")
+      assertEquals("colleges_state_codebook_fkey", error.constraint, "[$state]")
+      // And the message says CODEBOOK, not "referenced college not found":
+      // the two absences share SQLSTATE 23503 and do not share a remedy.
+      assertTrue(error.message!!.contains("codebook"), "[$state]: ${error.message}")
+    }
+  }
+
+  @Test
+  fun `a locale the published codebook does not name is rejected`() {
+    // The same tightening on the numeric half: 42 is inside the 11..43 range
+    // the dropped `colleges_locale_range_check` allowed and is only a real
+    // locale because `nces_locales` says so. 14 was never a locale and the
+    // range check let it through.
+    for (locale in listOf(14, 44)) {
+      val result = CollegesDao.upsert(session, newCollege(100701, locale = locale))
+      assertTrue(result.isFailure, "expected locale [$locale] to be rejected")
+      val error = result.exceptionOrNull()
+      assertIs<NotFoundException>(error, "[$locale]: $error")
+      assertEquals("colleges_locale_codebook_fkey", error.constraint, "[$locale]")
+    }
+  }
+
+  @Test
+  fun `the search index cannot hold a state the codebook does not name, and the map says which table`() {
+    // 0067's third foreign key. It is provoked from the REAL schema rather than
+    // asserted against a hand-made SQLException, because the thing that can
+    // break is the NAME: `CODEBOOK_FOREIGN_KEYS` restates three schema-owned
+    // constraint names, and a rename in a later migration would silently demote
+    // this message back to "Referenced college not found".
+    // Upserted WITHOUT the rebuild `seed` performs: the rebuild would write the
+    // index row this insert needs to be the first one.
+    val collegeId = CollegesDao.upsert(session, newCollege(100702, state = "CA")).getOrThrow().id
+    val thrown =
+      assertFailsWith<SQLException> {
+        connection
+          .prepareStatement(
+            """
+            INSERT INTO college_search_index (
+                college_id, ipeds_unit_id, name, search_text, state, control, is_active
+            ) VALUES (?, 100702, 'Test U', 'test u', 'ZZ', 'public', true)
+            """.trimIndent(),
+          ).use { stmt ->
+            stmt.setObject(1, collegeId.value)
+            stmt.executeUpdate()
+          }
+      }
+
+    val mapped = mapCollegeWriteError(thrown)
+    assertIs<NotFoundException>(mapped, "$mapped")
+    assertEquals("college_search_index_state_fkey", mapped.constraint)
+    // The message names the table the value had to be IN, not a disjunction of
+    // every codebook table it might have been.
+    assertTrue(mapped.message!!.contains("[us_states]"), mapped.message!!)
   }
 
   @Test
@@ -1835,8 +1895,13 @@ class CollegesDaoTest {
     // The LEFT-JOIN discipline of the rebuild, asserted from the SEARCH side:
     // an INNER JOIN there would silently delete colleges from search, which is
     // the worst failure this table can have and the hardest to notice.
-    connection.createStatement().use { it.execute("DELETE FROM ipeds_regions CASCADE") }
-    seed(newCollege(908001, name = "Regionless College"))
+    // Region 9 (`other-us-jurisdictions`) is the one codebook code the shared
+    // fixture deliberately leaves unseeded, and `colleges.region` keeps a plain
+    // 0..9 range check rather than the foreign key `state` and `locale` gained
+    // in 0067 — so it is still storable and still unexplained. Deleting the
+    // whole `ipeds_regions` table is no longer an option: `us_states` (which
+    // every college now references) points at it.
+    seed(newCollege(908001, name = "Regionless College", region = 9))
 
     val page = CollegesDao.search(session, CollegeQuery(limit = 25)).page()
     assertEquals(listOf(908001), page.matches.map { it.ipedsUnitId })

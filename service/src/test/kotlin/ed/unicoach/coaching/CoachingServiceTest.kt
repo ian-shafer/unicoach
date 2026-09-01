@@ -12,6 +12,7 @@ import ed.unicoach.coaching.budget.exhaustedBudgetService
 import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.FitSuggestionsDao
@@ -107,6 +108,10 @@ class CoachingServiceTest {
           "claims, colleges, students, users CASCADE",
       )
     }
+    // The published state/locale rows `colleges` foreign-keys into (0067).
+    // Truncating `colleges` does not empty them, but another suite on this
+    // shared database does, so each suite puts them back.
+    CodebookReferenceFixture.seed(sqlSession)
   }
 
   /**

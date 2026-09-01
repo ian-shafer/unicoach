@@ -326,11 +326,12 @@ class CollegeSearchIndexRebuildTest {
   fun `every coded column tolerates an unknown code and none of them drops the college`() {
     SearchIndexFixture.seedCodebooks(session)
     // Every code here must be one the shared fixture does NOT seed, or the
-    // column resolves and the assertion below is asserting nothing. Locale 42
-    // is inside `colleges_locale_range_check` (11-43) and absent from
-    // `nces_locales`; 43 is NOT usable here because `CollegesDaoTest` needs it
-    // to resolve, and the seed is shared.
-    insertCollege(newCollege(200300, region = 9, locale = 42))
+    // column resolves and the assertion below is asserting nothing. `locale` is
+    // no longer among them: migration 0067 foreign-keys `colleges.locale` onto
+    // `nces_locales`, so an unknown locale can no longer be STORED, let alone
+    // reach the rebuild. Region 9 still can — `colleges.region` keeps a plain
+    // 0..9 range check — and so can every `college_ipeds` code column below.
+    insertCollege(newCollege(200300, region = 9))
     CollegeIpedsDao
       .upsert(
         session,
@@ -338,7 +339,6 @@ class CollegeSearchIndexRebuildTest {
       ).getOrThrow()
     assertEquals(1, CollegesDao.rebuildSearchIndex(session).getOrThrow())
     assertNull(stringOrNull("region", 200300))
-    assertNull(stringOrNull("locale", 200300))
     assertNull(stringOrNull("religious_affiliation", 200300))
     assertNull(stringOrNull("test_policy", 200300))
     assertNull(stringOrNull("carnegie_class", 200300))

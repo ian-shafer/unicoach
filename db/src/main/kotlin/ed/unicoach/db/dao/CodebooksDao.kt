@@ -579,7 +579,7 @@ object CodebooksDao {
 }
 
 /**
- * The eleven code-storing columns, each NAMED once (RFC 147).
+ * The twelve code-storing columns, each NAMED once (RFC 147).
  *
  * They are constants rather than a set of literals because two places need
  * them: [CodebooksDao.CODE_COLUMNS], the SQL identifier allowlist, and
@@ -605,6 +605,19 @@ object CodeColumns {
   val COLLEGE_PROGRAMS_CENSUS_CIP_CODE = CodeColumn("college_programs_census", "cip_code")
   val US_STATES_IPEDS_REGION = CodeColumn("us_states", "ipeds_region")
 
+  /**
+   * The DERIVED copy of `colleges.state`, and a reference in its own right since
+   * migration 0067 gave it `college_search_index_state_fkey`.
+   *
+   * It is listed even though the index is rebuilt wholesale from `colleges`,
+   * because the codebooks phase runs BEFORE that rebuild: at the moment a
+   * dropped state is deleted the index still holds the STALE value, so a map
+   * that named only `colleges.state` would let the delete reach the database and
+   * die as a raw foreign-key error instead of the named refusal every other
+   * codebook column gets.
+   */
+  val COLLEGE_SEARCH_INDEX_STATE = CodeColumn("college_search_index", "state")
+
   val ALL: Set<CodeColumn> =
     setOf(
       COLLEGES_REGION,
@@ -618,6 +631,7 @@ object CodeColumns {
       COLLEGE_IPEDS_TEST_POLICY,
       COLLEGE_PROGRAMS_CENSUS_CIP_CODE,
       US_STATES_IPEDS_REGION,
+      COLLEGE_SEARCH_INDEX_STATE,
     )
 }
 

@@ -996,7 +996,17 @@ class CodebookLoader(
       key = "us_states",
       table = CodebookTable.US_STATES,
       requiredEntryKeys = setOf("code", "name", "label_raw", "jurisdiction_kind", "ipeds_region"),
-      references = listOf(CodebookReference(CodeColumns.COLLEGES_STATE, Referent.KEY)),
+      references =
+        listOf(
+          CodebookReference(CodeColumns.COLLEGES_STATE, Referent.KEY),
+          // The search index too, since 0067: the codebooks phase runs BEFORE
+          // the search-index rebuild, so a state dropped from the published
+          // codebook is still held by the STALE index at the moment the delete
+          // runs. Without this the delete would be refused by
+          // `college_search_index_state_fkey` as a raw FK error rather than by
+          // the named refusal above.
+          CodebookReference(CodeColumns.COLLEGE_SEARCH_INDEX_STATE, Referent.KEY),
+        ),
     ),
     NCES_LOCALE(
       key = "nces_locale",

@@ -3,6 +3,7 @@ package ed.unicoach.college
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.SqlSession
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -42,6 +43,20 @@ abstract class CollegeScorecardTestBase {
     return File(url.toURI())
   }
 
+  /**
+   * Whether [resetDatabase] puts the `us_states` / `nces_locales` /
+   * `ipeds_regions` rows back after truncating them, for the suites that insert
+   * a college WITHOUT running a `codebooks` phase — which is all of them but
+   * one, and the reason this defaults to true rather than being pasted into six
+   * `@BeforeEach` hooks.
+   *
+   * `CodebookLoaderTest` overrides it to false: it asserts that the committed
+   * codebook loads as 59 `us_states` INSERTS on a first load, so a base class
+   * that pre-seeded 51 of them would break the one suite whose subject is the
+   * loader. It seeds explicitly in the one test that needs the rows.
+   */
+  protected open val seedsCodebookReference: Boolean get() = true
+
   @BeforeEach
   fun resetDatabase() =
     runBlocking {
@@ -63,9 +78,18 @@ abstract class CollegeScorecardTestBase {
               "carnegie_2021_size_settings, religious_affiliations, athletic_associations, " +
               "football_conferences, admission_test_policies, cip_codes, codebook_sources CASCADE",
           ).use { it.execute() }
+        if (seedsCodebookReference) CodebookReferenceFixture.seed(session)
       }
       Unit
     }
+
+  /**
+   * Puts the `us_states` / `nces_locales` / `ipeds_regions` rows back that
+   * [resetDatabase] just truncated, for a suite that inserts a college WITHOUT
+   * running a `codebooks` phase. [resetDatabase] calls it for every suite that
+   * leaves [seedsCodebookReference] true; the one that does not calls it here.
+   */
+  protected fun seedCodebookReference() = withSession { session -> CodebookReferenceFixture.seed(session) }
 
   protected fun <T> withSession(block: (SqlSession) -> T): T = runBlocking { database.withConnection(block) }
 

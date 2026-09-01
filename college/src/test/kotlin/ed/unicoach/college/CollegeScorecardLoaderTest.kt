@@ -4,6 +4,7 @@ import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.DatabaseException
 import ed.unicoach.db.dao.LockAcquisitionFailureException
+import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
 import kotlinx.coroutines.runBlocking
@@ -261,6 +262,32 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
     }
 
   @Test
+  fun `a row naming an unpublished state is skipped under its FK name, not as an unnamed violation`() =
+    runBlocking {
+      // Migration 0067 made `colleges.state` a foreign key, which turns a
+      // two-letter code that names nothing into a ROUTINE per-row rejection —
+      // SQLSTATE 23503, i.e. a NotFoundException, not the 23505/23514 the skip
+      // path used to be written for. Before the diagnostics were carried through
+      // this skip tallied as ConstraintViolation(null) and logged
+      // [constraint=null] [detail=null]: the row lost the name of what rejected
+      // it and the value that did it.
+      val unknownState = fixture("scorecard-institutions-unknown-state-fixture.csv")
+      val emptyFields = fixture("scorecard-fields-empty-fixture.csv")
+
+      val result = loader.load(unknownState, emptyFields)
+
+      assertEquals(2, result.collegesLoaded)
+      assertEquals(1, result.permanentSkips)
+      assertEquals(
+        1,
+        result.skipsByReason[SkipReason.ConstraintViolation("colleges_state_codebook_fkey")],
+        "the skip is bucketed by the FK that rejected it: ${result.skipsByReason}",
+      )
+      assertNull(withSession { CollegesDao.findByIpedsUnitId(it, 800800).getOrThrow() })
+      assertEquals(2, withSession { count(it, "colleges") })
+    }
+
+  @Test
   fun `an out-of-domain optional field is coerced to null, not rejected`() =
     runBlocking {
       // ADM_RATE=1.5 is an out-of-domain *optional* metric (mechanism A): it is
@@ -323,6 +350,19 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
       SkipReason.ConstraintViolation("colleges_control_valid_check"),
       CsvIngestSupport.classifyUpsertFailure(
         ConstraintViolationException(SQLException("boom"), "colleges_control_valid_check"),
+      ),
+    )
+    // A foreign-key rejection — a NotFoundException, the shape a `colleges`
+    // row with an unpublished state now takes — keeps its constraint name too.
+    assertEquals(
+      SkipReason.ConstraintViolation("colleges_state_codebook_fkey"),
+      CsvIngestSupport.classifyUpsertFailure(
+        NotFoundException(
+          message = "Referenced codebook row not found",
+          cause = SQLException("boom"),
+          constraint = "colleges_state_codebook_fkey",
+          detail = "Key (state)=(ZZ) is not present in table \"us_states\".",
+        ),
       ),
     )
     // A generic permanent DB error is an unkeyed ConstraintViolation, distinct
