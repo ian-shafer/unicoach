@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.MoneyProfileEdit
 import ed.unicoach.db.models.MoneyProfileId
@@ -18,7 +19,8 @@ import java.util.UUID
 
 /**
  * Data-access layer over the versioned mutable `money_profiles` entity
- * (RFC 134): one row per student, two tri-state profile fields. Stateless
+ * (RFC 134, third field by RFC 152): one row per student, three tri-state
+ * profile fields. Stateless
  * `object`, one [SqlSession] per call, transaction boundaries owned by the
  * caller. Composes the capability interfaces exactly as
  * [CollegeListEntriesDao] does, plus [SoftDeleteListable] for the admin
@@ -40,6 +42,8 @@ object MoneyProfilesDao :
       incomeBandStatus = parseStatus(rs.getString("income_band_status"), "income_band_status", id),
       residencyState = rs.getString("residency_state"),
       residencyStatus = parseStatus(rs.getString("residency_status"), "residency_status", id),
+      livingPlan = rs.getString("living_plan")?.let { parseLivingPlan(it, id) },
+      livingPlanStatus = parseStatus(rs.getString("living_plan_status"), "living_plan_status", id),
       version = rs.getInt("version"),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
@@ -74,6 +78,25 @@ object MoneyProfilesDao :
         value,
         ValidationError.InvalidFormat(expected = "a known IncomeBand value"),
         location = "money_profiles.income_band (row [${rowId.value}])",
+      )
+
+  /**
+   * The living-plan twin of [parseIncomeBand] (RFC 152). A stored string the
+   * enum does not know is row corruption -- the `money_profiles_living_plan_check`
+   * CHECK admits exactly the three member values -- so it throws rather than
+   * quietly relabelling the field as never asked. Reporting a corrupt plan as
+   * "unanswered" would have the coach ASK a question the family already
+   * answered, which is the one thing the tri-state exists to prevent.
+   */
+  private fun parseLivingPlan(
+    value: String,
+    rowId: MoneyProfileId,
+  ): LivingArrangement =
+    LivingArrangement.fromValue(value)
+      ?: throw CorruptPersistedValueException(
+        value,
+        ValidationError.InvalidFormat(expected = "a known LivingArrangement value"),
+        location = "money_profiles.living_plan (row [${rowId.value}])",
       )
 
   /** Whether a [SoftDeleteScope] admits a row with the given `deletedAt`. */
@@ -159,28 +182,39 @@ object MoneyProfilesDao :
   ): Result<MoneyProfile> {
     val sql =
       """
-      INSERT INTO money_profiles (student_id, income_band, income_band_status, residency_state, residency_status)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO money_profiles (
+        student_id, income_band, income_band_status, residency_state, residency_status,
+        living_plan, living_plan_status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (student_id) WHERE deleted_at IS NULL DO UPDATE SET
         version = money_profiles.version + 1,
         income_band = CASE WHEN ? THEN EXCLUDED.income_band ELSE money_profiles.income_band END,
         income_band_status = CASE WHEN ? THEN EXCLUDED.income_band_status ELSE money_profiles.income_band_status END,
         residency_state = CASE WHEN ? THEN EXCLUDED.residency_state ELSE money_profiles.residency_state END,
-        residency_status = CASE WHEN ? THEN EXCLUDED.residency_status ELSE money_profiles.residency_status END
+        residency_status = CASE WHEN ? THEN EXCLUDED.residency_status ELSE money_profiles.residency_status END,
+        living_plan = CASE WHEN ? THEN EXCLUDED.living_plan ELSE money_profiles.living_plan END,
+        living_plan_status = CASE WHEN ? THEN EXCLUDED.living_plan_status ELSE money_profiles.living_plan_status END
       RETURNING *
       """.trimIndent()
     return session.mutateReturning(
       sql,
       bind = { stmt ->
+        // Hand-numbered, and the order is load-bearing: seven VALUES binds
+        // first, then the six apply flags in the DO UPDATE's column order.
         stmt.setObject(1, input.studentId.value)
         stmt.setStringOrNull(2, fieldValue(input.income)?.value)
         stmt.setString(3, fieldStatus(input.income).value)
         stmt.setStringOrNull(4, fieldValue(input.residency))
         stmt.setString(5, fieldStatus(input.residency).value)
-        stmt.setBoolean(6, input.income != null)
-        stmt.setBoolean(7, input.income != null)
-        stmt.setBoolean(8, input.residency != null)
-        stmt.setBoolean(9, input.residency != null)
+        stmt.setStringOrNull(6, fieldValue(input.living)?.value)
+        stmt.setString(7, fieldStatus(input.living).value)
+        stmt.setBoolean(8, input.income != null)
+        stmt.setBoolean(9, input.income != null)
+        stmt.setBoolean(10, input.residency != null)
+        stmt.setBoolean(11, input.residency != null)
+        stmt.setBoolean(12, input.living != null)
+        stmt.setBoolean(13, input.living != null)
       },
       map = ::mapProfile,
       mapError = ::mapCreateUpdateError,
@@ -200,6 +234,8 @@ object MoneyProfilesDao :
           "income_band_status" to { stmt, i -> stmt.setString(i, input.incomeBandStatus.value) },
           "residency_state" to { stmt, i -> stmt.setStringOrNull(i, input.residencyState) },
           "residency_status" to { stmt, i -> stmt.setString(i, input.residencyStatus.value) },
+          "living_plan" to { stmt, i -> stmt.setStringOrNull(i, input.livingPlan?.value) },
+          "living_plan_status" to { stmt, i -> stmt.setString(i, input.livingPlanStatus.value) },
         ),
       map = ::mapProfile,
       mapError = ::mapCreateUpdateError,
@@ -219,6 +255,8 @@ object MoneyProfilesDao :
           "income_band_status" to { stmt, i -> stmt.setString(i, edit.incomeBandStatus.value) },
           "residency_state" to { stmt, i -> stmt.setStringOrNull(i, edit.residencyState) },
           "residency_status" to { stmt, i -> stmt.setString(i, edit.residencyStatus.value) },
+          "living_plan" to { stmt, i -> stmt.setStringOrNull(i, edit.livingPlan?.value) },
+          "living_plan_status" to { stmt, i -> stmt.setString(i, edit.livingPlanStatus.value) },
         ),
       map = ::mapProfile,
       mapError = ::mapCreateUpdateError,

@@ -6,6 +6,7 @@ import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -79,6 +80,30 @@ class CollegeListChatToolTest {
     assertEquals(
       listOf("considering", "applying", "admitted", "rejected"),
       properties["status"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content },
+    )
+    // RFC 152 D2a: the per-college living-plan override, in the ONE arrangement
+    // vocabulary, each wire name arriving with the words a student says it in.
+    assertEquals(
+      LivingArrangement.entries.map { it.value },
+      properties["living_plan"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content },
+    )
+    LivingArrangement.entries.forEach {
+      assertTrue(
+        properties["living_plan"]!!
+          .jsonObject["description"]!!
+          .jsonPrimitive.content
+          .contains(it.label),
+        "every wire name must arrive with its spoken label: [${it.label}]",
+      )
+    }
+    assertEquals(
+      "true",
+      properties["living_plan_clear"]!!.jsonObject["const"]!!.jsonPrimitive.content,
+      "living_plan_clear must carry const: true, so a compliant model can never emit false",
+    )
+    assertTrue(
+      description.contains("clear it to go back to their usual plan"),
+      "the override's reversibility must ride the description",
     )
   }
 
@@ -315,6 +340,121 @@ class CollegeListChatToolTest {
     assertEquals("reasons cannot be set on a remove", errorOf(withReasons), "got $withReasons")
 
     assertEquals(1, activeEntries(student).size, "a malformed remove must not touch the entry")
+  }
+
+  @Test
+  fun `a per-college living plan round-trips through the tool and reaches the version history`() {
+    // RFC 152 D2a. NULL is "no override, use the usual plan", so the column has
+    // three reachable states through this tool -- unset, set, and cleared back
+    // to unset -- and all three must be legible in the entry's own history.
+    val student = createStudent()
+    val college = seedCollege("Brown University")
+    execute(student, """{"action":"add","college_id":"${college.value}"}""")
+    assertNull(activeEntries(student).single().livingPlan, "an add with no plan leaves the override unset")
+
+    val set =
+      execute(student, """{"action":"update","college_id":"${college.value}","living_plan":"on_campus"}""")
+    assertNull(errorOf(set), "got $set")
+    assertEquals(LivingArrangement.ON_CAMPUS, activeEntries(student).single().livingPlan)
+    val echoed = collegeListOf(set).single()
+    assertEquals("on_campus", echoed["living_plan"]!!.jsonPrimitive.content)
+    assertEquals(
+      LivingArrangement.ON_CAMPUS.label,
+      echoed["living_plan_label"]!!.jsonPrimitive.content,
+      "the wire name never travels alone in the echo",
+    )
+    assertEquals(
+      CollegeListEntryStatus.CONSIDERING.value,
+      echoed["status"]!!.jsonPrimitive.content,
+      "a plan-only update leaves the status alone",
+    )
+
+    val changed =
+      execute(student, """{"action":"update","college_id":"${college.value}","living_plan":"with_family"}""")
+    assertEquals(LivingArrangement.WITH_FAMILY, activeEntries(student).single().livingPlan)
+    assertNull(errorOf(changed), "got $changed")
+
+    val cleared = execute(student, """{"action":"update","college_id":"${college.value}","living_plan_clear":true}""")
+    assertNull(errorOf(cleared), "got $cleared")
+    assertNull(activeEntries(student).single().livingPlan, "a clear returns the school to the usual plan")
+    assertNull(
+      collegeListOf(cleared).single()["living_plan"],
+      "and the echo says nothing rather than saying null: absent IS no override",
+    )
+
+    val history =
+      CollegeListEntriesDao
+        .listVersions(CostsTestDb.sqlSession, activeEntries(student).single().id)
+        .getOrThrow()
+    assertEquals(
+      listOf(null, LivingArrangement.ON_CAMPUS, LivingArrangement.WITH_FAMILY, null),
+      history.map { it.entity.livingPlan },
+      "log_college_list_entry_version must carry the new column, or the trail is lost silently",
+    )
+  }
+
+  @Test
+  fun `a living plan and its clear in one call is a structured error, and a plan on a remove is refused`() {
+    val student = createStudent()
+    val college = seedCollege("Brown University")
+    execute(student, """{"action":"add","college_id":"${college.value}"}""")
+
+    val both =
+      execute(
+        student,
+        """{"action":"update","college_id":"${college.value}","living_plan":"on_campus","living_plan_clear":true}""",
+      )
+    assertEquals("living_plan and living_plan_clear cannot both be set in one call", errorOf(both), "got $both")
+
+    val falseFlag =
+      execute(student, """{"action":"update","college_id":"${college.value}","living_plan_clear":false}""")
+    assertEquals(
+      "living_plan_clear must be true when present; omit it to leave the field unchanged",
+      errorOf(falseFlag),
+      "got $falseFlag",
+    )
+
+    val unknown = execute(student, """{"action":"update","college_id":"${college.value}","living_plan":"in_a_yurt"}""")
+    assertEquals("unknown living_plan value: [in_a_yurt]", errorOf(unknown), "got $unknown")
+
+    val onRemove = execute(student, """{"action":"remove","college_id":"${college.value}","living_plan":"on_campus"}""")
+    assertEquals("living_plan cannot be set on a remove", errorOf(onRemove), "got $onRemove")
+
+    // One refusal per KEY: a call carrying the clear flag must not be told the
+    // other key is the problem, or the caller retries the same call.
+    val clearOnRemove =
+      execute(student, """{"action":"remove","college_id":"${college.value}","living_plan_clear":true}""")
+    assertEquals("living_plan_clear cannot be set on a remove", errorOf(clearOnRemove), "got $clearOnRemove")
+
+    assertEquals(1, activeEntries(student).size, "no malformed call touched the entry")
+    assertNull(activeEntries(student).single().livingPlan)
+  }
+
+  @Test
+  fun `a clear on an add is refused by name, never accepted and dropped`() {
+    val student = createStudent()
+    val college = seedCollege("Brown University")
+
+    val result =
+      execute(student, """{"action":"add","college_id":"${college.value}","living_plan_clear":true}""")
+    assertEquals(
+      "living_plan_clear cannot be set on an add; there is no plan to clear yet",
+      errorOf(result),
+      "got $result",
+    )
+    assertTrue(activeEntries(student).isEmpty(), "and the refused call wrote nothing at all")
+  }
+
+  @Test
+  fun `an add can carry the school's own living plan in the same call`() {
+    val student = createStudent()
+    val college = seedCollege("Brown University")
+
+    val result =
+      execute(student, """{"action":"add","college_id":"${college.value}","living_plan":"with_family"}""")
+    assertNull(errorOf(result), "got $result")
+    assertEquals(LivingArrangement.WITH_FAMILY, activeEntries(student).single().livingPlan)
+    assertEquals("with_family", collegeListOf(result).single()["living_plan"]!!.jsonPrimitive.content)
   }
 
   @Test

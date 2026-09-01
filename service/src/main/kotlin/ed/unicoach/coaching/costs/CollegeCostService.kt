@@ -13,10 +13,12 @@ import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.CollegeMeritAid
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
@@ -183,6 +185,16 @@ data class CollegeCost(
    * which source is quiet; `college_admissions_profile` owns that report.
    */
   val meritAid: MeritPractice?,
+  /**
+   * The way of living this answer LEADS with, resolved once here from the
+   * school's own override and the family's usual plan (RFC 152 D2a), rather
+   * than re-derived by the renderer.
+   *
+   * It never narrows [breakdown]: all three arrangements stay in the payload
+   * (D2). A resolved plan decides what the coach leads with and what a
+   * comparison column holds constant, never what exists.
+   */
+  val chosen: ChosenLivingPlan,
 )
 
 /** The money-profile field statuses echoed with every result, so the coach knows the history. */
@@ -191,6 +203,18 @@ data class MoneyProfileStatuses(
   val incomeBand: IncomeBand?,
   val residencyStatus: AnswerStatus,
   val residencyState: String?,
+  /**
+   * The family's USUAL plan (RFC 152) -- where the student would live when they
+   * have the choice -- as the closed vocabulary rather than a status beside a
+   * nullable plan: a reader cannot state a plan nobody gave, and a corrupt
+   * answered-with-no-plan row cannot be re-labelled "never asked" here, which is
+   * exactly the harm [CollegeCostService.requireIntactAnswers] exists to refuse.
+   *
+   * It is never the whole answer for a given school: a school with its own
+   * `CollegeListEntry.livingPlan` overrides it, and the resolution lives in
+   * exactly one helper, [CollegeCostService.plannedLivingPlanOf].
+   */
+  val living: ComparedLivingPlan,
 )
 
 /**
@@ -230,15 +254,26 @@ data class CollegeCostProfile(
 }
 
 /**
+ * How many arrangements a school must PRICE before asking where the family
+ * plans to live can move a number they can see (RFC 152 D4).
+ *
+ * One priced arrangement -- or none -- leaves the family nothing to choose
+ * between, so the offer is not made. Named rather than a digit inside the gate,
+ * because the threshold IS the rule of the offer and a test asserting the
+ * boundary must not have to repeat a literal.
+ */
+private const val MIN_PRICED_ARRANGEMENTS_FOR_LIVING_PLAN_OFFER = 2
+
+/**
  * The upgrade invitations a cost result can carry (RFC 145), declared in the
  * order the coach should raise them — residency first, and that IS the wire
  * order, because [CollegeCostProfile.precisionOffersFor] filters [entries].
  * Each case names the `money_profiles` [field] it would fill and owns the rule
  * for when it is on offer; the sentence the coach may say lives with the
- * rendering, in [ed.unicoach.coaching.costs.CollegeCostChatTool]. So a third
- * upgrade (M4's living arrangement) is a member here plus a copy string there:
- * it cannot compile without deciding its own [appliesTo], and it cannot ship
- * without words.
+ * rendering, in [ed.unicoach.coaching.costs.CollegeCostChatTool]. The third
+ * upgrade (RFC 152's living plan) arrived exactly that way -- a member here
+ * plus a copy string there: it could not compile without deciding its own
+ * [appliesTo], and could not ship without words.
  *
  * Every rule is keyed off [AnswerStatus.UNANSWERED] rather than off the absence
  * of a value, and that is the whole point: an offer derived from a missing
@@ -315,6 +350,47 @@ enum class PrecisionOffer(
       moneyProfile: MoneyProfileStatuses,
       college: CollegeCost,
     ): Boolean = moneyProfile.incomeBandStatus == AnswerStatus.UNANSWERED && college.reportsBandPricing
+  },
+
+  /**
+   * Where the family plans to live (RFC 152 D4), declared LAST: declaration
+   * order is wire order, and residency and the income band change the NUMBER
+   * more often, so they are still raised first.
+   *
+   * Keyed off [AnswerStatus.UNANSWERED] like its two siblings, for the reason
+   * this enum's doc gives: a rule keyed off the missing VALUE would re-raise a
+   * declined topic on every cost answer.
+   *
+   * And gated on this school having at least two arrangements that carry a
+   * TOTAL -- priced, not merely present. An offer must never rest on a school
+   * with nothing to choose between -- the [reportsBandPricing] /
+   * [CollegeCost.reportsPublishedTuition] precedent -- and three arrangements
+   * whose totals are all null give the family nothing to choose between just as
+   * surely as one arrangement does: the answer would move no number they can
+   * see.
+   *
+   * A consequence worth naming, because it is a behaviour and not an accident:
+   * at a public college an unanswered or declined residency leaves the tuition
+   * line null, so no arrangement carries a total and this offer does not apply.
+   * That is the right order anyway -- residency is declared first here for
+   * exactly the reason that it is the cheaper question and the bigger
+   * correction -- but it means the living-plan question follows residency at a
+   * public school rather than riding beside it.
+   *
+   * Deliberately NOT gated on this school's own override: the offer fills the
+   * family's USUAL plan, which is a different fact from what they decided about
+   * one school, and a school-level answer never closes the global question.
+   */
+  LIVING_PLAN("living_plan") {
+    override fun appliesTo(
+      moneyProfile: MoneyProfileStatuses,
+      college: CollegeCost,
+    ): Boolean =
+      moneyProfile.living is ComparedLivingPlan.Unanswered &&
+        college.breakdown
+          ?.arrangements
+          ?.count { it.totalPerYearUsd != null }
+          .let { it != null && it >= MIN_PRICED_ARRANGEMENTS_FOR_LIVING_PLAN_OFFER }
   },
   ;
 
@@ -393,8 +469,8 @@ class CollegeCostService(
         .getOrThrow()
 
     val costs =
-      selection.map { college, listStatus ->
-        costOf(college, listStatus, moneyProfile, meritById[college.id], offersHousingByUnitId[college.ipedsUnitId])
+      selection.map { college, entry ->
+        costOf(college, entry, moneyProfile, meritById[college.id], offersHousingByUnitId[college.ipedsUnitId])
       }
 
     return CollegeCostProfile(
@@ -418,7 +494,17 @@ class CollegeCostService(
       result.isSuccess -> {
         val p = result.getOrThrow()
         requireIntactAnswers(p)
-        MoneyProfileStatuses(p.incomeBandStatus, p.incomeBand, p.residencyStatus, p.residencyState)
+        MoneyProfileStatuses(
+          incomeBandStatus = p.incomeBandStatus,
+          incomeBand = p.incomeBand,
+          residencyStatus = p.residencyStatus,
+          residencyState = p.residencyState,
+          // Read into the closed vocabulary at the one boundary that can still
+          // refuse a corrupt row: requireIntactAnswers above has already thrown
+          // for an answered status with no stored plan, so no case here has to
+          // invent a fallback.
+          living = comparedLivingPlanOf(p),
+        )
       }
 
       result.exceptionOrNull() is NotFoundException -> {
@@ -432,8 +518,47 @@ class CollegeCostService(
   }
 
   /**
-   * Guards `db/schema/0046`'s two `*_value_iff_answered_check` constraints in
-   * code, for BOTH money-profile fields: an answered status with no stored
+   * The stored (status, plan) pair read into the closed vocabulary, at the one
+   * boundary that still holds both halves (RFC 152).
+   *
+   * An ANSWERED status with no stored plan is row corruption, and
+   * [requireIntactAnswers] has already refused it one line above; the throw
+   * here is this function's totality guard, never a second opinion -- and
+   * deliberately never a fallback to [ComparedLivingPlan.Unanswered], which
+   * would tell a family that answered that we never asked.
+   *
+   * It takes the whole row rather than the pair, and refuses in the shape the
+   * DAOs and [requireStoredValueWhenAnswered] already use
+   * ([CorruptPersistedValueException] naming the column AND the row): a guard
+   * that fires because the impossible happened is exactly when an operator
+   * needs the row id, so all three messages about this column read the same.
+   */
+  private fun comparedLivingPlanOf(profile: MoneyProfile): ComparedLivingPlan =
+    when (profile.livingPlanStatus) {
+      AnswerStatus.ANSWERED -> {
+        ComparedLivingPlan.Answered(
+          profile.livingPlan
+            ?: throw CorruptPersistedValueException(
+              "null",
+              ValidationError.InvalidFormat(expected = "a value present when status is 'answered'"),
+              location = "money_profiles.living_plan (row [${profile.id.value}])",
+            ),
+        )
+      }
+
+      AnswerStatus.UNANSWERED -> {
+        ComparedLivingPlan.Unanswered
+      }
+
+      AnswerStatus.DECLINED -> {
+        ComparedLivingPlan.Declined
+      }
+    }
+
+  /**
+   * Guards the `*_value_iff_answered_check` constraints of `db/schema/0046`
+   * and `db/schema/0070` in code, for ALL THREE money-profile fields: an
+   * answered status with no stored
    * value is row corruption, surfaced as [CorruptPersistedValueException]
    * naming the column and row (the DAO convention,
    * [ed.unicoach.coaching.CoachingService]'s `renderMoneyField` precedent).
@@ -443,10 +568,16 @@ class CollegeCostService(
    * render `tuition_applicable: "unknown"` AND withhold the residency offer
    * that exists to resolve it — the one state the coach cannot talk its way
    * out of. Never folded into an unknown label or a silently missing offer.
+   *
+   * The living plan is audited for the same reason (RFC 152): an answered row
+   * with no stored plan would degrade to "no plan chosen", which reads exactly
+   * like "never asked" -- and the coach would then ASK a family a question they
+   * have already answered. A corrupt row is refused, never relabelled.
    */
   private fun requireIntactAnswers(profile: MoneyProfile) {
     requireStoredValueWhenAnswered(profile.incomeBandStatus, profile.incomeBand, "income_band", profile)
     requireStoredValueWhenAnswered(profile.residencyStatus, profile.residencyState, "residency_state", profile)
+    requireStoredValueWhenAnswered(profile.livingPlanStatus, profile.livingPlan, "living_plan", profile)
   }
 
   /** One status/value pair, in the shared message shape: the column that is corrupt, and the row it is in. */
@@ -468,7 +599,7 @@ class CollegeCostService(
   /** Assembles one college's [CollegeCost]; every rule lives in its named helper. */
   private fun costOf(
     college: College,
-    listStatus: CollegeListEntryStatus,
+    entry: CollegeListEntry,
     moneyProfile: MoneyProfileStatuses,
     merit: CollegeMeritAid?,
     offersOnCampusHousing: Boolean?,
@@ -476,13 +607,14 @@ class CollegeCostService(
     val netPrice = netPriceOf(college, moneyProfile)
     val control = controlOf(college, moneyProfile)
     warnOnHousingContradiction(college, offersOnCampusHousing)
+    val breakdown = CostBreakdown.of(college, tuitionLineOf(college, control), offersOnCampusHousing)
     return CollegeCost(
       collegeId = college.id,
       name = college.name,
       city = college.city,
       state = college.state,
       control = control,
-      listStatus = listStatus,
+      listStatus = entry.status,
       stickerCostOfAttendancePerYearUsd = college.costOfAttendancePerYearUsd,
       tuitionAndFeesInStatePerYearUsd = college.tuitionAndFeesInStatePerYearUsd,
       tuitionAndFeesOutOfStatePerYearUsd = college.tuitionAndFeesOutOfStatePerYearUsd,
@@ -493,15 +625,127 @@ class CollegeCostService(
       reportsPublishedTuition = reportsPublishedTuition(college),
       notReported = notReportedOf(college, netPrice, offersOnCampusHousing),
       reported = reportedOf(college, netPrice),
-      breakdown = CostBreakdown.of(college, tuitionLineOf(college, control), offersOnCampusHousing),
+      breakdown = breakdown,
       offersOnCampusHousing = offersOnCampusHousing,
       // A row with no merit measure under it is a citation with no facts, which
       // is not data: [MeritPractice.from] returns null and the result degrades
       // to no merit sub-object at all, exactly like a school with no row. The
       // rule lives there, so both tools cannot disagree about a school's silence.
       meritAid = merit?.let { MeritPractice.from(college.name, it) },
+      // Two rules, two helpers, orchestrated here: WHICH plan applies (the
+      // entry and the profile) is a different question from whether THIS
+      // school prices it (the breakdown and the housing flag).
+      chosen =
+        pricedLivingPlanOf(plannedLivingPlanOf(entry, moneyProfile), breakdown, offersOnCampusHousing, control),
     )
   }
+
+  /**
+   * The ONE home for RFC 152 D2a's resolution: **override -> default -> none**.
+   *
+   * A living plan is two different facts wearing one name. _Preference_ ("we'd
+   * rather he lived at home") is global and lives on the money profile.
+   * _Feasibility_ ("he can only live at home if the school is commutable") is a
+   * fact about the student-college PAIR and lives on the list entry. Our data
+   * cannot decide feasibility and never will -- the Scorecard prices a commuter
+   * category at essentially every school whether or not THIS student could
+   * commute to it -- so the school's own plan wins wherever the family set one.
+   *
+   * It also reports WHERE the plan came from ([LivingPlanSource]), because the
+   * two cases are two different sentences: "you told us this for this school"
+   * versus "this is your usual plan, assumed here". `with_family` is never
+   * inferred by us, so the assumed case must stay nameable.
+   *
+   * Pricing that plan is a SEPARATE job ([pricedLivingPlanOf]); [costOf]
+   * orchestrates the two. The resolution reads only what the family said, so it
+   * can be read and tested without dragging one school's price data through it.
+   */
+  private fun plannedLivingPlanOf(
+    entry: CollegeListEntry,
+    moneyProfile: MoneyProfileStatuses,
+  ): PlannedLivingPlan? {
+    entry.livingPlan?.let { return PlannedLivingPlan(it, LivingPlanSource.PER_COLLEGE) }
+    // Exhaustive over the closed vocabulary, with no `else`: the answered case
+    // is the only one that carries a plan, and a declined plan must stay
+    // distinguishable from a plan nobody has been asked for.
+    val default =
+      when (val answer = moneyProfile.living) {
+        is ComparedLivingPlan.Answered -> answer.plan
+        ComparedLivingPlan.Unanswered, ComparedLivingPlan.Declined -> return null
+      }
+    return PlannedLivingPlan(default, LivingPlanSource.PROFILE_DEFAULT)
+  }
+
+  /**
+   * Whether THIS school prices the resolved plan, and the reason when it does
+   * not (RFC 152 D2a) -- the pricing half of the resolution [costOf] runs.
+   *
+   * THREE outcomes, because a school can fail to price a plan in two different
+   * ways and they are not the same fact:
+   *
+   * - the arrangement carries a total: [ChosenLivingPlan.Priced], the one shape
+   *   the coach leads with, and it always has a number;
+   * - the arrangement is here but carries no total (RFC 149 D-C's labelled
+   *   blank, or a tuition line waiting on residency):
+   *   [ChosenLivingPlan.NoTotalHere]. A chosen plan with neither a number nor a
+   *   statement about the missing one is the payload shape the tool description
+   *   never describes, so the silence is stated rather than shipped blank;
+   * - the arrangement is not here at all: [ChosenLivingPlan.NotPricedHere] with
+   *   the [ArrangementGap] reason, which is a claim about what the SCHOOL
+   *   published. Only this case may make that claim: saying "no published price
+   *   for it" because a part is missing, or because WE do not yet know which
+   *   tuition applies, would blame the school for our own gap (RFC 149 D-B).
+   *
+   * It never filters the breakdown: every arrangement stays in the payload, and
+   * a school is never given a substituted arrangement or a neighbour's figure.
+   */
+  private fun pricedLivingPlanOf(
+    planned: PlannedLivingPlan?,
+    breakdown: CostBreakdown?,
+    offersOnCampusHousing: Boolean?,
+    control: CollegeControl,
+  ): ChosenLivingPlan {
+    val (plan, source) = planned ?: return ChosenLivingPlan.NotChosen
+    val arrangement =
+      breakdown?.arrangements?.find { it.arrangement == plan }
+        ?: return ChosenLivingPlan.NotPricedHere(plan, source, ArrangementGap.of(plan, offersOnCampusHousing))
+    return if (arrangement.totalPerYearUsd != null) {
+      ChosenLivingPlan.Priced(arrangement, source)
+    } else {
+      ChosenLivingPlan.NoTotalHere(arrangement, source, noTotalReasonOf(arrangement, control))
+    }
+  }
+
+  /**
+   * WHY a shown arrangement carries no total (RFC 152) -- decided here, where
+   * the school's [control] and the family's own residency answer are both in
+   * hand, and never by the renderer.
+   *
+   * Three causes, and only one of them is the school's:
+   *
+   * - the tuition line is present, so what is missing is a component the school
+   *   did not publish: [NoTotalReason.PART_NOT_PUBLISHED];
+   * - no published tuition figure applies because OUR residency question is
+   *   still open at a public school: [NoTotalReason.AWAITING_RESIDENCY_ANSWER],
+   *   a gap of ours that one question closes;
+   * - no figure applies because this school's control is outside the vocabulary
+   *   (RFC 143): [NoTotalReason.TUITION_APPLICABILITY_UNKNOWN], also ours, and
+   *   no question the family can answer closes it.
+   *
+   * A missing line for an applicable tuition figure IS the school's silence, so
+   * it falls to [NoTotalReason.PART_NOT_PUBLISHED] with the components: the
+   * applicable figure was known and the school did not publish it.
+   */
+  private fun noTotalReasonOf(
+    arrangement: ArrangementCost,
+    control: CollegeControl,
+  ): NoTotalReason =
+    when {
+      arrangement.tuitionLine != null -> NoTotalReason.PART_NOT_PUBLISHED
+      applicableTuitionFor(control) != null -> NoTotalReason.PART_NOT_PUBLISHED
+      control is CollegeControl.Public -> NoTotalReason.AWAITING_RESIDENCY_ANSWER
+      else -> NoTotalReason.TUITION_APPLICABILITY_UNKNOWN
+    }
 
   /**
    * Says the IPEDS/Scorecard disagreement out loud (RFC 149 D-B): the published
@@ -801,6 +1045,7 @@ class CollegeCostService(
         incomeBand = null,
         residencyStatus = AnswerStatus.UNANSWERED,
         residencyState = null,
+        living = ComparedLivingPlan.Unanswered,
       )
   }
 }

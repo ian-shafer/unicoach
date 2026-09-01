@@ -7,6 +7,7 @@ import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
 import ed.unicoach.coaching.moneyprofile.UpsertMoneyProfileResult
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.error.FieldError
 import ed.unicoach.rest.auth.SessionConfig
@@ -104,14 +105,17 @@ class MoneyProfileRouteHandler(
   private fun parseUpdate(request: UpdateMoneyProfileRequest): ParsedUpdate {
     val income = parseIncomeUpdate(request)
     val residency = parseResidencyUpdate(request)
-    val errors = listOf(income, residency).filterIsInstance<FieldParse.Invalid>().flatMap { it.errors }
-    if (errors.isNotEmpty()) return ParsedUpdate.Invalid(errors)
-    // errors empty => neither parse is Invalid, so both field parses are Ok and the casts below cannot fail.
+    val living = parseLivingPlanUpdate(request)
+    // Every invalid field reports at once -- one 400 naming all of them, never
+    // just the first. The type check IS the guarantee the reads below are Ok,
+    // so nothing here rests on a comment.
+    if (income !is FieldParse.Ok || residency !is FieldParse.Ok || living !is FieldParse.Ok) {
+      return ParsedUpdate.Invalid(
+        listOf(income, residency, living).filterIsInstance<FieldParse.Invalid>().flatMap { it.errors },
+      )
+    }
     return ParsedUpdate.Ok(
-      MoneyProfileUpdate(
-        income = (income as FieldParse.Ok<IncomeBand>).update,
-        residency = (residency as FieldParse.Ok<String>).update,
-      ),
+      MoneyProfileUpdate(income = income.update, residency = residency.update, living = living.update),
     )
   }
 
@@ -174,12 +178,38 @@ class MoneyProfileRouteHandler(
     )
   }
 
+  /** Living plan: value/declined/clear are mutually exclusive; a value must be a known [LivingArrangement]; folds to one [FieldUpdate]. */
+  private fun parseLivingPlanUpdate(request: UpdateMoneyProfileRequest): FieldParse<LivingArrangement> {
+    val errors = mutableListOf<FieldError>()
+    val selections = listOf(request.livingPlan != null, request.livingPlanDeclined, request.livingPlanClear).count { it }
+    if (selections > 1) {
+      errors.add(FieldError("livingPlan", "At most one of livingPlan, livingPlanDeclined, livingPlanClear may be set"))
+    }
+    val plan =
+      request.livingPlan?.let { raw ->
+        val parsed = LivingArrangement.fromValue(raw)
+        if (parsed == null) errors.add(FieldError("livingPlan", "Unknown living plan value: [$raw]"))
+        parsed
+      }
+    if (errors.isNotEmpty()) return FieldParse.Invalid(errors)
+    return FieldParse.Ok(
+      when {
+        plan != null -> FieldUpdate.Set(plan)
+        request.livingPlanDeclined -> FieldUpdate.Decline
+        request.livingPlanClear -> FieldUpdate.Clear
+        else -> null
+      },
+    )
+  }
+
   private fun toPublicProfile(profile: MoneyProfile): PublicMoneyProfile =
     PublicMoneyProfile(
       incomeBandStatus = profile.incomeBandStatus.value,
       incomeBand = profile.incomeBand?.value,
       residencyStatus = profile.residencyStatus.value,
       residencyState = profile.residencyState,
+      livingPlanStatus = profile.livingPlanStatus.value,
+      livingPlan = profile.livingPlan?.value,
       version = profile.version,
       createdAt = profile.createdAt,
       updatedAt = profile.updatedAt,

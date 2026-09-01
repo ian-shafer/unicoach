@@ -5,12 +5,16 @@ import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegeIpedsDao
+import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeListEntryEdit
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.StudentId
@@ -58,6 +62,15 @@ object CostsTestDb {
   const val OTHER_EXPENSES_OFF_CAMPUS_PER_YEAR_USD = 3500
   const val OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD = 2500
 
+  /**
+   * The published tuition figures [seedCollege] seeds by default. Named for the
+   * same reason the component figures are: an expected arrangement total is a
+   * sum of these constants rather than a magic number that quietly stops
+   * matching the fixture.
+   */
+  const val TUITION_AND_FEES_IN_STATE_PER_YEAR_USD = 12000
+  const val TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD = 30000
+
   const val SOURCE_URL: String = "https://example.edu/cds-2024-25.pdf"
   const val ARCHIVE_URL: String = "https://www.collegedata.fyi/schools/example/2024-25"
 
@@ -74,6 +87,15 @@ object CostsTestDb {
       "students",
       "users",
     )
+    // `colleges.state` and `colleges.locale` are foreign keys into the codebook
+    // reference tables since migration 0067, so a college cannot be inserted
+    // until those vocabularies exist. They are seeded HERE, idempotently, and
+    // not left to whichever other suite happens to run first: the test database
+    // is recreated on every `bin/test`, and Gradle skips an up-to-date `:db:test`
+    // -- which is exactly the run in which nothing else seeds them and every
+    // fixture in this suite fails on a foreign key that has nothing to do with
+    // what it asserts.
+    CodebookReferenceFixture.seed(sqlSession)
   }
 
   /**
@@ -176,8 +198,8 @@ object CostsTestDb {
     netPricePerYearIncomeQ3Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q3_USD,
     netPricePerYearIncomeQ4Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q4_USD,
     netPricePerYearIncomeQ5Usd: Int? = NET_PRICE_PER_YEAR_INCOME_Q5_USD,
-    tuitionAndFeesInStatePerYearUsd: Int? = 12000,
-    tuitionAndFeesOutOfStatePerYearUsd: Int? = 30000,
+    tuitionAndFeesInStatePerYearUsd: Int? = TUITION_AND_FEES_IN_STATE_PER_YEAR_USD,
+    tuitionAndFeesOutOfStatePerYearUsd: Int? = TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD,
     medianDebtAtCompletionUsd: Int? = 23000,
     medianEarnings10yAfterEntryUsd: Int? = 55000,
     // The six published cost components (RFC 149). Defaulted to a complete,
@@ -275,9 +297,51 @@ object CostsTestDb {
       moneyProfiles.upsert(student, MoneyProfileUpdate(residency = FieldUpdate.Decline)).getOrThrow()
     }
 
+  /** The family's USUAL living plan (RFC 152) -- the money-profile default, not a claim about any one school. */
+  fun answerLivingPlan(
+    student: StudentId,
+    plan: LivingArrangement,
+  ) = runBlocking {
+    moneyProfiles.upsert(student, MoneyProfileUpdate(living = FieldUpdate.Set(plan))).getOrThrow()
+  }
+
+  fun declineLivingPlan(student: StudentId) =
+    runBlocking {
+      moneyProfiles.upsert(student, MoneyProfileUpdate(living = FieldUpdate.Decline)).getOrThrow()
+    }
+
   fun addToCollegeList(
     student: StudentId,
     collegeId: CollegeId,
     status: CollegeListEntryStatus = CollegeListEntryStatus.CONSIDERING,
   ) = CoachingTestDb.addToCollegeList(student, collegeId, status)
+
+  /**
+   * This school's OWN living plan (RFC 152 D2a) -- the per-college override.
+   * Written straight onto the row rather than through the chat tool, so a cost
+   * test can state the fixture it is about in one line; the tool's own path is
+   * asserted in [ed.unicoach.coaching.collegelist.CollegeListChatToolTest].
+   */
+  fun setEntryLivingPlan(
+    student: StudentId,
+    collegeId: CollegeId,
+    plan: LivingArrangement?,
+  ) {
+    val entry =
+      CollegeListEntriesDao
+        .listActiveByStudent(sqlSession, student)
+        .getOrThrow()
+        .single { it.collegeId == collegeId }
+    CollegeListEntriesDao
+      .update(
+        sqlSession,
+        CollegeListEntryEdit(
+          id = entry.id,
+          version = entry.version,
+          status = entry.status,
+          reasons = entry.reasons,
+          livingPlan = plan,
+        ),
+      ).getOrThrow()
+  }
 }

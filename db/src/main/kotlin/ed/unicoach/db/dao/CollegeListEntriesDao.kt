@@ -6,6 +6,7 @@ import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryEdit
 import ed.unicoach.db.models.CollegeListEntryId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentId
@@ -37,6 +38,10 @@ object CollegeListEntriesDao :
       collegeId = CollegeId(UUID.fromString(rs.getString("college_id"))),
       status = parseStatus(rs.getString("status")),
       reasons = rs.getString("reasons"),
+      livingPlan =
+        rs.getString("living_plan")?.let {
+          parseLivingPlan(it, rs.getString("id"))
+        },
       version = rs.getInt("version"),
       createdAt = rs.getInstant("created_at"),
       updatedAt = rs.getInstant("updated_at"),
@@ -54,6 +59,29 @@ object CollegeListEntriesDao :
   private fun parseStatus(value: String): CollegeListEntryStatus =
     CollegeListEntryStatus.fromValue(value)
       ?: throw CorruptPersistedValueException(value, ValidationError.InvalidFormat(expected = "a known CollegeListEntryStatus value"))
+
+  /**
+   * Reconstructs the per-college living-plan override (RFC 152). Same
+   * convention as [parseStatus]: the `college_list_entries_living_plan_check`
+   * CHECK admits exactly the three member values, so an unknown string is row
+   * corruption and throws. It is never softened to `null`, which the resolver
+   * reads as "no override, use the usual plan" -- that would silently answer
+   * this school with the wrong arrangement.
+   *
+   * It names its column and row, as its money-profile twin
+   * (`MoneyProfilesDao.parseLivingPlan`) does: a refusal that says only what the
+   * value was leaves an operator with no way to find the row that carries it.
+   */
+  private fun parseLivingPlan(
+    value: String,
+    rowId: String,
+  ): LivingArrangement =
+    LivingArrangement.fromValue(value)
+      ?: throw CorruptPersistedValueException(
+        value,
+        ValidationError.InvalidFormat(expected = "a known LivingArrangement value"),
+        location = "college_list_entries.living_plan (row [$rowId])",
+      )
 
   /** Whether a [SoftDeleteScope] admits a row with the given `deletedAt`. */
   private fun SoftDeleteScope.admits(deletedAt: java.time.Instant?): Boolean =
@@ -125,6 +153,7 @@ object CollegeListEntriesDao :
           "college_id" to { stmt, i -> stmt.setObject(i, input.collegeId.value) },
           "status" to { stmt, i -> stmt.setString(i, input.status.value) },
           "reasons" to { stmt, i -> stmt.setStringOrNull(i, input.reasons) },
+          "living_plan" to { stmt, i -> stmt.setStringOrNull(i, input.livingPlan?.value) },
         ),
       map = ::mapEntry,
       mapError = ::mapCreateUpdateError,
@@ -142,6 +171,7 @@ object CollegeListEntriesDao :
         linkedMapOf<String, Bind>(
           "status" to { stmt, i -> stmt.setString(i, edit.status.value) },
           "reasons" to { stmt, i -> stmt.setStringOrNull(i, edit.reasons) },
+          "living_plan" to { stmt, i -> stmt.setStringOrNull(i, edit.livingPlan?.value) },
         ),
       map = ::mapEntry,
       mapError = ::mapCreateUpdateError,

@@ -7,13 +7,16 @@ import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.MeritAidWire
 import ed.unicoach.coaching.costs.CostsTestDb.answerBand
+import ed.unicoach.coaching.costs.CostsTestDb.answerLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.answerResidency
 import ed.unicoach.coaching.costs.CostsTestDb.createStudent
 import ed.unicoach.coaching.costs.CostsTestDb.declineBand
+import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -286,7 +289,9 @@ class CollegeCostChatToolTest {
     assertEquals(
       listOf(PrecisionOffer.RESIDENCY.field, PrecisionOffer.INCOME_BAND.field),
       offerFieldsOf(college),
-      "both upgrades are on offer, and residency is index 0 - the cheaper question, the bigger correction",
+      "both upgrades are on offer, and residency is index 0 - the cheaper question, the bigger correction. " +
+        "The living plan is NOT offered here: residency is unanswered, so this public school's tuition line " +
+        "is null and no arrangement carries a total, which is nothing for the family to choose between (D4)",
     )
     val residency = offerCopyOf(college, PrecisionOffer.RESIDENCY.field)!!
     assertTrue(residency.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
@@ -304,7 +309,7 @@ class CollegeCostChatToolTest {
 
     collegesOf(execute(student)).forEach { college ->
       assertEquals(
-        listOf(PrecisionOffer.INCOME_BAND.field),
+        listOf(PrecisionOffer.INCOME_BAND.field, PrecisionOffer.LIVING_PLAN.field),
         offerFieldsOf(college),
         "a private school has one price, so residency buys nothing: [${college["name"]}]",
       )
@@ -322,7 +327,8 @@ class CollegeCostChatToolTest {
     assertEquals(
       listOf(PrecisionOffer.INCOME_BAND.field),
       offerFieldsOf(college),
-      "a declined residency is accepted permanently - the coach is never cued to reopen it",
+      "a declined residency is accepted permanently - the coach is never cued to reopen it. The living plan " +
+        "is not offered either: a declined residency leaves this public school's arrangements without totals",
     )
     assertEquals(
       "declined",
@@ -348,7 +354,7 @@ class CollegeCostChatToolTest {
     val byName = collegesOf(execute(student)).associateBy { it["name"]!!.jsonPrimitive.content }
     byName.values.forEach { college ->
       assertEquals(
-        listOf(PrecisionOffer.INCOME_BAND.field),
+        listOf(PrecisionOffer.INCOME_BAND.field, PrecisionOffer.LIVING_PLAN.field),
         offerFieldsOf(college),
         "residency is on file: [${college["name"]}]",
       )
@@ -382,12 +388,68 @@ class CollegeCostChatToolTest {
   }
 
   @Test
+  fun `a student who says they will live at home gets that total, with no housing and food line, in the same turn`() {
+    // The slice's first-session test, end to end through the two tools the
+    // coach actually calls: the write tool records the plan, and the very next
+    // cost read leads with it. Nothing in between, because "in the same turn"
+    // is the promise.
+    val student = createStudent()
+    seedListedCollege(student, "Same Turn U", control = 1)
+    answerResidency(student, "CA")
+
+    val offered = collegesOf(execute(student)).single()
+    assertTrue(
+      PrecisionOffer.LIVING_PLAN.field in offerFieldsOf(offered),
+      "before the answer, the question is on offer",
+    )
+    assertNull(offered[CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY], "and nothing is led with yet")
+
+    val write =
+      runBlocking {
+        MoneyProfileChatTool(CostsTestDb.moneyProfiles)
+          .execute(student, input("""{"living_plan":"with_family"}"""))
+      }
+    assertNull(write["error"], "got $write")
+
+    val after = collegesOf(execute(student)).single()
+    val chosen = after.getValue(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY).jsonObject
+    assertEquals(LivingArrangement.WITH_FAMILY.value, chosen.getValue("arrangement").jsonPrimitive.content)
+    assertEquals(
+      CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD + CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD +
+        CostsTestDb.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,
+      chosen
+        .getValue(CollegeCostChatTool.TOTAL_KEY)
+        .jsonPrimitive.content
+        .toInt(),
+      "a real total, from this school's own in-state tuition and its at-home allowances",
+    )
+    val atHome =
+      after
+        .getValue(CollegeCostChatTool.BREAKDOWN_KEY)
+        .jsonObject
+        .getValue(LivingArrangement.WITH_FAMILY.value)
+        .jsonObject
+    assertNull(
+      atHome[CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName],
+      "no housing and food line at all - that is data, never a zero: [$atHome]",
+    )
+    assertNull(atHome[CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD.wireName])
+    assertTrue(
+      PrecisionOffer.LIVING_PLAN.field !in offerFieldsOf(after),
+      "and the question is not asked twice",
+    )
+  }
+
+  @Test
   fun `a college with nothing to offer carries no precision_offer key`() {
     val student = createStudent()
     // Private, so residency buys nothing; band declined, so the income
     // invitation is closed for good. Nothing is left to offer.
     seedListedCollege(student, "Nothing To Offer U", control = 2)
     declineBand(student)
+    // RFC 152: the third field must be closed too, or the school's two priced
+    // ways of living keep an invitation alive. A decline closes it permanently.
+    declineLivingPlan(student)
 
     // Asserted on the RAW key, deliberately not through offerFieldsOf: that
     // helper folds an absent key and an empty array into the same empty list,
@@ -418,7 +480,8 @@ class CollegeCostChatToolTest {
     assertEquals(
       listOf(PrecisionOffer.INCOME_BAND.field),
       offerFieldsOf(byName.getValue("No Tuition U")),
-      "a college that publishes neither tuition figure has no upgrade to promise",
+      "a college that publishes neither tuition figure has no residency upgrade to promise - and no " +
+        "arrangement of its can carry a total, so it has no living-plan upgrade to promise either",
     )
     // One published figure still makes residency worth asking -- it decides
     // WHICH price applies -- and the offer copy promises no more than that,
@@ -429,7 +492,8 @@ class CollegeCostChatToolTest {
     assertEquals(
       listOf(PrecisionOffer.RESIDENCY.field, PrecisionOffer.INCOME_BAND.field),
       offerFieldsOf(inStateOnly),
-      "one published figure is still a price residency selects",
+      "one published figure is still a price residency selects - but until residency IS answered the " +
+        "tuition line stays null, so no arrangement totals and the living plan is not yet worth asking",
     )
     assertTrue(
       offerCopyOf(inStateOnly, PrecisionOffer.RESIDENCY.field)!!.contains("does not report the one that applies"),
@@ -530,7 +594,7 @@ class CollegeCostChatToolTest {
     assertEquals(
       listOf(PrecisionOffer.RESIDENCY.field),
       offerFieldsOf(college),
-      "an answered band needs no invitation; residency is still unanswered at this public school",
+      "an answered band needs no invitation, and the living plan waits on residency at a public school",
     )
 
     val profile = result.getValue("money_profile").jsonObject
@@ -876,7 +940,7 @@ class CollegeCostChatToolTest {
   private fun arrangementOf(
     college: JsonObject,
     arrangement: LivingArrangement,
-  ): JsonObject? = breakdownOf(college)?.get(arrangement.wireName)?.jsonObject
+  ): JsonObject? = breakdownOf(college)?.get(arrangement.value)?.jsonObject
 
   private fun intsOf(arrangement: JsonObject): Map<String, Int> =
     arrangement.mapValues {
@@ -917,9 +981,9 @@ class CollegeCostChatToolTest {
     val breakdown = assertNotNull(breakdownOf(college))
     assertEquals(
       listOf(
-        LivingArrangement.ON_CAMPUS.wireName,
-        LivingArrangement.OFF_CAMPUS.wireName,
-        LivingArrangement.WITH_FAMILY.wireName,
+        LivingArrangement.ON_CAMPUS.value,
+        LivingArrangement.OFF_CAMPUS.value,
+        LivingArrangement.WITH_FAMILY.value,
       ),
       breakdown.keys.toList(),
       "the arrangements ride in the order the coach reads them",
@@ -1253,9 +1317,9 @@ class CollegeCostChatToolTest {
 
     assertTrue(description.contains(CollegeCostChatTool.BREAKDOWN_KEY), "the new key must be described")
     assertTrue(
-      description.contains(LivingArrangement.WITH_FAMILY.wireName) &&
-        description.contains(LivingArrangement.ON_CAMPUS.wireName) &&
-        description.contains(LivingArrangement.OFF_CAMPUS.wireName),
+      description.contains(LivingArrangement.WITH_FAMILY.value) &&
+        description.contains(LivingArrangement.ON_CAMPUS.value) &&
+        description.contains(LivingArrangement.OFF_CAMPUS.value),
       "the three arrangements must be named",
     )
     assertTrue(
@@ -1278,6 +1342,44 @@ class CollegeCostChatToolTest {
       description.contains(CollegeCostChatTool.OFFERS_ON_CAMPUS_HOUSING_KEY) &&
         description.contains("has no residence halls"),
       "the no-dorms answer must be readable as one",
+    )
+    // RFC 152's chosen-arrangement block, in the same description.
+    assertTrue(
+      description.contains(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY),
+      "the chosen-arrangement key must be described",
+    )
+    assertTrue(
+      description.contains("Lead with it, name it in the student's own words"),
+      "a resolved plan is what the coach LEADS with, in the student's words",
+    )
+    assertTrue(
+      description.contains("never assume living at home for a school silently"),
+      "with_family is never inferred by us (D2a)",
+    )
+    assertTrue(
+      description.contains("never quote a different arrangement in its place") &&
+        description.contains("never carry a neighbour's figure across"),
+      "a school not priced for the plan gets its reason, never a substitute",
+    )
+    // Every shape is named by its CODE, never by which sibling keys are absent
+    // (RFC 152): the coach is told to read [CollegeCostChatTool.PRICING_KEY],
+    // and the no-total case says whose gap it is.
+    assertTrue(
+      description.contains(CollegeCostChatTool.PRICING_KEY) &&
+        LivingPlanPricing.entries
+          .filterNot { it == LivingPlanPricing.NOT_CHOSEN }
+          .all { description.contains("\"${it.value}\"") },
+      "the three resolved shapes are told apart by a code the description names",
+    )
+    assertTrue(
+      NoTotalReason.entries.all { description.contains("\"${it.value}\"") } &&
+        description.contains("are OUR gaps, so never say this school published no price") &&
+        description.contains("never add up what is there and call it the total"),
+      "and the no-total case says whose gap it is, so our own open question never blames a school's price list",
+    )
+    assertTrue(
+      description.contains("The other ways of living stay in ${CollegeCostChatTool.BREAKDOWN_KEY} and stay true"),
+      "the breakdown is never filtered (D2): a what-if stays answerable from the same result",
     )
     assertTrue(
       description.contains("never add figures from the two different years together"),
@@ -1428,7 +1530,7 @@ class CollegeCostChatToolTest {
         .getValue("living_arrangement")
         .jsonObject
     assertEquals(
-      listOf(LivingArrangement.OFF_CAMPUS.wireName, LivingArrangement.WITH_FAMILY.wireName),
+      listOf(LivingArrangement.OFF_CAMPUS.value, LivingArrangement.WITH_FAMILY.value),
       stringsOf(arrangement, "comparable"),
       "only a way of living every school is priced for may be held constant",
     )
@@ -1439,13 +1541,400 @@ class CollegeCostChatToolTest {
         .single()
         .jsonObject
     assertEquals("No Dorms U", gap.getValue("name").jsonPrimitive.content)
-    assertEquals(listOf(LivingArrangement.ON_CAMPUS.wireName), stringsOf(gap, "missing"))
+    assertEquals(listOf(LivingArrangement.ON_CAMPUS.value), stringsOf(gap, "missing"))
     assertEquals(
       ArrangementGap.NO_ON_CAMPUS_HOUSING.value,
       gap.getValue("reason").jsonPrimitive.content,
       "a school with no residence halls is stated as such, never as missing data",
     )
     assertTrue(statementOf(arrangement).isNotEmpty())
+  }
+
+  @Test
+  fun `the chosen living arrangement is emitted after the breakdown and before the vintage labels`() {
+    // The ordering is load-bearing and documented in place: the key re-keys a
+    // figure the breakdown already emitted, so a reader that met it BELOW the
+    // vintage labels would meet a dollar figure with no academic year beside
+    // it, and nothing -- no type, no other test -- would fail for it.
+    val student = createStudent()
+    seedListedCollege(student, "Ordered U")
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    val college = collegesOf(execute(student)).single()
+    val keys = college.keys.toList()
+    assertTrue(
+      keys.indexOf(CollegeCostChatTool.BREAKDOWN_KEY) < keys.indexOf(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY),
+      "the three arrangements are met before the one to lead with: [$keys]",
+    )
+    assertTrue(
+      keys.indexOf(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY) < keys.indexOf(ScorecardVintage.PUBLISHED_PRICE.wireName),
+      "and the chosen arrangement sits above the vintage labels: [$keys]",
+    )
+  }
+
+  @Test
+  fun `an assumed usual plan is rendered with its label, its total and the assumption named`() {
+    val student = createStudent()
+    seedListedCollege(student, "At Home U")
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    val chosen =
+      collegesOf(execute(student))
+        .single()
+        .getValue(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY)
+        .jsonObject
+    assertEquals(LivingArrangement.WITH_FAMILY.value, chosen.getValue("arrangement").jsonPrimitive.content)
+    assertEquals(
+      LivingArrangement.WITH_FAMILY.label,
+      chosen.getValue("label").jsonPrimitive.content,
+      "the wire name never travels without the words a student says it in",
+    )
+    assertEquals(LivingPlanSource.PROFILE_DEFAULT.value, chosen.getValue("source").jsonPrimitive.content)
+    assertEquals(
+      CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD + CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD +
+        CostsTestDb.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,
+      chosen
+        .getValue(CollegeCostChatTool.TOTAL_KEY)
+        .jsonPrimitive.content
+        .toInt(),
+      "the total is the breakdown's own for that arrangement, never re-summed here",
+    )
+    assertEquals(
+      LivingPlanPricing.PRICED.value,
+      chosen.getValue(CollegeCostChatTool.PRICING_KEY).jsonPrimitive.content,
+      "the priced case says so as a code, beside the number it leads with",
+    )
+    assertNull(chosen[CollegeCostChatTool.ARRANGEMENT_REASON_KEY], "a priced plan has no reason to give")
+    assertTrue(
+      statementOf(chosen).contains("usual plan, assumed"),
+      "the assumption is named in the same breath: [${statementOf(chosen)}]",
+    )
+    // The at-home arrangement carries no housing and food line, and the tool
+    // never renders one as a zero (brief 0003 D12).
+    val atHome =
+      collegesOf(execute(student))
+        .single()
+        .getValue(CollegeCostChatTool.BREAKDOWN_KEY)
+        .jsonObject
+        .getValue(LivingArrangement.WITH_FAMILY.value)
+        .jsonObject
+    assertNull(
+      atHome[CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD.wireName],
+      "living at home carries no housing and food line at all: [$atHome]",
+    )
+    assertNull(atHome[CostField.HOUSING_AND_FOOD_OFF_CAMPUS_PER_YEAR_USD.wireName])
+  }
+
+  @Test
+  fun `a school's own plan renders as told-us-so, and the other arrangements stay in the payload`() {
+    val student = createStudent()
+    val college = seedListedCollege(student, "Override U")
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+    CostsTestDb.setEntryLivingPlan(student, college, LivingArrangement.ON_CAMPUS)
+
+    val rendered = collegesOf(execute(student)).single()
+    val chosen = rendered.getValue(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY).jsonObject
+    assertEquals(LivingArrangement.ON_CAMPUS.value, chosen.getValue("arrangement").jsonPrimitive.content)
+    assertEquals(LivingPlanSource.PER_COLLEGE.value, chosen.getValue("source").jsonPrimitive.content)
+    assertTrue(
+      statementOf(chosen).contains("said they plan on"),
+      "a per-college plan is something the family SAID, not an assumption: [${statementOf(chosen)}]",
+    )
+    assertEquals(
+      LivingArrangement.entries.map { it.value },
+      rendered
+        .getValue(CollegeCostChatTool.BREAKDOWN_KEY)
+        .jsonObject.keys
+        .toList(),
+      "a chosen plan leads; it never removes a true fact from the payload (D2)",
+    )
+  }
+
+  @Test
+  fun `a school not priced for the chosen plan carries a reason and no total`() {
+    val student = createStudent()
+    CostsTestDb
+      .seedCollege(
+        "No Dorms U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ).also { CostsTestDb.addToCollegeList(student, it) }
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.ON_CAMPUS)
+
+    val chosen =
+      collegesOf(execute(student))
+        .single()
+        .getValue(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY)
+        .jsonObject
+    assertEquals(LivingArrangement.ON_CAMPUS.value, chosen.getValue("arrangement").jsonPrimitive.content)
+    assertEquals(
+      LivingPlanPricing.NOT_PRICED_HERE.value,
+      chosen.getValue(CollegeCostChatTool.PRICING_KEY).jsonPrimitive.content,
+    )
+    assertEquals(
+      ArrangementGap.NO_ON_CAMPUS_HOUSING.value,
+      chosen.getValue(CollegeCostChatTool.ARRANGEMENT_REASON_KEY).jsonPrimitive.content,
+    )
+    assertNull(chosen[CollegeCostChatTool.TOTAL_KEY], "there is no total to give, and none is invented")
+    assertTrue(
+      statementOf(chosen).contains("no residence halls") &&
+        statementOf(chosen).contains("never quote another way of living in its place"),
+      "the reason is said plainly and no arrangement is substituted: [${statementOf(chosen)}]",
+    )
+  }
+
+  @Test
+  fun `a chosen plan the school cannot total says so, and never ships a silent blank`() {
+    // The third shape, stated. The school shows this way of living but has no
+    // total for it, so the key carries no number -- and its own pricing code
+    // plus a no-total reason are what make that readable. The reason rides
+    // under its OWN key, never under the one that says what the SCHOOL
+    // published, which is the misattribution RFC 149 D-B forbids.
+    val student = createStudent()
+    CostsTestDb
+      .seedCollege("Silent Part U", housingAndFoodOffCampusPerYearUsd = null)
+      .also { CostsTestDb.addToCollegeList(student, it) }
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.OFF_CAMPUS)
+
+    val chosen =
+      collegesOf(execute(student))
+        .single()
+        .getValue(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY)
+        .jsonObject
+    assertEquals(LivingArrangement.OFF_CAMPUS.value, chosen.getValue("arrangement").jsonPrimitive.content)
+    assertNull(chosen[CollegeCostChatTool.TOTAL_KEY], "there is no total to give, and none is invented")
+    assertEquals(
+      LivingPlanPricing.NO_TOTAL_HERE.value,
+      chosen.getValue(CollegeCostChatTool.PRICING_KEY).jsonPrimitive.content,
+      "the case is a code, never three keys a reader has to notice the absence of",
+    )
+    assertEquals(
+      NoTotalReason.PART_NOT_PUBLISHED.value,
+      chosen.getValue(CollegeCostChatTool.NO_TOTAL_REASON_KEY).jsonPrimitive.content,
+      "this school published parts of it, so the missing part is the school's own silence",
+    )
+    assertNull(
+      chosen[CollegeCostChatTool.ARRANGEMENT_REASON_KEY],
+      "and never the SCHOOL-gap key: that vocabulary states what a price list does not carry",
+    )
+    assertTrue(
+      statementOf(chosen).contains("does not publish every part of what that way of living costs") &&
+        statementOf(chosen).contains("never add up what is there and call it the total"),
+      "the missing total is stated, and a partial sum is refused in the same breath: [${statementOf(chosen)}]",
+    )
+  }
+
+  @Test
+  fun `an open residency question names the gap as ours, and never as the school's price list`() {
+    // The same no-total shape, the other cause. A public school with our
+    // residency question still open publishes its prices in full, so the coach
+    // must be told the gap is OURS and what closes it -- never that this school
+    // publishes no price for that way of living (RFC 149 D-B).
+    val student = createStudent()
+    seedListedCollege(student, "Public Pending U")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    val chosen =
+      collegesOf(execute(student))
+        .single()
+        .getValue(CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY)
+        .jsonObject
+    assertEquals(
+      LivingPlanPricing.NO_TOTAL_HERE.value,
+      chosen.getValue(CollegeCostChatTool.PRICING_KEY).jsonPrimitive.content,
+    )
+    assertEquals(
+      NoTotalReason.AWAITING_RESIDENCY_ANSWER.value,
+      chosen.getValue(CollegeCostChatTool.NO_TOTAL_REASON_KEY).jsonPrimitive.content,
+      "our own open question, said as our own: the two causes of a missing total are two codes",
+    )
+    assertNull(chosen[CollegeCostChatTool.TOTAL_KEY], "and no total, because none applies until residency is answered")
+    assertTrue(
+      statementOf(chosen).contains("the gap is ours and not this school's") &&
+        statementOf(chosen).contains("Ask where the student is a resident"),
+      "the sentence says whose gap it is and what would close it: [${statementOf(chosen)}]",
+    )
+  }
+
+  @Test
+  fun `no plan and no override emits no chosen_living_arrangement key at all`() {
+    val student = createStudent()
+    seedListedCollege(student, "Unchosen U")
+
+    val college = collegesOf(execute(student)).single()
+    assertNull(
+      college[CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY],
+      "an absent key, never a null one: the family has said nothing, and the answer is what it always was",
+    )
+    assertEquals(
+      LivingArrangement.entries.map { it.value },
+      college
+        .getValue(CollegeCostChatTool.BREAKDOWN_KEY)
+        .jsonObject.keys
+        .toList(),
+    )
+  }
+
+  @Test
+  fun `a declined plan emits no chosen key and no living-plan offer, and echoes the decline`() {
+    val student = createStudent()
+    seedListedCollege(student, "Declined Plan U")
+    declineLivingPlan(student)
+
+    val result = execute(student)
+    val college = collegesOf(result).single()
+    assertNull(college[CollegeCostChatTool.CHOSEN_ARRANGEMENT_KEY])
+    assertTrue(
+      PrecisionOffer.LIVING_PLAN.field !in offerFieldsOf(college),
+      "a declined plan is accepted permanently - the coach is never cued to reopen it",
+    )
+    val profile = result.getValue("money_profile").jsonObject
+    assertEquals("declined", profile["living_plan_status"]!!.jsonPrimitive.content)
+    assertNull(profile["living_plan"], "a declined field carries no value")
+    assertNull(profile["living_plan_label"])
+  }
+
+  @Test
+  fun `the money_profile echo carries the plan with its spoken label, and the offer copy names the write tool`() {
+    val student = createStudent()
+    seedListedCollege(student, "Echo U")
+    answerLivingPlan(student, LivingArrangement.OFF_CAMPUS)
+
+    val result = execute(student)
+    val profile = result.getValue("money_profile").jsonObject
+    assertEquals("answered", profile.getValue("living_plan_status").jsonPrimitive.content)
+    assertEquals(LivingArrangement.OFF_CAMPUS.value, profile.getValue("living_plan").jsonPrimitive.content)
+    assertEquals(LivingArrangement.OFF_CAMPUS.label, profile.getValue("living_plan_label").jsonPrimitive.content)
+
+    // And the offer's own copy, on a student who has NOT answered the plan.
+    // Residency IS answered, because the offer rests on PRICED arrangements and
+    // a public school with no residency on file totals none of them (D4).
+    val other = createStudent()
+    seedListedCollege(other, "Offer U")
+    answerResidency(other, "CA")
+    val offer = offerCopyOf(collegesOf(execute(other)).single(), PrecisionOffer.LIVING_PLAN.field)!!
+    assertTrue(offer.contains(MoneyProfileChatTool.TOOL_NAME), "the offer must name the recording tool")
+    assertTrue(
+      offer.contains("one price picture instead of three"),
+      "and say what the answer unlocks, promising a narrowing rather than a number: [$offer]",
+    )
+  }
+
+  @Test
+  fun `the arrangement basis renders its code, the family's answer, and the per-school plans when they differ`() {
+    val student = createStudent()
+    val near = seedListedCollege(student, "Nearby U")
+    val far = seedListedCollege(student, "Faraway U")
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+    CostsTestDb.setEntryLivingPlan(student, far, LivingArrangement.ON_CAMPUS)
+
+    val arrangement =
+      assertNotNull(comparisonBasisOf(execute(student)))
+        .getValue("living_arrangement")
+        .jsonObject
+    assertEquals(
+      ArrangementScope.PLAN_VARIES_BY_SCHOOL.value,
+      arrangement.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content,
+      "the one comparison fact that used to ship only lists now ships a code too (D5)",
+    )
+    assertEquals("answered", arrangement.getValue("living_plan_status").jsonPrimitive.content)
+    assertEquals(LivingArrangement.WITH_FAMILY.value, arrangement.getValue("living_plan").jsonPrimitive.content)
+    assertEquals(
+      LivingArrangement.WITH_FAMILY.label,
+      arrangement.getValue("living_plan_label").jsonPrimitive.content,
+      "the family's usual plan never reaches the wire without the words they say it in",
+    )
+    val byCollege =
+      arrangement
+        .getValue("chosen_by_college")
+        .jsonArray
+        .map { it.jsonObject }
+        .associateBy { it.getValue("name").jsonPrimitive.content }
+    assertEquals(
+      LivingArrangement.WITH_FAMILY.value,
+      byCollege
+        .getValue("Nearby U")
+        .getValue("arrangement")
+        .jsonPrimitive.content,
+    )
+    assertEquals(
+      LivingPlanSource.PROFILE_DEFAULT.value,
+      byCollege
+        .getValue("Nearby U")
+        .getValue("source")
+        .jsonPrimitive.content,
+    )
+    assertEquals(
+      LivingArrangement.ON_CAMPUS.value,
+      byCollege
+        .getValue("Faraway U")
+        .getValue("arrangement")
+        .jsonPrimitive.content,
+    )
+    assertEquals(
+      LivingPlanSource.PER_COLLEGE.value,
+      byCollege
+        .getValue("Faraway U")
+        .getValue("source")
+        .jsonPrimitive.content,
+    )
+    assertEquals(
+      LivingArrangement.entries.map { it.value },
+      stringsOf(arrangement, "comparable"),
+      "and the comparable list is not narrowed by any of it (D2)",
+    )
+    assertTrue(near != far, "two distinct schools, or the case is not the one under test")
+  }
+
+  @Test
+  fun `with one plan everywhere the arrangement basis ships the code without a per-school list`() {
+    val student = createStudent()
+    seedListedCollege(student, "Home One U")
+    seedListedCollege(student, "Home Two U")
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    val arrangement =
+      assertNotNull(comparisonBasisOf(execute(student)))
+        .getValue("living_arrangement")
+        .jsonObject
+    assertEquals(
+      ArrangementScope.ONE_PLAN_EVERY_SCHOOL.value,
+      arrangement.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content,
+    )
+    assertNull(
+      arrangement["chosen_by_college"],
+      "with one plan everywhere the statement already says it; a per-school list would invite the coach " +
+        "to narrate a difference there is none of",
+    )
+  }
+
+  @Test
+  fun `with no plan on file the arrangement basis ships its code and no plan keys`() {
+    val student = createStudent()
+    seedListedCollege(student, "Quiet One U")
+    seedListedCollege(student, "Quiet Two U")
+    answerResidency(student, "CA")
+
+    val arrangement =
+      assertNotNull(comparisonBasisOf(execute(student)))
+        .getValue("living_arrangement")
+        .jsonObject
+    assertEquals(
+      ArrangementScope.NO_PLAN_COMPARABLE.value,
+      arrangement.getValue(CollegeCostChatTool.BASIS_KEY).jsonPrimitive.content,
+    )
+    assertEquals("unanswered", arrangement.getValue("living_plan_status").jsonPrimitive.content)
+    assertNull(arrangement["living_plan"], "an unanswered plan reaches the wire as a status and nothing more")
+    assertNull(arrangement["living_plan_label"])
+    assertNull(arrangement["chosen_by_college"])
   }
 
   @Test
@@ -1461,7 +1950,7 @@ class CollegeCostChatToolTest {
         .jsonObject
     assertNull(arrangement["incomplete_by_college"], "an absent key, never an empty array")
     assertEquals(
-      LivingArrangement.entries.map { it.wireName },
+      LivingArrangement.entries.map { it.value },
       stringsOf(arrangement, "comparable"),
     )
   }

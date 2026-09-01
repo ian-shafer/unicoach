@@ -50,7 +50,7 @@ class CollegeListEntriesResourceTest {
           .withConnection { session ->
             CollegeListEntriesDao.create(
               session,
-              NewCollegeListEntry(student.id, college.id, CollegeListEntryStatus.CONSIDERING, reasons),
+              NewCollegeListEntry(student.id, college.id, CollegeListEntryStatus.CONSIDERING, reasons, null),
             )
           }.getOrThrow()
       SeededEntry(

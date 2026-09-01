@@ -15,6 +15,7 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -673,6 +674,137 @@ class SystemPromptCatalogTest {
       "v11 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
     )
     assertTrue(v11.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+  }
+
+  /**
+   * The 0072 seed's structural contract (RFC 152 D6). v14 is ADDITIVE like
+   * every coach seed since 0047: the whole v13 body byte-identical as a prefix,
+   * joined by a single space to exactly one appended paragraph — the
+   * living-plan instruction. The paragraph's markers are asserted, not its full
+   * copy: the seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v14 is v13 plus one appended living-plan paragraph`() {
+    val appended = livingPlanParagraph()
+
+    assertTrue(
+      appended.startsWith(" A cost result may also carry a third precision_offer field"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    assertTrue(
+      appended.contains(PrecisionOffer.LIVING_PLAN.field),
+      "the paragraph must name the money-profile field the offer fills",
+    )
+    assertTrue(
+      appended.contains(PrecisionOffer.RESIDENCY.field) && appended.contains(PrecisionOffer.INCOME_BAND.field),
+      "and must place it AFTER the two offers that move the number more often (D4)",
+    )
+    assertTrue(
+      appended.contains("only when the result offers it") && appended.contains("cost is already what you are talking about"),
+      "the question is raised only when the result offers it and cost is already the subject",
+    )
+    assertTrue(
+      appended.contains("lead with that one way of living"),
+      "v14's whole point: an answered plan is what the coach LEADS with",
+    )
+    LivingArrangement.entries.forEach { arrangement ->
+      assertTrue(
+        appended.contains(arrangement.label),
+        "the plan is named in the student's own words, never as a wire key: [${arrangement.label}]",
+      )
+      assertFalse(
+        appended.contains(arrangement.value),
+        "and the wire key itself is never read aloud: [${arrangement.value}]",
+      )
+    }
+    assertTrue(
+      appended.contains("A plan set for one school wins over the usual plan at that school"),
+      "the per-college override (D2a), stated as the rule the coach applies",
+    )
+    assertTrue(
+      appended.contains("Living at home is never something you assume quietly"),
+      "with_family is never inferred by us: the assumption is named in the same breath",
+    )
+    assertTrue(
+      appended.contains("keep the correction as that school's own plan"),
+      "and a correction becomes that school's override, not a rewritten default",
+    )
+    assertTrue(
+      appended.contains("say the reason plainly") && appended.contains("no residence halls"),
+      "a school not priced for the plan gets its reason said, never a substituted arrangement",
+    )
+    assertTrue(
+      appended.contains("never quote a different arrangement in its place") &&
+        appended.contains("never carry a neighbour's figure across"),
+      "never a substitute and never a neighbour's figure",
+    )
+    assertTrue(
+      appended.contains("The other ways of living stay true and stay available"),
+      "the breakdown is never filtered (D2): a \"what if\" stays answerable from the same result",
+    )
+    assertTrue(
+      appended.contains("never raise the question again yourself"),
+      "a decline is permanent (brief 0001 D11)",
+    )
+    // RFCs 141/142 money language, carried into the new paragraph.
+    assertTrue(appended.contains("tuition and fees"), "the glossary term for the price the school sets")
+    assertTrue(appended.contains("housing and food"), "the glossary term that retires room and board")
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    assertEquals(
+      emptyList(),
+      Regex("""(.{0,6})subtract""")
+        .findAll(appended)
+        .map { it.groupValues[1] }
+        .toList()
+        .filterNot { it == "never " },
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+  }
+
+  /**
+   * RFC 142's source-jargon sentence and RFC 141's glossary pairs must survive
+   * RFC 152's append — and so must v7's money paragraph, whose "either field"
+   * wording RFC 152 deliberately did NOT reword (D6), and v11's comparison,
+   * v12's name-lookup and v13's similar-colleges paragraphs, which sit at
+   * interior positions of the body v14 keeps whole. Every one is extracted at
+   * runtime, never retyped here, so the chain is asserted rather than assumed
+   * as it lengthens.
+   */
+  @Test
+  fun `coach v14 preserves the source-jargon sentence and the money paragraph verbatim`() {
+    val sentence = sourceJargonSentence()
+    val v14 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v14").getOrThrow().body
+
+    assertTrue(
+      v14.contains(sentence),
+      "v14 must carry v6's source-jargon sentence byte-for-byte: [$sentence]",
+    )
+    assertTrue(v14.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+    assertTrue(v14.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
+    assertTrue(v14.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
+    assertTrue(
+      v14.contains(similarCollegesParagraph()),
+      "v13's similar-colleges paragraph must survive the append byte-for-byte",
+    )
+  }
+
+  /**
+   * The v14 living-plan paragraph: everything v14 appends to the v13 body.
+   * Guarded exactly as [comparisonParagraph] is — `removePrefix` is a silent
+   * no-op when the affix does not match, so the prefix is asserted before it is
+   * removed, and an empty remainder would let every `contains` pass vacuously.
+   */
+  private fun livingPlanParagraph(): String {
+    val v13 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v13").getOrThrow().body
+    val v14 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v14").getOrThrow().body
+    assertTrue(v14.startsWith(v13), "the v13 prefix must be byte-identical, so the new paragraph is the only change")
+    val appended = v14.removePrefix(v13)
+    assertTrue(appended.isNotEmpty(), "v14 must actually append something; an empty remainder means it equals v13")
+    return appended
   }
 
   /**

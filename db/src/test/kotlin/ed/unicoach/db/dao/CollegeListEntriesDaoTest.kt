@@ -4,6 +4,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryEdit
 import ed.unicoach.db.models.CollegeListEntryId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.SoftDeleteScope
@@ -123,7 +124,89 @@ class CollegeListEntriesDaoTest {
     collegeId: CollegeId,
     status: CollegeListEntryStatus = CollegeListEntryStatus.CONSIDERING,
     reasons: String? = null,
-  ): NewCollegeListEntry = NewCollegeListEntry(studentId, collegeId, status, reasons)
+    livingPlan: LivingArrangement? = null,
+  ): NewCollegeListEntry = NewCollegeListEntry(studentId, collegeId, status, reasons, livingPlan)
+
+  @Test
+  fun `every LivingArrangement member round-trips through the living_plan CHECK`() {
+    // The per-college twin of the money-profile binding test (RFC 152 D2a).
+    // LivingArrangement is ONE enum serving two tables, so this holds the
+    // Kotlin enum to `college_list_entries_living_plan_check` member-for-member
+    // -- a member added, removed or respelled on either side fails here for
+    // that member, not just for whichever plan another test happens to write.
+    val student = createStudent()
+    for (plan in LivingArrangement.entries) {
+      val college = createCollege()
+      val written =
+        CollegeListEntriesDao
+          .create(session, newEntry(student, college, livingPlan = plan))
+          .getOrThrow()
+      assertEquals(plan, written.livingPlan, "plan [$plan] must round-trip through the DB")
+
+      // And the same value survives an update, which is the path the override
+      // is actually written on: the chat tool and REST both write it wholesale.
+      val cleared =
+        CollegeListEntriesDao
+          .update(
+            session,
+            CollegeListEntryEdit(written.id, written.version, written.status, written.reasons, null),
+          ).getOrThrow()
+      assertNull(cleared.livingPlan, "NULL is 'no override', and it must be writable as such")
+    }
+  }
+
+  @Test
+  fun `a corrupt stored living plan is refused, never softened to no override`() {
+    // The CHECK makes this unreachable through the DAO, so the row is written
+    // with the constraint dropped for the length of the test -- the only way to
+    // exercise the mapper's corrupt-value path. Softening it to `null` would be
+    // read by the resolver as "no override, use the usual plan", which answers
+    // this school with the wrong arrangement and says nothing about it.
+    val student = createStudent()
+    val college = createCollege()
+    val entry =
+      CollegeListEntriesDao
+        .create(session, newEntry(student, college, livingPlan = LivingArrangement.OFF_CAMPUS))
+        .getOrThrow()
+
+    // `version = version + 1` because enforce_versioning refuses an UPDATE that
+    // does not bump it; the trigger is the entity's rule, not this test's
+    // obstacle, so it is obeyed rather than disabled.
+    connection.createStatement().use { stmt ->
+      stmt.execute("ALTER TABLE college_list_entries DROP CONSTRAINT college_list_entries_living_plan_check")
+      stmt.execute(
+        "UPDATE college_list_entries SET living_plan = 'in_a_yurt', version = version + 1 " +
+          "WHERE id = '${entry.id.value}'",
+      )
+    }
+
+    val error = CollegeListEntriesDao.findById(session, entry.id).exceptionOrNull()
+
+    // Restored BEFORE the assertions, and the row with it: the suite shares one
+    // database, so a corrupt row left behind would fail whichever test next
+    // lists every entry -- a failure with nothing to do with its own subject.
+    connection.createStatement().use { stmt ->
+      stmt.execute(
+        "UPDATE college_list_entries SET living_plan = 'off_campus', version = version + 1 " +
+          "WHERE id = '${entry.id.value}'",
+      )
+      stmt.execute(
+        "ALTER TABLE college_list_entries ADD CONSTRAINT college_list_entries_living_plan_check " +
+          "CHECK (living_plan IS NULL OR living_plan IN ('on_campus','off_campus','with_family'))",
+      )
+    }
+
+    assertTrue(error is CorruptPersistedValueException, "got $error")
+    assertEquals(
+      "in_a_yurt",
+      error.value,
+      "the failure must carry the value that defeated the enum, not merely that one did",
+    )
+    assertTrue(
+      error.message!!.contains("college_list_entries.living_plan") && error.message!!.contains(entry.id.value.toString()),
+      "and must name the corrupt column and row, as its money-profile twin does: [${error.message}]",
+    )
+  }
 
   private fun countVersions(id: CollegeListEntryId): Int {
     connection.prepareStatement("SELECT COUNT(*) FROM college_list_entries_versions WHERE id = ?").use { stmt ->
@@ -142,7 +225,7 @@ class CollegeListEntriesDaoTest {
 
     val entry =
       CollegeListEntriesDao
-        .create(session, NewCollegeListEntry(student, college, CollegeListEntryStatus.CONSIDERING, null))
+        .create(session, NewCollegeListEntry(student, college, CollegeListEntryStatus.CONSIDERING, null, null))
         .getOrThrow()
 
     assertEquals(student, entry.studentId)
@@ -227,14 +310,14 @@ class CollegeListEntriesDaoTest {
 
     val updated =
       CollegeListEntriesDao
-        .update(session, CollegeListEntryEdit(entry.id, entry.version, CollegeListEntryStatus.APPLYING, "Great fit"))
+        .update(session, CollegeListEntryEdit(entry.id, entry.version, CollegeListEntryStatus.APPLYING, "Great fit", null))
         .getOrThrow()
     assertEquals(2, updated.version)
     assertEquals(CollegeListEntryStatus.APPLYING, updated.status)
     assertEquals("Great fit", updated.reasons)
 
     val stale =
-      CollegeListEntriesDao.update(session, CollegeListEntryEdit(entry.id, entry.version, CollegeListEntryStatus.ADMITTED, null))
+      CollegeListEntriesDao.update(session, CollegeListEntryEdit(entry.id, entry.version, CollegeListEntryStatus.ADMITTED, null, null))
     assertTrue(stale.exceptionOrNull() is ConcurrentModificationException, "got ${stale.exceptionOrNull()}")
   }
 
@@ -275,9 +358,9 @@ class CollegeListEntriesDaoTest {
     val v1 = CollegeListEntriesDao.create(session, newEntry(student, college)).getOrThrow()
     val v2 =
       CollegeListEntriesDao
-        .update(session, CollegeListEntryEdit(v1.id, v1.version, CollegeListEntryStatus.APPLYING, "a"))
+        .update(session, CollegeListEntryEdit(v1.id, v1.version, CollegeListEntryStatus.APPLYING, "a", null))
         .getOrThrow()
-    CollegeListEntriesDao.update(session, CollegeListEntryEdit(v2.id, v2.version, CollegeListEntryStatus.ADMITTED, "b")).getOrThrow()
+    CollegeListEntriesDao.update(session, CollegeListEntryEdit(v2.id, v2.version, CollegeListEntryStatus.ADMITTED, "b", null)).getOrThrow()
 
     val versions = CollegeListEntriesDao.listVersions(session, v1.id).getOrThrow()
     assertEquals(listOf(1, 2, 3), versions.map { it.version })

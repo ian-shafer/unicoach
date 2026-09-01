@@ -2,12 +2,16 @@ package ed.unicoach.coaching.collegelist
 
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.putLivingPlan
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -35,54 +39,95 @@ class CollegeListChatTool(
 ) : StudentScopedChatTool() {
   override val name: String = TOOL_NAME
 
+  /**
+   * The input fields this tool accepts, built once and put into [definition]
+   * below -- so the schema the model is given and the guard that rejects unknown
+   * keys ([knownFields]) are the SAME object rather than two readings of one,
+   * and nothing has to be traversed or cast to recover it.
+   */
+  private val inputProperties: JsonObject =
+    buildJsonObject {
+      putJsonObject("action") {
+        put("type", "string")
+        putJsonArray("enum") { Action.entries.forEach { add(JsonPrimitive(it.value)) } }
+        put(
+          "description",
+          "What to do: add a school to the list, update a listed school's status and/or reasons, " +
+            "or remove a school from the list.",
+        )
+      }
+      putJsonObject("college_id") {
+        put("type", "string")
+        put(
+          "description",
+          "The college's identifier: the `college_id` field of a college search result or a college cost " +
+            "result, copied verbatim. Never construct or guess one.",
+        )
+      }
+      putJsonObject("status") {
+        put("type", "string")
+        putJsonArray("enum") { CollegeListEntryStatus.entries.forEach { add(JsonPrimitive(it.value)) } }
+        put(
+          "description",
+          "Where the student stands with this school. For add, omitted defaults to considering. " +
+            "For update, omitted leaves the status unchanged. An error on remove.",
+        )
+      }
+      putJsonObject("reasons") {
+        put("type", "string")
+        put(
+          "description",
+          "The student's own words for why this school. For update, omitted leaves the reasons " +
+            "unchanged. An error on remove.",
+        )
+      }
+      putJsonObject("living_plan") {
+        put("type", "string")
+        putJsonArray("enum") { LivingArrangement.entries.forEach { add(JsonPrimitive(it.value)) } }
+        put(
+          "description",
+          "Where the student plans to live AT THIS SCHOOL, when it differs from their usual plan: " +
+            LivingArrangement.entries.joinToString(", ") { "${it.value} (${it.label})" } +
+            ". Set this only when the student has said so about this school. Omitted leaves it " +
+            "unchanged. An error on remove.",
+        )
+      }
+      putJsonObject("living_plan_clear") {
+        put("type", "boolean")
+        put("const", true)
+        put(
+          "description",
+          "Literal true to drop this school's own living plan and go back to the student's usual " +
+            "plan; omit the field entirely to leave it unchanged (false is an error). An error on remove.",
+        )
+      }
+    }
+
   override val definition: JsonObject =
     buildJsonObject {
       put("name", TOOL_NAME)
       put("description", DESCRIPTION)
       putJsonObject("input_schema") {
         put("type", "object")
-        putJsonObject("properties") {
-          putJsonObject("action") {
-            put("type", "string")
-            putJsonArray("enum") { Action.entries.forEach { add(JsonPrimitive(it.value)) } }
-            put(
-              "description",
-              "What to do: add a school to the list, update a listed school's status and/or reasons, " +
-                "or remove a school from the list.",
-            )
-          }
-          putJsonObject("college_id") {
-            put("type", "string")
-            put(
-              "description",
-              "The college's identifier: the `college_id` field of a college search result or a college cost " +
-                "result, copied verbatim. Never construct or guess one.",
-            )
-          }
-          putJsonObject("status") {
-            put("type", "string")
-            putJsonArray("enum") { CollegeListEntryStatus.entries.forEach { add(JsonPrimitive(it.value)) } }
-            put(
-              "description",
-              "Where the student stands with this school. For add, omitted defaults to considering. " +
-                "For update, omitted leaves the status unchanged. An error on remove.",
-            )
-          }
-          putJsonObject("reasons") {
-            put("type", "string")
-            put(
-              "description",
-              "The student's own words for why this school. For update, omitted leaves the reasons " +
-                "unchanged. An error on remove.",
-            )
-          }
-        }
+        put("properties", inputProperties)
         putJsonArray("required") {
           add(JsonPrimitive("action"))
           add(JsonPrimitive("college_id"))
         }
       }
     }
+
+  /**
+   * The input fields this tool accepts, read off the very object the schema
+   * publishes rather than listed a second time.
+   *
+   * The schema IS the contract the model is given, so a property added there and
+   * forgotten in a hand-kept reject-list would have the tool refuse a call it
+   * advertised -- and a stale entry would mute the unknown-field guard for a key
+   * nobody accepts. Read off [inputProperties] itself, so there is no key to
+   * look up and no JSON node to cast on the way.
+   */
+  private val knownFields: Set<String> = inputProperties.keys
 
   override suspend fun execute(
     studentId: StudentId,
@@ -125,8 +170,21 @@ class CollegeListChatTool(
 
     val outcome =
       service
-        .addToList(studentId, parsed.collegeId, parsed.status ?: CollegeListEntryStatus.CONSIDERING, parsed.reasons, emptyList())
-        .getOrElse { e -> return writeFailed(studentId, Action.ADD, e) }
+        .addToList(
+          studentId,
+          parsed.collegeId,
+          parsed.status ?: CollegeListEntryStatus.CONSIDERING,
+          parsed.reasons,
+          // Exhaustive, not a cast: [parseInput] has already refused a clear on
+          // an add, and a case added later must fail here loudly rather than
+          // vanish into "no override".
+          when (val plan = parsed.livingPlan) {
+            is LivingPlanUpdate.Set -> plan.plan
+            LivingPlanUpdate.Clear -> error("a clear on an add is refused in parseInput; this branch is unreachable")
+            null -> null
+          },
+          emptyList(),
+        ).getOrElse { e -> return writeFailed(studentId, Action.ADD, e) }
 
     return when (outcome) {
       is AddToListResult.Success -> {
@@ -178,6 +236,7 @@ class CollegeListChatTool(
           // wants the note gone restates it or removes the entry.
           parsed.status ?: entry.status,
           parsed.reasons ?: entry.reasons,
+          resolveLivingPlan(parsed, entry),
           emptyList(),
         ).getOrElse { e -> return writeFailed(studentId, Action.UPDATE, e) }
 
@@ -208,6 +267,25 @@ class CollegeListChatTool(
     }
   }
 
+  /**
+   * The override to store on an update: omitted leaves this school's plan alone,
+   * an explicit clear writes NULL -- "no override, use the usual plan" (RFC 152
+   * D2a).
+   *
+   * Named rather than dropped into an argument position, so the call site reads
+   * like its two siblings and the write rule is stated once, where it can be
+   * read.
+   */
+  private fun resolveLivingPlan(
+    parsed: ParsedInput.Ok,
+    entry: CollegeListEntry,
+  ): LivingArrangement? =
+    when (val plan = parsed.livingPlan) {
+      is LivingPlanUpdate.Set -> plan.plan
+      LivingPlanUpdate.Clear -> null
+      null -> entry.livingPlan
+    }
+
   private suspend fun executeRemove(
     studentId: StudentId,
     parsed: ParsedInput.Ok,
@@ -234,6 +312,14 @@ class CollegeListChatTool(
       val collegeId: CollegeId,
       val status: CollegeListEntryStatus?,
       val reasons: String?,
+      /**
+       * The living-plan override the call asks for, or null when the call says
+       * nothing about it. Sealed rather than a nullable [LivingArrangement],
+       * because "leave it alone" and "drop it back to the usual plan" are two
+       * different writes onto the same nullable column and a bare null cannot
+       * tell them apart.
+       */
+      val livingPlan: LivingPlanUpdate?,
     ) : ParsedInput
 
     data class Invalid(
@@ -241,9 +327,18 @@ class CollegeListChatTool(
     ) : ParsedInput
   }
 
+  /** What one call asks of this school's living-plan override; see [ParsedInput.Ok.livingPlan]. */
+  private sealed interface LivingPlanUpdate {
+    data class Set(
+      val plan: LivingArrangement,
+    ) : LivingPlanUpdate
+
+    data object Clear : LivingPlanUpdate
+  }
+
   /** Maps the wire shape onto the typed action and fields; every malformation is a [ParsedInput.Invalid]. */
   private fun parseInput(input: JsonObject): ParsedInput {
-    unknownFieldsReason(input, KNOWN_FIELDS)?.let { return ParsedInput.Invalid(it) }
+    unknownFieldsReason(input, knownFields)?.let { return ParsedInput.Invalid(it) }
 
     val actionRaw =
       when (val read = getString(input, "action")) {
@@ -287,26 +382,101 @@ class CollegeListChatTool(
         is OptRead.Mismatch -> return ParsedInput.Invalid(read.reason)
       }
 
+    val livingPlanUpdate =
+      when (val parsed = parseLivingPlanUpdate(input)) {
+        is LivingPlanParse.Ok -> parsed.update
+        is LivingPlanParse.Invalid -> return ParsedInput.Invalid(parsed.reason)
+      }
+
     when (action) {
       Action.REMOVE -> {
         if (status != null) return ParsedInput.Invalid("status cannot be set on a remove")
         if (reasons != null) return ParsedInput.Invalid("reasons cannot be set on a remove")
+        // One refusal per KEY, not one for the type both keys fold into: a call
+        // carrying living_plan_clear must not be told living_plan is the
+        // problem, or the caller retries the same call.
+        when (livingPlanUpdate) {
+          is LivingPlanUpdate.Set -> return ParsedInput.Invalid("living_plan cannot be set on a remove")
+          LivingPlanUpdate.Clear -> return ParsedInput.Invalid("living_plan_clear cannot be set on a remove")
+          null -> Unit
+        }
       }
 
       Action.UPDATE -> {
-        if (status == null && reasons == null) {
-          return ParsedInput.Invalid("nothing to update: provide a status and/or reasons")
+        if (status == null && reasons == null && livingPlanUpdate == null) {
+          return ParsedInput.Invalid("nothing to update: provide a status, reasons and/or a living plan")
         }
       }
 
       Action.ADD -> {
-        // No cross-field rule: status is optional (defaults to considering)
-        // and reasons are optional on an add.
-        Unit
+        // Status, reasons and a plan are optional on an add. A clear is not:
+        // there is no override to drop yet, so the call asks for something this
+        // action cannot do. Refused by name rather than accepted and dropped,
+        // which would report a write that never happened.
+        if (livingPlanUpdate is LivingPlanUpdate.Clear) {
+          return ParsedInput.Invalid("living_plan_clear cannot be set on an add; there is no plan to clear yet")
+        }
       }
     }
 
-    return ParsedInput.Ok(action, collegeId, status, reasons)
+    return ParsedInput.Ok(action, collegeId, status, reasons, livingPlanUpdate)
+  }
+
+  /** The parse outcome for this school's override: the write it asks for (null: untouched), or why it is malformed. */
+  private sealed interface LivingPlanParse {
+    data class Ok(
+      val update: LivingPlanUpdate?,
+    ) : LivingPlanParse
+
+    data class Invalid(
+      val reason: String,
+    ) : LivingPlanParse
+  }
+
+  /**
+   * `living_plan` and `living_plan_clear` read, checked against each other, and
+   * folded into one write -- the twin of `MoneyProfileChatTool`'s own
+   * `parseLivingPlanUpdate`, so [parseInput] keeps the two lines it has for
+   * every other field instead of absorbing a whole field ladder.
+   *
+   * `clear` is literal-true (the tool contract): a `false` is malformed rather
+   * than "leave it alone", which is what omitting the key already says.
+   */
+  private fun parseLivingPlanUpdate(input: JsonObject): LivingPlanParse {
+    val plan =
+      when (val read = getString(input, "living_plan")) {
+        is OptRead.Present -> {
+          LivingArrangement.fromValue(read.value)
+            ?: return LivingPlanParse.Invalid("unknown living_plan value: [${read.value}]")
+        }
+
+        OptRead.Absent -> {
+          null
+        }
+
+        is OptRead.Mismatch -> {
+          return LivingPlanParse.Invalid(read.reason)
+        }
+      }
+    val clear =
+      when (val read = getBoolean(input, "living_plan_clear")) {
+        is OptRead.Present -> read.value
+        OptRead.Absent -> null
+        is OptRead.Mismatch -> return LivingPlanParse.Invalid(read.reason)
+      }
+    if (clear == false) {
+      return LivingPlanParse.Invalid("living_plan_clear must be true when present; omit it to leave the field unchanged")
+    }
+    if (plan != null && clear == true) {
+      return LivingPlanParse.Invalid("living_plan and living_plan_clear cannot both be set in one call")
+    }
+    return LivingPlanParse.Ok(
+      when {
+        plan != null -> LivingPlanUpdate.Set(plan)
+        clear == true -> LivingPlanUpdate.Clear
+        else -> null
+      },
+    )
   }
 
   /** The full post-write active list echo, each school named for the coach's next message. */
@@ -333,6 +503,9 @@ class CollegeListChatTool(
               put("name", row.collegeName)
               put("status", row.entry.status.value)
               row.entry.reasons?.let { put("reasons", it) }
+              // Absent, never null: a school with no override simply says
+              // nothing, and the coach falls back to the usual plan.
+              row.entry.livingPlan?.let { putLivingPlan(it) }
             },
           )
         }
@@ -396,7 +569,9 @@ class CollegeListChatTool(
         "entry without the student's say-so, and never push if they'd rather not track a school. " +
         "The student can change a school's status or remove it at any time - honour that " +
         "immediately and without comment. Use the college id from a college search or cost " +
-        "result. The result echoes the full list after the write."
+        "result. A school can also carry its own living plan - where the student plans to live at " +
+        "THAT school - when it differs from their usual plan: set it only when the student says so, " +
+        "and clear it to go back to their usual plan. The result echoes the full list after the write."
 
     private const val NOT_ON_LIST_REASON = "that school is not on the list; use action [add] to add it"
     private const val WRITE_FAILED_REASON = "college list write failed"
@@ -409,7 +584,5 @@ class CollegeListChatTool(
     // [MAX_REASONS_CHARS] chars. If the CHECKs change, this is what drifts.
     private const val MAX_REASONS_CHARS = 2048
     private const val INVALID_REASONS_REASON = "reasons must be non-empty and at most [$MAX_REASONS_CHARS] characters"
-
-    private val KNOWN_FIELDS = setOf("action", "college_id", "status", "reasons")
   }
 }

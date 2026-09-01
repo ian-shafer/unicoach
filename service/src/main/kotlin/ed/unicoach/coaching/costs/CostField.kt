@@ -1,5 +1,7 @@
 package ed.unicoach.coaching.costs
 
+import ed.unicoach.db.models.LivingArrangement
+
 /**
  * The cost columns of the result (RFC 135): one entry per cost figure the
  * tool renders, each carrying its wire key. One vocabulary shared by
@@ -85,10 +87,13 @@ enum class CostField(
      * hand-written list would not follow a seventh component added to an
      * arrangement -- it would simply never be named in `data_availability`.
      *
-     * Lazy on purpose, and not decoration: [LivingArrangement]'s constants are
-     * built from [CostField]'s, so computing this during [CostField]'s class
-     * initialisation could re-enter a half-initialised [LivingArrangement].
-     * Deferring to first access puts both initialisations safely behind us.
+     * Lazy on purpose, and not decoration: the `ARRANGEMENT_COMPONENTS` map
+     * that [LivingArrangement.components] reads through is built from
+     * [CostField]'s own constants, so computing this during [CostField]'s class
+     * initialisation could re-enter a half-initialised [CostField]. Deferring
+     * to first access puts both initialisations safely behind us. (RFC 152
+     * moved [LivingArrangement] to `:db`; that moved the cycle's other end into
+     * `CostBreakdown.kt`, it did not remove it.)
      */
     val COMPONENTS: List<CostField> by lazy {
       val declared = LivingArrangement.entries.flatMap { it.components }.toSet()

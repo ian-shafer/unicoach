@@ -419,7 +419,7 @@ class FitLensServiceTest {
       val college = createCollege(name = "Already Known U")
       // The reasoned college is already on the student's college list.
       CollegeListEntriesDao
-        .create(session, NewCollegeListEntry(student, college, CollegeListEntryStatus.CONSIDERING, null))
+        .create(session, NewCollegeListEntry(student, college, CollegeListEntryStatus.CONSIDERING, null, null))
         .getOrThrow()
 
       val provider =
@@ -970,7 +970,7 @@ class FitLensServiceTest {
       // One college on the list, one already suggested; both must steer call #1.
       val listed = createCollege(name = "Already Listed College")
       CollegeListEntriesDao
-        .create(session, NewCollegeListEntry(student, listed, CollegeListEntryStatus.CONSIDERING, null))
+        .create(session, NewCollegeListEntry(student, listed, CollegeListEntryStatus.CONSIDERING, null, null))
         .getOrThrow()
       val priorSuggested = createCollege(name = "Previously Suggested College")
       FitSuggestionsDao.create(session, NewFitSuggestion(student, priorSuggested, "suggested before")).getOrThrow()

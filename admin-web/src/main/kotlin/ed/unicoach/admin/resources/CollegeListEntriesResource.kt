@@ -39,6 +39,11 @@ object CollegeListEntriesResource : AdminResource<CollegeListEntry, CollegeListE
       AdminField("collegeId", "College ID", FieldType.UUID, editable = false, sensitive = false, refSlug = "college"),
       AdminField("status", "Status", FieldType.TEXT, editable = false, sensitive = false),
       AdminField("reasons", "Reasons", FieldType.MULTILINE, editable = false, sensitive = false, inList = false),
+      // The per-college living-plan override (RFC 152). Sensitive like its
+      // money-profile twin: where a family plans to live is a family fact, and
+      // one column of it must not be redacted in one resource and printed in
+      // another.
+      AdminField("livingPlan", "Living Plan", FieldType.TEXT, editable = false, sensitive = true, inList = false),
       AdminField("version", "Version", FieldType.INT, editable = false, sensitive = false, inList = false),
       AdminField("createdAt", "Created", FieldType.TIMESTAMP, editable = false, sensitive = false),
       AdminField("updatedAt", "Updated", FieldType.TIMESTAMP, editable = false, sensitive = false, inList = false),
@@ -62,6 +67,7 @@ object CollegeListEntriesResource : AdminResource<CollegeListEntry, CollegeListE
       "collegeId" to row.collegeId.value.toString(),
       "status" to row.status.value,
       "reasons" to (row.reasons ?: ""),
+      "livingPlan" to (row.livingPlan?.value ?: ""),
       "version" to row.version.toString(),
       "createdAt" to row.createdAt.toString(),
       "updatedAt" to row.updatedAt.toString(),

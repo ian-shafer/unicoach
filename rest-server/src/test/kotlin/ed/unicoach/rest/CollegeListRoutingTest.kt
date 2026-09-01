@@ -279,7 +279,7 @@ class CollegeListRoutingTest {
         client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
           header(HttpHeaders.Cookie, cookie)
-          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", "Applied now")))
+          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", "Applied now", null)))
         }
       assertEquals(HttpStatusCode.OK, patchResponse.status)
       val patched = mapper.readTree(patchResponse.bodyAsText())
@@ -298,6 +298,88 @@ class CollegeListRoutingTest {
           header(HttpHeaders.Cookie, cookie)
         }
       assertEquals(HttpStatusCode.NotFound, getAfterDelete.status)
+    }
+
+  @Test
+  fun `the per-college living plan round-trips, and an explicit null livingPlan on PATCH clears it`() =
+    runBlocking {
+      // RFC 152 D2a at the REST boundary. The override is written WHOLESALE,
+      // exactly as status and reasons are -- and, for the same reason, it is
+      // REQUIRED on the wire: null IS "no override, use the usual plan", so
+      // clearing must be an act the client performs, never one an omitted key
+      // performs for it. A client that forgot the field would otherwise drop a
+      // fact the family stated while meaning to change only the status.
+      val cookie = registerAndGetCookie()
+      registerStudent(cookie)
+      val college = seedCollege()
+
+      val createResponse =
+        client.post(buildUrl("/api/v1/students/me/college-list")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(
+            mapper.writeValueAsString(
+              CreateCollegeListEntryRequest(college, "considering", "Good fit", "with_family"),
+            ),
+          )
+        }
+      assertEquals(HttpStatusCode.Created, createResponse.status)
+      val entry = mapper.readTree(createResponse.bodyAsText())["entry"]
+      assertEquals("with_family", entry["livingPlan"].asText())
+      val entryId = entry["id"].asText()
+
+      val changed =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", "Good fit", "on_campus")))
+        }
+      assertEquals(HttpStatusCode.OK, changed.status)
+      assertEquals("on_campus", mapper.readTree(changed.bodyAsText())["entry"]["livingPlan"].asText())
+
+      // Stated as null on the next PATCH: the override goes back to "no override".
+      val cleared =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(2, "applying", "Good fit", null)))
+        }
+      assertEquals(HttpStatusCode.OK, cleared.status)
+      assertTrue(
+        mapper.readTree(cleared.bodyAsText())["entry"]["livingPlan"].isNull,
+        "an explicitly null livingPlan CLEARS the override, exactly as a null reasons clears the reasons",
+      )
+    }
+
+  @Test
+  fun `POST and PATCH college-list with an unknown living plan return 400 naming livingPlan`() =
+    runBlocking {
+      val cookie = registerAndGetCookie()
+      registerStudent(cookie)
+      val college = seedCollege()
+
+      val badCreate =
+        client.post(buildUrl("/api/v1/students/me/college-list")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(
+            mapper.writeValueAsString(
+              CreateCollegeListEntryRequest(college, "considering", null, "in_a_yurt"),
+            ),
+          )
+        }
+      assertEquals(HttpStatusCode.BadRequest, badCreate.status)
+      assertTrue(badCreate.bodyAsText().contains("livingPlan"), "got ${badCreate.bodyAsText()}")
+
+      val entryId = createEntryFor(cookie, college)
+      val badPatch =
+        client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", null, "in_a_yurt")))
+        }
+      assertEquals(HttpStatusCode.BadRequest, badPatch.status)
+      assertTrue(badPatch.bodyAsText().contains("livingPlan"), "got ${badPatch.bodyAsText()}")
     }
 
   // --- GET/PATCH/DELETE on another student's entry ---
@@ -336,7 +418,7 @@ class CollegeListRoutingTest {
         client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
           header(HttpHeaders.Cookie, otherCookie)
-          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", null)))
+          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", null, null)))
         }
       assertEquals(HttpStatusCode.NotFound, patchResponse.status)
 
@@ -360,14 +442,14 @@ class CollegeListRoutingTest {
       client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
         header(HttpHeaders.Cookie, cookie)
-        setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", null)))
+        setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", null, null)))
       }
 
       val stale =
         client.patch(buildUrl("/api/v1/students/me/college-list/$entryId")) {
           header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
           header(HttpHeaders.Cookie, cookie)
-          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "admitted", null)))
+          setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "admitted", null, null)))
         }
       assertEquals(HttpStatusCode.Conflict, stale.status)
       assertTrue(stale.bodyAsText().contains("version_conflict"))
@@ -411,7 +493,7 @@ class CollegeListRoutingTest {
         client
           .patch(buildUrl("/api/v1/students/me/college-list/$randomId")) {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-            setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", null)))
+            setBody(mapper.writeValueAsString(UpdateCollegeListEntryRequest(1, "applying", null, null)))
           }.status,
       )
       assertEquals(

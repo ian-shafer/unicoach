@@ -322,7 +322,8 @@ class CollegeAdmissionsService(
     val facts = LatestCdsFacts.read(session, selection.selected)
 
     val colleges =
-      selection.map { college, listStatus ->
+      selection.map { college, entry ->
+        val listStatus = entry.status
         admissionsOf(
           college = college,
           listStatus = listStatus,

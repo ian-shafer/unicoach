@@ -10,6 +10,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.Observation
 import ed.unicoach.db.models.ObservationId
 import ed.unicoach.error.FieldError
@@ -75,6 +76,25 @@ class CollegeListRouteHandler(
     call.respond(HttpStatusCode.Conflict, ErrorResponse(ErrorCode.VERSION_CONFLICT, "College list entry was modified concurrently"))
   }
 
+  /**
+   * The override this request asks for. An absent plan is `null` and not an
+   * error -- on an update that is the client clearing the override back to the
+   * family's usual plan (RFC 152 D2a) -- while a value no [LivingArrangement]
+   * names is handed to [onUnknown], which never returns.
+   *
+   * One home, so create and update cannot word one refusal two ways, and each
+   * handler still returns its own 400.
+   */
+  private inline fun mapLivingPlan(
+    raw: String?,
+    onUnknown: (FieldError) -> Nothing,
+  ): LivingArrangement? =
+    if (raw == null) {
+      null
+    } else {
+      LivingArrangement.fromValue(raw) ?: onUnknown(FieldError("livingPlan", "Unknown living plan value: [$raw]"))
+    }
+
   private fun RoutingContext.pathEntryId(): CollegeListEntryId? {
     val raw = call.parameters["entryId"] ?: return null
     return runCatching { CollegeListEntryId(java.util.UUID.fromString(raw)) }.getOrNull()
@@ -93,6 +113,7 @@ class CollegeListRouteHandler(
     if (status == null) {
       return respondValidationFailed(listOf(FieldError("status", "Unknown status value")))
     }
+    val livingPlan = mapLivingPlan(request.livingPlan) { return respondValidationFailed(listOf(it)) }
 
     val outcome =
       collegeListService
@@ -101,6 +122,7 @@ class CollegeListRouteHandler(
           collegeId = CollegeId(request.collegeId),
           status = status,
           reasons = request.reasons,
+          livingPlan = livingPlan,
           observationIds = request.observationIds.map { ObservationId(it) },
         ).getOrThrow()
 
@@ -167,6 +189,7 @@ class CollegeListRouteHandler(
     if (status == null) {
       return respondValidationFailed(listOf(FieldError("status", "Unknown status value")))
     }
+    val livingPlan = mapLivingPlan(request.livingPlan) { return respondValidationFailed(listOf(it)) }
 
     val outcome =
       collegeListService
@@ -176,6 +199,7 @@ class CollegeListRouteHandler(
           expectedVersion = request.version,
           status = status,
           reasons = request.reasons,
+          livingPlan = livingPlan,
           addObservationIds = request.addObservationIds.map { ObservationId(it) },
         ).getOrThrow()
 
@@ -261,6 +285,7 @@ class CollegeListRouteHandler(
       collegeName = collegeName,
       status = entry.status.value,
       reasons = entry.reasons,
+      livingPlan = entry.livingPlan?.value,
       version = entry.version,
       createdAt = entry.createdAt,
       updatedAt = entry.updatedAt,

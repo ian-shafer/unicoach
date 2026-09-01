@@ -13,6 +13,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryEdit
 import ed.unicoach.db.models.CollegeListEntryId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.NewCollegeListEntry
 import ed.unicoach.db.models.Observation
 import ed.unicoach.db.models.ObservationId
@@ -33,6 +34,12 @@ class CollegeListService(
     collegeId: CollegeId,
     status: CollegeListEntryStatus,
     reasons: String?,
+    /**
+     * The per-college living-plan override (RFC 152 D2a). `null` is "no
+     * override": this school uses the family's usual plan from the money
+     * profile. Not defaulted, so every caller states which it means.
+     */
+    livingPlan: LivingArrangement?,
     observationIds: List<ObservationId>,
   ): Result<AddToListResult> =
     try {
@@ -45,7 +52,7 @@ class CollegeListService(
         val createResult =
           CollegeListEntriesDao.create(
             session,
-            NewCollegeListEntry(studentId, collegeId, status, reasons),
+            NewCollegeListEntry(studentId, collegeId, status, reasons, livingPlan),
           )
         if (createResult.isFailure) {
           return@withConnection mapCreateOutcome(createResult.exceptionOrNull()!!)
@@ -131,6 +138,18 @@ class CollegeListService(
     expectedVersion: Int,
     status: CollegeListEntryStatus,
     reasons: String?,
+    /**
+     * The per-college living-plan override (RFC 152 D2a), written wholesale
+     * exactly as [status] and [reasons] are: `null` clears the override back to
+     * the family's usual plan.
+     *
+     * A caller that means "leave it alone" passes the entry's current value.
+     * The chat tool does exactly that, off its three-way `LivingPlanUpdate`.
+     * REST has no such vocabulary: its `livingPlan` is REQUIRED on the wire, so
+     * the client always states the value it wants stored, and clearing stays an
+     * act a caller performs rather than one an omitted key performs for it.
+     */
+    livingPlan: LivingArrangement?,
     addObservationIds: List<ObservationId>,
   ): Result<UpdateEntryResult> =
     try {
@@ -161,6 +180,7 @@ class CollegeListService(
               version = existing.version,
               status = status,
               reasons = reasons,
+              livingPlan = livingPlan,
             ),
           )
         if (updateResult.isFailure) {

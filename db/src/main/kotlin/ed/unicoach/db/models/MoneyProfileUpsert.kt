@@ -11,6 +11,7 @@ data class MoneyProfileUpsert(
   val studentId: StudentId,
   val income: FieldWrite<IncomeBand>? = null,
   val residency: FieldWrite<String>? = null,
+  val living: FieldWrite<LivingArrangement>? = null,
 ) {
   /**
    * One field's write operation, sealed so the schema's value-iff-answered CHECK is

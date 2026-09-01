@@ -887,6 +887,18 @@ class CoachingService(
             "- state of residency: " +
               renderMoneyField(moneyProfile.residencyStatus, moneyProfile.residencyState, "residency_state", moneyProfile),
           )
+          // The plan in the words a student says it, never the `with_family`
+          // wire name (RFC 152, the RFC 142 rule applied to the third field):
+          // whatever the coach reads here it may repeat aloud.
+          appendLine(
+            "- usual living plan: " +
+              renderMoneyField(
+                moneyProfile.livingPlanStatus,
+                moneyProfile.livingPlan?.label,
+                "living_plan",
+                moneyProfile,
+              ),
+          )
         }
       }
     return block.trimEnd()

@@ -205,6 +205,49 @@ class MoneyProfileRoutingTest {
     }
 
   @Test
+  fun `PUT money-profile round-trips the living plan, declines it, clears it, and rejects an unknown value`() =
+    runBlocking {
+      // RFC 152's third tri-state field on the REST twin: the same
+      // value / declined / clear ladder the other two fields already ride.
+      val cookie = registerAndGetCookie()
+      registerStudent(cookie)
+
+      val fresh = mapper.readTree(putProfile(cookie, UpdateMoneyProfileRequest(incomeBand = "under_30k")).bodyAsText())
+      assertEquals("unanswered", fresh["profile"]["livingPlanStatus"].asText())
+      assertTrue(fresh["profile"]["livingPlan"].isNull, "an unanswered field carries no value")
+
+      val set = putProfile(cookie, UpdateMoneyProfileRequest(livingPlan = "with_family"))
+      assertEquals(HttpStatusCode.OK, set.status)
+      val setBody = mapper.readTree(set.bodyAsText())
+      assertEquals("answered", setBody["profile"]["livingPlanStatus"].asText())
+      assertEquals("with_family", setBody["profile"]["livingPlan"].asText())
+      assertEquals("under_30k", setBody["profile"]["incomeBand"].asText(), "a subset write leaves the others untouched")
+
+      val declined = putProfile(cookie, UpdateMoneyProfileRequest(livingPlanDeclined = true))
+      val declinedBody = mapper.readTree(declined.bodyAsText())
+      assertEquals("declined", declinedBody["profile"]["livingPlanStatus"].asText())
+      assertTrue(declinedBody["profile"]["livingPlan"].isNull, "a declined field must carry no value")
+
+      val cleared = putProfile(cookie, UpdateMoneyProfileRequest(livingPlanClear = true))
+      val clearedBody = mapper.readTree(cleared.bodyAsText())
+      assertEquals("unanswered", clearedBody["profile"]["livingPlanStatus"].asText())
+
+      val unknown = putProfile(cookie, UpdateMoneyProfileRequest(livingPlan = "in_a_yurt"))
+      assertEquals(HttpStatusCode.BadRequest, unknown.status)
+      assertTrue(unknown.bodyAsText().contains("livingPlan"), "the 400 must name the offending field")
+    }
+
+  @Test
+  fun `PUT money-profile with a living plan and its decline returns 400`() =
+    runBlocking {
+      val cookie = registerAndGetCookie()
+      registerStudent(cookie)
+      val response = putProfile(cookie, UpdateMoneyProfileRequest(livingPlan = "on_campus", livingPlanDeclined = true))
+      assertEquals(HttpStatusCode.BadRequest, response.status)
+      assertTrue(response.bodyAsText().contains("At most one of livingPlan"), "got ${response.bodyAsText()}")
+    }
+
+  @Test
   fun `PUT money-profile with value and declined for the same field returns 400`() =
     runBlocking {
       val cookie = registerAndGetCookie()

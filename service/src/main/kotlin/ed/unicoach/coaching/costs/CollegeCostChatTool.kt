@@ -3,10 +3,13 @@ package ed.unicoach.coaching.costs
 import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.MeritAidWire
+import ed.unicoach.coaching.collegelist.CollegeListChatTool
 import ed.unicoach.coaching.putCollegeIdsSchema
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.putIncomeBand
+import ed.unicoach.db.models.putLivingPlan
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
@@ -158,18 +161,32 @@ class CollegeCostChatTool(
     }
 
   /**
-   * The living arrangement held constant (RFC 151 D-E): the arrangements every
+   * The living arrangement held constant (RFC 151 D-E, RFC 152 D5): what the
+   * family answered, what each school resolved to, the arrangements every
    * school in the call is priced for, and the schools that lack one another
    * school has.
    *
-   * Both lists are emitted only when they carry something -- the payload's
+   * The lists are emitted only when they carry something -- the payload's
    * absent-never-empty convention -- and the statement says which case it is in
-   * words, so an absent list is never read as a fact nobody stated.
+   * words, beside the [BASIS_KEY] code that says it as a fact, so an absent
+   * list is never read as a fact nobody stated.
+   *
+   * [CHOSEN_BY_COLLEGE_KEY] is emitted only when the schools are NOT all on one
+   * plan or one of them is not priced for it: with one plan everywhere, the
+   * statement and the per-college keys already say it, and a second per-school
+   * list would invite the coach to narrate a difference there is none of.
    */
   private fun arrangementBasisObject(arrangement: ArrangementBasis): JsonObject =
     buildJsonObject {
+      put(BASIS_KEY, arrangement.scope.value)
+      putComparedLivingPlan(arrangement.answer)
+      if (arrangement.planNamedPerCollege.isNotEmpty()) {
+        putJsonArray(CHOSEN_BY_COLLEGE_KEY) {
+          arrangement.planNamedPerCollege.forEach { add(collegeLivingPlanObject(it)) }
+        }
+      }
       if (arrangement.comparable.isNotEmpty()) {
-        putJsonArray("comparable") { arrangement.comparable.forEach { add(JsonPrimitive(it.wireName)) } }
+        putJsonArray("comparable") { arrangement.comparable.forEach { add(JsonPrimitive(it.value)) } }
       }
       if (arrangement.incompleteByCollege.isNotEmpty()) {
         putJsonArray("incomplete_by_college") {
@@ -178,6 +195,75 @@ class CollegeCostChatTool(
       }
       put(STATEMENT_KEY, arrangement.statement)
     }
+
+  /**
+   * One school's resolved plan inside the comparison: which way of living it is
+   * quoted at, where that plan came from, and -- when the school is not priced
+   * for it -- the reason, never a substitute.
+   *
+   * A school with no plan resolved carries its identity and the
+   * [LivingPlanPricing.NOT_CHOSEN] code, so "nothing is on file for it" is
+   * stated rather than left to be noticed in an absent key.
+   */
+  private fun collegeLivingPlanObject(row: CollegeLivingPlan): JsonObject =
+    buildJsonObject {
+      put("college_id", row.collegeId.value.toString())
+      put("name", row.name)
+      putChosenLivingPlan(row.chosen)
+    }
+
+  /**
+   * The resolved plan itself: which way of living, in the student's words,
+   * where the plan came from -- and the reason when this school is not priced
+   * for it, never a substitute.
+   *
+   * ONE emitter for the two places the sub-object appears (the per-college
+   * answer and the comparison's [CHOSEN_BY_COLLEGE_KEY]), so the coach can never
+   * meet two spellings of one shape.
+   *
+   * Every case writes its own [PRICING_KEY] code (RFC 152): the three shapes
+   * used to be told apart only by which sibling keys were absent, which made the
+   * coach infer a fact from a silence -- the very thing a code exists to
+   * prevent. A school with no plan resolved now says so as a code too, instead
+   * of being an identity-only row.
+   */
+  private fun JsonObjectBuilder.putChosenLivingPlan(chosen: ChosenLivingPlan) {
+    when (chosen) {
+      is ChosenLivingPlan.Priced -> {
+        put(ARRANGEMENT_KEY, chosen.plan.value)
+        put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
+        put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
+        put(PRICING_KEY, chosen.pricing.value)
+      }
+
+      is ChosenLivingPlan.NoTotalHere -> {
+        put(ARRANGEMENT_KEY, chosen.plan.value)
+        put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
+        put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
+        put(PRICING_KEY, chosen.pricing.value)
+        // OUR vocabulary, never the school's: two of this reason's three causes
+        // are gaps of ours, so it rides under its own key and never under the
+        // one that says what the school published.
+        put(NO_TOTAL_REASON_KEY, chosen.reason.value)
+      }
+
+      is ChosenLivingPlan.NotPricedHere -> {
+        put(ARRANGEMENT_KEY, chosen.plan.value)
+        put(ARRANGEMENT_LABEL_KEY, chosen.plan.label)
+        put(ARRANGEMENT_SOURCE_KEY, chosen.source.value)
+        put(PRICING_KEY, chosen.pricing.value)
+        // A reason code, never a substituted arrangement and never a
+        // neighbour's figure. No total, because there is none to give.
+        put(ARRANGEMENT_REASON_KEY, chosen.reason.value)
+      }
+
+      // No plan, so no arrangement to name -- but the code is written, so a row
+      // with nothing on file states that rather than leaving it to be noticed.
+      ChosenLivingPlan.NotChosen -> {
+        put(PRICING_KEY, chosen.pricing.value)
+      }
+    }
+  }
 
   /**
    * One school's gap in the arrangements the other schools are priced for: the
@@ -189,7 +275,7 @@ class CollegeCostChatTool(
     buildJsonObject {
       put("college_id", entry.collegeId.value.toString())
       put("name", entry.name)
-      putJsonArray("missing") { entry.missing.forEach { add(JsonPrimitive(it.wireName)) } }
+      putJsonArray("missing") { entry.missing.forEach { add(JsonPrimitive(it.value)) } }
       put("reason", entry.reason.value)
     }
 
@@ -256,6 +342,14 @@ class CollegeCostChatTool(
       // empty, when this school reports no component at all. Its lines are
       // recorded here, at the one place they are rendered.
       cost.breakdown?.let { putBreakdown(it, emitted) }
+      // AFTER the breakdown and BEFORE putVintageLabels, and that ordering is
+      // load-bearing (RFC 152). It re-keys a figure the breakdown already
+      // emitted -- the resolved arrangement's total -- so it must sit above the
+      // vintage labels for the rule "the keys after it emit no CostField" to
+      // stay true; and it sits below the breakdown because it names one of the
+      // arrangements that object rendered, so a reader meets the three before
+      // being told which one to lead with.
+      putChosenLivingArrangement(cost.chosen)
       putOffersOnCampusHousing(cost)
       // LAST of the figure-bearing keys, and it must stay there: it reads the
       // [emitted] set the puts above filled in, so a figure emitted BELOW this
@@ -283,6 +377,130 @@ class CollegeCostChatTool(
   ) {
     put(BREAKDOWN_KEY, breakdownObject(breakdown))
     breakdown.arrangements.forEach { arrangement -> arrangement.lines.forEach { emitted += it.field } }
+  }
+
+  /**
+   * The way of living this answer LEADS with (RFC 152), when the family has
+   * said where they plan to live.
+   *
+   * ABSENT, never null, when nothing is resolved: the plan is unanswered or
+   * declined and this school carries no plan of its own, so the answer is
+   * exactly what it was before this key existed -- all three arrangements, each
+   * named and labelled (D3).
+   *
+   * It never narrows the breakdown beside it (D2): the other ways of living
+   * stay in the payload as true facts, and a "what if we lived at home
+   * instead?" stays answerable from the same result.
+   *
+   * The key emits no CostField into [emitted] because it emits no NEW figure:
+   * the total it carries is the one the breakdown already rendered for the same
+   * arrangement, already dated by the vintage labels below.
+   */
+  private fun JsonObjectBuilder.putChosenLivingArrangement(chosen: ChosenLivingPlan) {
+    // Exhaustive with no `else`: a fourth case would otherwise fall silently
+    // out of the payload, and this key is the whole of what the coach leads
+    // with.
+    when (chosen) {
+      is ChosenLivingPlan.Priced -> {
+        putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
+          putChosenLivingPlan(chosen)
+          // Always present on this case: a plan is only PRICED when this school
+          // prices it, which means it carries a total (RFC 152 D2a). An
+          // arrangement this school shows but cannot total is emitted as
+          // no_total_here with its reason instead, so this key never ships
+          // without a number or a reason.
+          put(TOTAL_KEY, chosen.totalPerYearUsd)
+          put(STATEMENT_KEY, statementOf(chosen))
+        }
+      }
+
+      is ChosenLivingPlan.NoTotalHere -> {
+        putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
+          putChosenLivingPlan(chosen)
+          // No total, because this school has none for it -- and the statement
+          // says so, so the key never ships a plan with a silent blank where
+          // its number should be.
+          put(STATEMENT_KEY, statementOf(chosen))
+        }
+      }
+
+      is ChosenLivingPlan.NotPricedHere -> {
+        putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
+          putChosenLivingPlan(chosen)
+          put(STATEMENT_KEY, statementOf(chosen))
+        }
+      }
+
+      ChosenLivingPlan.NotChosen -> {}
+    }
+  }
+
+  /**
+   * The sentence for a resolved, priced plan. [LivingPlanSource] decides which
+   * one: a per-college plan is something the family SAID about this school, and
+   * their usual plan is an ASSUMPTION being made here -- which the coach must
+   * name in the same breath, because `with_family` is never inferred by us
+   * (RFC 152 D2a).
+   */
+  private fun statementOf(chosen: ChosenLivingPlan.Priced): String =
+    when (chosen.source) {
+      LivingPlanSource.PER_COLLEGE -> {
+        "The student said they plan on ${chosen.plan.label} at this school, so lead with that way of " +
+          "living and name it. The other ways of living are still here and still true if they ask."
+      }
+
+      LivingPlanSource.PROFILE_DEFAULT -> {
+        "${chosen.plan.label.replaceFirstChar { it.uppercase() }} is the student's usual plan, assumed " +
+          "for this school - say the assumption in the same breath as the number, and if they correct it, " +
+          "record it as this school's own plan. The other ways of living are still here and still true."
+      }
+    }
+
+  /**
+   * The sentence for a resolved plan this school shows but cannot total.
+   *
+   * One sentence per [NoTotalReason], because the causes are not one fact: a gap
+   * of OURS says so and says what would close it, and only the school's own
+   * silence is stated as the school's. Saying "this school has no total for that
+   * way of living" because WE have not asked which state the student lives in
+   * would blame a price list for our own question (RFC 149 D-B).
+   *
+   * Every case ends the same way: quote the parts that are here, and never add
+   * up what is there and call it the total.
+   */
+  private fun statementOf(chosen: ChosenLivingPlan.NoTotalHere): String =
+    when (chosen.reason) {
+      NoTotalReason.AWAITING_RESIDENCY_ANSWER -> {
+        "The student plans on ${chosen.plan.label}, and this school's published price depends on which state " +
+          "the student is a resident of - which we have not been told, so the gap is ours and not this " +
+          "school's. Ask where the student is a resident and the total follows; meanwhile quote the parts " +
+          "that are here and never add up what is there and call it the total."
+      }
+
+      NoTotalReason.TUITION_APPLICABILITY_UNKNOWN -> {
+        "The student plans on ${chosen.plan.label}, but we cannot tell which of this school's published " +
+          "prices applies to this student, so the missing total is ours and not this school's. Quote the " +
+          "parts that are here and never add up what is there and call it the total."
+      }
+
+      NoTotalReason.PART_NOT_PUBLISHED -> {
+        "The student plans on ${chosen.plan.label}, but this school does not publish every part of what that " +
+          "way of living costs, so there is no total for it. Quote the parts of it that are here, say which " +
+          "part is missing, and never add up what is there and call it the total."
+      }
+    }
+
+  /**
+   * The sentence for a resolved plan this school is not priced for. Two
+   * reasons, two sentences (the [ArrangementGap] split RFC 151 landed): a
+   * school with no residence halls has ANSWERED, and a school that published no
+   * figure has stayed silent. Neither becomes a substituted arrangement.
+   */
+  private fun statementOf(chosen: ChosenLivingPlan.NotPricedHere): String {
+    // The gap's own spoken phrase ([ArrangementGap.phrase]), never a second
+    // wording of it: the comparison says the same silence the same way.
+    return "The student plans on ${chosen.plan.label}, but this school has ${chosen.reason.phrase}. Say that " +
+      "plainly, and never quote another way of living in its place or carry a figure across from another school."
   }
 
   /**
@@ -364,7 +582,7 @@ class CollegeCostChatTool(
   private fun breakdownObject(breakdown: CostBreakdown): JsonObject =
     buildJsonObject {
       breakdown.arrangements.forEach { arrangement ->
-        putJsonObject(arrangement.arrangement.wireName) {
+        putJsonObject(arrangement.arrangement.value) {
           arrangement.lines.forEach { put(it.field.wireName, it.amountUsd) }
           // Absent whenever any part is missing (RFC 149 D-C): a partial sum is
           // not a total, and neither is a sum that guessed at the student's
@@ -390,6 +608,7 @@ class CollegeCostChatTool(
     when (offer) {
       PrecisionOffer.RESIDENCY -> RESIDENCY_OFFER
       PrecisionOffer.INCOME_BAND -> INCOME_BAND_OFFER
+      PrecisionOffer.LIVING_PLAN -> LIVING_PLAN_OFFER
     }
 
   /**
@@ -415,7 +634,7 @@ class CollegeCostChatTool(
     }
 
   /**
-   * The money-profile echo: both field statuses, values only when answered.
+   * The money-profile echo: all three field statuses, values only when answered.
    * An answered band carries its spoken dollar range alongside its code
    * (`IncomeBand.bracket`, RFC 142); an unanswered or declined band carries
    * neither.
@@ -426,7 +645,28 @@ class CollegeCostChatTool(
       profile.incomeBand?.let { putIncomeBand(it) }
       put("residency_status", profile.residencyStatus.value)
       profile.residencyState?.let { put("residency_state", it) }
+      putComparedLivingPlan(profile.living)
     }
+
+  /**
+   * The living-plan answer as the coach reads it: the status always, and the
+   * plan itself only on the answered case.
+   *
+   * One emitter for the two objects that echo it (the money-profile block and
+   * the comparison's arrangement basis), and exhaustive with no `else`, so the
+   * plan is reachable only through [ComparedLivingPlan.Answered] -- which is the
+   * whole reason that type is sealed.
+   */
+  private fun JsonObjectBuilder.putComparedLivingPlan(answer: ComparedLivingPlan) {
+    put("living_plan_status", answer.status.value)
+    when (answer) {
+      is ComparedLivingPlan.Answered -> {
+        putLivingPlan(answer.plan)
+      }
+
+      ComparedLivingPlan.Unanswered, ComparedLivingPlan.Declined -> {}
+    }
+  }
 
   companion object {
     private val logger = LoggerFactory.getLogger(CollegeCostChatTool::class.java)
@@ -446,6 +686,46 @@ class CollegeCostChatTool(
 
     /** The wire key carrying the per-arrangement price split (RFC 149). */
     const val BREAKDOWN_KEY = "cost_by_living_arrangement"
+
+    /**
+     * The way of living this school's answer leads with (RFC 152) -- absent
+     * when the family has said nothing about where they plan to live.
+     */
+    const val CHOSEN_ARRANGEMENT_KEY = "chosen_living_arrangement"
+
+    /**
+     * The resolved way of living itself, inside [CHOSEN_ARRANGEMENT_KEY] and
+     * inside [CHOSEN_BY_COLLEGE_KEY]: the wire name of the arrangement.
+     *
+     * Constants rather than literals, like every other key the DESCRIPTION
+     * quotes back to the model: a rename must move the payload and the prompt
+     * together, or the coach is told to read a key nothing emits.
+     */
+    const val ARRANGEMENT_KEY = "arrangement"
+
+    /** The resolved arrangement in the student's own words -- the paired-label convention. */
+    const val ARRANGEMENT_LABEL_KEY = "label"
+
+    /** Where the resolved plan came from ([LivingPlanSource]): the family said it here, or it is their usual plan. */
+    const val ARRANGEMENT_SOURCE_KEY = "source"
+
+    /** WHICH of the four resolved-plan cases this object is in ([LivingPlanPricing]) -- the code beside the statement. */
+    const val PRICING_KEY = "pricing"
+
+    /** Why this SCHOOL is not priced for the resolved plan ([ArrangementGap]) -- never a substituted arrangement. */
+    const val ARRANGEMENT_REASON_KEY = "reason"
+
+    /**
+     * Why a plan this school DOES show carries no total ([NoTotalReason]) -- its
+     * own key, because two of its three causes are gaps of ours and
+     * [ARRANGEMENT_REASON_KEY]'s vocabulary states what the school published.
+     * One key per vocabulary, so no reader has to know which case it is in to
+     * know which words it is reading.
+     */
+    const val NO_TOTAL_REASON_KEY = "no_total_reason"
+
+    /** The per-school plans inside the comparison basis: emitted only when the schools are not all on one plan. */
+    const val CHOSEN_BY_COLLEGE_KEY = "chosen_by_college"
 
     /** The IPEDS housing answer's own key -- emitted whenever the flag is known, true or false (RFC 149 D-B). */
     const val OFFERS_ON_CAMPUS_HOUSING_KEY = "offers_on_campus_housing"
@@ -537,6 +817,21 @@ class CollegeCostChatTool(
       "This net price is the overall average. If the student shares their household income band " +
         "(record it with ${MoneyProfileChatTool.TOOL_NAME}), it becomes the family-specific price for their bracket."
 
+    /**
+     * The living-plan invitation (RFC 152 D4): present exactly when the plan is
+     * unanswered AND this school is priced for at least two ways of living, so
+     * the question always has something to choose between -- and absent after a
+     * decline, so the coach is never cued to reopen a closed topic
+     * ([CollegeCostProfile.precisionOffersFor]).
+     *
+     * It promises no number, only a narrowing: three price pictures become one.
+     */
+    const val LIVING_PLAN_OFFER =
+      "This school is priced for more than one way of living, and the student's USUAL plan is not on file. " +
+        "If they say where they plan to live when they have the choice (record it with " +
+        "${MoneyProfileChatTool.TOOL_NAME}), every school they have not decided separately about can lead " +
+        "with that one price picture instead of three."
+
     // The ethos contract rides the tool description (RFC 135): real numbers
     // with a named source, the basis always labeled, never re-raise a decline.
     // Not `const`: the example band range is rendered from IncomeBand.bracket,
@@ -559,8 +854,10 @@ class CollegeCostChatTool(
         "in the order given: ${PrecisionOffer.RESIDENCY.field} sorts first because it is the cheaper question and the " +
         "bigger correction - it selects which of the school's published prices applies - while " +
         "${PrecisionOffer.INCOME_BAND.field} makes " +
-        "the net price family-specific. money_profile.residency_status is the authority on whether to raise residency, " +
-        "and money_profile.income_band_status the authority on whether to raise income: " +
+        "the net price family-specific and ${PrecisionOffer.LIVING_PLAN.field} narrows three price pictures to one. " +
+        "money_profile.residency_status is the authority on whether to raise residency, " +
+        "money_profile.income_band_status the authority on whether to raise income, and " +
+        "money_profile.living_plan_status the authority on whether to raise the living plan: " +
         "declined means the student said no - never re-raise it yourself; answered means the field is already on file. " +
         "A college result may also carry ${MeritAidWire.KEY}, from that school's own Common Data Set and cited " +
         "separately from the Scorecard figures: ${MeritAidWire.SHARE_KEY} is a share of ALL full-time freshmen " +
@@ -569,12 +866,12 @@ class CollegeCostChatTool(
         "never subtract it from any price here. Its absence means only that this school does not report it. " +
         "A college result may also carry $BREAKDOWN_KEY, the published price split into the parts a family can " +
         "actually influence, keyed by where the student would live: " +
-        "${LivingArrangement.ON_CAMPUS.wireName}, ${LivingArrangement.OFF_CAMPUS.wireName}, " +
-        "${LivingArrangement.WITH_FAMILY.wireName}. Each " +
+        "${LivingArrangement.ON_CAMPUS.value}, ${LivingArrangement.OFF_CAMPUS.value}, " +
+        "${LivingArrangement.WITH_FAMILY.value}. Each " +
         "arrangement carries the tuition and fees line that applies to this student and the school's published " +
         "allowances for that way of living, and $TOTAL_KEY only when every part of it is reported - when there is " +
         "no $TOTAL_KEY, say the parts and say a part is missing, never add up what is there and call it the total. " +
-        "${LivingArrangement.WITH_FAMILY.wireName} carries no housing and food line because no school publishes " +
+        "${LivingArrangement.WITH_FAMILY.value} carries no housing and food line because no school publishes " +
         "one for a student living at home; " +
         "that is missing data about the arrangement, never a housing cost of zero. " +
         "${CostField.STICKER_COST_OF_ATTENDANCE_PER_YEAR_USD.wireName} is a separate figure - an average blended " +
@@ -582,14 +879,37 @@ class CollegeCostChatTool(
         "never present one as the other. Aid applies to the whole price and not to any one part of it, so never " +
         "subtract ${CostField.NET_PRICE.wireName} from tuition or from any of these components, or one from the " +
         "other. When a college carries \"$OFFERS_ON_CAMPUS_HOUSING_KEY\": false, IPEDS reports that school has no " +
-        "residence halls: say so, and do not treat the absent ${LivingArrangement.ON_CAMPUS.wireName} arrangement as " +
-        "unreported data. If that college nevertheless carries an ${LivingArrangement.ON_CAMPUS.wireName} " +
+        "residence halls: say so, and do not treat the absent ${LivingArrangement.ON_CAMPUS.value} arrangement as " +
+        "unreported data. If that college nevertheless carries an ${LivingArrangement.ON_CAMPUS.value} " +
         "arrangement, the school published those figures itself and the two sources disagree: quote the published " +
         "figures and say the school reports no on-campus housing, never one fact without the other. " +
         "\"$OFFERS_ON_CAMPUS_HOUSING_KEY\": true means IPEDS reports the school does have on-campus housing, so a " +
-        "missing ${LivingArrangement.ON_CAMPUS.wireName} arrangement there is unreported cost data rather than the " +
+        "missing ${LivingArrangement.ON_CAMPUS.value} arrangement there is unreported cost data rather than the " +
         "absence of dorms. When the key is absent altogether IPEDS does not say either way - never read a present or " +
-        "missing ${LivingArrangement.ON_CAMPUS.wireName} arrangement as the answer. " +
+        "missing ${LivingArrangement.ON_CAMPUS.value} arrangement as the answer. " +
+        "A college result may also carry $CHOSEN_ARRANGEMENT_KEY: the one way of living the family has said " +
+        "they plan on at this school. Lead with it, name it in the student's own words from its " +
+        "$ARRANGEMENT_LABEL_KEY. Its $ARRANGEMENT_SOURCE_KEY says where the plan came from: " +
+        "${LivingPlanSource.PER_COLLEGE.value} means the student said it about THIS school; " +
+        "${LivingPlanSource.PROFILE_DEFAULT.value} means it is their usual plan being assumed here, so name the " +
+        "assumption in the same breath - never assume living at home for a school silently - and if they correct " +
+        "you, record it as that school's own plan with ${CollegeListChatTool.TOOL_NAME}. Its $PRICING_KEY says " +
+        "which case this school is in, and you read that code rather than guessing from which keys are there: " +
+        "\"${LivingPlanPricing.PRICED.value}\" carries the $TOTAL_KEY to lead with; " +
+        "\"${LivingPlanPricing.NOT_PRICED_HERE.value}\" carries an $ARRANGEMENT_REASON_KEY and no price, because " +
+        "this school is not priced for that way of living at all: say the reason plainly, never quote a " +
+        "different arrangement in its place, never carry a neighbour's figure across; " +
+        "\"${LivingPlanPricing.NO_TOTAL_HERE.value}\" means this school shows that way of living but no total is " +
+        "settled for it, and its $NO_TOTAL_REASON_KEY says whose gap that is - " +
+        "\"${NoTotalReason.AWAITING_RESIDENCY_ANSWER.value}\" and " +
+        "\"${NoTotalReason.TUITION_APPLICABILITY_UNKNOWN.value}\" are OUR gaps, so never say this school " +
+        "published no price, while \"${NoTotalReason.PART_NOT_PUBLISHED.value}\" is a part this school does not " +
+        "publish - in every one of those cases quote the parts of it in $BREAKDOWN_KEY, say which part is " +
+        "missing, and never add up what is there and call it the total. Its $STATEMENT_KEY says the same case in " +
+        "words, every time. The other ways " +
+        "of living stay in $BREAKDOWN_KEY and stay true - answer a \"what if we lived at home instead\" from them. " +
+        "When the key is absent the family has said nothing about where they will live: show every way of living " +
+        "the school publishes, each named, exactly as before. " +
         "${ScorecardVintage.PUBLISHED_PRICE.wireName} and ${ScorecardVintage.BLENDED_AVERAGE.wireName} each carry an " +
         "$ACADEMIC_YEAR_KEY (e.g. \"${ScorecardVintage.PUBLISHED_PRICE.label}\") and the $DATED_FIGURES_KEY it dates: " +
         "quote a number with the year of the key that lists it, never with the other one, and never add figures from " +

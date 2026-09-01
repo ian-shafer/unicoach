@@ -4,6 +4,7 @@ import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
+import ed.unicoach.db.models.LivingArrangement
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
@@ -76,6 +77,7 @@ class ComparisonBasisTest {
   private fun college(
     name: String,
     control: CollegeControl,
+    chosen: ChosenLivingPlan = ChosenLivingPlan.NotChosen,
   ): CollegeCost =
     CollegeCost(
       collegeId = CollegeId(UUID.randomUUID()),
@@ -97,17 +99,20 @@ class ComparisonBasisTest {
       breakdown = null,
       offersOnCampusHousing = null,
       meritAid = null,
+      chosen = chosen,
     )
 
   private fun moneyProfile(
     residencyStatus: AnswerStatus,
     residencyState: String?,
+    living: ComparedLivingPlan = ComparedLivingPlan.Unanswered,
   ): MoneyProfileStatuses =
     MoneyProfileStatuses(
       incomeBandStatus = AnswerStatus.UNANSWERED,
       incomeBand = null,
       residencyStatus = residencyStatus,
       residencyState = residencyState,
+      living = living,
     )
 
   @Test
@@ -208,5 +213,37 @@ class ComparisonBasisTest {
       failure.message.orEmpty().contains("Empty Gap U"),
       "and which school, in the words an operator reads elsewhere: [${failure.message}]",
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // ArrangementBasis: the code beside the sentence (RFC 152 D5)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `no two ArrangementScope cases share a code`() {
+    // The D-D invariant this fact went without until RFC 152: ArrangementBasis
+    // was the ONE comparison fact with no code, only lists. Two cases sharing a
+    // code would make the code unreadable, which is worse than having none.
+    //
+    // Only the vocabulary is stated here, because this file is the one that
+    // touches no database and [CostBreakdown]'s constructor is private -- a
+    // basis in the `no_plan_comparable` state needs a real priced breakdown,
+    // which needs a real `colleges` row. That every code is REACHABLE and
+    // carries its own sentence is earned in `CollegeCostServiceTest`'s
+    // `every ArrangementScope code is reachable and labels its own statement`,
+    // against actual fixtures.
+    val codes = ArrangementScope.entries.map { it.value }
+    assertEquals(codes.size, codes.toSet().size, "two cases sharing a code: $codes")
+    assertTrue(codes.none { it.isEmpty() }, "a fact with an empty code ships no code at all")
+  }
+
+  @Test
+  fun `a living plan is reachable only through the answered case`() {
+    // [ComparedLivingPlan] is sealed for [ComparedResidency]'s reason: a status
+    // plus a nullable plan re-encodes a disjoint fact, and a reader could then
+    // state a plan nobody gave. Asserted as a property of the type.
+    assertEquals(AnswerStatus.ANSWERED, ComparedLivingPlan.Answered(LivingArrangement.WITH_FAMILY).status)
+    assertEquals(AnswerStatus.UNANSWERED, ComparedLivingPlan.Unanswered.status)
+    assertEquals(AnswerStatus.DECLINED, ComparedLivingPlan.Declined.status)
   }
 }

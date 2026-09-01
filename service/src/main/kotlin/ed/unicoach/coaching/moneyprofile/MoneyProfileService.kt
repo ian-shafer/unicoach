@@ -4,6 +4,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfile
 import ed.unicoach.db.models.MoneyProfileUpsert
 import ed.unicoach.db.models.StudentId
@@ -25,7 +26,8 @@ sealed interface FieldUpdate<out T> {
 }
 
 /**
- * A create-or-update write against a student's money profile (RFC 134): any
+ * A create-or-update write against a student's money profile (RFC 134, third
+ * field by RFC 152): any
  * subset of fields, each as value-or-declined-or-clear. Both writers (REST PUT
  * and the `update_money_profile` chat tool) reduce to this shape, so the
  * tri-state write semantics have exactly one implementation.
@@ -33,6 +35,13 @@ sealed interface FieldUpdate<out T> {
 data class MoneyProfileUpdate(
   val income: FieldUpdate<IncomeBand>? = null,
   val residency: FieldUpdate<String>? = null,
+  /**
+   * Where the student would live when they have the choice (RFC 152) -- the
+   * family's DEFAULT plan. A school they have decided differently about carries
+   * its own `CollegeListEntry.livingPlan` override instead; this field is never
+   * the whole answer for a given school.
+   */
+  val living: FieldUpdate<LivingArrangement>? = null,
 )
 
 sealed interface GetMoneyProfileResult {
@@ -95,6 +104,7 @@ class MoneyProfileService(
               studentId = studentId,
               income = update.income?.let(::mapFieldUpdate),
               residency = update.residency?.let(::mapFieldUpdate),
+              living = update.living?.let(::mapFieldUpdate),
             ),
           )
         when {

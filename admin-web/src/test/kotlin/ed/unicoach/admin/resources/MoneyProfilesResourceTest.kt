@@ -4,6 +4,7 @@ import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfileEdit
 import ed.unicoach.db.models.MoneyProfileId
 import ed.unicoach.db.models.NewMoneyProfile
@@ -54,6 +55,8 @@ class MoneyProfilesResourceTest {
                 incomeBandStatus = AnswerStatus.ANSWERED,
                 residencyState = "CA",
                 residencyStatus = AnswerStatus.ANSWERED,
+                livingPlan = LivingArrangement.WITH_FAMILY,
+                livingPlanStatus = AnswerStatus.ANSWERED,
               ),
             )
           }.getOrThrow()
@@ -91,6 +94,10 @@ class MoneyProfilesResourceTest {
       assertTrue(body.contains("(redacted)"), "Sensitive value columns must be redacted")
       assertFalse(body.contains("48k_to_75k"), "The income band value must not render")
       assertFalse(body.contains(">CA<"), "The residency state value must not render")
+      assertFalse(
+        body.contains(LivingArrangement.WITH_FAMILY.value),
+        "The living plan value must not render (RFC 152: family finances are sensitive alike)",
+      )
     }
 
   @Test
@@ -113,6 +120,8 @@ class MoneyProfilesResourceTest {
                 incomeBandStatus = AnswerStatus.DECLINED,
                 residencyState = "CA",
                 residencyStatus = AnswerStatus.ANSWERED,
+                livingPlan = LivingArrangement.WITH_FAMILY,
+                livingPlanStatus = AnswerStatus.ANSWERED,
               ),
             )
           }.getOrThrow()
@@ -122,6 +131,13 @@ class MoneyProfilesResourceTest {
       assertTrue(body.contains("Version history"), "Detail must render the history panel")
       assertTrue(body.contains("declined"), "History must show the declined version's status")
       assertFalse(body.contains("48k_to_75k"), "History must not leak the redacted income band value")
+      // RFC 152: the third value column joins the same rule. The history panel
+      // ships STATUSES only, so the plan the family stated never reaches it.
+      assertTrue(body.contains("Living Plan Status"), "History must show the living-plan status column")
+      assertFalse(
+        body.contains(LivingArrangement.WITH_FAMILY.value),
+        "History must not leak the redacted living plan value",
+      )
     }
 
   @Test

@@ -45,11 +45,15 @@ internal class StudentCollegeSelection private constructor(
 
   /**
    * One result per selected college, in [selected]'s order, each built from its
-   * `colleges` row and its list status. The place the two services would
+   * `colleges` row and its list ENTRY. The place the two services would
    * otherwise each re-derive the same lookup pair.
+   *
+   * The whole entry rather than only its [CollegeListEntryStatus] (RFC 152):
+   * the entry now also carries this school's living-plan override, and handing
+   * the caller a projection would have the cost service reach back into the
+   * list for it -- a second lookup of a row this class already holds.
    */
-  fun <T> map(build: (College, CollegeListEntryStatus) -> T): List<T> =
-    selected.map { id -> build(collegeOf(id), entryById.getValue(id).status) }
+  fun <T> map(build: (College, CollegeListEntry) -> T): List<T> = selected.map { id -> build(collegeOf(id), entryById.getValue(id)) }
 
   private fun collegeOf(id: CollegeId): College =
     collegeById[id] ?: error(

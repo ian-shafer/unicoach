@@ -15,6 +15,8 @@ data class PublicMoneyProfile(
   val incomeBand: String?,
   val residencyStatus: String,
   val residencyState: String?,
+  val livingPlanStatus: String,
+  val livingPlan: String?,
   val version: Int,
   val createdAt: Instant,
   val updatedAt: Instant,

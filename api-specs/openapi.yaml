@@ -941,7 +941,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/MoneyProfileResponse'
         '400':
-          description: Validation failure (unknown income band, malformed state code, or value+declined for one field)
+          description: Validation failure (unknown income band, malformed state code, unknown living plan, or value+declined for one field)
           content:
             application/json:
               schema:
@@ -1772,9 +1772,20 @@ components:
         residencyClear:
           type: boolean
           default: false
+        livingPlan:
+          type: string
+          enum: [on_campus, off_campus, with_family]
+          nullable: true
+          description: Where the student plans to live when they have the choice.
+        livingPlanDeclined:
+          type: boolean
+          default: false
+        livingPlanClear:
+          type: boolean
+          default: false
     PublicMoneyProfile:
       type: object
-      required: [incomeBandStatus, residencyStatus, version, createdAt, updatedAt]
+      required: [incomeBandStatus, residencyStatus, livingPlanStatus, version, createdAt, updatedAt]
       properties:
         incomeBandStatus:
           type: string
@@ -1790,6 +1801,13 @@ components:
           type: string
           nullable: true
           pattern: '^[A-Z]{2}$'
+        livingPlanStatus:
+          type: string
+          enum: [unanswered, answered, declined]
+        livingPlan:
+          type: string
+          enum: [on_campus, off_campus, with_family]
+          nullable: true
         version:
           type: integer
           format: int32
@@ -1821,6 +1839,11 @@ components:
           type: string
           nullable: true
           maxLength: 2048
+        livingPlan:
+          type: string
+          enum: [on_campus, off_campus, with_family]
+          nullable: true
+          description: Where the student plans to live at THIS school, when it differs from their usual plan.
         observationIds:
           type: array
           items:
@@ -1830,7 +1853,7 @@ components:
     UpdateCollegeListEntryRequest:
       type: object
       additionalProperties: false
-      required: [version, status, reasons]
+      required: [version, status, reasons, livingPlan]
       properties:
         version:
           type: integer
@@ -1843,6 +1866,14 @@ components:
           type: string
           nullable: true
           maxLength: 2048
+        livingPlan:
+          type: string
+          enum: [on_campus, off_campus, with_family]
+          nullable: true
+          description: >-
+            Where the student plans to live at THIS school. Written wholesale like reasons,
+            and required for the same reason: null clears the override back to their usual
+            plan, so a client that omitted it would delete a fact it never meant to touch.
         addObservationIds:
           type: array
           items:
@@ -1863,7 +1894,7 @@ components:
           format: date-time
     PublicCollegeListEntry:
       type: object
-      required: [id, collegeId, collegeName, status, reasons, version, createdAt, updatedAt, supportingObservations]
+      required: [id, collegeId, collegeName, status, reasons, livingPlan, version, createdAt, updatedAt, supportingObservations]
       properties:
         id:
           type: string
@@ -1880,6 +1911,10 @@ components:
           type: string
           nullable: true
           maxLength: 2048
+        livingPlan:
+          type: string
+          enum: [on_campus, off_campus, with_family]
+          nullable: true
         version:
           type: integer
           format: int32

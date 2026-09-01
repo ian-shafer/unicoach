@@ -3,9 +3,11 @@ package ed.unicoach.coaching.costs
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.costs.CostsTestDb.addToCollegeList
 import ed.unicoach.coaching.costs.CostsTestDb.answerBand
+import ed.unicoach.coaching.costs.CostsTestDb.answerLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.answerResidency
 import ed.unicoach.coaching.costs.CostsTestDb.createStudent
 import ed.unicoach.coaching.costs.CostsTestDb.declineBand
+import ed.unicoach.coaching.costs.CostsTestDb.declineLivingPlan
 import ed.unicoach.coaching.costs.CostsTestDb.declineResidency
 import ed.unicoach.coaching.costs.CostsTestDb.seedCollege
 import ed.unicoach.db.dao.CorruptPersistedValueException
@@ -13,6 +15,7 @@ import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -68,9 +71,10 @@ class CollegeCostServiceTest {
     val netPrice = assertIs<NetPrice.OverallAverage>(cost.netPrice, "an overall average can carry no band")
     assertEquals(20000, netPrice.amount)
     assertEquals(
-      listOf(PrecisionOffer.INCOME_BAND),
+      listOf(PrecisionOffer.INCOME_BAND, PrecisionOffer.LIVING_PLAN),
       profile.precisionOffersFor(cost),
-      "an unanswered band must carry the in-answer invitation, and answered residency offers nothing more",
+      "an unanswered band must carry the in-answer invitation; answered residency offers nothing more, " +
+        "and the unanswered living plan is offered last (RFC 152 D4)",
     )
   }
 
@@ -157,7 +161,9 @@ class CollegeCostServiceTest {
     assertEquals(
       listOf(PrecisionOffer.RESIDENCY, PrecisionOffer.INCOME_BAND),
       profile.precisionOffersFor(cost),
-      "all-unanswered at a public college with published tuition offers both upgrades, residency first",
+      "all-unanswered at a public college offers the two upgrades that rest on nothing else, residency " +
+        "first. The living plan is NOT among them: with residency unanswered this school's tuition line " +
+        "is null, so no arrangement carries a total and there is nothing to choose between (D4)",
     )
   }
 
@@ -1441,6 +1447,672 @@ class CollegeCostServiceTest {
       one.prepared.size,
       five.prepared.size,
       "and five colleges must still cost what one does: one=[${one.prepared}] five=[${five.prepared}]",
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // The resolved living plan (RFC 152)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `no plan and no override leaves the answer exactly as it was - all three arrangements, nothing chosen`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Unanswered Plan U"))
+
+    val cost = profileOf(student).colleges.single()
+    assertIs<ChosenLivingPlan.NotChosen>(cost.chosen, "nothing said means nothing led with")
+    assertEquals(
+      LivingArrangement.entries,
+      cost.breakdown!!.arrangements.map { it.arrangement },
+      "and the breakdown is untouched: RFC 152 D3, today's behaviour exactly",
+    )
+  }
+
+  @Test
+  fun `a declined plan chooses nothing and is never re-offered`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Declined Plan U"))
+    declineLivingPlan(student)
+
+    val profile = profileOf(student)
+    val cost = profile.colleges.single()
+    assertIs<ComparedLivingPlan.Declined>(profile.moneyProfile.living)
+    assertIs<ChosenLivingPlan.NotChosen>(cost.chosen, "a decline leads with nothing, forever")
+    assertEquals(
+      LivingArrangement.entries,
+      cost.breakdown!!.arrangements.map { it.arrangement },
+      "and still shows every way of living the school publishes",
+    )
+    assertTrue(
+      PrecisionOffer.LIVING_PLAN !in profile.precisionOffersFor(cost),
+      "the coach must never be cued to reopen a declined plan",
+    )
+  }
+
+  @Test
+  fun `the usual plan is assumed for a school with no override, and says it was assumed`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Default Plan U"))
+    // A public school prices nothing until the residency question is answered,
+    // so the plan is answered too: this test is about the resolution, not about
+    // a tuition line that is still open.
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    val cost = profileOf(student).colleges.single()
+    val chosen = assertIs<ChosenLivingPlan.Priced>(cost.chosen)
+    assertEquals(LivingArrangement.WITH_FAMILY, chosen.plan)
+    assertEquals(
+      LivingPlanSource.PROFILE_DEFAULT,
+      chosen.source,
+      "with_family is never inferred by us: an assumed plan must stay nameable as an assumption",
+    )
+  }
+
+  @Test
+  fun `a school's own plan beats the usual plan, and a cleared override falls back to it`() {
+    val student = createStudent()
+    val college = seedCollege("Override U")
+    addToCollegeList(student, college)
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    CostsTestDb.setEntryLivingPlan(student, college, LivingArrangement.ON_CAMPUS)
+    val overridden = assertIs<ChosenLivingPlan.Priced>(profileOf(student).colleges.single().chosen)
+    assertEquals(LivingArrangement.ON_CAMPUS, overridden.plan, "override beats default")
+    assertEquals(
+      LivingPlanSource.PER_COLLEGE,
+      overridden.source,
+      "and says so, because 'you told us this for this school' is a different sentence from an assumption",
+    )
+
+    CostsTestDb.setEntryLivingPlan(student, college, null)
+    val cleared = assertIs<ChosenLivingPlan.Priced>(profileOf(student).colleges.single().chosen)
+    assertEquals(LivingArrangement.WITH_FAMILY, cleared.plan, "NULL is 'no override', so the usual plan returns")
+    assertEquals(LivingPlanSource.PROFILE_DEFAULT, cleared.source)
+  }
+
+  @Test
+  fun `an override alone resolves a school even with no usual plan on file`() {
+    // Feasibility is a fact about the student-college pair, so a family can
+    // state it about one school without ever stating a global preference.
+    val student = createStudent()
+    val overridden = seedCollege("Commutable U")
+    val plain = seedCollege("Far Away U")
+    addToCollegeList(student, overridden)
+    addToCollegeList(student, plain)
+    answerResidency(student, "CA")
+    CostsTestDb.setEntryLivingPlan(student, overridden, LivingArrangement.WITH_FAMILY)
+
+    val byName = profileOf(student).colleges.associateBy { it.name }
+    val chosen = assertIs<ChosenLivingPlan.Priced>(byName.getValue("Commutable U").chosen)
+    assertEquals(LivingArrangement.WITH_FAMILY, chosen.plan)
+    assertEquals(LivingPlanSource.PER_COLLEGE, chosen.source)
+    assertIs<ChosenLivingPlan.NotChosen>(
+      byName.getValue("Far Away U").chosen,
+      "a school the family said nothing about stays unchosen; an override is never a global answer",
+    )
+  }
+
+  @Test
+  fun `a school with no residence halls says so rather than substituting another arrangement`() {
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "No Dorms U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ),
+    )
+    answerLivingPlan(student, LivingArrangement.ON_CAMPUS)
+
+    val cost = profileOf(student).colleges.single()
+    val notPriced = assertIs<ChosenLivingPlan.NotPricedHere>(cost.chosen)
+    assertEquals(LivingArrangement.ON_CAMPUS, notPriced.plan)
+    assertEquals(
+      ArrangementGap.NO_ON_CAMPUS_HOUSING,
+      notPriced.reason,
+      "the school ANSWERED: it has no residence halls, which is not the same as silence",
+    )
+    assertFalse(
+      cost.breakdown!!.arrangements.any { it.arrangement == LivingArrangement.ON_CAMPUS },
+      "and no on-campus arrangement is invented to satisfy the plan",
+    )
+  }
+
+  @Test
+  fun `a school showing the chosen plan with no total says so, and is never blamed for our gap`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Silent Off Campus U", housingAndFoodOffCampusPerYearUsd = null))
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.OFF_CAMPUS)
+
+    val cost = profileOf(student).colleges.single()
+    // Three outcomes, not two. The arrangement still exists -- its other parts
+    // are published -- but it carries no total, so the family gets no number to
+    // lead with. That is NoTotalHere: stated, never a Priced with a silent
+    // blank where its number should be, and never NotPricedHere, whose
+    // ArrangementGap vocabulary would blame the school's price list for a
+    // missing PART (RFC 149 D-B). A missing part is a labelled blank; a missing
+    // ARRANGEMENT is a stated reason.
+    val noTotal = assertIs<ChosenLivingPlan.NoTotalHere>(cost.chosen)
+    assertEquals(LivingArrangement.OFF_CAMPUS, noTotal.plan)
+    assertNull(noTotal.cost.totalPerYearUsd, "a partial arrangement carries no total, and never a partial sum")
+    assertEquals(
+      NoTotalReason.PART_NOT_PUBLISHED,
+      noTotal.reason,
+      "and the cause is named: this one IS the school's silence about a part it does not publish",
+    )
+    assertTrue(
+      cost.breakdown!!.arrangements.any { it.arrangement == LivingArrangement.OFF_CAMPUS },
+      "and the way of living stays in the payload, each published part still labelled (D2)",
+    )
+  }
+
+  @Test
+  fun `an unanswered residency leaves a public school with no total, and the school is not blamed for it`() {
+    // The regression this case exists to prevent. A public school with the
+    // residency question still open has no tuition line, so no arrangement has
+    // a total -- but the school published its prices in full. Reading that as
+    // "this school publishes no price for that way of living" states OUR gap as
+    // a fact about the school's price list, which is the one thing the
+    // ArrangementGap vocabulary must never be used to say.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Public No Residency U"))
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    val cost = profileOf(student).colleges.single()
+    val noTotal = assertIs<ChosenLivingPlan.NoTotalHere>(cost.chosen)
+    assertEquals(LivingArrangement.WITH_FAMILY, noTotal.plan)
+    assertEquals(
+      LivingPlanSource.PROFILE_DEFAULT,
+      noTotal.source,
+      "the plan still resolved, and still says where it came from: only the number is missing",
+    )
+    assertEquals(
+      NoTotalReason.AWAITING_RESIDENCY_ANSWER,
+      noTotal.reason,
+      "and the missing total is named as OUR open question, never as this school's silence",
+    )
+  }
+
+  @Test
+  fun `a school priced for nothing at all reports the chosen plan as not reported`() {
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "No Components U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        housingAndFoodOffCampusPerYearUsd = null,
+        booksAndSuppliesPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        otherExpensesOffCampusPerYearUsd = null,
+        otherExpensesWithFamilyPerYearUsd = null,
+      ),
+    )
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    val cost = profileOf(student).colleges.single()
+    assertNull(cost.breakdown, "a school that reports no component has no breakdown at all")
+    val notPriced = assertIs<ChosenLivingPlan.NotPricedHere>(cost.chosen)
+    assertEquals(
+      ArrangementGap.NOT_REPORTED,
+      notPriced.reason,
+      "an absent IPEDS row is a gap in OUR data, never evidence a school has no residence halls",
+    )
+  }
+
+  @Test
+  fun `a with_family default and an on_campus override on the far school price both correctly in one comparison`() {
+    // Ian's own case (brief 0003 D20): commutable in-state school, far
+    // out-of-state one. One family, two plans, and both totals must be the
+    // school's own -- the failure this override exists to prevent is a single
+    // arrangement held across a table it is not true of.
+    val student = createStudent()
+    val nearby = seedCollege("Nearby State U", state = "CA", control = 1)
+    val faraway = seedCollege("Faraway State U", state = "NY", control = 1)
+    addToCollegeList(student, nearby)
+    addToCollegeList(student, faraway)
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+    CostsTestDb.setEntryLivingPlan(student, faraway, LivingArrangement.ON_CAMPUS)
+
+    val profile = profileOf(student)
+    val byName = profile.colleges.associateBy { it.name }
+
+    val near = assertIs<ChosenLivingPlan.Priced>(byName.getValue("Nearby State U").chosen)
+    assertEquals(LivingArrangement.WITH_FAMILY, near.plan)
+    assertEquals(LivingPlanSource.PROFILE_DEFAULT, near.source, "the usual plan, assumed for the commutable school")
+    assertEquals(
+      CostsTestDb.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD + CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD +
+        CostsTestDb.OTHER_EXPENSES_WITH_FAMILY_PER_YEAR_USD,
+      near.cost.totalPerYearUsd,
+      "in-state tuition and fees plus the at-home allowances, and NO housing and food line: that is data",
+    )
+    assertFalse(
+      near.cost.lines.any { it.field == CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD },
+      "living at home carries no housing and food line, and never a zero one",
+    )
+
+    val far = assertIs<ChosenLivingPlan.Priced>(byName.getValue("Faraway State U").chosen)
+    assertEquals(LivingArrangement.ON_CAMPUS, far.plan)
+    assertEquals(LivingPlanSource.PER_COLLEGE, far.source, "this school's own plan, stated by the family")
+    assertEquals(
+      CostsTestDb.TUITION_AND_FEES_OUT_OF_STATE_PER_YEAR_USD + CostsTestDb.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD +
+        CostsTestDb.BOOKS_AND_SUPPLIES_PER_YEAR_USD + CostsTestDb.OTHER_EXPENSES_ON_CAMPUS_PER_YEAR_USD,
+      far.cost.totalPerYearUsd,
+      "out-of-state tuition and fees plus the on-campus allowances - this school's own basis, not the other's",
+    )
+
+    // Neither answer narrowed: all three arrangements are still true facts on
+    // both schools, so "what if he lived at home at the far school?" is still
+    // answerable from the same result (D2).
+    profile.colleges.forEach { cost ->
+      assertEquals(
+        LivingArrangement.entries,
+        cost.breakdown!!.arrangements.map { it.arrangement },
+        "a resolved plan decides what is LED with, never what exists: [${cost.name}]",
+      )
+    }
+    val arrangement = assertNotNull(profile.comparisonBasis).livingArrangement
+    assertEquals(
+      LivingArrangement.entries,
+      arrangement.comparable,
+      "and ArrangementBasis.comparable is not narrowed by a resolved plan either",
+    )
+  }
+
+  @Test
+  fun `an answered plan with no stored value is refused, never relabelled as never asked`() {
+    // The third field joins requireIntactAnswers. Reading a corrupt row as
+    // "unanswered" would have the coach ASK a family a question they already
+    // answered - the one thing the tri-state exists to prevent.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Corrupt Plan U"))
+    answerLivingPlan(student, LivingArrangement.ON_CAMPUS)
+    CoachingTestDb.sqlSession
+      .prepareStatement(
+        "ALTER TABLE money_profiles DROP CONSTRAINT money_profiles_living_plan_value_iff_answered_check",
+      ).use { it.execute() }
+    CoachingTestDb.sqlSession
+      .prepareStatement("UPDATE money_profiles SET living_plan = NULL, version = version + 1 WHERE student_id = ?")
+      .use {
+        it.setObject(1, student.value)
+        it.executeUpdate()
+      }
+
+    val failure = runCatching { profileOf(student) }.exceptionOrNull()
+
+    // Restored before the assertions: the suite shares one database, and a
+    // dropped constraint left behind would weaken whichever test runs next
+    // rather than failing this one.
+    CoachingTestDb.sqlSession
+      .prepareStatement(
+        "ALTER TABLE money_profiles ADD CONSTRAINT money_profiles_living_plan_value_iff_answered_check " +
+          "CHECK ((living_plan IS NOT NULL) = (living_plan_status = 'answered')) NOT VALID",
+      ).use { it.execute() }
+
+    assertIs<CorruptPersistedValueException>(failure, "got $failure")
+    assertTrue(
+      failure.message!!.contains("money_profiles.[living_plan]"),
+      "the failure must name the corrupt column: [${failure.message}]",
+    )
+  }
+
+  @Test
+  fun `the living-plan offer rests only on a school with something to choose between`() {
+    val student = createStudent()
+    // Priced one way only: the school publishes just its at-home allowance, so
+    // no on-campus or off-campus arrangement exists at all and the question
+    // would buy this family nothing here. The SHARED books allowance is nulled
+    // too, deliberately -- it belongs to every arrangement, so leaving it would
+    // give this school three arrangements made of one line each.
+    addToCollegeList(
+      student,
+      seedCollege(
+        "One Way U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        housingAndFoodOffCampusPerYearUsd = null,
+        booksAndSuppliesPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        otherExpensesOffCampusPerYearUsd = null,
+      ),
+    )
+    addToCollegeList(student, seedCollege("Three Ways U"))
+    // Residency answered, because the gate counts PRICED arrangements and a
+    // public school with no residency on file totals none of them.
+    answerResidency(student, "CA")
+
+    val profile = profileOf(student)
+    val byName = profile.colleges.associateBy { it.name }
+    assertEquals(
+      1,
+      byName
+        .getValue("One Way U")
+        .breakdown!!
+        .arrangements.size,
+      "the fixture must actually price this school one way, or the test asserts nothing",
+    )
+    assertTrue(
+      PrecisionOffer.LIVING_PLAN !in profile.precisionOffersFor(byName.getValue("One Way U")),
+      "an offer must never rest on a school with nothing to choose between",
+    )
+    assertTrue(
+      PrecisionOffer.LIVING_PLAN in profile.precisionOffersFor(byName.getValue("Three Ways U")),
+      "and must be on offer where the plan actually moves the picture",
+    )
+  }
+
+  @Test
+  fun `arrangements present but not priced are nothing to choose between, so no living-plan offer`() {
+    // The case that distinguishes "two arrangements" from "two PRICED
+    // arrangements" (D4). This school publishes every component, so all three
+    // arrangements exist -- but it publishes no tuition figure at all, so not
+    // one of them carries a total. Asking the family where they plan to live
+    // would move no number they can see, which is the definition of an offer
+    // resting on nothing.
+    val student = createStudent()
+    addToCollegeList(
+      student,
+      seedCollege(
+        "Priceless U",
+        control = 2,
+        tuitionAndFeesInStatePerYearUsd = null,
+        tuitionAndFeesOutOfStatePerYearUsd = null,
+      ),
+    )
+
+    val profile = profileOf(student)
+    val cost = profile.colleges.single()
+    val arrangements = assertNotNull(cost.breakdown).arrangements
+    assertEquals(
+      LivingArrangement.entries.size,
+      arrangements.size,
+      "the fixture must give this school every arrangement, or it tests the size gate instead",
+    )
+    assertEquals(
+      0,
+      arrangements.count { it.totalPerYearUsd != null },
+      "and none of them may carry a total, which is the whole distinction under test",
+    )
+    assertTrue(
+      PrecisionOffer.LIVING_PLAN !in profile.precisionOffersFor(cost),
+      "three total-less arrangements are nothing to choose between: the old size gate would have offered here",
+    )
+  }
+
+  @Test
+  fun `resolving the living plan adds no query per college`() {
+    // The override is read from the list entry the selection ALREADY holds, and
+    // the default from the money profile read once -- so the resolution costs
+    // zero extra statements, whatever the list's size.
+    val student = createStudent()
+    val ids =
+      (1..5).map { n ->
+        seedCollege("Plan Batch $n").also { addToCollegeList(student, it) }
+      }
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+    CostsTestDb.setEntryLivingPlan(student, ids.last(), LivingArrangement.ON_CAMPUS)
+
+    val one = CoachingTestDb.CountingSession()
+    val five = CoachingTestDb.CountingSession()
+    service.readInSession(one, student, ids.take(1))
+    val all = service.readInSession(five, student, ids)
+    assertEquals(
+      one.prepared.size,
+      five.prepared.size,
+      "one=[${one.prepared}] five=[${five.prepared}]",
+    )
+    assertEquals(
+      LivingArrangement.ON_CAMPUS,
+      assertIs<ChosenLivingPlan.Priced>(all.colleges.last().chosen).plan,
+      "and the override still resolved inside that same statement budget",
+    )
+  }
+
+  @Test
+  fun `one plan priced at every school holds the comparison column and names the way of living`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Home One U"))
+    addToCollegeList(student, seedCollege("Home Two U"))
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+
+    val basis = assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+    assertEquals(ArrangementScope.ONE_PLAN_EVERY_SCHOOL, basis.scope)
+    assertEquals(ComparedLivingPlan.Answered(LivingArrangement.WITH_FAMILY), basis.answer)
+    assertTrue(
+      basis.statement.contains(LivingArrangement.WITH_FAMILY.label) &&
+        basis.statement.contains("the column holds that one way of living"),
+      "the plan is named in the student's words and the column is stated: [${basis.statement}]",
+    )
+  }
+
+  @Test
+  fun `different plans across the compared schools name the plan used for each`() {
+    val student = createStudent()
+    val near = seedCollege("Nearby U")
+    val far = seedCollege("Faraway U")
+    addToCollegeList(student, near)
+    addToCollegeList(student, far)
+    answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+    CostsTestDb.setEntryLivingPlan(student, far, LivingArrangement.ON_CAMPUS)
+
+    val basis = assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+    assertEquals(ArrangementScope.PLAN_VARIES_BY_SCHOOL, basis.scope)
+    assertTrue(
+      basis.statement.contains("not all on the same plan") && basis.statement.contains("the family's actual situation"),
+      "the column holds the situation rather than one arrangement: [${basis.statement}]",
+    )
+    assertTrue(
+      basis.statement.contains("Nearby U: ${LivingArrangement.WITH_FAMILY.label}") &&
+        basis.statement.contains("Faraway U: ${LivingArrangement.ON_CAMPUS.label}"),
+      "and names the plan used for EACH school, before the numbers: [${basis.statement}]",
+    )
+    assertEquals(
+      listOf(LivingArrangement.WITH_FAMILY, LivingArrangement.ON_CAMPUS),
+      basis.byCollege.map { it.plan },
+      "the per-school resolution is read off the per-college answer, never re-derived",
+    )
+    assertEquals(
+      LivingArrangement.entries,
+      basis.comparable,
+      "and comparable is not narrowed by any of it (D2)",
+    )
+  }
+
+  @Test
+  fun `a school with a plan of its own beside a school with none is still varies-by-school`() {
+    val student = createStudent()
+    val commutable = seedCollege("Commutable U")
+    addToCollegeList(student, commutable)
+    addToCollegeList(student, seedCollege("Nothing Said U"))
+    CostsTestDb.setEntryLivingPlan(student, commutable, LivingArrangement.WITH_FAMILY)
+
+    val basis = assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+    assertEquals(ArrangementScope.PLAN_VARIES_BY_SCHOOL, basis.scope)
+    assertTrue(
+      basis.statement.contains("Nothing Said U: no plan on file"),
+      "the school nobody said anything about is named as such, never given its neighbour's plan: [${basis.statement}]",
+    )
+    assertIs<ComparedLivingPlan.Unanswered>(basis.answer, "and the usual plan is still an open question")
+  }
+
+  @Test
+  fun `a plan some school is not priced for names those schools with their reason`() {
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Has Dorms U"))
+    addToCollegeList(
+      student,
+      seedCollege(
+        "No Dorms U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+      ),
+    )
+    answerResidency(student, "CA")
+    answerLivingPlan(student, LivingArrangement.ON_CAMPUS)
+
+    val basis = assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+    assertEquals(ArrangementScope.PLAN_NOT_PRICED_EVERYWHERE, basis.scope)
+    assertTrue(
+      basis.statement.contains("No Dorms U: no residence halls"),
+      "the school is named with its OWN reason, reusing the ArrangementGap split: [${basis.statement}]",
+    )
+    assertTrue(
+      basis.statement.contains("never quote another way of living in their place"),
+      "and no arrangement is substituted for the missing one: [${basis.statement}]",
+    )
+    assertFalse(
+      basis.statement.contains("Has Dorms U"),
+      "a school that IS priced for the plan is not named as a gap: [${basis.statement}]",
+    )
+  }
+
+  @Test
+  fun `every ArrangementScope code is reachable and labels its own statement`() {
+    // The other half of ComparisonBasisTest's vocabulary check, and the half
+    // that needs real fixtures: a code no arrangement of the facts produces is
+    // a vocabulary entry nothing means, and two codes sharing a sentence would
+    // make the code finer than the copy it labels. Both are the same defect in
+    // opposite directions, so both are checked here, where a school is priced
+    // by an actual `colleges` row.
+    val bases =
+      ArrangementScope.entries.associateWith { scope ->
+        val student = createStudent()
+        when (scope) {
+          ArrangementScope.ONE_PLAN_EVERY_SCHOOL -> {
+            addToCollegeList(student, seedCollege("Scope One A"))
+            addToCollegeList(student, seedCollege("Scope One B"))
+            // Residency too: a public school prices nothing while that question
+            // is open, and "priced for it everywhere" is about a total.
+            answerResidency(student, "CA")
+            answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+          }
+
+          ArrangementScope.PLAN_VARIES_BY_SCHOOL -> {
+            addToCollegeList(student, seedCollege("Scope Varies A"))
+            val far = seedCollege("Scope Varies B").also { addToCollegeList(student, it) }
+            answerLivingPlan(student, LivingArrangement.WITH_FAMILY)
+            CostsTestDb.setEntryLivingPlan(student, far, LivingArrangement.ON_CAMPUS)
+          }
+
+          ArrangementScope.PLAN_NOT_PRICED_EVERYWHERE -> {
+            addToCollegeList(student, seedCollege("Scope Gap A"))
+            addToCollegeList(
+              student,
+              seedCollege(
+                "Scope Gap B",
+                housingAndFoodOnCampusPerYearUsd = null,
+                otherExpensesOnCampusPerYearUsd = null,
+                ipedsHousing = CostsTestDb.IpedsHousing.DOES_NOT_OFFER,
+              ),
+            )
+            answerResidency(student, "CA")
+            answerLivingPlan(student, LivingArrangement.ON_CAMPUS)
+          }
+
+          ArrangementScope.NO_PLAN_COMPARABLE -> {
+            addToCollegeList(student, seedCollege("Scope Open A"))
+            addToCollegeList(student, seedCollege("Scope Open B"))
+          }
+
+          ArrangementScope.NO_PLAN_NOTHING_COMPARABLE -> {
+            addToCollegeList(
+              student,
+              seedCollege(
+                "Scope Silent A",
+                housingAndFoodOnCampusPerYearUsd = null,
+                housingAndFoodOffCampusPerYearUsd = null,
+                booksAndSuppliesPerYearUsd = null,
+                otherExpensesOnCampusPerYearUsd = null,
+                otherExpensesOffCampusPerYearUsd = null,
+              ),
+            )
+            addToCollegeList(
+              student,
+              seedCollege(
+                "Scope Silent B",
+                housingAndFoodOffCampusPerYearUsd = null,
+                booksAndSuppliesPerYearUsd = null,
+                otherExpensesOffCampusPerYearUsd = null,
+                otherExpensesWithFamilyPerYearUsd = null,
+              ),
+            )
+          }
+        }
+        assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+      }
+
+    bases.forEach { (expected, basis) ->
+      assertEquals(expected, basis.scope, "the fixture built for [$expected] must actually produce it")
+    }
+    val statements = bases.values.map { it.statement }
+    assertEquals(
+      statements.size,
+      statements.toSet().size,
+      "each code must label its OWN sentence, or the code is finer than the copy it labels: $statements",
+    )
+    assertTrue(statements.none { it.isEmpty() }, "a code with no sentence beside it is half a fact")
+  }
+
+  @Test
+  fun `no plan on file keeps RFC 151's two arrangement statements byte-for-byte`() {
+    // RFC 152 D3, the whole backward-compatibility story: an unanswered or
+    // declined plan renders exactly as it did, forever. The code is new; the
+    // sentences are not.
+    val student = createStudent()
+    addToCollegeList(student, seedCollege("Every Way One U"))
+    addToCollegeList(student, seedCollege("Every Way Two U"))
+
+    val comparable = assertNotNull(profileOf(student).comparisonBasis).livingArrangement
+    assertEquals(ArrangementScope.NO_PLAN_COMPARABLE, comparable.scope)
+    assertTrue(
+      comparable.statement.startsWith("Every school here is priced for") &&
+        comparable.statement.endsWith("name the one you are quoting."),
+      "RFC 151's non-empty statement, unchanged: [${comparable.statement}]",
+    )
+
+    val other = createStudent()
+    addToCollegeList(
+      other,
+      seedCollege(
+        "Only At Home U",
+        housingAndFoodOnCampusPerYearUsd = null,
+        housingAndFoodOffCampusPerYearUsd = null,
+        booksAndSuppliesPerYearUsd = null,
+        otherExpensesOnCampusPerYearUsd = null,
+        otherExpensesOffCampusPerYearUsd = null,
+      ),
+    )
+    addToCollegeList(
+      other,
+      seedCollege(
+        "Only On Campus U",
+        housingAndFoodOffCampusPerYearUsd = null,
+        booksAndSuppliesPerYearUsd = null,
+        otherExpensesOffCampusPerYearUsd = null,
+        otherExpensesWithFamilyPerYearUsd = null,
+      ),
+    )
+    declineLivingPlan(other)
+
+    val nothingShared = assertNotNull(profileOf(other).comparisonBasis).livingArrangement
+    assertEquals(ArrangementScope.NO_PLAN_NOTHING_COMPARABLE, nothingShared.scope)
+    assertEquals(
+      "No one way of living is priced at every school here, so a column cannot hold the living arrangement " +
+        "constant: quote each school for the ways of living it does publish, and say which one you are quoting.",
+      nothingShared.statement,
+      "RFC 151's empty statement, byte-for-byte",
+    )
+    assertIs<ComparedLivingPlan.Declined>(
+      nothingShared.answer,
+      "a declined plan is reachable as itself, never as an absent value",
     )
   }
 }

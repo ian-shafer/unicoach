@@ -4,6 +4,7 @@ import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.LivingArrangement
 
 /**
  * The five facts that make a multi-school cost table honest (RFC 151): whose
@@ -55,7 +56,7 @@ data class ComparisonBasis(
       return ComparisonBasis(
         population = PopulationBasis,
         residency = ResidencyBasis.of(colleges, moneyProfile),
-        livingArrangement = ArrangementBasis.of(colleges),
+        livingArrangement = ArrangementBasis.of(colleges, moneyProfile),
         academicYears = DatedFigures.of(colleges),
         aid = AidBasis,
       )
@@ -452,12 +453,22 @@ data class ResidencyBasis(
  */
 enum class ArrangementGap(
   val value: String,
+  /**
+   * The gap in the words a coach says it -- the spoken twin of [value], beside
+   * it in the one home for this vocabulary ([LivingArrangement.label] is the
+   * precedent). It reads as the object of "this school has", so the comparison
+   * and the per-college answer cannot word one silence two ways.
+   */
+  val phrase: String,
 ) {
   /** IPEDS reports this school has no residence halls, so there is no on-campus price to compare. */
-  NO_ON_CAMPUS_HOUSING("no_on_campus_housing"),
+  NO_ON_CAMPUS_HOUSING("no_on_campus_housing", "no residence halls"),
 
   /**
-   * The school publishes no figure for this way of living.
+   * The school publishes no figure at all for this way of living, so the
+   * arrangement is absent from its breakdown. An arrangement it SHOWS with no
+   * settled total is NOT this code -- it carries a [NoTotalReason] instead,
+   * because that blank may be a gap of ours rather than the school's silence.
    *
    * A claim about the SCORECARD's silence, and true whatever IPEDS says: it is
    * the reason a school with no housing fact on file (an absent
@@ -468,7 +479,67 @@ enum class ArrangementGap(
    * data as a fact about the school's price list, which is not what an entry
    * here means.
    */
-  NOT_REPORTED("not_reported"),
+  NOT_REPORTED("not_reported", "no published price for it"),
+  ;
+
+  companion object {
+    /**
+     * Why a school is not priced for [plan] -- the ONE home for the rule, read
+     * by both `gapsOf` (the comparison) and `CollegeCostService`'s
+     * chosen-plan resolver (the per-college answer), so the two can never give
+     * a family two different reasons for the same silence.
+     *
+     * ONLY a known `false` is the no-dorms answer. A school with no housing
+     * fact on file falls to [NOT_REPORTED], which is the true statement about
+     * it: it published no on-campus figure. An absent IPEDS row is a gap in OUR
+     * data, never a fact about the school's price list (RFC 149 D-B).
+     */
+    fun of(
+      plan: LivingArrangement,
+      offersOnCampusHousing: Boolean?,
+    ): ArrangementGap =
+      if (plan == LivingArrangement.ON_CAMPUS && offersOnCampusHousing == false) {
+        NO_ON_CAMPUS_HOUSING
+      } else {
+        NOT_REPORTED
+      }
+  }
+}
+
+/**
+ * WHY a school's cell in a compared column cannot be filled -- one code and the
+ * words a coach says it in, over the TWO vocabularies that answer that question
+ * (RFC 152).
+ *
+ * The two are deliberately not merged: [ArrangementGap] states what the SCHOOL
+ * published, and [NoTotalReason] states a blank whose cause may be OURS. This
+ * type carries either of them to the one site that formats them, so the
+ * comparison never flattens a code into its rendered wording on the way there.
+ */
+sealed interface PlanSilence {
+  /** The wire code, so a reader switches on the fact rather than on its sentence. */
+  val value: String
+
+  /** The same fact in the words a coach says it, reading on its own after a school's name. */
+  val phrase: String
+
+  /** This school publishes no price for the plan at all, for the [gap]'s reason. */
+  data class NotPriced(
+    val gap: ArrangementGap,
+  ) : PlanSilence {
+    override val value: String get() = gap.value
+
+    override val phrase: String get() = gap.phrase
+  }
+
+  /** This school shows the plan but no total is settled for it, for the [reason]'s cause. */
+  data class NoTotal(
+    val reason: NoTotalReason,
+  ) : PlanSilence {
+    override val value: String get() = reason.value
+
+    override val phrase: String get() = reason.phrase
+  }
 }
 
 /**
@@ -499,7 +570,98 @@ data class IncompleteArrangement(
 }
 
 /**
- * The living arrangement a comparison can hold constant (RFC 151 D-E).
+ * WHAT THE FAMILY ANSWERED about where the student plans to live (RFC 152), as
+ * one closed vocabulary -- the living-plan twin of [ComparedResidency].
+ *
+ * The plan rides on the answered case and nowhere else, for the same reason: a
+ * status plus a nullable plan re-encodes a disjoint fact, and a reader could
+ * then state a plan nobody gave. This is the family's USUAL plan; a school they
+ * decided differently about carries its own, which is why the per-school
+ * resolution below is read off each [CollegeCost] rather than from here.
+ */
+sealed interface ComparedLivingPlan {
+  /** The money-profile status this case echoes, derived from the case rather than stored beside it. */
+  val status: AnswerStatus
+
+  /** The family said where the student plans to live when they have the choice. */
+  data class Answered(
+    val plan: LivingArrangement,
+  ) : ComparedLivingPlan {
+    override val status: AnswerStatus get() = AnswerStatus.ANSWERED
+  }
+
+  /** Not asked yet, or asked and not answered: a question still open. */
+  data object Unanswered : ComparedLivingPlan {
+    override val status: AnswerStatus get() = AnswerStatus.UNANSWERED
+  }
+
+  /** The family said no. A closed topic, never reopened by the coach (RFC 145/152). */
+  data object Declined : ComparedLivingPlan {
+    override val status: AnswerStatus get() = AnswerStatus.DECLINED
+  }
+}
+
+/**
+ * WHAT a column can hold constant about where the student lives (RFC 152 D5) --
+ * a code beside the sentence, like every other fact in this object (D-D).
+ *
+ * [ArrangementBasis] was the ONE fact here with no code, only lists. Resolving
+ * a family's plan is the moment it needs one: four of these five cases did not
+ * exist before, and a coach parsing English for them is exactly what a code
+ * exists to prevent. One code per statement, so neither can drift.
+ */
+enum class ArrangementScope(
+  val value: String,
+) {
+  /** One plan resolved for every school here, and every school is priced for it: the column holds that one way of living. */
+  ONE_PLAN_EVERY_SCHOOL("one_plan_every_school"),
+
+  /**
+   * The schools here are not all on the same plan -- the per-college override
+   * case (at home for the in-state school, on campus for the far one), or a
+   * school with a plan of its own beside schools with none.
+   *
+   * NOT a breach of the RFC 151 comparison contract; it is the contract
+   * working. The contract requires the assumption to be stated before the
+   * numbers, and here the assumption is per school. The column then holds the
+   * family's actual situation rather than one arrangement.
+   */
+  PLAN_VARIES_BY_SCHOOL("plan_varies_by_school"),
+
+  /** One plan resolved for every school, but some school is not priced for it: those schools are named with their reason. */
+  PLAN_NOT_PRICED_EVERYWHERE("plan_not_priced_everywhere"),
+
+  /** No plan on file and no override, but every school is priced for at least one common way of living. */
+  NO_PLAN_COMPARABLE("no_plan_comparable"),
+
+  /** No plan on file and no override, and no one way of living is priced at every school here. */
+  NO_PLAN_NOTHING_COMPARABLE("no_plan_nothing_comparable"),
+}
+
+/**
+ * One school's resolved living plan inside a comparison (RFC 152) -- the
+ * per-school half of [ArrangementBasis], so a statement that names a plan per
+ * school reads it from the same place the per-college answer did.
+ */
+data class CollegeLivingPlan(
+  val collegeId: CollegeId,
+  val name: String,
+  val chosen: ChosenLivingPlan,
+) {
+  /** The plan resolved for this school, or null when nothing was resolved for it. */
+  val plan: LivingArrangement?
+    get() =
+      when (val resolved = chosen) {
+        is ChosenLivingPlan.Priced -> resolved.plan
+        is ChosenLivingPlan.NoTotalHere -> resolved.plan
+        is ChosenLivingPlan.NotPricedHere -> resolved.plan
+        ChosenLivingPlan.NotChosen -> null
+      }
+}
+
+/**
+ * The living arrangement a comparison can hold constant (RFC 151 D-E, RFC 152
+ * D5).
  *
  * [comparable] is the INTERSECTION over every college in the call, in
  * [LivingArrangement] declaration order: "held constant" is only truthful if the
@@ -507,23 +669,191 @@ data class IncompleteArrangement(
  * names each school that lacks a way of living some other school in the call is
  * priced for, and why -- so a dropped arrangement is a stated fact rather than a
  * quiet narrowing of the table.
+ *
+ * RFC 152 adds the family's own answer. [answer] is their USUAL plan;
+ * [byCollege] is what each school actually resolved to, read off
+ * [CollegeCost.chosen] rather than re-derived here, so the comparison
+ * and the per-college answer can never disagree about which way of living a
+ * school is being quoted at. [comparable] is deliberately NOT narrowed by a
+ * resolved plan (D2): the other arrangements stay comparable facts, and a
+ * "what if we lived at home instead?" stays answerable from the same result.
  */
 data class ArrangementBasis(
   val comparable: List<LivingArrangement>,
   val incompleteByCollege: List<IncompleteArrangement>,
+  val answer: ComparedLivingPlan,
+  val byCollege: List<CollegeLivingPlan>,
 ) {
-  val statement: String
+  init {
+    // The two lists that ARE populated when this fires say why a call with
+    // colleges produced no per-college row; the answer status alone is the one
+    // field guaranteed not to explain it.
+    require(byCollege.isNotEmpty()) {
+      "an arrangement basis with no college states a way of living held constant across no school: " +
+        "answer=[${answer.status.value}] " +
+        "comparable=[${comparable.joinToString(", ") { it.value }}] " +
+        "incomplete_colleges=[${incompleteByCollege.joinToString(", ") { it.collegeId.value.toString() }}]"
+    }
+  }
+
+  /** The schools a plan actually resolved for, and the ones it did not -- the two halves every statement below is about. */
+  private val planned: List<CollegeLivingPlan> get() = byCollege.filter { it.plan != null }
+
+  /** The distinct plans in play across the call, in [LivingArrangement] declaration order (never a set's iteration order). */
+  private val distinctPlans: List<LivingArrangement>
+    get() = LivingArrangement.entries.filter { arrangement -> byCollege.any { it.plan == arrangement } }
+
+  /**
+   * The schools whose cell this call cannot fill, each carrying the phrase that
+   * says why -- never given a substitute.
+   *
+   * Two different silences, each kept as a CODE rather than as the sentence it
+   * renders to ([PlanSilence]): a school not priced for the plan at all carries
+   * its [ArrangementGap], and a school that shows the way of living but settles
+   * no total for it carries its [NoTotalReason]. The wording is read where it is
+   * formatted, from the one home for that wording, so this property never
+   * discards a fact into English on the way to the renderer.
+   *
+   * The case is proved once, exhaustively, and the code carried out with it:
+   * selecting the schools and then casting them back would turn a new
+   * [ChosenLivingPlan] case, or one reordered filter, into a
+   * `ClassCastException` inside a live cost answer.
+   */
+  private val notPriced: List<Pair<CollegeLivingPlan, PlanSilence>>
     get() =
-      if (comparable.isEmpty()) {
-        "No one way of living is priced at every school here, so a column cannot hold the living arrangement " +
-          "constant: quote each school for the ways of living it does publish, and say which one you are quoting."
-      } else {
-        "Every school here is priced for ${arrangementPhraseOf(comparable)}, so a column may hold the living " +
-          "arrangement constant; name the one you are quoting."
+      byCollege.mapNotNull { row ->
+        when (val chosen = row.chosen) {
+          is ChosenLivingPlan.NotPricedHere -> row to PlanSilence.NotPriced(chosen.reason)
+          is ChosenLivingPlan.NoTotalHere -> row to PlanSilence.NoTotal(chosen.reason)
+          is ChosenLivingPlan.Priced, ChosenLivingPlan.NotChosen -> null
+        }
       }
 
+  /**
+   * WHAT this column can hold constant -- decided once, said aloud in
+   * [statement] AND shipped as a code, so no reader has to recover the decision
+   * by reading the sentence (D-D: every fact carries both).
+   */
+  val scope: ArrangementScope
+    get() =
+      when {
+        distinctPlans.isEmpty() -> {
+          if (comparable.isEmpty()) ArrangementScope.NO_PLAN_NOTHING_COMPARABLE else ArrangementScope.NO_PLAN_COMPARABLE
+        }
+
+        // More than one plan in play, or a school with a plan of its own beside
+        // a school with none: either way the schools here are not all on the
+        // same plan, so the column cannot claim one.
+        distinctPlans.size > 1 || planned.size != byCollege.size -> {
+          ArrangementScope.PLAN_VARIES_BY_SCHOOL
+        }
+
+        notPriced.isNotEmpty() -> {
+          ArrangementScope.PLAN_NOT_PRICED_EVERYWHERE
+        }
+
+        else -> {
+          ArrangementScope.ONE_PLAN_EVERY_SCHOOL
+        }
+      }
+
+  /**
+   * The schools worth naming one by one -- only when they are NOT all on one
+   * plan, or one of them is not priced for it.
+   *
+   * A fact about the comparison, so it lives with the comparison rather than in
+   * the renderer: with one plan everywhere the statement and the per-college
+   * keys already say it, and a second list would invite the coach to narrate a
+   * difference there is none of. Exhaustive with no `else`, so a sixth scope
+   * cannot default into silence.
+   */
+  val planNamedPerCollege: List<CollegeLivingPlan>
+    get() =
+      when (scope) {
+        ArrangementScope.PLAN_VARIES_BY_SCHOOL, ArrangementScope.PLAN_NOT_PRICED_EVERYWHERE -> byCollege
+
+        ArrangementScope.ONE_PLAN_EVERY_SCHOOL,
+        ArrangementScope.NO_PLAN_COMPARABLE,
+        ArrangementScope.NO_PLAN_NOTHING_COMPARABLE,
+        -> emptyList()
+      }
+
+  val statement: String
+    get() =
+      when (scope) {
+        // Byte-for-byte the two statements this fact carried before a plan
+        // could be on file (RFC 151), and deliberately so: an unanswered or
+        // declined plan renders exactly as it did, forever (RFC 152 D3).
+        ArrangementScope.NO_PLAN_NOTHING_COMPARABLE -> {
+          "No one way of living is priced at every school here, so a column cannot hold the living arrangement " +
+            "constant: quote each school for the ways of living it does publish, and say which one you are quoting."
+        }
+
+        ArrangementScope.NO_PLAN_COMPARABLE -> {
+          "Every school here is priced for ${arrangementPhraseOf(comparable)}, so a column may hold the living " +
+            "arrangement constant; name the one you are quoting."
+        }
+
+        ArrangementScope.ONE_PLAN_EVERY_SCHOOL -> {
+          onePlanStatement
+        }
+
+        ArrangementScope.PLAN_VARIES_BY_SCHOOL -> {
+          variesBySchoolStatement
+        }
+
+        ArrangementScope.PLAN_NOT_PRICED_EVERYWHERE -> {
+          notPricedEverywhereStatement
+        }
+      }
+
+  /** One plan, priced everywhere: the column holds that one way of living, and it is named. */
+  private val onePlanStatement: String
+    get() {
+      val plan = distinctPlans.single()
+      return "The student plans on ${plan.label}, and every school here is priced for it, so the column holds " +
+        "that one way of living; say so above the table."
+    }
+
+  /**
+   * Different plans across the compared schools -- the override case. The
+   * column then holds the family's actual situation rather than one
+   * arrangement, and the statement says so and names the plan used for each
+   * school (RFC 152 D5 case 2).
+   */
+  private val variesBySchoolStatement: String
+    get() {
+      val named =
+        byCollege.joinToString("; ") { row ->
+          val plan = row.plan
+          if (plan == null) "${row.name}: no plan on file" else "${row.name}: ${plan.label}"
+        }
+      return "The schools here are not all on the same plan, so the column holds the family's actual situation " +
+        "rather than one way of living: $named. Say which plan each school is quoted at, before the numbers."
+    }
+
+  /**
+   * One plan resolved, but some school is not priced for it. Those schools are
+   * named with their reason, reusing the [ArrangementGap] vocabulary -- never a
+   * substituted arrangement (RFC 152 D5 case 3).
+   */
+  private val notPricedEverywhereStatement: String
+    get() {
+      val plan = distinctPlans.single()
+      // The gap's own spoken phrase, never a second wording of it: the same
+      // silence must not be explained one way here and another way in the
+      // per-college answer.
+      val named = notPriced.joinToString("; ") { (row, silence) -> "${row.name}: ${silence.phrase}" }
+      return "The student plans on ${plan.label}, but not every school here is priced for it - $named. Say that " +
+        "plainly above the table and leave those cells blank; never quote another way of living in their place " +
+        "and never carry a figure across from another school."
+    }
+
   companion object {
-    fun of(colleges: List<CollegeCost>): ArrangementBasis {
+    fun of(
+      colleges: List<CollegeCost>,
+      moneyProfile: MoneyProfileStatuses,
+    ): ArrangementBasis {
       // Pairs rather than a map keyed by the college: [CollegeCost] is a data
       // class, so two schools that happened to report identical facts would
       // collapse into one key and silently drop a column from the intersection.
@@ -536,6 +866,12 @@ data class ArrangementBasis(
       return ArrangementBasis(
         comparable = comparable,
         incompleteByCollege = arrangementsByCollege.flatMap { (college, own) -> gapsOf(college, inPlay - own) },
+        answer = moneyProfile.living,
+        // Read off the per-college answer, never re-resolved: override ->
+        // default -> none has exactly one home
+        // ([CollegeCostService.plannedLivingPlanOf]), and a second copy here
+        // would be free to disagree with the number the same payload renders.
+        byCollege = colleges.map { CollegeLivingPlan(it.collegeId, it.name, it.chosen) },
       )
     }
 
@@ -569,12 +905,13 @@ data class ArrangementBasis(
       cost: CollegeCost,
       missing: List<LivingArrangement>,
     ): List<IncompleteArrangement> {
-      // ONLY a known `false` is the no-dorms answer. A school with no housing
-      // fact on file falls to NOT_REPORTED, which is the true statement about
-      // it: it published no on-campus figure. See [ArrangementGap.NOT_REPORTED]
-      // -- an absent IPEDS row is a gap in our data, never a fact about the
-      // school's price list, and never evidence it has no residence halls.
-      val noDorms = missing.filter { it == LivingArrangement.ON_CAMPUS && cost.offersOnCampusHousing == false }
+      // The reason rule has one home, [ArrangementGap.of]: the same
+      // silence must not be explained one way in a comparison and another way
+      // in the per-college answer.
+      val noDorms =
+        missing.filter {
+          ArrangementGap.of(it, cost.offersOnCampusHousing) == ArrangementGap.NO_ON_CAMPUS_HOUSING
+        }
       val unreported = missing.filterNot { it in noDorms }
       return listOfNotNull(
         entryOf(cost, noDorms, ArrangementGap.NO_ON_CAMPUS_HOUSING),

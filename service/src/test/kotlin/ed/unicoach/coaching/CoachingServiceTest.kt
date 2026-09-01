@@ -1962,6 +1962,8 @@ class CoachingServiceTest {
     incomeBandStatus: ed.unicoach.db.models.AnswerStatus,
     residencyState: String?,
     residencyStatus: ed.unicoach.db.models.AnswerStatus,
+    livingPlan: ed.unicoach.db.models.LivingArrangement? = null,
+    livingPlanStatus: ed.unicoach.db.models.AnswerStatus = ed.unicoach.db.models.AnswerStatus.UNANSWERED,
   ) {
     ed.unicoach.db.dao.MoneyProfilesDao
       .create(
@@ -1972,6 +1974,8 @@ class CoachingServiceTest {
           incomeBandStatus = incomeBandStatus,
           residencyState = residencyState,
           residencyStatus = residencyStatus,
+          livingPlan = livingPlan,
+          livingPlanStatus = livingPlanStatus,
         ),
       ).getOrThrow()
   }
@@ -1986,6 +1990,8 @@ class CoachingServiceTest {
         incomeBandStatus = ed.unicoach.db.models.AnswerStatus.ANSWERED,
         residencyState = null,
         residencyStatus = ed.unicoach.db.models.AnswerStatus.DECLINED,
+        livingPlan = ed.unicoach.db.models.LivingArrangement.WITH_FAMILY,
+        livingPlanStatus = ed.unicoach.db.models.AnswerStatus.ANSWERED,
       )
 
       var captured: ChatRequest? = null
@@ -2007,6 +2013,16 @@ class CoachingServiceTest {
         "and never the bare band code the model could say aloud",
       )
       assertTrue(systemText.contains("state of residency: declined"), "declined must render as declined, not be absent")
+      // RFC 152's third line. The spoken label, never the `with_family` wire
+      // name -- the RFC 142 rule the band line above already obeys.
+      assertTrue(
+        systemText.contains("usual living plan: answered (${ed.unicoach.db.models.LivingArrangement.WITH_FAMILY.label})"),
+        "the third money-profile field must render its own line, with the words a student says it in",
+      )
+      assertFalse(
+        systemText.contains(ed.unicoach.db.models.LivingArrangement.WITH_FAMILY.value),
+        "and never the bare wire name the model could say aloud",
+      )
       assertTrue(systemText.contains("You are Uni"), "the base prompt must still be present")
     }
 
@@ -2036,6 +2052,10 @@ class CoachingServiceTest {
         val systemText = request.system!!
         assertTrue(systemText.contains("household income band: unanswered"), "unanswered must render as open")
         assertTrue(systemText.contains("state of residency: answered (CA)"), "answered must render its value")
+        assertTrue(
+          systemText.contains("usual living plan: unanswered"),
+          "an unanswered plan renders as still open, so the coach knows the question is available",
+        )
       }
       assertEquals(2, requests.size)
     }

@@ -13,4 +13,7 @@ data class UpdateMoneyProfileRequest(
   val residencyState: String? = null,
   val residencyDeclined: Boolean = false,
   val residencyClear: Boolean = false,
+  val livingPlan: String? = null,
+  val livingPlanDeclined: Boolean = false,
+  val livingPlanClear: Boolean = false,
 )

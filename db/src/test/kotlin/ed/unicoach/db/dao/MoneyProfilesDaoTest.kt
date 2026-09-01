@@ -2,6 +2,7 @@ package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyProfileEdit
 import ed.unicoach.db.models.MoneyProfileId
 import ed.unicoach.db.models.MoneyProfileUpsert
@@ -76,6 +77,8 @@ class MoneyProfilesDaoTest {
       incomeBandStatus = AnswerStatus.UNANSWERED,
       residencyState = null,
       residencyStatus = AnswerStatus.UNANSWERED,
+      livingPlan = null,
+      livingPlanStatus = AnswerStatus.UNANSWERED,
     )
 
   private fun countVersions(id: MoneyProfileId): Int {
@@ -118,6 +121,8 @@ class MoneyProfilesDaoTest {
             incomeBandStatus = AnswerStatus.ANSWERED,
             residencyState = "CA",
             residencyStatus = AnswerStatus.ANSWERED,
+            livingPlan = null,
+            livingPlanStatus = AnswerStatus.UNANSWERED,
           ),
         ).getOrThrow()
 
@@ -286,6 +291,191 @@ class MoneyProfilesDaoTest {
   }
 
   @Test
+  fun `every LivingArrangement member round-trips through the living_plan CHECK`() {
+    // The binding test RFC 152 asks for. LivingArrangement is ONE enum with two
+    // homes for two facts, and its values are exactly the arrangement wire
+    // names the cost surfaces emit -- so holding the Kotlin enum to
+    // `money_profiles_living_plan_check` member-for-member holds the persisted
+    // vocabulary to the rendered one, in the only place the two can diverge.
+    for (plan in LivingArrangement.entries) {
+      val student = createStudent()
+      val written =
+        MoneyProfilesDao
+          .upsertForStudent(
+            session,
+            MoneyProfileUpsert(student, living = MoneyProfileUpsert.FieldWrite.Answer(plan)),
+          ).getOrThrow()
+      assertEquals(plan, written.livingPlan, "plan [$plan] must round-trip through the DB")
+      assertEquals(AnswerStatus.ANSWERED, written.livingPlanStatus)
+    }
+  }
+
+  @Test
+  fun `a living plan without answered status violates the value-iff-answered CHECK`() {
+    val student = createStudent()
+    val result =
+      MoneyProfilesDao.create(
+        session,
+        NewMoneyProfile(
+          studentId = student,
+          incomeBand = null,
+          incomeBandStatus = AnswerStatus.UNANSWERED,
+          residencyState = null,
+          residencyStatus = AnswerStatus.UNANSWERED,
+          livingPlan = LivingArrangement.WITH_FAMILY,
+          livingPlanStatus = AnswerStatus.DECLINED,
+        ),
+      )
+    val error = result.exceptionOrNull()
+    assertTrue(
+      error is ConstraintViolationException && error.constraint == "money_profiles_living_plan_value_iff_answered_check",
+      "got $error",
+    )
+  }
+
+  @Test
+  fun `an answered living plan without a value violates the value-iff-answered CHECK`() {
+    val student = createStudent()
+    val result =
+      MoneyProfilesDao.create(
+        session,
+        NewMoneyProfile(
+          studentId = student,
+          incomeBand = null,
+          incomeBandStatus = AnswerStatus.UNANSWERED,
+          residencyState = null,
+          residencyStatus = AnswerStatus.UNANSWERED,
+          livingPlan = null,
+          livingPlanStatus = AnswerStatus.ANSWERED,
+        ),
+      )
+    val error = result.exceptionOrNull()
+    assertTrue(
+      error is ConstraintViolationException && error.constraint == "money_profiles_living_plan_value_iff_answered_check",
+      "got $error",
+    )
+  }
+
+  @Test
+  fun `a corrupt stored living plan is refused, never relabelled as never asked`() {
+    // The CHECK makes this unreachable through the DAO, so the row is written
+    // with the constraint dropped for the length of the test -- the only way to
+    // exercise the mapper's corrupt-value path. Reporting it as "unanswered"
+    // would have the coach ASK a family a question they already answered, which
+    // is the one thing the tri-state exists to prevent.
+    val student = createStudent()
+    val created =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, living = MoneyProfileUpsert.FieldWrite.Answer(LivingArrangement.ON_CAMPUS)),
+        ).getOrThrow()
+    // `version = version + 1` because enforce_versioning refuses an UPDATE that
+    // does not bump it; the trigger is the entity's rule, not this test's
+    // obstacle, so it is obeyed rather than disabled.
+    connection.createStatement().use { stmt ->
+      stmt.execute("ALTER TABLE money_profiles DROP CONSTRAINT money_profiles_living_plan_check")
+      stmt.execute(
+        "UPDATE money_profiles SET living_plan = 'in_a_yurt', version = version + 1 WHERE id = '${created.id.value}'",
+      )
+    }
+
+    val error = MoneyProfilesDao.findById(session, created.id).exceptionOrNull()
+
+    // Restored BEFORE the assertions, and the row with it: the suite shares one
+    // database, so a corrupt row left behind would fail whichever test next
+    // lists every profile -- a failure with nothing to do with its own subject.
+    connection.createStatement().use { stmt ->
+      stmt.execute(
+        "UPDATE money_profiles SET living_plan = 'on_campus', version = version + 1 WHERE id = '${created.id.value}'",
+      )
+      stmt.execute(
+        "ALTER TABLE money_profiles ADD CONSTRAINT money_profiles_living_plan_check " +
+          "CHECK (living_plan IS NULL OR living_plan IN ('on_campus','off_campus','with_family'))",
+      )
+    }
+
+    assertTrue(error is CorruptPersistedValueException, "got $error")
+    assertTrue(
+      error.message!!.contains("money_profiles.living_plan"),
+      "the failure must name the corrupt column and row: [${error.message}]",
+    )
+  }
+
+  @Test
+  fun `the living plan upserts, carries over untouched, declines and re-answers with history`() {
+    // The third field on the apply-or-keep path, which is where the hand-
+    // numbered bind indices live: a shifted index would write a status into a
+    // value column and trip a CHECK at runtime, not at compile time.
+    val student = createStudent()
+
+    val set =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, living = MoneyProfileUpsert.FieldWrite.Answer(LivingArrangement.WITH_FAMILY)),
+        ).getOrThrow()
+    assertEquals(LivingArrangement.WITH_FAMILY, set.livingPlan)
+    assertEquals(AnswerStatus.ANSWERED, set.livingPlanStatus)
+
+    val bandOnly =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, income = MoneyProfileUpsert.FieldWrite.Answer(IncomeBand.K48_TO_75K)),
+        ).getOrThrow()
+    assertEquals(LivingArrangement.WITH_FAMILY, bandOnly.livingPlan, "an untouched plan must carry over")
+    assertEquals(IncomeBand.K48_TO_75K, bandOnly.incomeBand, "and the field this write named must land")
+
+    val changed =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, living = MoneyProfileUpsert.FieldWrite.Answer(LivingArrangement.ON_CAMPUS)),
+        ).getOrThrow()
+    assertEquals(LivingArrangement.ON_CAMPUS, changed.livingPlan, "a plan can be changed")
+
+    val declined =
+      MoneyProfilesDao
+        .upsertForStudent(session, MoneyProfileUpsert(student, living = MoneyProfileUpsert.FieldWrite.Declined))
+        .getOrThrow()
+    assertNull(declined.livingPlan, "a decline clears the value, by the CHECK")
+    assertEquals(AnswerStatus.DECLINED, declined.livingPlanStatus)
+    assertEquals(IncomeBand.K48_TO_75K, declined.incomeBand, "and touches no other field")
+
+    val reAnswered =
+      MoneyProfilesDao
+        .upsertForStudent(
+          session,
+          MoneyProfileUpsert(student, living = MoneyProfileUpsert.FieldWrite.Answer(LivingArrangement.OFF_CAMPUS)),
+        ).getOrThrow()
+    assertEquals(LivingArrangement.OFF_CAMPUS, reAnswered.livingPlan, "a decline is reversible if the student reopens it")
+
+    val history = MoneyProfilesDao.listVersions(session, set.id).getOrThrow()
+    assertEquals(
+      listOf(
+        AnswerStatus.ANSWERED,
+        AnswerStatus.ANSWERED,
+        AnswerStatus.ANSWERED,
+        AnswerStatus.DECLINED,
+        AnswerStatus.ANSWERED,
+      ),
+      history.map { it.entity.livingPlanStatus },
+      "the whole trail reaches history: log_money_profile_version carries the new columns",
+    )
+    assertEquals(
+      listOf(
+        LivingArrangement.WITH_FAMILY,
+        LivingArrangement.WITH_FAMILY,
+        LivingArrangement.ON_CAMPUS,
+        null,
+        LivingArrangement.OFF_CAMPUS,
+      ),
+      history.map { it.entity.livingPlan },
+    )
+  }
+
+  @Test
   fun `answer then decline then re-answer is versioned updates that write history`() {
     val student = createStudent()
     val created = MoneyProfilesDao.create(session, unansweredProfile(student)).getOrThrow()
@@ -301,6 +491,8 @@ class MoneyProfilesDaoTest {
             incomeBandStatus = AnswerStatus.ANSWERED,
             residencyState = null,
             residencyStatus = AnswerStatus.UNANSWERED,
+            livingPlan = null,
+            livingPlanStatus = AnswerStatus.UNANSWERED,
           ),
         ).getOrThrow()
     assertEquals(2, answered.version)
@@ -317,6 +509,8 @@ class MoneyProfilesDaoTest {
             incomeBandStatus = AnswerStatus.DECLINED,
             residencyState = null,
             residencyStatus = AnswerStatus.UNANSWERED,
+            livingPlan = null,
+            livingPlanStatus = AnswerStatus.UNANSWERED,
           ),
         ).getOrThrow()
     assertEquals(3, declined.version)
@@ -334,6 +528,8 @@ class MoneyProfilesDaoTest {
             incomeBandStatus = AnswerStatus.ANSWERED,
             residencyState = null,
             residencyStatus = AnswerStatus.UNANSWERED,
+            livingPlan = null,
+            livingPlanStatus = AnswerStatus.UNANSWERED,
           ),
         ).getOrThrow()
     assertEquals(4, reAnswered.version)
@@ -355,13 +551,31 @@ class MoneyProfilesDaoTest {
     MoneyProfilesDao
       .update(
         session,
-        MoneyProfileEdit(created.id, created.version, null, AnswerStatus.DECLINED, null, AnswerStatus.UNANSWERED),
+        MoneyProfileEdit(
+          created.id,
+          created.version,
+          null,
+          AnswerStatus.DECLINED,
+          null,
+          AnswerStatus.UNANSWERED,
+          null,
+          AnswerStatus.UNANSWERED,
+        ),
       ).getOrThrow()
 
     val stale =
       MoneyProfilesDao.update(
         session,
-        MoneyProfileEdit(created.id, created.version, null, AnswerStatus.DECLINED, null, AnswerStatus.UNANSWERED),
+        MoneyProfileEdit(
+          created.id,
+          created.version,
+          null,
+          AnswerStatus.DECLINED,
+          null,
+          AnswerStatus.UNANSWERED,
+          null,
+          AnswerStatus.UNANSWERED,
+        ),
       )
     assertTrue(stale.exceptionOrNull() is ConcurrentModificationException, "got ${stale.exceptionOrNull()}")
   }
@@ -378,6 +592,8 @@ class MoneyProfilesDaoTest {
           incomeBandStatus = AnswerStatus.DECLINED,
           residencyState = null,
           residencyStatus = AnswerStatus.UNANSWERED,
+          livingPlan = null,
+          livingPlanStatus = AnswerStatus.UNANSWERED,
         ),
       )
     val error = result.exceptionOrNull()
@@ -399,6 +615,8 @@ class MoneyProfilesDaoTest {
           incomeBandStatus = AnswerStatus.UNANSWERED,
           residencyState = null,
           residencyStatus = AnswerStatus.ANSWERED,
+          livingPlan = null,
+          livingPlanStatus = AnswerStatus.UNANSWERED,
         ),
       )
     val error = result.exceptionOrNull()
@@ -420,6 +638,8 @@ class MoneyProfilesDaoTest {
           incomeBandStatus = AnswerStatus.UNANSWERED,
           residencyState = "ca",
           residencyStatus = AnswerStatus.ANSWERED,
+          livingPlan = null,
+          livingPlanStatus = AnswerStatus.UNANSWERED,
         ),
       )
     val error = result.exceptionOrNull()

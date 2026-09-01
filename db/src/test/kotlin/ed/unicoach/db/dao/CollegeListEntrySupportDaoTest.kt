@@ -133,7 +133,7 @@ class CollegeListEntrySupportDaoTest {
     collegeId: CollegeId,
   ): CollegeListEntryId =
     CollegeListEntriesDao
-      .create(session, NewCollegeListEntry(studentId, collegeId, CollegeListEntryStatus.CONSIDERING, null))
+      .create(session, NewCollegeListEntry(studentId, collegeId, CollegeListEntryStatus.CONSIDERING, null, null))
       .getOrThrow()
       .id
 

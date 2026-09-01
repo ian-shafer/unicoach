@@ -209,7 +209,7 @@ class CollegeListServiceTest {
     college: CollegeId,
   ) = (
     service
-      .addToList(student, college, CollegeListEntryStatus.CONSIDERING, null, emptyList())
+      .addToList(student, college, CollegeListEntryStatus.CONSIDERING, null, null, emptyList())
       .getOrThrow() as AddToListResult.Success
   ).entry
 
@@ -238,7 +238,7 @@ class CollegeListServiceTest {
 
       val result =
         service
-          .addToList(student, college, CollegeListEntryStatus.CONSIDERING, "Great fit", listOf(obs1, obs2))
+          .addToList(student, college, CollegeListEntryStatus.CONSIDERING, "Great fit", null, listOf(obs1, obs2))
           .getOrThrow()
       assertTrue(result is AddToListResult.Success)
       assertEquals(CollegeListEntryStatus.CONSIDERING, result.entry.status)
@@ -261,7 +261,7 @@ class CollegeListServiceTest {
       val college = createCollege()
       val foreignObs = observation(otherStudent, convo)
 
-      val result = service.addToList(student, college, CollegeListEntryStatus.CONSIDERING, null, listOf(foreignObs)).getOrThrow()
+      val result = service.addToList(student, college, CollegeListEntryStatus.CONSIDERING, null, null, listOf(foreignObs)).getOrThrow()
       assertTrue(result is AddToListResult.ObservationNotFound)
       assertEquals(foreignObs, result.observationId)
     }
@@ -271,9 +271,9 @@ class CollegeListServiceTest {
     runTest {
       val student = createStudent()
       val college = createCollege()
-      service.addToList(student, college, CollegeListEntryStatus.CONSIDERING, null, emptyList()).getOrThrow()
+      service.addToList(student, college, CollegeListEntryStatus.CONSIDERING, null, null, emptyList()).getOrThrow()
 
-      val second = service.addToList(student, college, CollegeListEntryStatus.APPLYING, null, emptyList()).getOrThrow()
+      val second = service.addToList(student, college, CollegeListEntryStatus.APPLYING, null, null, emptyList()).getOrThrow()
       assertTrue(second is AddToListResult.AlreadyOnList)
     }
 
@@ -288,7 +288,7 @@ class CollegeListServiceTest {
 
       val stale =
         service
-          .updateEntry(student, entry.id, entry.version - 1, CollegeListEntryStatus.APPLYING, null, emptyList())
+          .updateEntry(student, entry.id, entry.version - 1, CollegeListEntryStatus.APPLYING, null, null, emptyList())
           .getOrThrow()
       assertTrue(stale is UpdateEntryResult.VersionConflict)
     }
@@ -303,7 +303,7 @@ class CollegeListServiceTest {
 
       val result =
         service
-          .updateEntry(otherStudent, entry.id, entry.version, CollegeListEntryStatus.APPLYING, null, emptyList())
+          .updateEntry(otherStudent, entry.id, entry.version, CollegeListEntryStatus.APPLYING, null, null, emptyList())
           .getOrThrow()
       assertTrue(result is UpdateEntryResult.NotFound)
     }
@@ -318,14 +318,14 @@ class CollegeListServiceTest {
       val entry =
         (
           service
-            .addToList(student, college, CollegeListEntryStatus.CONSIDERING, null, listOf(obs1))
+            .addToList(student, college, CollegeListEntryStatus.CONSIDERING, null, null, listOf(obs1))
             .getOrThrow() as AddToListResult.Success
         ).entry
 
       val obs2 = observation(student, convo, "second")
       val updated =
         service
-          .updateEntry(student, entry.id, entry.version, CollegeListEntryStatus.APPLYING, "notes", listOf(obs2))
+          .updateEntry(student, entry.id, entry.version, CollegeListEntryStatus.APPLYING, "notes", null, listOf(obs2))
           .getOrThrow()
       assertTrue(updated is UpdateEntryResult.Success)
 

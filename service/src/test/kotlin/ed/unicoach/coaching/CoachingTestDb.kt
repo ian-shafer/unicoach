@@ -98,7 +98,7 @@ object CoachingTestDb {
     status: CollegeListEntryStatus = CollegeListEntryStatus.CONSIDERING,
   ) {
     CollegeListEntriesDao
-      .create(sqlSession, NewCollegeListEntry(student, collegeId, status, null))
+      .create(sqlSession, NewCollegeListEntry(student, collegeId, status, null, null))
       .getOrThrow()
   }
 

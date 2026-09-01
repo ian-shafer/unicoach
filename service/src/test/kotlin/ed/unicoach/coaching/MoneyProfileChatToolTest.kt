@@ -7,10 +7,12 @@ import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.IncomeBand
+import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterAll
@@ -89,17 +91,38 @@ class MoneyProfileChatToolTest {
     assertEquals("update_money_profile", tool.name)
     assertEquals("update_money_profile", tool.definition["name"]!!.jsonPrimitive.content)
     val description = tool.definition["description"]!!.jsonPrimitive.content
-    assertTrue(description.contains("only when cost comes up naturally"), "the ethos contract must ride the description")
-    assertTrue(description.contains("without pushing"))
-    assertTrue(description.contains("Never re-ask a declined field"))
-
-    // The decline flags are literal-true in the schema itself, so a compliant
-    // model can never emit false.
     val properties =
       tool.definition["input_schema"]!!
         .jsonObject["properties"]!!
         .jsonObject
-    for (flag in listOf("income_band_declined", "residency_declined")) {
+    assertTrue(description.contains("only when cost comes up naturally"), "the ethos contract must ride the description")
+    assertTrue(description.contains("without pushing"))
+    assertTrue(description.contains("Never re-ask a declined field"))
+    // RFC 152: the third field, and the sentence that keeps a per-school
+    // correction off the global default.
+    assertTrue(description.contains("where the student plans to live"), "the third field must ride the description")
+    assertTrue(
+      description.contains("carries its own plan on the college list"),
+      "and the description must send a per-school correction to the college list, not to this tool",
+    )
+    // The plan's enum is the persisted vocabulary itself, with the spoken label
+    // beside every wire name -- one vocabulary, and no surface inventing copy.
+    val livingPlan = properties["living_plan"]!!.jsonObject
+    assertEquals(
+      LivingArrangement.entries.map { it.value },
+      livingPlan["enum"]!!.jsonArray.map { it.jsonPrimitive.content },
+      "the schema publishes the arrangement wire names in declaration order",
+    )
+    LivingArrangement.entries.forEach {
+      assertTrue(
+        livingPlan["description"]!!.jsonPrimitive.content.contains(it.label),
+        "every wire name must arrive with the words a student says it in: [${it.label}]",
+      )
+    }
+
+    // The decline flags are literal-true in the schema itself, so a compliant
+    // model can never emit false.
+    for (flag in listOf("income_band_declined", "residency_declined", "living_plan_declined")) {
       assertEquals(
         "true",
         properties[flag]!!.jsonObject["const"]!!.jsonPrimitive.content,
@@ -249,6 +272,111 @@ class MoneyProfileChatToolTest {
       val student = createStudent()
       val result = tool.execute(student, input("""{}"""))
       assertTrue(errorOf(result)!!.contains("nothing to update"), "got $result")
+    }
+
+  @Test
+  fun `setting a living plan writes it and echoes it with the words a student says it in`() =
+    runBlocking {
+      val student = createStudent()
+      val result = tool.execute(student, input("""{"living_plan":"with_family"}"""))
+
+      assertNull(errorOf(result), "got $result")
+      val profile = profileOf(result)
+      assertEquals("answered", profile["living_plan_status"]!!.jsonPrimitive.content)
+      assertEquals("with_family", profile["living_plan"]!!.jsonPrimitive.content)
+      assertEquals(
+        LivingArrangement.WITH_FAMILY.label,
+        profile["living_plan_label"]!!.jsonPrimitive.content,
+        "the wire name never travels alone: the coach reads the label aloud, never the key",
+      )
+
+      val persisted = MoneyProfilesDao.findActiveByStudent(sqlSession, student).getOrThrow()
+      assertEquals(LivingArrangement.WITH_FAMILY, persisted.livingPlan)
+      assertEquals(AnswerStatus.ANSWERED, persisted.livingPlanStatus)
+    }
+
+  @Test
+  fun `a living plan can be set, changed, declined and re-answered across separate calls`() =
+    runBlocking {
+      // The slice's first acceptance criterion, entirely through the chat tool:
+      // a field can be set, changed, declined and resumed, and the decline is
+      // recorded rather than absorbed (brief 0001 D11).
+      val student = createStudent()
+
+      tool.execute(student, input("""{"living_plan":"on_campus"}"""))
+      val changed = profileOf(tool.execute(student, input("""{"living_plan":"with_family"}""")))
+      assertEquals("with_family", changed["living_plan"]!!.jsonPrimitive.content)
+
+      val declined = profileOf(tool.execute(student, input("""{"living_plan_declined":true}""")))
+      assertEquals("declined", declined["living_plan_status"]!!.jsonPrimitive.content)
+      assertNull(declined["living_plan"], "a declined field must carry no value")
+      assertNull(declined["living_plan_label"], "and so has nothing to label")
+
+      val resumed = profileOf(tool.execute(student, input("""{"living_plan":"off_campus"}""")))
+      assertEquals("answered", resumed["living_plan_status"]!!.jsonPrimitive.content)
+      assertEquals("off_campus", resumed["living_plan"]!!.jsonPrimitive.content)
+
+      // The whole trail survives: a decline is a fact in history, not an erasure.
+      val id = MoneyProfilesDao.findActiveByStudent(sqlSession, student).getOrThrow().id
+      assertEquals(
+        listOf(
+          AnswerStatus.ANSWERED,
+          AnswerStatus.ANSWERED,
+          AnswerStatus.DECLINED,
+          AnswerStatus.ANSWERED,
+        ),
+        MoneyProfilesDao
+          .listVersions(sqlSession, id)
+          .getOrThrow()
+          .map { it.entity.livingPlanStatus },
+      )
+    }
+
+  @Test
+  fun `a living plan and its decline in one call is a structured error and writes nothing`() =
+    runBlocking {
+      val student = createStudent()
+      val result = tool.execute(student, input("""{"living_plan":"on_campus","living_plan_declined":true}"""))
+      assertTrue(errorOf(result)!!.contains("cannot both be set"), "got $result")
+      assertTrue(
+        MoneyProfilesDao.findActiveByStudent(sqlSession, student).isFailure,
+        "a conflicting call must not create a profile row",
+      )
+    }
+
+  @Test
+  fun `a false living_plan_declined flag is a structured error and writes nothing`() =
+    runBlocking {
+      val student = createStudent()
+      val result = tool.execute(student, input("""{"living_plan_declined":false}"""))
+      assertEquals(
+        "living_plan_declined must be true when present; omit it to leave the field unchanged",
+        errorOf(result),
+        "got $result",
+      )
+      assertTrue(
+        MoneyProfilesDao.findActiveByStudent(sqlSession, student).isFailure,
+        "a false-flag call must not create a profile row",
+      )
+    }
+
+  @Test
+  fun `an unknown living plan value is a structured error`() =
+    runBlocking {
+      val student = createStudent()
+      val result = tool.execute(student, input("""{"living_plan":"in_a_yurt"}"""))
+      assertTrue(errorOf(result)!!.contains("unknown living_plan value"), "got $result")
+      assertTrue(errorOf(result)!!.contains("in_a_yurt"), "the rejected value must be echoed, got $result")
+    }
+
+  @Test
+  fun `an unanswered living plan echoes its status with no value, beside the other two fields`() =
+    runBlocking {
+      val student = createStudent()
+      val profile = profileOf(tool.execute(student, input("""{"income_band":"under_30k"}""")))
+      assertEquals("unanswered", profile["living_plan_status"]!!.jsonPrimitive.content)
+      assertNull(profile["living_plan"], "an unanswered field must carry no value in the echo")
+      assertNull(profile["living_plan_label"])
     }
 
   @Test
