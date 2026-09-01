@@ -4,6 +4,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.CollegeSearchPage
+import ed.unicoach.db.models.CollegeSimilarityOutcome
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.NewAdmissionTestPolicy
 import ed.unicoach.db.models.NewAthleticAssociation
@@ -19,6 +20,9 @@ import ed.unicoach.db.models.NewIpedsRegion
 import ed.unicoach.db.models.NewNcesLocale
 import ed.unicoach.db.models.NewReligiousAffiliation
 import ed.unicoach.db.models.NewSubject
+import ed.unicoach.db.models.SimilarityAnchorOutcome
+import ed.unicoach.db.models.SimilarityAxis
+import ed.unicoach.db.models.SimilarityQuery
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -1906,6 +1910,135 @@ class CollegesDaoTest {
     val page = CollegesDao.search(session, CollegeQuery(limit = 25)).page()
     assertEquals(listOf(908001), page.matches.map { it.ipedsUnitId })
     assertNull(page.matches.single().region)
+  }
+
+  // ---------------------------------------------------------------------------
+  // findSimilar (RFC 153)
+  // ---------------------------------------------------------------------------
+
+  /** The percentile columns the index holds for one seeded college, read back raw. */
+  private fun percentilesOf(ipedsUnitId: Int): Map<String, Double?> =
+    connection
+      .prepareStatement(
+        """
+        SELECT undergrad_enrollment_percentile_share AS size, net_price_percentile_share AS price
+        FROM college_search_index WHERE ipeds_unit_id = ?
+        """.trimIndent(),
+      ).use { stmt ->
+        stmt.setInt(1, ipedsUnitId)
+        stmt.executeQuery().use { rs ->
+          assertTrue(rs.next(), "no index row for $ipedsUnitId")
+          mapOf(
+            "size" to rs.getObject("size")?.let { (it as Number).toDouble() },
+            "price" to rs.getObject("price")?.let { (it as Number).toDouble() },
+          )
+        }
+      }
+
+  /**
+   * The distance emitter at its OWN level (RFC 153 D66), which is where the
+   * risk is: it is positional-bind SQL text, and a weight bound where an anchor
+   * value belongs still returns numbers — a puzzling ranking rather than a
+   * failing test, two layers above.
+   *
+   * So the arithmetic is asserted against the percentiles read straight out of
+   * the index: two axes with DIFFERENT weights, so a swapped bind changes the
+   * answer, and a twin that scores exactly 0.
+   */
+  @Test
+  fun `findSimilar scores the weighted mean absolute difference over the axes both colleges have`() {
+    val anchorId = seed(newCollege(909001, name = "Anchor College", undergradEnrollmentHeadcount = 5000, netPricePerYearUsd = 20000))
+    seed(newCollege(909002, name = "Twin College", undergradEnrollmentHeadcount = 5000, netPricePerYearUsd = 20000))
+    seed(newCollege(909003, name = "Far College", undergradEnrollmentHeadcount = 40000, netPricePerYearUsd = 45000))
+    // Neither axis reported: it shares nothing with the anchor, so it is
+    // EXCLUDED and counted, never ranked at the top on a substituted zero.
+    seed(
+      newCollege(
+        909004,
+        name = "Silent College",
+        undergradEnrollmentHeadcount = null,
+        netPricePerYearUsd = null,
+      ),
+    )
+    rebuildSearchIndex()
+
+    val anchor =
+      assertIs<SimilarityAnchorOutcome.Found>(CollegesDao.findSimilarityAnchor(session, anchorId).getOrThrow()).anchor
+    val query =
+      SimilarityQuery(
+        anchor = anchor,
+        // Deliberately unequal, and deliberately in the enum's own order: the
+        // binds are positional, so weight-then-anchor-value per term is the
+        // contract this asserts. The axis carries the ANCHOR's own value on it,
+        // so a dropped axis cannot even be named here.
+        axes =
+          mapOf(
+            checkNotNull(anchor.anchoredOn(SimilarityAxis.SIZE)) to 3.0,
+            checkNotNull(anchor.anchoredOn(SimilarityAxis.PRICE)) to 1.0,
+          ),
+        filters = CollegeQuery(limit = 25),
+      )
+    val outcome = CollegesDao.findSimilar(session, query).getOrThrow()
+    val page = assertIs<CollegeSimilarityOutcome.Page>(outcome).page
+
+    val byUnit = page.matches.associateBy { it.match.ipedsUnitId }
+    assertEquals(setOf(909002, 909003), byUnit.keys, "the anchor is never its own peer, and Silent has no axis")
+    assertEquals(0.0, byUnit.getValue(909002).distance, "identical on every ranked axis is a distance of zero")
+    assertEquals(
+      listOf(SimilarityAxis.SIZE, SimilarityAxis.PRICE),
+      byUnit.getValue(909002).axesScored,
+      "and it was scored on both",
+    )
+
+    // The arithmetic itself, against the index's own percentiles.
+    val anchorP = percentilesOf(909001)
+    val farP = percentilesOf(909003)
+    val expected =
+      (
+        3.0 * kotlin.math.abs(farP.getValue("size")!! - anchorP.getValue("size")!!) +
+          1.0 * kotlin.math.abs(farP.getValue("price")!! - anchorP.getValue("price")!!)
+      ) / 4.0
+    assertEquals(expected, byUnit.getValue(909003).distance, 1e-9, "the weighted mean absolute difference, exactly")
+
+    assertEquals(2, page.totalCandidates, "the honest population shares at least one axis")
+    assertEquals(1, page.excludedUnknown["size"], "Silent College could not be judged on size")
+    assertEquals(1, page.excludedUnknown["price"], "nor on price")
+  }
+
+  /**
+   * The distance is NULL by construction for a candidate that shares no axis
+   * with the anchor (`nullif(sum(w), 0)`), and `getDouble` would hand that back
+   * as `0.0` — which in this domain reads as "identical to the anchor on every
+   * axis" and sorts FIRST. The shared-axis clause is what keeps such a row out
+   * of the page, so the property to hold is that no returned peer was scored on
+   * NOTHING: a row that reached the mapper with a NULL distance now raises
+   * rather than leading the list.
+   */
+  @Test
+  fun `a peer scored on no axis never arrives as a distance of zero`() {
+    val anchorId = seed(newCollege(909101, name = "Anchor College", undergradEnrollmentHeadcount = 5000))
+    seed(newCollege(909102, name = "Twin College", undergradEnrollmentHeadcount = 5000))
+    seed(newCollege(909103, name = "Silent College", undergradEnrollmentHeadcount = null))
+    rebuildSearchIndex()
+
+    val anchor =
+      assertIs<SimilarityAnchorOutcome.Found>(CollegesDao.findSimilarityAnchor(session, anchorId).getOrThrow()).anchor
+    val query =
+      SimilarityQuery(
+        anchor = anchor,
+        axes = mapOf(checkNotNull(anchor.anchoredOn(SimilarityAxis.SIZE)) to 1.0),
+        filters = CollegeQuery(limit = 25),
+      )
+    val page = assertIs<CollegeSimilarityOutcome.Page>(CollegesDao.findSimilar(session, query).getOrThrow()).page
+
+    assertTrue(page.matches.all { it.axesScored.isNotEmpty() }, "a peer judged on nothing is not a peer: ${page.matches}")
+    assertEquals(
+      emptyList(),
+      page.matches.filter { it.distance == 0.0 && it.axesScored.isEmpty() },
+      "a zero distance may only ever mean IDENTICAL on the axes it was scored on",
+    )
+    assertEquals(listOf(909102), page.matches.map { it.match.ipedsUnitId }, "Silent College shares no axis at all")
+    assertEquals(1, page.excludedUnknown["size"], "and is counted as unjudgeable rather than ranked on a sentinel")
   }
 
   // ---------------------------------------------------------------------------

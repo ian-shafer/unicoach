@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.db.models.AnchoredAxis
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeMatch
@@ -8,12 +9,19 @@ import ed.unicoach.db.models.CollegeProgramId
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.CollegeSearchPage
+import ed.unicoach.db.models.CollegeSimilarityOutcome
+import ed.unicoach.db.models.CollegeSimilarityPage
 import ed.unicoach.db.models.CollegeSummary
 import ed.unicoach.db.models.InstitutionControl
 import ed.unicoach.db.models.InstitutionSector
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
 import ed.unicoach.db.models.NewCollegeProgram
+import ed.unicoach.db.models.SimilarityAnchor
+import ed.unicoach.db.models.SimilarityAnchorOutcome
+import ed.unicoach.db.models.SimilarityAxis
+import ed.unicoach.db.models.SimilarityMatch
+import ed.unicoach.db.models.SimilarityQuery
 import ed.unicoach.db.models.Version
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -605,6 +613,7 @@ object CollegesDao :
   private fun createSearchPlan(
     query: CollegeQuery,
     programCodes: ExpandedPrograms,
+    extraFilters: List<IndexFilter> = emptyList(),
   ): SearchPlan {
     val universe = mutableListOf<String>()
 
@@ -624,7 +633,7 @@ object CollegesDao :
     val filters = mutableListOf<IndexFilter>()
 
     query.isFourYear?.let { fourYear ->
-      filters += IndexFilter("is_four_year = ?", listOf(booleanBinder(fourYear)), UnknownAxis("is_four_year"))
+      filters += IndexFilter("is_four_year = ?", listOf(booleanBinder(fourYear)), UnknownAxis.ofColumn("is_four_year"))
     }
 
     query.states?.let { states ->
@@ -634,12 +643,12 @@ object CollegesDao :
       }
     }
     query.region?.let { region ->
-      filters += IndexFilter("region = ?", listOf(stringBinder(region)), UnknownAxis("region"))
+      filters += IndexFilter("region = ?", listOf(stringBinder(region)), UnknownAxis.ofColumn("region"))
     }
     query.locales?.let { locales ->
       if (locales.isNotEmpty()) {
         filters +=
-          IndexFilter("locale = ANY ($TEXT_ARRAY_PARAM)", listOf(jsonbArrayBinder(locales)), UnknownAxis("locale"))
+          IndexFilter("locale = ANY ($TEXT_ARRAY_PARAM)", listOf(jsonbArrayBinder(locales)), UnknownAxis.ofColumn("locale"))
       }
     }
     query.control?.let { control ->
@@ -656,7 +665,7 @@ object CollegesDao :
         IndexFilter(
           "undergrad_enrollment_headcount >= ?",
           listOf(intBinder(min)),
-          UnknownAxis("undergrad_enrollment_headcount"),
+          UnknownAxis.ofColumn("undergrad_enrollment_headcount"),
         )
     }
     query.maxUndergradEnrollmentHeadcount?.let { max ->
@@ -664,37 +673,37 @@ object CollegesDao :
         IndexFilter(
           "undergrad_enrollment_headcount <= ?",
           listOf(intBinder(max)),
-          UnknownAxis("undergrad_enrollment_headcount"),
+          UnknownAxis.ofColumn("undergrad_enrollment_headcount"),
         )
     }
     query.minAdmissionRateShare?.let { min ->
-      filters += IndexFilter("admission_rate_share >= ?", listOf(doubleBinder(min)), UnknownAxis("admission_rate_share"))
+      filters += IndexFilter("admission_rate_share >= ?", listOf(doubleBinder(min)), UnknownAxis.ofColumn("admission_rate_share"))
     }
     query.maxAdmissionRateShare?.let { max ->
-      filters += IndexFilter("admission_rate_share <= ?", listOf(doubleBinder(max)), UnknownAxis("admission_rate_share"))
+      filters += IndexFilter("admission_rate_share <= ?", listOf(doubleBinder(max)), UnknownAxis.ofColumn("admission_rate_share"))
     }
     query.maxNetPricePerYearUsd?.let { max ->
-      filters += IndexFilter("net_price_per_year_usd <= ?", listOf(intBinder(max)), UnknownAxis("net_price_per_year_usd"))
+      filters += IndexFilter("net_price_per_year_usd <= ?", listOf(intBinder(max)), UnknownAxis.ofColumn("net_price_per_year_usd"))
     }
     query.minCompletionRate150pct4yrShare?.let { min ->
       filters +=
         IndexFilter(
           "completion_rate_150pct_4yr_share >= ?",
           listOf(doubleBinder(min)),
-          UnknownAxis("completion_rate_150pct_4yr_share"),
+          UnknownAxis.ofColumn("completion_rate_150pct_4yr_share"),
         )
     }
     query.testPolicy?.let { slug ->
-      filters += IndexFilter("test_policy = ?", listOf(stringBinder(slug)), UnknownAxis("test_policy"))
+      filters += IndexFilter("test_policy = ?", listOf(stringBinder(slug)), UnknownAxis.ofColumn("test_policy"))
     }
     query.religiousAffiliation?.let { slug ->
-      filters += IndexFilter("religious_affiliation = ?", listOf(stringBinder(slug)), UnknownAxis("religious_affiliation"))
+      filters += IndexFilter("religious_affiliation = ?", listOf(stringBinder(slug)), UnknownAxis.ofColumn("religious_affiliation"))
     }
     query.carnegieClass?.let { slug ->
-      filters += IndexFilter("carnegie_class = ?", listOf(stringBinder(slug)), UnknownAxis("carnegie_class"))
+      filters += IndexFilter("carnegie_class = ?", listOf(stringBinder(slug)), UnknownAxis.ofColumn("carnegie_class"))
     }
     query.carnegieSize?.let { slug ->
-      filters += IndexFilter("carnegie_size = ?", listOf(stringBinder(slug)), UnknownAxis("carnegie_size"))
+      filters += IndexFilter("carnegie_size = ?", listOf(stringBinder(slug)), UnknownAxis.ofColumn("carnegie_size"))
     }
     query.athleticAssociation?.let { slug ->
       // Unjudgeable is NULL — nothing was reported about this college's
@@ -706,17 +715,17 @@ object CollegesDao :
         IndexFilter(
           "athletic_associations @> ARRAY[?]::slug[]",
           listOf(stringBinder(slug)),
-          UnknownAxis("athletic_associations"),
+          UnknownAxis.ofColumn("athletic_associations"),
         )
     }
     query.hasRotc?.let { value ->
-      filters += IndexFilter("has_rotc = ?", listOf(booleanBinder(value)), UnknownAxis("has_rotc"))
+      filters += IndexFilter("has_rotc = ?", listOf(booleanBinder(value)), UnknownAxis.ofColumn("has_rotc"))
     }
     query.hasStudyAbroad?.let { value ->
-      filters += IndexFilter("has_study_abroad = ?", listOf(booleanBinder(value)), UnknownAxis("has_study_abroad"))
+      filters += IndexFilter("has_study_abroad = ?", listOf(booleanBinder(value)), UnknownAxis.ofColumn("has_study_abroad"))
     }
     query.hasHousing?.let { value ->
-      filters += IndexFilter("offers_housing = ?", listOf(booleanBinder(value)), UnknownAxis("offers_housing"))
+      filters += IndexFilter("offers_housing = ?", listOf(booleanBinder(value)), UnknownAxis.ofColumn("offers_housing"))
     }
     query.subject?.let { slug ->
       // The taxonomy expansion is MATERIALISED on the index (D51), so a subject
@@ -732,7 +741,7 @@ object CollegesDao :
         IndexFilter(
           "subject_slugs @> ARRAY[?]::slug[]",
           listOf(stringBinder(slug)),
-          UnknownAxis("subject_slugs"),
+          UnknownAxis.ofColumn("subject_slugs"),
         )
     }
     if (programCodes.cipPrefixCodes != null) {
@@ -741,11 +750,14 @@ object CollegesDao :
         IndexFilter(
           "cip_codes && $TEXT_ARRAY_PARAM",
           listOf(jsonbArrayBinder(codes)),
-          UnknownAxis("cip_codes"),
+          UnknownAxis.ofColumn("cip_codes"),
         )
     }
 
-    return SearchPlan(universe, filters)
+    // A similarity call appends its own clauses (the anchor's exclusion from
+    // its own results, and D68's two anchor-relative constraints) rather than
+    // forking the predicate builder: one home for a search predicate, still.
+    return SearchPlan(universe, filters + extraFilters)
   }
 
   /**
@@ -910,8 +922,55 @@ object CollegesDao :
     /** [matchClause] as a `WHERE`, or nothing at all when the search is unrestricted. */
     val whereClause: String = if (universe.isEmpty() && filters.isEmpty()) "" else "WHERE $matchClause"
 
-    /** The unjudgeable axes to report, one `excluded_unknown` key each, in select-list order. */
+    /**
+     * The unjudgeable axes to report, one `excluded_unknown` key each, in
+     * select-list order: the supplied filters' columns.
+     */
     val unknownAxes: List<UnknownAxis> = filters.mapNotNull { it.unknown }.distinctBy { it.key }
+
+    /**
+     * [matchClause] WITHOUT the filters over the very columns [unknown] reads —
+     * the population an `excluded_unknown` arm for that subject is honestly
+     * measured over (RFC 153 D67 as amended).
+     *
+     * A filter over a nullable column is exactly what silently removes the rows
+     * that cannot be judged on it, so counting those rows inside its own clause
+     * would always answer zero; counting them over the BARE universe answers
+     * about colleges the caller's other constraints already excluded. Every
+     * other constraint applies, and only the filters the count is about do not.
+     *
+     * The correspondence is STATED by [UnknownSubject.columns] rather than
+     * inferred from string equality: a ranked axis's key is a WORD (`price`)
+     * and the filter it must drop is over a COLUMN (`net_price_per_year_usd`),
+     * so matching the two by name dropped nothing and every axis arm answered
+     * zero by construction.
+     */
+    fun createMatchClauseExcluding(unknown: UnknownAxis): String =
+      (universe + listRetainedFilters(unknown).map { it.clause })
+        .let { if (it.isEmpty()) "TRUE" else it.joinToString(" AND ") }
+
+    /**
+     * Binds every parameter [createMatchClauseExcluding] carries for [unknown],
+     * starting at [from], and returns the NEXT free index — the same list that
+     * wrote the text, so an arm's clause and its binds cannot drift.
+     */
+    fun bindPredicateExcluding(
+      stmt: PreparedStatement,
+      unknown: UnknownAxis,
+      from: Int = 1,
+    ): Int {
+      var idx = from
+      listRetainedFilters(unknown).forEach { filter -> filter.binders.forEach { bind -> bind(stmt, idx++) } }
+      return idx
+    }
+
+    /** The filters an arm about [unknown] keeps: every one that is not over a column [unknown] itself reads. */
+    private fun listRetainedFilters(unknown: UnknownAxis): List<IndexFilter> =
+      filters.filter { filter ->
+        filter.unknown == null ||
+          filter.unknown.subject.columns
+            .none { it in unknown.subject.columns }
+      }
 
     /**
      * Binds every parameter [matchClause] and [whereClause] carry, starting at
@@ -936,16 +995,64 @@ object CollegesDao :
   )
 
   /**
-   * How a filter's column can be unjudgeable: the `excluded_unknown` key it is
-   * reported under, and the predicate that counts it. The key DEFAULTS the
-   * predicate and the two travel together, so a condition cannot exist without
-   * its key — the state that used to compile and then silently delete the
-   * filter's whole `excluded_unknown` count (D55).
+   * WHAT an `excluded_unknown` count is ABOUT: a supplied filter's own column,
+   * or a ranked similarity axis.
+   *
+   * The two used to share one `String` key, so a reader could not tell
+   * `net_price_per_year_usd` (a schema identifier) from `price` (an axis word)
+   * without already knowing, the default `"$key IS NULL"` condition compiled a
+   * broken predicate for an axis key, and the filter-exclusion lookup matched
+   * arms to filters by string identity — which an axis word never satisfies.
+   */
+  private sealed interface UnknownSubject {
+    /** The `excluded_unknown` key this subject is reported under. */
+    val key: String
+
+    /**
+     * The index columns this subject READS. An arm about it drops the filters
+     * over exactly these columns, because those filters are what remove the
+     * rows the arm is trying to count.
+     */
+    val columns: Set<String>
+
+    /** The SQL identifier fragment an arm's count column is built from: never caller text, never a word. */
+    val sqlAlias: String
+
+    /** A filter's column: the key IS the column, so the column being NULL is what counts it. */
+    data class FilterColumn(
+      val column: String,
+    ) : UnknownSubject {
+      override val key: String get() = column
+
+      override val columns: Set<String> get() = setOf(column)
+
+      override val sqlAlias: String get() = column
+    }
+
+    /** A ranked axis: the key is the axis WORD and never a column, so the caller states both predicate and columns. */
+    data class RankedAxis(
+      val axis: SimilarityAxis,
+      override val columns: Set<String>,
+    ) : UnknownSubject {
+      override val key: String get() = axis.word
+
+      override val sqlAlias: String get() = axisAlias(axis)
+    }
+  }
+
+  /**
+   * How a candidate can be unjudgeable: the subject it is reported under, and
+   * the predicate that counts it. Neither can exist without the other — the
+   * state that used to compile and then silently delete the whole
+   * `excluded_unknown` count (D55).
    */
   private data class UnknownAxis(
-    val key: String,
-    val condition: String = "$key IS NULL",
+    val subject: UnknownSubject,
+    val condition: String,
   ) {
+    /** The `excluded_unknown` key this count is reported under. */
+    val key: String get() = subject.key
+
     /**
      * The count column BOTH sides of the count query cite: the select list that
      * writes the arm, and the read that puts it under [key].
@@ -953,11 +1060,605 @@ object CollegesDao :
      * They used to be numbered by POSITION (`AS unk_$n`, read back by a second,
      * independent `mapIndexed`), so the correspondence between arm 3 and the
      * third axis was a fact about two loops rather than anything either one
-     * stated. Naming it after the axis makes the two sides quote the SAME
+     * stated. Naming it after the subject makes the two sides quote the SAME
      * string, so they cannot be reordered apart.
      */
-    val countColumn: String = "unknown_$key"
+    val countColumn: String = "unknown_${subject.sqlAlias}"
+
+    companion object {
+      /** A filter's column, whose unjudgeable rows are exactly the NULLs in it. */
+      fun ofColumn(column: String): UnknownAxis = UnknownAxis(UnknownSubject.FilterColumn(column), "$column IS NULL")
+
+      /**
+       * A ranked axis, whose unjudgeable rows are the ones its `scored`
+       * predicate rejects, and whose [columns] are the index columns that
+       * predicate reads.
+       */
+      fun ofAxis(
+        axis: SimilarityAxis,
+        scored: String,
+        columns: Set<String>,
+      ): UnknownAxis = UnknownAxis(UnknownSubject.RankedAxis(axis, columns), "NOT ($scored)")
+    }
   }
+
+  // ---------------------------------------------------------------------------
+  // Similar colleges (RFC 153)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The anchor row of a "schools like X" query (RFC 153 D63/D64), read from
+   * `college_search_index` — the same table the ranking reads, so the anchor's
+   * position and the candidates' positions can never come from two corpora.
+   *
+   * THREE outcomes, none of them a null (RFC 150's rule, which every other read
+   * of this table already follows): a database whose index was never built
+   * answers [SimilarityAnchorOutcome.IndexNotBuilt] rather than "no college has
+   * that id", which is the false zero a missing row and a missing INDEX used to
+   * arrive as together. A row that exists but sits OUTSIDE the default universe
+   * comes back with [SimilarityAnchor.inDefaultUniverse] false and NULL on
+   * every percentile: that is the fact D64 refuses on, and it is read here
+   * rather than inferred from four nulls, because "closed" and "reports
+   * nothing" are different statements about a college.
+   */
+  fun findSimilarityAnchor(
+    session: SqlSession,
+    id: CollegeId,
+  ): Result<SimilarityAnchorOutcome> {
+    if (!isSearchIndexBuilt(session).getOrElse { return Result.failure(it) }) {
+      return Result.success(SimilarityAnchorOutcome.IndexNotBuilt)
+    }
+    return findSimilarityAnchorRow(session, id).map { anchor ->
+      anchor?.let(SimilarityAnchorOutcome::Found) ?: SimilarityAnchorOutcome.NoSuchCollege
+    }
+  }
+
+  /** The anchor's index row itself, or null when this database holds none for that id. */
+  private fun findSimilarityAnchorRow(
+    session: SqlSession,
+    id: CollegeId,
+  ): Result<SimilarityAnchor?> =
+    session
+      .queryOne(
+        """
+        SELECT
+          college_id, name, state, control, locale,
+          -- `slug[]` is a DOMAIN over text, which JDBC hands back as Object[];
+          -- the cast is what makes it readable as the text[] every other array
+          -- read in this file expects.
+          subject_slugs::text[] AS subject_slugs,
+          net_price_per_year_usd, admission_rate_share,
+          undergrad_enrollment_percentile_share, net_price_percentile_share,
+          -- The anchor's SELECTIVITY position, computed by the SAME expression
+          -- that positions every candidate: one definition of the axis, so a
+          -- distance compares two colleges and never two formulas.
+          ($SELECTIVITY_POSITION) AS selectivity_percentile_share,
+          (${DefaultUniverse.sql()}) AS in_default_universe
+        FROM college_search_index
+        WHERE college_id = ?
+        """.trimIndent(),
+        bind = { stmt -> stmt.setObject(1, id.value) },
+        map = ::mapSimilarityAnchor,
+      ).orNullOnNotFound()
+
+  /**
+   * The ranked peers of [SimilarityQuery.anchor] (RFC 153 D62): ONE `SELECT`
+   * over `college_search_index` — the default universe, the caller's hard
+   * constraints, an `ORDER BY` on the distance expression, a `LIMIT` — then the
+   * payload read-back [listMatches] already uses. Nothing is stored, and no
+   * second query path exists: the predicate is the same [SearchPlan], with the
+   * distance appended to it.
+   *
+   * The same honesty gates [search] takes, in the same order: an unbuilt index
+   * is a named refusal rather than "nothing is similar", and a program word the
+   * vocabulary cannot expand is a named refusal rather than a silent zero.
+   */
+  fun findSimilar(
+    session: SqlSession,
+    query: SimilarityQuery,
+  ): Result<CollegeSimilarityOutcome> {
+    if (!isSearchIndexBuilt(session).getOrElse { return Result.failure(it) }) {
+      return Result.success(CollegeSimilarityOutcome.IndexNotBuilt)
+    }
+
+    val programCodes =
+      when (val expansion = expandProgramCodes(session, query.filters).getOrElse { return Result.failure(it) }) {
+        is ProgramExpansion.Unresolvable -> {
+          return Result.success(CollegeSimilarityOutcome.UnresolvableProgramFilter(expansion.refusal))
+        }
+
+        is ProgramExpansion.Codes -> {
+          expansion.programs
+        }
+      }
+
+    val plan =
+      SimilarityPlan(
+        createSearchPlan(query.filters, programCodes, extraFilters = createFilters(query)),
+        createDistance(query),
+      )
+
+    val matches =
+      listSimilarMatches(session, query, plan, programCodes.matchedCodes).getOrElse { return Result.failure(it) }
+
+    return countSimilarPage(session, plan, matches)
+  }
+
+  /**
+   * The constraints a similarity query adds to the ordinary filter set: the
+   * anchor's exclusion from its own results, and D68's two anchor-relative
+   * constraints EXPANDED against the anchor's own figures.
+   *
+   * They are expanded here rather than in the model because the coach cannot
+   * know the anchor's numbers before it calls: "but cheaper" is a sentence
+   * about Bowdoin's net price, and this is where Bowdoin's net price is known.
+   * Strictly cheaper and strictly easier, with no margin — an invented fudge
+   * factor would be a product judgement nobody made and invisible in the answer.
+   * A candidate that reports neither figure is EXCLUDED and counted, never kept
+   * as "maybe cheaper".
+   */
+  private fun createFilters(query: SimilarityQuery): List<IndexFilter> =
+    buildList {
+      // The anchor is never similar to itself in a way worth printing.
+      add(IndexFilter("college_id <> ?", listOf<Bind>({ stmt, i -> stmt.setObject(i, query.anchor.id.value) })))
+      // The FIGURE, not a flag: the query carries the anchor's own number when
+      // the constraint was asked for, so there is nothing to re-check here.
+      query.cheaperThanUsd?.let { price ->
+        add(
+          IndexFilter("net_price_per_year_usd < ?", listOf(intBinder(price)), UnknownAxis.ofColumn("net_price_per_year_usd")),
+        )
+      }
+      query.easierToAdmitThanShare?.let { rate ->
+        add(
+          IndexFilter("admission_rate_share > ?", listOf(doubleBinder(rate)), UnknownAxis.ofColumn("admission_rate_share")),
+        )
+      }
+    }
+
+  /**
+   * The distance expression (RFC 153 D66): a weighted mean absolute difference
+   * over the axes BOTH colleges can be measured on.
+   *
+   *     SUM  CASE WHEN <scored> THEN w * <difference> ELSE 0 END
+   *     / NULLIF(SUM CASE WHEN <scored> THEN w ELSE 0 END, 0)
+   *
+   * Every `w` and every one of the anchor's own values is a PARAMETER; only
+   * column names and the fixed arithmetic are text. `NULLIF(..., 0)` makes a
+   * candidate sharing no axis sort as NULL, which [SearchPlan.sharedAxisClause]
+   * excludes and [countSimilarPage] counts. Each difference is in `[0, 1]`, so
+   * the quotient is too, and the weights are normalised by their own sum —
+   * scaling every weight cannot inflate or deflate a score, once the tool's
+   * clamp has admitted them.
+   *
+   * A missing axis contributes 0 to BOTH sums rather than a zero difference:
+   * that is the whole of D67 in arithmetic, and the reason no median is ever
+   * substituted for an unreported percentile.
+   */
+  private fun createDistance(query: SimilarityQuery): SimilarityDistance {
+    val terms = query.axes.map { (anchored, weight) -> createDistanceTerm(anchored, weight) }
+    val numerator = terms.joinToString(" + ") { "CASE WHEN ${it.scored} THEN ? * (${it.difference}) ELSE 0 END" }
+    val denominator = terms.joinToString(" + ") { "CASE WHEN ${it.scored} THEN ? ELSE 0 END" }
+    return SimilarityDistance(
+      expression = "($numerator) / nullif($denominator, 0)",
+      // Textual order, which is the only order a positional bind can take: each
+      // numerator term's weight then its anchor value, and then one weight per
+      // denominator term.
+      binders = terms.flatMap { listOf(doubleBinder(it.weight)) + it.binders } + terms.map { doubleBinder(it.weight) },
+      scoredSelects = terms.map { it.axis to it.scored },
+      sharedAxisClause = terms.joinToString(" OR ", prefix = "(", postfix = ")") { it.scored },
+      unknownAxes = terms.map { UnknownAxis.ofAxis(it.axis, it.scored, it.columns) },
+    )
+  }
+
+  /**
+   * One axis of the distance: the predicate that says the CANDIDATE can be
+   * measured on it, and the difference from the anchor once it can.
+   *
+   * The numeric axes read the percentile columns; [SimilarityAxis.SELECTIVITY]
+   * averages the INVERTED admission-rate percentile with the SAT percentile
+   * over whichever the candidate reports, so both inputs point the same way
+   * before they are averaged. The categorical axes state the same shape with an
+   * equality test on the locale slug and a Jaccard distance over the subject
+   * slugs, whose GIN index RFC 150 already landed.
+   *
+   * The ANCHOR's own value arrives ON the axis ([AnchoredAxis]), so there is no
+   * nullable to re-check here: an axis the anchor cannot be measured on was
+   * dropped before a query could name it.
+   */
+  private fun createDistanceTerm(
+    anchored: AnchoredAxis,
+    weight: Double,
+  ): DistanceTerm =
+    when (anchored) {
+      is AnchoredAxis.Size -> {
+        createPercentileTerm(
+          anchored.axis,
+          "undergrad_enrollment_percentile_share",
+          setOf("undergrad_enrollment_percentile_share", "undergrad_enrollment_headcount"),
+          anchored.percentile,
+          weight,
+        )
+      }
+
+      is AnchoredAxis.Price -> {
+        createPercentileTerm(
+          anchored.axis,
+          "net_price_percentile_share",
+          setOf("net_price_percentile_share", "net_price_per_year_usd"),
+          anchored.percentile,
+          weight,
+        )
+      }
+
+      is AnchoredAxis.Selectivity -> {
+        DistanceTerm(
+          axis = anchored.axis,
+          weight = weight,
+          scored = "($ADMISSION_PERCENTILE IS NOT NULL OR $SAT_PERCENTILE IS NOT NULL)",
+          difference = "abs($SELECTIVITY_POSITION - ?)",
+          binders = listOf(doubleBinder(anchored.percentile)),
+          columns = setOf(ADMISSION_PERCENTILE, SAT_PERCENTILE, "admission_rate_share"),
+        )
+      }
+
+      is AnchoredAxis.Setting -> {
+        DistanceTerm(
+          axis = anchored.axis,
+          weight = weight,
+          scored = "locale IS NOT NULL",
+          difference = "CASE WHEN locale = ? THEN 0 ELSE 1 END",
+          binders = listOf(stringBinder(anchored.locale)),
+          columns = setOf("locale"),
+        )
+      }
+
+      is AnchoredAxis.Subjects -> {
+        val anchorSubjects = anchored.slugs
+        DistanceTerm(
+          axis = anchored.axis,
+          weight = weight,
+          // `{}` is "the programs are known and none of them is a taxonomy
+          // subject" (schema 0064) -- a real state, and not one a Jaccard
+          // distance can describe, so the candidate is unjudgeable here for
+          // exactly the reason an anchor in the same state is (D67).
+          scored = "(subject_slugs IS NOT NULL AND cardinality(subject_slugs) > 0)",
+          // 1 - |A n B| / |A u B|, over the slug arrays. Both sides bind the
+          // anchor's set as ONE jsonb parameter, never as interpolated text.
+          difference =
+            "(1 - cardinality(ARRAY(SELECT unnest(subject_slugs::text[]) " +
+              "INTERSECT SELECT unnest($TEXT_ARRAY_PARAM)))::double precision " +
+              "/ nullif(cardinality(ARRAY(SELECT unnest(subject_slugs::text[]) " +
+              "UNION SELECT unnest($TEXT_ARRAY_PARAM))), 0))",
+          binders = listOf(jsonbArrayBinder(anchorSubjects), jsonbArrayBinder(anchorSubjects)),
+          columns = setOf("subject_slugs"),
+        )
+      }
+    }
+
+  /**
+   * A PERCENTILE axis: judgeable when the column carries a position, and as far
+   * from the anchor as the two positions are apart. [SimilarityAxis.SIZE] and
+   * [SimilarityAxis.PRICE] differ only in which column they read, so they state
+   * that difference and nothing else.
+   */
+  private fun createPercentileTerm(
+    axis: SimilarityAxis,
+    column: String,
+    columns: Set<String>,
+    anchorPercentile: Double,
+    weight: Double,
+  ): DistanceTerm =
+    DistanceTerm(
+      axis = axis,
+      weight = weight,
+      scored = "$column IS NOT NULL",
+      difference = "abs($column - ?)",
+      binders = listOf(doubleBinder(anchorPercentile)),
+      columns = columns,
+    )
+
+  /**
+   * The ranked page: at most `limit` index rows ordered by distance, then the
+   * join back to the source of truth for the payload — [listMatches]'s shape,
+   * because the payload contract is the same one (D70) and reinventing it is
+   * how two result rows start disagreeing about what a college is.
+   *
+   * The order ends with the `ipeds_unit_id ASC` tiebreak every search ordering
+   * ends with, so ties are broken the same way here as there and the page is
+   * deterministic.
+   */
+  private fun listSimilarMatches(
+    session: SqlSession,
+    query: SimilarityQuery,
+    plan: SimilarityPlan,
+    matchedCodes: List<String>?,
+  ): Result<List<SimilarityMatch>> {
+    val titlesSelect =
+      if (matchedCodes == null) "NULL::text[]" else "coalesce(array_agg(cc.title ORDER BY cc.code), ARRAY[]::text[])"
+    val censusRestriction = if (matchedCodes == null) "" else "AND pc.cip_code = ANY ($TEXT_ARRAY_PARAM)"
+    val scoredSelects = plan.scoredSelects.joinToString("") { (axis, scored) -> ", ($scored) AS ${scoredColumn(axis)}" }
+    val scoredColumns = plan.scoredSelects.joinToString("") { (axis, _) -> ", i.${scoredColumn(axis)}" }
+
+    val sql =
+      """
+      SELECT
+        i.college_id AS id, i.ipeds_unit_id, i.name, i.state, i.control, i.region, i.locale,
+        i.undergrad_enrollment_headcount, i.admission_rate_share, i.net_price_per_year_usd,
+        i.completion_rate_150pct_4yr_share, i.distance$scoredColumns,
+        c.city, c.net_price_per_year_income_q1_usd, c.net_price_per_year_income_q2_usd,
+        c.net_price_per_year_income_q3_usd, c.net_price_per_year_income_q4_usd,
+        c.net_price_per_year_income_q5_usd, c.median_earnings_10y_after_entry_usd,
+        c.median_debt_at_completion_usd, c.pell_share, c.website,
+        ci.survey_year AS ipeds_survey_year,
+        t.titles AS program_titles,
+        t.census_year AS programs_census_survey_year
+      FROM (
+        SELECT
+          college_id, ipeds_unit_id, name, state, control, region, locale,
+          undergrad_enrollment_headcount, admission_rate_share, net_price_per_year_usd,
+          completion_rate_150pct_4yr_share,
+          ${plan.distanceExpression} AS distance$scoredSelects
+        FROM college_search_index
+        WHERE ${plan.search.matchClause} AND ${plan.sharedAxisClause}
+        -- `NULLS LAST` cannot fire: the shared-axis clause admits no NULL
+        -- distance. It is stated anyway so that a row slipping through a future
+        -- relaxation sinks to the end of the page instead of leading it, as
+        -- PostgreSQL's default NULLS FIRST would, and the read then raises.
+        ORDER BY distance ASC NULLS LAST, ipeds_unit_id ASC
+        LIMIT ?
+      ) i
+      JOIN colleges c ON c.id = i.college_id
+      LEFT JOIN college_ipeds ci ON ci.ipeds_unit_id = i.ipeds_unit_id
+      LEFT JOIN LATERAL (
+        SELECT $titlesSelect AS titles, max(pc.survey_year) AS census_year
+        FROM college_programs_census pc
+        JOIN cip_codes cc ON cc.code = pc.cip_code
+        WHERE pc.college_id = i.college_id
+        $censusRestriction
+      ) t ON TRUE
+      ORDER BY i.distance ASC NULLS LAST, i.ipeds_unit_id ASC
+      """.trimIndent()
+
+    return session.queryList(
+      sql,
+      bind = { stmt ->
+        // The select list is written before the `WHERE`, so the distance binds
+        // come first; the plan owns both sequences, so neither can drift.
+        var idx = plan.bindDistance(stmt)
+        idx = plan.search.bindPredicate(stmt, idx)
+        stmt.setInt(idx++, query.limit)
+        if (matchedCodes != null) jsonbArrayBinder(matchedCodes)(stmt, idx++)
+      },
+      map = { rs ->
+        SimilarityMatch(
+          match = mapMatch(rs),
+          // `nullif(..., 0)` makes the distance NULL for a candidate sharing no
+          // axis with the anchor, and `sharedAxisClause` excludes exactly those
+          // rows. A NULL here is therefore a broken query, never a peer -- and
+          // `getDouble`'s 0.0 sentinel would read as "identical to the anchor"
+          // and sort it FIRST, so it is raised rather than read back.
+          distance =
+            rs.doubleOrNull("distance")
+              ?: error("similarity distance is NULL for a row the shared-axis clause admitted"),
+          // Which axes this college was actually judged on -- read from the
+          // SAME predicate the arithmetic used, not recomputed in Kotlin from
+          // the columns, so the number in `distance` and the list beside it
+          // cannot describe different axes.
+          axesScored = plan.scoredSelects.map { it.first }.filter { rs.getBoolean(scoredColumn(it)) },
+        )
+      },
+    )
+  }
+
+  /**
+   * The SQL identifier fragment for [axis], taken from the enum CONSTANT rather
+   * than from [SimilarityAxis.word]: a constant is a Kotlin identifier by
+   * construction and so a legal SQL one, while the word is model-facing copy a
+   * product decision may rewrite with a space or a hyphen in it.
+   */
+  private fun axisAlias(axis: SimilarityAxis): String = axis.name.lowercase()
+
+  /** The `scored_<axis>` column name both sides of the ranked query quote. */
+  private fun scoredColumn(axis: SimilarityAxis): String = "scored_${axisAlias(axis)}"
+
+  /**
+   * The counts, and the finished page — [countPage]'s shape over the similarity
+   * predicate. ONE statement: the honest candidate population (every college
+   * the constraints admit that shares an axis with the anchor), plus one
+   * `excluded_unknown` arm per ranked axis and per supplied filter whose column
+   * can be unknown.
+   *
+   * Both counts are CONSTRAINT-RELATIVE (D67 as amended): an axis arm counts
+   * the colleges the caller's own constraints admit that CANNOT BE JUDGED on
+   * that axis, not the colleges of the bare universe. Measured over the
+   * universe the arms answered about schools the constraints had already
+   * excluded, so a call narrowed to one state could report more unjudgeable
+   * colleges than it considered candidates — two numbers the prompt tells the
+   * coach to read aloud together.
+   *
+   * The one constraint an arm drops is the filter ABOUT that same column: a
+   * filter over a nullable column is exactly what removes the rows that cannot
+   * be judged on it, so counting them inside its own clause would always answer
+   * zero and D68's "excluded and counted, never kept as maybe-cheaper" would
+   * have nothing to report.
+   *
+   * A candidate sharing no axis at all is still visible: it is unjudgeable on
+   * every one of them, so it appears under every axis name.
+   */
+  private fun countSimilarPage(
+    session: SqlSession,
+    plan: SimilarityPlan,
+    matches: List<SimilarityMatch>,
+  ): Result<CollegeSimilarityOutcome> {
+    val countSelects =
+      buildList {
+        add("count(*) FILTER (WHERE ${plan.search.matchClause} AND ${plan.sharedAxisClause}) AS total")
+        plan.unknownAxes.forEach { axis ->
+          add(
+            "count(*) FILTER (WHERE ${plan.search.createMatchClauseExcluding(axis)} AND ${axis.condition}) " +
+              "AS ${axis.countColumn}",
+          )
+        }
+      }
+    val countSql = "SELECT ${countSelects.joinToString(", ")} FROM college_search_index"
+
+    return session
+      .queryOne(
+        countSql,
+        // Every arm states a predicate of its own now, so every arm binds:
+        // total first, then one arm per unknown axis, in select-list order —
+        // the same list that wrote the text, so the two cannot drift.
+        bind = { stmt ->
+          var idx = plan.search.bindPredicate(stmt)
+          plan.unknownAxes.forEach { axis -> idx = plan.search.bindPredicateExcluding(stmt, axis, idx) }
+          idx
+        },
+        map = { rs ->
+          val total = rs.getInt("total")
+          val excluded = plan.unknownAxes.associate { axis -> axis.key to rs.getInt(axis.countColumn) }
+          total to excluded
+        },
+      ).map { (total, excluded) ->
+        CollegeSimilarityOutcome.Page(
+          CollegeSimilarityPage(
+            matches = matches,
+            totalCandidates = total,
+            excludedUnknown = excluded,
+            sourceYears = sourceYears(matches.map { it.match }),
+          ),
+        )
+      }
+  }
+
+  /**
+   * A [SearchPlan] with the similarity RANKING layered over it (RFC 153 D66).
+   *
+   * The shared predicate stays unaware of it, so an ordinary search carries no
+   * distance slot and no member it must never call: the distance is a
+   * constructor requirement here, which is why "this plan carries no distance
+   * expression" is not a state this type can be in and not a runtime check
+   * anybody has to remember.
+   */
+  private class SimilarityPlan(
+    val search: SearchPlan,
+    private val distance: SimilarityDistance,
+  ) {
+    /** The DISTANCE expression, NULL for a candidate that shares no axis with the anchor. */
+    val distanceExpression: String = distance.expression
+
+    /** One `scored_<axis>` boolean per ranked axis, in axis order. */
+    val scoredSelects: List<Pair<SimilarityAxis, String>> = distance.scoredSelects
+
+    /**
+     * The bind-free predicate "this candidate shares at least one axis with the
+     * anchor". It carries no parameter on purpose: the count query restates it
+     * without rebinding anything, and a `WHERE` cannot read the `distance`
+     * output column.
+     */
+    val sharedAxisClause: String = distance.sharedAxisClause
+
+    /**
+     * The axes a candidate may not be measurable on (D67), then the filters'
+     * unjudgeable columns — minus every filter column a ranked axis already
+     * reads.
+     *
+     * `cheaper_than_anchor` with the `price` axis used to report net price
+     * TWICE, once under a schema identifier and once under an axis word, as
+     * though they were two different facts about a college. One subject, one
+     * key: the axis says it, in the word the caller asked in.
+     */
+    val unknownAxes: List<UnknownAxis> =
+      (
+        distance.unknownAxes +
+          search.unknownAxes.filterNot { filter ->
+            distance.unknownAxes.any { axis -> filter.key in axis.subject.columns }
+          }
+      ).distinctBy { it.key }
+
+    /**
+     * Binds every parameter [distanceExpression] carries, starting at [from],
+     * and returns the NEXT free index — the ranked query's select list is
+     * written before its `WHERE`, so the distance binds come first.
+     */
+    fun bindDistance(
+      stmt: PreparedStatement,
+      from: Int = 1,
+    ): Int {
+      var idx = from
+      distance.binders.forEach { bind -> bind(stmt, idx++) }
+      return idx
+    }
+  }
+
+  /** Maps a [findSimilarityAnchor] row. */
+  private fun mapSimilarityAnchor(rs: ResultSet): SimilarityAnchor {
+    // The stored label is resolved ONCE, at the row boundary, and both halves
+    // travel: the category this vocabulary defines (null when it defines none),
+    // and the label exactly as stored, which is what a refusal must quote.
+    val controlLabel = rs.getString("control")
+    return SimilarityAnchor(
+      id = CollegeId(UUID.fromString(rs.getString("college_id"))),
+      name = rs.getString("name"),
+      state = rs.getString("state"),
+      control = InstitutionControl.fromLabel(controlLabel),
+      controlLabel = controlLabel,
+      locale = rs.getString("locale"),
+      subjectSlugs = rs.getStringListOrNull("subject_slugs"),
+      netPricePerYearUsd = rs.intOrNull("net_price_per_year_usd"),
+      admissionRateShare = rs.doubleOrNull("admission_rate_share"),
+      sizePercentile = rs.doubleOrNull("undergrad_enrollment_percentile_share"),
+      selectivityPercentile = rs.doubleOrNull("selectivity_percentile_share"),
+      pricePercentile = rs.doubleOrNull("net_price_percentile_share"),
+      inDefaultUniverse = rs.getBoolean("in_default_universe"),
+    )
+  }
+
+  /** The admission-rate percentile column, named once for the selectivity axis. */
+  private const val ADMISSION_PERCENTILE = "admission_rate_percentile_share"
+
+  /** The SAT-average percentile column, named once for the selectivity axis. */
+  private const val SAT_PERCENTILE = "sat_average_percentile_share"
+
+  /**
+   * A candidate's SELECTIVITY position (RFC 153 D65): the mean of the INVERTED
+   * admission-rate percentile and the SAT percentile over whichever of the two
+   * the college reports, and SQL NULL when it reports neither. The inversion is
+   * what makes both inputs point the same way — higher is harder to get into —
+   * before they are averaged.
+   */
+  private const val SELECTIVITY_POSITION =
+    "((coalesce(1 - $ADMISSION_PERCENTILE, 0) + coalesce($SAT_PERCENTILE, 0)) " +
+      "/ nullif((CASE WHEN $ADMISSION_PERCENTILE IS NULL THEN 0 ELSE 1 END " +
+      "+ CASE WHEN $SAT_PERCENTILE IS NULL THEN 0 ELSE 1 END), 0))"
+
+  /**
+   * The distance expression as ONE value: its text, its binds, the per-axis
+   * "this candidate is judgeable" predicates the result reports, and the axes
+   * whose unknowns are counted. Text and binds travel together for the same
+   * reason [IndexFilter]'s do — there is no way to obtain one without the other.
+   */
+  private class SimilarityDistance(
+    val expression: String,
+    val binders: List<Bind>,
+    val scoredSelects: List<Pair<SimilarityAxis, String>>,
+    val sharedAxisClause: String,
+    val unknownAxes: List<UnknownAxis>,
+  )
+
+  /** One axis's contribution to [SimilarityDistance]. */
+  private class DistanceTerm(
+    val axis: SimilarityAxis,
+    val weight: Double,
+    val scored: String,
+    val difference: String,
+    val binders: List<Bind>,
+    /**
+     * The index columns [scored] reads, so an `excluded_unknown` arm about this
+     * axis can drop the caller's filters over them — the filters that removed
+     * the very rows the arm counts.
+     */
+    val columns: Set<String>,
+  )
 
   /**
    * The program filter, expanded to real CIP codes before anything is matched.

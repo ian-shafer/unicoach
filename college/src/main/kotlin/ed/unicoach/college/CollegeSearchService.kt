@@ -4,9 +4,13 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.SearchIndexNotBuiltException
 import ed.unicoach.db.dao.mapDatabaseError
+import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
+import ed.unicoach.db.models.CollegeSimilarityOutcome
 import ed.unicoach.db.models.CollegeSummary
+import ed.unicoach.db.models.SimilarityAnchorOutcome
+import ed.unicoach.db.models.SimilarityQuery
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
@@ -160,6 +164,52 @@ class CollegeSearchService(
   fun rejectedInput(error: Throwable): QueryTooLongException? = error as? QueryTooLongException
 
   /**
+   * The anchor of a "schools like X" query (RFC 153 D63), behind the same
+   * connection boundary as [search].
+   *
+   * [SimilarityAnchorOutcome.NoSuchCollege] means this database has no college
+   * with that id — a refusal the boundary above states in words, never a page
+   * of peers for a school nobody named — and
+   * [SimilarityAnchorOutcome.IndexNotBuilt] is the DEPLOYMENT state stated
+   * separately, so an unbuilt index is never answered as "that school does not
+   * exist".
+   */
+  suspend fun findSimilarityAnchor(id: CollegeId): Result<SimilarityAnchorOutcome> =
+    handleFailures { database.withConnection { session -> CollegesDao.findSimilarityAnchor(session, id) } }
+      .onSuccess { outcome ->
+        if (outcome is SimilarityAnchorOutcome.IndexNotBuilt) {
+          logger.error(
+            "a similar-college anchor was resolved against an UNBUILT college_search_index -- " +
+              "run the ingest's `search-index` phase (`bin/ingest-colleges`); until then the anchor " +
+              "is refused rather than reported as a college this database does not hold",
+          )
+        }
+      }
+
+  /**
+   * Runs [query] after clamping its `limit` to [MIN_LIMIT]`..`[MAX_SIMILAR_LIMIT]
+   * (RFC 153 D70: a peer list is read, not scrolled), behind the same
+   * `withConnection` + [mapDatabaseError] boundary as [search].
+   *
+   * The clamp is the only domain rule applied here; the axis drops, the weight
+   * clamp and the anchor-relative expansions all happen before a
+   * [SimilarityQuery] can exist, and the ranking itself is SQL.
+   */
+  suspend fun findSimilar(query: SimilarityQuery): Result<CollegeSimilarityOutcome> {
+    val clamped = query.copy(filters = query.filters.copy(limit = query.limit.coerceIn(MIN_LIMIT, MAX_SIMILAR_LIMIT)))
+    return handleFailures { database.withConnection { session -> CollegesDao.findSimilar(session, clamped) } }
+      .onSuccess { outcome ->
+        if (outcome is CollegeSimilarityOutcome.IndexNotBuilt) {
+          logger.error(
+            "similar-college search ran against an UNBUILT college_search_index: no rows and no build row -- " +
+              "run the ingest's `search-index` phase (`bin/ingest-colleges`); until then every peer list " +
+              "is refused rather than answered with a false zero",
+          )
+        }
+      }
+  }
+
+  /**
    * Runs [block] and keeps EVERY failure inside the [Result] both entry points
    * promise.
    *
@@ -173,23 +223,40 @@ class CollegeSearchService(
    * keeps its [ed.unicoach.error.TransientError] trait here exactly as it does
    * inside the DAO. A [CancellationException] is not this function's to
    * report — structured concurrency must see it.
+   *
+   * Every failure is LOGGED here, once, with the throwable itself.
    */
-  private suspend fun <T> handleFailures(block: suspend () -> Result<T>): Result<T> =
-    try {
-      block()
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: SQLException) {
-      Result.failure(mapDatabaseError(e))
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+  private suspend fun <T> handleFailures(block: suspend () -> Result<T>): Result<T> {
+    val result =
+      try {
+        block()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: SQLException) {
+        Result.failure(mapDatabaseError(e))
+      } catch (e: Exception) {
+        Result.failure(e)
+      }
+    // The tool boundary answers a failure with a JSON envelope built from
+    // `message` alone and never THROWS, so the coaching funnel's catch never
+    // runs: this is the only place the exception type, the SQLSTATE, the stack
+    // and the cause chain can still be seen. One statement here covers every
+    // caller of this boundary, which four call sites of their own would not.
+    return result.onFailure { error -> logger.error("college retrieval failed", error) }
+  }
 
   companion object {
     private val logger = LoggerFactory.getLogger(CollegeSearchService::class.java)
 
     const val MIN_LIMIT = 1
     const val MAX_LIMIT = 25
+
+    /**
+     * The result cap for [findSimilar] (RFC 153 D70), lower than [MAX_LIMIT] on
+     * purpose: a peer list is a handful of schools a student reads, not a page
+     * they scroll.
+     */
+    const val MAX_SIMILAR_LIMIT = 10
 
     /** The `q` boundary for [searchByName], referenced by the REST route's 400 validation. */
     const val MAX_QUERY_LENGTH = 100

@@ -25,7 +25,7 @@ import org.slf4j.LoggerFactory
  *
  * [execute] is total. A zero-match name is `{ "colleges": [], "count": 0 }` — a
  * valid domain outcome — but an UNBUILT index is never rendered that way: it
- * returns the same [CollegeSearchTool.INDEX_NOT_BUILT] sentence the structured
+ * returns the same [INDEX_NOT_BUILT] sentence the structured
  * search uses, because an empty answer out of a full database is a fact no
  * reader could tell from a real zero (RFC 150).
  *
@@ -124,7 +124,7 @@ class FindCollegeTool(
     // name" out of a full database. Asked of the service rather than
     // type-tested here, because the exception class is `:db`'s and the service
     // is the boundary that owns what `:db` means. The service logs it.
-    if (service.isIndexNotBuilt(error)) return errorObject(CollegeSearchTool.INDEX_NOT_BUILT)
+    if (service.isIndexNotBuilt(error)) return errorObject(INDEX_NOT_BUILT)
 
     // A REJECTED INPUT is not a failed SEARCH. The service owns the length rule
     // (D-C) and hands the rejection up as data; reporting it as `search_failed`
@@ -145,14 +145,6 @@ class FindCollegeTool(
     )
     return searchFailureObject(error)
   }
-
-  /**
-   * The over-long refusal, in THIS tool's vocabulary: the service's rejection
-   * carries the numbers and the tool names the field they are about. The
-   * service's own sentence says "query", a word this tool has no field for.
-   */
-  private fun refusalSentence(rejection: QueryTooLongException): String =
-    "[name] must be at most [${rejection.maxLength}] characters (got [${rejection.actualLength}])"
 
   private fun matchesObject(matches: List<CollegeSummary>): JsonObject =
     buildJsonObject {

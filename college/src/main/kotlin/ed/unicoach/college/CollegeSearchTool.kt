@@ -1,10 +1,8 @@
 package ed.unicoach.college
 
-import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.IncomeBand
-import ed.unicoach.db.models.putIncomeBand
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -101,7 +99,7 @@ class CollegeSearchTool(
 
     return buildJsonObject {
       putJsonArray("colleges") {
-        page.matches.forEach { add(matchObject(it)) }
+        page.matches.forEach { add(matchObject(it, vocabulary)) }
       }
       put("count", page.matches.size)
       // The honest population count (RFC 139): unclamped, so the model can say
@@ -110,27 +108,8 @@ class CollegeSearchTool(
       // Unknown is never silently "no" (RFC 150 D55): every supplied filter over
       // a column a college may not report says how many colleges it could not
       // judge. `{}` when no supplied filter can exclude an unknown.
-      putJsonObject("excluded_unknown") {
-        page.excludedUnknown.toSortedMap().forEach { (axis, count) -> put(axis, count) }
-      }
-      // The vintages of the rows actually returned, read at result time. A key
-      // is ABSENT when no returned row carries that vintage -- an empty page
-      // reports no years, which is the truthful answer. When the returned rows
-      // MIX vintages the key carries the span instead of one year: the mixture
-      // is a fact about the answer, and reporting nothing (what a single-year
-      // reading had to do) hid it behind the same silence as "unknown".
-      putJsonObject("source_years") {
-        page.sourceYears.toSortedMap().forEach { (source, years) ->
-          if (years.first == years.last) {
-            put(source, years.first)
-          } else {
-            putJsonObject(source) {
-              put("earliest", years.first)
-              put("latest", years.last)
-            }
-          }
-        }
-      }
+      putExcludedUnknown(page.excludedUnknown)
+      putSourceYears(page.sourceYears)
     }
   }
 
@@ -161,100 +140,9 @@ class CollegeSearchTool(
   // Output serialization
   // ---------------------------------------------------------------------------
 
-  private fun matchObject(match: CollegeMatch): JsonObject =
-    buildJsonObject {
-      // First key by design: the id the model must copy into
-      // `update_college_list`'s `college_id`, ahead of the name — the only
-      // other field it could mistake for a handle on the school.
-      put("college_id", match.id.value.toString())
-      put("name", match.name)
-      put("city", match.city)
-      put("state", match.state)
-      // The word, never a code -- and now STRUCTURALLY so (RFC 150 D61): the
-      // search index stores our vocabulary, so there is no code on this path to
-      // leak and no code-to-word step left to forget.
-      put("control", match.control)
-      // The same words the `region`/`locale_type`/`locale_detail` filters take
-      // (RFC 147 D45), so what the model reads back is what it can ask for.
-      putOrNull("region", match.region)
-      val locale = vocabulary.localeOf(match.locale)
-      putOrNull("locale_type", locale?.type?.word)
-      putOrNull("locale_detail", locale?.detail?.word)
-      putOrNull("undergrad_enrollment_headcount", match.undergradEnrollmentHeadcount)
-      putOrNull("admission_rate_share", match.admissionRateShare)
-      putOrNull("net_price_per_year_usd", match.netPricePerYearUsd)
-      // One self-describing array rather than five opaque `net_price_per_year_income_qN_usd` keys
-      // (RFC 142): every amount arrives beside the band code AND the dollar
-      // range a coach says aloud, so the model never has to translate a source
-      // bucket name into English -- and cannot say "Q5" because it never saw it.
-      putJsonArray("net_price_by_income_band") {
-        IncomeBand.entries.forEach { band ->
-          // An unreported bracket is omitted entirely rather than carried as a
-          // labelled null: the array names the bands this college actually
-          // reports, so there is nothing to mistake for a price of zero.
-          band.netPriceFor(match)?.let { amount ->
-            add(
-              buildJsonObject {
-                putIncomeBand(band)
-                put("net_price_per_year_usd", amount)
-              },
-            )
-          }
-        }
-      }
-      putOrNull("completion_rate_150pct_4yr_share", match.completionRate150pct4yrShare)
-      putOrNull("median_earnings_10y_after_entry_usd", match.medianEarnings10yAfterEntryUsd)
-      putOrNull("median_debt_at_completion_usd", match.medianDebtAtCompletionUsd)
-      putOrNull("pell_share", match.pellShare)
-      // Present only when a program filter was written: the key MEANS "what your
-      // program filter matched", so on a search that asked nothing about
-      // programs there is no answer to give. It used to print `programs: []` on
-      // every non-program search — an empty array that reads as "this college
-      // offers nothing".
-      match.programTitles?.let { titles ->
-        putJsonArray("programs") {
-          titles.forEach { add(it) }
-        }
-      }
-    }
-
-  /**
-   * The SENTENCE for a typed program-filter refusal — composed here, at the
-   * boundary that speaks to the model, from the field, the word and the cause
-   * the DAO reported as data.
-   *
-   * The DAO used to hand up a pre-formatted string and this was `outcome.reason`.
-   * The wording is model-facing copy, so it belongs beside the rest of the
-   * model-facing copy; the DAO's job is the fact.
-   */
-  private fun refusalSentence(outcome: CollegeSearchOutcome.UnresolvableProgramFilter): String =
-    when (outcome.cause) {
-      CollegeSearchOutcome.UnresolvableProgramFilter.Cause.NOT_A_PUBLISHED_CIP_CODE -> {
-        "[${outcome.field.word}] [${outcome.value}] is not a CIP code in the loaded vocabulary"
-      }
-
-      CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_NOT_IN_TAXONOMY -> {
-        "[${outcome.field.word}] [${outcome.value}] is not in the loaded taxonomy"
-      }
-
-      CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_MATCHES_NO_CIP_CODE -> {
-        "[${outcome.field.word}] [${outcome.value}] matches no CIP code in the loaded vocabulary"
-      }
-
-      CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_AND_CIP_PREFIX_SHARE_NO_CIP_CODE -> {
-        "subject [${outcome.value}] and cipPrefix [${outcome.conflictsWith}] name no CIP code in common, " +
-          "so no single program can satisfy both -- write only the one you mean"
-      }
-    }
-
   companion object {
     const val TOOL_NAME = "search_colleges"
 
-    /** What the tool says when `college_search_index` has never been built (RFC 150). */
-    const val INDEX_NOT_BUILT =
-      "the search index has not been built yet, so no college can be found -- this is a deployment " +
-        "state, not an empty result; tell the family the college search is temporarily unavailable " +
-        "and do not say that no colleges match"
     const val DEFAULT_LIMIT = 10
     const val MIN_LIMIT = CollegeSearchService.MIN_LIMIT
     const val MAX_LIMIT = CollegeSearchService.MAX_LIMIT

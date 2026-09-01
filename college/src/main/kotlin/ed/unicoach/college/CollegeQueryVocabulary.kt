@@ -303,6 +303,50 @@ class CollegeQueryVocabulary(
   }
 
   /**
+   * Every filter this vocabulary parsed, back in WORDS (RFC 153 D70), in schema
+   * order — the sentences a tool that reports "the constraints I ran under"
+   * reads out.
+   *
+   * It lives here, beside the parser, for D69's reason: the words a filter is
+   * ASKED in and the words it is REPORTED in are one vocabulary, so a filter
+   * added to [parse] is reported without a second list somewhere else to
+   * forget. A tool that hand-listed its own sentences reported five of the
+   * twenty-three filters it had actually applied, which is the acceptance
+   * criterion "every response names its axes and constraints" failing rather
+   * than a matter of polish.
+   *
+   * The two UNIVERSE axes (`is_active`, `is_four_year`) are deliberately absent:
+   * their default IS the default universe, which the caller states in that
+   * universe's own words rather than as two filters among the rest.
+   */
+  fun listConstraintSentences(filters: CollegeQuery): List<String> =
+    buildList {
+      filters.cipPrefix?.let { add("programs under CIP prefix [$it]") }
+      filters.subject?.let { add("offering the subject [$it]") }
+      filters.states?.let { add("in ${it.joinToString(", ")}") }
+      filters.region?.let { add("in the [$it] region") }
+      filters.locales?.let { slugs ->
+        val words = slugs.mapNotNull { slug -> localeOf(slug)?.let { "${it.type.word}/${it.detail.word}" } }
+        add("campus setting: ${(words.takeIf { it.isNotEmpty() } ?: slugs).joinToString(", ")}")
+      }
+      filters.control?.let { add("run as: ${it.joinToString(", ") { control -> control.label }}") }
+      filters.minUndergradEnrollmentHeadcount?.let { add("at least $it undergraduates") }
+      filters.maxUndergradEnrollmentHeadcount?.let { add("at most $it undergraduates") }
+      filters.minAdmissionRateShare?.let { add("admission rate at or above ${mapShareToSpokenPercent(it)}") }
+      filters.maxAdmissionRateShare?.let { add("admission rate at or below ${mapShareToSpokenPercent(it)}") }
+      filters.maxNetPricePerYearUsd?.let { add("average annual net price at or below ${mapUsdToSpoken(it)}") }
+      filters.minCompletionRate150pct4yrShare?.let { add("six-year completion rate at or above ${mapShareToSpokenPercent(it)}") }
+      filters.testPolicy?.let { add("testing policy [$it]") }
+      filters.religiousAffiliation?.let { add("religious affiliation [$it]") }
+      filters.carnegieClass?.let { add("Carnegie classification [$it]") }
+      filters.carnegieSize?.let { add("Carnegie size [$it]") }
+      filters.athleticAssociation?.let { add("athletic association [$it]") }
+      filters.hasRotc?.let { add(if (it) "offering ROTC" else "not offering ROTC") }
+      filters.hasStudyAbroad?.let { add(if (it) "offering study abroad" else "not offering study abroad") }
+      filters.hasHousing?.let { add(if (it) "offering on-campus housing" else "not offering on-campus housing") }
+    }
+
+  /**
    * The two published halves of a `college_search_index.locale` SLUG — the only
    * OUTPUT-side resolution left in this class.
    *

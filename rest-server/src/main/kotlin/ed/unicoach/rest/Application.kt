@@ -323,6 +323,13 @@ fun Application.appModule(
         ed.unicoach.coaching.FindCollegeChatTool(
           ed.unicoach.college.FindCollegeTool(collegeSearchService),
         ),
+        // "Schools like Bowdoin" (RFC 153): the same service and the same
+        // codebook the search tool reads, so the three doors speak one vocabulary.
+        ed.unicoach.coaching
+          .SimilarCollegesChatTool(
+            ed.unicoach.college
+              .SimilarCollegesTool(collegeSearchService, codebook),
+          ),
         ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
         ed.unicoach.coaching.costs
           .CollegeCostChatTool(

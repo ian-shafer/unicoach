@@ -325,7 +325,7 @@ class FindCollegeToolTest {
 
       val result = tool.execute(buildJsonObject { put("name", "Amherst College") })
 
-      assertEquals(CollegeSearchTool.INDEX_NOT_BUILT, result["error"]?.jsonPrimitive?.content)
+      assertEquals(INDEX_NOT_BUILT, result["error"]?.jsonPrimitive?.content)
       assertNull(result["colleges"], "an unbuilt index must never answer with a list")
       assertNull(result["count"], "an unbuilt index must never answer with a count")
     }

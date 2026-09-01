@@ -27,6 +27,18 @@ enum class InstitutionControl(
     fun fromCode(code: Int): InstitutionControl? = entries.find { it.code == code }
 
     /**
+     * The control this [label] names, or null for the [unknownLabel] phrase an
+     * extended source code produces.
+     *
+     * The label -> control half of the vocabulary, beside the code -> label
+     * half, so no caller hand-scans [entries] and no caller has to rediscover
+     * that [labelFor] is TOTAL: a stored label that matches no entry is a real
+     * state, and a lookup that says so is what lets the caller report it
+     * instead of silently losing the constraint it was building.
+     */
+    fun fromLabel(label: String): InstitutionControl? = entries.find { it.label == label }
+
+    /**
      * The label for a [code] the vocabulary does NOT define: named as unknown,
      * but carrying the raw code inside the phrase, so a vocabulary the source
      * has extended stays observable at the wire instead of being silently

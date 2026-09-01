@@ -36,6 +36,9 @@ value class Share private constructor(
       "%.1f".format(Locale.US, percent)
     }
 
+  /** The spoken number with its sign, e.g. `"12.5%"` — the form a sentence interpolates. */
+  fun spokenPercent(): String = "${spoken()}%"
+
   companion object {
     /** A ratio is a percent times this; the conversion has one home rather than a literal per call site. */
     private const val PERCENT_PER_UNIT = 100.0
@@ -57,5 +60,18 @@ value class Share private constructor(
       } else {
         null
       }
+
+    /**
+     * A 0-1 [ratio] as the percent it is spoken as, snapped to the same
+     * one-decimal grid [ofOrNull] uses.
+     *
+     * This is the ONE home of `ratio * 100`: a caller holding a `_share` column
+     * reaches for this rather than writing the literal at its own site, and so
+     * gets the same spoken form as every other share. Two call sites that
+     * rounded with `roundToInt` spoke a 12.5% admission rate as "13%" while
+     * this type spoke it as "12.5".
+     */
+    fun ofRatio(ratio: Double): Share =
+      Share(Math.round(ratio * PERCENT_PER_UNIT * ROUNDING_STEPS_PER_PERCENT) / ROUNDING_STEPS_PER_PERCENT)
   }
 }

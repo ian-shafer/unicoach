@@ -10,6 +10,7 @@ import ed.unicoach.coaching.fitlens.FitLensConfig
 import ed.unicoach.coaching.synthesis.SynthesisConfig
 import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.college.FindCollegeTool
+import ed.unicoach.college.SimilarCollegesTool
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SystemPromptsDao
@@ -66,6 +67,13 @@ class SystemPromptCatalogTest {
      */
     private val FIND_COLLEGE_TOOL_NAME = FindCollegeTool.TOOL_NAME
     private val COLLEGE_SEARCH_TOOL_NAME = CollegeSearchTool.TOOL_NAME
+
+    /**
+     * The similar-colleges tool the v13 paragraph names (RFC 153), read from
+     * the tool itself for the same reason [ADMISSIONS_TOOL_NAME] is: the
+     * pairing under test is SEEDED COPY versus SHIPPING TOOL.
+     */
+    private val SIMILAR_TOOL_NAME = SimilarCollegesTool.TOOL_NAME
 
     /** The first words of the codebook sentence v3 deletes (RFC 147). */
     private const val CODEBOOK_SENTENCE_OPENER = "The coded fields use these codebooks:"
@@ -786,6 +794,116 @@ class SystemPromptCatalogTest {
     assertTrue(v12.startsWith(v11), "the v11 prefix must be byte-identical, so the new paragraph is the only change")
     val appended = v12.removePrefix(v11)
     assertTrue(appended.isNotEmpty(), "v12 must actually append something; an empty remainder means it equals v11")
+    return appended
+  }
+
+  /**
+   * The 0069 seed's structural contract (RFC 153). v13 is ADDITIVE like every
+   * coach seed since 0047: the whole v12 body byte-identical as a prefix,
+   * joined by a single space to exactly one appended paragraph — the
+   * similar-colleges instruction. The paragraph's markers are asserted, not its
+   * full copy: the seed migration is the single home of the approved wording.
+   */
+  @Test
+  fun `coach v13 is v12 plus one appended similar-colleges paragraph`() {
+    val appended = similarCollegesParagraph()
+
+    assertTrue(
+      appended.startsWith(" When a student names one school"),
+      "the paragraph must open with the single space that joins it to the paragraph before it",
+    )
+    // The tool is named from the CONSTANT, never typed: a literal would keep
+    // passing after the tool was renamed, leaving the seeded prompt telling the
+    // model to call a tool that no longer exists.
+    assertTrue(
+      appended.contains(SIMILAR_TOOL_NAME),
+      "the paragraph must name the shipping tool [$SIMILAR_TOOL_NAME]: [$appended]",
+    )
+    assertTrue(
+      appended.contains("rather than naming peers from memory"),
+      "D62: similarity is decided by the call, not by a list the model imagines it knows",
+    )
+    // The THIRD tool role, and only the third: this paragraph routes an anchor
+    // by id and claims NO name resolution of its own, because v12 already made
+    // find_college the one name-to-id door and two doors would teach the coach
+    // that either will do.
+    assertTrue(
+      appended.contains("college_id") && appended.contains(FIND_COLLEGE_TOOL_NAME),
+      "the anchor is a college_id, and [$FIND_COLLEGE_TOOL_NAME] is what turns a name into one: [$appended]",
+    )
+    assertTrue(
+      appended.contains("which axes the answer ranked on") && appended.contains("had to drop"),
+      "D67: the axes used AND the axes dropped are both said, with the reason",
+    )
+    assertTrue(
+      appended.contains("a silence is never a no"),
+      "D67 again: an unreported figure was not judged, and is not a failure",
+    )
+    // The pairing under test is SEEDED COPY versus SHIPPING PAYLOAD, so the key
+    // is READ from the tool, never typed: an immutable seed cannot import a
+    // constant, and renaming the key would otherwise leave the shipped prompt
+    // telling the coach to read a field the tool no longer emits.
+    assertTrue(
+      appended.contains(SimilarCollegesTool.AXES_SCORED_KEY),
+      "the paragraph must name the shipping key [${SimilarCollegesTool.AXES_SCORED_KEY}]: [$appended]",
+    )
+    assertTrue(
+      appended.contains("rank aid") && appended.contains("Never say it as a percentage"),
+      "D70: distance is never rendered as a percentage or as a quality score",
+    )
+    // RFCs 141/142 money language: the paragraph names no retired term, which is
+    // what keeps the appended span assertable by absence.
+    assertFalse(appended.contains("room and board"), "the retired term is never stated here, not even contrastively")
+    assertFalse(appended.contains("sticker"), "the published price, never the sticker price (RFC 141)")
+    assertFalse(appended.contains("award"), "a financial aid offer, never an award (RFC 141)")
+    // The served-body guard below sweeps the WHOLE prompt; this says the rule
+    // holds inside the span v13 actually adds.
+    assertEquals(
+      emptyList(),
+      Regex("""(.{0,6})subtract""")
+        .findAll(appended)
+        .map { it.groupValues[1] }
+        .toList()
+        .filterNot { it == "never " },
+      "every mention of subtracting in the new paragraph must forbid it",
+    )
+    assertTrue(BareSourceCodeGuard.codeToWordPatternFires(), "the guard pattern must be able to fire")
+    assertFalse(CODE_EQUALS_WORD.containsMatchIn(appended), "the new paragraph must transcribe no source codebook")
+  }
+
+  /**
+   * RFC 142's source-jargon sentence, RFC 141's glossary pairs, RFC 151's
+   * comparison paragraph and RFC 154's name-lookup paragraph must survive RFC
+   * 153's append. They do so by construction — v13 keeps the whole v12 body as
+   * a prefix — but they are the copy seven prior versions have already had to
+   * preserve, so they are asserted rather than assumed. All are extracted at
+   * runtime, never retyped here.
+   */
+  @Test
+  fun `coach v13 preserves the source-jargon sentence, the money paragraph, the comparison and the name-lookup paragraphs verbatim`() {
+    val v13 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v13").getOrThrow().body
+
+    assertTrue(
+      v13.contains(sourceJargonSentence()),
+      "v13 must carry v6's source-jargon sentence byte-for-byte",
+    )
+    assertTrue(v13.contains(v7MoneyParagraph()), "v7's money paragraph must survive the append byte-for-byte")
+    assertTrue(v13.contains(comparisonParagraph()), "v11's comparison paragraph must survive the append byte-for-byte")
+    assertTrue(v13.contains(nameLookupParagraph()), "v12's name-lookup paragraph must survive the append byte-for-byte")
+  }
+
+  /**
+   * The v13 similar-colleges paragraph: everything v13 appends to the v12 body.
+   * Guarded exactly as [nameLookupParagraph] is — `removePrefix` is a silent
+   * no-op when the affix does not match, so the prefix is asserted before it is
+   * removed, and an empty remainder would let every `contains` pass vacuously.
+   */
+  private fun similarCollegesParagraph(): String {
+    val v12 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v12").getOrThrow().body
+    val v13 = SystemPromptsDao.findByNameAndVersion(session, "coach", "v13").getOrThrow().body
+    assertTrue(v13.startsWith(v12), "the v12 prefix must be byte-identical, so the new paragraph is the only change")
+    val appended = v13.removePrefix(v12)
+    assertTrue(appended.isNotEmpty(), "v13 must actually append something; an empty remainder means it equals v12")
     return appended
   }
 

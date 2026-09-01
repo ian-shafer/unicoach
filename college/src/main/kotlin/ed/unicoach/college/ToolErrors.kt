@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 import ed.unicoach.error.errorCategory
@@ -15,6 +16,12 @@ import kotlinx.serialization.json.putJsonObject
 // says "the same error object `search_colleges` already emits". That agreement
 // used to be a COMMENT beside a byte-for-byte copy, with nothing enforcing it;
 // it is a shared function now, so the two tools cannot drift apart silently.
+//
+// RFC 153 widened it from "the two tools' envelope" to "every college tool's
+// refusal vocabulary": `similar_colleges` refuses the same words for the same
+// reasons, so the SENTENCES live here too rather than in a rival file per tool.
+// Two copies of model-facing copy teach the model that the wording carries
+// information it does not, and drift the day a `Cause` is added.
 //
 // Deliberately `internal` and deliberately module-local: `:service`'s
 // `StudentScopedChatTool` carries its own equivalents for its own tools, and
@@ -68,3 +75,61 @@ internal fun unknownFieldsReason(
   val unknown = input.keys - known
   return if (unknown.isEmpty()) null else "unknown field(s): [${unknown.sorted().joinToString(", ")}]"
 }
+
+/**
+ * What a college tool says when `college_search_index` has never been built
+ * (RFC 150).
+ *
+ * ONE sentence for every tool in this module: `search_colleges`,
+ * `find_college` and `similar_colleges` all report the same DEPLOYMENT state,
+ * and a coach reading the refusal cannot tell which tool produced it. Never a
+ * page of zero — an unbuilt index would otherwise report "no college matches"
+ * out of a full database, which no reader could tell from a real zero.
+ */
+internal const val INDEX_NOT_BUILT =
+  "the search index has not been built yet, so no college can be found -- this is a deployment " +
+    "state, not an empty result; tell the family the college search is temporarily unavailable " +
+    "and do not say that no colleges match"
+
+/**
+ * The SENTENCE for a typed program-filter refusal — composed from the field,
+ * the word and the cause the DAO reported as data.
+ *
+ * The DAO used to hand up a pre-formatted string. The wording is model-facing
+ * copy, so it belongs beside the rest of the model-facing copy; the DAO's job
+ * is the fact. Both `search_colleges` and `similar_colleges` take the same
+ * filter vocabulary, so they refuse an unresolvable program filter in the same
+ * words.
+ */
+internal fun refusalSentence(outcome: CollegeSearchOutcome.UnresolvableProgramFilter): String =
+  when (outcome.cause) {
+    CollegeSearchOutcome.UnresolvableProgramFilter.Cause.NOT_A_PUBLISHED_CIP_CODE -> {
+      "[${outcome.field.word}] [${outcome.value}] is not a CIP code in the loaded vocabulary"
+    }
+
+    CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_NOT_IN_TAXONOMY -> {
+      "[${outcome.field.word}] [${outcome.value}] is not in the loaded taxonomy"
+    }
+
+    CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_MATCHES_NO_CIP_CODE -> {
+      "[${outcome.field.word}] [${outcome.value}] matches no CIP code in the loaded vocabulary"
+    }
+
+    CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_AND_CIP_PREFIX_SHARE_NO_CIP_CODE -> {
+      "subject [${outcome.value}] and cipPrefix [${outcome.conflictsWith}] name no CIP code in common, " +
+        "so no single program can satisfy both -- write only the one you mean"
+    }
+  }
+
+/**
+ * The over-long refusal for a tool whose field is `name`: the service's
+ * rejection carries the NUMBERS and this sentence names the field they are
+ * about. The service's own message says "query", a word neither
+ * `find_college` nor `similar_colleges` has a field for.
+ *
+ * Shared because both tools take the same field under the same name and must
+ * refuse it in the same words — the reason every other sentence in this file
+ * is shared.
+ */
+internal fun refusalSentence(rejection: QueryTooLongException): String =
+  "[name] must be at most [${rejection.maxLength}] characters (got [${rejection.actualLength}])"
