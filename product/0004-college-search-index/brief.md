@@ -98,6 +98,32 @@ Ledger (updated as slices land):
        search/04. NEXT FREE: RFC 152 (151 claimed by a live run), migration
        0066 — recompute both at run time, never copy them.
 
+    CODEBOOK FK FAST-FOLLOW LANDED (main@9789b823, 2026-08-31) — not a slice
+       and no RFC: the engineering debt RFC 147 deferred and RFC 150 measured,
+       run under Ian's trigger before search/04, with the design already
+       approved and recorded in RFC 150 `## Deferred`. 37 files, +1041/-88.
+       Migration 0067 drops colleges_locale_range_check and
+       colleges_state_length_check and adds three foreign keys:
+       colleges.locale -> nces_locales(code), colleges.state ->
+       us_states(usps_code), and college_search_index.state ->
+       us_states(usps_code). colleges_versions stays unconstrained on purpose —
+       a history table records what WAS stored. The measurement was re-run, not
+       assumed, on the real 6,273-college snapshot: 59/59 distinct state codes
+       resolve, 5,728 rows carry a locale over 12/12 codes, zero unresolved.
+       --codebooks is now REQUIRED at the JVM entry point (bin/ingest-colleges
+       still owns the default path), and a separate named refusal fires when
+       the reference tables are empty. Review found and fixed a real defect:
+       the codebook delete-refusal map did not know about the new index FK, so
+       a state dropped from the published codebook would have died as a raw
+       foreign-key error instead of a named refusal; two tests now prove the
+       refusal. Gate: the full bin/pre-commit passed, over a suite that had
+       executed 2,200 tests, 0 failed, 0 skipped in the same worktree. This
+       DISCHARGES the fast-follow S3b's line records as not landed; that line
+       is left as written, per the rule below. search/04/similar-colleges now
+       has no precondition outstanding. NEXT FREE: RFC 155 (152, 153 and 154
+       claimed by live runs), migration 0068 — recompute both at run time,
+       never copy them.
+
 ## Slice IDs
 
 Permanent IDs for this brief's slices (`search/<milestone>/<name>`). The old

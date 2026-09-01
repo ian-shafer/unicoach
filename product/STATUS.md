@@ -7,8 +7,16 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-01 — `money/03/comparison-contract` (M3) landed as RFC 151: a
-cost answer covering two or more schools now carries `comparison_basis`, five
+Updated: 2026-08-31 — the `colleges` state/locale codebook foreign-key
+fast-follow LANDED as `main@9789b823` ("Constrain college state and locale to
+the published codebooks", 37 files, +1041/-88). No RFC: the design was already
+approved and recorded in RFC 150's `## Deferred`. Migration 0067 drops
+`colleges_locale_range_check` and `colleges_state_length_check` and binds
+`colleges.locale` to `nces_locales(code)`, `colleges.state` and
+`college_search_index.state` to `us_states(usps_code)`. **Its trigger — run
+before `search/04/similar-colleges` — is now satisfied; S4 has no precondition
+left.** Before it, `money/03/comparison-contract` (M3) landed as RFC 151: a cost
+answer covering two or more schools now carries `comparison_basis`, five
 labelled facts stated above the table, and the coach speaks them on prompt
 **v11** (migration 0066, rollback `COACHING_SYSTEM_PROMPT_VERSION=v10`). It also
 put the aid basis on the wire for the first time. Before it,
@@ -16,10 +24,11 @@ put the aid basis on the wire for the first time. Before it,
 on 2026-08-31. Slices carry permanent IDs and declared `Needs:` edges, and
 readiness is computed by `slice-board` rather than written down here.
 
-At that moment the next free RFC was **152** and the next free migration was
-**0067**. Those two numbers are a snapshot and are almost certainly stale by the
-time you read them: recompute both at run time with the commands below, and
-never copy a number out of a document.
+At that moment the next free RFC was **155** (152, 153 and 154 are claimed by
+live runs) and the next free migration was **0068**. Those two numbers are a
+snapshot and are almost certainly stale by the time you read them: recompute
+both at run time with the commands below, and never copy a number out of a
+document.
 
 **No RFC or migration number is recorded in this file, on purpose.** They are
 claimed by live runs in other worktrees, so any number written here is wrong
@@ -61,8 +70,9 @@ the answer to "what can I kick off?".
    stored federal codes explainable. **Next in 0004:
    `search/04/similar-colleges`, which this slice UNBLOCKED** — it was 0004's
    only BLOCKS edge, and its weighted distance reads the percentile columns S3b
-   computes (nothing reads them yet). Run the `colleges` state/locale
-   foreign-key fast-follow BEFORE it starts (Backlog). Then
+   computes (nothing reads them yet). The `colleges` state/locale foreign-key
+   fast-follow that was triggered to run first LANDED on 2026-08-31
+   (`main@9789b823`, migration 0067), so S4 starts with nothing owed. Then
    `search/05/consumer-sweep`.
 
 2. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
@@ -89,7 +99,7 @@ the answer to "what can I kick off?".
 
 3. **Brief 0003 — clear money language — M1, M1.1, RFC 143, M1.2, M2 and now M3
    LANDED (RFCs 141–143, 145, 149, 151); only M4 is left.**
-   `money/03/comparison-contract` landed 2026-09-01 and closes the brief's
+   `money/03/comparison-contract` landed 2026-08-31 and closes the brief's
    honesty story: a side-by-side no longer lets a column label hide what the
    number assumes. Any cost answer covering two or more schools now carries
    `comparison_basis` — five facts, each with a code AND the sentence the coach
@@ -351,8 +361,10 @@ English, answered honestly.
   and asserting a choice would have been a lie. It returns only if
   `college_programs_census` ever carries more than that. The percentile-rank
   columns are computed but read by nothing until `search/04/similar-colleges`.
-  `is_active` is not tri-state (Backlog), and the `colleges` state/locale
-  foreign keys did not land (Backlog, triggered).
+  `is_active` is not tri-state (Backlog). The `colleges` state/locale foreign
+  keys, which did not land with S3b, landed in the 2026-08-31 fast-follow
+  (migration 0067): `state` and `locale` now reference the published codebooks,
+  and so does `college_search_index.state`.
 
 ### Know how a school admits and what it pays (brief 0001 S4, RFCs 140 + 148)
 
@@ -415,12 +427,12 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Where                                    |
-| --- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | College search index (brief 0004)          | EXECUTING — gates 1+2 approved (2026-08-27); `search/01`→`search/05` specced, DDL approved. **`search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147) and `search/03b/the-index` (RFC 150, 2026-08-31) have all LANDED.** S3b is the aha: the derived index serves both search paths, the coach searches by subject on prompt v10, and the CONFLICTS edge with `money/02` cost only a rebase, exactly as a CONFLICTS edge predicts. Next: **`search/04/similar-colleges`**, unblocked by S3b and the only consumer of its percentile columns — but the `colleges` state/locale foreign-key fast-follow (Backlog) is triggered to run BEFORE it. Then `search/05/consumer-sweep`. | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` + `money/02` + `money/03` LANDED** (RFCs 141–143, 145, 149, 151; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, and as of RFC 151 states the five assumption lines above any side-by-side from a per-call `comparison_basis` — including the aid basis, which had never been on the wire (prompt v11; v10 is the rollback). Next and last: **`money/04/where-youll-live`**, which has real components to personalise.                                                                                                                                                                                                                        | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, whose two PREFER edges (`money/02`, `money/03`) have both landed, then `first-value/06/invite-your-parent`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `product/0001-v1-differentiator/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `bin/state-apply`                        |
+| Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Where                                    |
+| --- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | College search index (brief 0004)          | EXECUTING — gates 1+2 approved (2026-08-27); `search/01`→`search/05` specced, DDL approved. **`search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147) and `search/03b/the-index` (RFC 150, 2026-08-31) have all LANDED.** S3b is the aha: the derived index serves both search paths, the coach searches by subject on prompt v10, and the CONFLICTS edge with `money/02` cost only a rebase, exactly as a CONFLICTS edge predicts. The triggered `colleges` state/locale foreign-key fast-follow also LANDED (`main@9789b823`, migration 0067, 2026-08-31), so its precondition is discharged. Next: **`search/04/similar-colleges`**, unblocked by S3b and the only consumer of its percentile columns, with nothing left to run first. Then `search/05/consumer-sweep`. | `product/0004-college-search-index`      |
+| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` + `money/02` + `money/03` LANDED** (RFCs 141–143, 145, 149, 151; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, and as of RFC 151 states the five assumption lines above any side-by-side from a per-call `comparison_basis` — including the aid basis, which had never been on the wire (prompt v11; v10 is the rollback). Next and last: **`money/04/where-youll-live`**, which has real components to personalise.                                                                                                                                                                                                                                                                                                                  | `product/0003-clear-money-language`      |
+| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, whose two PREFER edges (`money/02`, `money/03`) have both landed, then `first-value/06/invite-your-parent`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `product/0001-v1-differentiator/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `bin/state-apply`                        |
 
 ## Sequencing — ask the board, do not read a list
 
@@ -467,18 +479,6 @@ bullet, enough context to pick it up cold); /chart promotes an item into the
 work table by giving it a priority, or into a brief when it deserves gates.
 Nothing here is committed work.
 
-- **`colleges` state/locale foreign keys — fast-follow, ruled by Ian at RFC
-  150's gate. TRIGGER: run BEFORE `search/04/similar-colleges` starts.** The
-  corpus measurement PASSED — every stored `state` and `locale` value resolves
-  to a codebook row — so the blocker is not the data. It is that `us_states` and
-  `nces_locales` are ingest-loaded and the test bases truncate them, so the
-  constraints would fail tests that load no codebooks. Two places need seeding:
-  `CollegeScorecardTestBase` (8 ingest suites) and the db-module college
-  fixtures, both reusing `SearchIndexFixture.seedCodebooks`, which RFC 150
-  added. The exact SQL is in RFC 150 `## Deferred` (D57). One design question
-  belongs to that run: whether `--codebooks` becomes mandatory at the JVM entry
-  point. RFC 147 already deferred this once, which is why it now carries a
-  trigger and a run of its own rather than a hope.
 - **`is_active` is not tri-state** — deferred by Ian at RFC 150's gate. The
   index column is `NOT NULL` and coalesces a missing IPEDS row to TRUE, so it
   asserts "open" about a college the ingest knows nothing about; on a
@@ -531,9 +531,11 @@ the approval gate in each session.
 
 PASTE: start work on `search/04/similar-colleges`.
 
-FIRST, THOUGH: the `colleges` state/locale foreign-key fast-follow (Backlog) is
-triggered to run before this slice starts. Do that run, or tell me you are
-skipping it, before you begin S4.
+NOTHING IS OWED FIRST: the `colleges` state/locale foreign-key fast-follow that
+was triggered to run before this slice LANDED on 2026-08-31 (`main@9789b823`,
+migration 0067) — `colleges.state`, `colleges.locale` and
+`college_search_index.state` now reference the published codebooks, and
+`--codebooks` is required at the JVM entry point.
 
 WHAT LANDED BEFORE IT: S3b (RFC 150, migrations 0064/0065) built the derived
 `college_search_index` — 30 columns, rebuilt whole by a `search-index` ingest
