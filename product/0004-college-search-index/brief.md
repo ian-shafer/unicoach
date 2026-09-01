@@ -163,6 +163,53 @@ Ledger (updated as slices land):
        next copy. NEXT FREE: RFC 156 (152, 153 and 155 claimed by live runs),
        migration 0069 — recompute both at run time, never copy them.
 
+    S4 LANDED as RFC 153 (main@f0822d4f + 1850c930, 2026-09-01) — the second of
+       Ian's two founding queries, and the first reader of RFC 150's percentile
+       columns. A `similar_colleges` chat tool, decided per call: one query over
+       college_search_index — default universe + the caller's hard constraints +
+       a weighted-distance ORDER BY + LIMIT <= 10 — with no new table, no
+       precompute and no method registry (D8 as amended by Ian, "I'm not sure it
+       even makes sense to pre-define it"). Five axes, two kinds: size,
+       selectivity and price over the percentile columns; setting (locale
+       equality) and subjects (Jaccard over subject_slugs). A bare "schools like
+       X" ranks size + selectivity + setting, same control, active four-years;
+       price is deliberately NOT a default, because that would silently turn a
+       question about character into a question about budget. Unknown data is
+       never substituted: an axis the anchor lacks is dropped for the whole
+       query and named with its reason (axes_dropped), a candidate lacking an
+       axis is scored on the rest and says so (axes_scored), a candidate sharing
+       no axis at all is excluded and counted (excluded_unknown). Outcome
+       percentiles are never axes, per the gate-1 ruling. "Like X but cheaper"
+       and "like X but where I'd likely get in" are anchor-relative constraints
+       expanded server-side and echoed back in words; the second also drops
+       selectivity as an axis, since otherwise the ranking pulls back toward the
+       anchor while the constraint pushes away. Every response names each axis
+       and constraint it actually used. Door: the coach in chat — the student
+       names a school, the coach resolves it to a college_id with RFC 154's
+       find_college and passes the id here. Migration 0069 seeds coach prompt
+       v13 (rollback COACHING_SYSTEM_PROMPT_VERSION=v12, which leaves the tool
+       registered but un-prompted). Review was 39 lenses over 4 tiers, 116
+       findings, 4 fix passes; it caught the selectivity formula being written
+       twice — Kotlin for the anchor, SQL for the candidates, subtracting two
+       different formulas with no test to notice — an anchor-by-id path that
+       never checked whether the index was built, two regressions the tier-1
+       pass itself introduced, and a false statement shipped to the model in the
+       weights schema (the clamp runs before normalisation, so scaling is not
+       weight-preserving), corrected in the RFC as well as the code. Gate: 2062
+       JVM tests executed, 0 failures, plus the full bin/pre-commit hook.
+       Declined on purpose and now recorded in product/STATUS.md's backlog: the
+       33-field NewCollege fixture is a 5th copy (the shared helper sits in
+       :db's test source set, not testFixtures, so :college cannot see it —
+       ~9 files, its own slice, and parked TWICE now, since RFC 154 parked it
+       too), and genericising CollegeSearchOutcome to absorb
+       CollegeSimilarityOutcome, which ripples into the sibling feature. The
+       shared DelegatingChatTool RFC 154 parked for this slice WAS extracted,
+       since a third hand-written adapter now existed. This CLOSES brief 0004's
+       core: every slice has landed and only search/06/unattended-refresh
+       remains, DEFERRED by intent. NEXT FREE: RFC 157 (155 and 156 claimed by
+       live runs), migration 0072 (0070 and 0071 claimed in live worktrees) —
+       recompute both at run time, never copy them.
+
 ## Slice IDs
 
 Permanent IDs for this brief's slices (`search/<milestone>/<name>`). The old
@@ -176,7 +223,7 @@ inserted later takes a decimal step. Neither renumbers a neighbour.
 | S2  | search/02/ipeds-attributes     | LANDED RFC 144                            |
 | S3  | search/03a/published-codebooks | LANDED RFC 147                            |
 | S3  | search/03b/the-index           | LANDED RFC 150                            |
-| S4  | search/04/similar-colleges     | NOT STARTED                               |
+| S4  | search/04/similar-colleges     | LANDED RFC 153                            |
 | S5  | search/05/consumer-sweep       | LANDED RFC 154                            |
 | S6  | search/06/unattended-refresh   | DEFERRED                                  |
 
