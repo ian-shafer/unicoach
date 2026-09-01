@@ -32,3 +32,12 @@ ios-app/env/*.env
 *.tfstate.*
 *.tfplan
 terraform.tfvars
+
+# The IPEDS survey data files fetched by bin/fetch-ipeds (RFC 144). The
+# extracted CSVs are far too large to commit -- bin/fetch-ipeds states the
+# figure -- so only the record lands: PROVENANCE.json is the committed record of
+# the real fetch and the baseline the fetcher's shrink guard reads, and
+# FETCH-NOTES.md says how it was made.
+db/seed/ipeds/*
+!db/seed/ipeds/PROVENANCE.json
+!db/seed/ipeds/FETCH-NOTES.md

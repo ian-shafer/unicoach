@@ -2213,23 +2213,57 @@ rm -rf "$CODEBOOK_OUT"
 
 # IPEDS group (RFC 144): all-or-nothing, refused BEFORE any download or JVM
 # start, and each file's original argument forwarded as its --*-source partner.
-assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only --hd)" \
-  bin/ingest-colleges a.csv b.csv --hd=HD2023.csv
-assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects an IPEDS group missing --survey-year" \
-  bin/ingest-colleges a.csv b.csv --hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=CA.csv
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an unknown long option" \
-  bin/ingest-colleges a.csv b.csv --hd2=HD.csv
+# The group is -H/-I/-A/-C plus the -y year: short options, parsed by the one
+# getopts loop, because bin/ scripts take short options only. The long forms this
+# group used to accept are GONE (see the rejection assertions below); the --hd=
+# etc. flags that remain are the ingest JAR's own grammar, forwarded to it.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only -H)" \
+  bin/ingest-colleges -H HD2023.csv a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects an IPEDS group missing -y" \
+  bin/ingest-colleges -H HD.csv -I IC.csv -A adm.csv -C CA.csv a.csv b.csv
+# Every one of the five, individually, arms the all-or-nothing rule: a group that
+# fired only on -H would let a lone -y (or a lone -C) through as a silent
+# Scorecard-only run.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only -I)" \
+  bin/ingest-colleges -I IC2023.csv a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only -A)" \
+  bin/ingest-colleges -A adm2023.csv a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only -C)" \
+  bin/ingest-colleges -C C2023_a.csv a.csv b.csv
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges rejects a partial IPEDS group (only -y)" \
+  bin/ingest-colleges -y 2023 a.csv b.csv
+# The retired long options are REJECTED, not silently read as a file name. Both
+# positions matter: written before the operands getopts itself refuses the "--",
+# and written after them getopts has already stopped, so the guard after the
+# shift is what stops "--hd=HD.csv" from becoming the aliases argument.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects the retired --hd= long option (10)" \
+  bin/ingest-colleges --hd=HD.csv a.csv b.csv
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects a retired long option AFTER the positionals, never as a file name (10)" \
+  bin/ingest-colleges a.csv b.csv --hd=HD.csv
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects the retired --survey-year= long option (10)" \
+  bin/ingest-colleges --survey-year=2023 a.csv b.csv
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects the retired --codebooks-source= long option (10)" \
+  bin/ingest-colleges --codebooks-source=codebooks.json a.csv b.csv
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects the retired --subjects-source= long option (10)" \
+  bin/ingest-colleges --subjects-source=subjects.json a.csv b.csv
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects an unknown long option" \
+  bin/ingest-colleges --hd2=HD.csv a.csv b.csv
 # A flag given with an EMPTY value is a wrong value, not an omitted flag: five
 # empty flags would otherwise look like "no IPEDS group" and silently downgrade
 # the run to Scorecard-only with a green exit.
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty IPEDS flag value" \
-  bin/ingest-colleges a.csv b.csv --hd= --ic=IC.csv --adm=adm.csv --completions=CA.csv --survey-year=2023
+  bin/ingest-colleges -H "" -I IC.csv -A adm.csv -C CA.csv -y 2023 a.csv b.csv
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an all-empty IPEDS group, never a silent Scorecard-only run" \
-  bin/ingest-colleges a.csv b.csv --hd= --ic= --adm= --completions= --survey-year=
+  bin/ingest-colleges -H "" -I "" -A "" -C "" -y "" a.csv b.csv
 # A repeated flag is the usage error the JVM names; last-wins here would forward
 # only the survivor and the JVM's refusal would be unreachable.
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects a repeated IPEDS flag" \
-  bin/ingest-colleges a.csv b.csv --hd=A.csv --hd=B.csv --ic=IC.csv --adm=adm.csv --completions=CA.csv --survey-year=2023
+  bin/ingest-colleges -H A.csv -H B.csv -I IC.csv -A adm.csv -C CA.csv -y 2023 a.csv b.csv
+# -a (the CDS admission-factors CSV) and -A (the IPEDS ADM survey file) are a
+# deliberate case pair. Passing -a alone must fire the CDS rule, never the IPEDS
+# one, and vice versa: a parser that folded the case would report the wrong group.
+assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges -a alone is a CDS group error, not an IPEDS one" \
+  bin/ingest-colleges -a factors.csv a.csv b.csv
 test_ingest_colleges_ipeds_source_flags() {
   local root parent stub argv inst fields hd ic adm ca entry rc log
   parent="$(mktemp -d)"
@@ -2249,9 +2283,9 @@ test_ingest_colleges_ipeds_source_flags() {
   : > "$inst"; : > "$fields"; : > "$hd"; : > "$ic"; : > "$adm"; : > "$ca"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" \
-    --hd="$hd" --ic="$ic" --adm="$adm" --completions="$ca" --survey-year=2023 \
-    > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" \
+    -H "$hd" -I "$ic" -A "$adm" -C "$ca" -y 2023 \
+    "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -2304,11 +2338,1050 @@ test_ingest_colleges_no_ipeds_argv() {
 }
 assert_success "a Scorecard-only ingest-colleges run passes no IPEDS argv at all" test_ingest_colleges_no_ipeds_argv
 
+# ── RFC 144: the IPEDS survey data files (bin/fetch-ipeds) ───────────────────
+echo ""
+echo "==== Testing RFC 144 IPEDS data fetch ===="
+
+assert_success "bin/fetch-ipeds parses as python3" \
+  python3 -c "import ast; ast.parse(open('$PROJECT_ROOT/bin/fetch-ipeds').read())"
+
+# The whole extraction runs offline against the recorded CSV fixtures (-F, no
+# network): the fixtures are verbatim SUBSETS of the published members, real
+# header line included, so a reader that only works on invented text cannot pass.
+IPEDS_FIXTURES="$PROJECT_ROOT/college/src/test/resources"
+# No EXIT trap here: the harness's daemon-teardown trap (top of file) must not
+# be clobbered. The dirs are removed at the end of this section.
+IPEDS_OUT="$(mktemp -d)"
+assert_success "fetch-ipeds runs offline from the recorded CSV fixtures" \
+  bin/fetch-ipeds -F "$IPEDS_FIXTURES" -o "$IPEDS_OUT" > /dev/null 2>&1
+
+test_ipeds_writes_four_csvs() {
+  local name
+  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv; do
+    [ -s "$IPEDS_OUT/$name" ] || return 1
+  done
+  return 0
+}
+assert_success "the four members are written under the names the ingest is given" \
+  test_ipeds_writes_four_csvs
+
+# Every embedded python assertion below runs through here, and the CHANNEL is
+# owned in this one place: a bare sys.exit("...") reaches stderr with none of the
+# prefixes this harness is grepped by, and there are sixteen of those messages.
+# The heredoc each caller writes is this function's stdin, which python3
+# inherits, so the call sites read exactly as they would with python3 itself.
+ipeds_python() {
+  local message rc=0
+  message="$(python3 "$@" 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || log-error "$message"
+  return "$rc"
+}
+
+# PROVENANCE is read as JSON, not grepped: `rows` is what the shrink guard
+# compares against next time, and `member` is the trap this fetcher exists for.
+ipeds_provenance_assert() {
+  ipeds_python - "$1" "$2" << 'PY'
+import json, sys
+provenance = json.load(open(sys.argv[1]))
+scope = {"provenance": provenance, "artifacts": provenance["artifacts"]}
+# Parenthesised so a readable multi-line assertion is one expression.
+if not eval(f"({sys.argv[2]})", scope):
+    sys.exit(f"provenance assertion failed: {sys.argv[2]}")
+PY
+}
+
+# Its mirror image: load a manifest, mutate it, write it back. Every guard test
+# below builds its case by damaging a real manifest in one specific way, so the
+# load-mutate-write half is written once here and each test supplies only the
+# mutation (executed against the name `provenance`).
+provenance_rewrite() {
+  python3 - "$1" "$2" << 'PY'
+import json, sys
+path = sys.argv[1]
+provenance = json.loads(open(path).read())
+exec(sys.argv[2])
+open(path, "w").write(json.dumps(provenance, indent=2) + "\n")
+PY
+}
+
+# The MODE is read from the typed fields that declare it -- source and
+# fixture_derived -- and not from a null timestamp. `fetched_at` is asserted for
+# its SHAPE instead: one caller-supplied value, stamped identically at both
+# levels, so the top-level field can never be later than the artifacts by the
+# whole download. Reading a null timestamp as "this was offline" would make the
+# mode depend on a field whose real job is to say WHEN.
+assert_success "PROVENANCE records the offline route, the member taken and its row count" \
+  ipeds_provenance_assert "$IPEDS_OUT/PROVENANCE.json" \
+    'provenance["source"] == "fixtures"
+     and provenance["fixture_derived"] is True
+     and sorted(artifacts) == ["ADM2023.zip", "C2023_A.zip", "HD2023.zip", "IC2023.zip"]
+     and all(a["rows"] == 3 for a in artifacts.values())
+     and all(a["fetched_at"] == provenance["fetched_at"] for a in artifacts.values())'
+
+# The three RFC 144 traps are properties of the ZIP MEMBERSHIP, so they need real
+# zips -- but no real data. These are synthesised on the fly: four bytes-accurate
+# archives carrying the exact member-name, _RV and BOM shapes the publisher ships.
+#
+# A second argument names a DAMAGE shape, which rewrites HD2023.zip inside the
+# otherwise well-formed set of four, so that what fails in the refusal tests
+# below is the member RESOLUTION and not the fixture lookup that precedes it.
+# One synthesiser, one header literal, one row body: the damaged archives differ
+# only in their membership.
+write_ipeds_zips() {
+  python3 - "$1" "${2:-}" << 'PY'
+import sys, zipfile
+from pathlib import Path
+
+out, damage = Path(sys.argv[1]), sys.argv[2]
+HEADER = "UNITID,VALUE\n"
+def body(rows, bom=False):
+    text = HEADER + "".join(f"{100000 + i},{i}\n" for i in range(rows))
+    return text.encode("utf-8-sig" if bom else "utf-8")
+def archive(name, members):
+    with zipfile.ZipFile(out / name, "w") as zipped:
+        for member, content in members.items():
+            zipped.writestr(member, content)
+# Trap 1: the member name's casing is nobody's published rule (HD2023.csv but
+# adm2023.csv), so it is resolved case-insensitively and never assumed.
+archive("HD2023.zip", {"hd2023.CSV": body(4, True)})
+# Trap 2: IC2023.zip and C2023_A.zip ship a REVISED member beside the original.
+# The original is the pinned one; the revision here is deliberately larger, so
+# taking it would be visible in the row count rather than plausible.
+archive("IC2023.zip", {"IC2023.csv": body(4), "IC2023_RV.csv": body(9)})
+# Trap 3: HD/IC/C_A carry a UTF-8 BOM and adm2023 does not. Both must parse, and
+# the BOM must never reach the first header name.
+archive("ADM2023.zip", {"adm2023.csv": body(4)})
+archive("C2023_A.zip", {"C2023_a.csv": body(4, True)})
+DAMAGE = {
+    # Nothing to resolve at all.
+    "no-csv": {"HD2023.txt": body(4), "readme.md": b"not a survey\n"},
+    # Two plausible non-_RV members and no published name among them: which one
+    # is the survey is a guess, and guessing is the failure this script prevents.
+    "ambiguous": {"HD2022.csv": body(4), "HD2024.csv": body(4)},
+    # The published name is absent and exactly one non-_RV member remains. It is
+    # NOT substituted in: an unpublished member name is the case a human has to
+    # look at, so it is refused like every other unresolvable membership.
+    "renamed": {"hd-2023-directory.csv": body(4), "HD2023_RV.csv": body(9)},
+}
+if damage:
+    archive("HD2023.zip", DAMAGE[damage])
+PY
+}
+IPEDS_ZIPS="$(mktemp -d)"
+IPEDS_ZIP_OUT="$(mktemp -d)"
+write_ipeds_zips "$IPEDS_ZIPS"
+assert_success "fetch-ipeds extracts from published-shape archives (synthesised, no network)" \
+  bin/fetch-ipeds -F "$IPEDS_ZIPS" -o "$IPEDS_ZIP_OUT" > /dev/null 2>&1
+assert_success "a member whose name is cased differently still resolves" \
+  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+    'artifacts["HD2023.zip"]["member"] == "hd2023.CSV" and artifacts["HD2023.zip"]["rows"] == 4'
+assert_success "the _RV revised member is never the one taken" \
+  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+    'artifacts["IC2023.zip"]["member"] == "IC2023.csv" and artifacts["IC2023.zip"]["rows"] == 4'
+assert_success "a BOM-carrying member and a BOM-less member parse to the same row count" \
+  ipeds_provenance_assert "$IPEDS_ZIP_OUT/PROVENANCE.json" \
+    'artifacts["HD2023.zip"]["rows"] == artifacts["ADM2023.zip"]["rows"]
+     and artifacts["C2023_A.zip"]["rows"] == artifacts["ADM2023.zip"]["rows"]'
+# A row count can never see a BOM: it shifts the byte count by three and the row
+# count by zero, so equal counts above prove nothing about the decode. The claim
+# is that the BOM BYTES never reach the data -- asserted on BOTH BOM-carrying
+# members, at the written file and at the first header name, because a BOM left
+# in place lands inside UNITID and every column lookup for it misses.
+test_ipeds_bom_never_reaches_the_data() {
+  ipeds_python - "$IPEDS_ZIP_OUT" << 'PY'
+import csv, io, sys
+from pathlib import Path
+
+for name in ("HD2023.csv", "C2023_a.csv"):
+    raw = (Path(sys.argv[1]) / name).read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        sys.exit(f"[{name}]: the written member still begins with the UTF-8 BOM")
+    header = next(csv.reader(io.StringIO(raw.decode("utf-8"), newline="")))
+    if header[0] != "UNITID":
+        sys.exit(f"[{name}]: first header field is [{header[0]}], not [UNITID]")
+PY
+}
+assert_success "no BOM byte reaches either BOM-carrying member's file or its UNITID header" \
+  test_ipeds_bom_never_reaches_the_data
+
+# Member resolution is the whole reason this script exists, so its refusals are
+# triggered, not assumed: the NAMED fatal, and nothing written -- a non-zero exit
+# alone would be satisfied by a traceback.
+ipeds_zip_variant_refused() {
+  local damage="$1" phrase="$2" fixtures out output status
+  fixtures="$(mktemp -d)"; out="$(mktemp -d)"
+  write_ipeds_zips "$fixtures" "$damage"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  local written; written="$(ls -A "$out")"
+  rm -rf "$fixtures" "$out"
+  case "$output" in
+    *"[FATAL]"*"$phrase"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ -z "$written" ] || { log-error "wrote [$written] despite refusing"; return 1; }
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+
+assert_success "an archive with no .csv member at all is refused by name, writing nothing" \
+  ipeds_zip_variant_refused no-csv "holds no .csv member"
+assert_success "two candidate non-_RV members are refused, never guessed between" \
+  ipeds_zip_variant_refused ambiguous "non-_RV .csv"
+# The renamed case: no member carries the published name and exactly one non-_RV
+# member is left. Taking it would write an UNPUBLISHED member under the expected
+# filename and exit 0 -- so the one case a human must review would be the only
+# one that proceeded, while zero candidates and two candidates both stop. It is
+# refused like the rest, which is what makes `member` in the manifest always the
+# name of a published file.
+assert_success "a sole non-_RV member under an unpublished name is refused, never substituted in" \
+  ipeds_zip_variant_refused renamed "holds no member named [HD2023.csv]"
+
+# An empty CSV is never a real IPEDS survey: it is a member resolution that found
+# the wrong file, and it is refused with or without a baseline to compare against.
+# A ZERO-BYTE member and a HEADER-ONLY member are the same fact -- the extraction
+# produced no data -- and both must reach the same named refusal, not one guard
+# and one exit from inside a constructor.
+ipeds_empty_member_refused() {
+  local emptiness="$1" recorded="$2" fixtures out output status listing
+  fixtures="$(mktemp -d)"; out="$(mktemp -d)"
+  cp "$recorded"/ipeds-*2023*-fixture.csv "$fixtures/"
+  case "$emptiness" in
+    header-only) head -1 "$recorded/ipeds-hd2023-fixture.csv" > "$fixtures/ipeds-hd2023-fixture.csv" ;;
+    zero-byte) : > "$fixtures/ipeds-hd2023-fixture.csv" ;;
+    *) log-error "unknown empty-member shape [$emptiness]"; rm -rf "$fixtures" "$out"; return 1 ;;
+  esac
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  # The DIRECTORY LISTING, not a named CSV: HD2023.csv is a name bin/fetch-ipeds
+  # owns, and an assertion keyed on it would pass vacuously after a rename.
+  listing="$(ls -A "$out")"
+  rm -rf "$fixtures" "$out"
+  case "$output" in
+    *"[FATAL]"*"produced no data rows"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ -z "$listing" ] || { log-error "wrote [$listing] despite refusing"; return 1; }
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "a header-only member is refused, and nothing is written" \
+  ipeds_empty_member_refused header-only "$IPEDS_FIXTURES"
+assert_success "a zero-byte member is refused by the SAME guard, and nothing is written" \
+  ipeds_empty_member_refused zero-byte "$IPEDS_FIXTURES"
+
+# The guard compares data-row COUNTS, not zip bytes: the failure it exists to
+# catch (a truncated or collapsed read) leaves the downloaded zip byte-perfect.
+# The baseline manifest and the fixtures are PASSED IN, not inherited from an
+# assertion far above: an inherited empty $IPEDS_OUT would make `cp` copy nothing
+# and the test pass on a different fatal entirely.
+# The baseline that must collapse is DERIVED from the floor the script actually
+# applies, not from the round number 1000 that happened to trip it: with a 0.5
+# floor and three-row fixtures, 1000 collapses only by accident, and a change to
+# SEED_SHRINK_FLOOR would leave this test green for a reason that no longer
+# holds. Authored ONCE here and passed to every test that needs it, so the
+# number written into the manifest and the number asserted back out of it cannot
+# drift apart.
+IPEDS_SHRINK_BASELINE="$(python3 - "$PROJECT_ROOT/bin/fetch-ipeds" "$IPEDS_OUT/PROVENANCE.json" << 'PY'
+import json, re, sys
+floor = float(re.search(r"^SEED_SHRINK_FLOOR = (\S+)$", open(sys.argv[1]).read(), re.M).group(1))
+rows = max(a["rows"] for a in json.load(open(sys.argv[2]))["artifacts"].values())
+# Strictly above rows/floor, so `rows < floor * baseline` holds for every artifact.
+print(int(rows / floor) + 1)
+PY
+)"
+
+test_ipeds_shrink_refused() {
+  local baseline="$1" fixtures="$2" collapsed="$3" out output status before after
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  # A SENTINEL, not a copy of the real output: copying the CSVs this run would
+  # write makes a leaked write byte-identical to the untouched file, so the
+  # "nothing was written" claim could not fail. Its digest is the evidence.
+  local name
+  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv; do
+    printf 'SENTINEL,%s\n' "$name" > "$out/$name"
+  done
+  before="$(cat "$out"/*.csv | shasum -a 256)"
+  provenance_rewrite "$out/PROVENANCE.json" "
+for artifact in provenance['artifacts'].values():
+    artifact['rows'] = $collapsed
+"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  after="$(cat "$out"/*.csv | shasum -a 256)"
+  [ "$before" = "$after" ] || { log-error "the refused run overwrote a CSV"; rm -rf "$out"; return 1; }
+  case "$output" in
+    *"[FATAL] row counts collapsed"*) ;;
+    *) log-error "output was [$output]"; rm -rf "$out"; return 1 ;;
+  esac
+  # The recorded counts must still be the OLD ones: a refusal that rewrote the
+  # manifest would disarm itself on the next run.
+  ipeds_provenance_assert "$out/PROVENANCE.json" "artifacts['HD2023.zip']['rows'] == $collapsed" \
+    || { rm -rf "$out"; return 1; }
+  [ "$status" -ne 0 ] || { rm -rf "$out"; return 1; }
+  rm -rf "$out"
+  return 0
+}
+assert_success "a collapsed row count is refused, and the manifest is NOT overwritten" \
+  test_ipeds_shrink_refused "$IPEDS_OUT" "$IPEDS_FIXTURES" "$IPEDS_SHRINK_BASELINE"
+
+# The row count CANNOT see a wrong member: IC2023_RV.csv is a revision of the
+# same survey and carries the same number of rows as IC2023.csv, so an _RV swap
+# or a case-match miss sails through any count-based check while changing the
+# columns underneath the ingest. The manifest has always recorded `member`; this
+# is the guard that reads it back.
+test_ipeds_member_drift_refused() {
+  local baseline="$1" fixtures="$2" out output status listing
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  # Only the NAME changes -- every row count is left exactly as this run will
+  # recompute it, so nothing but the member comparison can fail here.
+  provenance_rewrite "$out/PROVENANCE.json" '
+provenance["artifacts"]["HD2023.zip"]["member"] = "HD2023_RV.csv"
+'
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  listing="$(ls -A "$out")"
+  rm -rf "$out"
+  case "$output" in
+    *"[FATAL]"*"resolved member changed"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] despite refusing"; return 1; }
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "a resolved member that is not the recorded one is refused, at an unchanged row count" \
+  test_ipeds_member_drift_refused "$IPEDS_OUT" "$IPEDS_FIXTURES"
+
+# The guard is armed by the MANIFEST, not by the CSVs sitting beside it: the CSVs
+# are gitignored, so a fresh -o holding only a recovered PROVENANCE.json is the
+# normal case, and it must not disarm the check.
+test_ipeds_shrink_refused_with_fresh_outdir() {
+  local baseline="$1" fixtures="$2" collapsed="$3" out output status listing
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" "
+for artifact in provenance['artifacts'].values():
+    artifact['rows'] = $collapsed
+"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  listing="$(ls -A "$out")"
+  rm -rf "$out"
+  case "$output" in
+    *"[FATAL] row counts collapsed"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] despite refusing"; return 1; }
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "an output dir holding only the manifest does not disarm the guard" \
+  test_ipeds_shrink_refused_with_fresh_outdir "$IPEDS_OUT" "$IPEDS_FIXTURES" "$IPEDS_SHRINK_BASELINE"
+
+# PROVENANCE.json is the ONLY committed record of the fetch here -- the CSVs are
+# far too large to commit -- so an offline replay against a directory holding one
+# is refused OUTRIGHT, before anything is written. Writing the fixture CSVs and
+# then declining to touch the manifest would leave a directory whose manifest
+# describes the real survey and whose files are a three-row replay.
+test_ipeds_offline_refuses_a_network_provenance() {
+  local baseline="$1" fixtures="$2" out before after output status listing
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" '
+provenance["source"] = "network"
+provenance["fixture_derived"] = False
+'
+  before="$(shasum -a 256 < "$out/PROVENANCE.json")"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  after="$(shasum -a 256 < "$out/PROVENANCE.json")"
+  listing="$(ls -A "$out")"
+  rm -rf "$out"
+  [ "$status" -ne 0 ] || { log-error "expected a refusal, exited 0"; return 1; }
+  [ "$before" = "$after" ] || { log-error "the manifest was rewritten"; return 1; }
+  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] as well"; return 1; }
+  case "$output" in
+    *"[FATAL]"*"records a real fetch"*) return 0 ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+}
+assert_success "an offline run into a directory with a network manifest is refused, writing nothing" \
+  test_ipeds_offline_refuses_a_network_provenance "$IPEDS_OUT" "$IPEDS_FIXTURES"
+
+# The same protection must not depend on an OPTIONAL key being present. A
+# manifest carrying real fetched_at/bytes/sha256 and simply missing `source` is
+# not a fixture replay, and probing for source == "network" would classify it as
+# replaceable and let a three-row replay overwrite the reviewed record. The
+# classification is exhaustive: unknown joins the protected side.
+test_ipeds_offline_refuses_a_sourceless_provenance() {
+  local baseline="$1" fixtures="$2" out before after output status listing
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" '
+provenance.pop("source", None)
+provenance.pop("fixture_derived", None)
+provenance["fetched_at"] = "2026-08-31T00:00:00+00:00"
+'
+  before="$(shasum -a 256 < "$out/PROVENANCE.json")"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  after="$(shasum -a 256 < "$out/PROVENANCE.json")"
+  listing="$(ls -A "$out")"
+  rm -rf "$out"
+  [ "$status" -ne 0 ] || { log-error "expected a refusal, exited 0"; return 1; }
+  [ "$before" = "$after" ] || { log-error "the manifest was rewritten"; return 1; }
+  [ "$listing" = "PROVENANCE.json" ] || { log-error "wrote [$listing] as well"; return 1; }
+  case "$output" in
+    *"[FATAL]"*"declares [source=None]"*) return 0 ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+}
+assert_success "a manifest that declares no source is protected like a network one, not overwritten" \
+  test_ipeds_offline_refuses_a_sourceless_provenance "$IPEDS_OUT" "$IPEDS_FIXTURES"
+
+# A manifest that cannot be PARSED is not an absent manifest: it is the baseline
+# and the provenance record, damaged. There is one loader with one policy, so
+# neither the replay refusal nor the shrink guard can quietly step past it.
+test_ipeds_corrupt_manifest_refused() {
+  local fixtures="$1" out output status
+  out="$(mktemp -d)"
+  printf 'not json at all\n' > "$out/PROVENANCE.json"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  case "$output" in
+    *"[FATAL]"*"is unreadable"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "an unparseable manifest is refused by one policy, not silently stepped past" \
+  test_ipeds_corrupt_manifest_refused "$IPEDS_FIXTURES"
+
+# A genuinely fresh -o -- no manifest at all -- has no baseline to compare
+# against and writes, which is what makes a first generation possible. It is also
+# COMPLETELY unguarded, and that is said out loud on stderr and stated in the
+# summary line: a run with no protection at all must not print the same success
+# an armed run prints.
+test_ipeds_fresh_outdir_writes_and_warns() {
+  local fixtures="$1" out output status name
+  out="$(mktemp -d)/fresh"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  for name in HD2023.csv IC2023.csv adm2023.csv C2023_a.csv PROVENANCE.json; do
+    [ -s "$out/$name" ] || { rm -rf "$out"; log-error "no [$name]"; return 1; }
+  done
+  rm -rf "$out"
+  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
+  case "$output" in
+    *"[ERROR]"*"NEITHER baseline guard is armed for any artifact"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  # PER GUARD, and stated as such: one word covering two independent checks
+  # would either overstate a run whose member baseline was missing or understate
+  # one whose only gap was a renamed archive.
+  case "$output" in
+    *"guards [shrink: NOT armed, member: NOT armed]"*) return 0 ;;
+    *) log-error "the summary line did not state the guard verdict, output [$output]"; return 1 ;;
+  esac
+}
+assert_success "a directory with no manifest writes a first generation, and says it is unguarded" \
+  test_ipeds_fresh_outdir_writes_and_warns "$IPEDS_FIXTURES"
+
+# A baseline from ANOTHER survey year keys its counts by an archive name this run
+# never sees, so the comparison has nothing to compare: legitimate (a survey-year
+# bump is a reviewed change) but it DISARMS the guard, which must be said.
+test_ipeds_unarmed_guard_warns() {
+  local baseline="$1" fixtures="$2" out output status
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" '
+provenance["artifacts"] = {
+    name.replace("2023", "2022"): artifact
+    for name, artifact in provenance["artifacts"].items()
+}
+'
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
+  case "$output" in
+    *"[ERROR]"*"shrink guard is NOT armed"*) return 0 ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+}
+assert_success "a baseline from another survey year warns that the guard is not armed" \
+  test_ipeds_unarmed_guard_warns "$IPEDS_OUT" "$IPEDS_FIXTURES"
+
+# A mistyped -F path is a caller error, named as one, rather than an empty read.
+test_ipeds_missing_fixtures_dir_refused() {
+  local out output status
+  out="$(mktemp -d)"
+  output="$(bin/fetch-ipeds -F "/no/such/$$-ipeds-fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  [ "$status" -ne 0 ] || return 1
+  case "$output" in
+    *"[FATAL]"*"fixtures directory"*"does not exist"*) return 0 ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+}
+assert_success "a -F directory that does not exist is refused by name" \
+  test_ipeds_missing_fixtures_dir_refused
+
+# -F REQUIRES -o, decided from the ARGUMENTS. Without that rule an offline replay
+# defaults to db/seed/ipeds -- the committed record -- and whether it is stopped
+# depends on what is inside a data file, so a missing or fixture-marked manifest
+# there would let a three-row replay overwrite the reviewed seed. The refusal
+# against a network manifest stays as the second line of defence; this is the
+# first, and it fires before a single fixture is read.
+test_ipeds_offline_without_outdir_refused() {
+  local output status before after listing
+  before="$(shasum -a 256 < "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json")"
+  # The DIRECTORY LISTING, not a named CSV: an assertion on HD2023.csv would pass
+  # vacuously the day that name changes. Compared before against after rather
+  # than against a fixed list, because a developer who has actually run the
+  # fetcher legitimately has the four members sitting there.
+  listing="$(ls -A "$PROJECT_ROOT/db/seed/ipeds" | sort)"
+  output="$(bin/fetch-ipeds -F "$IPEDS_FIXTURES" 2>&1)"
+  status=$?
+  after="$(shasum -a 256 < "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json")"
+  [ "$status" -eq "$EXIT_OPTION_REQUIRES_VALUE" ] \
+    || { log-error "exit [$status], expected [$EXIT_OPTION_REQUIRES_VALUE], output [$output]"; return 1; }
+  [ "$before" = "$after" ] || { log-error "the committed manifest was rewritten"; return 1; }
+  [ "$listing" = "$(ls -A "$PROJECT_ROOT/db/seed/ipeds" | sort)" ] \
+    || { log-error "db/seed/ipeds changed to [$(ls -A "$PROJECT_ROOT/db/seed/ipeds")]"; return 1; }
+  case "$output" in
+    *"[FATAL]"*"requires an explicit [-o]"*) return 0 ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+}
+assert_success "a -F run with no -o is refused as a usage error, leaving db/seed/ipeds untouched" \
+  test_ipeds_offline_without_outdir_refused
+
+# The committed manifest is both the provenance of the real download and the
+# shrink baseline every later fetch is measured against, so it must be a NETWORK
+# record naming the four archives and the non-_RV member of each. Three separate
+# claims, so three named checks rather than one long script: which of them broke
+# is the whole diagnosis, and a single assertion reports only that "the manifest"
+# is wrong.
+IPEDS_COMMITTED="$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json"
+
+# 1. A NETWORK record with a real timestamp is what distinguishes this file from
+# a fixture replay: an offline run writes source "fixtures", fixture_derived true
+# and every fetched_at null, and such a file must never become the committed
+# provenance -- it would claim a download that never happened.
+#
+# The timestamp is checked for its FORMAT, not merely for being truthy. The
+# contract (stated in bin/fetch-ipeds) is ISO-8601, and a coarser real precision
+# is allowed: a run writes seconds ("2026-09-01T13:44:20+00:00", which is what
+# the committed record carries), while a hand-recorded value may claim only the
+# bare date it observed ("2026-08-31"). Both parse; "31/08/2026" does not, which
+# is why BOTH shapes are accepted below rather than only the one in the file.
+test_ipeds_committed_is_a_network_record() {
+  ipeds_python - "$IPEDS_COMMITTED" << 'PY'
+import json, sys
+from datetime import date, datetime
+from pathlib import Path
+
+provenance = json.loads(Path(sys.argv[1]).read_text())
+if provenance.get("source") != "network" or provenance.get("fixture_derived"):
+    sys.exit("db/seed/ipeds/PROVENANCE.json is not a network fetch record")
+
+def iso(value, where):
+    if not value:
+        sys.exit(f"{where}: fetched_at is empty; null is the OFFLINE replay marker")
+    for parse in (datetime.fromisoformat, date.fromisoformat):
+        try:
+            parse(value)
+            return
+        except ValueError:
+            continue
+    sys.exit(f"{where}: fetched_at {value!r} is not an ISO-8601 date or datetime")
+
+iso(provenance.get("fetched_at"), "top level")
+for name, artifact in provenance["artifacts"].items():
+    iso(artifact.get("fetched_at"), name)
+PY
+}
+assert_success "the committed db/seed/ipeds manifest records a real network fetch, ISO-dated" \
+  test_ipeds_committed_is_a_network_record
+
+# 2. The zips are not committed, so these four digests -- verified by the
+# operator against the real download -- are the only thing standing between this
+# manifest and an invented one. Pinned here rather than derived from the file
+# they check.
+test_ipeds_committed_digests_are_the_verified_ones() {
+  ipeds_python - "$IPEDS_COMMITTED" << 'PY'
+import json, sys
+from pathlib import Path
+
+provenance = json.loads(Path(sys.argv[1]).read_text())
+VERIFIED = {
+    "HD2023.zip": (1110720, "e11d35af6f50fbe2f51d8ddd5a9d4f49860abbab7d73beae1f8524f13ad8945b"),
+    "IC2023.zip": (381806, "1454ab8fc5df34aafb04566351c29ed313350f41bc2a241a33fb4f7b93a044a1"),
+    "ADM2023.zip": (97321, "670ecc7c4313f044dcdf740a42ef10c6d2927eb9f890fb405e3569c8442aca27"),
+    "C2023_A.zip": (9294160, "651d95b6405bb86c6c14884ed54225a27492199d21d8acd63cda2581aa60838a"),
+}
+if set(provenance["artifacts"]) != set(VERIFIED):
+    sys.exit(f"artifacts are {sorted(provenance['artifacts'])}, expected {sorted(VERIFIED)}")
+for name, (size, digest) in VERIFIED.items():
+    artifact = provenance["artifacts"][name]
+    if artifact["bytes"] != size:
+        sys.exit(f"{name}: bytes {artifact['bytes']} is not the verified {size}")
+    if artifact["sha256"] != digest:
+        sys.exit(f"{name}: sha256 {artifact['sha256']} is not the verified digest")
+PY
+}
+assert_success "the committed manifest pins the four operator-verified archive digests" \
+  test_ipeds_committed_digests_are_the_verified_ones
+
+# 3. The member half of the record: the url names the archive, both digests are
+# digests, the member taken is the ORIGINAL release rather than the _RV revision,
+# and the row counts are a real survey rather than a fixture replay.
+test_ipeds_committed_members_are_the_published_ones() {
+  ipeds_python - "$IPEDS_COMMITTED" << 'PY'
+import json, sys
+from pathlib import PurePosixPath, Path
+
+provenance = json.loads(Path(sys.argv[1]).read_text())
+for name, artifact in provenance["artifacts"].items():
+    if not artifact["url"].endswith(f"/{name}"):
+        sys.exit(f"{name}: url {artifact['url']} does not name the archive")
+    for field in ("sha256", "member_sha256"):
+        if len(artifact[field]) != 64:
+            sys.exit(f"{name}: {field} is not a sha256 digest")
+    if PurePosixPath(artifact["member"]).stem.lower().endswith("_rv"):
+        sys.exit(f"{name}: the committed member is the _RV revision")
+    # The real surveys carry thousands of institutions; a manifest recording a
+    # handful is a fixture replay that got committed by accident.
+    if artifact["rows"] < 1000:
+        sys.exit(f"{name}: {artifact['rows']} rows is not a real IPEDS survey")
+PY
+}
+assert_success "the committed manifest names the published, non-_RV member of each archive" \
+  test_ipeds_committed_members_are_the_published_ones
+
+# The gitignore rule is the only thing keeping the extracted members out of the
+# repo, and until now nothing tested it: a hand-copied path that stopped matching
+# would go unnoticed until the extracted CSVs landed in .git. The member names
+# come from the committed manifest rather than being retyped here.
+test_ipeds_members_are_gitignored() {
+  local members member
+  members="$(python3 -c 'import json,sys
+provenance = json.load(open(sys.argv[1]))
+print("\n".join(a["member"] for a in provenance["artifacts"].values()))' \
+    "$PROJECT_ROOT/db/seed/ipeds/PROVENANCE.json")" || return 1
+  [ -n "$members" ] || { log-error "no members read from the committed manifest"; return 1; }
+  # read -r, not `for member in $members`: the names come out of a manifest a
+  # publisher's file naming reaches, so word-splitting and globbing them would
+  # let a member called "HD *.csv" check a different path than the one recorded.
+  while IFS= read -r member; do
+    [ -n "$member" ] || continue
+    git -C "$PROJECT_ROOT" check-ignore -q "db/seed/ipeds/$member" \
+      || { log-error "[db/seed/ipeds/$member] is NOT gitignored"; return 1; }
+  done <<< "$members"
+  # The two committed files are the negations, and they must survive the rule.
+  git -C "$PROJECT_ROOT" check-ignore -q db/seed/ipeds/PROVENANCE.json \
+    && { log-error "[db/seed/ipeds/PROVENANCE.json] is gitignored"; return 1; }
+  git -C "$PROJECT_ROOT" check-ignore -q db/seed/ipeds/FETCH-NOTES.md \
+    && { log-error "[db/seed/ipeds/FETCH-NOTES.md] is gitignored"; return 1; }
+  return 0
+}
+assert_success "the extracted members are gitignored and the committed record is not" \
+  test_ipeds_members_are_gitignored
+
+# A manifest holding the literal `null` PARSES, and it is falsy. Read as "no
+# manifest" it disarms the replay refusal outright and the reviewed record is
+# overwritten by a three-row replay -- the loudest possible failure of the one
+# rule this directory has. An empty or wrongly-typed manifest is DAMAGE, and the
+# same policy that catches unparseable text catches it.
+ipeds_broken_manifest_refused() {
+  local manifest_json="$1" fixtures="$2" out output status after
+  out="$(mktemp -d)"
+  printf '%s\n' "$manifest_json" > "$out/PROVENANCE.json"
+  after="$(shasum -a 256 < "$out/PROVENANCE.json")"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  [ "$after" = "$(shasum -a 256 < "$out/PROVENANCE.json")" ] \
+    || { log-error "the damaged manifest was overwritten"; rm -rf "$out"; return 1; }
+  [ "$(ls -A "$out")" = "PROVENANCE.json" ] \
+    || { log-error "wrote [$(ls -A "$out")] despite refusing"; rm -rf "$out"; return 1; }
+  rm -rf "$out"
+  case "$output" in
+    *"[FATAL]"*"is unreadable"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "a manifest holding null is damage, not an absent manifest, and is refused" \
+  ipeds_broken_manifest_refused "null" "$IPEDS_FIXTURES"
+assert_success "a manifest that parses as a list is refused, not read as an object" \
+  ipeds_broken_manifest_refused "[]" "$IPEDS_FIXTURES"
+
+# `artifacts` is walked by BOTH baseline readers. A list-valued one, or an entry
+# that is not an object, must reach this script's refusal rather than an
+# AttributeError from whichever reader touched it first.
+ipeds_bad_artifacts_refused() {
+  local manifest_json="$1" fixtures="$2" out output status
+  out="$(mktemp -d)"
+  printf '%s\n' "$manifest_json" > "$out/PROVENANCE.json"
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  case "$output" in
+    *Traceback*) log-error "raw traceback [$output]"; return 1 ;;
+  esac
+  case "$output" in
+    *"[FATAL]"*"artifacts"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "a list-valued artifacts is refused by name, not crashed on" \
+  ipeds_bad_artifacts_refused '{"source": "fixtures", "artifacts": []}' "$IPEDS_FIXTURES"
+assert_success "an artifacts entry that is not an object is refused by name" \
+  ipeds_bad_artifacts_refused '{"source": "fixtures", "artifacts": {"HD2023.zip": 3}}' \
+    "$IPEDS_FIXTURES"
+
+# A truncated download is THE flaky-network failure here, and it arrives as a
+# zip that will not open. It must be reported on the [FATAL] channel naming the
+# archive -- a stdlib traceback naming a /nix/store path is neither greppable nor
+# actionable.
+test_ipeds_truncated_zip_refused() {
+  local fixtures out output status
+  fixtures="$(mktemp -d)"; out="$(mktemp -d)"
+  write_ipeds_zips "$fixtures"
+  # A well-formed archive whose MEMBER DATA is damaged: the directory still
+  # opens and the member still resolves, and the fault surfaces from the read as
+  # a CRC failure -- the shape a corrupted or partially rewritten download
+  # leaves. (A body that is not a zip AT ALL is refused earlier, and on the
+  # network route by name; see the non-zip test below.)
+  python3 - "$fixtures/HD2023.zip" << 'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+raw = bytearray(path.read_bytes())
+at = raw.index(b"UNITID")
+raw[at] = raw[at] ^ 0xFF
+path.write_bytes(bytes(raw))
+PY
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$fixtures" "$out"
+  case "$output" in
+    *Traceback*) log-error "raw traceback [$output]"; return 1 ;;
+  esac
+  case "$output" in
+    *"[FATAL]"*"HD2023.zip"*"could not be read as a zip archive"*) ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+  [ "$status" -ne 0 ] || return 1
+  return 0
+}
+assert_success "a truncated archive is refused by name on the FATAL channel, not as a traceback" \
+  test_ipeds_truncated_zip_refused
+
+# Every published IPEDS artifact is a zip, so a body that is not one on the
+# NETWORK route is an error page or a redirect notice served with a success
+# status -- never the survey. The raw-CSV branch exists for -F fixtures only, and
+# this is the boundary asserted directly (no test ever fetches).
+test_ipeds_network_non_zip_refused() {
+  ipeds_python - "$PROJECT_ROOT/bin/fetch-ipeds" << 'PY'
+import importlib.machinery, importlib.util, io, sys
+from contextlib import redirect_stderr
+
+# No bytecode cache: loading the script by path would otherwise leave a
+# bin/__pycache__ directory in the checkout.
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_loader(
+    "fetch_ipeds", importlib.machinery.SourceFileLoader("fetch_ipeds", sys.argv[1])
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+captured = io.StringIO()
+try:
+    with redirect_stderr(captured):
+        module.read_member(b"<html>Service Unavailable</html>", "HD2023.zip", "HD2023.csv",
+                           "https://nces.ed.gov/ipeds/datacenter/data/HD2023.zip")
+except SystemExit as error:
+    if error.code == 0:
+        sys.exit("a non-zip network body exited 0")
+else:
+    sys.exit("a non-zip network body was accepted as the survey")
+message = captured.getvalue()
+if "[FATAL]" not in message or "not a zip archive" not in message:
+    sys.exit(f"unexpected refusal: {message!r}")
+
+# The same body on the FIXTURE route (no url) is a plain CSV, which -F accepts.
+text, member = module.read_member(b"UNITID,VALUE\n100001,1\n", "fixture.csv", "HD2023.csv", None)
+if member != "fixture.csv":
+    sys.exit(f"the fixture route resolved member {member!r}")
+PY
+}
+assert_success "a non-zip body on the network route is refused, while -F still reads a raw CSV" \
+  test_ipeds_network_non_zip_refused
+
+# The two baseline guards are INDEPENDENT and are reported independently. A
+# manifest recording `rows` but no usable `member` leaves the member-drift guard
+# -- the only check that can see an _RV swap, since a revision carries the same
+# row count -- disarmed, and a run that armed on `rows` alone would print a fully
+# guarded success over that hole.
+test_ipeds_member_guard_alone_is_unarmed() {
+  local baseline="$1" fixtures="$2" out output status
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" '
+for artifact in provenance["artifacts"].values():
+    artifact.pop("member", None)
+'
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
+  case "$output" in
+    *"[ERROR]"*"member-drift guard is NOT armed"*) ;;
+    *) log-error "the unarmed member guard was not warned about, output [$output]"; return 1 ;;
+  esac
+  case "$output" in
+    *"guards [shrink: armed, member: NOT armed]"*) return 0 ;;
+    *) log-error "the summary overstated the guard state, output [$output]"; return 1 ;;
+  esac
+}
+assert_success "a baseline with rows but no member warns, and the summary says which guard is armed" \
+  test_ipeds_member_guard_alone_is_unarmed "$IPEDS_OUT" "$IPEDS_FIXTURES"
+
+# A recorded row count of the WRONG TYPE is not an absent one, and the warning
+# must show the value rather than claim the manifest records nothing.
+test_ipeds_string_rows_warns_with_the_value() {
+  local baseline="$1" fixtures="$2" out output status
+  out="$(mktemp -d)"
+  cp "$baseline/PROVENANCE.json" "$out/"
+  provenance_rewrite "$out/PROVENANCE.json" '
+for artifact in provenance["artifacts"].values():
+    artifact["rows"] = str(artifact["rows"])
+'
+  output="$(bin/fetch-ipeds -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$out"
+  [ "$status" -eq 0 ] || { log-error "exit [$status] output [$output]"; return 1; }
+  case "$output" in
+    *"[ERROR]"*"records row count [3], a [str]"*"shrink guard is NOT armed"*) return 0 ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+}
+assert_success "a row count recorded as a string names the offending value in the warning" \
+  test_ipeds_string_rows_warns_with_the_value "$IPEDS_OUT" "$IPEDS_FIXTURES"
+
+# -o is checked as an ARGUMENT, before anything reads a disk: an existing
+# non-directory is a usage error, not the FileExistsError traceback mkdir raises,
+# and a value that is another option is a dropped operand rather than a directory
+# named "-F".
+test_ipeds_outdir_is_a_file_refused() {
+  local out output status
+  out="$(mktemp -d)/not-a-directory"
+  : > "$out"
+  output="$(bin/fetch-ipeds -F "$IPEDS_FIXTURES" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$(dirname "$out")"
+  case "$output" in
+    *Traceback*) log-error "raw traceback [$output]"; return 1 ;;
+  esac
+  [ "$status" -eq "$EXIT_INVALID_ARG_VALUE" ] \
+    || { log-error "exit [$status], expected [$EXIT_INVALID_ARG_VALUE], output [$output]"; return 1; }
+  case "$output" in
+    *"[FATAL]"*"is not a directory"*) return 0 ;;
+    *) log-error "output was [$output]"; return 1 ;;
+  esac
+}
+assert_success "an -o naming an existing file is a usage error, not a traceback" \
+  test_ipeds_outdir_is_a_file_refused
+
+# The DOWNLOAD percentage is the half of the progress an offline replay can never
+# exercise -- a fixture is read in one go -- so it is driven directly here,
+# against a fake response, with no network. Three claims: a known Content-Length
+# reports coarse milestones plus a final 100% line and nothing per chunk; a
+# MISSING or unparseable one still reports the bytes that arrived and never the
+# string "None%"; and neither writes a carriage return off a TTY.
+test_ipeds_download_progress_reports_a_percentage() {
+  ipeds_python - "$PROJECT_ROOT/bin/fetch-ipeds" << 'PY'
+import contextlib, importlib.machinery, importlib.util, io, sys
+
+# bin/ is a source directory in a git checkout, not a package: loading a script
+# out of it must not leave a bin/__pycache__ behind for the next `git status` to
+# report as an untracked directory.
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("fetch_ipeds", sys.argv[1])
+spec = importlib.util.spec_from_loader("fetch_ipeds", loader)
+fetch_ipeds = importlib.util.module_from_spec(spec)
+loader.exec_module(fetch_ipeds)
+
+SIZE = 8 * fetch_ipeds.DOWNLOAD_CHUNK_BYTES
+
+class FakeResponse:
+    """A body that arrives in chunks, with whatever headers the case declares."""
+
+    def __init__(self, size, headers):
+        self.body = io.BytesIO(b"x" * size)
+        self.headers = headers
+
+    def read(self, count):
+        return self.body.read(count)
+
+def run(headers):
+    captured = io.StringIO()
+    with contextlib.redirect_stderr(captured):
+        body = fetch_ipeds.read_body_with_progress(FakeResponse(SIZE, headers), "X2023.zip")
+    if len(body) != SIZE:
+        sys.exit(f"read {len(body)} bytes of {SIZE}")
+    return captured.getvalue()
+
+known = run({"Content-Length": str(SIZE)})
+if "\r" in known:
+    sys.exit("the non-TTY path emitted a carriage return")
+if "[100%]" not in known:
+    sys.exit(f"no final 100% line in {known!r}")
+lines = [line for line in known.splitlines() if line.strip()]
+# 8 chunks, so a per-chunk report would be 8 lines; milestones every 25% plus
+# the final line are at most 5.
+if not 2 <= len(lines) <= 5:
+    sys.exit(f"{len(lines)} progress lines for 8 chunks: {known!r}")
+if "of [524.3 KB]" not in known:
+    sys.exit(f"the total is not reported readably: {known!r}")
+
+for headers in ({}, {"Content-Length": "banana"}, {"Content-Length": "0"}):
+    unknown = run(headers)
+    if "None" in unknown or "%" in unknown:
+        sys.exit(f"headers {headers} reported a percentage it does not have: {unknown!r}")
+    if "[524.3 KB]" not in unknown:
+        sys.exit(f"headers {headers} did not report the bytes read: {unknown!r}")
+    if len([line for line in unknown.splitlines() if line.strip()]) != 1:
+        sys.exit(f"headers {headers} reported more than the final line: {unknown!r}")
+PY
+}
+assert_success "a chunked download reports a percentage, and a missing Content-Length degrades" \
+  test_ipeds_download_progress_reports_a_percentage
+
+# LOGGING GOES TO STDERR, all of it. This script's product is files on disk, not
+# a data stream: nothing it prints is machine-consumable, so a successful run
+# writes NOTHING AT ALL to stdout. That is the property that regresses the moment
+# someone "helpfully" puts the summary line or the paste-able ingest command back
+# on stdout, and it is only visible if the two channels are captured SEPARATELY
+# (every other test here reads them merged with 2>&1, which cannot see it).
+#
+# The same run proves the progress is not vacuous: the per-archive lines, the
+# guard phases, the write phase, the summary and the ingest command are all
+# asserted on stderr by content.
+#
+# The harness is not a TTY, so the NON-TTY progress path is what runs here and is
+# directly observable: no carriage return may appear at all, and the whole run's
+# stderr is bounded to a line count a human reads. A \r update stream captured to
+# a file would be one enormous line; a per-chunk line stream would be thousands.
+test_ipeds_logs_to_stderr_and_stdout_stays_empty() {
+  local out stdout stderr status returns lines
+  out="$(mktemp -d)"
+  stdout="$(mktemp)"
+  stderr="$(mktemp)"
+  bin/fetch-ipeds -F "$IPEDS_FIXTURES" -o "$out" > "$stdout" 2> "$stderr"
+  status=$?
+  ipeds_stderr_cleanup() { rm -rf "$out" "$stdout" "$stderr"; }
+  if [ "$status" -ne 0 ]; then
+    log-error "exit [$status], stderr [$(cat "$stderr")]"; ipeds_stderr_cleanup; return 1
+  fi
+  if [ -s "$stdout" ]; then
+    log-error "stdout is not empty, it holds [$(cat "$stdout")]"; ipeds_stderr_cleanup; return 1
+  fi
+  # The four things a run must SAY, each on stderr: where it is going, what it
+  # resolved out of each archive, that the write phase started, and the two
+  # result lines that used to live on stdout.
+  local phrase
+  for phrase in \
+    "Fetching [4] IPEDS survey archives" \
+    "[1/4] [HD2023.zip]" \
+    "[4/4] [C2023_A.zip] -> member" \
+    "data rows" \
+    "Checking every artifact produced data rows" \
+    "Writing [5] files" \
+    "IPEDS survey files written to" \
+    "-y 2023"; do
+    grep -qF -- "$phrase" "$stderr" \
+      || { log-error "stderr does not report [$phrase]"; ipeds_stderr_cleanup; return 1; }
+  done
+  returns="$(tr -cd '\r' < "$stderr" | wc -c | tr -d ' ')"
+  if [ "$returns" -ne 0 ]; then
+    log-error "the non-TTY path emitted [$returns] carriage returns"
+    ipeds_stderr_cleanup; return 1
+  fi
+  lines="$(wc -l < "$stderr" | tr -d ' ')"
+  if [ "$lines" -gt 40 ]; then
+    log-error "stderr is [$lines] lines, which is progress spam rather than a report"
+    ipeds_stderr_cleanup; return 1
+  fi
+  ipeds_stderr_cleanup
+  return 0
+}
+assert_success "a successful fetch writes its whole report to stderr and NOTHING to stdout" \
+  test_ipeds_logs_to_stderr_and_stdout_stays_empty
+
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-ipeds rejects [-o -F], a dropped operand (22)" \
+  bin/fetch-ipeds -o -F
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-ipeds rejects an empty -o value (22)" \
+  bin/fetch-ipeds -o ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-ipeds refuses a repeated -o rather than last-wins (22)" \
+  bin/fetch-ipeds -o /tmp -o /tmp
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "fetch-ipeds refuses a repeated -F rather than last-wins (22)" \
+  bin/fetch-ipeds -o /tmp -F /tmp -F /tmp
+
+# The three bands the stdlib getopt is mapped onto, kept apart because they are
+# three different operator mistakes. getopt raises ONE exception class for the
+# first two, so what separates them is the option that faulted, not the message
+# text; the third is not an exception at all but the operand list getopt hands
+# back, and this script declares no operands.
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "fetch-ipeds rejects an unknown option (10)" \
+  bin/fetch-ipeds -z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-ipeds -F without a value exits 11" \
+  bin/fetch-ipeds -F
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "fetch-ipeds -o without a value exits 11" \
+  bin/fetch-ipeds -o
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-ipeds rejects a stray positional (20, not 10)" \
+  bin/fetch-ipeds stray
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "fetch-ipeds rejects a positional after a good option (20)" \
+  bin/fetch-ipeds -o /tmp stray
+# -h is the ONE thing this script puts on stdout: stdout carries what the caller
+# explicitly asked for, and a caller passing -h asked for the help text. It is
+# the requested output of that invocation, not a diagnostic printed beside one --
+# and it is what both sibling fetchers do. Everything else stays on stderr, which
+# the empty-stdout assertion on a normal run above is what actually guards.
+test_ipeds_help_exits_zero_on_stdout() {
+  local out err status
+  out="$(mktemp)"
+  err="$(mktemp)"
+  bin/fetch-ipeds -h > "$out" 2> "$err"
+  status=$?
+  [ "$status" -eq 0 ] || { log-error "-h exited [$status]"; rm -f "$out" "$err"; return 1; }
+  grep -q "fetch-ipeds: download the IPEDS survey data files" "$out" \
+    || { log-error "-h printed no help: [$(head -3 "$out")]"; rm -f "$out" "$err"; return 1; }
+  [ ! -s "$err" ] || { log-error "-h wrote to stderr: [$(head -3 "$err")]"; rm -f "$out" "$err"; return 1; }
+  rm -f "$out" "$err"
+  return 0
+}
+assert_success "fetch-ipeds -h prints the help to stdout and exits 0, stderr empty" \
+  test_ipeds_help_exits_zero_on_stdout
+rm -rf "$IPEDS_OUT" "$IPEDS_ZIPS" "$IPEDS_ZIP_OUT"
+
 # ── RFC 147: the codebook source on ingest-colleges ──────────────────────────
 # Every run loads the generated codebook, so the launcher must always receive
 # BOTH the resolved path (--codebooks) and the caller's original argument
 # (--codebooks-source) — the aliases contract, applied to a flag rather than a
-# positional. Exercised against the same fake-checkout argv-capturing stub.
+# positional. Those two are the ingest JAR's own flags; the SCRIPT takes -k.
+# Exercised against the same fake-checkout argv-capturing stub.
 test_ingest_colleges_codebooks_default() {
   local root parent stub argv inst fields entry rc log
   parent="$(mktemp -d)"
@@ -2364,7 +3437,7 @@ test_ingest_colleges_codebooks_override() {
   : > "$inst"; : > "$fields"; : > "$codebooks"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" --codebooks-source="$codebooks" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -k "$codebooks" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -2378,16 +3451,16 @@ test_ingest_colleges_codebooks_override() {
   rm -rf "$parent"
   return "$rc"
 }
-assert_success "ingest-colleges --codebooks-source replaces the repo default entirely" \
+assert_success "ingest-colleges -k replaces the repo default codebook entirely" \
   test_ingest_colleges_codebooks_override
 
 # An explicitly-empty value is a wrong value, refused rather than silently
 # replaced by the repo default — the rule the aliases argument already follows.
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty --codebooks-source" \
-  bin/ingest-colleges a.csv b.csv --codebooks-source=
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -k codebook value" \
+  bin/ingest-colleges -k "" a.csv b.csv
 # A nonexistent codebook path fatals in resolve_file_arg, before the launcher.
 test_ingest_colleges_missing_codebooks() {
-  bin/ingest-colleges --codebooks-source="/no/such/$$-codebooks.json" bin/functions bin/functions \
+  bin/ingest-colleges -k "/no/such/$$-codebooks.json" bin/functions bin/functions \
     > /dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent codebook path" test_ingest_colleges_missing_codebooks
@@ -2449,7 +3522,7 @@ test_ingest_colleges_subjects_override() {
   : > "$inst"; : > "$fields"; : > "$subjects"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" --subjects-source="$subjects" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -s "$subjects" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -2463,13 +3536,13 @@ test_ingest_colleges_subjects_override() {
   rm -rf "$parent"
   return "$rc"
 }
-assert_success "ingest-colleges --subjects-source replaces the repo default entirely" \
+assert_success "ingest-colleges -s replaces the repo default subject taxonomy entirely" \
   test_ingest_colleges_subjects_override
 
-assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty --subjects-source" \
-  bin/ingest-colleges a.csv b.csv --subjects-source=
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -s subject taxonomy value" \
+  bin/ingest-colleges -s "" a.csv b.csv
 test_ingest_colleges_missing_subjects() {
-  bin/ingest-colleges --subjects-source="/no/such/$$-subjects.json" bin/functions bin/functions \
+  bin/ingest-colleges -s "/no/such/$$-subjects.json" bin/functions bin/functions \
     > /dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent subject taxonomy path" test_ingest_colleges_missing_subjects

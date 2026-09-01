@@ -1,0 +1,1439 @@
+#!/usr/bin/env python3
+"""fetch-ipeds: download the IPEDS survey data files bin/ingest-colleges reads.
+
+RFC 144. Downloads the four IPEDS survey data archives for SURVEY_YEAR,
+extracts the one data member from each, and writes the CSVs plus a manifest:
+
+    db/seed/ipeds/HD2023.csv        institutional characteristics (directory)
+    db/seed/ipeds/IC2023.csv        institutional characteristics (survey)
+    db/seed/ipeds/adm2023.csv       admissions and test scores
+    db/seed/ipeds/C2023_a.csv       completions by CIP code and award level
+    db/seed/ipeds/PROVENANCE.json   url, fetched_at, bytes, sha256 per archive,
+                                    plus the member taken, its digest and its
+                                    data-row count
+
+The CSVs are NOT committed: extracted they are ~66 MB against a 16 MB .git (~11
+MB as the four zips) -- the one place that figure is stated, in one unit system
+-- so db/seed/ipeds/ is gitignored except for PROVENANCE.json and
+FETCH-NOTES.md. That manifest is the committed record of the real fetch AND the
+baseline the shrink guard below reads, which is why an offline (-F) replay is
+refused outright against a directory holding one that is not itself a fixture
+replay.
+
+The `fetched_at` CONTRACT, at both levels of the manifest (top level and per
+artifact), is part of that record:
+
+  * a network run writes ISO-8601 UTC to SECONDS precision, e.g.
+    "2026-08-31T09:14:02+00:00";
+  * a fixture (-F) replay writes null, and null means exactly that -- an offline
+    replay -- so it is never a stand-in for "unknown";
+  * the committed manifest under db/seed/ipeds/ carries a real network run's
+    timestamp at that seconds precision (see db/seed/ipeds/FETCH-NOTES.md).
+
+A reader stays tolerant of an ISO-8601 date OR datetime rather than assuming
+seconds: a hand-recorded value may only ever claim the precision that was
+actually observed.
+
+ALL member interpretation lives here (the ingest is handed plain CSV paths):
+
+  * The member is resolved CASE-INSENSITIVELY, never by an assumed name. IPEDS
+    ships HD2023.csv and IC2023.csv but adm2023.csv and C2023_a.csv, and the
+    casing is not a rule anyone published.
+  * IC2023.zip and C2023_A.zip also ship a REVISED member (IC2023_RV.csv,
+    C2023_a_RV.csv). The NON-_RV member is taken. The _RV file is a later
+    revision of the same survey -- for IC2023 a reordered 141-column superset --
+    so which one you get would depend on when you fetched. The ingest is pinned
+    to the survey as originally published, so that a re-fetch of a named survey
+    year reproduces the same rows and a revision arrives as a reviewed change of
+    this script, not as a silent change of the data.
+  * An archive that holds no member under the published name is FATAL. A sole
+    surviving member under an unpublished name is exactly the case a human must
+    look at, so it is never substituted in silently.
+  * Members are decoded as utf-8-sig: HD/IC/C_A carry a UTF-8 BOM and adm2023
+    does not, and a BOM left in place would land in the first header name.
+
+Stdlib-only (dev-shell python3), no dependencies. Usage:
+
+    fetch-ipeds [-o <outdir>] [-F <fixtures-dir>]
+
+    -o DIR    extracted CSV + PROVENANCE.json directory
+              (default: db/seed/ipeds under the repo root)
+    -F DIR    offline mode for tests: read the recorded archives or CSVs from
+              <dir> instead of downloading. REQUIRES an explicit -o: the
+              recorded fixtures are a handful of rows while the committed
+              manifest under the DEFAULT -o records the real survey, so a replay
+              into the default directory would either be refused or, worse,
+              overwrite the committed record.
+    -h        help
+
+Options are parsed with the stdlib getopt, the model of the getopts builtin the
+bash scripts in bin/ use, and the checks getopt does NOT make are made after it:
+each option may be given at most once, its value may not be empty or begin with
+"-", and this script takes no positional arguments at all. This is the script
+whose whole point is refusing to write the wrong directory, so a silent last-wins
+-o, or a "-o -F" that makes a directory called "-F", is a usage error rather than
+a surprise on disk. A stray positional exits 20, an unknown option 10, an option
+missing its value 11, and a malformed value 22.
+
+EVERYTHING this script prints goes to STDERR -- the progress (including a
+per-archive download percentage), the final summary, and the ingest command.
+Its product is files on disk, not a data stream, so a normal run leaves stdout
+EMPTY. The ONE exception is `-h`: the help text is what a caller passing -h
+explicitly asked for, so it is printed on stdout and the run exits 0.
+
+It is OPERATOR-RUN: no ingest and no test ever fetches. A successful run PRINTS
+the bin/ingest-colleges command to paste next, built from SURVEY_YEAR and the
+files it actually wrote, so the survey year the ingest stamps on every row is
+never retyped from memory.
+
+The run REFUSES to write an artifact that resolved to a member with ZERO data
+rows, REFUSES to write when a data-row count collapsed against the count
+PROVENANCE.json recorded, and REFUSES to write when the resolved member NAME is
+not the one PROVENANCE.json recorded. Nothing is written until all three pass,
+and the write itself is all-or-nothing across the four CSVs AND the manifest.
+"""
+
+import contextlib
+import csv
+import getopt
+import hashlib
+import http.client
+import io
+import json
+import os
+import posixpath
+import shlex
+import sys
+import time
+import urllib.error
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from typing import NamedTuple, NoReturn
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTDIR = REPO_ROOT / "db" / "seed" / "ipeds"
+
+BASE_URL = "https://nces.ed.gov/ipeds/datacenter/data"
+
+MANIFEST_NAME = "PROVENANCE.json"
+
+# The manifest's `source` vocabulary, named once. It is a PERSISTED guard
+# vocabulary -- compared by == wherever the replay refusal and the route check
+# read it back -- so a typo in one of those comparisons would silently downgrade
+# a committed record from "protected" to "replaceable". Plain constants rather
+# than an enum: the values are written to and read from JSON, and nothing here
+# needs more than the names.
+ROUTE_NETWORK = "network"
+ROUTE_FIXTURES = "fixtures"
+# Not a value ever WRITTEN: what manifest_route calls a manifest that declares
+# neither, which joins the protected side.
+ROUTE_UNKNOWN = "unknown"
+
+# The IPEDS survey year these archives publish. bin/ingest-colleges stamps it on
+# every college_ipeds row via --survey-year, so the command printed at the end of
+# a run carries THIS value rather than whatever the operator last pasted.
+#
+# The archive and member names in ARTIFACTS below are deliberately kept as
+# LITERALS instead of being built from it: their casing is irregular (HD2023.csv
+# and IC2023.csv, but adm2023.csv and C2023_a.csv) and that irregularity is the
+# whole point of the resolution below, so it stays readable. require_survey_year
+# checks the two agree, which makes a half-done year bump fatal at startup.
+SURVEY_YEAR = 2023
+
+
+class Artifact(NamedTuple):
+    """One published survey artifact, by NAME rather than by tuple position.
+
+    archive, member_csv and fixture_csv are three look-alike strings that differ
+    by a few characters ("HD2023.zip" / "HD2023.csv"), and a positional unpacking
+    that swapped two of them would still run -- it would just download the right
+    file and look for the wrong member. bin/fetch-cds-seed already states this
+    house rule; this is the same rule applied here.
+
+    year is carried per row rather than inferred from the archive name, so
+    require_survey_year compares a DECLARED field by equality instead of asking
+    whether "2023" appears somewhere inside "HD2024_from2023.zip"."""
+
+    archive: str
+    member_csv: str
+    fixture_csv: str
+    ingest_option: str
+    year: int
+
+
+# The artifacts. These are the plain DATA zips. Do NOT confuse them with the
+# *_Stata.zip syntax archives bin/fetch-codebooks handles -- two different
+# downloads with two different manifests, deliberately not sharing code. The
+# member_csv is the name the extracted CSV is WRITTEN under, so the printed
+# ingest command is copy-pasteable; the member actually resolved inside the
+# archive is recorded in PROVENANCE.json. The fixture_csv is the recorded
+# stand-in an offline (-F) run accepts under that exact name, beside the
+# archive's own name. ingest_option is the bin/ingest-colleges SHORT flag the
+# written file is passed as (that script takes short options only, like every
+# other script in bin/), so the printed command has ONE declaration of it.
+ARTIFACTS = (
+    Artifact("HD2023.zip", "HD2023.csv", "ipeds-hd2023-fixture.csv", "-H", 2023),
+    Artifact("IC2023.zip", "IC2023.csv", "ipeds-ic2023-fixture.csv", "-I", 2023),
+    Artifact("ADM2023.zip", "adm2023.csv", "ipeds-adm2023-fixture.csv", "-A", 2023),
+    Artifact("C2023_A.zip", "C2023_a.csv", "ipeds-c2023-a-fixture.csv", "-C", 2023),
+)
+
+# A revised release of a member, published alongside the original. LOWERCASE is
+# an invariant, not a style: is_revised_release compares it against a name that
+# has already been .lower()ed, so "correcting" this to "_RV" would match nothing
+# and silently retire the revision filter -- the run would then take IC2023_RV.csv
+# whenever it sorted first.
+REVISED_SUFFIX = "_rv"
+
+# The network bounds, named once each. The timeout is per socket READ, not per
+# download: the largest artifact (C2023_A.zip, ~9 MB) arrives in many reads, so
+# 60s is a bound on a stalled connection rather than on a slow one, and a link
+# that would fail this bound could not finish the fetch anyway.
+HTTP_MAX_ATTEMPTS = 3
+HTTP_TIMEOUT_SECONDS = 60
+HTTP_RETRY_BACKOFF_SECONDS = 2
+# The body is read in CHUNKS rather than in one response.read(), so that a
+# download the operator is waiting on reports as it goes. 64 KiB is a read size,
+# not a progress interval -- how often anything is PRINTED is decided below.
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
+# On a TTY the progress line is rewritten in place, at most this often: a fast
+# local read arrives in hundreds of chunks a second and formatting every one of
+# them is work spent on frames nobody sees.
+PROGRESS_TTY_INTERVAL_SECONDS = 0.1
+# Off a TTY (a log, a CI capture, bin/scripts-tests) there is no line to rewrite,
+# so progress is printed at coarse milestones instead -- every this-many percent,
+# plus the final line. A carriage-return update stream there is thousands of
+# lines of noise in a captured log.
+PROGRESS_MILESTONE_PERCENT = 25
+# How much of an error response body is quoted back. A publisher's own
+# explanation lives in the first line or two; the rest is markup.
+HTTP_ERROR_BODY_PREVIEW_BYTES = 200
+# Transient statuses: throttling and server-side faults are worth another
+# attempt. Every other status is the REQUEST being wrong (a renamed or retired
+# survey file) and retrying it only delays the diagnosis.
+RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+# A re-fetched artifact carrying fewer than this fraction of the data rows the
+# manifest recorded is treated as a failed extraction rather than a real survey
+# change: a survey loses institutions in dozens, never in thousands.
+SEED_SHRINK_FLOOR = 0.5
+
+# The usage-error exit codes bin/functions reserves (10-29), kept in step here
+# so a caller that invoked this script wrongly is distinguishable from a fetch
+# that faulted.
+EXIT_UNKNOWN_OPTION = 10
+EXIT_OPTION_REQUIRES_VALUE = 11
+# A positional argument, which this script's grammar has none of. bin/functions
+# reserves 20 for exactly that -- an argument beyond the declared grammar --
+# which is a different operator mistake from a mistyped option (10).
+EXIT_UNEXPECTED_ARG = 20
+EXIT_INVALID_ARG_VALUE = 22
+
+
+def log_info(message):
+    """Anything this script says, on the channel and with the (absent) prefix
+    bin/functions' log-info uses: stderr, no prefix.
+
+    LOGGING GOES TO STDERR, all of it -- the progress, the final summary, and the
+    bin/ingest-colleges command printed to paste next. This script's PRODUCT is
+    files on disk, not a data stream: none of that is what a caller asked for, so
+    none of it belongs on stdout and a normal run leaves stdout EMPTY. (The help
+    answering -h is the one thing a caller does ask for by name; parse_args
+    prints it directly.) Logging on one channel beside the
+    [WARNING]/[ERROR]/[FATAL] family also means a redirect that keeps the log
+    keeps all of it, in order."""
+    print(message, file=sys.stderr)
+
+
+def log_warning(message):
+    """A non-fatal fault, on the channel and with the prefix bin/functions'
+    log-warning uses, so one grep finds them across shell and python."""
+    print(f"[WARNING] {message}", file=sys.stderr)
+
+
+def log_error(message):
+    """A fault the run did not die of but that must not be read past, on the
+    channel and with the prefix bin/functions' log-error uses. Distinct from
+    log_warning: a recovered fallback (cp1252) is a warning, while writing the
+    seed with a baseline guard provably disarmed is an error."""
+    print(f"[ERROR] {message}", file=sys.stderr)
+
+
+def fatal(message, status=1) -> NoReturn:
+    """Reports on the [FATAL] channel and EXITS: this call never returns, which
+    is why the guards below end on a bare fatal() with no fall-through return."""
+    print(f"[FATAL] {message}", file=sys.stderr)
+    sys.exit(status)
+
+
+def bracketed(names):
+    """Names for a message: each one in brackets, in a stable order.
+
+    Interpolating a list directly renders a Python repr, which wraps every
+    element in the single quotes this project's messages use for nothing --
+    brackets are the one wrapper, so a name carrying a space or a quote is still
+    read unambiguously."""
+    return ", ".join(f"[{name}]" for name in sorted(names))
+
+
+def format_bytes(count):
+    """A byte count an operator can read: [9.3 MB] rather than [9294160].
+
+    Decimal units (1000), because that is what the publisher's page and every
+    download UI states a file size in, and this number is read beside them. The
+    exact byte counts are still what PROVENANCE.json records -- this is for the
+    progress channel only, where "is it nearly done" is the whole question."""
+    size = float(count)
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(size) < 1000 or unit == "GB":
+            # Whole bytes stay whole: [512 B], not [512.0 B].
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1000
+    raise AssertionError("unreachable")
+
+
+def require_survey_year():
+    """Every artifact in ARTIFACTS declares SURVEY_YEAR.
+
+    The archive names are literals (their casing is irregular and must stay
+    visible) and the year is a constant, so nothing makes them agree by
+    construction. A year bump that renamed three of the four archives, or that
+    renamed all four and left SURVEY_YEAR behind, would otherwise stamp the wrong
+    year on every college_ipeds row with no error anywhere.
+
+    The comparison is against the DECLARED year field, by equality. A
+    substring test on the archive name -- "2023" in "HD2024_from2023.zip" --
+    passes for exactly the half-done bump this exists to catch, and also passes
+    for IC2023_Stata.zip, the codebook archive this script must never touch.
+    Checked at startup, before a byte is fetched."""
+    stale = sorted(
+        f"[{artifact.archive}] declares [{artifact.year}]"
+        for artifact in ARTIFACTS
+        if artifact.year != SURVEY_YEAR
+    )
+    if stale:
+        fatal(
+            f"SURVEY_YEAR is [{SURVEY_YEAR}] but {', '.join(stale)}; a survey-year "
+            f"bump must move ARTIFACTS and SURVEY_YEAR together, or the ingest is told "
+            f"the wrong year for the data it is given"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fetching and reading the archives
+# ---------------------------------------------------------------------------
+
+
+def content_length(headers):
+    """The Content-Length as an int, or None when the server did not send a
+    usable one.
+
+    MISSING is normal (a chunked response has no length at all) and malformed is
+    possible, and neither may cost the download: an absent total means progress
+    reports bytes so far with no percentage, never "None%" and never a
+    traceback three quarters of the way through a 9 MB fetch."""
+    raw = headers.get("Content-Length")
+    if raw is None:
+        return None
+    try:
+        total = int(raw.strip())
+    except (AttributeError, ValueError):
+        return None
+    # A zero or negative length is not a total anything can be a fraction of.
+    return total if total > 0 else None
+
+
+class DownloadProgress:
+    """The running report of one download, on log_info's channel.
+
+    TWO shapes, because there are two readers. On a TTY a human is watching one
+    line, so it is rewritten in place with \r and closed with a newline. Off a
+    TTY -- a log file, CI, bin/scripts-tests -- there is nothing to rewrite, and
+    a \r stream is thousands of unreadable lines in the capture, so the same
+    facts are printed at milestones (every PROGRESS_MILESTONE_PERCENT) plus one
+    final line. The final line is ALWAYS printed on both, so a download that
+    reported nothing is a download that did not happen."""
+
+    def __init__(self, label, total):
+        self.label = label
+        self.total = total
+        self.tty = sys.stderr.isatty()
+        self.last_emit = 0.0
+        # The last milestone REPORTED, so a chunk that crosses two of them still
+        # prints one line and a stalled read prints none.
+        self.last_milestone = -1
+        # The in-place line is padded back to the longest line already written:
+        # "9.3 MB of 9.3 MB [100%]" is shorter than what preceded it, and without
+        # the padding the tail of the previous line survives on screen.
+        self.width = 0
+
+    def line(self, seen):
+        if self.total is None:
+            return f"    [{self.label}] [{format_bytes(seen)}] (total not published)"
+        percent = min(100, int(seen * 100 / self.total))
+        return (
+            f"    [{self.label}] [{format_bytes(seen)}] of [{format_bytes(self.total)}] "
+            f"[{percent}%]"
+        )
+
+    def update(self, seen):
+        """Report an in-flight position, or say nothing. Called once per chunk,
+        so every path here is throttled."""
+        if self.tty:
+            now = time.monotonic()
+            if now - self.last_emit < PROGRESS_TTY_INTERVAL_SECONDS:
+                return
+            self.last_emit = now
+            self.write(seen, end="")
+            return
+        if self.total is None:
+            # No total, so no milestone can be computed; the final line below
+            # still reports what arrived. Guessing an interval in bytes would
+            # print an unbounded number of lines for an unknown-size body.
+            return
+        milestone = int(seen * 100 / self.total) // PROGRESS_MILESTONE_PERCENT
+        # 100% belongs to finish(), which prints it exactly once.
+        if milestone <= self.last_milestone or milestone * PROGRESS_MILESTONE_PERCENT >= 100:
+            return
+        self.last_milestone = milestone
+        log_info(self.line(seen))
+
+    def finish(self, seen):
+        """The final position, always printed, and on a TTY the newline that
+        ends the line every update() has been overwriting."""
+        if self.tty:
+            self.write(seen, end="\n")
+            return
+        log_info(self.line(seen))
+
+    def write(self, seen, end):
+        text = self.line(seen)
+        self.width = max(self.width, len(text))
+        print(f"\r{text:<{self.width}}", end=end, file=sys.stderr, flush=True)
+
+
+def read_body_with_progress(response, label):
+    """The whole response body, read in chunks so that the wait is visible.
+
+    A single response.read() is one call that returns after however long the
+    body takes; the operator sees nothing until it does, and the largest artifact
+    here is ~9 MB. Chunking changes nothing about what is returned -- the bytes
+    are joined and hashed exactly as before -- only about what is said while it
+    arrives."""
+    progress = DownloadProgress(label, content_length(response.headers))
+    chunks = []
+    seen = 0
+    while True:
+        chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        seen += len(chunk)
+        progress.update(seen)
+    progress.finish(seen)
+    return b"".join(chunks)
+
+
+def http_get(url, label):
+    """The response body, retrying only TRANSIENT faults. A permanent fault is
+    reported immediately through this script's own fatal channel -- naming the
+    attempt it died on and carrying the head of the response body, which is
+    where a publisher's own explanation lives -- and the swallowed causes of the
+    earlier attempts are logged rather than discarded.
+
+    `label` names the artifact in the progress report: the URL is already on the
+    start line, and a 9 MB download reporting itself against the full URL wraps
+    the terminal line it is trying to rewrite in place."""
+    request = urllib.request.Request(url, headers={"User-Agent": "unicoach"})
+    for attempt in range(HTTP_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                # Read INSIDE the try: a connection that drops mid-body now
+                # faults here, in a chunk read, rather than in one read() call,
+                # and must still be caught as the transient fault it is.
+                return read_body_with_progress(response, label)
+        except urllib.error.HTTPError as error:
+            # Bound to a `with`: the body is read and the connection released
+            # here, rather than held open across the retry sleep below.
+            with error:
+                # One byte MORE than is quoted: reading the preview plus one
+                # says whether the body was truncated without holding the rest
+                # of a publisher's error page in memory.
+                raw = error.read()[: HTTP_ERROR_BODY_PREVIEW_BYTES + 1]
+            body = raw[:HTTP_ERROR_BODY_PREVIEW_BYTES].decode("utf-8", errors="replace")
+            if len(raw) > HTTP_ERROR_BODY_PREVIEW_BYTES:
+                body += f"... (truncated at [{HTTP_ERROR_BODY_PREVIEW_BYTES}] bytes)"
+            cause = f"HTTP [{error.code}] [{error.reason}] body [{body}]"
+            if error.code not in RETRYABLE_STATUS:
+                fatal(f"GET [{url}] failed permanently on attempt [{attempt + 1}]: {cause}")
+        except TimeoutError as error:
+            # Its own branch, so the bound that was exceeded is named: a socket
+            # timeout reports as an empty message otherwise.
+            cause = (
+                f"[{type(error).__name__}] timed out after [{HTTP_TIMEOUT_SECONDS}]s [{error}]"
+            )
+        except urllib.error.URLError as error:
+            cause = f"[{type(error).__name__}] [{error}]"
+        except (http.client.IncompleteRead, ConnectionResetError) as error:
+            # A connection dropped mid-body. Neither a URLError nor a
+            # TimeoutError, and as transient as either: retried, not escaped.
+            cause = f"[{type(error).__name__}] connection dropped mid-body [{error}]"
+        if attempt == HTTP_MAX_ATTEMPTS - 1:
+            fatal(f"GET [{url}] failed after [{HTTP_MAX_ATTEMPTS}] attempts: {cause}")
+        log_warning(
+            f"GET [{url}] attempt [{attempt + 1}]/[{HTTP_MAX_ATTEMPTS}] failed: {cause}; retrying"
+        )
+        time.sleep(HTTP_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
+def find_fixture(fixtures, artifact):
+    """The one file in `fixtures` that stands in for `artifact`: either the
+    published archive under its own name, or the recorded CSV named in ARTIFACTS.
+
+    Both are matched by EXACT name. A normalised substring search would be
+    friendlier, but the fixture directory (college/src/test/resources) is shared
+    with every other test in the repo and this script does not own it: one new
+    file named by that directory's own convention would make a substring search
+    ambiguous and this fetcher fatal, from a change with nothing to do with
+    IPEDS. Ambiguity is still fatal -- picking the first of two candidates would
+    make the harness depend on readdir order -- but it now takes two files this
+    table actually names."""
+    candidates = [
+        path
+        for path in (fixtures / artifact.archive, fixtures / artifact.fixture_csv)
+        if path.is_file()
+    ]
+    if not candidates:
+        fatal(
+            f"no fixture for [{artifact.archive}] in [{fixtures}]: expected "
+            f"[{artifact.archive}] or [{artifact.fixture_csv}]"
+        )
+    if len(candidates) > 1:
+        fatal(
+            f"[{len(candidates)}] fixtures stand in for [{artifact.archive}] in "
+            f"[{fixtures}]: {bracketed(path.name for path in candidates)}"
+        )
+    return candidates[0]
+
+
+def is_revised_release(member):
+    """Whether a zip member name is a REVISED release (IC2023_RV.csv) rather than
+    the original the ingest is pinned to.
+
+    Named because it is asked in two places and is a fact about IPEDS' publishing
+    convention, not a string operation. The name is parsed as a ZIP member --
+    PurePosixPath -- because the zip grammar is "/"-separated on every platform,
+    which is not what pathlib.Path means on all of them."""
+    return PurePosixPath(member).stem.lower().endswith(REVISED_SUFFIX)
+
+
+def resolve_member(archive, origin, expected_member):
+    """The name of the one DATA member of an opened ARCHIVE. (A raw CSV payload
+    has no member to resolve -- the body IS the CSV -- so this is reached only
+    for a zip.)
+
+    Everything about this is deliberate. The _RV members are dropped first,
+    because IC2023.zip and C2023_A.zip carry a revised release beside the
+    original and the ingest is pinned to the original. The published name is
+    then matched CASE-INSENSITIVELY, because IPEDS ships HD2023.csv and
+    IC2023.csv but adm2023.csv and C2023_a.csv and the casing is nobody's
+    published rule -- matching the name is the whole point, so an archive that
+    happens to carry a second, unrelated .csv still resolves.
+
+    A guess is never made, and that is exhaustive: no member under the published
+    name is as fatal as two of them. A sole surviving member under an UNPUBLISHED
+    name is the case a human most needs to see, so it is refused rather than
+    written under the expected file name with a warning nobody reads -- after
+    this, `member` in PROVENANCE.json always names a published file."""
+    members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+    if not members:
+        fatal(f"[{origin}] holds no .csv member (members: {bracketed(archive.namelist())})")
+    kept = [name for name in members if not is_revised_release(name)]
+    if not kept:
+        fatal(
+            f"[{origin}] holds only revised (_RV) .csv members {bracketed(members)}; "
+            f"the original release of [{expected_member}] is what the ingest is pinned to"
+        )
+    named = [name for name in kept if posixpath.basename(name).lower() == expected_member.lower()]
+    if len(named) == 1:
+        return named[0]
+    if len(named) > 1:
+        fatal(
+            f"[{origin}] holds [{len(named)}] members named [{expected_member}] "
+            f"{bracketed(named)}, expected exactly one (all members: {bracketed(members)})"
+        )
+    fatal(
+        f"[{origin}] holds no member named [{expected_member}]; its [{len(kept)}] non-_RV .csv "
+        f"members are {bracketed(kept)}, and which of them is the survey -- or whether the "
+        f"publisher renamed it -- is a review, never a guess "
+        f"(all members: {bracketed(members)})"
+    )
+
+
+def read_member(body, origin, expected_member, url):
+    """(text, member) for a payload: the one resolved .csv member of a zip, or --
+    on the FIXTURE route only -- the body itself when the payload is already a
+    plain CSV. A raw payload has no member to resolve, so member-name matching
+    applies to zip members only, and the member recorded is the file that was
+    read.
+
+    Zip-ness is decided by reading the archive's structure (zipfile.is_zipfile),
+    never by the extension -- which is what makes a fixture directory able to
+    hold either form under the same name.
+
+    On the NETWORK route a non-zip body is FATAL. Every published IPEDS artifact
+    is a zip, so a body that is not one is an error page, a redirect notice or a
+    captive-portal splash served with HTTP 200; treating it as the survey would
+    write a CSV of HTML and record its digest as provenance.
+
+    A zip that will not open is reported through this script's own channel too. A
+    truncated download is THE flaky-network failure here, and it must not arrive
+    as a stdlib traceback naming a /nix/store path.
+
+    The ROUTE is carried by `url`: a network fetch always has one, and `url is
+    None` is what an offline (-F) replay means. That is the single value the
+    raw-CSV branch below is allowed to open on."""
+    if not zipfile.is_zipfile(io.BytesIO(body)):
+        # url is None only on the FIXTURE route, so this is where -F accepts a
+        # recorded CSV; a network body that is not a zip can never reach it.
+        if url is not None:
+            preview = body[:HTTP_ERROR_BODY_PREVIEW_BYTES].decode("utf-8", errors="replace")
+            fatal(
+                f"GET [{url}] returned [{len(body)}] bytes that are not a zip archive; every "
+                f"published IPEDS artifact is a zip, so this is an error page or a redirect "
+                f"served as a success, not the survey. Body begins [{preview}]"
+            )
+        return decode(body, origin), origin
+    try:
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            member = resolve_member(archive, origin, expected_member)
+            member_body = archive.read(member)
+    except (zipfile.BadZipFile, EOFError, RuntimeError) as error:
+        fatal(
+            f"[{origin}] (from [{url or origin}], [{len(body)}] bytes) could not be read as a "
+            f"zip archive: [{type(error).__name__}] [{error}]. A truncated or partial "
+            f"download is the usual cause -- re-run the fetch; an encrypted or otherwise "
+            f"unreadable archive is a publisher change and needs a look."
+        )
+    return decode(member_body, member), member
+
+
+def decode(body, filename):
+    """utf-8-sig, falling back to the Windows codepage IPEDS' tooling emits.
+    utf-8-sig strips a BOM where there is one (HD/IC/C_A) and is plain UTF-8
+    where there is not (adm2023), so every member is decoded the same way and a
+    BOM never survives into the first header name.
+
+    The fallback is GUARDED rather than trusted: cp1252 leaves five byte values
+    undefined (0x81, 0x8d, 0x8f, 0x90, 0x9d), so a payload that is neither UTF-8
+    nor cp1252 would raise from inside the recovery path. That matters more here
+    than in the sibling fetchers: the text this returns is what gets WRITTEN and
+    hashed into member_sha256, so an undecodable member is a refusal, not a
+    traceback."""
+    try:
+        return body.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        log_warning(
+            f"[{filename}] is not UTF-8 ([{error.reason}] at byte [{error.start}]); "
+            f"decoding as cp1252"
+        )
+    try:
+        return body.decode("cp1252")
+    except UnicodeDecodeError as error:
+        fatal(
+            f"[{filename}] decodes as neither UTF-8 nor cp1252 ([{error.reason}] at byte "
+            f"[{error.start}]); the payload is not the text member this expects, and its "
+            f"bytes are what member_sha256 would describe"
+        )
+
+
+def count_data_rows(text, origin, member):
+    """The data rows, header EXCLUDED, counted with csv.reader: a line count
+    would miscount the quoted institution names that carry embedded newlines.
+
+    A member with no header line AT ALL counts 0, exactly as a header-only member
+    does. Both are the same fact -- the extraction produced no data -- and there
+    is one guard that refuses it (require_data_rows), rather than an exit from
+    inside a constructor for one shape and a guard for the other.
+
+    csv.Error is reported through this script's channel: this count is what the
+    whole shrink guard rests on, so a member the reader cannot walk (a NUL byte,
+    a field past the reader's limit) is a named refusal naming the archive and
+    the member, not a traceback."""
+    # newline="" is load-bearing: without it StringIO translates the newlines
+    # inside quoted institution names and csv.reader sees extra rows. An
+    # INFLATED count is the dangerous direction -- it can never trip the shrink
+    # floor, so a miscount would pass every guard here.
+    reader = csv.reader(io.StringIO(text, newline=""))
+    try:
+        if next(reader, None) is None:
+            return 0
+        return sum(1 for _ in reader)
+    except csv.Error as error:
+        fatal(
+            f"[{origin}] -> [{member}] could not be read as CSV: [{type(error).__name__}] "
+            f"[{error}]; the data-row count is what the shrink guard compares against, so "
+            f"an unreadable member is refused rather than counted as zero"
+        )
+
+
+class Source:
+    """One survey artifact: the archive it came from, the member taken out of it,
+    and the CSV bytes about to be written. A value: everything it reports is
+    passed in or computed from the bytes, and nothing here can exit."""
+
+    def __init__(self, artifact, url, body, member, member_body, rows, fetched_at):
+        self.artifact = artifact
+        self.archive = artifact.archive
+        self.output_csv = artifact.member_csv
+        self.url = url
+        self.bytes = len(body)
+        self.sha256 = hashlib.sha256(body).hexdigest()
+        self.member = member
+        # The CSV exactly as it will be written: decoded, BOM stripped, re-encoded
+        # UTF-8. The digest describes the file the ingest reads, not the member as
+        # it sat compressed in the archive. The decoded TEXT is deliberately not
+        # retained -- C2023_a alone is ~62 MB of it, and nothing reads it after
+        # the row count.
+        self.member_body = member_body
+        self.member_bytes = len(member_body)
+        self.member_sha256 = hashlib.sha256(member_body).hexdigest()
+        self.rows = rows
+        self.fetched_at = fetched_at
+
+    def as_json(self):
+        return {
+            "url": self.url,
+            "fetched_at": self.fetched_at,
+            "bytes": self.bytes,
+            "sha256": self.sha256,
+            "member": self.member,
+            "member_bytes": self.member_bytes,
+            "member_sha256": self.member_sha256,
+            "rows": self.rows,
+        }
+
+
+def load_sources(fixtures, fetched_at):
+    """{archive -> Source} for the four artifacts, downloaded, or read from
+    `fixtures` with no network at all. Nothing is written here: the CSVs land
+    only once the counts they carry have been believed.
+
+    The row count is taken HERE, beside the decode that produced the text, so
+    that a member which yields none is an ordinary Source carrying rows=0 and is
+    refused by the guard like any other, rather than by an exit from inside a
+    constructor."""
+    sources = {}
+    for index, artifact in enumerate(ARTIFACTS, start=1):
+        # [n/4] on every line of one artifact's report, so a run that is being
+        # watched says how far through the four it is, and a captured log can be
+        # read back per artifact.
+        step = f"[{index}/{len(ARTIFACTS)}]"
+        if fixtures is not None:
+            path = find_fixture(fixtures, artifact)
+            log_info(f"{step} [{artifact.archive}] reading fixture [{path}]")
+            body = path.read_bytes()
+            # None IS the fixture route: read_member and the manifest both read
+            # the absence of a url as "this was not downloaded".
+            url = None
+            # The fixture's own name, so PROVENANCE names the file actually read
+            # rather than the artifact it stands in for.
+            origin = path.name
+        else:
+            url = f"{BASE_URL}/{artifact.archive}"
+            log_info(f"{step} [{artifact.archive}] downloading [{url}]")
+            body = http_get(url, artifact.archive)
+            origin = artifact.archive
+        text, member = read_member(body, origin, artifact.member_csv, url)
+        rows = count_data_rows(text, origin, member)
+        member_body = text.encode("utf-8")
+        # The three facts the guards below are about to decide on -- the member
+        # that was resolved, how big it is, and how many data rows it holds --
+        # reported as they are learned rather than only when one of them fails.
+        log_info(
+            f"{step} [{artifact.archive}] -> member [{member}] "
+            f"[{format_bytes(len(member_body))}] [{rows}] data rows"
+        )
+        sources[artifact.archive] = Source(
+            artifact,
+            url,
+            body,
+            member,
+            member_body,
+            rows,
+            fetched_at,
+        )
+    return sources
+
+
+# ---------------------------------------------------------------------------
+# The manifest this run would overwrite
+# ---------------------------------------------------------------------------
+
+
+def read_manifest(outdir):
+    """The parsed manifest OBJECT in `outdir`, or None where there is no file.
+
+    ONE loader with ONE corruption policy, because both readers of this file --
+    the offline-replay refusal and the shrink guard -- are protecting the same
+    thing. A manifest that cannot be read is not an absent manifest: it is the
+    baseline and the provenance record, damaged. Neither caller may quietly
+    proceed past it, which is why this fatals rather than returning None.
+
+    "Absent" is decided by the READ failing with FileNotFoundError, not by a
+    prior exists() probe: a path whose parent is a file (ENOTDIR), a symlink loop
+    (ELOOP) or an unreadable directory all make exists() answer False, and every
+    one of those would disarm the replay refusal on a directory that does hold a
+    manifest.
+
+    A parsed value that is not an OBJECT is corruption, not absence. A file
+    holding the literal `null` parses fine and is falsy, and treating it as "no
+    manifest" would step straight past the refusal and overwrite the reviewed
+    record; a list or a scalar would instead raise AttributeError from whichever
+    reader touched it first. Both are the same fault and get the same refusal.
+
+    The exception TYPE is reported beside its message throughout: "cannot open"
+    and "is not JSON" need different repairs."""
+    path = outdir / MANIFEST_NAME
+    try:
+        raw = path.read_text()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        fatal(
+            f"[{path}] is unreadable: [{type(error).__name__}] [{error}]. {_MANIFEST_REPAIR}"
+        )
+    try:
+        manifest = json.loads(raw)
+    except ValueError as error:
+        fatal(
+            f"[{path}] is unreadable, it is not JSON: [{type(error).__name__}] [{error}]. "
+            f"{_MANIFEST_REPAIR}"
+        )
+    if not isinstance(manifest, dict):
+        fatal(
+            f"[{path}] is unreadable: it parses as [{type(manifest).__name__}], not a JSON "
+            f"object. An empty or `null` manifest is DAMAGE, never an absent one -- reading "
+            f"it as absent is exactly how a reviewed record gets overwritten. "
+            f"{_MANIFEST_REPAIR}"
+        )
+    return manifest
+
+
+_MANIFEST_REPAIR = (
+    "It is both the record of the fetch that produced this directory and the baseline "
+    "this run would be measured against, so nothing here can proceed past it: repair it, "
+    "or point -o at a different directory."
+)
+
+
+def manifest_route(manifest):
+    """(route, declared) for a parsed manifest: one of ROUTE_NETWORK,
+    ROUTE_FIXTURES or ROUTE_UNKNOWN, and the value the manifest actually
+    declares.
+
+    EXHAUSTIVE on purpose. Reading `source == "fixtures"` and treating everything
+    else as a fetch would be equally safe, but reading `source == "network"` and
+    treating everything else as replaceable is not: a manifest carrying real
+    fetched_at/bytes/sha256 and simply missing the optional `source` key would be
+    read as a replay and overwritten by one. Safety must not depend on a
+    key being present, so the third case is named and joins the protected side
+    (see require_offline_outdir).
+
+    The DECLARED value comes back with the classification because it is the
+    diagnosis. A manifest declaring "netwrok" is not a manifest that declares
+    nothing, and a refusal saying so sends the operator looking for a missing
+    key instead of at the typo in front of them."""
+    declared = manifest.get("source")
+    if declared in (ROUTE_NETWORK, ROUTE_FIXTURES):
+        return declared, declared
+    return ROUTE_UNKNOWN, declared
+
+
+def get_manifest_artifacts(manifest):
+    """The manifest's `artifacts` object, validated.
+
+    Both baseline readers walk this, so its SHAPE is checked once here rather
+    than assumed twice: a list-valued `artifacts`, or an entry that is not an
+    object, would otherwise crash whichever reader reached it first with an
+    AttributeError instead of this script's refusal."""
+    artifacts = manifest.get("artifacts", {})
+    if not isinstance(artifacts, dict):
+        fatal(
+            f"the manifest's [artifacts] is a [{type(artifacts).__name__}], not a JSON "
+            f"object keyed by archive name; the baseline cannot be read from it. "
+            f"{_MANIFEST_REPAIR}"
+        )
+    wrong = sorted(
+        f"[{name}] is a [{type(entry).__name__}]"
+        for name, entry in artifacts.items()
+        if not isinstance(entry, dict)
+    )
+    if wrong:
+        fatal(
+            f"the manifest records {', '.join(wrong)} under [artifacts], not a JSON object; "
+            f"the baseline cannot be read from it. {_MANIFEST_REPAIR}"
+        )
+    return artifacts
+
+
+def get_baseline_rows(manifest):
+    """{archive -> recorded rows} -- only for artifacts that RECORD a count.
+
+    An absent key is an absent entry. Defaulting it to None here and then asking
+    isinstance at every call site puts the same policy in three places, and a
+    site that forgot it would compare against None."""
+    return {
+        name: entry["rows"]
+        for name, entry in get_manifest_artifacts(manifest).items()
+        if "rows" in entry
+    }
+
+
+def get_baseline_members(manifest):
+    """{archive -> recorded member} -- only for artifacts that RECORD one."""
+    return {
+        name: entry["member"]
+        for name, entry in get_manifest_artifacts(manifest).items()
+        if "member" in entry
+    }
+
+
+def is_usable_row_count(rows):
+    """Whether a recorded row count can be a baseline.
+
+    bool is rejected explicitly: isinstance(True, int) is True in Python, so a
+    manifest recording `"rows": true` would otherwise arm the shrink guard
+    against a baseline of 1. A count of zero or less is not a survey either, and
+    a floor computed from it can never fire."""
+    return isinstance(rows, int) and not isinstance(rows, bool) and rows > 0
+
+
+def is_usable_member_name(member):
+    """Whether a recorded member name can be a baseline: a non-empty string."""
+    return isinstance(member, str) and member != ""
+
+
+# ---------------------------------------------------------------------------
+# The plausibility guards, in the order main runs them
+# ---------------------------------------------------------------------------
+
+
+def require_data_rows(outdir, sources):
+    """Refuses an extraction that produced no data.
+
+    Fatal on its own, with or without a baseline: an empty CSV is never a real
+    IPEDS survey, and a first run has no committed counts to be caught by.
+
+    A zero-byte member and a header-only member both count zero rows, but they
+    are NOT the same operator action -- one is a missing or truncated file to
+    re-fetch, the other is a real file whose data rows are gone -- so each is
+    named for what it is."""
+    log_info(f"Checking every artifact produced data rows ([{len(sources)}] artifacts)")
+    empty = sorted(
+        f"[{source.archive}] -> [{source.member}] "
+        + (
+            "is zero bytes (nothing was extracted)"
+            if source.member_bytes == 0
+            else f"holds a header and no data rows ([{source.member_bytes}] bytes)"
+        )
+        for source in sources.values()
+        if source.rows == 0
+    )
+    if empty:
+        fatal(
+            f"{', '.join(empty)}; produced no data rows, so refusing to write the "
+            f"extracted CSVs in [{outdir}]"
+        )
+
+
+def armed_guards(outdir, previous, sources):
+    """(rows_armed, member_armed): whether EACH baseline guard is armed for every
+    artifact. It also REPORTS as it goes -- one log_error per guard that is not
+    armed, naming the artifacts and the recorded value that disarmed it -- so a
+    caller reads the verdict and the operator reads the reason.
+
+    There are two independent guards and they must be reported independently. A
+    manifest recording `rows` but no usable `member` disarms the MEMBER guard --
+    the only check that can see an _RV swap, since a revision carries the same
+    row count -- and a run that armed on `rows` alone would print a fully
+    guarded success while that hole was open.
+
+    Three ways to be unarmed, and the quiet ones are the worse. With NO manifest
+    at all there is no baseline for anything, and a run with no protection must
+    not print what a protected run prints. With a manifest from ANOTHER survey
+    year the baseline is keyed by archive names this run never sees. With a
+    recorded value of the wrong TYPE (a row count as a string, a member as null)
+    the key is there and the baseline still is not -- and the offending value is
+    printed, because it is the diagnosis."""
+    manifest_path = outdir / MANIFEST_NAME
+    if previous is None:
+        log_error(
+            f"[{manifest_path}] does not exist, so NEITHER baseline guard is armed for any "
+            f"artifact: this run's row counts and resolved members are believed as they "
+            f"are. That is how a first generation is made -- but against a directory that "
+            f"should already hold a manifest it means the baseline was lost."
+        )
+        return False, False
+    return (
+        _warn_unarmed(
+            manifest_path,
+            sources,
+            get_baseline_rows(previous),
+            is_usable_row_count,
+            "row count",
+            "the shrink guard is NOT armed",
+        ),
+        _warn_unarmed(
+            manifest_path,
+            sources,
+            get_baseline_members(previous),
+            is_usable_member_name,
+            "member name",
+            "the member-drift guard is NOT armed -- an _RV swap carries the same row count, "
+            "so nothing else can see it",
+        ),
+    )
+
+
+def _warn_unarmed(manifest_path, sources, recorded, usable, baseline_label, consequence):
+    """Whether one baseline covers every artifact, reporting per artifact it does
+    not and naming the value that made it unusable.
+
+    The value is printed beside its TYPE rather than as a repr: a row count
+    recorded as the string "3" and one recorded as 3 must stay distinguishable,
+    and so must a member recorded as null from one recorded as "None", but a
+    repr wraps the value in the single quotes this project's messages never
+    use."""
+    unarmed = sorted(
+        f"[{source.archive}] (no {baseline_label} recorded)"
+        if source.archive not in recorded
+        else f"[{source.archive}] (records {baseline_label} [{recorded[source.archive]}], "
+        f"a [{type(recorded[source.archive]).__name__}])"
+        for source in sources.values()
+        if not usable(recorded.get(source.archive))
+    )
+    if not unarmed:
+        return True
+    log_error(f"[{manifest_path}]: {', '.join(unarmed)}; {consequence}.")
+    return False
+
+
+def list_member_drift(manifest_path, previous, sources):
+    """The member-drift complaints, if any.
+
+    Catches a wrong member resolution, which the row count CANNOT: IC2023_RV.csv
+    is a revision of the same survey and carries the same number of rows as
+    IC2023.csv, so an _RV swap sails through any count-based check while changing
+    the columns underneath the ingest. The manifest has always recorded `member`;
+    this is what reads it back."""
+    recorded = get_baseline_members(previous)
+    drifted = [
+        f"[{source.archive}]: [{source.member}] now, [{recorded[source.archive]}] recorded"
+        for source in sources.values()
+        if is_usable_member_name(recorded.get(source.archive))
+        and recorded[source.archive] != source.member
+    ]
+    if not drifted:
+        return []
+    return [
+        f"the resolved member changed against [{manifest_path}] ({'; '.join(drifted)}); "
+        f"a revision (_RV) or a renamed member carries the same row count as the "
+        f"original, so this is the only check that sees it"
+    ]
+
+
+def list_row_shrink(manifest_path, previous, sources):
+    """The shrink complaints, if any.
+
+    Catches a truncated or collapsed read: an extraction that succeeded and
+    produced a fraction of the survey. It compares DATA-ROW COUNTS per artifact,
+    not zip bytes and not CSV bytes -- counts are immune to encoding drift, where
+    a BOM appearing or disappearing moves the byte count by three and the row
+    count by zero. Both sibling fetchers compare counts (rows, codes) for the
+    same reason."""
+    recorded = get_baseline_rows(previous)
+    shrunk = [
+        f"[{source.archive}]: [{source.rows}] now, [{recorded[source.archive]}] recorded"
+        for source in sources.values()
+        if is_usable_row_count(recorded.get(source.archive))
+        and source.rows < SEED_SHRINK_FLOOR * recorded[source.archive]
+    ]
+    if not shrunk:
+        return []
+    return [f"row counts collapsed against [{manifest_path}] ({'; '.join(shrunk)})"]
+
+
+def require_stable_baseline(outdir, previous, sources):
+    """Refuses to overwrite a recorded extraction with an implausible one.
+
+    Two independent comparisons -- the member NAME and the row COUNT -- because
+    they catch different failures. Both are run and BOTH verdicts are collected
+    into one refusal: an extraction that drifted its member and collapsed its
+    counts has two things wrong with it, and reporting only the first sends the
+    operator round the loop twice."""
+    if previous is None:
+        return
+    manifest_path = outdir / MANIFEST_NAME
+    log_info(f"Checking the resolved member names against [{manifest_path}]")
+    complaints = list_member_drift(manifest_path, previous, sources)
+    log_info(f"Checking the row counts against [{manifest_path}]")
+    complaints += list_row_shrink(manifest_path, previous, sources)
+    if complaints:
+        fatal(
+            f"{'; also '.join(complaints)}. Refusing to overwrite the extracted CSVs in "
+            f"[{outdir}]."
+        )
+
+
+def require_matching_route(outdir, previous, offline):
+    """A real (network) fetch is refused against a directory whose manifest
+    records a FIXTURE replay.
+
+    Without this the run reaches the baseline guards and fails there, and the
+    message it fails with is a lie: every real member name is compared against a
+    fixture CSV's name, so the member-drift guard blames an _RV swap, and the
+    real row counts are compared against three. The fault is the ROUTE, and the
+    route is knowable before a byte is fetched.
+
+    (The mirror case -- an offline replay against a real record -- is
+    require_offline_outdir, which refuses for a different reason: there it is the
+    committed provenance that must not be overwritten.)"""
+    if offline or previous is None:
+        return
+    route, declared = manifest_route(previous)
+    if route != ROUTE_FIXTURES:
+        return
+    manifest_path = outdir / MANIFEST_NAME
+    fatal(
+        f"[{manifest_path}] declares [source={declared}] (a [{type(declared).__name__}]): it "
+        f"is the record of an offline (-F) replay, not of a fetch. Its members are "
+        f"fixture file names and its row "
+        f"counts are a handful of rows, so measuring a real download against it would "
+        f"report a member drift and a row collapse that are neither -- the ROUTE changed. "
+        f"Fetch into a directory whose manifest records a real fetch, or into an empty one."
+    )
+
+
+def require_offline_outdir(outdir, previous, offline):
+    """An offline (-F) replay is REFUSED against an output directory whose
+    manifest is not itself a fixture replay, before anything at all is written.
+
+    PROVENANCE.json is the only committed record of the real download and the
+    shrink baseline every later fetch is measured against. Writing fixture CSVs
+    beside it would leave a directory whose manifest describes the real survey
+    and whose files are a three-row replay -- silently inconsistent, and worse
+    than either half alone. So the run stops here rather than writing some of
+    it: a replay wants its own -o.
+
+    A manifest that declares NOTHING is refused with the same force as one that
+    declares a fetch (manifest_route): the protection may not depend on an
+    optional key being present in a file this script did not necessarily write.
+    The refusal NAMES what was declared -- "netwrok" is a typo the operator can
+    fix, and a message saying "declares no source" would hide it."""
+    if not offline or previous is None:
+        return
+    route, declared = manifest_route(previous)
+    if route == ROUTE_FIXTURES:
+        return
+    manifest_path = outdir / MANIFEST_NAME
+    claim = (
+        f"declares [source={declared}] (a [{type(declared).__name__}]) and so records a "
+        f"real fetch"
+        if route == ROUTE_NETWORK
+        else f"declares [source={declared}] (a [{type(declared).__name__}]), which is not "
+        f"[{ROUTE_NETWORK}] or "
+        f"[{ROUTE_FIXTURES}], so it is read as one that records a real fetch"
+    )
+    fatal(
+        f"[{manifest_path}] {claim}; an offline (-F) replay refuses to write "
+        f"into that directory at all -- its CSVs would not be the ones the manifest "
+        f"describes. Give the replay its own output directory with -o."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Writing
+# ---------------------------------------------------------------------------
+
+
+def write_files_atomically(files):
+    """Write every (target, body) pair, or none of them.
+
+    All-or-nothing as a SET, not per file. Writing each member and then the
+    manifest one at a time means an OSError on the largest member (C2023_a is
+    ~62 MB, and ENOSPC is real) leaves new CSVs sitting beside stale ones under
+    the OLD manifest -- and the next run adopts that stale manifest as both its
+    shrink and its member baseline, which is the exact state these guards exist
+    to prevent.
+
+    So every body is staged to a temp file in the SAME directory first, and only
+    once all of them are on disk are they renamed into place: os.replace is
+    atomic within a filesystem. On any fault the staged files are removed, so no
+    orphan ".partial" is left in the operator's output directory, and the
+    refusal comes through this script's channel."""
+    staged = []
+    try:
+        for target, body in files:
+            partial = target.with_name(f".{target.name}.partial")
+            partial.write_bytes(body)
+            staged.append((partial, target))
+        for partial, target in staged:
+            os.replace(partial, target)
+    except OSError as error:
+        for partial, _ in staged:
+            with contextlib.suppress(OSError):
+                partial.unlink()
+        fatal(
+            f"writing [{len(files)}] files failed: [{type(error).__name__}] [{error}]. "
+            f"Nothing partial was left behind; the previous contents of the directory "
+            f"stand as they were."
+        )
+
+
+def build_manifest(sources, offline, fetched_at):
+    """The manifest: when and from where each archive came, its size and digest,
+    which member was taken out of it, that member's digest as written, and the
+    data-row count the shrink guard reads next time.
+
+    This file is the ONLY committed record of the fetch -- the CSVs themselves
+    are far too large to commit -- so an OFFLINE (-F) run is refused outright
+    against a directory that holds one (require_offline_outdir, before anything
+    is written).
+
+    Where an offline run DOES write one -- a fresh output directory, which is
+    what the shell harness uses -- it is marked unmistakably: fixture_derived
+    true, source "fixtures", and every fetched_at null. There is ONE input that
+    decides all three, so no caller can assemble a manifest claiming a fetch that
+    did not happen. `fetched_at` is likewise the caller's single timestamp,
+    stamped identically at both levels: asking the clock again here would make
+    the top-level field later than every artifact by the whole download."""
+    return {
+        "fetched_at": fetched_at,
+        "source": ROUTE_FIXTURES if offline else ROUTE_NETWORK,
+        "fixture_derived": offline,
+        "artifacts": {source.archive: source.as_json() for source in sources.values()},
+    }
+
+
+def print_summary(outdir, sources, offline, rows_armed, member_armed):
+    """The one success line, reporting each guard as it actually stood.
+
+    The guard state is stated PER GUARD. A single "guarded"/"not guarded" verdict
+    over two independent checks either overstates a run whose member baseline was
+    missing, or understates one whose only gap was a renamed archive -- and this
+    line is the whole record an operator has of which protection was in force."""
+    counts = " ".join(f"{source.output_csv}={source.rows}" for source in sources.values())
+    route = ROUTE_FIXTURES if offline else ROUTE_NETWORK
+    guards = (
+        f"shrink: {'armed' if rows_armed else 'NOT armed'}, "
+        f"member: {'armed' if member_armed else 'NOT armed'}"
+    )
+    log_info(
+        f"IPEDS survey files written to [{outdir}] from [{route}]; guards [{guards}]: {counts}"
+    )
+
+
+def print_ingest_command(outdir, sources):
+    """The bin/ingest-colleges command to paste next, built from SURVEY_YEAR and
+    the files this run actually wrote.
+
+    -y (the survey year) is stamped on every college_ipeds row and is never
+    guessed from a filename, so an operator pasting a remembered year after an
+    archive bump would mislabel the whole load with no error. Printing it from
+    the constant the archives were just checked against removes the retyping.
+
+    The flag NAMES come from ARTIFACTS, not from a second list typed out here: a
+    re-typed key set is a declaration that can disagree with the first one, and
+    it would disagree by raising AFTER a successful 10 MB download. Every path is
+    shell-quoted (shlex.quote, as bin/remote does), because -o may legitimately
+    name "$HOME/Google Drive/ipeds" and an unquoted path there prints a command
+    bash splits into two arguments."""
+    log_info("Feed them to the ingest with:")
+    log_info("  nix develop -c bin/ingest-colleges \\")
+    for artifact in ARTIFACTS:
+        path = shlex.quote(str(outdir / sources[artifact.archive].output_csv))
+        log_info(f"      {artifact.ingest_option} {path} \\")
+    log_info(f"      -y {SURVEY_YEAR} \\")
+    log_info("      <institution.csv> <fields.csv>")
+
+
+# The option grammar, in getopt's own notation and declared ONCE: "o:F:h" is
+# what parses argv and VALUE_OPTIONS is what the error handler asks whether a
+# faulted option is one that takes a value. A second hand-written list of the
+# letters is a declaration that can drift from the first, and it would drift into
+# reporting a missing value as an unknown option.
+GETOPT_SPEC = "o:F:h"
+VALUE_OPTIONS = ("-o", "-F")
+
+
+def parse_args(argv):
+    """(outdir, fixtures) from argv, fataling on a malformed option.
+
+    The GRAMMAR is getopt.getopt -- the stdlib's model of the getopts builtin
+    every bash script in bin/ parses with, so this python3 script follows the
+    same house rule rather than hand-rolling a loop that reimplements it
+    slightly differently.
+
+    getopt gives the grammar and NOTHING else, so every check the grammar cannot
+    make is made here, after it parses. A value beginning with "-" is a dropped
+    operand -- getopt will happily take "-F" as the value of "-o" and make a
+    directory named "-F" -- an empty value silently means the current directory,
+    and a repeated option is a last-wins guess about which of two directories the
+    operator meant. In the script whose entire purpose is refusing to write the
+    wrong directory, none of those may pass quietly.
+
+    -F REQUIRES -o, and that is enforced here rather than documented. Without it,
+    an offline replay defaults to db/seed/ipeds -- the committed record -- and
+    whether it is stopped then depends on what is inside a data file: a missing
+    manifest, or one already marked `fixtures`, and the replay writes over the
+    committed seed. require_offline_outdir stays as the second line of defence
+    for an explicit -o, but the argument shape is decided by the arguments."""
+    try:
+        options, positional = getopt.getopt(argv[1:], GETOPT_SPEC)
+    except getopt.GetoptError as error:
+        # ONE exception class for two different operator mistakes, so it is the
+        # OFFENDING OPTION that separates them, not the message text: an option
+        # this script declares a value for faulted because the value is missing
+        # (11), and anything else faulted because the option is not one of ours
+        # (10). Matching on error.msg would tie these exit codes to the stdlib's
+        # wording.
+        offender = f"-{error.opt}" if error.opt else ""
+        if offender in VALUE_OPTIONS:
+            fatal(f"option [{offender}] requires a value", status=EXIT_OPTION_REQUIRES_VALUE)
+        fatal(
+            f"unknown option [{offender or error.msg}]", status=EXIT_UNKNOWN_OPTION
+        )
+
+    # -h is answered BEFORE the rest of the argv is judged: a caller reaching for
+    # the help is a caller who does not yet know the grammar, and refusing them
+    # the text over a stray word in the same command line helps nobody.
+    if any(option == "-h" for option, _ in options):
+        # The help goes to STDOUT, the one thing here that does. stdout carries
+        # what the caller explicitly ASKED FOR, and a caller that passed -h asked
+        # for this text -- it is the product of that invocation, not a diagnostic
+        # printed alongside one. Both sibling fetchers (bin/fetch-codebooks,
+        # bin/fetch-cds-seed) print their help the same way.
+        print(__doc__)
+        sys.exit(0)
+
+    # getopt hands back everything after the options as operands. This script
+    # declares none, so any of them is an argument beyond the grammar -- 20, the
+    # code bin/functions reserves for exactly that, and NOT the 10 an unknown
+    # option gets: a mistyped option and a stray word are different mistakes.
+    if positional:
+        fatal(
+            f"unexpected argument {bracketed(positional)}; this script takes options only "
+            f"({GETOPT_SPEC.replace(':', ' <value>')})",
+            status=EXIT_UNEXPECTED_ARG,
+        )
+
+    given = {}
+    for option, raw in options:
+        if option in given:
+            fatal(
+                f"option [{option}] was given more than once; which directory was meant is "
+                f"not a guess this script makes",
+                status=EXIT_INVALID_ARG_VALUE,
+            )
+        if raw == "":
+            fatal(
+                f"option [{option}] was given an empty value; if the current directory is "
+                f"meant, say so with [.]",
+                status=EXIT_INVALID_ARG_VALUE,
+            )
+        if raw.startswith("-"):
+            fatal(
+                f"option [{option}] was given [{raw}], which is another option: its value "
+                f"was left out",
+                status=EXIT_INVALID_ARG_VALUE,
+            )
+        given[option] = Path(raw)
+
+    outdir = given.get("-o", DEFAULT_OUTDIR)
+    fixtures = given.get("-F")
+    if fixtures is not None and "-o" not in given:
+        fatal(
+            f"option [-F] requires an explicit [-o]: an offline replay must not be aimed "
+            f"at the default output directory [{DEFAULT_OUTDIR}], which holds the "
+            f"committed record of the real fetch",
+            status=EXIT_OPTION_REQUIRES_VALUE,
+        )
+    # Checked as an ARGUMENT, before anything reads a disk: an -o naming an
+    # existing file is a usage error, not the traceback mkdir would raise.
+    if outdir.exists() and not outdir.is_dir():
+        fatal(
+            f"option [-o] names [{outdir}], which exists and is not a directory; the output "
+            f"directory cannot be created there",
+            status=EXIT_INVALID_ARG_VALUE,
+        )
+    return outdir, fixtures
+
+
+def main(argv):
+    require_survey_year()
+    outdir, fixtures = parse_args(argv)
+    offline = fixtures is not None
+    if offline and not fixtures.is_dir():
+        fatal(f"fixtures directory [{fixtures}] does not exist")
+
+    # Read once, under one corruption policy, before anything is written --
+    # including the directory itself.
+    previous = read_manifest(outdir)
+    require_offline_outdir(outdir, previous, offline)
+    require_matching_route(outdir, previous, offline)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # The start line: the ROUTE (the download host, or the fixture directory a
+    # replay reads) and the directory this will write. Both are decisions the
+    # arguments just made, and both are what an operator checks before letting a
+    # ~66 MB extraction run.
+    route = f"fixtures [{fixtures}]" if offline else f"network [{BASE_URL}]"
+    log_info(
+        f"Fetching [{len(ARTIFACTS)}] IPEDS survey archives from {route} into [{outdir}]"
+    )
+
+    fetched_at = None if offline else datetime.now(timezone.utc).isoformat(timespec="seconds")
+    sources = load_sources(fixtures, fetched_at)
+    # Nothing is written until the extraction is believed: a fetch that succeeded
+    # and a member resolution that went wrong must leave the recorded CSVs and
+    # the manifest that describes them exactly as they were.
+    require_data_rows(outdir, sources)
+    rows_armed, member_armed = armed_guards(outdir, previous, sources)
+    require_stable_baseline(outdir, previous, sources)
+
+    # The four members AND the manifest, as one set: a directory holding new CSVs
+    # under the old manifest is the state the guards above exist to prevent.
+    provenance = build_manifest(sources, offline, fetched_at)
+    files = [(outdir / source.output_csv, source.member_body) for source in sources.values()] + [
+        (
+            outdir / MANIFEST_NAME,
+            (json.dumps(provenance, indent=2) + "\n").encode("utf-8"),
+        )
+    ]
+    # The write is its own wait: the four real members are ~66 MB, staged and
+    # then renamed, so a run that said nothing here would look finished long
+    # before it was.
+    log_info(
+        f"Writing [{len(files)}] files ([{format_bytes(sum(len(body) for _, body in files))}]) "
+        f"to [{outdir}]"
+    )
+    write_files_atomically(files)
+
+    print_summary(outdir, sources, offline, rows_armed, member_armed)
+    print_ingest_command(outdir, sources)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except OSError as error:
+        # The one boundary for a filesystem fault this script did not anticipate.
+        # A traceback would print off the [FATAL] channel that bin/scripts-tests
+        # and every operator grep key on, and would name a /nix/store path instead
+        # of the thing that failed.
+        fatal(f"[{type(error).__name__}] [{error}]")

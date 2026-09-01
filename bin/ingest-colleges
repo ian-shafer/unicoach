@@ -4,9 +4,9 @@ source "$(dirname "$0")/common"
 help() {
   cat << 'EOF'
 ingest-colleges [-m <merit-aid.csv> -a <admission-factors.csv> -d <deadlines.csv>]
-                <institution.csv> <fields.csv> [aliases.json] \
-    [--codebooks-source=codebooks.json] [--subjects-source=subjects.json] \
-    [--hd=HD.csv --ic=IC.csv --adm=adm.csv --completions=C_A.csv --survey-year=YYYY]
+                [-k <codebooks.json>] [-s <subjects.json>]
+                [-H <HD.csv> -I <IC.csv> -A <adm.csv> -C <C_A.csv> -y <YYYY>]
+                <institution.csv> <fields.csv> [aliases.json]
 
 Loads a version-pinned College Scorecard CSV pair into the `colleges` and
 `college_programs` reference tables via the :college ingester (RFC 67). Upserts
@@ -20,7 +20,7 @@ printed change summary and one college_index_build provenance row.
 
 Every run also loads the generated published codebook (RFC 147) as its
 `codebooks` phase, before the attribute phases: db/data/codebooks.json by
-default, overridable with --codebooks-source=PATH (or an s3:// URL). The JVM
+default, overridable with -k PATH (or an s3:// URL). The JVM
 entry point REQUIRES it (migration 0067 made `colleges.state` and
 `colleges.locale` foreign keys onto the codebook tables, so a run without one
 can write no college row); this launcher is what supplies the path, because a
@@ -33,7 +33,7 @@ bin/fetch-codebooks; never hand-edit it.
 Every run also loads the authored subject taxonomy (RFC 150) in its own
 `subjects` phase, run immediately after `codebooks` so it is validated against
 the CIP codes that phase just loaded:
-db/data/subjects.json by default, overridable with --subjects-source=PATH. Every
+db/data/subjects.json by default, overridable with -s PATH. Every
 cip_prefix must match at least one real cip_codes row — a prefix that matches
 none is FATAL and names the subject, because a subject that can never match a
 college is indistinguishable, in a result, from one no college offers.
@@ -66,31 +66,51 @@ Run inside the nix dev shell (the JVM lives there):
     -a db/seed/cds/admission-factors.csv \
     -d db/seed/cds/deadlines.csv \
     <institution.csv> <fields.csv>
-IPEDS (RFC 144, optional, ALL-OR-NOTHING). The five long options above load the
-IPEDS institutional-characteristics survey into `college_ipeds` and
+IPEDS (RFC 144, optional, ALL-OR-NOTHING). The five options -H/-I/-A/-C/-y load
+the IPEDS institutional-characteristics survey into `college_ipeds` and
 `college_programs_census` in the SAME run. Give none of them and the run is
-exactly as before; give any one and all five are required. --survey-year is
-explicit (e.g. 2023) and is stamped on every IPEDS row: it is never guessed from
-a filename.
+exactly as before; give any one and all five are required. -y is explicit
+(e.g. 2023) and is stamped on every IPEDS row: it is never guessed from a
+filename.
 
-  Getting the files: unzip HD2023.zip, IC2023.zip, ADM2023.zip and C2023_A.zip
-  from https://nces.ed.gov/ipeds/datacenter/data/ and pass the CSV paths.
-  WATCH OUT — the member names are inconsistently cased (HD2023.csv, IC2023.csv,
-  but adm2023.csv and C2023_a.csv), and IC/C_A also ship revised `_RV` members.
-  Pass the NON-_RV member: IC2023_RV.csv is a reordered 141-column superset that
-  a naive column check would accept and mis-map. The header assertion is the
-  backstop, not the plan.
+  Getting the files: run bin/fetch-ipeds. It downloads the four archives,
+  extracts the right member from each into db/seed/ipeds/ and records a
+  PROVENANCE.json; pass those four CSV paths. Do not unzip them by hand — the
+  member names are inconsistently cased (HD2023.csv, IC2023.csv, but adm2023.csv
+  and C2023_a.csv) and IC/C_A also ship revised `_RV` members, and the fetcher is
+  where that resolution lives. Only the NON-_RV member is ever loaded:
+  IC2023_RV.csv is a reordered 141-column superset that a naive column check
+  would accept and mis-map. The header assertion is the backstop, not the plan.
+  The extracted CSVs are gitignored (bin/fetch-ipeds states why);
+  db/seed/ipeds/PROVENANCE.json is what is committed. A successful fetch PRINTS
+  the exact command below, with its own -y, so copy it from there.
 
 Run inside the nix dev shell (the JVM lives there):
   nix develop -c bin/ingest-colleges <institution.csv> <fields.csv>
-  nix develop -c bin/ingest-colleges inst.csv fields.csv aliases.json \
-      --hd=HD2023.csv --ic=IC2023.csv --adm=adm2023.csv \
-      --completions=C2023_a.csv --survey-year=2023
+  nix develop -c bin/fetch-ipeds
+  nix develop -c bin/ingest-colleges \
+      -H db/seed/ipeds/HD2023.csv -I db/seed/ipeds/IC2023.csv \
+      -A db/seed/ipeds/adm2023.csv -C db/seed/ipeds/C2023_a.csv -y 2023 \
+      inst.csv fields.csv aliases.json
 
 Options:
-  -m FILE: CDS merit-aid seed CSV
-  -a FILE: CDS admission-factors seed CSV
-  -d FILE: CDS deadlines seed CSV
+  -m FILE: CDS merit-aid seed CSV (Common Data Set)
+  -a FILE: CDS admission-factors seed CSV (Common Data Set)
+  -d FILE: CDS deadlines seed CSV (Common Data Set)
+  -k FILE: published codebook JSON (default: db/data/codebooks.json)
+  -s FILE: authored subject taxonomy JSON (default: db/data/subjects.json)
+
+  The IPEDS survey group (RFC 144) — all five together, or none of them. Every
+  IPEDS flag is UPPER CASE except the year:
+  -H FILE: IPEDS HD survey file, the institutional directory (HD2023.csv)
+  -I FILE: IPEDS IC survey file, institutional characteristics (IC2023.csv)
+  -A FILE: IPEDS ADM survey file, admissions and test scores (adm2023.csv)
+  -C FILE: IPEDS completions survey file, by CIP code (C2023_a.csv)
+  -y YYYY: IPEDS survey year, stamped on every IPEDS row (e.g. 2023)
+
+  Read the case pairs carefully: -a is the CDS admission-factors CSV and -A is
+  the IPEDS ADM survey file; they are different files for different tables.
+
   -h: Help
 EOF
   exit 0
@@ -100,20 +120,7 @@ CDS_MERIT_AID=""
 CDS_ADMISSION_FACTORS=""
 CDS_DEADLINES=""
 
-while getopts ":m:a:d:h" opt; do
-  case "$opt" in
-  m) CDS_MERIT_AID="$OPTARG" ;;
-  a) CDS_ADMISSION_FACTORS="$OPTARG" ;;
-  d) CDS_DEADLINES="$OPTARG" ;;
-  h) help ;;
-  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
-  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
-  esac
-done
-shift $((OPTIND-1))
-
-# Split argv into the positional Scorecard args and the optional IPEDS long
-# options. The five IPEDS options are parsed here (not just forwarded) because
+# The IPEDS survey files (RFC 144). Parsed here (not just forwarded) because
 # each file path must be run through resolve_file_arg before the JVM sees it,
 # exactly as the three positionals are.
 IPEDS_HD=""
@@ -122,15 +129,14 @@ IPEDS_ADM=""
 IPEDS_COMPLETIONS=""
 IPEDS_SURVEY_YEAR=""
 # The generated published codebook (RFC 147). Defaults to the repo copy, exactly
-# as the aliases positional does; --codebooks-source overrides it (and, like
-# every other source arg, may be an s3:// URL). An explicitly-empty value is a
-# wrong value, refused rather than silently replaced by the default.
+# as the aliases positional does; -k overrides it (and, like every other source
+# arg, may be an s3:// URL). An explicitly-empty value is a wrong value, refused
+# rather than silently replaced by the default.
 CODEBOOKS_ARG=""
-# The authored subject taxonomy (RFC 150). Same shape as --codebooks-source
-# above, and for the same reasons: a repo default, an s3:// source allowed, and
-# an explicitly-empty value refused rather than silently replaced.
+# The authored subject taxonomy (RFC 150). Same shape as -k above, and for the
+# same reasons: a repo default, an s3:// source allowed, and an explicitly-empty
+# value refused rather than silently replaced.
 SUBJECTS_ARG=""
-POSITIONAL=()
 IPEDS_GIVEN=()
 
 # Presence is judged on the FLAG, not on its value, and each flag may appear
@@ -140,36 +146,56 @@ IPEDS_GIVEN=()
 # the last of a repeated flag would silently discard a file the JVM calls a
 # usage error. Both are refused here, before any download.
 set_ipeds_flag() {
-  local name="$1" value="$2" seen
+  local flag="$1" value="$2" seen
   for seen in ${IPEDS_GIVEN[@]+"${IPEDS_GIVEN[@]}"}; do
-    [ "$seen" = "--$name" ] &&
-      fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [--$name] was given more than once"
+    [ "$seen" = "-$flag" ] &&
+      fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-$flag] was given more than once"
   done
   [ -n "$value" ] ||
-    fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [--$name] must have a non-empty value"
-  IPEDS_GIVEN+=("--$name")
+    fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-$flag] must have a non-empty value"
+  IPEDS_GIVEN+=("-$flag")
 }
 
-for arg in "$@"; do
-  case "$arg" in
-  --codebooks-source=*) CODEBOOKS_ARG="${arg#--codebooks-source=}"
-    [ -n "$CODEBOOKS_ARG" ] ||
-      fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [--codebooks-source] must have a non-empty value"
-    ;;
-  --subjects-source=*) SUBJECTS_ARG="${arg#--subjects-source=}"
-    [ -n "$SUBJECTS_ARG" ] ||
-      fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [--subjects-source] must have a non-empty value"
-    ;;
-  --hd=*)          IPEDS_HD="${arg#--hd=}";                   set_ipeds_flag hd "$IPEDS_HD" ;;
-  --ic=*)          IPEDS_IC="${arg#--ic=}";                   set_ipeds_flag ic "$IPEDS_IC" ;;
-  --adm=*)         IPEDS_ADM="${arg#--adm=}";                 set_ipeds_flag adm "$IPEDS_ADM" ;;
-  --completions=*) IPEDS_COMPLETIONS="${arg#--completions=}"; set_ipeds_flag completions "$IPEDS_COMPLETIONS" ;;
-  --survey-year=*) IPEDS_SURVEY_YEAR="${arg#--survey-year=}"; set_ipeds_flag survey-year "$IPEDS_SURVEY_YEAR" ;;
-  --*) fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: unknown option [$arg]" ;;
-  *) POSITIONAL+=("$arg") ;;
+# ONE getopts loop parses the whole grammar (bin/ conventions: short options
+# only, no hand-rolled argument loop). The IPEDS group is upper case throughout
+# — -H/-I/-A/-C plus the -y year — so -a (the CDS admission-factors CSV) and -A
+# (the IPEDS ADM survey file) stay distinct; the help text spells both out.
+while getopts ":m:a:d:k:s:H:I:A:C:y:h" opt; do
+  case "$opt" in
+  m) CDS_MERIT_AID="$OPTARG" ;;
+  a) CDS_ADMISSION_FACTORS="$OPTARG" ;;
+  d) CDS_DEADLINES="$OPTARG" ;;
+  k) CODEBOOKS_ARG="$OPTARG"
+     [ -n "$CODEBOOKS_ARG" ] ||
+       fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-k] must have a non-empty value"
+     ;;
+  s) SUBJECTS_ARG="$OPTARG"
+     [ -n "$SUBJECTS_ARG" ] ||
+       fatal -s "$EXIT_INVALID_ARG_VALUE" "ingest-colleges: [-s] must have a non-empty value"
+     ;;
+  H) IPEDS_HD="$OPTARG";          set_ipeds_flag H "$IPEDS_HD" ;;
+  I) IPEDS_IC="$OPTARG";          set_ipeds_flag I "$IPEDS_IC" ;;
+  A) IPEDS_ADM="$OPTARG";         set_ipeds_flag A "$IPEDS_ADM" ;;
+  C) IPEDS_COMPLETIONS="$OPTARG"; set_ipeds_flag C "$IPEDS_COMPLETIONS" ;;
+  y) IPEDS_SURVEY_YEAR="$OPTARG"; set_ipeds_flag y "$IPEDS_SURVEY_YEAR" ;;
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
   esac
 done
-set -- ${POSITIONAL[@]+"${POSITIONAL[@]}"}
+shift $((OPTIND-1))
+
+# getopts stops at the first operand, so an option written AFTER the positionals
+# is left in "$@" and would otherwise be read as a file name — a retired long
+# option such as --hd=HD.csv would silently become the aliases argument. Nothing
+# this script takes positionally begins with "-", so anything that does is an
+# option in the wrong place or an option this script does not have.
+for candidate in "$@"; do
+  case "$candidate" in
+  -*) fatal -s "$EXIT_UNKNOWN_OPTION" \
+    "ingest-colleges: unknown option [$candidate]; options come before <institution.csv>" ;;
+  esac
+done
 
 if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
   fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges requires two or three arguments: <institution.csv> <fields.csv> [aliases.json]"
@@ -199,10 +225,10 @@ fi
 # so the failure costs no download and no JVM start. The JVM keeps its own copy
 # of this rule because it is reachable without this script.
 IPEDS_MISSING=()
-for name in hd ic adm completions survey-year; do
+for flag in H I A C y; do
   case " ${IPEDS_GIVEN[@]+${IPEDS_GIVEN[*]}} " in
-  *" --$name "*) ;;
-  *) IPEDS_MISSING+=("--$name") ;;
+  *" -$flag "*) ;;
+  *) IPEDS_MISSING+=("-$flag") ;;
   esac
 done
 if [ "${#IPEDS_GIVEN[@]}" -gt 0 ] && [ "${#IPEDS_MISSING[@]}" -gt 0 ]; then

@@ -180,6 +180,42 @@ The dev shell (`flake.nix`) provides:
 - **ktlint** — Kotlin lint/format
 - **git** — self-consistent git on PATH
 
+## `bin/` conventions
+
+Two rules govern every script in `bin/`. Both are invariants, not preferences —
+they were reaffirmed after a run added the only violations in the tree.
+
+**1. Option parsing is `getopts`, with short options only.**
+
+No hand-rolled `while`/`case` argument loops, and **no long options**. `getopts`
+is the arbiter of the grammar; `bin/functions` supplies the reserved usage-error
+exit codes (`EXIT_UNKNOWN_OPTION` 10, `EXIT_OPTION_REQUIRES_VALUE` 11,
+`EXIT_UNEXPECTED_ARG` 20, `EXIT_MISSING_REQUIRED_ARG` 21,
+`EXIT_INVALID_ARG_VALUE` 22), so a caller that invoked a script wrongly is
+distinguishable from a run that faulted.
+
+A python script in `bin/` has no `getopts`, so it uses the stdlib **`getopt`**
+module — the same grammar in the language actually in use. `getopt` gives you
+the grammar only: value-shape checks (empty value, a value that begins with `-`,
+a repeated flag, a path that must be a directory) still belong after it.
+
+The rule exists because a hand-rolled parser silently accepts what `getopts`
+would reject, and every such parser disagrees with the others in its own way.
+
+**2. Logging ALWAYS goes to stderr.**
+
+Every diagnostic — `log-info`, `log-warning`, `log-error`, `fatal`, progress
+output, and the final human-readable summary — is written to **stderr**.
+`bin/functions` already defines the shell half this way; a python script in
+`bin/` mirrors it with its own `log_info`/`log_warning`/`log_error`/`fatal`.
+
+stdout carries only what the caller **explicitly asked for**: machine-consumable
+data, or the help text when `-h` was passed. Everything else — progress, status,
+the closing summary — is a diagnostic and belongs on stderr. A script whose
+product is files on disk therefore writes _nothing at all_ to stdout on a normal
+run, and that emptiness is worth asserting in a test — it is exactly what
+regresses when someone "helpfully" moves a summary line back.
+
 ## Schema conventions
 
 - **Own enumerations** are `TEXT` + `CHECK IN (...)` in the schema plus exactly
