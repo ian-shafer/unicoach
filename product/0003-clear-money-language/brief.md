@@ -75,6 +75,47 @@ Status:
          check passed as the gate. Declined and open: no vintage-typed
          CostField split, no money value class (every cost figure in the repo
          is a bare Int).
+      M3 (money/03/comparison-contract) LANDED as RFC 151 (main@79e2abce +
+         06a6ba81, 2026-09-01) -- the comparison contract. A cost result
+         carrying two or more colleges now returns comparison_basis: five
+         per-call facts, each with a stable code AND the sentence the coach may
+         say (D-D), so the coach reports the basis rather than composing it.
+         population (averages for first-year full-time federal-aid recipients,
+         not a quote); residency, with a scope code all_public/no_public/mixed
+         so the line is true of the actual column set, a sealed
+         answered/unanswered/declined state, and by_college naming each
+         school's tuition_basis (in_state, out_of_state, unknown,
+         single_published_price, published_price_unknown -- its own key,
+         because the per-college tuition_applicable is a narrower public-only
+         fact); living_arrangement, carrying `comparable` as the INTERSECTION
+         across every school in the call plus incomplete_by_college with one
+         reason per gap, so "held constant" is false the moment one column has
+         no figure; academic_years reusing the existing {academic_year,
+         figures} shape and derived from CostField.reportedAmountOf rather than
+         a second classifier, with a wire-vs-wire test binding the dated set to
+         what the payload rendered; and aid -- the published price minus grants
+         and scholarships, loans and work-study never subtracted, which had
+         never been on the wire before. comparable, incomplete_by_college and
+         academic_years all follow absent-never-empty. Per-call, not
+         per-college (D-A): four facts are identical for every school and
+         repeating them invites a divergent-looking caveat. Coach prompt v11
+         (0066) adds one paragraph: five lines above the table, tuition and
+         fees above the estimated living costs, rows are schools inside RFC
+         124's three-column phone cap, a labelled blank never a zero, no
+         residence halls said plainly, never two bases in one column. No DDL;
+         v10 is the rollback. RFC 150 landed mid-run and claimed 0064 and v10,
+         so this is 0066/v11 rebuilt on v10 as a byte-identical prefix. 39
+         review lenses over four tiers; four lenses independently caught a
+         corrupt money_profiles row being relabelled "never asked", now
+         refused with the service's own CorruptPersistedValueException. 2,188
+         tests green; bin/test check passed as the gate. Also fixed a
+         pre-existing main defect: CoachingServiceTest's live search
+         round-trip seeded no college and since RFC 150 passed only on a
+         neighbour's leftover state, masked by a Gradle cache hit. Declined
+         and open: no shared BasisFact type, no putJsonArrayIfPresent /
+         putCollegeRef extraction across the eight pre-existing call sites,
+         and the batching guard stays relative (1 vs 2 vs 5) like its RFC
+         148/149 siblings.
 
 ## Slice IDs
 
@@ -87,7 +128,7 @@ letters stay valid as references; the ledger above is left as written.
 | M1.1 | money/01.1/bands-in-dollars        | LANDED RFC 142 |
 | M1.2 | money/01.2/residency-before-income | LANDED RFC 145 |
 | M2   | money/02/component-split           | LANDED RFC 149 |
-| M3   | money/03/comparison-contract       | NOT STARTED    |
+| M3   | money/03/comparison-contract       | LANDED RFC 151 |
 | M4   | money/04/where-youll-live          | NOT STARTED    |
 
 Per-slice dependencies (`Needs:` lines) live in `spec.md`.

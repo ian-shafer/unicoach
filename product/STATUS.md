@@ -7,18 +7,19 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-08-31 — `search/03b/the-index` (S3) landed as RFC 150: the derived
-`college_search_index` and a 181-subject taxonomy are live, both search paths
-run through the index, and the coach searches by subject on prompt v10
-(migrations 0064/0065). `money/02/component-split` (M2) landed the same day as
-RFC 149. Slices carry permanent IDs and declared `Needs:` edges, and readiness
-is computed by `slice-board` rather than written down here.
+Updated: 2026-09-01 — `money/03/comparison-contract` (M3) landed as RFC 151: a
+cost answer covering two or more schools now carries `comparison_basis`, five
+labelled facts stated above the table, and the coach speaks them on prompt
+**v11** (migration 0066, rollback `COACHING_SYSTEM_PROMPT_VERSION=v10`). It also
+put the aid basis on the wire for the first time. Before it,
+`search/03b/the-index` (RFC 150) and `money/02/component-split` (RFC 149) landed
+on 2026-08-31. Slices carry permanent IDs and declared `Needs:` edges, and
+readiness is computed by `slice-board` rather than written down here.
 
-At that moment the next free RFC was **152** — 151 was already claimed by a live
-run (`pipeline/rfc-151`, designing) — and the next free migration was **0066**.
-Those two numbers are a snapshot and are almost certainly stale by the time you
-read them: recompute both at run time with the commands below, and never copy a
-number out of a document.
+At that moment the next free RFC was **152** and the next free migration was
+**0067**. Those two numbers are a snapshot and are almost certainly stale by the
+time you read them: recompute both at run time with the commands below, and
+never copy a number out of a document.
 
 **No RFC or migration number is recorded in this file, on purpose.** They are
 claimed by live runs in other worktrees, so any number written here is wrong
@@ -80,31 +81,36 @@ the answer to "what can I kick off?".
    `share_of_all_full_time_freshmen_pct` and tests assert the payload never
    contains "without need". A school that reports only a freshman total (28 of
    368) is a silence, not a zero; "not reported" is always the honest answer.
-   **Next for 0001: `first-value/05/family-cost-report` (S5)**, which _prefers_
-   `money/02` + `money/03` so the parent-facing artifact speaks the language.
-   That is product judgement (PREFER), not a technical block — Ian can pull it
-   forward.
+   **Next for 0001: `first-value/05/family-cost-report` (S5)**, and **both of
+   its PREFER edges are now satisfied** — `money/02` (RFC 149) and `money/03`
+   (RFC 151) have landed, so the parent-facing artifact is born speaking the
+   component split and carrying the five assumption lines. Nothing is holding
+   S5.
 
-3. **Brief 0003 — clear money language — M1, M1.1, RFC 143, M1.2 and now M2
-   LANDED (RFCs 141–143, 145, 149).** `money/02/component-split` landed
-   2026-08-31 and is the payload of the brief: the coach no longer quotes one
-   blended number. Six Scorecard components (housing and food on/off campus,
-   books and supplies, other expenses on/off campus/with family) are ingested
-   and rendered as three living arrangements, so the product can finally say
-   _living at home instead would cost $7,368 less_. Coach prompt **v9**
-   (rollback `COACHING_SYSTEM_PROMPT_VERSION=v8`). Honesty rules that are now
-   code, not prose: an arrangement missing a part carries **no** total;
-   `with_family` shows no housing line because the source publishes none;
-   unanswered residency drops the tuition line and every total rather than
-   guessing a residency; nothing computes `net_price − tuition`; and each
-   academic year is emitted as an object naming the figures it dates, so median
-   debt and earnings — dated by no source we have — carry no year at all. **Next
-   for this brief: `money/03/comparison-contract` (M3)**, then
-   `money/04/where-youll-live` (M4), which now has real components to
+3. **Brief 0003 — clear money language — M1, M1.1, RFC 143, M1.2, M2 and now M3
+   LANDED (RFCs 141–143, 145, 149, 151); only M4 is left.**
+   `money/03/comparison-contract` landed 2026-09-01 and closes the brief's
+   honesty story: a side-by-side no longer lets a column label hide what the
+   number assumes. Any cost answer covering two or more schools now carries
+   `comparison_basis` — five facts, each with a code AND the sentence the coach
+   may say: whose price it is; the residency held constant, with a scope code so
+   an all-private table is never given a caveat about public tuition, and a
+   per-school `tuition_basis`; the living arrangements comparable across
+   **every** school, plus who lacks which and why; the academic year per
+   vintage; and the **aid basis — the published price minus grants and
+   scholarships, loans and work-study never subtracted, which had never been on
+   the wire before**. Coach prompt **v11** (rollback
+   `COACHING_SYSTEM_PROMPT_VERSION=v10`) says those five lines above the table,
+   puts tuition and fees above the estimated living costs, keeps
+   rows-are-schools inside RFC 124's three-column phone cap, and leaves a
+   labelled blank rather than a zero. Before it, M2 (RFC 149) replaced the one
+   blended number with three living arrangements. **Next and last for this
+   brief: `money/04/where-youll-live` (M4)**, which now has real components to
    personalise.
 4. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
-   S6 is the wedge and its token becomes Beat 2's parent-account claim path. S5
-   waits on 0003 M2+M3 so the parent-facing artifact speaks the language.
+   S6 is the wedge and its token becomes Beat 2's parent-account claim path.
+   S5's two PREFER edges (0003 M2+M3) have both landed, so nothing is holding
+   it.
 5. **Before any App Store submission: brief 0002, account deletion** — parked in
    the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR Art.
    17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
@@ -208,6 +214,46 @@ One blended number became three priced living arrangements.
   arithmetic itself.
 - **Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v8`; the v8 row is immutable and
   stays in the catalog.
+
+### Comparing schools without hiding the assumptions (brief 0003 M3, RFC 151)
+
+**The door:** the chat coach. Ask about more than one school on your college
+list — "compare these three" — and the answer arrives as a short table with five
+plain sentences above it.
+
+A dollar figure is a statistic about a population, a year, a residency and a way
+of living. A bare column label hides all four, which is how a side-by-side
+quietly lies. So whenever a cost answer covers two or more schools, the tool now
+returns one `comparison_basis` object and the coach states it **before** the
+numbers, as ordinary copy rather than a disclaimer at the bottom:
+
+- **whose price** — averages for first-year, full-time students who received
+  federal aid, not a quote for your family;
+- **the residency held constant**, said per school. An all-private table is
+  never given a caveat about public tuition, and a mixed table names which
+  schools the caveat is about;
+- **the way of living held constant** — and it names only the arrangements every
+  school in the table is actually priced for. The moment one column has no
+  figure, "held constant" is false and the coach says so;
+- **the academic year** each figure comes from;
+- **the aid basis** — a net price is the published price minus grants and
+  scholarships. Loans and work-study are never subtracted. This one had never
+  been on the wire before.
+
+Tuition and fees — the price the school sets and publishes — renders above the
+estimated living costs, and the coach says which block is which. Rows are
+schools, inside RFC 124's three-column phone cap, or it says it as a list.
+
+**How it degrades.** A school that does not report a part gets a labelled blank,
+never a zero, never a neighbour's number, and never a total summed from the
+parts that happen to be there. A school with no residence halls is said to have
+none, not "unreported". A school whose type we cannot recognise says plainly
+that no published price can be selected for it, rather than being dropped or
+guessed at. One school only? No comparison object rides at all — a one-school
+answer is already fully labelled and must not be narrated as a comparison.
+
+**Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v10`. The v10 row is immutable and
+stays in the catalog, so this is one environment variable, no migration.
 
 ### Asking where you live before asking what you earn (brief 0003 M1.2, RFC 145)
 
@@ -372,8 +418,8 @@ progress — this is the column /chart reads to know what "halfway done" means.
 | Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Where                                    |
 | --- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | P1  | College search index (brief 0004)          | EXECUTING — gates 1+2 approved (2026-08-27); `search/01`→`search/05` specced, DDL approved. **`search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147) and `search/03b/the-index` (RFC 150, 2026-08-31) have all LANDED.** S3b is the aha: the derived index serves both search paths, the coach searches by subject on prompt v10, and the CONFLICTS edge with `money/02` cost only a rebase, exactly as a CONFLICTS edge predicts. Next: **`search/04/similar-colleges`**, unblocked by S3b and the only consumer of its percentile columns — but the `colleges` state/locale foreign-key fast-follow (Backlog) is triggered to run BEFORE it. Then `search/05/consumer-sweep`. | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` + `money/02` LANDED** (RFCs 141–143, 145, 149; 2026-08-28/31). The coach asks residency before income, and as of RFC 149 it prices three living arrangements from six ingested Scorecard components instead of one blended number (prompt v9; v8 is the rollback). Next: **`money/03/comparison-contract`**, whose stable/variable blocks build directly on M2's breakdown object, then `money/04/where-youll-live`, which now has real components to personalise.                                                                                                                                                                                                                                                                   | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, which PREFERs (does not require) `money/02` + `money/03`, then `first-value/06/invite-your-parent`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `product/0001-v1-differentiator/spec.md` |
+| P1  | Clear money language (brief 0003)          | **`money/01` + `money/01.1` + RFC 143 + `money/01.2` + `money/02` + `money/03` LANDED** (RFCs 141–143, 145, 149, 151; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, and as of RFC 151 states the five assumption lines above any side-by-side from a per-call `comparison_basis` — including the aid basis, which had never been on the wire (prompt v11; v10 is the rollback). Next and last: **`money/04/where-youll-live`**, which has real components to personalise.                                                                                                                                                                                                                        | `product/0003-clear-money-language`      |
+| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, whose two PREFER edges (`money/02`, `money/03`) have both landed, then `first-value/06/invite-your-parent`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `product/0001-v1-differentiator/spec.md` |
 | P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `bin/state-apply`                        |
 
 ## Sequencing — ask the board, do not read a list
@@ -529,31 +575,29 @@ mapped in the brief. I approve every new table personally, with visible DDL at
 the gate. Note RFC 138 (bin/state-apply) deliberately deferred its delete/reset
 semantics to this brief's engine.
 
-### Clear money language — M3 (brief 0003; the comparison contract)
+### Clear money language — M4 (brief 0003; where you'll live)
 
-PASTE: start work on `money/03/comparison-contract`.
+PASTE: start work on `money/04/where-youll-live`.
 
-WHAT LANDED BEFORE IT: M2 (RFC 149) put the components in the database and the
-breakdown on the wire. `college_cost_profile` now returns
-`cost_by_living_arrangement` with `on_campus` / `off_campus` / `with_family`,
-each carrying tuition and fees, housing and food, books and supplies, other
-expenses and that arrangement's total; `offers_on_campus_housing` whenever the
-flag is known; and one academic-year object per vintage naming the figures it
-dates. M3 builds its stable/estimate blocks and its `comparison_basis` on THAT
-object — read the code, not the spec's sketch of it.
+WHAT LANDED BEFORE IT: M2 (RFC 149) put six Scorecard components in the database
+and `cost_by_living_arrangement` on the wire. M3 (RFC 151) added the per-call
+`comparison_basis` — five labelled facts said above any multi-school table — and
+coach prompt v11. M4 personalises the housing choice on top of BOTH. Read the
+code, not the spec's sketch of it.
 
 CARRY THESE FORWARD, they are already true in code and must not regress: an
 arrangement missing a part carries no total; missing data is a labelled blank,
 never a zero; unanswered residency withholds the tuition line and every total
 rather than guessing; `net_price − tuition` is forbidden and a test scans the
 source for it; only same-vintage figures may be summed; no bare source code
-reaches a tool result (RFC 143's guard).
+reaches a tool result (RFC 143's guard); a multi-school answer states its five
+basis lines before the numbers, and "held constant" is claimed only for
+arrangements every school in the table is priced for.
 
-M3's own decisions are in `product/0003-clear-money-language/spec.md` under
-"money/03/comparison-contract (M3)" — five assumption lines above any
-side-by-side, stable block above estimate block, `comparison_basis` returned by
-the tool so the coach reports it rather than composing it. Prompt v9 is live;
-the next prompt version is v10. Claim RFC and migration numbers at run time and
+M4's own decisions are in `product/0003-clear-money-language/spec.md` under
+"money/04/where-youll-live", and D16 stands: **M4 personalises housing only, and
+the coach makes no quantitative travel-distance claim.** Prompt v11 is live; the
+next prompt version is v12. Claim RFC and migration numbers at run time and
 re-check them immediately before committing.
 
 I am the approval gate. Land it, then update the brief ledger and
