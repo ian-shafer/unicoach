@@ -38,8 +38,27 @@ list). S4 SPLIT IN DESIGN into S4a (schema + seed + ingest) and S4b (cited tool
   — the data (a share only when both counts exist; a freshman total alone is a
   denominator, not a fact, so the 28 of 368 rows carrying only that read as
   silence), the wire (the key is `share_of_all_full_time_freshmen_pct`, and
-  tests assert the payload never contains "without need"), and the prompt. Next:
-  S5 (Family Cost Report) — S5 also waits on brief 0003 M2+M3.
+  tests assert the payload never contains "without need"), and the prompt. **S5
+  LANDED as RFC 155 (main@47cf9d62 + 6777c7c7, 2026-09-01)** — the Family Cost
+  Report: the student asks the coach to share, `share_cost_report` returns a
+  link, and a parent opens `https://app.uni.coach/report?token=...` on a phone
+  with no login and no account, seeing the student's college list as a live cost
+  table (the five comparison assumption sentences, a cross-school summary table,
+  per-school living-cost detail, cited merit practice, debt context, and a
+  sources block); `revoke_cost_report_share` kills it, and revoke means every
+  link ever sent is dead. The token is derived, never stored —
+  `HMAC-SHA256(shareTokenSecret, row id)`, with only the SHA-256 hash in the
+  row, so re-sharing reproduces the same link while a database leak yields none,
+  and rotating the secret is a global revoke; one live share per student
+  (partial unique index). `publicWeb.urlBase` is now the single public-web
+  origin feeding both the verify-email and report links. Migrations 0073 + 0074,
+  coach prompt **v15** (rollback `COACHING_SYSTEM_PROMPT_VERSION=v14`);
+  unsetting `COST_REPORT_SHARE_TOKEN_SECRET` leaves the feature dark and
+  declining honestly. Gate: 2405 JVM tests, 0 failures; 431 shell assertions, 0
+  failures. **S5's two PREFER edges (`money/02`, `money/03`) were already
+  satisfied when it started, so nothing was overridden.** Next: S6
+  (`first-value/06/invite-your-parent`), now UNBLOCKED — its BLOCKS edge was
+  exactly this slice's report surface and token.
 
 ## Slice IDs
 
@@ -55,7 +74,7 @@ written.
 | S3.5 | first-value/03.5/college-list-in-chat | LANDED RFC 136 |
 | S4a  | first-value/04a/admissions-data       | LANDED RFC 140 |
 | S4b  | first-value/04b/admissions-in-chat    | LANDED RFC 148 |
-| S5   | first-value/05/family-cost-report     | NOT STARTED    |
+| S5   | first-value/05/family-cost-report     | LANDED RFC 155 |
 | S6   | first-value/06/invite-your-parent     | NOT STARTED    |
 
 Per-slice dependencies (`Needs:` lines) live in `spec.md`.

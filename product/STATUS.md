@@ -7,36 +7,44 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-01 — `money/04/where-youll-live` (brief 0003 M4) LANDED as
-**RFC 152** (`main@f7fcc99c` + `5d067bf0`), and with it **brief 0003 is
-COMPLETE**. The coach now leads with the one way of living the family said they
-plan. Ian rejected the slice's one-global-field model at the gate: preference is
-global, feasibility is a fact about the student–college pair, so
-`money_profiles.living_plan` (migration 0070) is the default,
-`college_list_entries.living_plan` (0071) is a nullable per-college override,
-and resolution is override → default → show all three (brief 0003 **D20**). When
-a total cannot be shown, the answer names which kind of silence it is — our
-unanswered residency, a price we cannot select, or a part the school does not
-publish — on a wire key separate from what the school published. Coach prompt
-**v14** (migration `0072.seed-coach-system-prompt-v14.sql`, rollback
-`COACHING_SYSTEM_PROMPT_VERSION=v13`). Gate: 2318 JVM tests, 0 failures, plus
-the full `bin/pre-commit` hook. Before it, `search/04/similar-colleges` (RFC
-153, prompt v13) completed brief 0004's core; `search/05/consumer-sweep` (RFC
-154, prompt v12) added `find_college`; the `colleges` codebook foreign-key
-fast-follow (migration 0067); `money/03/comparison-contract` (RFC 151);
-`search/03b/the-index` (RFC 150); and `money/02/component-split` (RFC 149). **At
-this moment the next free RFC number was 157** (155 and 156 are claimed by live
-runs) **and the next free migration was 0073.** Four concurrent runs collided on
-coach prompt v12 during this slice; the rule that settled it is that a run
+Updated: 2026-09-01 — `first-value/05/family-cost-report` (brief 0001 S5) LANDED
+as **RFC 155** (`main@47cf9d62` + `6777c7c7`). A parent can now open the
+student's college list as a cost table on a phone, with **no login and no
+account**: the student asks the coach to share, `share_cost_report` returns
+`https://app.uni.coach/report?token=...`, and `revoke_cost_report_share` kills
+every link ever sent. The page is live, not a snapshot, and says so. The token
+is **derived, never stored** — `HMAC-SHA256(shareTokenSecret, row id)`, with
+only the SHA-256 hash in the row — so re-sharing reproduces the same link while
+a database leak yields none, and rotating the secret is a global revoke. One
+live share per student (partial unique index). Migrations **0073**
+(`cost_report_shares`) and **0074**, coach prompt **v15** (rollback
+`COACHING_SYSTEM_PROMPT_VERSION=v14`). `publicWeb.urlBase` is now the single
+public-web origin behind both the verify-email and the report link. Gate:
+`bin/test check` — **2405 JVM tests, 0 failures; 431 shell assertions, 0
+failures**. **After this landing the next free RFC number was 157** (156 is
+claimed by the live `pipeline/rfc-156` run) **and the next free migration was
+0075.** Before it, `money/04/where-youll-live` (RFC 152, `main@f7fcc99c` +
+`5d067bf0`) completed **brief 0003**: the coach leads with the one way of living
+the family said they plan, over a global `money_profiles.living_plan` default
+and a nullable `college_list_entries.living_plan` per-college override
+(resolution override → default → show all three, brief 0003 **D20**), and when
+it cannot show a total it names which kind of silence it is — our unanswered
+residency, a price we cannot select, or a part the school does not publish.
+Before that, `search/04/similar-colleges` (RFC 153, prompt v13) completed brief
+0004's core; `search/05/consumer-sweep` (RFC 154, prompt v12) added
+`find_college`; the `colleges` codebook foreign-key fast-follow (migration
+0067); `money/03/comparison-contract` (RFC 151); `search/03b/the-index` (RFC
+150); and `money/02/component-split` (RFC 149). Four concurrent runs collided on
+coach prompt v12 during that stretch; the rule that settled it is that a run
 claims its prompt version and migration numbers from the **rebased** tree
-immediately before commit, never from its own design doc. Slices carry permanent
-IDs and declared `Needs:` edges, and readiness is computed by `slice-board`
-rather than written down here.
+immediately before commit, never from its own design doc — RFC 155 re-claimed
+its pair four times. Slices carry permanent IDs and declared `Needs:` edges, and
+readiness is computed by `slice-board` rather than written down here.
 
-At that moment the next free RFC was **157** (155 and 156 are claimed by live
-runs) and the next free migration was **0073**. Those two numbers are a snapshot
-and are almost certainly stale by the time you read them: recompute both at run
-time with the commands below, and never copy a number out of a document.
+At that moment the next free RFC was **157** (156 is claimed by a live run) and
+the next free migration was **0075**. Those two numbers are a snapshot and are
+almost certainly stale by the time you read them: recompute both at run time
+with the commands below, and never copy a number out of a document.
 
 **No RFC or migration number is recorded in this file, on purpose.** They are
 claimed by live runs in other worktrees, so any number written here is wrong
@@ -62,7 +70,37 @@ the answer to "what can I kick off?".
 
 ## TL;DR — next steps, most important first
 
-1. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
+1. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
+   LANDED as RFC 155 (`main@47cf9d62` + `6777c7c7`, 2026-09-01), so brief 0001's
+   Beat 1 is ONE SLICE from complete.** A parent no longer needs an account, a
+   login, or the app. The student asks the coach to share, `share_cost_report`
+   returns a link, and the parent opens `https://app.uni.coach/report?token=...`
+   on a phone and reads the student's college list as a cost table — the five
+   comparison assumption sentences, a cross-school summary table (rows are
+   schools, one held-constant way of living), per-school living-cost detail,
+   cited merit practice, debt context, and a sources block. The page is **live,
+   not a snapshot**: it recomputes on every view and says so, so a parent who
+   opens it again in March sees March's answer. `revoke_cost_report_share` kills
+   it, and **revoke means every link ever sent is dead**. The token is
+   **derived, never stored** — `HMAC-SHA256(shareTokenSecret, row id)`, with
+   only the SHA-256 hash in the row — so re-sharing reproduces the same link
+   while a database leak yields none, and rotating the secret is a global
+   revoke. One live share per student. Coach prompt **v15** (migrations 0073 +
+   0074, rollback `COACHING_SYSTEM_PROMPT_VERSION=v14`). Gate: 2405 JVM tests
+   and 431 shell assertions, 0 failures. **Operational precondition:**
+   `COST_REPORT_SHARE_TOKEN_SECRET` must be set in SSM before this works in
+   production; unset, the feature stays dark, declines honestly, and warns once
+   at boot.
+
+2. **THE WEDGE IS NOW UNBLOCKED: `first-value/06/invite-your-parent` (S6) is the
+   last slice in Beat 1 and it is startable.** Its BLOCKS edge was exactly this
+   slice's report surface and token, and both now exist. RFC 155 stopped short
+   of the nudge on purpose: S6 owns the share CTA placement, the RFC 93
+   synthesis commitment trigger, and share-event tracking, and S6's token is
+   Beat 2's parent-account claim path. Read the drift notes in the work table
+   before writing the RFC — the sharing mechanic itself is already built.
+
+3. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
    LANDED as RFC 152 (`main@f7fcc99c` + `5d067bf0`, 2026-09-01), and with it
    every slice in the brief.** The coach now leads with the one way of living
    the family said they plan, instead of offering three and letting them pick —
@@ -76,80 +114,40 @@ the answer to "what can I kick off?".
    `money_profiles.living_plan` is the default,
    `college_list_entries.living_plan` is a nullable per-college override, and
    resolution has exactly one home — **override → default → show all three**.
-   `with_family` is never inferred by us; where the default is assumed onto a
-   school the coach names the assumption, and the correction is stored as that
-   school's override. **When it cannot show a total it now says which kind of
-   silence it is** — our unanswered residency (one question closes it), a
-   published price we cannot select, or a part the school does not publish — on
-   two separate wire keys, so what the school published can never be confused
-   with what we have not asked yet. Because the invitation needs two _priced_
-   arrangements, the coach asks where you live AFTER which state you live in,
-   which is money/01.2's ordering arrived at a second time. Coach prompt **v14**
-   (migration 0072, rollback `COACHING_SYSTEM_PROMPT_VERSION=v13`). Gate: 2318
-   tests, 0 failures, plus the full hook. **Nothing in brief 0003 is startable —
+   **When it cannot show a total it now says which kind of silence it is** — our
+   unanswered residency, a published price we cannot select, or a part the
+   school does not publish. Coach prompt **v14** (migration 0072, rollback
+   `COACHING_SYSTEM_PROMPT_VERSION=v13`). **Nothing in brief 0003 is startable —
    the brief is done.**
 
-2. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
-   (RFCs 139, 144, 147, 150, 154 and now 153, `search/04/similar-colleges`,
+4. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
+   (RFCs 139, 144, 147, 150, 154 and 153, `search/04/similar-colleges`,
    2026-09-01); only `search/06/unattended-refresh` is left, and it is DEFERRED
-   by intent.** The last slice answers Ian's second founding query. A
-   **`similar_colleges`** chat tool decides "similar" per call and runs one
-   query over `college_search_index`: the default universe, the caller's hard
-   constraints, a weighted-distance `ORDER BY` and `LIMIT <= 10`. No new table,
-   no precompute, no method registry. Five axes — size, selectivity and price
-   over RFC 150's percentile columns (their first reader), setting by locale
-   equality, and subject mix by Jaccard over `subject_slugs`. A bare "schools
-   like Bowdoin" ranks size + selectivity + setting, same control, active
-   four-years; **price is deliberately not a default**, or a question about
-   character would silently become a question about budget. **Unknown data is
-   dropped, counted and named, never substituted**, and outcome percentiles are
-   never an axis (gate-1 ruling). "But cheaper" and "but where I'd likely get
-   in" are anchor-relative constraints echoed back in words; the second also
-   drops selectivity as an axis. Coach prompt **v13** (migration 0069, rollback
-   `COACHING_SYSTEM_PROMPT_VERSION=v12`) sends a school named in words through
-   RFC 154's `find_college` first. Gate: 2062 tests executed, 0 failures, plus
-   the full hook. Before it S5 gave chat a name→id path, S3b made the aha real —
-   one derived `college_search_index` serving both search paths, a 181-subject
-   taxonomy, nine slug-bound filters — S3a made the stored federal codes
-   explainable, S2 ingested the IPEDS attribute layer, and S1 gave fuzzy name
-   search and honest counts. **Nothing in 0004 is startable now.** The debt it
+   by intent.** A **`similar_colleges`** chat tool decides "similar" per call
+   and runs one query over `college_search_index`: the default universe, the
+   caller's hard constraints, a weighted-distance `ORDER BY` and `LIMIT <= 10`.
+   Five axes — size, selectivity and price over RFC 150's percentile columns,
+   setting by locale, subject mix by Jaccard over `subject_slugs`. **Price is
+   deliberately not a default**, or a question about character would silently
+   become a question about budget. **Unknown data is dropped, counted and named,
+   never substituted**, and outcome percentiles are never an axis (gate-1
+   ruling). Coach prompt **v13** sends a school named in words through RFC 154's
+   `find_college` first. **Nothing in 0004 is startable now.** The debt it
    leaves is in the Backlog: the `NewCollege` test fixture is a 5th copy and the
    shared helper is in the wrong source set, parked twice over.
 
-3. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
-   admissions layer is now user-visible. The coach can answer, with citations,
-   what a school weighs in admissions, when its rounds close, and how it
-   actually behaves on merit aid — and merit now rides along inside cost
-   answers. Every fact names the school's own Common Data Set, its cycle, and an
-   archive link. Coach prompt v8 (migration 0058, rollback
-   `COACHING_SYSTEM_PROMPT_VERSION=v7`). RFC 148 also closed RFC 140's open
-   item: the CDS load runs as a tracked phase **before** RFC 139's
-   `college_index_build` row is written, so that row — not `PROVENANCE.json` —
-   is now the provenance of record for the CDS seed. **THE HONEST DENOMINATOR IS
-   LOAD-BEARING AND IMPLEMENTED:** the CDS publishes no count of no-need
+5. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
+   admissions layer is user-visible: the coach can answer, with citations, what
+   a school weighs in admissions, when its rounds close, and how it actually
+   behaves on merit aid — and merit rides along inside cost answers. Every fact
+   names the school's own Common Data Set, its cycle, and an archive link. **THE
+   HONEST DENOMINATOR IS LOAD-BEARING:** the CDS publishes no count of no-need
    freshmen, so the only computable share is "X% of ALL full-time freshmen
    received non-need (merit) aid, average $Y". The wire key is
    `share_of_all_full_time_freshmen_pct` and tests assert the payload never
    contains "without need". A school that reports only a freshman total (28 of
-   368) is a silence, not a zero; "not reported" is always the honest answer.
-   **Next for 0001: `first-value/05/family-cost-report` (S5)**, and **both of
-   its PREFER edges are now satisfied** — `money/02` (RFC 149) and `money/03`
-   (RFC 151) have landed, so the parent-facing artifact is born speaking the
-   component split and carrying the five assumption lines. Nothing is holding
-   S5.
+   368) is a silence, not a zero.
 
-4. **Brief 0003's earlier slices, for context.** M3
-   (`money/03/comparison-contract`, RFC 151) closed the brief's honesty story
-   for side-by-sides: any answer covering two or more schools carries
-   `comparison_basis` — five facts, each with a code AND the sentence the coach
-   may say, including the aid basis, which had never been on the wire. M2 (RFC
-   149) replaced one blended number with three living arrangements over six
-   ingested Scorecard components, a labelled blank never a zero. M1.2 (RFC 145)
-   put residency before income. M4 above completes the set.
-5. **S5 Family Cost Report, then S6 invite-your-parent** — the rest of Beat 1;
-   S6 is the wedge and its token becomes Beat 2's parent-account claim path.
-   S5's two PREFER edges (0003 M2+M3) have both landed, so nothing is holding
-   it.
 6. **Before any App Store submission: brief 0002, account deletion** — parked in
    the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR Art.
    17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
@@ -549,6 +547,53 @@ Refresh the seed with `nix develop -c bin/fetch-cds-seed` (review the diff,
 commit), load with `bin/ingest-colleges -m/-a/-d`. The ingest records the seed's
 digests and per-table counts into the `college_index_build` provenance row.
 
+### Show a parent the price, with no account (brief 0001 S5, RFC 155)
+
+**The door:** the chat coach. The student asks the coach to share the cost
+report; `share_cost_report` returns a link. The parent opens
+`https://app.uni.coach/report?token=...` on a phone — **no login, no parent
+account, no app**. `revoke_cost_report_share` takes it back. Live on the next
+`service` and `public-web` deploy once migrations 0073 and 0074 have run and
+`COST_REPORT_SHARE_TOKEN_SECRET` is set.
+
+- **What it does:** renders the student's college list as a cost table for a
+  parent — the five `comparison_basis` assumption sentences, a cross-school
+  summary table (rows are schools, one held-constant way of living), per-school
+  living-cost detail, cited merit practice, debt context, and a sources block.
+  It is the same money vocabulary the coach speaks (brief 0003), on a page.
+- **The page is live, not a snapshot,** and it says so on the page: every view
+  recomputes from the current list, money profile and data, so a parent who
+  re-opens the link in March when the aid offers arrive reads March's answer.
+- **The token is derived, never stored:**
+  `HMAC-SHA256(shareTokenSecret, row
+  id)`, with only the SHA-256 hash in
+  `cost_report_shares` (migration 0073). Re- sharing reproduces the **same**
+  link, a database leak yields **no** working link, and rotating the secret is a
+  **global revoke**. **One live share per student**, enforced by a partial
+  unique index; revoke is a promise about every link ever sent, not just the
+  latest one. There is no expiry — the control is revocation, and it is
+  immediate.
+- **What the page does not say:** no name, no email, no user id — the link is
+  not proof of who sent it, so the page never asserts it; it opens as "Your
+  student's college list". It does state the family's income band, because a
+  likely price is a price for a family like this one. The page is `noindex` /
+  `no-store` / `no-referrer`, and the token is redacted from the request log.
+- **How it degrades:** no money profile → overall figures with the basis stated,
+  never a band claim. A school missing a part → a labelled blank, never a zero,
+  never a neighbour's number, and no partial total. An empty college list says
+  so instead of rendering an empty table. An unknown, malformed or revoked token
+  → the ordinary branded 404, never "revoked" and never "expired", so the page
+  leaks nothing about which links once existed.
+- **One public-web origin:** `publicWeb.urlBase` is now the single origin, and
+  both the verify-email link and the report link derive from it. The two
+  per-link env vars remain as overrides that still win.
+- **Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v14` turns the coach's offer off
+  (the v14 row is immutable and stays in the catalog). Unsetting
+  `COST_REPORT_SHARE_TOKEN_SECRET` leaves the feature dark: it declines honestly
+  and warns once at boot.
+- **Not yet:** no iOS share sheet (RFC 155 **D-I**, chat is the door), and no
+  share or view is recorded anywhere — that is `first-value/06`.
+
 ### College list (RFC 91 schema/REST; RFC 136 chat door)
 
 The student's working list of schools — the substrate the cost feature keys off.
@@ -580,12 +625,12 @@ beat's remainder; P3 = in flight but not on the critical path. Unprioritised
 ideas live in the Backlog below, not in the table. "State" is honest partial
 progress — this is the column /chart reads to know what "halfway done" means.
 
-| Pri | Work                                       | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Where                                    |
-| --- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P1  | College search index (brief 0004)          | **CORE COMPLETE** — gates 1+2 approved (2026-08-27); every specced slice has landed: `search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147), `search/03b/the-index` (RFC 150), `search/05/consumer-sweep` (RFC 154) and `search/04/similar-colleges` (RFC 153, 2026-09-01). S3b was the aha — the derived index serves both search paths. S5 turned out to be an audit (RFC 150 had already repointed every consumer, so there was nothing to delete) and closed the real gap instead with the `find_college` chat tool. S4 closes the brief: `similar_colleges` answers "schools like X" with one query-time weighted distance over the index, no similarity table, on coach prompt **v13** — and it is the first and only reader of the percentile columns S3b computed. The triggered `colleges` state/locale foreign-key fast-follow also LANDED (`main@9789b823`, migration 0067). **Nothing here is startable.** `search/06/unattended-refresh` stays DEFERRED — automate the quarterly ingest only if running it by hand proves annoying. The debt S4 declined moved to the Backlog: the 5th `NewCollege` fixture copy, and genericising `CollegeSearchOutcome`. | `product/0004-college-search-index`      |
-| P1  | Clear money language (brief 0003)          | **COMPLETE — every slice landed.** `money/01` + `01.1` + RFC 143 + `01.2` + `02` + `03` + **`04/where-youll-live`** (RFCs 141–143, 145, 149, 151, 152; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, states the assumption lines above any side-by-side, and now leads with the one way of living the family said they plan — a global default with a per-college override, because living at home is possible at the in-state school and not at the far one (D20). When it cannot show a total it says which kind of silence it is: our unanswered residency, a price we cannot select, or a part the school does not publish. Prompt v14; v13 is the rollback. Nothing left in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `product/0003-clear-money-language`      |
-| P1  | Beat 1 remainder: `first-value/05` → `/06` | **`first-value/04` COMPLETE** — split into `04a/admissions-data` (RFC 140) and `04b/admissions-in-chat` (RFC 148), both landed; cited merit answers are live in chat. Next: `first-value/05/family-cost-report`, whose two PREFER edges (`money/02`, `money/03`) have both landed — **IN FLIGHT** as `rfc-155` (verifying), so do not start it again; ask the board. Then `first-value/06/invite-your-parent`, which BLOCKS on it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `product/0001-v1-differentiator/spec.md` |
-| P3  | `bin/state-apply` (RFC 138)                | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `bin/state-apply`                        |
+| Pri | Work                                                  | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Where                                    |
+| --- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| P1  | College search index (brief 0004)                     | **CORE COMPLETE** — gates 1+2 approved (2026-08-27); every specced slice has landed: `search/01/honest-name-search` (RFC 139, matching later replaced by RFC 146), `search/02/ipeds-attributes` (RFC 144), `search/03a/published-codebooks` (RFC 147), `search/03b/the-index` (RFC 150), `search/05/consumer-sweep` (RFC 154) and `search/04/similar-colleges` (RFC 153, 2026-09-01). S3b was the aha — the derived index serves both search paths. S5 turned out to be an audit (RFC 150 had already repointed every consumer, so there was nothing to delete) and closed the real gap instead with the `find_college` chat tool. S4 closes the brief: `similar_colleges` answers "schools like X" with one query-time weighted distance over the index, no similarity table, on coach prompt **v13** — and it is the first and only reader of the percentile columns S3b computed. The triggered `colleges` state/locale foreign-key fast-follow also LANDED (`main@9789b823`, migration 0067). **Nothing here is startable.** `search/06/unattended-refresh` stays DEFERRED — automate the quarterly ingest only if running it by hand proves annoying. The debt S4 declined moved to the Backlog: the 5th `NewCollege` fixture copy, and genericising `CollegeSearchOutcome`.                                                  | `product/0004-college-search-index`      |
+| P1  | Clear money language (brief 0003)                     | **COMPLETE — every slice landed.** `money/01` + `01.1` + RFC 143 + `01.2` + `02` + `03` + **`04/where-youll-live`** (RFCs 141–143, 145, 149, 151, 152; 2026-08-28 to 09-01). The coach asks residency before income, prices three living arrangements from six ingested Scorecard components, states the assumption lines above any side-by-side, and now leads with the one way of living the family said they plan — a global default with a per-college override, because living at home is possible at the in-state school and not at the far one (D20). When it cannot show a total it says which kind of silence it is: our unanswered residency, a price we cannot select, or a part the school does not publish. Prompt v14; v13 is the rollback. Nothing left in this brief.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `product/0003-clear-money-language`      |
+| P1  | Beat 1 remainder: `first-value/06/invite-your-parent` | **ONE SLICE LEFT.** `first-value/04` COMPLETE (RFCs 140 + 148); **`first-value/05/family-cost-report` LANDED as RFC 155** (`main@47cf9d62` + `6777c7c7`, 2026-09-01) — the tokenized, revocable, login-free parent page, chat as the door, prompt v15, migrations 0073 + 0074, gate 2405 JVM tests + 431 shell assertions, 0 failures. Its two PREFER edges (`money/02`, `money/03`) were already satisfied, so nothing was overridden. **`first-value/06/invite-your-parent` is now UNBLOCKED** — its BLOCKS edge was exactly RFC 155's report surface and token. Honest state before anyone writes its RFC: RFC 155 already built the mint/revoke mechanic (`share_cost_report`, `revoke_cost_report_share`, prompt v15) and the public page, and stopped short of the nudge on purpose, so S6's remaining work is the **CTA placement, the RFC 93 synthesis commitment trigger, and share-event tracking** — and **nothing records a share or a view today** (`cost_report_shares` holds only id, created_at, student_id, token_hash, revoked_at), so tracking is new storage and hits Ian's DDL gate (0001 **D10**). The spec's "share CTA on the report surface" reads oddly now: the door is **chat**, not the parent page, and an iOS share sheet was deliberately deferred (RFC 155 **D-I**). Spec edits belong to /chart. | `product/0001-v1-differentiator/spec.md` |
+| P3  | `bin/state-apply` (RFC 138)                           | **Landed** (v1: users world file, create-only). Per-entity replace/reset waits on brief 0002's delete engine — see Backlog.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `bin/state-apply`                        |
 
 ## Sequencing — ask the board, do not read a list
 
@@ -769,9 +814,19 @@ Its declined items are in the Backlog above, not lost: `StoredAnswer<T>`, the
 tri-state parse ladder's third copy, the two-file wire echo, and the question of
 whether a per-college override should stop the coach asking for a usual plan.
 
-### Beat 1 remainder — S5 / S6
+### Beat 1 remainder — one slice: `first-value/06/invite-your-parent`
 
-PASTE: Ship S<n> from product brief 0001: use the slice instruction in
+**`first-value/05/family-cost-report` LANDED as RFC 155 (2026-09-01), so it left
+the ready wave.** Do not start it again. `first-value/06/invite-your-parent`
+takes its place in the ready wave: its BLOCKS edge was RFC 155's report surface
+and token, and both now exist.
+
+PASTE: start work on `first-value/06/invite-your-parent`.
+
+Or, long form: Ship S6 from product brief 0001: use the slice instruction in
 product/0001-v1-differentiator/spec.md verbatim as the /ship instruction, plus
-gate-2 decisions D7–D12 as standing context. Update the brief's ledger and
-product/STATUS.md when the slice lands.
+gate-2 decisions D7–D12 as standing context. Read RFC 155 first — the share
+mechanic, the derived token, the public page and the revoke path already exist,
+so this slice is the CTA, the RFC 93 commitment trigger and share-event
+tracking, and any new table needs Ian's DDL at the gate (D10). Update the
+brief's ledger and product/STATUS.md when the slice lands.
