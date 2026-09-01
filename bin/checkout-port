@@ -27,19 +27,44 @@ consumer takes the next reserved offset:
   +7        rest-server  -- fuzz (PORT / SERVER_PORT)
   +8        admin-web    -- fuzz (ADMIN_WEB_PORT)
   +9        public-web   -- fuzz (PUBLIC_WEB_PORT)
-  +10..+15  reserved
+  +10       rest-server  -- dev (PORT / SERVER_PORT)
+  +11       admin-web    -- dev (ADMIN_WEB_PORT)
+  +12       public-web   -- dev (PUBLIC_WEB_PORT)
+  +13..+15  reserved
 
 Test and fuzz take disjoint halves of the SAME block: they use different
 databases, so one checkout may legitimately run both at once. queue-worker gets
 no offset -- it binds no port.
 
-The derived block is a preferred base, not a guarantee. EVERY port in it is
-verified with bin/check-port; if any is held, this advances to the NEXT BLOCK
-(base + 16) and re-checks. Advancing by BLOCK and never by port is the whole
-point: a port-wise fallback would hand out a base whose block straddles a
-neighbouring checkout's, which is exactly what the block derivation removes. Two
-cases need the fallback: a hash collision between two simultaneously-running
-checkouts (1900 blocks), and a foreign process sitting inside the derived range.
+The block has two halves with DIFFERENT rules (RFC 156):
+
+  +0..+9   EPHEMERAL -- test, scripts-tests scratch, fuzz. A run needs *a* free
+                       block right now and does not care which, so this script
+                       ADVANCES on contention (below).
+  +10..+15 DEV       -- long-lived daemons. .env.dev derives these from
+                       checkout_block_base (bin/functions) and NEVER advances:
+                       the dev port is baked into iOS bundles (bin/build-ios ->
+                       Info.plist UnicoachBackendURL), so a port that moved
+                       would silently point every previously-built app at the
+                       wrong server, or at nothing. A hash collision (1 in 1900)
+                       therefore shows up as daemon-up refusing to bind, and the
+                       remedy is to rename one of the two worktree directories.
+
+The derived block is a preferred base for the EPHEMERAL half, not a guarantee.
+Every port in +0..+9 is verified with bin/check-port; if any is held, this
+advances to the NEXT BLOCK (base + 16) and re-checks. Advancing by BLOCK and
+never by port is the whole point: a port-wise fallback would hand out a base
+whose block straddles a neighbouring checkout's, which is exactly what the block
+derivation removes. Two cases need the fallback: a hash collision between two
+simultaneously-running checkouts (1900 blocks), and a foreign process sitting
+inside the derived range.
+
+The free-check deliberately covers ONLY +0..+9. The dev ports are SUPPOSED to be
+held -- by this checkout's own dev daemons -- so probing them would read "my own
+server is running" as "my block is unavailable" and advance every checkout that
+has a dev server up, onto a block it does not own. The ephemeral consumers bind
+nothing outside +0..+9, so that range is both necessary and sufficient for the
+advance decision.
 
 Range: 18000 is the floor, clear of every daemon port in `.env`. The advance
 stops below 49152 -- macOS begins its ephemeral range there
@@ -74,33 +99,60 @@ if [ "$#" -ne 0 ]; then
   fatal -s "$EXIT_UNEXPECTED_ARG" "Unexpected argument(s): checkout-port takes none, got [$#]."
 fi
 
-# Block geometry. BLOCK_COUNT * BLOCK_SIZE spans 18000..48399, entirely below the
-# ephemeral floor, so the derivation itself can never land above it.
-BLOCK_FLOOR=18000
-BLOCK_SIZE=16
-BLOCK_COUNT=1900
+# Block geometry (CHECKOUT_BLOCK_FLOOR / _SIZE / _COUNT) and the dev offsets live
+# in bin/functions beside checkout_block_base, their only other consumer.
+# EPHEMERAL_FLOOR is local: it bounds the advance loop below, which is this
+# script's alone.
 EPHEMERAL_FLOOR=49152
 
-# 0 = every port in the block is free. check-port exits 0 = in use, so a single
-# in-use port disqualifies the whole block: the block is claimed as a unit.
-block_is_free() {
-  local base="$1" offset
-  for ((offset = 0; offset < BLOCK_SIZE; offset++)); do
-    if "$PROJECT_ROOT/bin/check-port" $((base + offset)) >/dev/null 2>&1; then
-      return 1
-    fi
+# How many offsets from the base the advance loop probes. The EPHEMERAL half of
+# the block only (+0..+9: test +0..+2, scripts-tests scratch +3..+6, fuzz
+# +7..+9). The dev half (+10..+12) is deliberately NOT probed -- see the two-half
+# rule in help() -- because those ports are meant to be held by this checkout's
+# own long-lived daemons, and treating that as contention would advance every
+# checkout with a dev server up onto a block it does not own (RFC 156).
+#
+# DERIVED, not restated: the ephemeral half ends exactly where the dev half
+# begins, so the boundary is CHECKOUT_DEV_OFFSET_REST_SERVER (bin/functions)
+# -- the same number .env.dev adds to the base. The two must agree or the no-advance design
+# silently breaks, and a derivation cannot disagree.
+EPHEMERAL_SPAN="$CHECKOUT_DEV_OFFSET_REST_SERVER"
+
+# 0 = every ephemeral port in the block is free. check-port exits 0 = in use, so a
+# single in-use port disqualifies the whole block: the block is claimed as a unit.
+# Named for the range it actually probes: it does NOT answer "is this block
+# free", and widening it back to all 16 offsets is the documented way to break
+# the dev half of RFC 156.
+# check-port's status is EXHAUSTED, not tested for 0 alone. It documents three
+# exits (0 in use, 1 free, 2 invalid argument) and a missing or non-executable
+# file adds 126/127 — and `if cmd` suspends errexit, so treating every non-zero
+# status as "free" would let a check-port that CANNOT RUN read as "the whole
+# block is free". This script would then print a base whose contention was never
+# established, and bin/test would bind a 16-port block on it.
+ephemeral_half_is_free() {
+  local base="$1" offset port status
+  for ((offset = 0; offset < EPHEMERAL_SPAN; offset++)); do
+    port=$((base + offset))
+    status=0
+    "$PROJECT_ROOT/bin/check-port" "$port" >/dev/null 2>&1 || status=$?
+    case "$status" in
+    0) return 1 ;;
+    1) ;;
+    *) fatal "bin/check-port could not determine whether port [$port] is in use (exit [$status]); refusing to report a block whose contention was never established" ;;
+    esac
   done
   return 0
 }
 
-checksum="$(printf '%s' "$(basename "$PROJECT_ROOT")" | cksum | cut -d' ' -f1)"
-base=$((BLOCK_FLOOR + (checksum % BLOCK_COUNT) * BLOCK_SIZE))
+# The pure derivation, shared with .env.dev via bin/functions so the formula has
+# exactly one home; the advance loop below is what this script adds on top.
+base="$(checkout_block_base "$PROJECT_ROOT")"
 
-while ! block_is_free "$base"; do
-  base=$((base + BLOCK_SIZE))
+while ! ephemeral_half_is_free "$base"; do
+  base=$((base + CHECKOUT_BLOCK_SIZE))
   # The last port of the next block must stay below the ephemeral floor.
-  if [ $((base + BLOCK_SIZE)) -gt "$EPHEMERAL_FLOOR" ]; then
-    fatal "No free ${BLOCK_SIZE}-port block below the ephemeral floor [$EPHEMERAL_FLOOR]."
+  if [ $((base + CHECKOUT_BLOCK_SIZE)) -gt "$EPHEMERAL_FLOOR" ]; then
+    fatal "No free block of [$CHECKOUT_BLOCK_SIZE] ports below the ephemeral floor [$EPHEMERAL_FLOOR]."
   fi
 done
 

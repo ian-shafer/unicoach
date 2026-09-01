@@ -6,6 +6,12 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_ROOT/bin/functions"
+# The backend-URL derivation — which dotenvs to layer, and what URL they mean —
+# is ONE library, shared with bin/release-ios and with the install-time
+# staleness check in bin/ios-functions / bin/install-ios (RFC 156). Why it is
+# safe to source outside the Nix dev shell is stated once, in that file's
+# header; do not restate it here, where the copy would drift.
+source "$PROJECT_ROOT/bin/ios-url-functions"
 
 help() {
   cat << 'EOF'
@@ -29,13 +35,19 @@ The backend URL is honor-if-set, else derived from a dotenv's APP_DOMAIN:
     UNICOACH_BACKEND_URL=https://api.$APP_DOMAIN — HTTPS, TLS terminated at the
     ALB, no port. The checked-in `prod` / `prod-simulator` targets use this, so
     the api host is never restated in the target file.
-  - DERIVE (local): otherwise the repo .env.dev supplies APP_DOMAIN and the base
-    .env supplies SERVER_PORT (the same single sources the local server reads),
-    and the build bakes UNICOACH_BACKEND_URL=http://$APP_DOMAIN:${SERVER_PORT:-8080}.
-    APP_DOMAIN defaults to localhost; a bare IP literal is rejected (invalid cookie
-    Domain). This is the local-dev path that keeps app and server in sync. (Since
+  - DERIVE (local): otherwise the repo .env and .env.dev supply APP_DOMAIN and
+    SERVER_PORT (the same single sources the local server reads), and the build
+    bakes UNICOACH_BACKEND_URL=http://$APP_DOMAIN:$SERVER_PORT. SERVER_PORT is
+    REQUIRED and must be a port (1-65535); there is no default. APP_DOMAIN
+    defaults to localhost and must be a DNS hostname — a bare IP literal in any
+    spelling is rejected (invalid cookie Domain). This is the local-dev path that keeps app and server in sync. (Since
     RFC 95 APP_DOMAIN lives in .env.dev, not the base — override it there for
-    on-device use.)
+    on-device use. Since RFC 156 SERVER_PORT is per-worktree, derived in .env.dev,
+    so the baked URL names THIS checkout's dev server and no other's.)
+
+The derivation itself — which dotenvs are layered and what URL they mean — is
+bin/ios-url-functions, shared with bin/release-ios and with the install-time
+check that refuses a bundle built for a different backend (RFC 156).
 
 A target is a simulator build iff its UNICOACH_DESTINATION contains "Simulator";
 otherwise it is a device build, which additionally sources ios-app/env/signing.env
@@ -86,65 +98,32 @@ set +a
 : "${UNICOACH_DESTINATION:?UNICOACH_DESTINATION must be set in $ENV_FILE}"
 UNICOACH_CONFIGURATION="${UNICOACH_CONFIGURATION:-Debug}"
 
-# A dotenv is sourced UNCONDITIONALLY on both the honor and derive paths: it is
+# A dotenv is loaded UNCONDITIONALLY on both the honor and derive paths: it is
 # the source of UNICOACH_CLIENT_KEY (forwarded to xcodebuild below) and, on the
-# derive path, of APP_DOMAIN. A deploy target (UNICOACH_DEPLOY set in the target
-# file) sources .env.prod — the single source of the prod domain — so the prod URL
-# derives from APP_DOMAIN without restating it in the target. A non-deploy (local)
-# target sources the repo base .env AND .env.dev (RFC 95 moved APP_DOMAIN and the
-# other dev values into .env.dev; the base carries SERVER_PORT), mirroring the
-# `.env → .env.dev` stack the local server reads. UNICOACH_DOTENV overrides the
-# choice with a single file (used by bin/ios-scripts-tests to point at a temp
-# fixture).
-if [ -n "${UNICOACH_DOTENV:-}" ]; then
-  DOTENVS=("$UNICOACH_DOTENV")
-elif [ -n "${UNICOACH_DEPLOY:-}" ]; then
-  DOTENVS=("$PROJECT_ROOT/.env.prod")
-else
-  DOTENVS=("$PROJECT_ROOT/.env" "$PROJECT_ROOT/.env.dev")
-fi
-# DOTENV names the last-layered file for diagnostics (the one an operator edits to
-# set APP_DOMAIN on the derive path).
-DOTENV="${DOTENVS[${#DOTENVS[@]}-1]}"
-for dotenv in "${DOTENVS[@]}"; do
-  if [ -f "$dotenv" ]; then
-    set -a
-    # shellcheck source=/dev/null
-    source "$dotenv"
-    set +a
-  fi
-done
+# derive path, of APP_DOMAIN and SERVER_PORT. WHICH files those are — a deploy
+# target's .env.prod, a UNICOACH_DOTENV fixture, or the `.env -> .env.dev` stack
+# the local server reads — is ios_dotenv_files in bin/ios-url-functions, beside
+# the derivation that consumes them, so the two cannot disagree about where the
+# domain comes from. ios_load_dotenvs sources them into THIS shell — that is how
+# UNICOACH_CLIENT_KEY arrives.
+ios_load_dotenvs
 
-# Backend URL: honor-if-set, else derive. If the target file (or environment)
-# set a non-empty UNICOACH_BACKEND_URL, it is forwarded verbatim — no
-# derivation, no validation (a checked-in target's URL is reviewed at commit
-# time). Otherwise it derives from the dotenv's APP_DOMAIN, applying the bare-IP
-# rejection: a DEPLOY target (UNICOACH_DEPLOY set) bakes https://api.$APP_DOMAIN
-# (TLS terminated at the ALB, api. subdomain, no port); a LOCAL target bakes
-# http://$APP_DOMAIN:$SERVER_PORT. The honor path short-circuits derivation AND
-# its bare-IP check, so a stale bare-IP APP_DOMAIN cannot break a build that
-# never derives.
-if [ -z "${UNICOACH_BACKEND_URL:-}" ]; then
-  # DERIVE. APP_DOMAIN defaults to localhost when unset, so simulator use needs
-  # zero configuration.
-  APP_DOMAIN="${APP_DOMAIN:-localhost}"
+# The BUILD-time policy, run HERE in this script's own shell rather than inside
+# the derivation: a bare-IP APP_DOMAIN is an invalid cookie Domain, so nothing
+# may be BUILT against one. It is a rule about what a build BAKES, which is why
+# it belongs to the two scripts that bake and not to the install-time staleness
+# check that consumes the same derivation. Calling it out here also means its
+# fatal exits THIS script, instead of exiting a command substitution and
+# depending on the assignment's syntax to be noticed.
+ios_require_valid_app_domain
 
-  # A bare IP (IPv4 or IPv6 literal) is an invalid cookie Domain per RFC 6265 and
-  # could never persist a session, so reject it before invoking xcodebuild.
-  # localhost and DNS hostnames are accepted.
-  if [[ "$APP_DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-    || [[ "$APP_DOMAIN" == *:* ]]; then
-    fatal "APP_DOMAIN [$APP_DOMAIN] is a bare IP literal, which is an invalid cookie Domain (RFC 6265) and cannot persist a session. Set APP_DOMAIN in $DOTENV to a DNS hostname (e.g. a Tailscale MagicDNS name)."
-  fi
-
-  if [ -n "${UNICOACH_DEPLOY:-}" ]; then
-    # DEPLOY: externally-terminated HTTPS on the api. subdomain, no port.
-    UNICOACH_BACKEND_URL="https://api.$APP_DOMAIN"
-  else
-    SERVER_PORT="${SERVER_PORT:-8080}"
-    UNICOACH_BACKEND_URL="http://$APP_DOMAIN:$SERVER_PORT"
-  fi
-fi
+# Backend URL: honor-if-set, else derived — ONE copy of the rule, in
+# bin/ios-url-functions, shared with bin/release-ios (which bakes the same URL
+# into a release) and with the install-time staleness check that compares a
+# built bundle against it. `|| exit $?` because the derivation can still fail to
+# produce a value (no SERVER_PORT on the local path), and a fatal inside a
+# command substitution exits only that subshell.
+UNICOACH_BACKEND_URL="$(ios_derive_backend_url)" || exit $?
 
 # Signing args accumulate only for device builds. A simulator build (destination
 # containing "Simulator") does not sign and needs no Apple team.

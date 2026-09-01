@@ -86,6 +86,14 @@ so this script only reminds you of it — it never writes it.
 
 Options:
   -h           Help
+
+Exit status:
+  3                The built app was built for a different backend than this
+                   checkout builds for (stale or foreign build) — rebuild it
+                   with bin/build-ios <target>
+  10, 11, 20, 22   Usage error (unknown option, option missing its value, stray
+                   argument, malformed option value)
+  1                Any other failure
 EOF
   exit 0
 }

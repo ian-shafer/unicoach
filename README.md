@@ -90,7 +90,7 @@ Requires postgres to be running and the app binary to have been built
 (`bin/build-rest-server`).
 
 ```sh
-bin/rest-server-up         # starts the REST API on PORT (default 8080)
+bin/rest-server-up         # starts the REST API on this worktree's dev PORT
 bin/rest-server-down       # stops the REST server
 bin/rest-server-bounce     # restarts the REST server
 bin/rest-server-check      # exits 0 if /healthz responds, 1 otherwise
@@ -355,17 +355,17 @@ shared by every worktree.
 
 Copy `.env.template` to `.env`. Key variables:
 
-| Variable            | Description                                            | Default                       |
-| ------------------- | ------------------------------------------------------ | ----------------------------- |
-| `PORT`              | REST server listen port                                | `8080`                        |
-| `SERVER_PORT`       | Derived from `PORT` (used by rest-server.conf)         | `$PORT`                       |
-| `POSTGRES_DATA_DIR` | PostgreSQL cluster directory (shared by all worktrees) | `$HOME/var/unicoach/postgres` |
-| `POSTGRES_PORT`     | PostgreSQL listen port (required; no in-code default)  | `5432`                        |
-| `POSTGRES_DB`       | Application database name                              | `unicoach`                    |
-| `POSTGRES_USER`     | PostgreSQL superuser                                   | `postgres`                    |
-| `PGHOST`            | libpq host (all psql/pg_isready calls)                 | `localhost`                   |
-| `DATABASE_USER`     | Application role                                       | `unicoach`                    |
-| `DATABASE_PASSWORD` | Application role password                              | `password`                    |
+| Variable            | Description                                             | Default                       |
+| ------------------- | ------------------------------------------------------- | ----------------------------- |
+| `PORT`              | REST server listen port (dev derives it per worktree)   | block base `+10`              |
+| `SERVER_PORT`       | Derived from `PORT` (used by rest-server.conf)          | `$PORT`                       |
+| `POSTGRES_DATA_DIR` | PostgreSQL cluster directory (shared by all worktrees)  | `$HOME/var/unicoach/postgres` |
+| `POSTGRES_PORT`     | PostgreSQL listen port (required; no in-code default)   | `5432`                        |
+| `POSTGRES_DB`       | Application database name (derived per worktree in dev) | `unicoach-dev-<checkout-dir>` |
+| `POSTGRES_USER`     | PostgreSQL superuser                                    | `postgres`                    |
+| `PGHOST`            | libpq host (all psql/pg_isready calls)                  | `localhost`                   |
+| `DATABASE_USER`     | Application role                                        | `unicoach`                    |
+| `DATABASE_PASSWORD` | Application role password                               | `password`                    |
 
 `POSTGRES_PORT` is **required** and must be set in the env file — scripts and
 the JVM crash hard if it is missing rather than silently defaulting. The same is
@@ -373,15 +373,60 @@ now true of `SERVER_PORT` and `APP_DOMAIN` for the JVM: `rest-server.conf` pulls
 both from the env with a **required** `${VAR}` (no HOCON default), so they live
 in the dotenv layer alone.
 
-`.env` is the committed **base**; `.env.test` and `.env.fuzz` are **slimmed
-deltas layered _after_ it** — each restates only the keys whose values differ
-from `.env` (e.g. `PORT`, the per-worktree `POSTGRES_DB`, `DATABASE_USER`,
-`GOOGLE_AUTH_PROVIDER=stub`), inheriting everything else (the Postgres-cluster
-block, `DATABASE_PASSWORD`, `APP_DOMAIN`) from the base. `bin/common` sources
-`.env` first, then the selected delta. `POSTGRES_DB` is derived **per worktree**
-(`unicoach-test-<worktree-dir>`) so parallel test runs never collide. Dev and
-test (and every worktree) share the same postgres cluster; isolation is at the
-database level.
+`.env` is the committed **base**; `.env.dev`, `.env.test` and `.env.fuzz` are
+**slimmed deltas layered _after_ it** — each restates only the keys whose values
+differ from the layers beneath it (e.g. `PORT`, the per-worktree `POSTGRES_DB`,
+`DATABASE_USER`, `GOOGLE_AUTH_PROVIDER=stub`), inheriting everything else (the
+Postgres-cluster block, `DATABASE_PASSWORD`, `APP_DOMAIN`) from below.
+`bin/common` sources `.env` first, then the selected deltas.
+
+`POSTGRES_DB` is derived **per worktree** in **all three** local roles —
+`unicoach-dev-<worktree-dir>`, `unicoach-test-<worktree-dir>`,
+`unicoach-fuzz-<worktree-dir>` — so neither parallel test runs nor a routine
+`bin/db-reset` in one checkout can touch another's data (RFC 156). Every
+worktree shares the same postgres cluster; isolation is at the database level.
+The key is therefore **absent from the base `.env`**, and each cloud
+`.env.<env>` sets it explicitly (`.env.prod`: `unicoach`, matching
+`infra/rds.tf`'s `db_name`).
+
+The three **dev ports** are derived per worktree the same way: `PORT`,
+`ADMIN_WEB_PORT` and `PUBLIC_WEB_PORT` take this checkout's dev offsets inside
+its 16-port block. `bin/checkout-port -h` prints the offset registry — the
+authority for who owns which offset — and the block base. So two worktrees can
+run dev servers at the same time, and an iOS app built in one checkout can only
+talk to that checkout's server. Unlike the test/fuzz offsets, the dev ports
+**never advance** onto another block — the port is baked into the app bundle. If
+two worktree directory names collide, `bin/daemon-up` refuses to bind and names
+the port; rename one of the directories. The **database** half of the same
+collision is quieter — two checkouts with the same directory basename share one
+dev database and nothing fails — and the remedy is the same rename. A checkout
+directory name longer than **50 bytes** is refused outright: PostgreSQL
+truncates a database name at 63 bytes, so two long names agreeing in their first
+50 would share one dev database with nothing to reveal it.
+
+### Migrating an existing checkout (RFC 156)
+
+The old shared `unicoach` database is **left in place** — nothing drops it — but
+dev no longer points at it, so each worktree needs its own database once:
+
+```sh
+nix develop -c bin/db-create && nix develop -c bin/db-migrate   # empty database
+```
+
+To keep an existing ingest instead of re-running it, dump the old database once
+and restore it into each worktree:
+
+```sh
+nix develop -c bin/db-dump -d unicoach -o ~/opt/unicoach/var/dumps/dev.dump   # once, from any checkout
+nix develop -c bin/db-restore ~/opt/unicoach/var/dumps/dev.dump               # in each worktree
+```
+
+`-d` is needed because no checkout points at `unicoach` any more, and
+`POSTGRES_DB=unicoach bin/db-dump` does not work: `bin/common` layers the
+dotenvs over the caller's environment, so `.env.dev` wins. `bin/db-restore` has
+no `-d`: it destroys what it restores over, so its target is never an argument.
+
+This is a one-time operator step; no script performs it automatically.
 
 ## Configuration model & environments
 

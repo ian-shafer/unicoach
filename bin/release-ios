@@ -13,6 +13,10 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_ROOT/bin/functions"
+# The backend-URL derivation is ONE library, shared with bin/build-ios: a
+# release must bake exactly what a build of the same target would (RFC 156).
+# Its header states why it is safe to source outside the Nix dev shell.
+source "$PROJECT_ROOT/bin/ios-url-functions"
 
 help() {
   cat << 'EOF'
@@ -31,8 +35,9 @@ Connect for TestFlight. Runs under system Xcode, not the Nix dev shell.
                then stop — do not upload. No App Store Connect API key required.
 
 Three things are resolved before archiving (all fail fast):
-  - Backend URL: honor-if-set, else derived — identical to bin/build-ios. The
-    `prod` target sets UNICOACH_DEPLOY, so the URL derives from .env.prod as
+  - Backend URL: honor-if-set, else derived — the same bin/ios-url-functions
+    derivation bin/build-ios uses, not a second copy of it. The `prod` target
+    sets UNICOACH_DEPLOY, so the URL derives from .env.prod as
     https://api.$APP_DOMAIN (today https://api.uni.coach).
   - Signing: ios-app/env/signing.env supplies UNICOACH_DEVELOPMENT_TEAM. By
     default the export uses Xcode automatic signing (-allowProvisioningUpdates),
@@ -111,42 +116,29 @@ fi
 CONFIGURATION="Release"
 
 # A dotenv is the single source of UNICOACH_CLIENT_KEY (forwarded to xcodebuild
-# below) and, on the derive path, of APP_DOMAIN. A deploy target (UNICOACH_DEPLOY
-# set in the target file, e.g. prod) sources .env.prod — the single source of the
-# prod domain; a non-deploy target sources the repo .env. UNICOACH_DOTENV
-# overrides the choice (used by bin/ios-scripts-tests). Mirrors bin/build-ios.
-if [ -n "${UNICOACH_DOTENV:-}" ]; then
-  DOTENV="$UNICOACH_DOTENV"
-elif [ -n "${UNICOACH_DEPLOY:-}" ]; then
-  DOTENV="$PROJECT_ROOT/.env.prod"
-else
-  DOTENV="$PROJECT_ROOT/.env"
-fi
-if [ -f "$DOTENV" ]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$DOTENV"
-  set +a
-fi
+# below) and, on the derive path, of APP_DOMAIN. WHICH files those are is
+# ios_dotenv_files in bin/ios-url-functions — a deploy target (UNICOACH_DEPLOY
+# set in the target file, e.g. prod) reads .env.prod, the single source of the
+# prod domain; a non-deploy target reads the `.env -> .env.dev` stack the local
+# server reads; UNICOACH_DOTENV overrides both with one file (used by
+# bin/ios-scripts-tests). Shared with bin/build-ios, so a release cannot layer a
+# different set of files than a build and quietly bake a different host.
+ios_load_dotenvs
 
-# Backend URL: honor-if-set, else derive — identical to bin/build-ios. A DEPLOY
-# target (UNICOACH_DEPLOY set, e.g. prod) derives https://api.$APP_DOMAIN from
-# .env.prod (TLS terminated at the ALB, no port); a local target derives
-# http://$APP_DOMAIN:$SERVER_PORT. An explicit UNICOACH_BACKEND_URL short-circuits
-# both derivations and the bare-IP check.
-if [ -z "${UNICOACH_BACKEND_URL:-}" ]; then
-  APP_DOMAIN="${APP_DOMAIN:-localhost}"
-  if [[ "$APP_DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-    || [[ "$APP_DOMAIN" == *:* ]]; then
-    fatal "APP_DOMAIN [$APP_DOMAIN] is a bare IP literal, which is an invalid cookie Domain (RFC 6265) and cannot persist a session. Set APP_DOMAIN in $DOTENV to a DNS hostname."
-  fi
-  if [ -n "${UNICOACH_DEPLOY:-}" ]; then
-    UNICOACH_BACKEND_URL="https://api.$APP_DOMAIN"
-  else
-    SERVER_PORT="${SERVER_PORT:-8080}"
-    UNICOACH_BACKEND_URL="http://$APP_DOMAIN:$SERVER_PORT"
-  fi
-fi
+# The BUILD-time cookie-Domain policy, in this script's own shell — same call
+# bin/build-ios makes, for the same reason: a release must not bake a bare-IP
+# APP_DOMAIN either, and the policy is deliberately NOT inside the derivation
+# (the install-time staleness check shares that derivation and must not inherit
+# a refusal about baking). An explicit UNICOACH_BACKEND_URL short-circuits it.
+ios_require_valid_app_domain
+
+# Backend URL: honor-if-set, else derive — the SAME function bin/build-ios
+# calls, not a copy of it. A DEPLOY target derives https://api.$APP_DOMAIN (TLS
+# terminated at the ALB, no port); a local target derives
+# http://$APP_DOMAIN:$SERVER_PORT. `|| exit $?` so a derivation that cannot
+# produce a value (no SERVER_PORT on the local path) stops the release here,
+# rather than exiting a command substitution unnoticed.
+UNICOACH_BACKEND_URL="$(ios_derive_backend_url)" || exit $?
 
 # Signing is mandatory: an App Store archive is always signed for distribution.
 SIGNING_ENV="$ENV_DIR/signing.env"

@@ -1,0 +1,368 @@
+# ios-url-functions is a SOURCED library, not an executable: the ONE derivation
+# of the backend URL an iOS build bakes into the bundle, plus the install-time
+# check that the bundle on disk still agrees with THIS checkout (RFC 156).
+#
+# It sits beside bin/functions and bin/ios-functions and is sourced the same
+# way, AFTER bin/functions (it uses log-info/log-warning/fatal from there) and
+# with PROJECT_ROOT already set. It deliberately does NOT source bin/common: its
+# callers — bin/build-ios, bin/release-ios, bin/install-ios and, through
+# bin/ios-functions, bin/ios-simulator and bin/screenshot-ios — run under SYSTEM
+# Xcode, outside the Nix dev shell, where bin/common's .env/Postgres/Nix
+# requirements do not hold. It reads the dotenv FILES directly, exactly as
+# bin/build-ios always did.
+#
+# Why one library. The derivation used to exist three times: in bin/build-ios
+# (which bakes it), in bin/release-ios (a verbatim copy), and — after RFC 156 —
+# it would have been needed a third and fourth time to say what a bundle SHOULD
+# hold. Three copies of a rule whose whole value is that both sides agree is two
+# copies too many: the moment one drifts, the app talks to a server the build
+# script no longer names, and nothing says so.
+#
+# Why the check exists at all. Since RFC 156 the dev SERVER_PORT is
+# per-worktree, so the derived URL is a property of the CHECKOUT. A .app built
+# in worktree A carries A's port for ever. Run it from worktree B and either
+# nothing is listening (the app blames the network) or — the dangerous case — A's
+# daemon IS up and the app talks to a real backend on a DIFFERENT database, with
+# nothing visibly wrong. The bundle records what it was built with, this
+# checkout can say what it would build now, so the mismatch is a fact both sides
+# already hold. It is therefore a REFUSAL, not a warning: a warning in a build
+# log is not louder than a wrong answer from a real server.
+#
+# THREE SEPARATE THINGS, deliberately not one function:
+#   - ios_require_valid_app_domain — a BUILD-time policy about what a build may
+#     BAKE (the cookie-Domain rule). Only bin/build-ios and bin/release-ios call
+#     it, in their OWN shell, and only they should: refusing an INSTALL because
+#     of a rule about baking would abort on a bundle that agrees with this
+#     checkout perfectly well.
+#   - ios_derive_backend_url — the VALUE. It fails only when it cannot produce
+#     one (no SERVER_PORT on the local path), never on a policy judgement.
+#   - ios_assert_bundle_is_this_checkouts — the install-time comparison.
+#
+# Every call of the two producing functions is written `x="$(f ...)" || exit $?`.
+# A `fatal` inside a command substitution exits only the SUBSHELL, so whether it
+# stops the program would otherwise be decided by the caller's syntax — under
+# `local x="$(f)"` the status is the status of `local`, and the program carries
+# on with an empty value. The explicit `|| exit $?` is that guarantee written in
+# code rather than restated in a comment at every call site.
+
+# Exit status for the stale-bundle refusal. Distinct from the plain `fatal` (1)
+# every other -ios failure uses, so a caller can tell "your build is stale" from
+# "the tool said no", and outside the reserved 10-29 usage band because the
+# operator did not invoke anything wrongly. Documented in bin/install-ios,
+# bin/ios-simulator and bin/screenshot-ios help texts.
+#
+# A PLAIN assignment, not `: "${IOS_EXIT_STALE_BUNDLE:=3}"`. That assign-if-unset
+# idiom is right for bin/functions' SHARED EXIT_* band, which .env is documented
+# to override; it is wrong for a private constant of one library, because
+# bin/functions' fatal runs `exit "$status_code"` unguarded — so an ambient
+# IOS_EXIT_STALE_BUNDLE=0 would turn a refused install into exit 0 and the
+# caller would see success. IOS_BUNDLE_ID in bin/ios-functions is a plain
+# constant for the same reason.
+IOS_EXIT_STALE_BUNDLE=3
+
+# Sets IOS_DOTENV_FILES to the dotenv files to layer, in order. The SELECTION is
+# part of the derivation and lives here with it:
+#   - UNICOACH_DOTENV overrides everything with a single file (bin/ios-scripts-tests
+#     points it at a temp fixture);
+#   - a DEPLOY target (UNICOACH_DEPLOY set in the target file) reads .env.prod,
+#     the single source of the prod domain, so no target restates the api host;
+#   - otherwise the repo base .env AND .env.dev — the same `.env -> .env.dev`
+#     stack the local server reads, since RFC 95 moved APP_DOMAIN there and RFC
+#     156 derives the per-worktree SERVER_PORT there.
+# Reads PROJECT_ROOT from the caller. It sets an ARRAY rather than echoing
+# newline-delimited paths: the one consumer wants a list, and a list printed as
+# a string only to be split apart again five lines later is a parsing contract
+# with nothing on the other end of it.
+ios_dotenv_files() {
+  if [ -n "${UNICOACH_DOTENV:-}" ]; then
+    IOS_DOTENV_FILES=("$UNICOACH_DOTENV")
+  elif [ -n "${UNICOACH_DEPLOY:-}" ]; then
+    IOS_DOTENV_FILES=("$PROJECT_ROOT/.env.prod")
+  else
+    IOS_DOTENV_FILES=("$PROJECT_ROOT/.env" "$PROJECT_ROOT/.env.dev")
+  fi
+}
+
+# Echoes the LAST file ios_dotenv_files names — the file an operator edits to
+# change APP_DOMAIN or SERVER_PORT, which is what a fatal about either must
+# point at. Derived on demand from the selection above rather than left behind
+# in a global by whoever happened to load the files last.
+#
+# `local -a IOS_DOTENV_FILES` is what makes that claim TRUE. Without it this
+# function has TWO outputs — the path it echoes, and the caller-visible array
+# ios_dotenv_files assigns — and the undeclared one fires even from inside the
+# fatal strings below, which call this function purely for its message. Bash
+# dynamic scoping makes the callee write THIS local instead.
+ios_primary_dotenv() {
+  local -a IOS_DOTENV_FILES
+  ios_dotenv_files
+  echo "${IOS_DOTENV_FILES[${#IOS_DOTENV_FILES[@]}-1]}"
+}
+
+# Sources those files into the CALLER's shell. Sourcing into the caller (rather
+# than a subshell) is deliberate: bin/build-ios and bin/release-ios need the same
+# layered env for UNICOACH_CLIENT_KEY, so one load serves both needs and no
+# caller re-derives which files those are.
+#
+# NOT `set -a`. That made this a PROCESS-WIDE EXPORT, not a shell load: both
+# producing callers run xcodebuild — and every build phase it spawns — right
+# after calling this, so POSTGRES_DB, DATABASE_PASSWORD, DATABASE_USER, PGHOST,
+# POSTGRES_DATA_DIR, SERVER_HOST and (on the deploy path) .env.prod's
+# GOOGLE_CLIENT_IDS / APPLE_CLIENT_IDS were handed to the iOS build. Nothing in
+# the build reads them: everything it consumes — UNICOACH_BACKEND_URL and
+# UNICOACH_CLIENT_KEY — is passed as an EXPLICIT xcodebuild build setting
+# (bin/build-ios, bin/release-ios). Plain shell variables serve the callers
+# identically, INCLUDING dotenv `$VAR` interpolation, which expands shell
+# variables whether or not they are exported.
+#
+# A MISSING file is reported, never silent. An explicitly named UNICOACH_DOTENV
+# that does not exist is a FATAL — a typo would otherwise load nothing and let
+# the build derive from the ambient environment with no trace, and the
+# SERVER_PORT fatal below would then name a file that does not exist.
+# bin/common:82 fatals on exactly this state; the iOS path now agrees with the
+# repo's own loader. An OPTIONAL layer (.env / .env.dev / .env.prod) may legally
+# be absent — a fresh checkout has no .env — so that one warns instead.
+ios_load_dotenvs() {
+  local dotenv
+  local -a IOS_DOTENV_FILES
+  ios_dotenv_files
+  for dotenv in "${IOS_DOTENV_FILES[@]}"; do
+    if [ ! -f "$dotenv" ]; then
+      if [ -n "${UNICOACH_DOTENV:-}" ]; then
+        fatal "UNICOACH_DOTENV names [$dotenv], which does not exist. Nothing would be loaded and the build would derive APP_DOMAIN / SERVER_PORT from the ambient environment with no trace of it. Point UNICOACH_DOTENV at an existing dotenv, or unset it to use this checkout's own .env stack."
+      fi
+      log-warning "Dotenv [$dotenv] does not exist, so nothing was loaded from it: APP_DOMAIN, SERVER_PORT and UNICOACH_CLIENT_KEY come only from the files that DO exist. Create it (see .env.template) if the build derives the wrong backend."
+      continue
+    fi
+    # shellcheck source=/dev/null
+    source "$dotenv"
+  done
+}
+
+# BUILD-TIME POLICY, not part of the derivation: a bare IP (IPv4 or IPv6
+# literal) APP_DOMAIN is an invalid cookie Domain per RFC 6265 and could never
+# persist a session, so nothing may be BUILT against one. localhost and DNS
+# hostnames are accepted.
+#
+# An ALLOWLIST, not a denylist. It used to deny exactly two spellings — a
+# dotted-quad regex, and anything containing a colon — and macOS/BSD resolvers
+# accept many more: 127.1, 10.1, 2130706433, 0x7f000001 and 192.168.1 are all
+# bare IP literals, all equally invalid as cookie Domains, and all passed. The
+# consequence is silent: the value is baked into a bundle and the session cookie
+# simply never persists. So the rule is stated positively instead — the LAST
+# label of a DNS name must start with a LETTER. That admits `localhost`, every
+# real TLD and every MagicDNS name, and rejects every IPv4 spelling above,
+# because each one ends in a digit whatever base it is written in.
+#
+# The colon is a SEPARATE test with its OWN message. Inferring "IPv6 literal"
+# from a colon told an operator who wrote `localhost:8080` — a plausible
+# mis-edit now that the port is per-worktree and lives one line away in the same
+# file — something untrue about their value.
+#
+# Called by bin/build-ios and bin/release-ios in their OWN shell, before the
+# derivation, so the fatal exits the program rather than a command substitution.
+# The install-time staleness check does NOT call it: a bundle baked with a
+# bare-IP backend that MATCHES this checkout is not stale, and refusing it would
+# be a cookie-policy message on a path where nothing is being built — with exit
+# 1, not the published IOS_EXIT_STALE_BUNDLE the install path documents.
+#
+# Honor-if-set short-circuits it: an explicit UNICOACH_BACKEND_URL means no
+# derivation happens, so a stale bare-IP APP_DOMAIN must not break that build.
+ios_require_valid_app_domain() {
+  [ -z "${UNICOACH_BACKEND_URL:-}" ] || return 0
+  local app_domain="${APP_DOMAIN:-localhost}"
+  if [[ "$app_domain" == *:* ]]; then
+    fatal "APP_DOMAIN [$app_domain] contains a colon, so it is not a bare host: APP_DOMAIN carries the HOST ONLY — the port comes from SERVER_PORT, and an IPv6 literal is an invalid cookie Domain (RFC 6265) either way. Set APP_DOMAIN in $(ios_primary_dotenv) to a DNS hostname alone (e.g. a Tailscale MagicDNS name), and set the port as SERVER_PORT in that same file."
+  fi
+  if [[ ! "${app_domain##*.}" =~ ^[A-Za-z] ]]; then
+    fatal "APP_DOMAIN [$app_domain] is not a DNS hostname — its last label [${app_domain##*.}] does not start with a letter, which is what every bare IP literal (192.168.1.42, 127.1, 2130706433, 0x7f000001) looks like. A bare IP is an invalid cookie Domain (RFC 6265) and cannot persist a session. Set APP_DOMAIN in $(ios_primary_dotenv) to a DNS hostname (e.g. a Tailscale MagicDNS name)."
+  fi
+}
+
+# Echoes the backend URL for the ALREADY-LOADED environment: honor-if-set, else
+# derive. A VALUE producer — it holds no policy and makes no judgement about
+# whether the value it produces is one this checkout should build against.
+#   - HONOR: a non-empty UNICOACH_BACKEND_URL (from the target file or the
+#     environment) is echoed VERBATIM — no derivation, no validation. A
+#     checked-in target's URL is reviewed at commit time.
+#   - DERIVE (deploy): UNICOACH_DEPLOY set => https://api.$APP_DOMAIN. TLS is
+#     terminated at the ALB, so HTTPS and no port.
+#   - DERIVE (local): http://$APP_DOMAIN:$SERVER_PORT, from the same single
+#     sources the local server reads. APP_DOMAIN defaults to localhost, so
+#     simulator use needs zero configuration.
+#
+# SERVER_PORT is REQUIRED on the local path — it has no default. It used to read
+# `${SERVER_PORT:-8080}`, and after RFC 156 no dev server binds 8080, so that
+# fallback baked a DEAD port into the bundle. Worse, the staleness check could
+# not catch it: the expected URL and the baked URL both come from THIS function,
+# so they agreed with each other while both were wrong. A check that compares a
+# value against itself is not a check. Failing here is the only way the two
+# sides can disagree about a missing port.
+#
+# And the test is validate_port, not `-z`: a non-empty value is not a port.
+# `abc`, `8080 `, `0` and `99999` all passed the emptiness guard and were baked
+# into Info.plist as http://localhost:abc — with the SAME blind spot, since the
+# expectation is derived by this very function. bin/functions:validate_port
+# already owns the 1..65535 rule for check-port, daemon-up, daemon-check,
+# daemon-http-check and find-free-port; every caller of this library sources
+# bin/functions first, so the iOS build now judges a port exactly as they do.
+ios_derive_backend_url() {
+  if [ -n "${UNICOACH_BACKEND_URL:-}" ]; then
+    echo "$UNICOACH_BACKEND_URL"
+    return 0
+  fi
+  local app_domain="${APP_DOMAIN:-localhost}"
+  if [ -n "${UNICOACH_DEPLOY:-}" ]; then
+    echo "https://api.$app_domain"
+    return 0
+  fi
+  if ! validate_port "${SERVER_PORT:-}"; then
+    fatal "SERVER_PORT [${SERVER_PORT:-}] is not a valid TCP port (an integer 1-65535), so the local backend URL cannot be derived (there is no default: since RFC 156 the dev port is per-worktree and nothing listens on 8080). Set SERVER_PORT in $(ios_primary_dotenv) to this checkout's port, or set UNICOACH_BACKEND_URL explicitly in the target file."
+  fi
+  echo "http://$app_domain:$SERVER_PORT"
+}
+
+# Echoes the URL this checkout would bake RIGHT NOW for the target named $1,
+# loading that target's env file AND the dotenvs in a SUBSHELL so nothing leaks
+# into the caller.
+#
+# The target file is loaded HERE, not assumed to be in the caller's environment.
+# The check is then a function of its argument: a caller that has not sourced
+# ios-app/env/<target>.env would otherwise get this checkout's LOCAL expectation
+# (http://localhost:<port>) compared against a correct PROD bundle
+# (https://api.uni.coach) and a false refusal. Same order bin/build-ios uses —
+# target file first, then the dotenvs — so the expectation is derived exactly as
+# the build would derive it.
+#
+# The subshell isolation is the other half of the point: the install-time
+# consumers (bin/ios-functions, bin/install-ios) are about to name a device and
+# a bundle id, and a stray APP_DOMAIN/SERVER_PORT/CLIENT_KEY landing in their
+# environment would be a second, invisible way for one script to change
+# another's behaviour. bin/build-ios and bin/release-ios do NOT use this: they
+# need the loaded env for UNICOACH_CLIENT_KEY, so they call ios_load_dotenvs and
+# ios_derive_backend_url themselves.
+ios_expected_backend_url() {
+  local env_name="$1"
+  local env_dir="${UNICOACH_ENV_DIR:-$PROJECT_ROOT/ios-app/env}"
+  (
+    if [ ! -f "$env_dir/$env_name.env" ]; then
+      fatal "Target env file [$env_dir/$env_name.env] does not exist, so this checkout cannot say what it would build for target [$env_name]. Without it the expectation silently degrades to the LOCAL derivation, and a correct prod bundle is refused as stale. Name an existing target (see ios-app/env/)."
+    fi
+    # `set -a` here, despite the header's "NOT `set -a`" above: that rule is
+    # about ios_load_dotenvs, which sources into the CALLER's shell, where an
+    # export would leak into xcodebuild and every phase it spawns. This one is
+    # bounded by the subshell this whole function runs in, and it is needed:
+    # the target env file's values must reach ios_load_dotenvs' dotenv
+    # interpolation, and they die with the subshell.
+    set -a
+    # shellcheck source=/dev/null
+    source "$env_dir/$env_name.env"
+    set +a
+    ios_load_dotenvs
+    ios_derive_backend_url
+  )
+}
+
+# Reads the URL BAKED into the .app at $1. The bundle's expanded Info.plist
+# holds it under UnicoachBackendURL (ios-app/UnicoachiOS/Info.plist), written
+# from the UNICOACH_BACKEND_URL build setting bin/build-ios passes to xcodebuild.
+#
+# Read with system plutil, NOT grep: a simulator build's Info.plist is a BINARY
+# plist. plutil is /usr/bin/plutil, outside the Nix store, which is exactly
+# where these scripts run.
+#
+# THREE outcomes, because they are three different facts and collapsing them
+# into one empty string reported a TOOL FAILURE as a fact about the bundle:
+#   0  the URL was read. It is on stdout, and in IOS_BUNDLE_BACKEND_URL.
+#   1  the bundle STATES NOTHING — no Info.plist, no such key, or an empty
+#      value. Expected, and RFC 156 authorises not refusing on it: a bundle that
+#      cannot say what it was built for is not evidence that it is stale, and
+#      refusing would break every bundle built before this check existed. WHICH
+#      of the three is in IOS_BUNDLE_URL_ABSENT_REASON.
+#   2  the READ FAILED — no plutil on this machine, or a corrupt/half-written
+#      Info.plist. That is not evidence about the bundle at all. The caller
+#      still installs, but SAYS SO: a silent skip makes an unchecked install
+#      indistinguishable from a checked one. The reason is in
+#      IOS_BUNDLE_URL_READ_ERROR.
+# `plutil -lint` is what discriminates 1 from 2 once the extract has failed:
+# a well-formed plist that simply lacks the key is the absent case.
+#
+# ONE KIND OF VALUE PER CHANNEL. The reasons used to be ECHOED, so stdout meant
+# a URL at status 0 and an English sentence at status 2 — and the caller held
+# both in one variable named `baked`, which it then compared with `!=` against
+# the expected URL. A channel whose meaning is decided by a status the reader
+# must have kept is a channel that will eventually be read wrong. stdout now
+# carries a URL or nothing at all; every reason is a NAMED global, the same way
+# ios_dotenv_files returns IOS_DOTENV_FILES. All three globals are reset on
+# entry, so a stale reason from an earlier bundle can never be reported.
+#
+# IOS_BUNDLE_BACKEND_URL holds the same URL stdout carries. That is a DECLARED
+# second output, not a hidden one, and it is what lets a caller run this in its
+# OWN shell: a `$( )` capture is a subshell, and every global set inside it —
+# the reasons included — dies with it.
+ios_bundle_backend_url() {
+  local app="$1"
+  local plist="$app/Info.plist"
+  IOS_BUNDLE_BACKEND_URL=""
+  IOS_BUNDLE_URL_ABSENT_REASON=""
+  IOS_BUNDLE_URL_READ_ERROR=""
+  if [ ! -f "$plist" ]; then
+    IOS_BUNDLE_URL_ABSENT_REASON="there is no [$plist] in it"
+    return 1
+  fi
+  if ! command -v plutil > /dev/null 2>&1; then
+    IOS_BUNDLE_URL_READ_ERROR="no plutil on PATH"
+    return 2
+  fi
+  local url
+  if url="$(plutil -extract UnicoachBackendURL raw -o - "$plist" 2>/dev/null)"; then
+    if [ -z "$url" ]; then
+      IOS_BUNDLE_URL_ABSENT_REASON="its [$plist] sets UnicoachBackendURL to an empty value"
+      return 1
+    fi
+    IOS_BUNDLE_BACKEND_URL="$url"
+    echo "$url"
+    return 0
+  fi
+  if plutil -lint "$plist" > /dev/null 2>&1; then
+    IOS_BUNDLE_URL_ABSENT_REASON="its [$plist] is well-formed but has no UnicoachBackendURL key"
+    return 1
+  fi
+  IOS_BUNDLE_URL_READ_ERROR="[$plist] is not a readable property list"
+  return 2
+}
+
+# REFUSES to install the .app at $1 when the URL baked into it is not the URL
+# this checkout derives now for the target named $2. $2 is BOTH the expectation's
+# input and the word in the one-line fix.
+#
+# Called immediately before an install, on both paths that put a build on
+# something: ios_boot_install_launch (bin/ios-functions — bin/ios-simulator and
+# bin/screenshot-ios) and bin/install-ios (the physical device, which does not
+# pass through that lib). `bin/ios-simulator -B` — install without rebuilding —
+# is precisely the case this exists for.
+ios_assert_bundle_is_this_checkouts() {
+  local app="$1" env_name="$2"
+  local baked_url expected_url read_status=0
+  # Called in THIS shell, NOT as `$(ios_bundle_backend_url ...)`: a command
+  # substitution is a subshell, and the reason globals it sets would die there,
+  # leaving the two failure paths below with nothing to report but a fixed
+  # sentence. The URL comes back in IOS_BUNDLE_BACKEND_URL; stdout is discarded
+  # because this function speaks through log-info / log-warning / fatal.
+  ios_bundle_backend_url "$app" > /dev/null || read_status=$?
+  baked_url="$IOS_BUNDLE_BACKEND_URL"
+  if [ "$read_status" -eq 1 ]; then
+    # Nothing baked to compare: refuse nothing (see above), but say it happened.
+    log-info "Built app at [$app] states no backend URL [$IOS_BUNDLE_URL_ABSENT_REASON], so it cannot be checked against this checkout — installing it as-is."
+    return 0
+  fi
+  if [ "$read_status" -ne 0 ]; then
+    log-warning "Could not read the backend URL from [$app] [$IOS_BUNDLE_URL_READ_ERROR], so the RFC 156 staleness check was SKIPPED for this install: if the app talks to another worktree's server, that is why. Rebuild it to be sure: [bin/build-ios $env_name]."
+    return 0
+  fi
+  expected_url="$(ios_expected_backend_url "$env_name")" || exit $?
+  if [ "$baked_url" != "$expected_url" ]; then
+    fatal -s "$IOS_EXIT_STALE_BUNDLE" "The built app at [$app] was built for backend [$baked_url], but this checkout builds for [$expected_url] — it is another checkout's build, or predates a change to APP_DOMAIN / SERVER_PORT. Installing it would point the app at the wrong server (or at another worktree's database). Rebuild it: [bin/build-ios $env_name]."
+  fi
+  log-info "Built app backend [$baked_url] matches this checkout."
+}

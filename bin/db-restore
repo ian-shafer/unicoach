@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+db-restore [-y] [<file>]
+
+Arguments:
+  file: A pg_dump custom-format artifact written by bin/db-dump; when omitted,
+        the dump is read from stdin
+
+Restores POSTGRES_DB from a bin/db-dump artifact. DESTRUCTIVE: the target is
+dropped and recreated first (bin/db-drop -y, then bin/db-create), because
+restoring over a populated database yields a merge, not a restore. It does NOT
+run bin/db-migrate — the dump already carries the schema and the
+schema_migrations rows.
+
+bin/db-create pre-creates an empty schema_migrations, which collides with the
+same table in the dump, so the restore runs
+`pg_restore --single-transaction --clean --if-exists --no-owner --no-privileges`.
+db-create is still required in the sequence: it issues the database-level GRANT
+CONNECT to DATABASE_USER, which a plain pg_dump does not carry.
+
+The restore itself is ALL-OR-NOTHING. pg_restore's default is to CONTINUE past
+errors, which would leave a partly restored database — and since the dump
+carries schema_migrations, a partial restore can make bin/db-status report a
+fully migrated database over a broken schema. --single-transaction (which
+implies --exit-on-error) makes a failed restore roll back instead, so the
+outcome is either the whole archive or an EMPTY database, never a plausible
+half.
+
+The internal bin/db-drop -y disarms the only confirmation in the chain, so this
+script prompts for itself and takes its own -y. On a stdin restore the prompt
+cannot share stdin with the dump, so it is read from /dev/tty; with no terminal,
+pass -y.
+
+The input is verified to be a readable pg_dump custom-format archive BEFORE the
+target is dropped. Only then is anything destroyed. A truncated file, or a plain
+SQL file passed by mistake — the natural mistake, since -Fc is not
+human-readable — is refused with exit 7 and the database is left exactly as it
+was, rather than dropped and then found unrestorable.
+
+There is deliberately no option to name a different target database: this script
+DESTROYS what it restores over, and a restore aimed at the wrong database is the
+accident RFC 156 exists to prevent. bin/db-dump's read-only -d has no
+counterpart here.
+
+Artifacts live outside the repo by convention, under
+$HOME/opt/unicoach/var/dumps/:
+
+  nix develop -c bin/db-restore ~/opt/unicoach/var/dumps/dev.dump
+  nix develop -c bin/db-dump | ssh other-mac 'nix develop -c bin/db-restore -y'
+
+The stream form is for a DIFFERENT MACHINE. Piping a bin/db-dump from THIS
+checkout into it is not a workflow: both ends resolve the same POSTGRES_DB, so
+it would drop a live dev database to restore it from itself.
+
+Local-only tooling; never deployed.
+
+Options:
+  -y: Disable confirmation prompt
+  -h: Help
+
+Exit codes:
+  3: the named input file does not exist or is not readable
+  4: no input — stdin is a terminal, or the stdin stream was empty
+  5: pg_restore failed; the restore was rolled back and the target is EMPTY
+  6: no terminal available to confirm a stdin restore (pass -y)
+  7: the input is not a readable pg_dump custom-format archive (nothing dropped)
+ 10: unknown option
+ 11: option given without its value
+ 20: unexpected positional argument
+EOF
+  exit 0
+}
+
+EXIT_NO_SUCH_INPUT_FILE=3
+EXIT_NO_INPUT=4
+# 5 is "the underlying pg_* tool failed" in bin/db-dump too; these two ship as a
+# pair, so the code that means a tool failure means it in both.
+EXIT_RESTORE_FAILED=5
+EXIT_CANNOT_PROMPT=6
+EXIT_NOT_AN_ARCHIVE=7
+
+skip_prompt=false
+while getopts ":yh" opt; do
+  case "$opt" in
+  y) skip_prompt=true ;;
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -gt 1 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-restore accepts at most one argument: <file>; received: [$*]"
+fi
+
+# PRESENCE of the file argument is held in its own variable, NOT inferred from
+# IN_FILE being non-empty. `bin/db-restore ""` -- the shape a caller's unset
+# variable makes, `bin/db-restore "$DUMP"` -- named a file, so it must be refused
+# as a missing file (exit 3); reading it as "no argument" turned it into a STDIN
+# restore, prompting to replace the database "with the contents of [stdin]" and
+# dropping POSTGRES_DB on any non-empty stream. IN_FILE is also REASSIGNED to the
+# buffered stdin copy below, after which "empty" could not mean "no file named"
+# anyway. Same shape the file already uses for skip_prompt.
+IN_FILE_GIVEN=false
+IN_FILE=
+SOURCE_LABEL=stdin
+
+# Decide WHAT is being restored, and refuse the inputs that are not restorable at
+# all. Nothing is destroyed here.
+resolve_input() {
+  if [ "$IN_FILE_GIVEN" = true ]; then
+    if [ ! -f "$IN_FILE" ] || [ ! -r "$IN_FILE" ]; then
+      fatal -s "$EXIT_NO_SUCH_INPUT_FILE" "dump file not found or not readable [$IN_FILE]"
+    fi
+    SOURCE_LABEL="$IN_FILE"
+  elif [ -t 0 ]; then
+    fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin is a terminal and no file was named"
+  fi
+}
+
+# The prompt must not eat the dump. With a named file, stdin is free and the
+# prompt reads it as usual; on a stdin restore the confirmation is read from the
+# controlling terminal instead, and its absence is an error rather than a silent
+# destructive run.
+#
+# The terminal is named by a variable so the no-terminal refusal can be triggered
+# under test — a harness always runs with a real /dev/tty, and an untriggerable
+# refusal on a destructive path is an untested one. Same test-hook convention as
+# UNICOACH_DOTENV / UNICOACH_ENV_DIR; unset, the behaviour is byte-identical to
+# reading /dev/tty directly.
+confirm_destruction() {
+  [ "$skip_prompt" = false ] || return 0
+  local tty_device="${UNICOACH_TTY_DEVICE:-/dev/tty}"
+  local description="drop database [$POSTGRES_DB] and replace it with the contents of [$SOURCE_LABEL]"
+  if [ "$IN_FILE_GIVEN" = true ]; then
+    require_dangerous_confirmation "$description"
+    return 0
+  fi
+  if [ ! -e "$tty_device" ] || ! : < "$tty_device" 2>/dev/null; then
+    fatal -s "$EXIT_CANNOT_PROMPT" "cannot confirm a stdin restore without a terminal; pass -y"
+  fi
+  require_dangerous_confirmation "$description" < "$tty_device"
+}
+
+# A stdin dump is buffered to a private temp file BEFORE anything is dropped.
+#
+# The durable reason is not the same-checkout self-pipe (which is not a workflow
+# — see help()): it is that THE TARGET MUST NOT BE DROPPED UNTIL THE INPUT IS
+# KNOWN READABLE AND NON-EMPTY. A stream cannot be inspected without being
+# consumed, and a stream that turns out to be empty or truncated after the drop
+# leaves the operator with no database and no archive. Buffering first makes the
+# input a file, which the archive gate below then reads exactly as it reads a
+# named one. That the buffering also lets a same-machine producer finish and
+# disconnect is a side effect, not the reason.
+buffer_stdin_to_file() {
+  [ "$IN_FILE_GIVEN" = false ] || return 0
+  local tmp_base="${TMPDIR:-/tmp}"
+  mkdir -p "$tmp_base"
+  RESTORE_TMP="$(mktemp "$tmp_base/unicoach-db-restore.XXXXXX")"
+  trap 'rm -f "$RESTORE_TMP"' EXIT INT TERM
+  cat > "$RESTORE_TMP"
+  if [ ! -s "$RESTORE_TMP" ]; then
+    fatal -s "$EXIT_NO_INPUT" "no dump to restore: stdin was empty"
+  fi
+  IN_FILE="$RESTORE_TMP"
+}
+
+# THE LAST GATE BEFORE DESTRUCTION. pg_restore --list reads the archive's table
+# of contents and nothing else, so it is cheap and read-only, and it fails on
+# exactly the inputs that would have been discovered only AFTER the drop: a
+# truncated artifact, and a plain-SQL file (the natural mistake, since -Fc is not
+# human-readable). Emptiness alone was not enough, and it was only ever checked
+# on the stdin path.
+#
+# pg_restore's own diagnostic is CAPTURED INTO the refusal (`2>&1 >/dev/null`, in
+# that order: stderr to the current stdout, then stdout to /dev/null), because it
+# is the one fact that separates a truncated transfer from a plain SQL file from
+# a permission problem. On the stdin path it is the only evidence there is: the
+# label is the word "stdin" and the buffered copy is removed by the EXIT trap, so
+# the path is named too.
+require_readable_archive() {
+  local err
+  if ! err="$(pg_restore --list "$IN_FILE" 2>&1 >/dev/null)"; then
+    fatal -s "$EXIT_NOT_AN_ARCHIVE" \
+      "[$SOURCE_LABEL] is not a readable pg_dump custom-format archive; database [$POSTGRES_DB] was not touched. pg_restore --list [$IN_FILE] said [$(printf '%s' "$err" | tr '\n' ' ')]"
+  fi
+}
+
+# The destructive step, and the only one. --single-transaction makes it
+# ALL-OR-NOTHING: pg_restore's DEFAULT is to CONTINUE past errors, which would
+# leave a PARTLY restored database -- and schema_migrations can restore while a
+# table does not, so bin/db-status would then report a fully migrated database
+# over a broken schema. --single-transaction implies --exit-on-error, so a failed
+# restore rolls back and leaves the (already dropped and recreated) database
+# EMPTY, which no tool mistakes for healthy.
+#
+# --clean --if-exists drops each object the archive is about to create, which is
+# what resolves db-create's pre-created schema_migrations; --no-owner and
+# --no-privileges keep the artifact portable across roles (db-create has already
+# issued the grants this checkout needs).
+#
+# `< /dev/null` on the two children, which bin/db-reset (the precedent help()
+# cites) does NOT use: on a stdin restore THIS script's stdin is the DUMP
+# STREAM, and a child that read one byte of it would eat part of the artifact
+# being restored. Neither child wants stdin -- db-drop is passed -y -- so
+# closing it costs nothing. It is defence in depth, not the sole guard: the
+# buffer-before-drop step has already drained stdin to a temp file by the time
+# these run. Keep it anyway; it is what makes the safety local to this line
+# instead of resting on a decision made 100 lines up.
+restore_into_fresh_database() {
+  "$PROJECT_ROOT/bin/db-drop" -y < /dev/null
+  "$PROJECT_ROOT/bin/db-create" < /dev/null
+
+  local status=0
+  pg_restore --single-transaction --clean --if-exists --no-owner --no-privileges \
+    -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$IN_FILE" || status=$?
+  if [ "$status" -ne 0 ]; then
+    fatal -s "$EXIT_RESTORE_FAILED" \
+      "pg_restore failed for database [$POSTGRES_DB] from [$SOURCE_LABEL] [status=$status]; the restore was ROLLED BACK, so [$POSTGRES_DB] is EMPTY (dropped and recreated, nothing from the archive applied). Fix or replace the archive and re-run this command, or run bin/db-reset for an empty migrated database."
+  fi
+}
+
+if [ "$#" -eq 1 ]; then
+  IN_FILE_GIVEN=true
+  IN_FILE="$1"
+fi
+
+# The order of these steps IS the safety property: nothing is destroyed until the
+# input has been resolved, confirmed, buffered, and proven to be a readable
+# archive.
+resolve_input
+confirm_destruction
+log-info "Restoring database [$POSTGRES_DB] from [${SOURCE_LABEL}]..."
+buffer_stdin_to_file
+require_readable_archive
+restore_into_fresh_database
+
+log-info "Database [$POSTGRES_DB] restored from [$SOURCE_LABEL]."

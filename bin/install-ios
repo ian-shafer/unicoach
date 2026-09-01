@@ -6,6 +6,10 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_ROOT/bin/functions"
+# The install-time staleness check (RFC 156) and the backend-URL derivation it
+# compares against. Its header states why it is safe to source outside the Nix
+# dev shell.
+source "$PROJECT_ROOT/bin/ios-url-functions"
 
 BUNDLE_ID="coach.uni.UnicoachiOS"
 
@@ -26,8 +30,22 @@ Device selection: UNICOACH_DEVICE (from ios-app/env/signing.env) when set;
 otherwise the single connected device is auto-detected, failing if zero or more
 than one device is connected.
 
+The build is checked against this checkout before it is installed: the URL baked
+into the bundle (Info.plist UnicoachBackendURL) must equal the URL this checkout
+would build with now. Since RFC 156 the dev port is per-worktree, so a bundle
+built in another checkout — or before APP_DOMAIN / SERVER_PORT changed — points
+the app at the wrong server. That is refused, not warned about; rebuild with
+bin/build-ios <target>.
+
 Options:
   -h           Help
+
+Exit status:
+  3            The built app was built for a different backend than this
+               checkout builds for (stale or foreign build)
+  10, 11, 20   Usage error (unknown option, option missing its value, stray
+               argument)
+  1            Any other failure
 EOF
   exit 0
 }
@@ -84,6 +102,18 @@ APP="$PRODUCTS_DIR/$UNICOACH_CONFIGURATION-iphoneos/UnicoachiOS.app"
 if [ ! -d "$APP" ]; then
   fatal "Built app not found at [$APP]. Run [bin/build-ios $ENV_NAME] first."
 fi
+
+# The app exists — but is it THIS checkout's? Since RFC 156 the dev SERVER_PORT
+# is per-worktree, so a bundle built in another checkout carries another
+# checkout's backend, and a phone is the worst place to discover that: it either
+# shows "No Connection" (which blames the network) or talks to a real server
+# backed by a different database. Compare the URL baked into the bundle against
+# the one this checkout derives now, and refuse if they differ. The check is
+# shared with the simulator path (ios_boot_install_launch in bin/ios-functions);
+# this script needs its own call because a physical-device install does not go
+# through that lib. Before signing.env / device resolution: a stale build cannot
+# be fixed by naming a different device.
+ios_assert_bundle_is_this_checkouts "$APP" "$ENV_NAME"
 
 # signing.env is the home of UNICOACH_DEVICE.
 SIGNING_ENV="$ENV_DIR/signing.env"

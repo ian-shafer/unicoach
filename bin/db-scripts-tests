@@ -297,12 +297,430 @@ test_db_status_formats() {
 }
 test_db_status_formats
 
+echo "==== Testing Dump & Restore ===="
+# All scratch artifacts live under PRIVATE_ROOT, so the EXIT trap removes them.
+DUMP_DIR="$PRIVATE_ROOT/dumps"
+
+# The shape both the dump/restore and the migration sections need: an empty
+# database and an empty migration directory to drive it from. Written once, and
+# defined here because the dump section runs first; setup_migration_test calls it
+# too.
+reset_database_with_schema_dir() {
+  bin/db-drop -y >/dev/null 2>&1 || true
+  bin/db-create >/dev/null
+  export DB_SCHEMA_DIR="$1"
+  rm -rf "$DB_SCHEMA_DIR"
+  mkdir -p "$DB_SCHEMA_DIR"
+}
+
+setup_dump_restore_test() {
+  mkdir -p "$DUMP_DIR"
+  rm -f "$DUMP_DIR"/*.dump
+  reset_database_with_schema_dir "$PRIVATE_ROOT/dump_schema"
+  echo "CREATE TABLE dump_rows (id INT PRIMARY KEY, val TEXT);" > "$DB_SCHEMA_DIR/0001.dump-test.sql"
+  bin/db-migrate >/dev/null
+  bin/db-run rw "INSERT INTO dump_rows (id, val) VALUES (1, 'kept');" >/dev/null
+}
+
+teardown_dump_restore_test() {
+  rm -rf "$DB_SCHEMA_DIR"
+  unset DB_SCHEMA_DIR
+}
+
+# The marker row setup_dump_restore_test plants. Its survival — or its return
+# after a restore — is what every case in this section actually asserts, so the
+# query lives in one place.
+dump_marker_row_present() {
+  bin/db-run -r ro "SELECT val FROM dump_rows WHERE id = 1;" 2>/dev/null | grep -q "kept"
+}
+
+test_db_dump_restore_round_trip() {
+  setup_dump_restore_test
+  bin/db-dump -o "$DUMP_DIR/round-trip.dump" >/dev/null 2>&1
+  if [ ! -s "$DUMP_DIR/round-trip.dump" ]; then
+    fail_test "db-dump produced no artifact"
+    return 1
+  fi
+  bin/db-drop -y >/dev/null
+  bin/db-restore -y "$DUMP_DIR/round-trip.dump" >/dev/null 2>&1
+  if ! dump_marker_row_present; then
+    fail_test "restored database is missing the dumped row"
+    return 1
+  fi
+  return 0
+}
+
+# Restoring over a POPULATED database must replace it, not merge into it: the row
+# inserted after the dump was taken has to be gone afterwards.
+test_db_restore_replaces_rather_than_merges() {
+  setup_dump_restore_test
+  bin/db-dump -o "$DUMP_DIR/replace.dump" >/dev/null 2>&1
+  bin/db-run rw "INSERT INTO dump_rows (id, val) VALUES (2, 'after-dump');" >/dev/null
+  bin/db-run rw "CREATE TABLE only_after_dump (id INT);" >/dev/null
+  bin/db-restore -y "$DUMP_DIR/replace.dump" >/dev/null 2>&1
+
+  if bin/db-run -r ro "SELECT val FROM dump_rows;" | grep -q "after-dump"; then
+    fail_test "db-restore merged: the post-dump row survived"
+    return 1
+  fi
+  if ! bin/db-run -r ro "SELECT val FROM dump_rows;" | grep -q "kept"; then
+    fail_test "db-restore lost the dumped row"
+    return 1
+  fi
+  if bin/db-run ro "SELECT * FROM only_after_dump;" >/dev/null 2>&1; then
+    fail_test "db-restore merged: the post-dump table survived"
+    return 1
+  fi
+  return 0
+}
+
+# The dump carries schema_migrations, so a restored database is fully migrated
+# without db-restore ever running db-migrate.
+test_db_restore_restores_schema_migrations() {
+  setup_dump_restore_test
+  bin/db-dump -o "$DUMP_DIR/migrations.dump" >/dev/null 2>&1
+  bin/db-restore -y "$DUMP_DIR/migrations.dump" >/dev/null 2>&1
+
+  applied_out=$(bin/db-status -f applied-only)
+  if [ "$applied_out" != "0001.dump-test.sql" ]; then
+    fail_test "restored schema_migrations wrong. Got: $applied_out"
+    return 1
+  fi
+  unapplied_out=$(bin/db-status -f unapplied-only)
+  if [ -n "$unapplied_out" ]; then
+    fail_test "db-status reports pending migrations after a restore. Got: $unapplied_out"
+    return 1
+  fi
+  return 0
+}
+
+# MECHANISM ONLY — this is NOT a recommended workflow, and the help texts do not
+# advertise it. Both ends resolve the same POSTGRES_DB, so in real use it would
+# drop a live database to restore it from itself; the shipped stream form sends
+# the dump to ANOTHER MACHINE over ssh. What is asserted here is the mechanism
+# the cross-machine form relies on: stdout and stdin compose, and db-restore
+# drains and validates the whole stream before it drops anything. It is kept as
+# the one same-checkout pipe case because it is also the most hostile one.
+test_db_dump_restore_pipe() {
+  setup_dump_restore_test
+  bin/db-dump 2>/dev/null | bin/db-restore -y >/dev/null 2>&1
+  if ! dump_marker_row_present; then
+    fail_test "piped dump | restore lost the row"
+    return 1
+  fi
+  return 0
+}
+
+# stdout carries the archive alone; every log line goes to stderr. A single
+# stray log-info on stdout would corrupt the artifact.
+test_db_dump_logs_to_stderr_only() {
+  setup_dump_restore_test
+  bin/db-dump > "$DUMP_DIR/stdout.dump" 2> "$DUMP_DIR/stdout.err"
+  if ! head -c 5 "$DUMP_DIR/stdout.dump" | grep -q "PGDMP"; then
+    fail_test "db-dump stdout is not a pg_dump custom archive (log output leaked?)"
+    return 1
+  fi
+  if ! grep -q "Dumping database" "$DUMP_DIR/stdout.err"; then
+    fail_test "db-dump did not log to stderr"
+    return 1
+  fi
+  return 0
+}
+
+# db-restore calls db-drop -y internally, disarming the only confirmation in the
+# chain, so it must prompt for itself. With stdin at EOF the prompt is refused
+# and the database is left untouched.
+test_db_restore_without_y_prompts() {
+  setup_dump_restore_test
+  bin/db-dump -o "$DUMP_DIR/prompt.dump" >/dev/null 2>&1
+  if bin/db-restore "$DUMP_DIR/prompt.dump" > /dev/null 2> "$DUMP_DIR/prompt.err" < /dev/null; then
+    fail_test "db-restore without -y succeeded with no confirmation"
+    return 1
+  fi
+  if ! grep -q "Destructive action" "$DUMP_DIR/prompt.err"; then
+    fail_test "db-restore without -y did not prompt"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "db-restore destroyed data despite an unconfirmed prompt"
+    return 1
+  fi
+  return 0
+}
+
+# Operational failures live in 1-9 and are distinct per reason (bin/INVARIANTS.md).
+test_db_dump_refuses_to_overwrite() {
+  setup_dump_restore_test
+  bin/db-dump -o "$DUMP_DIR/exists.dump" >/dev/null 2>&1
+  local status=0
+  bin/db-dump -o "$DUMP_DIR/exists.dump" >/dev/null 2>&1 || status=$?
+  if [ "$status" -ne 3 ]; then
+    fail_test "db-dump over an existing target expected exit 3, got $status"
+    return 1
+  fi
+  if ! bin/db-dump -f -o "$DUMP_DIR/exists.dump" >/dev/null 2>&1; then
+    fail_test "db-dump -f did not overwrite an existing target"
+    return 1
+  fi
+  return 0
+}
+
+test_db_dump_missing_database_exits_4() {
+  setup_dump_restore_test
+  bin/db-drop -y >/dev/null
+  local status=0
+  bin/db-dump -o "$DUMP_DIR/missing-db.dump" >/dev/null 2>&1 || status=$?
+  bin/db-create >/dev/null
+  if [ "$status" -ne 4 ]; then
+    fail_test "db-dump against a missing database expected exit 4, got $status"
+    return 1
+  fi
+  return 0
+}
+
+# db-dump attaches to a running cluster and never provisions one, so a stopped
+# cluster is exit 2 — the repo-wide "postgres unreachable" code (bin/db-run).
+test_db_dump_stopped_cluster_exits_2() {
+  bin/postgres-down >/dev/null
+  local status=0
+  bin/db-dump -o "$DUMP_DIR/offline.dump" >/dev/null 2>&1 || status=$?
+  if [ -f "$POSTGRES_DATA_DIR/postmaster.pid" ]; then
+    fail_test "db-dump started the cluster (postmaster.pid appeared)"
+    return 1
+  fi
+  bin/postgres-up >/dev/null
+  wait_for_postgres
+  if [ "$status" -ne 2 ]; then
+    fail_test "db-dump against a stopped cluster expected exit 2, got $status"
+    return 1
+  fi
+  return 0
+}
+
+test_db_restore_missing_file_exits_3() {
+  local status=0
+  bin/db-restore -y "$DUMP_DIR/does-not-exist.dump" >/dev/null 2>&1 || status=$?
+  if [ "$status" -ne 3 ]; then
+    fail_test "db-restore with a missing input file expected exit 3, got $status"
+    return 1
+  fi
+  return 0
+}
+
+test_db_restore_empty_stdin_exits_4() {
+  local status=0
+  bin/db-restore -y < /dev/null >/dev/null 2>&1 || status=$?
+  if [ "$status" -ne 4 ]; then
+    fail_test "db-restore with an empty stdin stream expected exit 4, got $status"
+    return 1
+  fi
+  return 0
+}
+
+# A piped restore has the archive on stdin, so the confirmation has to come from
+# the terminal — and with no terminal it is a refusal, never a silent destroy.
+# UNICOACH_TTY_DEVICE points the script at a path that does not exist, which is
+# the only way to reach this branch from a harness that has a real /dev/tty.
+test_db_restore_piped_without_y_refuses() {
+  setup_dump_restore_test
+  local status=0
+  bin/db-dump 2>/dev/null \
+    | env UNICOACH_TTY_DEVICE="$PRIVATE_ROOT/no-such-tty" bin/db-restore >/dev/null 2>&1 \
+    || status=$?
+  if [ "$status" -ne 6 ]; then
+    fail_test "piped db-restore without -y and without a terminal expected exit 6, got $status"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "db-restore destroyed data despite refusing to confirm"
+    return 1
+  fi
+  return 0
+}
+
+# THE DATA-LOSS CASE. Only emptiness used to be checked, and only on the stdin
+# path, so a truncated artifact or a plain-SQL file — the natural mistake, since
+# -Fc is not human-readable — was discovered only AFTER the target was dropped.
+# The database must SURVIVE, with its rows, and the exit must be 7.
+test_db_restore_rejects_non_archive_without_dropping() {
+  setup_dump_restore_test
+  local status=0
+  printf 'CREATE TABLE not_an_archive (id INT);\n' > "$DUMP_DIR/plain.sql"
+  bin/db-restore -y "$DUMP_DIR/plain.sql" >/dev/null 2>&1 || status=$?
+  if [ "$status" -ne 7 ]; then
+    fail_test "db-restore of a non-archive expected exit 7, got $status"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "db-restore DESTROYED the database while refusing a non-archive input"
+    return 1
+  fi
+  return 0
+}
+
+# THE OTHER HALF OF THE DATA-LOSS CASE, and the one no gate before the drop can
+# catch: an archive that IS a readable custom-format archive but cannot be
+# restored (a truncated transfer — its table of contents lives at the front, so
+# `pg_restore --list` still succeeds). pg_restore CONTINUES PAST ERRORS by
+# default, which would leave a PARTLY restored database: schema_migrations can
+# come back while a table does not, and bin/db-status would then report a fully
+# migrated database over a broken schema. --single-transaction makes it
+# all-or-nothing, so the outcome here must be exit 5 and an EMPTY database — not
+# a plausible-looking half.
+test_db_restore_rolls_back_a_failing_restore() {
+  setup_dump_restore_test
+  # Enough bulk for the DATA section to dominate the archive: the table of
+  # contents lives at the front, so a two-row dump truncated at 2/3 loses its
+  # TOC and is refused by the exit-7 gate instead of failing mid-restore.
+  bin/db-run rw "CREATE TABLE bulk_rows AS SELECT g AS id, repeat('x', 200) AS val FROM generate_series(1, 5000) g;" >/dev/null
+  bin/db-dump -o "$DUMP_DIR/rollback.dump" >/dev/null 2>&1
+  local size status=0 listable=0 leftover
+  size="$(wc -c < "$DUMP_DIR/rollback.dump" | tr -d '[:space:]')"
+  head -c $(( size * 2 / 3 )) "$DUMP_DIR/rollback.dump" > "$DUMP_DIR/truncated.dump"
+  # The precondition IS the point of the case: if the truncated file no longer
+  # lists, the exit-7 gate would refuse it and this test would prove nothing.
+  pg_restore --list "$DUMP_DIR/truncated.dump" >/dev/null 2>&1 || listable=$?
+  if [ "$listable" -ne 0 ]; then
+    fail_test "precondition: the truncated archive is not listable, so the restore-failure path is unreachable"
+    return 1
+  fi
+  bin/db-restore -y "$DUMP_DIR/truncated.dump" >/dev/null 2>&1 || status=$?
+  if [ "$status" -ne 5 ]; then
+    fail_test "a failing db-restore expected exit 5, got $status"
+    return 1
+  fi
+  # EMPTY, not partial: the dumped table must not exist at all.
+  leftover="$(bin/db-run -r ro "SELECT to_regclass('public.dump_rows') IS NULL" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$leftover" != "t" ]; then
+    fail_test "a failed db-restore left objects behind (to_regclass IS NULL returned [$leftover]); the restore was not rolled back"
+    return 1
+  fi
+  # …and a GOOD archive still restores fully over that empty database.
+  bin/db-restore -y "$DUMP_DIR/rollback.dump" >/dev/null 2>&1
+  if ! dump_marker_row_present; then
+    fail_test "a good archive did not restore after the rolled-back one"
+    return 1
+  fi
+  return 0
+}
+
+# An EMPTY path argument named a file — it is the shape `bin/db-restore "$DUMP"`
+# takes when DUMP is unset. It must be refused as a missing file (exit 3), never
+# read as "no argument given" and turned into a STDIN restore of the live dev
+# database.
+test_db_restore_empty_argument_exits_3() {
+  setup_dump_restore_test
+  local status=0
+  bin/db-restore -y "" < /dev/null >/dev/null 2>&1 || status=$?
+  if [ "$status" -ne 3 ]; then
+    fail_test "db-restore with an empty path argument expected exit 3, got $status"
+    return 1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "db-restore with an empty path argument DESTROYED the database"
+    return 1
+  fi
+  return 0
+}
+
+# The migration this pair exists for reads a database NO checkout points at, and
+# `POSTGRES_DB=other bin/db-dump` cannot express it — bin/common layers the
+# dotenvs over the caller's environment. -d is that expression, and it is
+# read-only: the ambient POSTGRES_DB must be untouched afterwards.
+test_db_dump_other_database_with_d() {
+  setup_dump_restore_test
+  psql -U "$POSTGRES_USER" -d "${POSTGRES_ADMIN_DB:-postgres}" \
+    -c 'DROP DATABASE IF EXISTS "unicoach-dump-other"' >/dev/null 2>&1
+  psql -U "$POSTGRES_USER" -d "${POSTGRES_ADMIN_DB:-postgres}" \
+    -c 'CREATE DATABASE "unicoach-dump-other"' >/dev/null
+  psql -U "$POSTGRES_USER" -d "unicoach-dump-other" \
+    -c 'CREATE TABLE only_in_other (id INT)' >/dev/null
+  bin/db-dump -d "unicoach-dump-other" -o "$DUMP_DIR/other.dump" >/dev/null 2>&1
+  local ok=0
+  if ! pg_restore --list "$DUMP_DIR/other.dump" | grep -q "only_in_other"; then
+    fail_test "db-dump -d did not dump the named database"
+    ok=1
+  fi
+  if pg_restore --list "$DUMP_DIR/other.dump" | grep -q "dump_rows"; then
+    fail_test "db-dump -d dumped POSTGRES_DB instead of the named database"
+    ok=1
+  fi
+  if ! dump_marker_row_present; then
+    fail_test "db-dump -d disturbed POSTGRES_DB"
+    ok=1
+  fi
+  psql -U "$POSTGRES_USER" -d "${POSTGRES_ADMIN_DB:-postgres}" \
+    -c 'DROP DATABASE IF EXISTS "unicoach-dump-other"' >/dev/null 2>&1
+  return "$ok"
+}
+
+# `pg_dump -f` TRUNCATES its target in place, so a dump that fails half-way used
+# to leave a PARTIAL archive under the name an operator trusts — and the operator
+# would then restore it. The dump is written to a temporary sibling and moved in
+# only on success. Forced with a failing `pg_dump` first on PATH, because there
+# is no reliable way to make the real one fail after the existence probe passes.
+test_db_dump_failure_leaves_the_target_intact() {
+  setup_dump_restore_test
+  bin/db-dump -o "$DUMP_DIR/good.dump" >/dev/null 2>&1
+  local before after status=0 stub_dir
+  before="$(shasum "$DUMP_DIR/good.dump" | cut -d' ' -f1)"
+  stub_dir="$PRIVATE_ROOT/failing-pg_dump"
+  mkdir -p "$stub_dir"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$stub_dir/pg_dump"
+  chmod +x "$stub_dir/pg_dump"
+  PATH="$stub_dir:$PATH" bin/db-dump -f -o "$DUMP_DIR/good.dump" >/dev/null 2>&1 || status=$?
+  after="$(shasum "$DUMP_DIR/good.dump" | cut -d' ' -f1)"
+  rm -rf "$stub_dir"
+  if [ "$status" -ne 5 ]; then
+    fail_test "a failing pg_dump expected exit 5, got $status"
+    return 1
+  fi
+  if [ "$before" != "$after" ]; then
+    fail_test "a failed db-dump overwrote the existing -o target with a partial archive"
+    return 1
+  fi
+  if compgen -G "$DUMP_DIR/.unicoach-db-dump.*" > /dev/null; then
+    fail_test "a failed db-dump left its temporary sibling behind"
+    return 1
+  fi
+  return 0
+}
+
+assert_success "db-dump | db-restore round-trips row data" test_db_dump_restore_round_trip
+assert_success "db-restore replaces rather than merges" test_db_restore_replaces_rather_than_merges
+assert_success "db-restore restores schema_migrations (no pending migrations)" test_db_restore_restores_schema_migrations
+assert_success "db-dump | db-restore works over a pipe" test_db_dump_restore_pipe
+assert_success "db-dump writes the archive to stdout and logs to stderr" test_db_dump_logs_to_stderr_only
+assert_success "db-restore without -y prompts and leaves the database intact" test_db_restore_without_y_prompts
+assert_success "db-dump refuses to overwrite without -f (exit 3)" test_db_dump_refuses_to_overwrite
+assert_success "db-dump against a missing database exits 4" test_db_dump_missing_database_exits_4
+assert_success "db-dump against a stopped cluster exits 2" test_db_dump_stopped_cluster_exits_2
+assert_success "db-restore with a missing input file exits 3" test_db_restore_missing_file_exits_3
+assert_success "db-restore with an empty stdin stream exits 4" test_db_restore_empty_stdin_exits_4
+assert_success "db-restore piped without -y and without a terminal exits 6, changes nothing" test_db_restore_piped_without_y_refuses
+assert_success "db-restore refuses a non-archive with exit 7 and drops nothing" test_db_restore_rejects_non_archive_without_dropping
+assert_success "a failing db-restore rolls back (exit 5, empty database), and a good archive still restores" test_db_restore_rolls_back_a_failing_restore
+assert_success "db-restore with an empty path argument exits 3 and destroys nothing" test_db_restore_empty_argument_exits_3
+assert_success "db-dump -d dumps the named database, not POSTGRES_DB" test_db_dump_other_database_with_d
+assert_success "a failed db-dump leaves the existing -o target intact" test_db_dump_failure_leaves_the_target_intact
+
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "db-dump -z exits 10" bin/db-dump -z
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "db-dump -o (no value) exits 11" bin/db-dump -o
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-dump rejects a stray positional" bin/db-dump stray
+assert_exit_code "$EXIT_EXCLUSIVE_OPTIONS" "db-dump -f without -o exits 23" bin/db-dump -f
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-dump -d with an empty value exits 22" bin/db-dump -d ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-dump -o with an empty value exits 22" bin/db-dump -o ""
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "db-dump -f -o with an empty value exits 22 (not 23)" bin/db-dump -f -o ""
+assert_exit_code "$EXIT_UNKNOWN_OPTION" "db-restore -z exits 10" bin/db-restore -z
+assert_exit_code "$EXIT_UNEXPECTED_ARG" "db-restore rejects a second positional" bin/db-restore -y one two
+
+teardown_dump_restore_test
+bin/db-drop -y >/dev/null
+bin/db-create >/dev/null
+
 echo "==== Testing Migration Engine ===="
 setup_migration_test() {
-  bin/db-drop -y >/dev/null 2>&1 || true
-  bin/db-create
-  export DB_SCHEMA_DIR="/tmp/test_migrations_$$"
-  mkdir -p "$DB_SCHEMA_DIR"
+  reset_database_with_schema_dir "/tmp/test_migrations_$$"
 }
 
 teardown_migration_test() {

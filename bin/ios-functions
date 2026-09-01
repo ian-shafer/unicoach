@@ -33,6 +33,21 @@
 # prevent.
 IOS_BUNDLE_ID="coach.uni.UnicoachiOS"
 
+# The install-time staleness check (RFC 156) lives in bin/ios-url-functions,
+# with the derivation it compares against. It is sourced HERE rather than by
+# each caller because this lib owns the sequence that installs: bin/ios-simulator
+# and bin/screenshot-ios both reach the check through ios_boot_install_launch,
+# and neither can forget a source line it does not have to write. PROJECT_ROOT
+# and bin/functions are already in place — both callers set the first and source
+# the second before sourcing this file.
+#
+# That library reads the dotenvs ITSELF, in a subshell (ios_expected_backend_url),
+# so nothing here has to source .env / .env.dev — which matters: these scripts
+# run under system Xcode and must not acquire bin/common's requirements, and a
+# dotenv sourced into THIS shell could redefine values the sequence below is
+# about to use.
+source "$PROJECT_ROOT/bin/ios-url-functions"
+
 # Echoes the simulator to drive, most explicit first: $1 (the -d option) beats
 # UNICOACH_SIMULATOR, which beats the destination's own `id=<UDID>` component,
 # which beats THIS CHECKOUT's device — the per-checkout simulator bin/ios-device
@@ -191,6 +206,15 @@ ios_terminate_running_app() {
 ios_boot_install_launch() {
   local device="$1" app="$2" env_name="$3"
   shift 3
+
+  # BEFORE anything is booted or installed: refuse a bundle built for a
+  # different backend than this checkout builds for (RFC 156). It is first
+  # because it is the cheapest step and the only one with no side effect — a
+  # refusal must not leave a booted simulator behind — and because installing is
+  # the act that does the damage. `bin/ios-simulator -B`, which installs without
+  # rebuilding, is the case this exists for; on the default path the build has
+  # just run, so the check passes and says which backend it agrees on.
+  ios_assert_bundle_is_this_checkouts "$app" "$env_name"
 
   ios_boot_device "$device"
 

@@ -78,6 +78,26 @@ if [ "\${1:-}" = "test" ]; then
     exit 65
   fi
 fi
+# What xcodebuild INHERITS, for the build/archive invocations. bin/build-ios and
+# bin/release-ios load a dotenv before calling it, and that load used to run
+# under \`set -a\` — a process-wide export, so POSTGRES_DB, DATABASE_PASSWORD and
+# the rest of the dev environment were handed to the iOS build and to every
+# build phase it spawns. The build settings the build really consumes travel in
+# ARGV; nothing may travel in the environment. Recorded with the same \`env:\`
+# prefix the test-runner variables above use, so no existing argv assertion
+# (which matches whole lines) can collide with these.
+if [ "\${1:-}" != "test" ]; then
+  {
+    echo "env:POSTGRES_DB=\${POSTGRES_DB:-}"
+    echo "env:DATABASE_PASSWORD=\${DATABASE_PASSWORD:-}"
+    echo "env:DATABASE_USER=\${DATABASE_USER:-}"
+    echo "env:PGHOST=\${PGHOST:-}"
+    echo "env:SERVER_HOST=\${SERVER_HOST:-}"
+    echo "env:APP_DOMAIN=\${APP_DOMAIN:-}"
+    echo "env:SERVER_PORT=\${SERVER_PORT:-}"
+    echo "env:UNICOACH_CLIENT_KEY=\${UNICOACH_CLIENT_KEY:-}"
+  } >> "$ARGV_LOG"
+fi
 exit 0
 EOF
 
@@ -401,8 +421,12 @@ UNICOACH_PROVISIONING_PROFILE="$1"
 EOF
 }
 
-# Stage a Debug-iphoneos UnicoachiOS.app so install-ios finds a built app.
+# Stage a Debug-iphoneos UnicoachiOS.app so install-ios finds a built app. The
+# directory is REPLACED, not merely created: a case that bakes an Info.plist
+# into it (below) would otherwise leave that plist behind for every later case,
+# which is the difference between "no backend URL to check" and "a stale one".
 stage_built_app() {
+  rm -rf "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app"
   mkdir -p "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app"
 }
 
@@ -410,7 +434,59 @@ stage_built_app() {
 # app. A separate helper because the two scripts look under DIFFERENT SDK
 # subdirectories — staging one must never satisfy the other's check.
 stage_built_simulator_app() {
+  rm -rf "$PRODUCTS_DIR/Debug-iphonesimulator/UnicoachiOS.app"
   mkdir -p "$PRODUCTS_DIR/Debug-iphonesimulator/UnicoachiOS.app"
+}
+
+# Write the ONE fact a real .app carries about the backend it was built for: the
+# expanded Info.plist's UnicoachBackendURL, which xcodebuild fills in from the
+# UNICOACH_BACKEND_URL build setting. The staleness check (RFC 156) reads it
+# back with system plutil, so the fixture must be a plist plutil accepts — this
+# is an XML one, which plutil reads exactly as it reads the binary plist a real
+# simulator build produces. $1 the .app directory, $2 the URL.
+#
+# The bundles staged WITHOUT this (the helpers above) are not an oversight: a
+# bundle that cannot say what it was built for must install unchallenged, and
+# every pre-existing case here proves that path stays open.
+write_bundle_backend_url() {
+  cat > "$1/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>coach.uni.UnicoachiOS</string>
+	<key>UnicoachBackendURL</key>
+	<string>$2</string>
+</dict>
+</plist>
+EOF
+}
+
+# A well-formed Info.plist that simply does NOT carry UnicoachBackendURL — the
+# "bundle states nothing" case, which must stay installable AND be distinguished
+# from a plist that cannot be READ at all. $1 the .app directory.
+write_bundle_without_backend_url() {
+  cat > "$1/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>coach.uni.UnicoachiOS</string>
+</dict>
+</plist>
+EOF
+}
+
+# The two stage helpers again, with a baked backend URL. $1 is the URL.
+stage_built_app_for_backend() {
+  stage_built_app
+  write_bundle_backend_url "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app" "$1"
+}
+stage_built_simulator_app_for_backend() {
+  stage_built_simulator_app
+  write_bundle_backend_url "$PRODUCTS_DIR/Debug-iphonesimulator/UnicoachiOS.app" "$1"
 }
 
 # App Store Connect API credentials fixture for release-ios upload tests, plus
@@ -767,10 +843,15 @@ run_build() {
     ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/build-ios" "$@"
 }
+# UNICOACH_DOTENV is passed for the same reason run_build passes it: since RFC
+# 156 install-ios derives the URL this checkout builds for, to compare it with
+# the one baked into the bundle. Without it the comparison would read the REAL
+# repo .env / .env.dev and the result would depend on the machine.
 run_install() {
   reset_log
   env PATH="$SHIM_DIR:$PATH" \
     UNICOACH_ENV_DIR="$ENV_DIR" \
+    UNICOACH_DOTENV="$DOTENV" \
     UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
     DEVICECTL_LIST_OUTPUT="${DEVICECTL_LIST_OUTPUT:-}" \
     ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
@@ -832,16 +913,22 @@ run_screenshot() {
     UNICOACH_ENV_DIR="$ENV_DIR" \
     UNICOACH_PRODUCTS_DIR="$PRODUCTS_DIR" \
     UNICOACH_SCREENSHOT_DIR="$SCREENSHOT_DIR" \
+    UNICOACH_DOTENV="$IOS_SIMULATOR_DOTENV" \
     SIMCTL_NO_WRITE="${SIMCTL_NO_WRITE:-}" \
     ${SIMULATOR_OVERRIDE:+UNICOACH_SIMULATOR="$SIMULATOR_OVERRIDE"} \
     ${DEV_SHELL_MARKER:+UNICOACH_DEV_SHELL="$DEV_SHELL_MARKER"} \
     "$PROJECT_ROOT/bin/screenshot-ios" "$@"
 }
 
-# The repo-.env fixture bin/ios-simulator's BUILD leg hands to bin/build-ios.
-# It is its OWN file, not the shared $DOTENV: that one is rewritten by the
-# build-ios cases (a bare-IP APP_DOMAIN among them, which build-ios rejects), so
-# borrowing it would make these cases depend on which case ran last.
+# The repo-.env fixture the two simulator scripts run against: handed to the
+# bin/build-ios CHILD by bin/ios-simulator's build leg, and read by both scripts
+# to derive the URL a bundle must have been built for (RFC 156). It is its OWN
+# file, not the shared $DOTENV: that one is rewritten by the build-ios cases (a
+# bare-IP APP_DOMAIN among them, which build-ios rejects), so borrowing it would
+# make these cases depend on which case ran last.
+#
+# Its localhost:8080 is therefore the backend every simulator case's staged
+# bundle must carry to install without complaint.
 IOS_SIMULATOR_DOTENV="$WORK/ios-simulator-dotenv"
 cat > "$IOS_SIMULATOR_DOTENV" <<'EOF'
 APP_DOMAIN=localhost
@@ -1124,7 +1211,7 @@ test_build_missing_env_file() {
 }
 
 test_build_device_env_absent_signing() {
-  write_dotenv "mymac.example.ts.net"
+  write_dotenv "mymac.example.ts.net" "8080"
   rm -f "$ENV_DIR/signing.env"
   local out
   if out="$(run_build device 2>&1)"; then return 1; fi
@@ -1132,7 +1219,7 @@ test_build_device_env_absent_signing() {
 }
 
 test_build_device_env_absent_team() {
-  write_dotenv "mymac.example.ts.net"
+  write_dotenv "mymac.example.ts.net" "8080"
   # signing.env present but with no team.
   cat > "$ENV_DIR/signing.env" <<'EOF'
 UNICOACH_DEVELOPMENT_TEAM=
@@ -1143,7 +1230,7 @@ EOF
 }
 
 test_build_simulator_no_signing() {
-  write_dotenv ""   # unset APP_DOMAIN => localhost default
+  write_dotenv "" "8080"   # unset APP_DOMAIN => localhost default
   rm -f "$ENV_DIR/signing.env"
   run_build simulator >/dev/null 2>&1 || return 1
   log_has "platform=iOS Simulator,name=iPhone 17 Pro" || return 1
@@ -1157,7 +1244,7 @@ test_build_simulator_no_signing() {
 }
 
 test_build_device_forwards_signing() {
-  write_dotenv "mymac.example.ts.net"
+  write_dotenv "mymac.example.ts.net" "8080"
   write_signing_env
   run_build device >/dev/null 2>&1 || return 1
   log_has "generic/platform=iOS" || return 1
@@ -1185,6 +1272,141 @@ test_build_bare_ip_rejected() {
   echo "$out" | grep -qi "DNS hostname" || return 1
   # Rejected before any build.
   log_no_tool "xcodebuild"
+}
+
+# The local derive path REQUIRES SERVER_PORT. It used to read
+# `${SERVER_PORT:-8080}`, and after RFC 156 nothing binds 8080 — so the fallback
+# baked a DEAD port into the bundle, and the install-time staleness check could
+# not catch it: expectation and bundle both came from that one function, so they
+# agreed with each other while both were wrong. The fatal must name the variable
+# AND the file that should have set it, and must land before any build.
+test_build_requires_server_port_on_the_local_path() {
+  write_dotenv "mymac.example.ts.net"   # APP_DOMAIN but no SERVER_PORT
+  write_signing_env
+  local out
+  if out="$(run_build device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "SERVER_PORT" || return 1
+  echo "$out" | grep -q "$DOTENV" || return 1
+  # It must fail rather than quietly bake the old 8080 default: nothing is
+  # built, so no URL is handed to xcodebuild at all.
+  if grep -q "^UNICOACH_BACKEND_URL=" "$ARGV_LOG"; then return 1; fi
+  log_no_tool "xcodebuild"
+}
+
+# A non-empty SERVER_PORT is not a PORT. The guard used to test emptiness only,
+# so `abc` was baked into Info.plist as http://host:abc — and the staleness
+# check cannot catch it, because the expectation comes from the same function
+# that baked it. bin/functions:validate_port owns the rule; this proves the iOS
+# build now uses it. The message must name the offending value AND the dotenv.
+test_build_refuses_a_non_numeric_server_port() {
+  write_dotenv "mymac.example.ts.net" "abc"
+  write_signing_env
+  local out
+  if out="$(run_build device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "SERVER_PORT \[abc\]" || return 1
+  echo "$out" | grep -q "$DOTENV" || return 1
+  if grep -q "^UNICOACH_BACKEND_URL=" "$ARGV_LOG"; then return 1; fi
+  log_no_tool "xcodebuild"
+}
+
+# Out of range is the same defect with a value that LOOKS like a port: 99999 is
+# an integer, is non-empty, and cannot be bound by anything.
+test_build_refuses_an_out_of_range_server_port() {
+  write_dotenv "mymac.example.ts.net" "99999"
+  write_signing_env
+  local out
+  if out="$(run_build device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "SERVER_PORT \[99999\]" || return 1
+  echo "$out" | grep -q "$DOTENV" || return 1
+  log_no_tool "xcodebuild"
+}
+
+# Whitespace padding is the realistic typo — a quoted trailing space in a
+# dotenv, which survives sourcing — and it produced http://host:8080%20 shaped
+# nonsense that no server answers. write_dotenv cannot express it (an unquoted
+# trailing space is just a separator), so the fixture is written here.
+test_build_refuses_a_whitespace_padded_server_port() {
+  {
+    echo 'APP_DOMAIN=mymac.example.ts.net'
+    echo 'SERVER_PORT="8080 "'
+  } > "$DOTENV"
+  write_signing_env
+  local out
+  if out="$(run_build device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "SERVER_PORT" || return 1
+  echo "$out" | grep -q "8080" || return 1
+  if grep -q "^UNICOACH_BACKEND_URL=" "$ARGV_LOG"; then return 1; fi
+  log_no_tool "xcodebuild"
+}
+
+# The dotenv load is a SHELL LOAD, not a process-wide export. It ran under
+# `set -a`, so every dev value in the dotenv — database credentials among them —
+# was inherited by xcodebuild and by every build phase it spawns. What the build
+# actually consumes travels as an explicit build SETTING in argv, and this case
+# asserts both halves at once: the settings still arrive, the environment does
+# not.
+test_build_does_not_export_the_dev_environment_into_xcodebuild() {
+  {
+    echo 'APP_DOMAIN=mymac.example.ts.net'
+    echo 'SERVER_PORT=18010'
+    echo 'POSTGRES_DB=unicoach-dev-fixture'
+    echo 'DATABASE_PASSWORD=fixture-secret'
+    echo 'DATABASE_USER=fixture-user'
+    echo 'PGHOST=127.0.0.1'
+    echo 'SERVER_HOST=0.0.0.0'
+    echo 'UNICOACH_CLIENT_KEY=fixture-client-key'
+  } > "$DOTENV"
+  rm -f "$ENV_DIR/signing.env"
+  run_build simulator > /dev/null 2>&1 || return 1
+  # The build settings still reach xcodebuild, in argv.
+  log_has "UNICOACH_BACKEND_URL=http://mymac.example.ts.net:18010" || return 1
+  log_has "UNICOACH_CLIENT_KEY=fixture-client-key" || return 1
+  # Nothing reaches it in the environment — not the secrets, and not even the
+  # two values the URL was derived from.
+  log_has "env:POSTGRES_DB=" || return 1
+  log_has "env:DATABASE_PASSWORD=" || return 1
+  log_has "env:DATABASE_USER=" || return 1
+  log_has "env:PGHOST=" || return 1
+  log_has "env:SERVER_HOST=" || return 1
+  log_has "env:APP_DOMAIN=" || return 1
+  log_has "env:SERVER_PORT=" || return 1
+  log_has "env:UNICOACH_CLIENT_KEY=" || return 1
+  return 0
+}
+
+# An explicitly named UNICOACH_DOTENV that does not exist used to load NOTHING,
+# silently: the build then derived from whatever the ambient environment held,
+# and the SERVER_PORT fatal named a file that was not there. bin/common fatals
+# on exactly this state, so the iOS loader now does too.
+test_build_refuses_a_missing_named_dotenv() {
+  rm -f "$DOTENV"
+  write_signing_env
+  local out
+  if out="$(run_build device 2>&1)"; then return 1; fi
+  echo "$out" | grep -q "UNICOACH_DOTENV" || return 1
+  echo "$out" | grep -q "$DOTENV" || return 1
+  log_no_tool "xcodebuild"
+}
+
+# The requirement is scoped to the LOCAL derivation: a deploy target composes
+# https://api.$APP_DOMAIN, which has no port at all, so demanding one there
+# would break every prod build.
+test_build_deploy_needs_no_server_port() {
+  write_dotenv "uni.coach"   # no SERVER_PORT
+  rm -f "$ENV_DIR/signing.env"
+  run_build deploy-simulator >/dev/null 2>&1 || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
+  return 0
+}
+
+# Nor does the honor path: an explicit UNICOACH_BACKEND_URL means no derivation
+# runs, so there is nothing for a port to be part of.
+test_build_explicit_url_needs_no_server_port() {
+  write_dotenv "mymac.example.ts.net"   # no SERVER_PORT
+  rm -f "$ENV_DIR/signing.env"
+  run_build explicit-simulator >/dev/null 2>&1 || return 1
+  log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
+  return 0
 }
 
 # Honor path: an explicit UNICOACH_BACKEND_URL in the target file is forwarded
@@ -1237,7 +1459,7 @@ test_build_explicit_url_device_forwards_signing() {
 # Regression: with UNICOACH_BACKEND_URL unset in the target file, the build
 # takes the DERIVE path and composes http://$APP_DOMAIN:$SERVER_PORT from .env.
 test_build_derives_when_url_unset() {
-  write_dotenv "mymac.example.ts.net"
+  write_dotenv "mymac.example.ts.net" "8080"
   rm -f "$ENV_DIR/signing.env"
   run_build simulator >/dev/null 2>&1 || return 1
   # device.env / simulator.env set no UNICOACH_BACKEND_URL, so derivation runs.
@@ -1288,10 +1510,11 @@ test_env_prod_is_single_domain_source() {
   local domain
   domain="$(set -a; source "$envprod"; set +a; printf '%s' "${APP_DOMAIN:-}")"
   [ -n "$domain" ] || return 1
-  # Apex must be a DNS name, not a bare IPv4/IPv6 literal (invalid cookie Domain).
-  if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$domain" == *:* ]]; then
-    return 1
-  fi
+  # The apex must be a DNS name, not a bare IP literal (an invalid cookie
+  # Domain). Asserted THROUGH the shipped rule, not through a copy of it: this
+  # assertion used to restate the library's regex, so a fix to the library left
+  # a stale test that still passed while checking something else.
+  run_url_lib "APP_DOMAIN=$domain ios_require_valid_app_domain" > /dev/null 2>&1 || return 1
   return 0
 }
 
@@ -1402,12 +1625,349 @@ test_install_with_launch() {
   return 0
 }
 
+# RFC 156: the dev port is per-worktree, so a .app built in another checkout
+# names another checkout's backend. The bundle records what it was built for
+# (Info.plist UnicoachBackendURL) and this checkout can say what it would build
+# now, so the mismatch is REFUSED — before the device is even resolved, and with
+# both URLs in the message, since "which one is wrong" is the whole question.
+test_install_refuses_a_bundle_built_for_another_backend() {
+  write_dotenv "localhost" "8080"
+  write_signing_env_with_device "DEADBEEF-0000111122223333"
+  stage_built_app_for_backend "http://localhost:8099"
+  local out rc=0
+  out="$(run_install device 2>&1)" || rc=$?
+  # A distinct code: "your build is stale" is not "the tool said no".
+  [ "$rc" -eq 3 ] || return 1
+  echo "$out" | grep -q "http://localhost:8099" || return 1
+  echo "$out" | grep -q "http://localhost:8080" || return 1
+  # The one-line fix, named.
+  echo "$out" | grep -q "bin/build-ios device" || return 1
+  # Refused BEFORE anything reached the phone.
+  log_no_tool "xcrun" || return 1
+  return 0
+}
+
+# The other half of the same rule: a bundle built for the URL this checkout
+# derives installs with no complaint. Without this case the check could be a
+# blanket refusal and the suite would still be green.
+test_install_accepts_a_bundle_built_for_this_backend() {
+  local udid="DEADBEEF-0000111122223333"
+  write_dotenv "localhost" "8080"
+  write_signing_env_with_device "$udid"
+  stage_built_app_for_backend "http://localhost:8080"
+  run_install device >/dev/null 2>&1 || return 1
+  log_has "install" || return 1
+  log_has "$udid" || return 1
+  log_has "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app" || return 1
+  return 0
+}
+
+# REGRESSION (the bare-IP policy is a BUILD-time rule, not an install-time one).
+# The bare-IP APP_DOMAIN check used to live INSIDE the shared derivation, so the
+# staleness check inherited a refusal it never asked for: a bundle baked with
+# the very URL this checkout derives was refused anyway — with exit 1, not the
+# published exit 3, and with a cookie-Domain message on a path where nothing is
+# being built. The bundle AGREES with the checkout here, so the install must
+# proceed and say nothing about cookies.
+test_install_accepts_a_matching_bundle_with_a_bare_ip_domain() {
+  local udid="DEADBEEF-0000111122223333"
+  write_dotenv "10.0.0.5" "18010"
+  write_signing_env_with_device "$udid"
+  stage_built_app_for_backend "http://10.0.0.5:18010"
+  local out
+  out="$(run_install device 2>&1)" || return 1
+  if echo "$out" | grep -qi "bare IP"; then return 1; fi
+  if echo "$out" | grep -qi "DNS hostname"; then return 1; fi
+  log_has "install" || return 1
+  log_has "$udid" || return 1
+  return 0
+}
+
+# The mismatch refusal still fires with a bare-IP APP_DOMAIN, and with the
+# STALE-BUNDLE code — so the case above is not the check being switched off.
+test_install_refuses_a_stale_bundle_with_a_bare_ip_domain() {
+  write_dotenv "10.0.0.5" "18010"
+  write_signing_env_with_device "DEADBEEF-0000111122223333"
+  stage_built_app_for_backend "http://10.0.0.5:18099"
+  local out rc=0
+  out="$(run_install device 2>&1)" || rc=$?
+  [ "$rc" -eq 3 ] || return 1
+  echo "$out" | grep -q "http://10.0.0.5:18099" || return 1
+  log_no_tool "xcrun" || return 1
+  return 0
+}
+
+# The refusal's exit code is a CONSTANT of the library, not an environment knob.
+# It used to be `: "${IOS_EXIT_STALE_BUNDLE:=3}"`, so an ambient 0 made a refused
+# install exit 0 and the caller saw success — bin/functions' fatal runs
+# `exit "$status_code"` with no guard.
+test_install_stale_exit_code_is_not_overridable_by_the_environment() {
+  write_dotenv "localhost" "8080"
+  write_signing_env_with_device "DEADBEEF-0000111122223333"
+  stage_built_app_for_backend "http://localhost:8099"
+  local rc=0
+  IOS_EXIT_STALE_BUNDLE=0 run_install device >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 3 ] || return 1
+  return 0
+}
+
+# A bundle that STATES NOTHING (a well-formed Info.plist with no
+# UnicoachBackendURL) installs unchallenged — RFC 156 says absence is not
+# evidence of staleness — but it is no longer SILENT about it, so a checked
+# install and an unchecked one read differently in the log.
+test_install_says_when_a_bundle_states_no_backend_url() {
+  local udid="DEADBEEF-0000111122223333"
+  write_dotenv "localhost" "8080"
+  write_signing_env_with_device "$udid"
+  stage_built_app
+  write_bundle_without_backend_url "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app"
+  local out
+  out="$(run_install device 2>&1)" || return 1
+  echo "$out" | grep -q "states no backend URL" || return 1
+  log_has "install" || return 1
+  return 0
+}
+
+# "States nothing" is THREE different facts, and they used to collapse into one
+# fixed sentence. A bundle with NO Info.plist at all — the shape a half-copied
+# or wrongly-pathed .app has — must say so, so an operator is not left thinking
+# the plist was read and found wanting.
+test_install_names_a_bundle_with_no_info_plist() {
+  local udid="DEADBEEF-0000111122223333"
+  write_dotenv "localhost" "8080"
+  write_signing_env_with_device "$udid"
+  stage_built_app
+  rm -f "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app/Info.plist"
+  local out
+  out="$(run_install device 2>&1)" || return 1
+  echo "$out" | grep -q "states no backend URL" || return 1
+  echo "$out" | grep -q "there is no" || return 1
+  echo "$out" | grep -q "Info.plist" || return 1
+  log_has "install" || return 1
+  return 0
+}
+
+# The other absence: a well-formed Info.plist that simply lacks the key. Same
+# outcome (install anyway), a DIFFERENT reason — which is the whole point of
+# distinguishing them.
+test_install_names_a_bundle_whose_plist_lacks_the_key() {
+  local udid="DEADBEEF-0000111122223333"
+  write_dotenv "localhost" "8080"
+  write_signing_env_with_device "$udid"
+  stage_built_app
+  write_bundle_without_backend_url "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app"
+  local out
+  out="$(run_install device 2>&1)" || return 1
+  echo "$out" | grep -q "well-formed but has no UnicoachBackendURL key" || return 1
+  # Not the missing-file wording.
+  if echo "$out" | grep -q "there is no"; then return 1; fi
+  log_has "install" || return 1
+  return 0
+}
+
+# A READ FAILURE is not a fact about the bundle. A corrupt/half-written
+# Info.plist used to be collapsed into the same empty string as "no such key",
+# which silently disabled the whole RFC 156 check with no output at all. It
+# still installs — refusing on a tool failure would be a different wrong answer
+# — but it WARNS, and the warning says the check was skipped.
+test_install_warns_when_the_bundle_cannot_be_read() {
+  local udid="DEADBEEF-0000111122223333"
+  write_dotenv "localhost" "8080"
+  write_signing_env_with_device "$udid"
+  stage_built_app
+  printf 'this is not a property list\n' \
+    > "$PRODUCTS_DIR/Debug-iphoneos/UnicoachiOS.app/Info.plist"
+  local out
+  out="$(run_install device 2>&1)" || return 1
+  echo "$out" | grep -q "WARNING" || return 1
+  echo "$out" | grep -qi "could not read the backend URL" || return 1
+  log_has "install" || return 1
+  return 0
+}
+
 test_install_ambiguous_device() {
   write_signing_env   # no UNICOACH_DEVICE -> auto-detect
   stage_built_app
   local out
   if out="$(DEVICECTL_LIST_OUTPUT="$TWO_DEVICES" run_install device 2>&1)"; then return 1; fi
   echo "$out" | grep -qi "multiple"
+}
+
+# ====================== ios-url-functions (library) tests ====================
+
+# Run a snippet with bin/functions and bin/ios-url-functions sourced and NOTHING
+# else — no target env file, no dotenv, no build script's leftovers. That empty
+# starting state is the point of the cases below: it is the caller the library
+# must not depend on having been sourced first.
+run_url_lib() {
+  env PATH="$SHIM_DIR:$PATH" \
+    UNICOACH_ENV_DIR="$ENV_DIR" \
+    UNICOACH_DOTENV="$DOTENV" \
+    PROJECT_ROOT="$PROJECT_ROOT" \
+    bash -c "set -euo pipefail
+      source \"\$PROJECT_ROOT/bin/functions\"
+      source \"\$PROJECT_ROOT/bin/ios-url-functions\"
+      $1"
+}
+
+# The staleness check must be a FUNCTION OF ITS ARGUMENT. The expectation used
+# to be read out of whatever UNICOACH_DEPLOY / UNICOACH_BACKEND_URL the caller
+# happened to have sourced, so a caller that had not sourced the target file got
+# this checkout's LOCAL expectation compared against a correct PROD bundle — a
+# false refusal on a good build. One shell, one dotenv, two targets, two
+# answers: the only thing that differs is the argument.
+test_expected_backend_url_routes_on_its_argument() {
+  write_dotenv "uni.coach" "8080"
+  local deploy_url local_url
+  deploy_url="$(run_url_lib 'ios_expected_backend_url deploy-device')" || return 1
+  local_url="$(run_url_lib 'ios_expected_backend_url simulator')" || return 1
+  [ "$deploy_url" = "https://api.uni.coach" ] || return 1
+  [ "$local_url" = "http://uni.coach:8080" ] || return 1
+  return 0
+}
+
+# The expectation is derived in a SUBSHELL: an install-time caller is about to
+# name a device and a bundle id, and a stray APP_DOMAIN/SERVER_PORT landing in
+# its environment would be a second, invisible way for one script to change
+# another's behaviour.
+test_expected_backend_url_leaks_nothing_into_the_caller() {
+  write_dotenv "uni.coach" "8080"
+  local out
+  out="$(run_url_lib 'ios_expected_backend_url simulator > /dev/null
+    echo APP_DOMAIN=[${APP_DOMAIN:-}]
+    echo SERVER_PORT=[${SERVER_PORT:-}]')" || return 1
+  echo "$out" | grep -qx "APP_DOMAIN=\[\]" || return 1
+  echo "$out" | grep -qx "SERVER_PORT=\[\]" || return 1
+  return 0
+}
+
+# The bare-IP cookie-Domain rule is a BUILD-time policy and lives in its own
+# function, which the derivation does NOT call. Same environment, two verdicts:
+# the derivation produces its value, the policy refuses.
+test_derivation_holds_no_bare_ip_policy() {
+  write_dotenv "10.0.0.5" "18010"
+  local url rc=0
+  url="$(run_url_lib 'ios_load_dotenvs; ios_derive_backend_url')" || return 1
+  [ "$url" = "http://10.0.0.5:18010" ] || return 1
+  run_url_lib 'ios_load_dotenvs; ios_require_valid_app_domain' > /dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  return 0
+}
+
+# The cookie-Domain rule is an ALLOWLIST. It was a denylist of two spellings —
+# a dotted-quad regex and "contains a colon" — and macOS/BSD resolvers accept
+# many more forms, every one of them an invalid cookie Domain. Each of these
+# used to PASS, be baked into a bundle, and leave the session silently
+# unpersisted. Asserted through the shipped function, one value at a time, so a
+# failure names the form that leaked.
+test_bare_ip_forms_are_all_refused() {
+  local form rc
+  for form in 192.168.1.42 127.1 10.1 2130706433 0x7f000001 192.168.1; do
+    rc=0
+    run_url_lib "APP_DOMAIN=$form ios_require_valid_app_domain" > /dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || return 1
+  done
+  return 0
+}
+
+# The other half of an allowlist: it must still admit the names people really
+# use — localhost (the zero-configuration simulator default), a MagicDNS name,
+# and a public apex.
+test_dns_hostnames_are_accepted() {
+  local name
+  for name in localhost mymac.example.ts.net uni.coach example.test; do
+    run_url_lib "APP_DOMAIN=$name ios_require_valid_app_domain" > /dev/null 2>&1 || return 1
+  done
+  # The default, with APP_DOMAIN unset at all, is localhost and must pass too.
+  run_url_lib 'ios_require_valid_app_domain' > /dev/null 2>&1 || return 1
+  return 0
+}
+
+# `localhost:8080` is the mis-edit the per-worktree port makes likely — the port
+# lives one line away in the same file. It must be refused, and the refusal must
+# be TRUE: the old code inferred "IPv6 literal" from the colon and told the
+# operator something about their value that was not so.
+test_host_with_a_port_is_refused_without_claiming_ipv6() {
+  local out rc=0
+  out="$(run_url_lib 'APP_DOMAIN=localhost:8080 ios_require_valid_app_domain' 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "SERVER_PORT" || return 1
+  echo "$out" | grep -qi "colon" || return 1
+  # It must NOT be reported as a bare IP literal, which it is not.
+  if echo "$out" | grep -qi "is not a DNS hostname"; then return 1; fi
+  return 0
+}
+
+# An OPTIONAL dotenv layer may legally be absent (a fresh checkout has no .env),
+# but absence must leave a trace: the derivation that follows reads whatever the
+# ambient environment holds, and silence made that indistinguishable from a
+# loaded file. PROJECT_ROOT points at an empty directory, so both layers are
+# missing and neither is the explicitly named kind.
+test_missing_optional_dotenv_warns_rather_than_being_silent() {
+  local empty_root="$WORK/empty-root"
+  mkdir -p "$empty_root"
+  local out
+  out="$(env PATH="$SHIM_DIR:$PATH" PROJECT_ROOT="$empty_root" bash -c "set -euo pipefail
+    source \"$PROJECT_ROOT/bin/functions\"
+    source \"$PROJECT_ROOT/bin/ios-url-functions\"
+    ios_load_dotenvs
+    echo LOADED" 2>&1)" || return 1
+  echo "$out" | grep -q "WARNING" || return 1
+  echo "$out" | grep -q "$empty_root/.env" || return 1
+  echo "$out" | grep -q "$empty_root/.env.dev" || return 1
+  echo "$out" | grep -qx "LOADED" || return 1
+  return 0
+}
+
+# A MISSING TARGET env file used to make the expectation degrade to the LOCAL
+# derivation, so a correct prod bundle was refused as stale (exit 3) merely
+# because a file was absent. The expectation must fail instead of guessing.
+test_expected_backend_url_refuses_a_missing_target() {
+  write_dotenv "uni.coach" "8080"
+  local out rc=0
+  out="$(run_url_lib 'ios_expected_backend_url no-such-target' 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  echo "$out" | grep -q "no-such-target.env" || return 1
+  # It must not have silently produced this checkout's local URL instead.
+  if echo "$out" | grep -q "http://uni.coach:8080"; then return 1; fi
+  return 0
+}
+
+# ONE KIND OF VALUE PER CHANNEL. stdout used to carry a URL on status 0 and an
+# English sentence on status 2, held by the caller in one variable it then
+# compared against the expected URL. stdout now carries a URL or nothing; the
+# reason is a named global.
+test_bundle_url_reader_keeps_prose_off_stdout() {
+  local app="$WORK/prose-check.app"
+  rm -rf "$app"
+  mkdir -p "$app"
+  printf 'this is not a property list\n' > "$app/Info.plist"
+  local out
+  out="$(run_url_lib "rc=0
+    ios_bundle_backend_url '$app' || rc=\$?
+    echo \"status=\$rc\"
+    echo \"reason=[\$IOS_BUNDLE_URL_READ_ERROR]\"
+    echo \"url=[\$IOS_BUNDLE_BACKEND_URL]\"" 2>/dev/null)" || return 1
+  echo "$out" | grep -qx "status=2" || return 1
+  echo "$out" | grep -q "reason=\[.*not a readable property list\]" || return 1
+  echo "$out" | grep -qx "url=\[\]" || return 1
+  # stdout carried the three echoes and nothing else: no prose line from the
+  # reader itself.
+  [ "$(echo "$out" | wc -l | tr -d ' ')" = "3" ] || return 1
+  return 0
+}
+
+# ios_primary_dotenv is documented as DERIVING a path rather than leaving one
+# behind in a global. It called ios_dotenv_files, which assigns the
+# caller-visible IOS_DOTENV_FILES — a second, undeclared output, fired even from
+# inside the fatal strings that call this function only for its message.
+test_primary_dotenv_leaves_no_array_behind() {
+  write_dotenv "uni.coach" "8080"
+  local out
+  out="$(run_url_lib 'ios_primary_dotenv > /dev/null
+    echo "files=[${IOS_DOTENV_FILES[*]:-}]"')" || return 1
+  echo "$out" | grep -qx "files=\[\]" || return 1
+  return 0
 }
 
 # ============================ release-ios tests ============================
@@ -1543,6 +2103,44 @@ test_release_deploy_derives_https() {
   run_release -n deploy-device >/dev/null 2>&1 || return 1
   log_has "UNICOACH_BACKEND_URL=https://api.uni.coach" || return 1
   log_lacks "UNICOACH_BACKEND_URL=http://localhost:8080" || return 1
+  return 0
+}
+
+# The de-duplication guard (RFC 156): bin/build-ios and bin/release-ios derive
+# the backend URL from ONE library (bin/ios-url-functions), so from one dotenv
+# they must produce the same string. They used to hold two copies of the
+# derivation, which is a rule that can drift silently — a release signed for a
+# host the build script no longer names is invisible until TestFlight.
+#
+# Both the local derive path (host + port) and the deploy path (https://api.)
+# are compared, because the copies differed by branch, not by line.
+logged_backend_url() { grep -m1 '^UNICOACH_BACKEND_URL=' "$ARGV_LOG"; }
+
+test_build_and_release_derive_the_same_url() {
+  write_dotenv "mymac.example.ts.net" "9099"
+  write_signing_env
+  rm -f "$ENV_DIR/appstore.env"   # -n path needs no upload auth
+  local built released
+  run_build device > /dev/null 2>&1 || return 1
+  built="$(logged_backend_url)" || return 1
+  run_release -n device > /dev/null 2>&1 || return 1
+  released="$(logged_backend_url)" || return 1
+  [ "$built" = "UNICOACH_BACKEND_URL=http://mymac.example.ts.net:9099" ] || return 1
+  [ "$built" = "$released" ] || return 1
+  return 0
+}
+
+test_build_and_release_derive_the_same_deploy_url() {
+  write_dotenv "example.test"
+  write_signing_env
+  rm -f "$ENV_DIR/appstore.env"
+  local built released
+  run_build deploy-device > /dev/null 2>&1 || return 1
+  built="$(logged_backend_url)" || return 1
+  run_release -n deploy-device > /dev/null 2>&1 || return 1
+  released="$(logged_backend_url)" || return 1
+  [ "$built" = "UNICOACH_BACKEND_URL=https://api.example.test" ] || return 1
+  [ "$built" = "$released" ] || return 1
   return 0
 }
 
@@ -1999,6 +2597,18 @@ test_screenshot_help_exits_zero() {
   echo "$out" | grep -q "screenshot-ios"
 }
 
+# Exit 3 is a PUBLISHED interface (RFC 156), and this script refuses with it —
+# so it has to say so. Only bin/install-ios documented it, while the two
+# simulator scripts refused with the same code and documented nothing.
+test_screenshot_help_documents_the_stale_bundle_exit_code() {
+  local out
+  out="$(run_screenshot -h 2>&1)" || return 1
+  echo "$out" | grep -q "Exit status:" || return 1
+  echo "$out" | grep -qE "^  3 " || return 1
+  echo "$out" | grep -qi "different backend" || return 1
+  return 0
+}
+
 # ========================= ios-simulator tests ===============================
 
 # One command for "build this checkout and run it in the simulator". Everything
@@ -2087,6 +2697,53 @@ test_ios_simulator_skips_the_build_with_B() {
   log_no_tool "xcodebuild" || return 1
   log_has "install" || return 1
   log_has "launch" || return 1
+  return 0
+}
+
+# The install-time staleness check on the SIMULATOR path (RFC 156), reached
+# through ios_boot_install_launch in bin/ios-functions. `-B` — install without
+# rebuilding — is exactly the case it exists for: nothing here would otherwise
+# notice that the bundle in DerivedData was built by another checkout, against
+# another worktree's dev port and database.
+test_ios_simulator_refuses_a_bundle_built_for_another_backend() {
+  stage_built_simulator_app_for_backend "http://localhost:8099"
+  local out rc=0
+  out="$(run_ios_simulator -B simulator 2>&1)" || rc=$?
+  [ "$rc" -eq 3 ] || return 1
+  echo "$out" | grep -q "http://localhost:8099" || return 1
+  echo "$out" | grep -q "http://localhost:8080" || return 1
+  echo "$out" | grep -q "bin/build-ios simulator" || return 1
+  # Refused before the sequence starts: nothing booted, nothing installed,
+  # nothing launched. (The device WAS resolved — that happens before the
+  # sequence and creates nothing here.)
+  log_lacks "boot" || return 1
+  log_lacks "install" || return 1
+  log_lacks "launch" || return 1
+  return 0
+}
+
+# The matching bundle installs and launches as before, so the check cannot be a
+# blanket refusal.
+test_ios_simulator_accepts_a_bundle_built_for_this_backend() {
+  stage_built_simulator_app_for_backend "http://localhost:8080"
+  run_ios_simulator -B simulator >/dev/null 2>&1 || return 1
+  log_has "install" || return 1
+  log_has "launch" || return 1
+  return 0
+}
+
+# The check lives at the SHARED choke point, so the capture path gets it too —
+# a screenshot of another checkout's build is the same wrong answer, saved to a
+# file.
+test_screenshot_refuses_a_bundle_built_for_another_backend() {
+  stage_built_simulator_app_for_backend "http://localhost:8099"
+  local out rc=0
+  out="$(run_screenshot simulator 2>&1)" || rc=$?
+  [ "$rc" -eq 3 ] || return 1
+  echo "$out" | grep -q "http://localhost:8099" || return 1
+  echo "$out" | grep -q "bin/build-ios simulator" || return 1
+  log_lacks "install" || return 1
+  log_lacks "screenshot" || return 1
   return 0
 }
 
@@ -2370,6 +3027,16 @@ test_screenshot_env_file_cannot_redefine_the_bundle_id() {
   run_screenshot -w 0 bundle-decoy-simulator >/dev/null 2>&1 || return 1
   log_has "coach.uni.UnicoachiOS" || return 1
   log_lacks "com.decoy.NotUnicoach" || return 1
+  return 0
+}
+
+# The same published exit 3 (RFC 156), documented where an operator reads it.
+test_ios_simulator_help_documents_the_stale_bundle_exit_code() {
+  local out
+  out="$(run_ios_simulator -h 2>&1)" || return 1
+  echo "$out" | grep -q "Exit status:" || return 1
+  echo "$out" | grep -qE "^  3 " || return 1
+  echo "$out" | grep -qi "different backend" || return 1
   return 0
 }
 
@@ -3018,6 +3685,10 @@ test_testios_destination_is_the_checkout_device() {
 # here instead of silently costing a cold rebuild on every test run.
 test_testios_shares_build_ios_derived_data() {
   local build_path test_path
+  # The dotenv is written explicitly rather than inherited from whichever case
+  # ran last: the local derive path REQUIRES SERVER_PORT (RFC 156 removed the
+  # 8080 fallback), so a build here must be handed one.
+  write_dotenv "" "8080"
   run_build simulator >/dev/null 2>&1 || return 1
   build_path="$(grep -A1 -Fx -- "-derivedDataPath" "$ARGV_LOG" | sed -n '2p')"
   [ -n "$build_path" ] || return 1
@@ -3374,6 +4045,14 @@ assert_success "build-ios: simulator env builds without signing, derives localho
 assert_success "build-ios: device env forwards signing + derived backend + destination" test_build_device_forwards_signing
 assert_success "build-ios: derives backend port from SERVER_PORT" test_build_derives_port_from_server_port
 assert_success "build-ios: bare-IP APP_DOMAIN rejected before any build" test_build_bare_ip_rejected
+assert_success "build-ios: the local derive path REQUIRES SERVER_PORT (no 8080 fallback)" test_build_requires_server_port_on_the_local_path
+assert_success "build-ios: a non-numeric SERVER_PORT is refused, naming the value" test_build_refuses_a_non_numeric_server_port
+assert_success "build-ios: an out-of-range SERVER_PORT (99999) is refused" test_build_refuses_an_out_of_range_server_port
+assert_success "build-ios: a whitespace-padded SERVER_PORT is refused" test_build_refuses_a_whitespace_padded_server_port
+assert_success "build-ios: the dev environment is not exported into xcodebuild (settings still arrive)" test_build_does_not_export_the_dev_environment_into_xcodebuild
+assert_success "build-ios: a UNICOACH_DOTENV naming a missing file is fatal" test_build_refuses_a_missing_named_dotenv
+assert_success "build-ios: a deploy target needs no SERVER_PORT" test_build_deploy_needs_no_server_port
+assert_success "build-ios: an explicit backend URL needs no SERVER_PORT" test_build_explicit_url_needs_no_server_port
 assert_success "build-ios: explicit UNICOACH_BACKEND_URL honored, beats derive" test_build_honors_explicit_backend_url
 assert_success "build-ios: explicit URL forwarded byte-for-byte (trailing slash, no port)" test_build_honors_explicit_url_passthrough_fidelity
 assert_success "build-ios: explicit URL skips the derive-only bare-IP check" test_build_explicit_url_skips_bare_ip_check
@@ -3394,6 +4073,27 @@ assert_success "install-ios: device env with absent signing.env fails, names sig
 assert_success "install-ios: UNICOACH_DEVICE drives devicectl install with app path" test_install_with_device_set
 assert_success "install-ios: -l records process launch of the bundle id" test_install_with_launch
 assert_success "install-ios: ambiguous (two) devices with no UNICOACH_DEVICE fails" test_install_ambiguous_device
+assert_success "install-ios: a bundle built for another backend is refused (exit 3), names both URLs" test_install_refuses_a_bundle_built_for_another_backend
+assert_success "install-ios: a bundle built for this checkout's backend installs" test_install_accepts_a_bundle_built_for_this_backend
+assert_success "install-ios: a MATCHING bundle installs even with a bare-IP APP_DOMAIN" test_install_accepts_a_matching_bundle_with_a_bare_ip_domain
+assert_success "install-ios: a stale bundle is still refused (exit 3) with a bare-IP APP_DOMAIN" test_install_refuses_a_stale_bundle_with_a_bare_ip_domain
+assert_success "install-ios: an ambient IOS_EXIT_STALE_BUNDLE cannot turn a refusal into success" test_install_stale_exit_code_is_not_overridable_by_the_environment
+assert_success "install-ios: a bundle stating no backend URL installs, and says so" test_install_says_when_a_bundle_states_no_backend_url
+assert_success "install-ios: a bundle with NO Info.plist is named as such" test_install_names_a_bundle_with_no_info_plist
+assert_success "install-ios: a plist lacking the key reads differently from a missing plist" test_install_names_a_bundle_whose_plist_lacks_the_key
+assert_success "install-ios: an unreadable Info.plist warns that the check was skipped" test_install_warns_when_the_bundle_cannot_be_read
+
+# ios-url-functions (library)
+assert_success "ios-url-functions: the expected URL routes on its target argument" test_expected_backend_url_routes_on_its_argument
+assert_success "ios-url-functions: deriving the expected URL leaks nothing into the caller" test_expected_backend_url_leaks_nothing_into_the_caller
+assert_success "ios-url-functions: the derivation holds no bare-IP policy (the policy is its own function)" test_derivation_holds_no_bare_ip_policy
+assert_success "ios-url-functions: every bare-IP spelling is refused (allowlist, not denylist)" test_bare_ip_forms_are_all_refused
+assert_success "ios-url-functions: localhost and DNS/MagicDNS hostnames are accepted" test_dns_hostnames_are_accepted
+assert_success "ios-url-functions: host:port is refused without claiming it is IPv6" test_host_with_a_port_is_refused_without_claiming_ipv6
+assert_success "ios-url-functions: a missing OPTIONAL dotenv warns instead of loading nothing silently" test_missing_optional_dotenv_warns_rather_than_being_silent
+assert_success "ios-url-functions: a missing target env file fails instead of degrading the expectation" test_expected_backend_url_refuses_a_missing_target
+assert_success "ios-url-functions: the bundle reader keeps prose off stdout (reason in a named global)" test_bundle_url_reader_keeps_prose_off_stdout
+assert_success "ios-url-functions: ios_primary_dotenv leaves no IOS_DOTENV_FILES in the caller" test_primary_dotenv_leaves_no_array_behind
 
 # release-ios
 assert_success "release-ios: dev-shell guard fires, no xcodebuild line" test_release_guard_device
@@ -3407,6 +4107,8 @@ assert_success "release-ios: missing .p8 at UNICOACH_ASC_KEY_PATH fails fast" te
 assert_success "release-ios: forces Release even when target sets Debug" test_release_forces_release_config
 assert_success "release-ios: derives build number from HEAD commit count" test_release_derives_build_number_from_git
 assert_success "release-ios: deploy target derives https://api.\$APP_DOMAIN from .env.prod" test_release_deploy_derives_https
+assert_success "build-ios/release-ios: one dotenv derives ONE local URL for both" test_build_and_release_derive_the_same_url
+assert_success "build-ios/release-ios: one dotenv derives ONE deploy URL for both" test_build_and_release_derive_the_same_deploy_url
 assert_success "release-ios: manual signing when a provisioning profile is named" test_release_manual_signing_with_profile
 assert_success "release-ios: automatic signing by default (no profile)" test_release_automatic_signing_default
 
@@ -3492,6 +4194,7 @@ assert_success "screenshot-ios: device resolves from the destination's id=<UDID>
 assert_success "screenshot-ios: a destination with neither name= nor id= is fatal" test_screenshot_unresolvable_destination_is_fatal
 assert_success "screenshot-ios: a decoy devicename= key does not win over the real name=" test_screenshot_device_ignores_decoy_name_key
 assert_success "screenshot-ios: -h prints help and exits 0" test_screenshot_help_exits_zero
+assert_success "screenshot-ios: -h documents the stale-bundle exit code (3)" test_screenshot_help_documents_the_stale_bundle_exit_code
 assert_success "screenshot-ios: does NOT bring Simulator.app to the front" test_screenshot_does_not_bring_the_gui_to_the_front
 
 # ios-simulator
@@ -3502,6 +4205,9 @@ assert_success "ios-simulator: builds first, then boots/installs/launches" test_
 assert_success "ios-simulator: the build is bin/build-ios, not a second xcodebuild" test_ios_simulator_delegates_the_build_to_build_ios
 assert_success "ios-simulator: -B skips the build but still installs and launches" test_ios_simulator_skips_the_build_with_B
 assert_success "ios-simulator: -B with nothing built is fatal and names the flag" test_ios_simulator_B_without_a_built_app_is_fatal
+assert_success "ios-simulator: -B refuses a bundle built for another backend (exit 3), nothing booted" test_ios_simulator_refuses_a_bundle_built_for_another_backend
+assert_success "ios-simulator: -B installs a bundle built for this checkout's backend" test_ios_simulator_accepts_a_bundle_built_for_this_backend
+assert_success "screenshot-ios: a bundle built for another backend is refused before the capture" test_screenshot_refuses_a_bundle_built_for_another_backend
 assert_success "ios-simulator: terminates the running app before launching (no stale run)" test_ios_simulator_terminates_before_launch
 assert_success "ios-simulator: args after -- are forwarded to simctl launch" test_ios_simulator_forwards_launch_args
 assert_success "ios-simulator: a run passes no StoreKit argument at all" test_ios_simulator_passes_no_storekit_argument
@@ -3522,6 +4228,7 @@ assert_success "ios-simulator: a failed launch quotes the launch arguments back"
 assert_success "ios-simulator: a target env file cannot redefine the bundle id" test_ios_simulator_env_file_cannot_redefine_the_bundle_id
 assert_success "screenshot-ios: a target env file cannot redefine the bundle id" test_screenshot_env_file_cannot_redefine_the_bundle_id
 assert_success "ios-simulator: -h prints help and exits 0" test_ios_simulator_help_exits_zero
+assert_success "ios-simulator: -h documents the stale-bundle exit code (3)" test_ios_simulator_help_documents_the_stale_bundle_exit_code
 
 # snapshot-ios
 assert_success "snapshot-ios: dev-shell guard fires, no xcodebuild line" test_snapshot_guard

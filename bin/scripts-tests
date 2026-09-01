@@ -495,22 +495,52 @@ make_fake_checkout() {
   # name=nix-shell-env).
   root="$CKP_FAKE_PARENT/$name"
   mkdir -p "$root"
-  for entry in bin .env .env.dev .env.test .env.fuzz; do
+  # `db` is linked too so a fake root can run the DB scripts (db-migrate resolves
+  # DB_SCHEMA_DIR as $PROJECT_ROOT/db/schema) — the cross-checkout isolation test
+  # below drives a real bin/db-reset inside one of these roots.
+  for entry in bin db .env .env.dev .env.test .env.fuzz; do
     ln -s "$PROJECT_ROOT/$entry" "$root/$entry"
   done
   echo "$root"
 }
-ckp_name_a=""; ckp_name_b=""; ckp_base_a=""; ckp_base_b=""
-for suffix in a b c d e f g h; do
-  ckp_root="$(make_fake_checkout "unicoach-blocktest-$suffix")"
-  ckp_base="$("$ckp_root/bin/checkout-port")"
-  if [ -z "$ckp_name_a" ]; then
-    ckp_name_a="unicoach-blocktest-$suffix"; ckp_base_a="$ckp_base"
-  elif [ "$ckp_base" != "$ckp_base_a" ]; then
-    ckp_name_b="unicoach-blocktest-$suffix"; ckp_base_b="$ckp_base"
-    break
-  fi
-done
+
+# Walks fake checkout names under $1 until two of them RESOLVE DIFFERENTLY under
+# $2 — a resolver function taking a fake root and echoing one value — then leaves
+# the pair in FAKE_NAME_A/FAKE_RESOLVED_A and FAKE_NAME_B/FAKE_RESOLVED_B.
+# FAKE_NAME_B empty means no differing pair was found. Globals rather than a return value:
+# it yields four strings, and bash cannot return a tuple. Both disjointness
+# properties below (port BLOCKS, and dev port TRIPLES) need exactly this search,
+# differing only in what they resolve.
+find_two_differing_checkouts() {
+  local prefix="$1" resolver="$2" suffix root resolved
+  FAKE_NAME_A=""; FAKE_NAME_B=""; FAKE_RESOLVED_A=""; FAKE_RESOLVED_B=""
+  for suffix in a b c d e f g h; do
+    root="$(make_fake_checkout "$prefix-$suffix")"
+    resolved="$("$resolver" "$root")"
+    if [ -z "$FAKE_NAME_A" ]; then
+      FAKE_NAME_A="$prefix-$suffix"; FAKE_RESOLVED_A="$resolved"
+    elif [ "$resolved" != "$FAKE_RESOLVED_A" ]; then
+      FAKE_NAME_B="$prefix-$suffix"; FAKE_RESOLVED_B="$resolved"
+      break
+    fi
+  done
+}
+
+resolve_checkout_port() {
+  "$1/bin/checkout-port"
+}
+
+# env -u ENV_FILES: this harness exports the test layering, and the dev ports
+# only exist under the ambient `.env -> .env.dev` default. The root is passed as
+# an ARGUMENT to the child rather than interpolated into its program text.
+resolve_dev_ports() {
+  env -u ENV_FILES -u ENV_FILE bash -c \
+    'source "$1/bin/common"; echo "$PORT $ADMIN_WEB_PORT $PUBLIC_WEB_PORT"' _ "$1"
+}
+
+find_two_differing_checkouts "unicoach-blocktest" resolve_checkout_port
+ckp_name_a="$FAKE_NAME_A"; ckp_base_a="$FAKE_RESOLVED_A"
+ckp_name_b="$FAKE_NAME_B"; ckp_base_b="$FAKE_RESOLVED_B"
 rm -rf "$CKP_FAKE_PARENT"
 if [ -z "$ckp_name_b" ]; then echo "Fail: could not find two checkout names with different derived blocks"; exit 1; fi
 # Disjoint, not merely different: neither block may contain any port of the other.
@@ -524,9 +554,14 @@ pass_test "two different checkout names derive non-overlapping port blocks"
 # Ceiling: the highest derivable block must stay entirely below macOS's ephemeral
 # range (net.inet.ip.portrange.first = 49152), where an outbound socket could
 # steal a test port. Read the geometry from the script rather than restating it.
-ckp_floor="$(grep -E '^BLOCK_FLOOR=' bin/checkout-port | cut -d= -f2)"
-ckp_size="$(grep -E '^BLOCK_SIZE=' bin/checkout-port | cut -d= -f2)"
-ckp_count="$(grep -E '^BLOCK_COUNT=' bin/checkout-port | cut -d= -f2)"
+# The constants moved to bin/functions (RFC 156), their single home now that
+# checkout_block_base shares them with bin/checkout-port. Read the SOURCED
+# variables, not a text grep of the file: this harness already sources
+# bin/functions (line 25), and a harmless reformat there -- `CHECKOUT_BLOCK_SIZE=$((8 * 2))`
+# -- would make a grep yield empty strings and this ceiling test pass vacuously.
+ckp_floor="$CHECKOUT_BLOCK_FLOOR"
+ckp_size="$CHECKOUT_BLOCK_SIZE"
+ckp_count="$CHECKOUT_BLOCK_COUNT"
 ckp_top=$((ckp_floor + (ckp_count - 1) * ckp_size + ckp_size - 1))
 if [ "$ckp_top" -ge 49152 ]; then echo "Fail: highest derivable port $ckp_top is at or above the ephemeral floor 49152"; exit 1; fi
 pass_test "the highest derivable block stays below the 49152 ephemeral floor ($ckp_top)"
@@ -551,15 +586,20 @@ fi
 pass_test "the delta files' fallback block ($ckp_fb_test) sits below the $ckp_floor block floor"
 
 # Block-wise fallback: the derived block is a preference, not a guarantee (hash
-# collision, or a foreign process squatting inside it). Hold a port in the MIDDLE
-# of the block — offset +12, which no consumer uses, so a port-wise fallback
-# would happily return a base whose block still straddles the held port. The
-# whole point of RFC 132 is that checkout-port advances by BLOCK: the fallback
-# must be a different block, entirely free.
-start_foreign_listener $((ckp_first + 12)) || { echo "Fail: could not bind foreign listener on $((ckp_first + 12))"; exit 1; }
+# collision, or a foreign process squatting inside it). Hold a port in the middle
+# of the EPHEMERAL half — offset +5, one of the scripts-tests scratch offsets, so
+# a port-wise fallback would happily return a base whose block still straddles
+# the held port. The whole point of RFC 132 is that checkout-port advances by
+# BLOCK: the fallback must be a different block, entirely free.
+#
+# The fixture used to sit on +12. RFC 156 assigned +10/+11/+12 to the DEV
+# daemons and narrowed the free-check to +0..+9, so a listener on +12 no longer
+# advances anything — it is now the subject of the opposite assertion below.
+# Holding it here would have turned this test green-but-vacuous.
+start_foreign_listener $((ckp_first + 5)) || fail_test "could not bind foreign listener on [$((ckp_first + 5))]"
 ckp_listener="$FOREIGN_LISTENER_PID"
 ckp_fallback="$(bin/checkout-port)" || { echo "Fail: checkout-port failed while a port inside its derived block was held"; stop_foreign_listener "$ckp_listener"; exit 1; }
-if [ "$ckp_fallback" = "$ckp_first" ]; then echo "Fail: checkout-port returned block $ckp_first, which contains the held port $((ckp_first + 12))"; stop_foreign_listener "$ckp_listener"; exit 1; fi
+if [ "$ckp_fallback" = "$ckp_first" ]; then stop_foreign_listener "$ckp_listener"; fail_test "checkout-port returned block [$ckp_first], which contains the held port [$((ckp_first + 5))]"; fi
 if [ "$ckp_fallback" -le $((ckp_first + 15)) ] && [ $((ckp_fallback + 15)) -ge "$ckp_first" ]; then
   echo "Fail: checkout-port fallback block $ckp_fallback..$((ckp_fallback + 15)) overlaps the held block $ckp_first..$((ckp_first + 15))"
   stop_foreign_listener "$ckp_listener"; exit 1
@@ -571,9 +611,171 @@ for ckp_offset in $(seq 0 15); do
   fi
 done
 stop_foreign_listener "$ckp_listener"
-pass_test "checkout-port advances a whole block when any port in the derived block is held"
+pass_test "checkout-port advances a whole block when a port in the ephemeral half is held"
 # The suite's own scratch ports live in this block; release it before moving on.
-if ! wait_for_port_free $((ckp_first + 12)); then echo "Fail: $((ckp_first + 12)) not released after the checkout-port fallback case"; exit 1; fi
+if ! wait_for_port_free $((ckp_first + 5)); then fail_test "[$((ckp_first + 5))] not released after the checkout-port fallback case"; fi
+
+# ── The dev half of the block (RFC 156) ──────────────────────────────────────
+# checkout_block_base (bin/functions) is the PURE derivation, shared by
+# bin/checkout-port and .env.dev. It must be deterministic for the same reason
+# the script is: a dev port that moves is baked-in-wrong in every iOS bundle
+# built before it moved.
+#
+# …and it must AGREE with bin/checkout-port whenever that script has no reason to
+# advance, or the registry in its help text and the derivation .env.dev reads
+# would be describing two different blocks. The agreement only holds when the
+# ephemeral half is free, which is exactly the condition the script advances on,
+# so establish that first and assert the weaker (still-derived) property
+# otherwise rather than failing on someone else's stray listener.
+ckp_derived_base="$(checkout_block_base)"
+
+test_checkout_block_base_is_the_pure_derivation() {
+  local again offset held=0
+  again="$(checkout_block_base)"
+  if [ "$ckp_derived_base" != "$again" ]; then
+    fail_test "checkout_block_base is not deterministic ($ckp_derived_base vs $again)"
+  fi
+  if ! validate_port "$ckp_derived_base"; then
+    fail_test "checkout_block_base printed an invalid base [$ckp_derived_base]"
+  fi
+  for offset in $(seq 0 9); do
+    if bin/check-port $((ckp_derived_base + offset)) >/dev/null 2>&1; then held=1; fi
+  done
+  if [ "$held" -eq 0 ]; then
+    if [ "$ckp_derived_base" != "$ckp_first" ]; then
+      fail_test "checkout_block_base [$ckp_derived_base] disagrees with bin/checkout-port [$ckp_first] with the ephemeral half free"
+    fi
+  elif [ "$ckp_first" -le "$ckp_derived_base" ] || [ $(( (ckp_first - ckp_derived_base) % ckp_size )) -ne 0 ]; then
+    fail_test "with the ephemeral half held, bin/checkout-port [$ckp_first] is not a whole-block advance from checkout_block_base [$ckp_derived_base]"
+  fi
+  return 0
+}
+
+# An EXPLICIT EMPTY root must FAIL, not fall back to the ambient PROJECT_ROOT:
+# taking the root by argument exists precisely so a caller cannot get another
+# checkout's block by accident. Run in a SUBSHELL — the guard is a fatal, which
+# exits the shell it runs in.
+test_checkout_derivations_refuse_an_empty_root() {
+  if (checkout_block_base "" >/dev/null 2>&1); then
+    fail_test "checkout_block_base accepted an empty checkout root"
+  fi
+  if (checkout_name "" >/dev/null 2>&1); then
+    fail_test "checkout_name accepted an empty checkout root"
+  fi
+  return 0
+}
+
+# PostgreSQL truncates a `name` at 63 bytes and .env.dev's database is
+# `unicoach-dev-<checkout name>` (13 bytes of prefix), so two checkouts agreeing
+# in their first 50 bytes would SHARE one dev database while cksum — which sees
+# the whole name — gave them different port blocks. Nothing would fail to bind,
+# and the documented remedy ("rename a worktree") does not apply because the
+# names already differ. The derivation must refuse the input instead. Subshells
+# again: the refusal is a fatal.
+test_checkout_name_refuses_a_truncating_name() {
+  local at_limit over_limit
+  at_limit="$(printf 'a%.0s' $(seq 1 "$CHECKOUT_NAME_MAX_BYTES"))"
+  over_limit="$at_limit"a
+  if ! (checkout_name "/tmp/$at_limit" >/dev/null 2>&1); then
+    fail_test "checkout_name rejected a name of exactly $CHECKOUT_NAME_MAX_BYTES bytes"
+  fi
+  if (checkout_name "/tmp/$over_limit" >/dev/null 2>&1); then
+    fail_test "checkout_name accepted a ${#over_limit}-byte name, which PostgreSQL would truncate into another checkout's dev database"
+  fi
+  return 0
+}
+
+# The rule the dev half exists for: a listener on a DEV offset must NOT advance
+# the block. This is the inverse of the +5 case above, and it is not cosmetic —
+# once a dev rest-server holds +10, an unnarrowed free-check would send this
+# checkout's own bin/test onto base+16, a block another checkout derives. The
+# fixture is +10 (rest-server, dev), the offset a real dev daemon holds.
+test_dev_half_listener_does_not_advance_checkout_port() {
+  local listener base
+  start_foreign_listener $((ckp_derived_base + 10)) \
+    || fail_test "could not bind foreign listener on the dev offset $((ckp_derived_base + 10))"
+  listener="$FOREIGN_LISTENER_PID"
+  base="$(bin/checkout-port)" || {
+    stop_foreign_listener "$listener"
+    fail_test "checkout-port failed while a dev-half port was held"
+  }
+  stop_foreign_listener "$listener"
+  if [ "$base" != "$ckp_first" ]; then
+    fail_test "a listener on the dev offset $((ckp_derived_base + 10)) advanced checkout-port from $ckp_first to $base; the free-check must cover +0..+9 only"
+  fi
+  if ! wait_for_port_free $((ckp_derived_base + 10)); then
+    fail_test "$((ckp_derived_base + 10)) not released after the dev-half no-advance case"
+  fi
+  return 0
+}
+
+# Two different checkout names must get DISJOINT dev port triples — the property
+# that lets two worktrees run dev servers at once. Exercised end to end through
+# fake checkout roots (directories of symlinks back into this one, so
+# `basename $PROJECT_ROOT` is the only input that differs) and resolved in a
+# CHILD sourcing bin/common, because the .env.dev layering only happens there.
+test_two_checkouts_derive_disjoint_dev_port_triples() {
+  local name_a ports_a name_b ports_b distinct
+  CKP_FAKE_PARENT="$(mktemp -d)"
+  find_two_differing_checkouts "unicoach-devporttest" resolve_dev_ports
+  name_a="$FAKE_NAME_A"; ports_a="$FAKE_RESOLVED_A"
+  name_b="$FAKE_NAME_B"; ports_b="$FAKE_RESOLVED_B"
+  rm -rf "$CKP_FAKE_PARENT"
+  if [ -z "$name_b" ]; then
+    fail_test "could not find two checkout names with different derived dev ports"
+  fi
+  # Disjoint, not merely different: six ports, six distinct values.
+  distinct="$(printf '%s\n' $ports_a $ports_b | sort -u | wc -l | tr -d ' ')"
+  if [ "$distinct" -ne 6 ]; then
+    fail_test "dev triples for [$name_a] ($ports_a) and [$name_b] ($ports_b) are not disjoint"
+  fi
+  return 0
+}
+
+# The .env:30 trap, and the reason .env.dev re-derives SERVER_PORT: the BASE
+# layer assigns SERVER_PORT=$PORT before any delta is read, so a delta that
+# overrode PORT alone would leave the JVM's rest-server.conf ${SERVER_PORT} on
+# 8080 while the daemon bound base+10. Asserted in a CHILD — the layering only
+# happens there — and against the registry's LITERAL +10, not against the
+# constant .env.dev itself adds, which would make the check circular.
+test_env_dev_derives_port_and_server_port_from_the_block() {
+  local pair
+  pair="$(env -u ENV_FILES -u ENV_FILE bash -c 'source bin/common; echo "$PORT $SERVER_PORT"')"
+  if [ "$pair" != "$((ckp_derived_base + 10)) $((ckp_derived_base + 10))" ]; then
+    fail_test "sourcing .env.dev resolved PORT/SERVER_PORT to [$pair], not the registry's dev offset [$((ckp_derived_base + 10)) $((ckp_derived_base + 10))]"
+  fi
+  return 0
+}
+
+# .env.template is the file a NEW env role is copied from, and NOTHING sources it
+# at runtime — so its copy of the four per-worktree derivations can rot silently
+# and hand whoever copies it a wrong port or a wrong database name. Compare the
+# derivation lines themselves, not just the key names: the `:?` guard that makes
+# the port fail closed is IN the value, so a template that kept the key and lost
+# the guard would still fail open. sort -u because the template also restates
+# SERVER_PORT in its base block.
+test_env_template_restates_the_dev_derivations() {
+  local pattern dev_derivations tpl_derivations
+  pattern='^[A-Za-z_]+=.*(CHECKOUT_BLOCK_BASE|checkout_name)|^SERVER_PORT='
+  dev_derivations="$(grep -E "$pattern" .env.dev | sort -u)"
+  tpl_derivations="$(grep -E "$pattern" .env.template | sort -u)"
+  if [ -z "$dev_derivations" ]; then
+    fail_test "found no per-worktree derivations in .env.dev; the .env.template comparison would be vacuous"
+  fi
+  if [ "$dev_derivations" != "$tpl_derivations" ]; then
+    diff <(echo "$dev_derivations") <(echo "$tpl_derivations") >&2 || true
+    fail_test ".env.template's per-worktree derivations differ from .env.dev's."
+  fi
+  return 0
+}
+
+assert_success "checkout_block_base is deterministic and consistent with bin/checkout-port" test_checkout_block_base_is_the_pure_derivation
+assert_success "checkout_block_base / checkout_name refuse an empty checkout root" test_checkout_derivations_refuse_an_empty_root
+assert_success "checkout_name refuses a name PostgreSQL would truncate" test_checkout_name_refuses_a_truncating_name
+assert_success "a listener on the dev half (+10) does not advance checkout-port" test_dev_half_listener_does_not_advance_checkout_port
+assert_success "two different checkout names derive disjoint dev port triples" test_two_checkouts_derive_disjoint_dev_port_triples
+assert_success "sourcing .env.dev yields SERVER_PORT == PORT == checkout_block_base + 10" test_env_dev_derives_port_and_server_port_from_the_block
+assert_success ".env.template restates .env.dev's per-worktree derivations exactly" test_env_template_restates_the_dev_derivations
 
 # RFC 131 regression, and it MUST cross a process boundary: `.env` assigns PORT
 # unconditionally, so a PORT exported by this harness is clobbered in every child
@@ -979,6 +1181,91 @@ assert_failure "checkout-port 18000 (unexpected arg) is rejected" bin/checkout-p
 test_db_reset_drops() { bin/db-reset >/dev/null 2>&1; }
 assert_success "db-reset drops/recreates non-interactively (relays db-drop -y)" test_db_reset_drops
 
+# 12b. Cross-checkout dev-data isolation (RFC 156) — the regression the whole RFC
+#      exists for, asserted rather than assumed. Before it, every worktree shared
+#      one database literally named `unicoach`, so a routine bin/db-reset in ANY
+#      checkout destroyed every other checkout's dev data; it happened twice in
+#      one day. This drives the REAL bin/db-reset in one checkout and proves the
+#      other's rows survive it.
+#
+#      Two fake checkout roots (directories of symlinks back into this one, so
+#      `basename $PROJECT_ROOT` — the only input to the derivation — is the only
+#      difference) each get their own dev database from .env.dev's
+#      unicoach-dev-<dir> derivation. Real cluster, real databases, real DROP:
+#      a mocked version of this test would assert nothing, since the failure mode
+#      was precisely that the two names were the same string.
+echo ""
+echo "==== Testing cross-checkout dev database isolation ===="
+CKP_FAKE_PARENT="$(mktemp -d)"
+iso_root_a="$(make_fake_checkout "unicoach-isotest-a")"
+iso_root_b="$(make_fake_checkout "unicoach-isotest-b")"
+
+# Every invocation drops the harness's exported ENV_FILES: the dev database only
+# exists under the AMBIENT `.env -> .env.dev` layering, which is the layering an
+# operator's bin/db-reset actually runs under.
+iso_dev() {
+  local root="$1"; shift
+  env -u ENV_FILES -u ENV_FILE "$root/bin/$@"
+}
+iso_db_name() {
+  env -u ENV_FILES -u ENV_FILE bash -c 'source "$1/bin/common"; echo "$POSTGRES_DB"' _ "$1"
+}
+iso_cleanup() {
+  iso_dev "$iso_root_a" db-drop -y >/dev/null 2>&1 || true
+  iso_dev "$iso_root_b" db-drop -y >/dev/null 2>&1 || true
+  rm -rf "$CKP_FAKE_PARENT"
+}
+# The ONE failure exit for this section. fail_test exits the harness, so every
+# abort has to drop the two real databases first — repeating that cleanup at each
+# branch is exactly how one forgotten copy leaks a database into the shared dev
+# cluster.
+iso_fail() {
+  iso_cleanup
+  fail_test "$1"
+}
+
+test_iso_derives_distinct_dev_databases() {
+  iso_db_a="$(iso_db_name "$iso_root_a")"
+  iso_db_b="$(iso_db_name "$iso_root_b")"
+  if [ "$iso_db_a" != "unicoach-dev-unicoach-isotest-a" ] || [ "$iso_db_b" != "unicoach-dev-unicoach-isotest-b" ]; then
+    iso_fail ".env.dev did not derive a per-worktree dev database (got [$iso_db_a] and [$iso_db_b])"
+  fi
+  return 0
+}
+
+# The blast radius under test: a full drop/create/migrate in checkout A only.
+# A's own marker must be GONE (so the survival of B's row is isolation and not a
+# no-op) and B's must be untouched.
+test_iso_db_reset_spares_the_other_checkout() {
+  local marker_sql="CREATE TABLE IF NOT EXISTS rfc156_marker (id INT PRIMARY KEY); INSERT INTO rfc156_marker VALUES (1);"
+  local out a_gone b_rows
+  if ! out="$(iso_dev "$iso_root_a" db-create 2>&1)" || ! out="$(iso_dev "$iso_root_b" db-create 2>&1)"; then
+    iso_fail "could not provision the two fake checkouts' dev databases: $out"
+  fi
+  if ! out="$(iso_dev "$iso_root_a" db-run rw "$marker_sql" 2>&1)" \
+    || ! out="$(iso_dev "$iso_root_b" db-run rw "$marker_sql" 2>&1)"; then
+    iso_fail "could not seed the marker row in both dev databases: $out"
+  fi
+  # db-reset's own output is CAPTURED and reported: a provisioning failure in the
+  # test this whole RFC exists for must not be a bare "it failed".
+  if ! out="$(iso_dev "$iso_root_a" db-reset 2>&1)"; then
+    iso_fail "bin/db-reset failed in the fake checkout [$iso_root_a]: $out"
+  fi
+  a_gone="$(iso_dev "$iso_root_a" db-run -r ro "SELECT to_regclass('public.rfc156_marker') IS NULL" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$a_gone" != "t" ]; then
+    iso_fail "db-reset in [$iso_db_a] did not drop its own marker table (to_regclass IS NULL returned [$a_gone])"
+  fi
+  b_rows="$(iso_dev "$iso_root_b" db-run -r ro "SELECT count(*) FROM rfc156_marker" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$b_rows" != "1" ]; then
+    iso_fail "db-reset in [$iso_db_a] destroyed the other checkout's data: [$iso_db_b] reports [$b_rows] marker rows, expected 1"
+  fi
+  return 0
+}
+
+assert_success "two checkouts derive distinct dev databases" test_iso_derives_distinct_dev_databases
+assert_success "bin/db-reset in one checkout leaves another checkout's dev data untouched" test_iso_db_reset_spares_the_other_checkout
+iso_cleanup
+
 # 13. Unexpected-argument rejection across the guard set. Each guard fires before
 #     any real work, so no live cluster/daemon is needed: the stray argument is
 #     rejected with EXIT_UNEXPECTED_ARG (20) up front. postgres-bounce now rejects
@@ -1061,6 +1348,17 @@ for unit_path in "$PROJECT_ROOT"/infra/files/unicoach-*.service; do
   assert_success "build_deploy_command enables $unit" unit_enabled "$unit"
   assert_success "deploy-on-instance restarts $unit" unit_restarted "$unit"
 done
+
+# The mirror image, for local-only tooling (RFC 156 4d). bin/deploy's REPO_PATHS
+# is an ALLOW-LIST, so a new bin/ script is excluded by construction — and
+# exclusion by omission is invisible, which is exactly how a future "helpful"
+# addition would slip a laptop-only DB tool into the deploy bundle. bin/db-dump
+# and bin/db-restore target $POSTGRES_DB on the developer's shared cluster and
+# have no meaning on an instance. The check is pure text against bin/deploy, so
+# it holds whether or not the scripts themselves exist yet.
+not_bundled() { ! grep -qE "\"bin/$1\"" "$PROJECT_ROOT/bin/deploy"; }
+assert_success "bin/deploy does not bundle db-dump (local-only)" not_bundled db-dump
+assert_success "bin/deploy does not bundle db-restore (local-only)" not_bundled db-restore
 
 echo ""
 echo "==== Testing every shell test harness is run by bin/shell-tests ===="
@@ -2233,9 +2531,11 @@ make_gen_env_root() {
   local root; root="$(mktemp -d)"
   mkdir -p "$root/bin"
   cp "$PROJECT_ROOT/bin/functions" "$PROJECT_ROOT/bin/common" "$PROJECT_ROOT/bin/gen-deployed-env" "$root/bin/"
+  # No POSTGRES_DB here: RFC 156 removed it from the real base .env (dev derives
+  # it per worktree), so a fixture that still set it would model the pre-RFC
+  # world and keep these cases green through a base-removal regression.
   cat > "$root/.env" <<'EOF'
 POSTGRES_PORT=5432
-POSTGRES_DB=unicoach
 DATABASE_MAXIMUM_POOL_SIZE=10
 PUBLIC_WEB_PORT=8082
 ADMIN_WEB_PORT=8081
@@ -2257,6 +2557,7 @@ EOF
 # Full, valid cloud fixture (all DEPLOY_VAR_NAMES keys present).
 write_full_cloud_env() {
   cat > "$1/.env.gentest" <<'EOF'
+POSTGRES_DB=unicoach
 APP_DOMAIN=gentest.example.com
 GOOGLE_CLIENT_IDS=abc.apps.googleusercontent.com
 APPLE_CLIENT_IDS=com.example.gentest
@@ -2373,6 +2674,40 @@ test_gen_deployed_env_delta_value_wins() {
   echo "$out" | grep -qx 'APP_DOMAIN=gentest.example.com' || { echo "delta value did not win: $out"; return 1; }
 }
 assert_success "gen-deployed-env: .env.<env> value wins over .env.dev" test_gen_deployed_env_delta_value_wins
+
+# RFC 156 removed POSTGRES_DB from the base .env and re-added it to .env.prod.
+# Asserted against the REAL env files, not the hermetic gentest fixture: the
+# fixture writes its own base, so it cannot see a regression in .env.prod at all.
+# infra/rds.tf OWNS the name -- `db_name = "unicoach"` is what RDS actually
+# creates -- and POSTGRES_DB is what the instance JVM connects to. So assert the
+# PAIRING, not the literal: an assertion on the literal `unicoach` stays GREEN
+# after a rename in rds.tf while the JVM points at a database RDS never created.
+# Read-only: gen-deployed-env only prints, and the sed only reads.
+#
+# WHY sed AND NOT A TOFU OUTPUT: `tofu output` requires an INITIALISED working
+# directory (a provider download and, for this stack, remote state and AWS
+# credentials), so reading the value the "proper" way would make a pure shell
+# assertion depend on network, credentials, and `tofu init` — and it would then
+# report a broken pairing as a green skip whenever those are absent. `db_name =
+# "..."` is a literal in one HCL file, and this sed reads exactly that line
+# shape; a value that stopped matching it yields an empty string, which the
+# guard below turns into a FAILURE rather than a pass.
+test_gen_deployed_env_prod_postgres_db() {
+  local out err diag rds_db rc=0
+  rds_db="$(sed -n 's/^[[:space:]]*db_name[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$PROJECT_ROOT/infra/rds.tf")"
+  if [ -z "$rds_db" ]; then
+    echo "could not read db_name from infra/rds.tf -- the pairing is unasserted, not satisfied"
+    return 1
+  fi
+  err="$(mktemp)"
+  out="$(env -u ENV_FILES -u ENV_FILE "$PROJECT_ROOT/bin/gen-deployed-env" prod 2> "$err")" || rc=$?
+  diag="$(cat "$err")"; rm -f "$err"
+  [ "$rc" -eq 0 ] || { echo "gen-deployed-env prod exited $rc: $diag"; return 1; }
+  echo "$out" | grep -qx "POSTGRES_DB=$rds_db" \
+    || { echo "prod POSTGRES_DB [$(echo "$out" | grep '^POSTGRES_DB=')] does not match infra/rds.tf db_name [$rds_db]. stderr: $diag"; return 1; }
+  return 0
+}
+assert_success "gen-deployed-env prod POSTGRES_DB matches infra/rds.tf db_name (RFC 156)" test_gen_deployed_env_prod_postgres_db
 
 # ── render-env merge (RFC 95) ─────────────────────────────────────────────────
 echo "==== Testing render-env merge ===="

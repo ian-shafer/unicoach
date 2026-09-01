@@ -11,19 +11,24 @@ rests on. Full design:
   roles (RFC 95), split by scope:
   - **`.env`** — the base: env-**neutral** non-secret app config only (values
     identical in dev and every cloud env). No dev-dangerous value, no
-    deploy-control value.
+    deploy-control value. `POSTGRES_DB` is **not** here: dev derives it per
+    worktree (below), so the value is no longer identical everywhere (RFC 156).
   - **`.env.dev`** — local-dev's env-specific and dev-dangerous values (dev DB
     password, `trust`, `localhost`, the bind-host loopback overrides, the
     required toggles' dev values). Layered by `bin/common`'s ambient default
     (`.env → .env.dev`) and by the test harnesses
     (`ENV_FILES=".env.dev:.env.test|.env.fuzz"`). The deploy/infra path
-    **never** layers it.
+    **never** layers it. It also owns dev's **per-worktree** identity —
+    `POSTGRES_DB=unicoach-dev-<checkout-dir>` and the `+10/+11/+12` dev ports —
+    so one checkout's `bin/db-reset` or dev daemon cannot touch another's.
   - **`.env.<env>`** (e.g. `.env.prod`) — a cloud env's non-secret app config.
     Read only by `bin/gen-deployed-env` (to flatten into the `deploy-env`
     artifact) and `bin/infra-*` (to export `TF_VAR_*`), always as
     `.env → .env.<env>` with **`.env.dev` excluded** (the deploy/infra chain
     rule). A key omitted here is **unset**, not inherited from `.env.dev`, so
-    `require_env_vars` fatals on the laptop before build.
+    `require_env_vars` fatals on the laptop before build. `POSTGRES_DB` is one
+    of those keys since RFC 156 — `.env.prod` sets it explicitly to `unicoach`,
+    which must match `infra/rds.tf`'s `db_name` literal.
   - **`.env.deploy.<env>`** — deploy-control only (`AWS_ACCOUNT_ID`, `REGION`,
     and the `AWS_REGION` derivation). Sourced by
     `bin/deploy`/`bin/remote`/`bin/infra-*` to reach the right AWS
@@ -94,6 +99,46 @@ rests on. Full design:
   reserved offset rather than a new harness variable. `BASE_TEST_PORT` is set
   only by a harness at run time, never committed to any `.env*`, and never read
   by the JVM — the JVM sees only the `PORT`/`SERVER_PORT` it resolves to.
+
+  **Dev overrides the same three keys, but from the dotenv layer, not a
+  harness** (RFC 156). `.env.dev` has no harness above it — it is the ambient
+  default layer every script reads — so it takes the dev offsets of this
+  checkout's block directly. Run `bin/checkout-port -h` for the offset registry,
+  which offsets dev owns, and the two-half rule; it is the authority, and this
+  document does not restate it.
+
+  The two halves differ in one rule. `bin/checkout-port` advances to the next
+  whole block when the **ephemeral** half is contended, which is right for a run
+  that just needs some free block. The **dev** half never advances: the dev port
+  is baked into iOS bundles (`bin/build-ios` → `Info.plist`
+  `UnicoachBackendURL`), so a port that moved would silently point every
+  previously-built app at the wrong server. A name collision therefore surfaces
+  as `bin/daemon-up` refusing to bind, and the remedy is to rename one of the
+  two worktree directories. For the same reason `ephemeral_half_is_free` probes
+  the ephemeral offsets **only** — the dev ports are _supposed_ to be held by
+  this checkout, and reading that as contention would push every checkout with a
+  dev server up onto a block it does not own.
+
+  The derivation lives in `bin/functions`, not `bin/checkout-port` and not
+  `bin/common`, because those are unreachable from a dotenv: `bin/checkout-port`
+  sources `bin/common`, which sources `.env.dev`, so a call from `.env.dev`
+  would fork without bound; and `bin/build-ios` never sources `bin/common` at
+  all. `bin/functions` is sourced, and `PROJECT_ROOT` set, before the dotenvs on
+  both paths — and it publishes the base as `CHECKOUT_BLOCK_BASE`, and the three
+  dev offsets as `CHECKOUT_DEV_OFFSET_REST_SERVER/_ADMIN_WEB/_PUBLIC_WEB`, which
+  `.env.dev` adds with
+  `${CHECKOUT_BLOCK_BASE:?...} + ${CHECKOUT_DEV_OFFSET_REST_SERVER:?...}` so a
+  missing precondition fails closed rather than yielding `PORT=10`. Both are
+  plain shell variables, **not exported**: the only reader is `.env.dev`,
+  sourced by the same shell, and an exported base would be inherited by a child
+  that never set `PROJECT_ROOT` — defeating the `:?` guard and handing that
+  child the **parent checkout's** block.
+
+  `checkout_name` refuses a checkout directory name longer than 50 bytes.
+  PostgreSQL truncates a name at 63 bytes and the dev database is
+  `unicoach-dev-<name>` (13 bytes of prefix), so two longer names agreeing in
+  their first 50 bytes would silently share one database while getting different
+  port blocks.
 
   `ENV_FILE` selects a single delta; `ENV_FILES` is a PATH-like `:`-separated,
   exported string of deltas layered left-to-right (later wins) — the two are

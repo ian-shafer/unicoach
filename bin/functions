@@ -9,6 +9,11 @@
 : "${EXIT_INVALID_ARG_VALUE:=22}"       # a present value that is malformed (bad port, bad mode)
 : "${EXIT_EXCLUSIVE_OPTIONS:=23}"       # two options that cannot combine (e.g. -r with -x)
 
+# Operational exit codes (1-9) that mean the same thing repo-wide. Postgres being
+# unreachable is one outcome with one number, so every script that attaches to a
+# running cluster reports it identically (bin/db-run, bin/db-repl, bin/db-dump).
+: "${EXIT_POSTGRES_UNREACHABLE:=2}"     # the cluster is not answering; run bin/postgres-up
+
 log-info() {
   echo "$@" >&2
 }
@@ -101,6 +106,197 @@ validate_duration() {
 validate_port() {
   local port="$1"
   [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+# Geometry of the per-checkout 16-port block (RFC 132). It lives here, beside the
+# derivation that uses it, so the numbers have ONE home: bin/checkout-port and
+# .env.dev both reach this file, and a second copy of the constants would be a
+# second place for them to drift. CHECKOUT_BLOCK_COUNT * CHECKOUT_BLOCK_SIZE
+# spans 18000..48399, entirely below macOS's 49152 ephemeral floor, so the
+# derivation itself can never land above it. EPHEMERAL_FLOOR stays in
+# bin/checkout-port: it bounds that script's advance loop, and is a property of
+# the advance, not of the derivation.
+#
+# The CHECKOUT_ prefix is not decoration. This file is sourced by EVERY bin/
+# script, and the dotenvs are sourced AFTER it, so a bare `BLOCK_SIZE=` anywhere
+# in the repo or in an operator's environment would silently re-scale every dev
+# port. These are library globals and they are namespaced as such.
+CHECKOUT_BLOCK_FLOOR=18000
+CHECKOUT_BLOCK_SIZE=16
+CHECKOUT_BLOCK_COUNT=1900
+
+# Where the DEV half of the block starts, and the offset each dev service takes.
+# bin/checkout-port derives its EPHEMERAL_SPAN from
+# CHECKOUT_DEV_OFFSET_REST_SERVER, and .env.dev derives its three ports from these same three numbers, so the
+# "+10 is where dev begins" fact has ONE home. The two MUST agree: if the
+# free-check probed into the dev half, a checkout's own dev daemon would push its
+# bin/test onto a block it does not own (RFC 156). bin/checkout-port's help text
+# remains the offset REGISTRY -- the authority for who owns which offset; these
+# constants are that registry's machine-readable half.
+CHECKOUT_DEV_OFFSET_REST_SERVER=10
+CHECKOUT_DEV_OFFSET_ADMIN_WEB=11
+CHECKOUT_DEV_OFFSET_PUBLIC_WEB=12
+
+# The longest checkout basename .env.dev's `unicoach-dev-<name>` can carry.
+# PostgreSQL's `name` type truncates SILENTLY at 63 bytes (NAMEDATALEN-1), and
+# the prefix is 13 of them. Two worktrees agreeing in their first 50 characters
+# would therefore land on ONE dev database while cksum -- which sees the full
+# name -- hands them DIFFERENT port blocks: nothing fails to bind, nothing
+# reveals it, and the documented "rename a worktree" remedy does not apply
+# because the names ALREADY DIFFER. That is the exact data-loss bug RFC 156
+# exists to remove, re-entering through truncation, so the derivation refuses the
+# input instead of producing a name the server will quietly shorten.
+CHECKOUT_NAME_MAX_BYTES=50
+
+# Echoes the checkout's IDENTITY -- the basename of its root -- which is the sole
+# input to both per-worktree derivations: the port block below, and .env.dev's
+# POSTGRES_DB. $1 is the checkout root, defaulting to $PROJECT_ROOT.
+#
+# `${1-...}` and NOT `${1:-...}`: an EXPLICIT EMPTY argument must reach the guard
+# below rather than falling back to the ambient PROJECT_ROOT, which is precisely
+# what taking the root by argument was meant to prevent.
+checkout_name() {
+  [ "$#" -le 1 ] || fatal "checkout_name takes at most one argument (the checkout root), got [$#]"
+  local project_root="${1-${PROJECT_ROOT:-}}" name
+  [ -n "$project_root" ] || fatal "checkout_name requires a checkout root (PROJECT_ROOT unset)"
+  name="$(basename "$project_root")"
+  # Counted in BYTES, not characters: the 63 the server truncates at are bytes,
+  # and `${#name}` counts characters in a UTF-8 locale, which would let a
+  # multi-byte name through.
+  local name_bytes
+  name_bytes="$(printf '%s' "$name" | LC_ALL=C wc -c | tr -d '[:space:]')"
+  if [ "$name_bytes" -gt "$CHECKOUT_NAME_MAX_BYTES" ]; then
+    fatal "checkout directory name [$name] is [$name_bytes] bytes; the per-worktree dev database is unicoach-dev-<name> and PostgreSQL truncates a name at 63 bytes, so two checkouts agreeing in their first [$CHECKOUT_NAME_MAX_BYTES] bytes would SHARE one dev database while getting different port blocks. Rename this worktree directory to at most [$CHECKOUT_NAME_MAX_BYTES] bytes (RFC 156)."
+  fi
+  printf '%s\n' "$name"
+}
+
+# Echoes the BASE of this checkout's 16-port block — the PURE derivation, with no
+# port probing and no advance:
+#
+#   18000 + (cksum of "$(basename "$PROJECT_ROOT")" % 1900) * 16
+#
+# It is a pure function of the checkout DIRECTORY NAME, so it is stable across
+# runs and reboots, and because the blocks are 16-aligned two checkouts get either
+# entirely disjoint blocks or the identical one — never a partial overlap.
+#
+# It lives in this file — not in bin/checkout-port, and not in bin/common —
+# because .env.dev must call it and neither of those is reachable from there
+# (RFC 156):
+#
+#   - bin/checkout-port sources bin/common, and bin/common sources .env.dev, so a
+#     command substitution in .env.dev that called it would re-enter bin/common,
+#     re-source .env.dev, and fork again. That is an unbounded fork bomb, not a
+#     slow path. The same applies to bin/check-port.
+#   - bin/build-ios does not source bin/common AT ALL — it runs under system
+#     Xcode, outside the Nix dev shell, and sources .env and .env.dev directly.
+#     Dev-port logic held in bin/common would be invisible to the one consumer
+#     that BAKES the port into a shipped bundle (Info.plist UnicoachBackendURL).
+#
+# bin/functions is already sourced, and PROJECT_ROOT already set, before the
+# dotenvs are read on BOTH paths (bin/common:3,5 then 99; bin/build-ios:7,8 then
+# its dotenv loop), which is what makes this the one location both consumers can
+# reach. It therefore sources nothing itself (sourcing bin/common here would be
+# the same recursion) and forks nothing but cksum.
+#
+# bin/checkout-port layers its block-advance loop on top of this for the
+# EPHEMERAL half of the block. The DEV half (+10..+12, .env.dev) uses this value
+# as-is and never advances: a dev port that moves is not a dev port, because a
+# previously-built iOS bundle still points at the old one.
+#
+# Takes the checkout root as $1, defaulting to $PROJECT_ROOT, and REFUSES an
+# empty one. Taking it by argument matters: an ambient PROJECT_ROOT is silently
+# satisfiable by the WRONG value (an exported one from a parent script, or a test
+# fixture root), which yields a valid-LOOKING block for another checkout with
+# nothing visible at the call site. An EMPTY one used to produce
+# `basename "" -> "" -> a real cksum -> 21120`: a plausible number for no
+# checkout at all. Both now fail loudly instead (RFC 156).
+checkout_block_base() {
+  [ "$#" -le 1 ] || fatal "checkout_block_base takes at most one argument (the checkout root), got [$#]"
+  # `${1-...}`, NOT `${1:-...}`: an explicit EMPTY root must reach the guard
+  # below instead of silently falling back to the ambient PROJECT_ROOT.
+  local project_root="${1-${PROJECT_ROOT:-}}" checksum
+  [ -n "$project_root" ] || fatal "checkout_block_base requires a checkout root (PROJECT_ROOT unset)"
+  checksum="$(printf '%s' "$(checkout_name "$project_root")" | cksum | cut -d' ' -f1)"
+  echo $((CHECKOUT_BLOCK_FLOOR + (checksum % CHECKOUT_BLOCK_COUNT) * CHECKOUT_BLOCK_SIZE))
+}
+
+# Publish the VALUE, not the function, for the dotenv layer to read: .env.dev
+# reads `${CHECKOUT_BLOCK_BASE:?...}` and fails CLOSED when this file was not
+# sourced first, instead of the old `$(( $(checkout_block_base) + 10 ))`, which
+# evaluated to PORT=10 with rc=0 when the function was missing -- a silently
+# wrong port that bin/build-ios then BAKES into an iOS bundle.
+#
+# A PLAIN SHELL VARIABLE, deliberately NOT exported. The only reader is .env.dev,
+# sourced by the SAME shell on both paths (bin/common sources this file, then the
+# dotenvs; bin/build-ios does the same), so an export would reach nothing that
+# needs it -- only gradle, the JVM, xcodebuild and psql. Worse, it would BREAK the
+# fail-closed guard: a child that sources bin/functions WITHOUT PROJECT_ROOT
+# (bin/gen-deployed-env is exactly such a site) would INHERIT this value, so
+# .env.dev's `:?` could never fire and the child would silently use the PARENT
+# CHECKOUT'S block. (.env.test's BASE_TEST_PORT is exported because that contract
+# genuinely crosses a process boundary; this one does not.)
+#
+# The PROJECT_ROOT guard is not optional: bin/functions is sourced by scripts that
+# never set it, and an unconditional call to a now-fataling checkout_block_base
+# would kill every one of them.
+#
+# Assigned and status-checked SEPARATELY. `export VAR="$(f)"` -- like
+# `local x="$(f)"` -- returns the STATUS OF EXPORT, not of the command
+# substitution, so a fataling derivation would print its message while the caller
+# carried on.
+if [ -n "${PROJECT_ROOT:-}" ]; then
+  CHECKOUT_BLOCK_BASE="$(checkout_block_base "$PROJECT_ROOT")" || exit $?
+fi
+
+# Exits EXIT_POSTGRES_UNREACHABLE unless the cluster answers. For scripts that
+# ATTACH to a running cluster and never provision one (bin/INVARIANTS.md: DDL
+# scripts attach, they do not start postgres) — so a stopped cluster is an error
+# with a remedy the operator runs, not something the script fixes. The health
+# check's own logging is suppressed; this message names host and port instead.
+#
+# Only NEW callers use this. bin/db-create, bin/db-run, bin/db-repl and
+# bin/admin-grant keep their own inline copies deliberately: they are in
+# bin/deploy's REPO_PATHS allow-list and run ON THE INSTANCE, and rewriting a
+# deployed script for a style rule is how a config change becomes an outage.
+# The health check's STDOUT is suppressed (it is a progress line, and a caller
+# such as bin/db-dump puts a dump on stdout); its STDERR is deliberately NOT --
+# it carries the reason the cluster did not answer, and this message can only
+# name the address it tried.
+require_postgres_reachable() {
+  if ! "$PROJECT_ROOT/bin/postgres-check" >/dev/null; then
+    log-info "PostgreSQL is offline [host=${PGHOST:-localhost} port=${PGPORT:-${POSTGRES_PORT:-unset}}]"
+    exit "$EXIT_POSTGRES_UNREACHABLE"
+  fi
+}
+
+# Returns 0 if a database named $1 exists, 1 if it does not, and 2 if the PROBE
+# ITSELF failed (the cluster died after the health check, auth was refused, the
+# admin database is absent). Three outcomes, because collapsing the third into
+# "does not exist" states a FALSE FACT with the WRONG REMEDY — the operator goes
+# and recreates a database that was there all along. Asked in POSTGRES_ADMIN_DB,
+# since the subject may be the database we cannot connect to.
+#
+# The name NEVER enters the SQL. The query lists pg_database and the comparison
+# happens in the shell, with `grep -qxF` -- exact, whole-line, fixed-string. A
+# hand-rolled SQL literal would have had to quote the name (correct only while
+# standard_conforming_strings is on), and since RFC 156 the name is derived from
+# an OPERATOR-CHOSEN worktree basename. The earlier `grep -q 1` was also an
+# UNANCHORED substring match, so any database whose name merely contained a `1`
+# read as "exists".
+#
+# db-query's stderr is NOT suppressed: it is silent on success, so on failure the
+# cause ("role does not exist", "database does not exist", "connection refused")
+# flows to the caller's stderr, which is the only evidence status 2 could carry.
+# The caller's STDOUT is unaffected -- this is stderr.
+database_exists() {
+  local db_name="$1" out status=0
+  out="$(printf 'SELECT datname FROM pg_database' \
+    | "$PROJECT_ROOT/bin/db-query" -d "${POSTGRES_ADMIN_DB:-postgres}" -r)" || status=$?
+  if [ "$status" -ne 0 ]; then
+    return 2
+  fi
+  printf '%s\n' "$out" | grep -qxF "$db_name"
 }
 
 # Echoes the value of the `<key>=` component of an xcodebuild -destination

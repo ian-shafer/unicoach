@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/common"
+
+help() {
+  cat << 'EOF'
+db-dump [-f] [-d <db>] [-o <file>]
+
+Dumps POSTGRES_DB in pg_dump custom format (-Fc) to stdout, or to the file named
+by -o. The artifact is a compressed, self-contained snapshot of the schema, the
+data, and the schema_migrations rows; restore it with bin/db-restore.
+
+-d names a DIFFERENT database to dump. It exists for the one job this pair was
+written for: lifting the legacy shared `unicoach` database into a per-worktree
+dev database (RFC 156), which no checkout points at any more. `POSTGRES_DB=...
+bin/db-dump` does NOT work — bin/common layers the dotenvs under `set -a` AFTER
+the caller's environment, so .env.dev wins. The option is read-only and mirrors
+bin/db-query -d. bin/db-restore has NO counterpart on purpose: it DESTROYS its
+target, and a restore aimed at the wrong database is the exact accident this RFC
+exists to prevent.
+
+The artifact is a regenerable CACHE, not an asset: it is never authoritative and
+it is never committed. The convention is to keep it OUTSIDE the repo, under
+$HOME/opt/unicoach/var/dumps/, so one worktree can dump and another restore:
+
+  nix develop -c bin/db-dump -o ~/opt/unicoach/var/dumps/dev.dump
+  nix develop -c bin/db-restore ~/opt/unicoach/var/dumps/dev.dump
+  nix develop -c bin/db-dump | ssh other-mac 'nix develop -c bin/db-restore -y'
+
+The stream form is for a DIFFERENT MACHINE. Piping into a bin/db-restore in this
+same checkout is not a workflow: both ends resolve the same POSTGRES_DB, so it
+drops a live dev database in order to restore it from itself.
+
+That directory is a documented convention, not configuration: there is no dotenv
+key for it, the default is stdout, and the path is always an explicit argument.
+
+A -o target is written to a temporary sibling and moved into place only after
+pg_dump succeeds, so a failed dump can never leave a PARTIAL archive under the
+name an operator trusts. The moved-in file carries mktemp's 0600 mode.
+
+Attaches to a running cluster and never provisions one, so a stopped cluster is
+an error, not something this script fixes (run bin/postgres-up).
+Local-only tooling; never deployed.
+
+Options:
+  -d <db>:   Dump <db> instead of POSTGRES_DB (read-only; for the RFC 156 migration)
+  -o <file>: Write the dump to <file> instead of stdout
+  -f:        Force — overwrite an existing -o target
+  -h:        Help
+
+Exit codes:
+  2: postgres is not reachable, or the existence probe itself failed
+     (repo-wide meaning; see bin/db-run)
+  3: the -o target already exists and -f was not given
+  4: the database to dump does not exist
+  5: pg_dump failed, or the completed dump could not be moved into place
+ 10: unknown option
+ 11: option given without its value
+ 20: unexpected positional argument
+ 22: -d or -o given an empty value
+ 23: -f given without -o
+EOF
+  exit 0
+}
+
+# EXIT_POSTGRES_UNREACHABLE (2) is repo-wide and lives in bin/functions.
+EXIT_REFUSING_OVERWRITE=3
+EXIT_NO_SUCH_DATABASE=4
+EXIT_DUMP_FAILED=5
+
+# PRESENCE is held separately from the VALUE. An empty string is a MALFORMED
+# value, never "the option was not given": `-d ""` silently becoming POSTGRES_DB
+# would dump the WRONG database (naming another one is the option's entire
+# purpose), and `-o ""` made the -f check fatal with the untrue message "option
+# -f is meaningless without -o".
+OUT_FILE=
+OUT_FILE_GIVEN=0
+DUMP_DB=
+DUMP_DB_GIVEN=0
+FORCE=0
+while getopts ":d:o:fh" opt; do
+  case "$opt" in
+  d) DUMP_DB="$OPTARG"; DUMP_DB_GIVEN=1 ;;
+  o) OUT_FILE="$OPTARG"; OUT_FILE_GIVEN=1 ;;
+  f) FORCE=1 ;;
+  h) help ;;
+  \?) fatal -s "$EXIT_UNKNOWN_OPTION" "unknown option [-$OPTARG]" ;;
+  :)  fatal -s "$EXIT_OPTION_REQUIRES_VALUE" "option [-$OPTARG] requires an argument" ;;
+  esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -gt 0 ]; then
+  fatal -s "$EXIT_UNEXPECTED_ARG" "db-dump does not accept positional arguments: [$*]"
+fi
+
+if [ "$DUMP_DB_GIVEN" -eq 1 ] && [ -z "$DUMP_DB" ]; then
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "option -d requires a database name; got an empty value"
+fi
+if [ "$OUT_FILE_GIVEN" -eq 1 ] && [ -z "$OUT_FILE" ]; then
+  fatal -s "$EXIT_INVALID_ARG_VALUE" "option -o requires a file path; got an empty value"
+fi
+
+if [ "$FORCE" -eq 1 ] && [ "$OUT_FILE_GIVEN" -eq 0 ]; then
+  fatal -s "$EXIT_EXCLUSIVE_OPTIONS" "option -f is meaningless without -o (stdout is never overwritten)"
+fi
+
+if [ "$DUMP_DB_GIVEN" -eq 0 ]; then
+  DUMP_DB="$POSTGRES_DB"
+fi
+
+if [ "$OUT_FILE_GIVEN" -eq 1 ] && [ -e "$OUT_FILE" ] && [ "$FORCE" -eq 0 ]; then
+  fatal -s "$EXIT_REFUSING_OVERWRITE" "refusing to overwrite [$OUT_FILE]; pass -f to replace it"
+fi
+
+# Attach to a running cluster; never start one (bin/INVARIANTS.md: DDL scripts
+# attach to a running cluster, never provision one).
+require_postgres_reachable
+
+# Three outcomes, not two. A probe that FAILED (cluster gone, auth refused, no
+# admin database) is not evidence that the database is absent, and reporting it
+# as exit 4 would send the operator to recreate a database that is still there.
+# database_exists lets the probe's own stderr through, so the cause is already on
+# this script's stderr above this message.
+require_database_exists() {
+  local status=0
+  database_exists "$DUMP_DB" || status=$?
+  case "$status" in
+  0) ;;
+  1) fatal -s "$EXIT_NO_SUCH_DATABASE" "database [$DUMP_DB] does not exist" ;;
+  *) fatal -s "$EXIT_POSTGRES_UNREACHABLE" \
+       "could not determine whether database [$DUMP_DB] exists: the probe against [${POSTGRES_ADMIN_DB:-postgres}] failed [host=${PGHOST:-localhost} port=${PGPORT:-${POSTGRES_PORT:-unset}} user=$POSTGRES_USER]; nothing was dumped" ;;
+  esac
+}
+
+# Where the dump is written, and under what name it is PUBLISHED. One pg_dump
+# invocation and one failure policy; only the DESTINATION differs. A -o dump goes
+# to a temporary sibling first, because `pg_dump -f` truncates its target in
+# place: a dump that fails half-way would otherwise leave a partial archive under
+# the trusted filename, and the operator would restore it. The sibling shares the
+# destination's filesystem, so the publish is a rename and cannot itself be
+# partial. Sets DUMP_ARGS, DEST_LABEL and (for -o) DUMP_TMP.
+create_dump_destination() {
+  DUMP_ARGS=(-Fc -U "$POSTGRES_USER" -d "$DUMP_DB")
+  DEST_LABEL="stdout"
+  if [ "$OUT_FILE_GIVEN" -eq 1 ]; then
+    DEST_LABEL="$OUT_FILE"
+    local out_dir
+    out_dir="$(dirname "$OUT_FILE")"
+    DUMP_TMP="$(mktemp "$out_dir/.unicoach-db-dump.XXXXXX")"
+    trap 'rm -f "$DUMP_TMP"' EXIT INT TERM
+    DUMP_ARGS+=(-f "$DUMP_TMP")
+  fi
+}
+
+# The other half of the same idea: move the completed temporary into place, so
+# the trusted filename only ever names a COMPLETE archive. A stdout dump has
+# nothing to publish.
+publish_dump() {
+  [ "$OUT_FILE_GIVEN" -eq 1 ] || return 0
+  if ! mv "$DUMP_TMP" "$OUT_FILE"; then
+    fatal -s "$EXIT_DUMP_FAILED" "could not publish the dump to [$OUT_FILE]"
+  fi
+}
+
+# Every log line goes to stderr (log-info), so stdout carries the dump alone.
+run_dump() {
+  local status=0
+  log-info "Dumping database [$DUMP_DB] to [$DEST_LABEL]..."
+  pg_dump "${DUMP_ARGS[@]}" || status=$?
+  if [ "$status" -ne 0 ]; then
+    fatal -s "$EXIT_DUMP_FAILED" "pg_dump failed for database [$DUMP_DB] [status=$status]"
+  fi
+}
+
+require_database_exists
+create_dump_destination
+run_dump
+publish_dump
+log-info "Dumped database [$DUMP_DB] to [$DEST_LABEL]."

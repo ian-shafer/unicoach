@@ -67,10 +67,54 @@ after the target file and the repo `.env` are sourced:
   `https://api.uni.coach`).
 - **Derive (local):** if `UNICOACH_BACKEND_URL` is empty and `UNICOACH_DEPLOY`
   is unset, the build composes
-  `UNICOACH_BACKEND_URL = http://$APP_DOMAIN:${SERVER_PORT:-8080}` from the repo
-  `.env` (the same single source the server reads). `APP_DOMAIN` defaults to
-  `localhost`; a bare-IP literal is rejected (an invalid cookie `Domain`). This
-  is the local-dev path.
+  `UNICOACH_BACKEND_URL = http://$APP_DOMAIN:$SERVER_PORT` from the repo `.env`
+  / `.env.dev` (the same single sources the server reads). `APP_DOMAIN` defaults
+  to `localhost`. This is the local-dev path. Since RFC 156 the dev
+  `SERVER_PORT` is **per-worktree** — derived in `.env.dev` from this checkout's
+  port block — so the baked URL names **this checkout's** dev server and no
+  other's. Run `bin/checkout-port` to see the block, or `bin/build-ios` and read
+  the `[backend=...]` line it logs.
+
+  **`SERVER_PORT` is required here, and it must be a PORT.** It used to read
+  `${SERVER_PORT:-8080}`, but after RFC 156 nothing binds 8080, so that fallback
+  baked a **dead port** into the bundle — and the install-time check below could
+  not catch it, because the expected URL and the baked URL come from the same
+  derivation and so agreed with each other while both were wrong. The value is
+  now checked with `validate_port` (`bin/functions`), the same 1–65535 rule
+  `bin/check-port` and the daemon scripts use — not merely for being non-empty.
+  `abc`, `99999`, `0` and a quoted `"8080 "` are all refused, because each of
+  them has the same blind spot: it would be baked in and then "confirmed" by an
+  expectation derived from the same broken value. A build with a bad or absent
+  `SERVER_PORT` fails and names both the offending value and the dotenv that
+  should have set it.
+
+All three paths, and the choice of which dotenvs to layer, are one shared
+library: `bin/ios-url-functions`, used by `bin/build-ios`, `bin/release-ios`,
+and the install-time check below. There is one derivation, not one per script.
+
+**A missing dotenv is reported, never silent.** An explicitly named
+`UNICOACH_DOTENV` that does not exist is **fatal** — a typo would otherwise load
+nothing and let the build derive from whatever the ambient environment holds,
+with the `SERVER_PORT` message then naming a file that is not there. An
+**optional** layer (`.env`, `.env.dev`, `.env.prod`) may legally be absent, so
+that one logs a warning instead.
+
+**The dotenv load is a shell load, not an export.** It used to run under
+`set -a`, so every value in the dotenv — `POSTGRES_DB`, `DATABASE_PASSWORD`,
+`DATABASE_USER`, `PGHOST`, `SERVER_HOST` and, on the deploy path, `.env.prod`'s
+client-id lists — was inherited by `xcodebuild` and by every build phase it
+spawns. Nothing in the build reads them: what the build consumes travels as an
+explicit **build setting** on the `xcodebuild` command line
+(`UNICOACH_BACKEND_URL`, `UNICOACH_CLIENT_KEY`, which `Info.plist` expands as
+`$(UNICOACH_BACKEND_URL)` / `$(UNICOACH_CLIENT_KEY)`). The dev environment stays
+in the shell that derived the URL.
+
+The library keeps the **value** and the **policy** apart, deliberately. The
+bare-IP `APP_DOMAIN` rule below is a rule about what a build may **bake**, so
+only `bin/build-ios` and `bin/release-ios` apply it. The derivation itself makes
+no judgement, which is why an install of a bundle that agrees with a bare-IP
+checkout is not refused on cookie grounds — the install check is about
+staleness, and nothing is being built.
 
 For the **derive** path, the deploy host is defined **once**, as `APP_DOMAIN` in
 the repo `.env`. Both sides derive from that single value, so they cannot
@@ -81,15 +125,54 @@ disagree:
   `Domain =
   session.cookieDomain`; for the device to store and replay it, that
   `Domain` must match the host the app targets.
-- **The build** derives
-  `UNICOACH_BACKEND_URL = http://$APP_DOMAIN:${SERVER_PORT:-8080}` in
-  `bin/build-ios` and bakes it into the app bundle.
+- **The build** derives `UNICOACH_BACKEND_URL = http://$APP_DOMAIN:$SERVER_PORT`
+  in `bin/build-ios` and bakes it into the app bundle.
 
-Because there is one source, there is no second value to reconcile. The only
-residual step is temporal: **bounce the server after changing `APP_DOMAIN`** so
-it reloads `cookieDomain`. A stale bare-IP `APP_DOMAIN` in `.env` does **not**
-break an explicit-URL (honor) build: the honor path skips derivation and its
-bare-IP check entirely.
+Because there is one source, there is no second value to reconcile **at the
+moment of the build**. What is left is temporal, and there are two parts to it:
+
+1. **Bounce the server after changing `APP_DOMAIN`** so it reloads
+   `cookieDomain`. A stale bare-IP `APP_DOMAIN` in `.env` does **not** break an
+   explicit-URL (honor) build: the honor path skips derivation and its bare-IP
+   check entirely. Nor does it break an **install**: the bare-IP rule is a
+   build-time rule, so a bundle that agrees with this checkout installs even
+   when `APP_DOMAIN` is a bare IP. It stops the next `bin/build-ios`.
+2. **Rebuild the app after the derived URL changes.** The bundle holds a _copy_
+   of the value, taken when it was built. Both inputs move: `APP_DOMAIN` when
+   you edit it, and `SERVER_PORT` the moment you work in a different worktree,
+   because the dev port is per-worktree (RFC 156). So the app on the simulator
+   or the phone can name a host and port that this checkout no longer uses — and
+   if a neighbouring worktree's daemon holds that port, the app talks to a
+   **real server backed by a different database**, with nothing visibly wrong.
+
+Point 2 is why the install is checked rather than trusted. `bin/install-ios`,
+`bin/ios-simulator` and `bin/screenshot-ios` read `UnicoachBackendURL` back out
+of the built bundle and compare it with the URL this checkout derives now. If
+they differ the install is **refused** — not warned about — naming both URLs and
+the fix:
+
+```
+[FATAL] The built app at [.../UnicoachiOS.app] was built for backend
+[http://localhost:8091], but this checkout builds for [http://localhost:8075]
+... Rebuild it: [bin/build-ios simulator].
+```
+
+All three scripts exit **3** for that case, distinct from their other failures,
+and each says so in its `-h` help. `bin/ios-simulator -B` (install without
+rebuilding) is the case the check exists for; the default path rebuilds first,
+so the check simply confirms the two agree.
+
+There are two non-refusal outcomes, and they read differently on purpose:
+
+- **The bundle states nothing** — a well-formed `Info.plist` with no
+  `UnicoachBackendURL`, e.g. one built before this check existed. Not refused:
+  absence is not evidence of staleness. The install logs that the bundle could
+  not be checked, so a checked install and an unchecked one are distinguishable.
+- **The bundle could not be read** — no `plutil` on this machine, or a corrupt /
+  half-written `Info.plist`. That is a **tool failure, not a fact about the
+  bundle**, so it is a `[WARNING]` saying the staleness check was **skipped**
+  for this install. It still installs (refusing on a tool failure would be a
+  different wrong answer), but it never does so silently.
 
 However the URL is resolved, the build and install mechanics are the same:
 
@@ -129,14 +212,18 @@ However the URL is resolved, the build and install mechanics are the same:
    phone then reaches the Mac at a stable name `<host>.<tailnet>.ts.net` over
    any network, surviving DHCP changes — a natural fit for `APP_DOMAIN`, which
    must be a DNS hostname. A same-network LAN hostname is the fallback.
-4. **Server running and reachable.** `rest-server` already binds `0.0.0.0:8080`,
+4. **Server running and reachable.** `rest-server` binds `0.0.0.0:$SERVER_PORT`,
    so it listens on the Tailscale interface with no change. Start it the usual
-   way (`bin/daemon-up` etc.).
+   way (`bin/daemon-up` etc.). Since RFC 156 that port is **per-worktree**, not
+   a fixed 8080: `bin/checkout-port` prints this checkout's block, and
+   `bin/build-ios` logs the port it bakes. Wherever this page says `8080` below,
+   read "this checkout's `SERVER_PORT`".
 5. **`APP_DOMAIN` set once + server bounced** (see below) — required for the
    session to persist on-device.
-6. **Inbound 8080 allowed.** Allow inbound connections to the server: either via
-   the Tailscale interface, or by permitting inbound 8080 in the macOS firewall
-   (System Settings → Network → Firewall).
+6. **Inbound `SERVER_PORT` allowed.** Allow inbound connections to the server:
+   either via the Tailscale interface, or by permitting inbound `$SERVER_PORT`
+   (8080 before RFC 156; now this checkout's derived dev port) in the macOS
+   firewall (System Settings → Network → Firewall).
 7. **Sign in with Apple enabled on the App ID, for a real Apple authorization.**
    The `coach.uni.UnicoachiOS` App ID in the Apple Developer portal must have
    the **Sign in with Apple** capability turned on. A simulator build does not
@@ -173,10 +260,26 @@ the whole configuration: the server's cookie `Domain` and the app's backend host
 both come from this one line, so they cannot drift apart.
 
 **Caveat:** a **bare IP** host is an invalid cookie `Domain` per RFC 6265 and
-will not yield a persisted session. `bin/build-ios` rejects a bare-IP
-`APP_DOMAIN` before building and directs you to a DNS hostname. Use a MagicDNS
-name (or any DNS hostname) — that is the path that retains login on-device.
-`localhost` (the default) is accepted and is what the simulator uses.
+will not yield a persisted session. `bin/build-ios` and `bin/release-ios` reject
+a bare-IP `APP_DOMAIN` before building and direct you to a DNS hostname. This is
+a **build-time** check only — installing an already-built bundle does not
+re-apply it — so the message reaches you at the one moment you can act on it.
+Use a MagicDNS name (or any DNS hostname) — that is the path that retains login
+on-device. `localhost` (the default) is accepted and is what the simulator uses.
+
+The rule is an **allowlist**: the last label of `APP_DOMAIN` must start with a
+**letter**. It used to be a denylist of two spellings (a dotted quad, and
+anything with a colon), and macOS resolves far more than two: `127.1`, `10.1`,
+`2130706433`, `0x7f000001` and `192.168.1` are all bare IP literals, all invalid
+cookie `Domain`s, and all used to pass — after which the session simply never
+persisted, with nothing said. Stated positively, the rule admits `localhost`,
+every MagicDNS name and every real TLD, and rejects every IP spelling, because
+each one ends in a digit whatever base it is written in.
+
+A **colon** is a separate refusal with its own message. `APP_DOMAIN` carries the
+**host only** — the port is `SERVER_PORT`, one line away in the same file — so
+`APP_DOMAIN=localhost:8080` is now told exactly that, instead of being told it
+is an IPv6 literal, which it is not.
 
 ## First-time setup
 
@@ -677,10 +780,27 @@ store rather than a launch argument for a catalogue nobody injected.
   but did not bounce the server, so the issued cookie `Domain` still names the
   old host. Bounce the server, then rebuild and reinstall. (`APP_DOMAIN` must be
   a DNS name, not a bare IP.)
-- **Cannot reach the backend (connection failures).** Wrong host, server not
-  running/bound, or the firewall is blocking inbound 8080. Confirm the phone can
-  reach the Mac (e.g. open `http://<host>:8080` in mobile Safari), check the
-  server is up on `0.0.0.0:8080`, and allow inbound 8080 / use Tailscale.
+- **Cannot reach the backend (connection failures).** Wrong host, **wrong
+  port**, server not running/bound, or the firewall is blocking it. Since RFC
+  156 the dev port is per-worktree, so the first thing to check is that the app
+  was built by THIS checkout: run `bin/checkout-port` for the block,
+  `bin/build-ios <target>` and read its `[backend=...]` line, and compare with
+  what the running server bound. Then confirm the phone can reach the Mac (open
+  `http://<host>:<port>` in mobile Safari), check the server is up on
+  `0.0.0.0:<port>`, and allow that port inbound / use Tailscale.
+- **The app installed from another checkout is refused (`exit 3`).** The bundle
+  in `ios-app/build/DerivedData` was built for a different backend than this
+  checkout derives — another worktree's dev port, or an `APP_DOMAIN` /
+  `SERVER_PORT` you have since changed. That is the check working. Rebuild:
+  `bin/build-ios <target>` (or drop `-B` from `bin/ios-simulator`).
+- **The app reaches a server, but the data is wrong.** Same cause, seen from the
+  other side: a neighbouring worktree's dev daemon is holding the port your
+  bundle was built for, so the app is talking to a real backend on a **different
+  database**. Rebuild in this checkout and reinstall — the install-time check
+  above now refuses this case, so it should only reach you from a bundle
+  installed by hand or by Xcode — or from an install that printed the
+  `[WARNING] Could not read the backend URL ...` line, which says in as many
+  words that the check was skipped.
 - **No device found, or the wrong device is targeted.** Set `UNICOACH_DEVICE` in
   `signing.env` to the intended UDID (`xcrun devicectl list devices`).
 - **Dev-shell guard error (`must run under system Xcode`).** The script was
