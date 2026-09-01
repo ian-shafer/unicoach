@@ -473,6 +473,22 @@ breakdown; 0001 D11/D12 (never forced).
   column comment, per the `0015` house pattern (`cost_attendance` for
   `COSTT4_A`). Schema, `CostField` wire names and user copy therefore all speak
   one language. DECIDED.
+- **D20. (Ian, 2026-09-01) A living plan is a global default PLUS a per-college
+  override, not one global field.** M4's slice text decided "one tri-state field
+  pair on `money_profiles`". That collapses two different facts: _preference_
+  ("we'd rather he lived at home") is global, _feasibility_ ("he can only live
+  at home if the school is commutable") is a fact about the student–college
+  pair. A Seattle family can live at home for UW and cannot for UCSD, and our
+  data can never tell us which: the Scorecard publishes an `OTHEREXPENSE_FAM`
+  figure for essentially every school because schools price a commuter category
+  regardless of any one student, and D16 bars us from travel-distance claims. So
+  `money_profiles.living_plan` is the default (tri-state, as specified) and
+  `college_list_entries.living_plan` is a nullable per-college override, `NULL`
+  meaning "use the default"; resolution is override → default → show all three.
+  `with_family` is never inferred by us — it applies only where the family said
+  so, and where the default is assumed onto a school the coach names the
+  assumption. Carried by RFC 152. DECIDED.
+
 - **D19. (Ian, 2026-08-28) All six component columns carry a nonneg CHECK,**
   matching the sibling `cost_attendance`/`tuition_*` columns and deliberately
   unlike `0045`'s net-price band columns. DECIDED.

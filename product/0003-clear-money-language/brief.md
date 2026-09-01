@@ -117,6 +117,55 @@ Status:
          and the batching guard stays relative (1 vs 2 vs 5) like its RFC
          148/149 siblings.
 
+      M4 (money/04/where-youll-live) LANDED as RFC 152 (main@f7fcc99c +
+         5d067bf0, 2026-09-01) -- where you'll live. The slice specified ONE
+         global field; Ian's UW-vs-UCSD objection at the gate split it in two
+         (D20): preference is global, feasibility is a fact about the
+         student-college pair, and our data can never decide feasibility
+         because the Scorecard prices a commuter category at essentially every
+         school. So 0070 adds money_profiles.living_plan/living_plan_status
+         (on_campus|off_campus|with_family, tri-state, value-IFF-answered) as
+         the DEFAULT, 0071 adds a nullable college_list_entries.living_plan as
+         a per-college OVERRIDE (NULL means use the default -- an entry has
+         nothing to decline), and resolution has exactly one home: override ->
+         default -> show all three. with_family is never inferred by us; where
+         the default is assumed onto a school the coach names the assumption
+         and the correction is stored as that school's override.
+         LivingArrangement moved :service -> :db per CLAUDE.md's one-enum rule,
+         wireName -> value, its CostField mapping left behind. Review found
+         "priced" meaning two things (a row exists vs a total exists) and the
+         naive fix would have told every family that a public school with an
+         unanswered residency "has no published price" -- a false claim about
+         the school when the gap is ours. So the resolver has three cases, each
+         stating its own code on the wire (priced / no_total_here /
+         not_priced_here) and TWO separate reason vocabularies: ArrangementGap
+         for what the school published, NoTotalReason
+         (awaiting_residency_answer, tuition_applicability_unknown,
+         part_not_published) for our own silence, on separate wire keys so the
+         two can never be confused. The offer is gated on two PRICED
+         arrangements, so at a public school the coach now asks where you live
+         AFTER which state you live in -- money/01.2's ordering, arrived at
+         again. Coach prompt v14 (0072) over rfc-153's landed v13; v13 is the
+         rollback. 39 review lenses over four tiers; three independent Tier 2
+         lenses converged on the missing case code, and Tier 3's
+         highest-severity finding was four comments still arguing for the
+         two-case model the earlier tiers had deleted. Two workers argued back
+         against prescribed fixes and were right both times. 2,318 tests green;
+         bin/test check passed as the gate (its Gradle tasks were a cache hit
+         on the identical already-green tree; the shell harnesses, schemathesis
+         and the format check ran fresh). The prompt version moved twice
+         mid-run as rfc-154 took v12 and rfc-153 took v13; the rule that
+         settled a four-way collision without argument is that a run claims its
+         version and migration numbers from the REBASED tree immediately before
+         commit, never from its own design doc. Also fixed a latent main
+         defect: CostsTestDb never seeded the codebook fixture, so a cached
+         :db:test left 69 cost tests failing on 0067's FKs. Declined and open:
+         no StoredAnswer<T> for the (value, status) pairs, no generic
+         tri-state parse ladder (now three copies across two surfaces), no
+         wire-echo unification, and the living-plan invitation is not
+         suppressed by a per-college override -- a school-level answer never
+         closes the global question.
+
 ## Slice IDs
 
 Permanent IDs for this brief's slices (`money/<milestone>/<name>`). The old
@@ -129,7 +178,7 @@ letters stay valid as references; the ledger above is left as written.
 | M1.2 | money/01.2/residency-before-income | LANDED RFC 145 |
 | M2   | money/02/component-split           | LANDED RFC 149 |
 | M3   | money/03/comparison-contract       | LANDED RFC 151 |
-| M4   | money/04/where-youll-live          | NOT STARTED    |
+| M4   | money/04/where-youll-live          | LANDED RFC 152 |
 
 Per-slice dependencies (`Needs:` lines) live in `spec.md`.
 
