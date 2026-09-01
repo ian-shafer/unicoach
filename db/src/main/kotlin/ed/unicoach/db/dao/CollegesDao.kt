@@ -100,6 +100,13 @@ private object DefaultUniverse {
  * no client-supplied version; the upsert sets `version = colleges.version + 1`
  * from the current row inside the statement. `college_programs` remains
  * unversioned (out of scope), so its upsert carries no version column.
+ *
+ * Before adding a method that FINDS a college — by name, by attribute, by
+ * anything a user typed — read the module convention on
+ * `ed.unicoach.college.CollegeSearchService` (not linkable from here: `:db` does
+ * not depend on `:college`). Search goes through that service over
+ * `college_search_index`; this file's point-reads are what stays on `colleges`
+ * (RFC 154 D-F).
  */
 object CollegesDao :
   Findable<College, CollegeId>,

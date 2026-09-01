@@ -5,9 +5,6 @@ import ed.unicoach.db.models.CollegeQuery
 import ed.unicoach.db.models.CollegeSearchOutcome
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.putIncomeBand
-import ed.unicoach.error.PermanentError
-import ed.unicoach.error.TransientError
-import ed.unicoach.error.errorCategory
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -148,10 +145,7 @@ class CollegeSearchTool(
    * are known is the TOOL's question, not the vocabulary's.
    */
   private fun parseQuery(input: JsonObject): Result<CollegeQuery> {
-    val unknown = input.keys - KNOWN_FIELDS
-    if (unknown.isNotEmpty()) {
-      return fail("unknown field(s): [${unknown.sorted().joinToString(", ")}]")
-    }
+    unknownFieldsReason(input, KNOWN_FIELDS)?.let { return fail(it) }
 
     val limit = optInt(input, "limit").getOrElse { return Result.failure(it) } ?: DEFAULT_LIMIT
     val sortBy =
@@ -250,27 +244,6 @@ class CollegeSearchTool(
       CollegeSearchOutcome.UnresolvableProgramFilter.Cause.SUBJECT_AND_CIP_PREFIX_SHARE_NO_CIP_CODE -> {
         "subject [${outcome.value}] and cipPrefix [${outcome.conflictsWith}] name no CIP code in common, " +
           "so no single program can satisfy both -- write only the one you mean"
-      }
-    }
-
-  private fun errorObject(reason: String): JsonObject = buildJsonObject { put("error", reason) }
-
-  /**
-   * A structured error for a search-time DAO failure. Unlike a malformed-input
-   * error (a precise validation string), a DAO failure carries a retryability
-   * category: [TransientError] (a DB blip — the same query may succeed on retry)
-   * vs [PermanentError] (a programming/SQL fault — retrying will not help). The
-   * `transient` flag and the wrapper's cause message let the consumer branch on
-   * the category instead of re-parsing a flattened string.
-   */
-  private fun searchFailureObject(error: Throwable): JsonObject =
-    buildJsonObject {
-      putJsonObject("error") {
-        put("kind", "search_failed")
-        put("category", error.errorCategory())
-        put("transient", error is TransientError)
-        put("detail", error.message ?: error::class.simpleName ?: "search failed")
-        error.cause?.message?.let { put("cause", it) }
       }
     }
 

@@ -317,6 +317,12 @@ fun Application.appModule(
     ToolRegistry(
       listOf(
         CollegeChatTool(CollegeSearchTool(collegeSearchService, codebook)),
+        // The name door beside the filter door (RFC 154): the same
+        // collegeSearchService instance, so a school the student NAMED resolves
+        // over the very path the iOS picker uses.
+        ed.unicoach.coaching.FindCollegeChatTool(
+          ed.unicoach.college.FindCollegeTool(collegeSearchService),
+        ),
         ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
         ed.unicoach.coaching.costs
           .CollegeCostChatTool(

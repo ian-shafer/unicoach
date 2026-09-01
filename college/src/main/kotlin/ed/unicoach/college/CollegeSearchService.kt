@@ -12,6 +12,30 @@ import org.slf4j.LoggerFactory
 import java.sql.SQLException
 
 /**
+ * The rejection [CollegeSearchService.searchByName] answers with when the
+ * caller's words are longer than [CollegeSearchService.MAX_QUERY_LENGTH] — a
+ * REJECTED INPUT, never a failed search.
+ *
+ * It carries the two NUMBERS and no model-facing prose: the sentence a chat
+ * tool shows is composed at the boundary that speaks to the model (the same
+ * move RFC 150 made when it took the program-filter refusal string out of the
+ * DAO and left `CollegeSearchTool.refusalSentence` to word it). The
+ * `IllegalArgumentException` message stays a complete sentence for every
+ * caller — the REST route and the logs — that has nothing to compose with.
+ *
+ * It is its OWN type so a caller can tell this rejection from any other
+ * `IllegalArgumentException`: [CollegeSearchService.handleFailures] catches
+ * `Exception` around the DAO and the JDBC driver, so a supertype test would
+ * report a driver fault to the caller as "your words were wrong". It still
+ * EXTENDS `IllegalArgumentException` so nothing that already maps that type —
+ * `GET /api/v1/colleges?q=` among them — changes behaviour.
+ */
+class QueryTooLongException(
+  val maxLength: Int,
+  val actualLength: Int,
+) : IllegalArgumentException("query must be at most [$maxLength] characters (got [$actualLength])")
+
+/**
  * Orchestrates structured college retrieval over the `db` module's
  * [CollegesDao]. Constructor-DI sibling of the coaching service: it owns the
  * connection boundary and the result-cap clamp, delegating all filtering and
@@ -19,6 +43,18 @@ import java.sql.SQLException
  *
  * The only domain rule applied here is clamping the caller's `limit` into
  * [MIN_LIMIT]`..`[MAX_LIMIT]; everything else is passed through to the DAO.
+ *
+ * **The module convention (RFC 154 D-F).** Three clauses, stated here because
+ * this is where a caller adding a fourth way to find a college is standing:
+ *
+ * - college SEARCH — structured or by name — goes through this service, over
+ *   `college_search_index`. Every consumer takes one of these two doors, and a
+ *   new finder is a new caller HERE, never a new query somewhere else. The
+ *   consumers are deliberately NOT listed: they live in modules this one cannot
+ *   see, so any list written here is stale the moment one is added;
+ * - point-reads by `id` / `ipeds_unit_id` stay on `colleges`, which holds the
+ *   facts. Admin's unfiltered browse is such a read, not a search (D-D);
+ * - ingest and versioning WRITE `colleges` and rebuild the index from it.
  */
 class CollegeSearchService(
   private val database: Database,
@@ -60,8 +96,10 @@ class CollegeSearchService(
    * owns the query boundary so every caller inherits it, not just the REST
    * route: [query] is trimmed, a blank query is an empty success (nothing can
    * match nothing — never an unbounded scan), and a query longer than
-   * [MAX_QUERY_LENGTH] is a failure. A zero-match query yields an empty list,
-   * not a failure.
+   * [MAX_QUERY_LENGTH] is a failure carrying [QueryTooLongException] — a
+   * PUBLISHED type, asked about through [rejectedInput], not an unstated
+   * implementation choice a caller has to type-test for itself. A zero-match
+   * query yields an empty list, not a failure.
    */
   suspend fun searchByName(
     query: String,
@@ -70,22 +108,56 @@ class CollegeSearchService(
     val trimmed = query.trim()
     if (trimmed.isEmpty()) return Result.success(emptyList())
     if (trimmed.length > MAX_QUERY_LENGTH) {
-      return Result.failure(
-        IllegalArgumentException("query must be at most [$MAX_QUERY_LENGTH] characters (got [${trimmed.length}])"),
-      )
+      return Result.failure(QueryTooLongException(maxLength = MAX_QUERY_LENGTH, actualLength = trimmed.length))
     }
     val clamped = limit.coerceIn(MIN_LIMIT, MAX_LIMIT)
     return handleFailures { database.withConnection { session -> CollegesDao.searchByName(session, trimmed, clamped) } }
       .onFailure { error ->
         if (error is SearchIndexNotBuiltException) {
+          // The throwable is passed, not just the sentence: the type, the stack
+          // and any cause are the only record of this state anywhere in the
+          // system -- every consumer above renders it as a fixed refusal.
           logger.error(
             "college name search ran against an UNBUILT college_search_index -- " +
               "run the ingest's `search-index` phase (`bin/ingest-colleges`); until then the picker " +
               "can find nothing, and is refused rather than answered with a false zero",
+            error,
           )
         }
       }
   }
+
+  /**
+   * Whether [error] — a failure from [searchByName] — means the search index
+   * has never been built, rather than that the query itself failed.
+   *
+   * The answer lives HERE because the fact is `:db`'s
+   * ([ed.unicoach.db.dao.SearchIndexNotBuiltException]) and this service is the
+   * boundary that owns what `:db` hands up. A caller that type-tested the
+   * exception class itself would be reaching through this boundary for a
+   * detail it should not have to know; a caller ASKS instead, and keeps working
+   * if the DAO ever reports the state some other way.
+   */
+  fun isIndexNotBuilt(error: Throwable): Boolean = error is SearchIndexNotBuiltException
+
+  /**
+   * The REJECTED-INPUT rejection inside [error] — a failure from
+   * [searchByName] — or `null` when [error] is anything else, meaning the
+   * SEARCH failed rather than the caller's words being refused.
+   *
+   * The answer lives HERE for the same reason [isIndexNotBuilt] does: this
+   * service is the boundary that owns what `:db` hands up, and only it knows
+   * which failures are its own rules speaking. A caller that tested
+   * `error is IllegalArgumentException` instead would be answering a different
+   * question, because [handleFailures] catches `Exception` around the DAO and
+   * the JDBC driver: any `IllegalArgumentException` from down there would be
+   * reported to the caller as a fault in the words it wrote.
+   *
+   * It returns the rejection rather than a boolean so the caller can WORD it
+   * from the numbers ([QueryTooLongException.maxLength],
+   * [QueryTooLongException.actualLength]) instead of re-parsing a sentence.
+   */
+  fun rejectedInput(error: Throwable): QueryTooLongException? = error as? QueryTooLongException
 
   /**
    * Runs [block] and keeps EVERY failure inside the [Result] both entry points

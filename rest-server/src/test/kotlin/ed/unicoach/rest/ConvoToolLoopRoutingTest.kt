@@ -38,6 +38,14 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -68,8 +76,52 @@ class ConvoToolLoopRoutingTest {
       java.util.concurrent.atomic
         .AtomicInteger(0)
 
+    /**
+     * The tool_use block the first provider call replays. One scripted provider
+     * serves every case and only the block differs, so each case ARMS it through
+     * [resetLoop] — `search_colleges` or `find_college` (RFC 154).
+     *
+     * Deliberately null until armed, with no default. JUnit guarantees no method
+     * order, so a default would let a case that forgot to arm inherit whatever
+     * the previous case installed and still pass — a green test asserting the
+     * wrong tool. Unarmed is now a named failure instead.
+     */
+    private val toolUseBlock =
+      java.util.concurrent.atomic
+        .AtomicReference<String?>(null)
+
+    /** Every ChatRequest the loop made, in order: the continuation is where the tool_result rides. */
+    private val requests = java.util.Collections.synchronizedList(mutableListOf<ChatRequest>())
+
+    /** The low 30 bits: keeps a random UUID's tail inside a POSITIVE `int` for `ipeds_unit_id`. */
+    private const val IPEDS_UNIT_ID_MASK = 0x3FFFFFFFL
+
+    private const val SEARCH_COLLEGES_TOOL_USE =
+      """[{"type":"tool_use","id":"toolu_0","name":"search_colleges","input":{"cipPrefix":"26"}}]"""
+
+    /**
+     * The `find_college` block, BUILT rather than interpolated: this tool's
+     * whole point is a fuzzy name, and a realistic one ("St. Mary's", a quoted
+     * nickname) interpolated into a JSON literal produces invalid JSON that
+     * fails at parse time, two layers away from the case that wrote it.
+     */
+    private fun findCollegeToolUse(name: String): String =
+      buildJsonArray {
+        add(
+          buildJsonObject {
+            put("type", "tool_use")
+            put("id", "toolu_find_0")
+            put("name", "find_college")
+            putJsonObject("input") { put("name", name) }
+          },
+        )
+      }.toString()
+
     private fun toolUseTerminal(): ChatEvent.Terminal {
-      val content = Json.parseToJsonElement("""[{"type":"tool_use","id":"toolu_0","name":"search_colleges","input":{"cipPrefix":"26"}}]""")
+      val content =
+        Json.parseToJsonElement(
+          requireNotNull(toolUseBlock.get()) { "arm the scripted provider with resetLoop(...) first" },
+        )
       return ChatEvent.Completed(
         response =
           ChatResponse(
@@ -104,6 +156,9 @@ class ConvoToolLoopRoutingTest {
 
         override fun stream(request: ChatRequest): Flow<ChatEvent> =
           flow {
+            // Recorded, because the CONTINUATION request is the only place the
+            // dispatched tool's own answer is observable from outside the loop.
+            requests.add(request)
             val n = callCount.getAndIncrement()
             emit(if (n == 0) toolUseTerminal() else finalTerminal())
           }
@@ -180,6 +235,84 @@ class ConvoToolLoopRoutingTest {
 
   private fun url(path: String) = "http://localhost:$port$path"
 
+  /**
+   * Arms the scripted provider for one turn: the first call replays [toolUse],
+   * every later one ends the turn. The recorded requests are cleared with the
+   * counter, so a case reads only its own turn.
+   */
+  private fun resetLoop(toolUse: String) {
+    callCount.set(0)
+    requests.clear()
+    toolUseBlock.set(toolUse)
+  }
+
+  /**
+   * A uniquely-named college this test alone matches, on the shared un-truncated
+   * test DB, with both derived tables re-derived in the SAME transaction as the
+   * row (the [CollegeSearchRoutingTest] rule): `college_name_words` for the
+   * one-keystroke arm and `college_search_index` for the substring arm and the
+   * index-built gate. Under autocommit the DELETE inside `rebuildNameWords`
+   * would commit alone, and the embedded server is live on this database.
+   */
+  private fun seedCollege(name: String): java.util.UUID {
+    val id = java.util.UUID.randomUUID()
+    val uniqueIpedsUnitId = (id.leastSignificantBits and IPEDS_UNIT_ID_MASK).toInt()
+    val session =
+      object : ed.unicoach.db.dao.SqlSession {
+        override fun prepareStatement(sql: String): java.sql.PreparedStatement = connection.prepareStatement(sql)
+      }
+    connection.autoCommit = false
+    try {
+      connection
+        .prepareStatement(
+          """
+          INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control, undergrad_enrollment_headcount)
+          VALUES (?, ?, ?, 'Townsville', 'CA', 1, 5000)
+          """.trimIndent(),
+        ).use { stmt ->
+          stmt.setObject(1, id)
+          stmt.setInt(2, uniqueIpedsUnitId)
+          stmt.setString(3, name)
+          stmt.executeUpdate()
+        }
+      ed.unicoach.db.dao.CollegesDao
+        .rebuildNameWords(session)
+        .getOrThrow()
+      ed.unicoach.db.dao.CollegesDao
+        .rebuildSearchIndex(session)
+        .getOrThrow()
+      connection.commit()
+    } catch (e: Throwable) {
+      connection.rollback()
+      throw e
+    } finally {
+      connection.autoCommit = true
+    }
+    return id
+  }
+
+  /**
+   * The single `tool_result` block the loop sent back to the provider on
+   * [request] — the continuation is the only place the dispatched tool's answer
+   * is observable from outside the loop.
+   */
+  private fun toolResultBlock(request: ChatRequest): JsonObject =
+    Json
+      .parseToJsonElement(
+        request.messages
+          .last()
+          .content
+          .toString(),
+      ).jsonArray
+      .map { it.jsonObject }
+      .single { it["type"]?.jsonPrimitive?.content == "tool_result" }
+
+  /** The tool's own JSON answer, which rides inside [block] as a content STRING. */
+  private fun toolAnswer(block: JsonObject): JsonObject =
+    Json
+      .parseToJsonElement(block["content"]!!.jsonPrimitive.content)
+      .jsonObject
+
   private fun markEmailVerified(email: String) {
     connection
       .prepareStatement(
@@ -230,7 +363,7 @@ class ConvoToolLoopRoutingTest {
   @Test
   fun `a tool-round turn enqueues extraction with the continuation request id and collapses the transcript`() =
     runBlocking {
-      callCount.set(0)
+      resetLoop(SEARCH_COLLEGES_TOOL_USE)
       val cookie = registerWithStudent()
       val created =
         client.post(url("/api/v1/conversations")) {
@@ -263,5 +396,56 @@ class ConvoToolLoopRoutingTest {
       assertEquals("biology colleges?", list[0]["content"].asText())
       assertEquals("coach", list[1]["role"].asText())
       assertEquals("no matches yet", list[1]["content"].asText())
+    }
+
+  /**
+   * RFC 154's acceptance criterion, at the chat level: the name goes in and a
+   * `college_id` comes back, over the same fuzzy path the iOS picker uses. The
+   * registry the appModule wires must SERVE `find_college` — an unknown tool
+   * would come back as an `is_error` tool_result instead — and the answer must
+   * carry the seeded college's id, so the coach has an id to hand
+   * `update_college_list`.
+   */
+  @Test
+  fun `a find_college tool round resolves a named school to its college_id`() =
+    runBlocking {
+      // An apostrophe on purpose: the tool_use block is BUILT, so a realistic
+      // fuzzy name cannot break the JSON the provider replays.
+      val name = "Keystone O'Fuzzy College ${java.util.UUID.randomUUID()}"
+      val seededId = seedCollege(name)
+      resetLoop(findCollegeToolUse(name))
+      val cookie = registerWithStudent()
+
+      val created =
+        client.post(url("/api/v1/conversations")) {
+          header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+          header(HttpHeaders.Cookie, cookie)
+          setBody(mapper.writeValueAsString(CreateConversationRequest("add $name to my list", null)))
+        }
+      assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+
+      // Two provider calls: the tool_use opener and the continuation carrying
+      // the tool's answer.
+      assertEquals(2, requests.size, "the tool loop must make two provider calls")
+      val block = toolResultBlock(requests[1])
+      assertEquals(
+        null,
+        block["is_error"],
+        "an is_error tool_result means the registry does not serve find_college: [$block]",
+      )
+      val result = toolAnswer(block)
+      assertEquals(null, result["error"], "the lookup must answer, not refuse: [$result]")
+      val matches = result["colleges"]!!.jsonArray.map { it.jsonObject }
+      assertEquals(
+        listOf(seededId.toString()),
+        matches.map { it["college_id"]!!.jsonPrimitive.content },
+        "the named school must resolve to the id every other college tool takes",
+      )
+
+      // And the registry advertises it on the turn, so the model can reach it at
+      // all: the opener's tool list names find_college beside search_colleges.
+      val advertised = requests[0].tools.map { it["name"]!!.jsonPrimitive.content }
+      assertTrue(advertised.contains("find_college"), "the registry must advertise find_college, got [$advertised]")
+      assertTrue(advertised.contains("search_colleges"), "beside the structured search it does not replace")
     }
 }

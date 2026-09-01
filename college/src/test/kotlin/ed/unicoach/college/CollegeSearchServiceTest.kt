@@ -18,6 +18,8 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CollegeSearchServiceTest {
@@ -250,6 +252,35 @@ class CollegeSearchServiceTest {
       assertTrue(exception is IllegalArgumentException)
       assertTrue(exception.message!!.contains("${CollegeSearchService.MAX_QUERY_LENGTH}"))
     }
+
+  @Test
+  fun `the oversized rejection is its OWN type and carries the two numbers`() =
+    runBlocking {
+      val overLong = "x".repeat(CollegeSearchService.MAX_QUERY_LENGTH + 1)
+      val thrown: Throwable = service.searchByName(overLong, 25).exceptionOrNull()!!
+      val rejection = service.rejectedInput(thrown)
+
+      assertNotNull(rejection, "the service must report its OWN rejection as a rejected input")
+      // The numbers, not a sentence: the boundary that speaks to the model
+      // words it for the field IT has (RFC 150's `refusalSentence` precedent).
+      assertEquals(CollegeSearchService.MAX_QUERY_LENGTH, rejection.maxLength)
+      assertEquals(overLong.length, rejection.actualLength)
+      // It stays an IllegalArgumentException, so every existing mapping of that
+      // type -- `GET /api/v1/colleges?q=` among them -- is unchanged. Asserted
+      // of the THROWABLE as the caller sees it, so the check is not vacuous.
+      assertTrue(thrown is IllegalArgumentException, "the rejection must keep its old supertype: [$thrown]")
+    }
+
+  @Test
+  fun `any OTHER IllegalArgumentException is a failed search, not a rejected input`() {
+    // The point of the type. `handleFailures` catches `Exception` around the DAO
+    // and the JDBC driver, so a supertype test here would report a fault from
+    // down there to the caller as "your words were wrong".
+    assertNull(
+      service.rejectedInput(IllegalArgumentException("a driver said this, not the query rule")),
+      "only the service's own rejection is a rejected input",
+    )
+  }
 }
 
 /** The page a search must have produced; a program-filter refusal fails loudly. */
