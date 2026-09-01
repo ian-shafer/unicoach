@@ -124,6 +124,45 @@ Ledger (updated as slices land):
        claimed by live runs), migration 0068 — recompute both at run time,
        never copy them.
 
+    S5 LANDED as RFC 154 (main@1f1292f0 + 540eadaa, 2026-09-01) — the sweep
+       that found nothing to sweep, and closed the gap it found instead. The
+       audit walked every call site that searches, filters or name-resolves a
+       college (a FINDER / BROWSE / READER / INGEST inventory, recorded in the
+       RFC) and found RFC 150 had already repointed them all: both DAO search
+       entry points read college_search_index, chat search, the fit lens,
+       GET /api/v1/colleges?q= and the iOS picker all go through
+       CollegeSearchService, and no pg_trgm or similarity( call survives in
+       main source. There was NO legacy query path left to delete, and the RFC
+       states that as an audited finding rather than inventing a deletion. The
+       real gap was that fuzzy name resolution was reachable only over REST
+       (the iOS picker), so a school a student names in words had no path to a
+       college_id in chat — the slice's own acceptance line, unmet. It closes
+       that with a new find_college chat tool over the picker's own
+       CollegeSearchService.searchByName: no new SQL, no new table, no DDL.
+       Coach prompt v12 (migration 0068, rollback
+       COACHING_SYSTEM_PROMPT_VERSION=v11) tells the coach to resolve a named
+       school with find_college and then use the id verbatim for
+       update_college_list, the cost tool and the admissions tool;
+       search_colleges stays for attribute-shaped discovery. The module
+       convention is now written into CollegeSearchService's KDoc and
+       cross-referenced from CollegesDao — search goes through the service
+       over the index, point-reads by id/unit_id stay on colleges,
+       ingest/versioning writes colleges — and a ruling is recorded that
+       admin-web's college browse stays on colleges because it is an
+       unfiltered browse of raw source columns the index does not carry.
+       Review was 39 lenses over 4 tiers with no must-fix; it caught two real
+       bugs before landing (an over-long name reported to the coach as a
+       failed search instead of a rejected input, and a supertype catch that
+       would have shown a driver fault to the student as their own bad words),
+       and gave the tool-error envelope one home in ToolErrors.kt used by both
+       :college tools. Gate: the full bin/test check passed at the commit.
+       Carried forward, declined on purpose: the test-fixture duplication (the
+       NewCollege builder is a 4th copy, and the seed+rebuild transaction is
+       duplicated) and the absent shared JsonTool/DelegatingChatTool
+       abstraction — both best fixed when search/04/similar-colleges adds the
+       next copy. NEXT FREE: RFC 156 (152, 153 and 155 claimed by live runs),
+       migration 0069 — recompute both at run time, never copy them.
+
 ## Slice IDs
 
 Permanent IDs for this brief's slices (`search/<milestone>/<name>`). The old
@@ -138,7 +177,7 @@ inserted later takes a decimal step. Neither renumbers a neighbour.
 | S3  | search/03a/published-codebooks | LANDED RFC 147                            |
 | S3  | search/03b/the-index           | LANDED RFC 150                            |
 | S4  | search/04/similar-colleges     | NOT STARTED                               |
-| S5  | search/05/consumer-sweep       | NOT STARTED                               |
+| S5  | search/05/consumer-sweep       | LANDED RFC 154                            |
 | S6  | search/06/unattended-refresh   | DEFERRED                                  |
 
 Per-slice dependencies (`Needs:` lines) live in `spec.md`.
