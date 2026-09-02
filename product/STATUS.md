@@ -7,8 +7,22 @@ and paste-ready prompts to kick off new sessions. **/chart reads this file first
 and updates it after every landed slice** — if this file and a brief disagree,
 the brief's ledger wins and this file gets fixed.
 
-Updated: 2026-09-01 — `first-value/05/family-cost-report` (brief 0001 S5) LANDED
-as **RFC 155** (`main@47cf9d62` + `6777c7c7`). A parent can now open the
+Updated: 2026-09-02 — **RFC 157, "the residency basis of the blended figures"**
+(`main@29242880` + `7c7c56af`), a correctness fix Ian found by using the
+product, not a chart slice: the Scorecard's published price (`COSTT4_A`) and its
+net price (`NPT4` family) are figures for students paying the **in-state** rate,
+and we printed them beside out-of-state arrangement totals with no basis stated
+— a WA family reading a shared report for UC San Diego saw "$38,701 published,
+$28,785 after aid" against a real out-of-state published price near $77,102.
+Both figures are now **withheld at the source** at a public school whose state
+does not match a KNOWN residency, the blank names the reason and points at the
+family's own totals, and `comparison_basis` carries the basis as a **sixth**
+fact. Migrations **0075** (schema comments) + **0076** (coach prompt **v16**,
+rollback `COACHING_SYSTEM_PROMPT_VERSION=v15`). Gate: `bin/test check` — **2441
+tests, 0 failures**, shell harnesses green, `bin/format -c` 284 files. **After
+this landing the next free RFC number was 158 and the next free migration
+was 0077.** Before it, `first-value/05/family-cost-report` (brief 0001 S5)
+LANDED as **RFC 155** (`main@47cf9d62` + `6777c7c7`). A parent can now open the
 student's college list as a cost table on a phone, with **no login and no
 account**: the student asks the coach to share, `share_cost_report` returns
 `https://app.uni.coach/report?token=...`, and `revoke_cost_report_share` kills
@@ -41,10 +55,10 @@ immediately before commit, never from its own design doc — RFC 155 re-claimed
 its pair four times. Slices carry permanent IDs and declared `Needs:` edges, and
 readiness is computed by `slice-board` rather than written down here.
 
-At that moment the next free RFC was **157** (156 is claimed by a live run) and
-the next free migration was **0075**. Those two numbers are a snapshot and are
-almost certainly stale by the time you read them: recompute both at run time
-with the commands below, and never copy a number out of a document.
+At that moment the next free RFC was **158** and the next free migration was
+**0077**. Those two numbers are a snapshot and are almost certainly stale by the
+time you read them: recompute both at run time with the commands below, and
+never copy a number out of a document.
 
 **No RFC or migration number is recorded in this file, on purpose.** They are
 claimed by live runs in other worktrees, so any number written here is wrong
@@ -70,29 +84,53 @@ the answer to "what can I kick off?".
 
 ## TL;DR — next steps, most important first
 
-1. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
+1. **A NUMBER IN THE PARENT'S REPORT WAS NOT THE FAMILY'S NUMBER, AND IAN FOUND
+   IT BY USING THE PRODUCT. Fixed by RFC 157** (`main@29242880` + `7c7c56af`,
+   2026-09-02). The Scorecard's published cost of attendance (`COSTT4_A`) and
+   its net price (`NPT4` family) are figures for students paying the
+   **in-state** rate. We printed them beside arrangement totals built from
+   **out-of-state** tuition, with no basis stated — so a Washington family
+   reading a shared Family Cost Report for UC San Diego saw a
+   **$38,701 published price** and **$28,785 after aid**, when their real
+   out-of-state published price is near **$77,102**. Now, at a public school
+   whose state does not match a **KNOWN** residency, both figures are **removed
+   from the answer at the source** — no renderer can print them — and the blank
+   names the reason and points at the totals that ARE this family's. A school
+   that publishes neither figure still reads as "not reported by this school".
+   An **unanswered residency withholds nothing** and states the basis instead. A
+   cost answer covering two or more schools carries the basis as a **sixth**
+   assumption fact. The fit-lens prompt and both search tool descriptions now
+   name the in-state basis at the model boundary, and coach prompt **v16** says
+   it too. Migrations **0075** + **0076**, rollback
+   `COACHING_SYSTEM_PROMPT_VERSION=v15`. Gate: **2441 tests, 0 failures**, shell
+   harnesses green. **It left two open follow-ups — see the Backlog: the search
+   index still ranks every family on the in-state net price (a /chart slice, not
+   a fix to fold into the next run), and `first-value/06`'s spec drift.**
+
+2. **THE FAMILY COST REPORT IS LIVE. `first-value/05/family-cost-report` (S5)
    LANDED as RFC 155 (`main@47cf9d62` + `6777c7c7`, 2026-09-01), so brief 0001's
    Beat 1 is ONE SLICE from complete.** A parent no longer needs an account, a
    login, or the app. The student asks the coach to share, `share_cost_report`
    returns a link, and the parent opens `https://app.uni.coach/report?token=...`
-   on a phone and reads the student's college list as a cost table — the five
-   comparison assumption sentences, a cross-school summary table (rows are
-   schools, one held-constant way of living), per-school living-cost detail,
-   cited merit practice, debt context, and a sources block. The page is **live,
-   not a snapshot**: it recomputes on every view and says so, so a parent who
-   opens it again in March sees March's answer. `revoke_cost_report_share` kills
-   it, and **revoke means every link ever sent is dead**. The token is
-   **derived, never stored** — `HMAC-SHA256(shareTokenSecret, row id)`, with
-   only the SHA-256 hash in the row — so re-sharing reproduces the same link
-   while a database leak yields none, and rotating the secret is a global
-   revoke. One live share per student. Coach prompt **v15** (migrations 0073 +
-   0074, rollback `COACHING_SYSTEM_PROMPT_VERSION=v14`). Gate: 2405 JVM tests
-   and 431 shell assertions, 0 failures. **Operational precondition:**
+   on a phone and reads the student's college list as a cost table — the six
+   comparison assumption sentences (RFC 157 added the blended-figure basis), a
+   cross-school summary table (rows are schools, one held-constant way of
+   living), per-school living-cost detail, cited merit practice, debt context,
+   and a sources block. The page is **live, not a snapshot**: it recomputes on
+   every view and says so, so a parent who opens it again in March sees March's
+   answer. `revoke_cost_report_share` kills it, and **revoke means every link
+   ever sent is dead**. The token is **derived, never stored** —
+   `HMAC-SHA256(shareTokenSecret, row id)`, with only the SHA-256 hash in the
+   row — so re-sharing reproduces the same link while a database leak yields
+   none, and rotating the secret is a global revoke. One live share per student.
+   Coach prompt **v15** (migrations 0073 + 0074, rollback
+   `COACHING_SYSTEM_PROMPT_VERSION=v14`). Gate: 2405 JVM tests and 431 shell
+   assertions, 0 failures. **Operational precondition:**
    `COST_REPORT_SHARE_TOKEN_SECRET` must be set in SSM before this works in
    production; unset, the feature stays dark, declines honestly, and warns once
    at boot.
 
-2. **THE WEDGE IS NOW UNBLOCKED: `first-value/06/invite-your-parent` (S6) is the
+3. **THE WEDGE IS NOW UNBLOCKED: `first-value/06/invite-your-parent` (S6) is the
    last slice in Beat 1 and it is startable.** Its BLOCKS edge was exactly this
    slice's report surface and token, and both now exist. RFC 155 stopped short
    of the nudge on purpose: S6 owns the share CTA placement, the RFC 93
@@ -100,7 +138,7 @@ the answer to "what can I kick off?".
    Beat 2's parent-account claim path. Read the drift notes in the work table
    before writing the RFC — the sharing mechanic itself is already built.
 
-3. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
+4. **Brief 0003 — clear money language — COMPLETE. `money/04/where-youll-live`
    LANDED as RFC 152 (`main@f7fcc99c` + `5d067bf0`, 2026-09-01), and with it
    every slice in the brief.** The coach now leads with the one way of living
    the family said they plan, instead of offering three and letting them pick —
@@ -120,7 +158,7 @@ the answer to "what can I kick off?".
    `COACHING_SYSTEM_PROMPT_VERSION=v13`). **Nothing in brief 0003 is startable —
    the brief is done.**
 
-4. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
+5. **Brief 0004 — college search index — CORE COMPLETE. Every slice has landed
    (RFCs 139, 144, 147, 150, 154 and 153, `search/04/similar-colleges`,
    2026-09-01); only `search/06/unattended-refresh` is left, and it is DEFERRED
    by intent.** A **`similar_colleges`** chat tool decides "similar" per call
@@ -136,7 +174,7 @@ the answer to "what can I kick off?".
    leaves is in the Backlog: the `NewCollege` test fixture is a 5th copy and the
    shared helper is in the wrong source set, parked twice over.
 
-5. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
+6. **Brief 0001 S4 COMPLETE — S4a (RFC 140) and S4b (RFC 148, 2026-08-30).** The
    admissions layer is user-visible: the coach can answer, with citations, what
    a school weighs in admissions, when its rounds close, and how it actually
    behaves on merit aid — and merit rides along inside cost answers. Every fact
@@ -148,7 +186,7 @@ the answer to "what can I kick off?".
    contains "without need". A school that reports only a freshman total (28 of
    368) is a silence, not a zero.
 
-6. **Before any App Store submission: brief 0002, account deletion** — parked in
+7. **Before any App Store submission: brief 0002, account deletion** — parked in
    the Backlog (Ian, 2026-08-27), but 5.1.1(v) still blocks review and GDPR Art.
    17 / CCPA still apply. Nothing in Beat 1 is affected; launch is.
 
@@ -232,7 +270,12 @@ One blended number became three priced living arrangements.
   figure; that absence is explicit, never a `$0`. A school silent on a component
   says so in `data_availability`. If we do not know the family's state, the
   tuition line and every total are withheld rather than guessing a residency,
-  and the coach asks the residency question instead.
+  and the coach asks the residency question instead. **At a public school whose
+  state does not match a KNOWN residency, the blended published price and the
+  net price are withheld too** (RFC 157) — both are in-state figures and this
+  family is not in-state — and the blank says so and points at the arrangement
+  totals, which ARE built from their tuition. A school that publishes neither
+  figure still reads as "not reported by this school", never as withheld.
 - **"No residence halls" is an answer, not a gap:** read from IPEDS
   `offers_housing`, and reported whenever known. If a school flagged as having
   no housing nonetheless publishes on-campus figures, the published figures win,
@@ -255,7 +298,7 @@ One blended number became three priced living arrangements.
 ### Comparing schools without hiding the assumptions (brief 0003 M3, RFC 151)
 
 **The door:** the chat coach. Ask about more than one school on your college
-list — "compare these three" — and the answer arrives as a short table with five
+list — "compare these three" — and the answer arrives as a short table with six
 plain sentences above it.
 
 A dollar figure is a statistic about a population, a year, a residency and a way
@@ -275,7 +318,11 @@ numbers, as ordinary copy rather than a disclaimer at the bottom:
 - **the academic year** each figure comes from;
 - **the aid basis** — a net price is the published price minus grants and
   scholarships. Loans and work-study are never subtracted. This one had never
-  been on the wire before.
+  been on the wire before;
+- **the basis of the blended figures** (the sixth fact, RFC 157) — the published
+  price and the net price are figures for students paying the **in-state** rate.
+  Where that is not this family's rate the two figures are not shown at all, and
+  the sentence says which schools that applies to.
 
 Tuition and fees — the price the school sets and publishes — renders above the
 estimated living costs, and the coach says which block is which. Rows are
@@ -283,11 +330,15 @@ schools, inside RFC 124's three-column phone cap, or it says it as a list.
 
 **How it degrades.** A school that does not report a part gets a labelled blank,
 never a zero, never a neighbour's number, and never a total summed from the
-parts that happen to be there. A school with no residence halls is said to have
-none, not "unreported". A school whose type we cannot recognise says plainly
-that no published price can be selected for it, rather than being dropped or
-guessed at. One school only? No comparison object rides at all — a one-school
-answer is already fully labelled and must not be narrated as a comparison.
+parts that happen to be there. A public school outside a KNOWN residency shows
+**no** published price and **no** price after aid — the blank names the reason
+and points at that school's arrangement totals — while an **unanswered**
+residency withholds nothing and states the in-state basis instead. A school with
+no residence halls is said to have none, not "unreported". A school whose type
+we cannot recognise says plainly that no published price can be selected for it,
+rather than being dropped or guessed at. One school only? No comparison object
+rides at all — a one-school answer is already fully labelled and must not be
+narrated as a comparison.
 
 **Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v10`. The v10 row is immutable and
 stays in the catalog, so this is one environment variable, no migration.
@@ -557,10 +608,11 @@ account, no app**. `revoke_cost_report_share` takes it back. Live on the next
 `COST_REPORT_SHARE_TOKEN_SECRET` is set.
 
 - **What it does:** renders the student's college list as a cost table for a
-  parent — the five `comparison_basis` assumption sentences, a cross-school
-  summary table (rows are schools, one held-constant way of living), per-school
-  living-cost detail, cited merit practice, debt context, and a sources block.
-  It is the same money vocabulary the coach speaks (brief 0003), on a page.
+  parent — the six `comparison_basis` assumption sentences (RFC 157 added the
+  blended-figure basis), a cross-school summary table (rows are schools, one
+  held-constant way of living), per-school living-cost detail, cited merit
+  practice, debt context, and a sources block. It is the same money vocabulary
+  the coach speaks (brief 0003), on a page.
 - **The page is live, not a snapshot,** and it says so on the page: every view
   recomputes from the current list, money profile and data, so a parent who
   re-opens the link in March when the aid offers arrive reads March's answer.
@@ -580,15 +632,21 @@ account, no app**. `revoke_cost_report_share` takes it back. Live on the next
   `no-store` / `no-referrer`, and the token is redacted from the request log.
 - **How it degrades:** no money profile → overall figures with the basis stated,
   never a band claim. A school missing a part → a labelled blank, never a zero,
-  never a neighbour's number, and no partial total. An empty college list says
-  so instead of rendering an empty table. An unknown, malformed or revoked token
-  → the ordinary branded 404, never "revoked" and never "expired", so the page
-  leaks nothing about which links once existed.
+  never a neighbour's number, and no partial total. **A public school outside a
+  KNOWN residency shows no published price and no price after aid** (RFC 157):
+  both are in-state figures, so they are withheld at the source, and the blank
+  names the reason and points the parent at the arrangement totals, which are
+  built from the tuition this family would actually pay. An unanswered residency
+  withholds nothing and states the in-state basis instead. An empty college list
+  says so instead of rendering an empty table. An unknown, malformed or revoked
+  token → the ordinary branded 404, never "revoked" and never "expired", so the
+  page leaks nothing about which links once existed.
 - **One public-web origin:** `publicWeb.urlBase` is now the single origin, and
   both the verify-email link and the report link derive from it. The two
   per-link env vars remain as overrides that still win.
-- **Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v14` turns the coach's offer off
-  (the v14 row is immutable and stays in the catalog). Unsetting
+- **Rollback:** `COACHING_SYSTEM_PROMPT_VERSION=v15` returns the coach to the
+  prompt before RFC 157; `v14` turns the coach's share offer off entirely (both
+  rows are immutable and stay in the catalog). Unsetting
   `COST_REPORT_SHARE_TOKEN_SECRET` leaves the feature dark: it declines honestly
   and warns once at boot.
 - **Not yet:** no iOS share sheet (RFC 155 **D-I**, chat is the door), and no
@@ -676,6 +734,31 @@ Valuable, unscheduled, unprioritised — the parking lot. Append freely (one
 bullet, enough context to pick it up cold); /chart promotes an item into the
 work table by giving it a priority, or into a brief when it deserves gates.
 Nothing here is committed work.
+
+**Two open follow-ups from RFC 157 (2026-09-02), at the top because they are the
+newest and the first is a product decision, not a bug:**
+
+- **THE SEARCH INDEX STILL RANKS EVERY FAMILY ON THE IN-STATE NET PRICE — a
+  /chart slice on brief 0004's surface, NOT a fix to fold into the next run.**
+  RFC 157 corrected the labels and the withholding in cost answers; it did not
+  touch ranking. `net_price_percentile_share` is `percent_rank()` over the
+  in-state net price, migration 0064 carries **no tuition column at all**, and
+  `cheaper_than_anchor` in `similar_colleges` compares two in-state figures. So
+  an out-of-state family still gets "cheaper" and price-axis ordering computed
+  from a price that is not theirs. Fixing it needs **new index columns** and a
+  **product decision about what "cheaper" means when residency is unknown** —
+  that is design work with a gate, which is why it goes to /chart rather than
+  into an implementation run.
+- **`first-value/06/invite-your-parent` has spec drift, recorded when RFC 155
+  landed.** Four things the spec assumes are no longer true or were never built:
+  the share CTA is a **chat affordance**, not something on the parent page (an
+  iOS share sheet was deliberately deferred, RFC 155 **D-I**); **"share events
+  tracked" has no storage yet** — `cost_report_shares` holds only id,
+  created_at, student_id, token_hash, revoked_at — so tracking is new DDL and
+  hits Ian's DDL gate (0001 **D10**); the derived token **cannot be reversed to
+  a student**, which constrains Beat 2's parent-account claim path; and **one
+  live share per student** means there is no per-recipient attribution. Spec
+  edits belong to /chart, before anyone writes the RFC.
 
 - **The money profile's `(value, status)` pairs are not a type** — "answered
   with no value" is representable in `:db`'s models and caught only by the
